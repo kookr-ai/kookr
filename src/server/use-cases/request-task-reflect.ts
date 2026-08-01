@@ -328,10 +328,14 @@ async function readReflectIdentity(
 }
 
 /**
- * Startup sweep: remove any ephemeral reflect worktree whose linked task is
- * no longer present in the task store, plus a 7-day TTL backstop. Called from
- * startup recovery so crashes between worktree creation and reflect-task
- * completion don't accumulate dirs.
+ * Reflect worktree orphan sweep: remove any ephemeral reflect worktree whose
+ * linked source task is no longer present in the task store, plus a 7-day TTL
+ * backstop. Safe for concurrent use — worktrees still linked to a live reflect
+ * task are kept unless the 7-day mtime TTL fires.
+ *
+ * Called once at startup recovery and on the lifecycle-timer schedule
+ * (issue #1860) so long-lived production instances do not accumulate dirs
+ * from crashes between worktree creation and reflect-task completion.
  */
 export async function sweepReflectWorktrees(deps: {
   reflectWorktreesDir: string;
@@ -386,6 +390,63 @@ export async function sweepReflectWorktrees(deps: {
     }
   }
   return { removed, kept };
+}
+
+/** Default periodic reflect-worktree sweep cadence (issue #1860). */
+export const DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS = 1;
+
+/** Config for the scheduled reflect-worktree orphan sweep (issue #1860). */
+export interface ReflectWorktreeSweepScheduleConfig {
+  /** Absolute path to the reflect-worktrees directory. */
+  reflectWorktreesDir: string;
+  /** Live task store — used to skip worktrees whose source task is still active. */
+  taskStore: TaskStore;
+  /** Interval between sweeps, in hours. `<= 0` disables the timer entirely. */
+  intervalHours: number;
+  /** Test seam for the sweep core. */
+  run?: typeof sweepReflectWorktrees;
+}
+
+/**
+ * Resolve the reflect-worktree sweep interval (hours) from the environment.
+ *
+ * Default is {@link DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS} (1h) so
+ * long-lived production instances reclaim crash orphans without an env knob.
+ * Set `KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS=0` to disable; a positive
+ * number overrides the cadence.
+ */
+export function resolveReflectWorktreeSweepIntervalHours(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS?.trim();
+  if (!raw) return DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS;
+  return value;
+}
+
+/**
+ * Run one scheduled reflect-worktree orphan sweep (issue #1860). Errors are
+ * caught and logged so a failed sweep can never bubble into the interval
+ * callback and crash the process. Always logs removed/kept counts.
+ */
+export async function runScheduledReflectWorktreeSweep(
+  config: ReflectWorktreeSweepScheduleConfig,
+): Promise<{ removed: number; kept: number } | null> {
+  try {
+    const run = config.run ?? sweepReflectWorktrees;
+    const result = await run({
+      reflectWorktreesDir: config.reflectWorktreesDir,
+      taskStore: config.taskStore,
+    });
+    console.log(
+      `[reflect-sweep] scheduled sweep removed ${result.removed} orphaned reflect worktree(s), kept ${result.kept}`,
+    );
+    return result;
+  } catch (err) {
+    console.error('[reflect-sweep] scheduled sweep failed:', err);
+    return null;
+  }
 }
 
 /**

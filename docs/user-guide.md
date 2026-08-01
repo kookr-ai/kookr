@@ -43,7 +43,7 @@ parentRepo: /path/to/project
 
 For managed task worktree cleanup, the file's presence makes Kookr skip removal with reason `protected`. The first non-empty line is an optional human-readable reason. The optional `parentRepo:` field identifies the parent repository when Kookr needs to resolve it; replace the example path with the real absolute path. A production checkout such as `kookr-prod` should use this marker when it must remain long-lived.
 
-This marker does not preserve Kookr's ephemeral reflection worktrees. Those carry a separate `.kookr-reflect.json` identity marker, live directly under Kookr's reflection-worktree root, and are intentionally force-removed through Git when their reflection task ends. Legacy plain reflection directories without that marker are removable only during the startup sweep when their UUID basename and direct-child root checks pass; Git-looking directories are left untouched.
+This marker does not preserve Kookr's ephemeral reflection worktrees. Those carry a separate `.kookr-reflect.json` identity marker, live directly under Kookr's reflection-worktree root, and are intentionally force-removed through Git when their reflection task ends. Legacy plain reflection directories without that marker are removable during the startup or scheduled lifecycle-timer sweep when their UUID basename and direct-child root checks pass; Git-looking directories are left untouched.
 
 Remove `.kookr-protected` only when the worktree may be cleaned up normally again. The filename must be exact and the file must be at the worktree root.
 

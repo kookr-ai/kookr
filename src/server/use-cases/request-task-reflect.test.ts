@@ -13,10 +13,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS,
   REFLECT_IDENTITY_FILE,
   REFLECT_IDENTITY_SCHEMA,
   removeReflectWorktree,
   requestTaskReflect,
+  resolveReflectWorktreeSweepIntervalHours,
+  runScheduledReflectWorktreeSweep,
   sweepReflectWorktrees,
 } from './request-task-reflect.js';
 import { TaskStore, type Task } from '../../core/tasks.js';
@@ -358,6 +361,70 @@ describe('sweepReflectWorktrees', () => {
     });
 
     expect(result).toEqual({ removed: 0, kept: 0 });
+  });
+});
+
+describe('resolveReflectWorktreeSweepIntervalHours (issue #1860)', () => {
+  it('defaults to 1h when unset so long-lived prod instances sweep without config', () => {
+    expect(resolveReflectWorktreeSweepIntervalHours({})).toBe(
+      DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS,
+    );
+    expect(resolveReflectWorktreeSweepIntervalHours({
+      KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS: '',
+    })).toBe(DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS);
+    expect(resolveReflectWorktreeSweepIntervalHours({
+      KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS: 'nope',
+    })).toBe(DEFAULT_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS);
+  });
+
+  it('accepts 0 to disable and positive hours to override cadence', () => {
+    expect(resolveReflectWorktreeSweepIntervalHours({
+      KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS: '0',
+    })).toBe(0);
+    expect(resolveReflectWorktreeSweepIntervalHours({
+      KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS: '2',
+    })).toBe(2);
+    expect(resolveReflectWorktreeSweepIntervalHours({
+      KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS: '0.5',
+    })).toBe(0.5);
+  });
+});
+
+describe('runScheduledReflectWorktreeSweep (issue #1860)', () => {
+  it('logs removed/kept counts and returns the sweep result', async () => {
+    const run = vi.fn(async () => ({ removed: 2, kept: 3 }));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runScheduledReflectWorktreeSweep({
+      reflectWorktreesDir: '/tmp/reflect-worktrees',
+      taskStore: makeTaskStore([]),
+      intervalHours: 1,
+      run,
+    });
+    expect(result).toEqual({ removed: 2, kept: 3 });
+    expect(run).toHaveBeenCalledWith({
+      reflectWorktreesDir: '/tmp/reflect-worktrees',
+      taskStore: expect.anything(),
+    });
+    expect(logSpy.mock.calls.flat().join(' ')).toMatch(
+      /scheduled sweep removed 2 orphaned reflect worktree\(s\), kept 3/,
+    );
+    logSpy.mockRestore();
+  });
+
+  it('never throws — a failing sweep is logged and returns null', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('disk exploded');
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await runScheduledReflectWorktreeSweep({
+      reflectWorktreesDir: '/tmp/reflect-worktrees',
+      taskStore: makeTaskStore([]),
+      intervalHours: 1,
+      run,
+    });
+    expect(result).toBeNull();
+    expect(errSpy.mock.calls.flat().join(' ')).toMatch(/scheduled sweep failed/);
+    errSpy.mockRestore();
   });
 });
 

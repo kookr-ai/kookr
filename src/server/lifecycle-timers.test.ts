@@ -1563,6 +1563,96 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }
   });
 
+  // --- Reflect-worktree orphan sweep wiring (issue #1860) ---
+  test('fires the scheduled reflect-worktree sweep on its interval with fake clock', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({ removed: 1, kept: 0 }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      reflectWorktreeSweep: {
+        reflectWorktreesDir: '/tmp/reflect-worktrees',
+        taskStore: new TaskStore(),
+        intervalHours: 0.0005 /* 1.8s */,
+        run,
+      },
+    }) as any);
+    try {
+      expect(handles.reflectWorktreeSweepInterval).not.toBeNull();
+      expect(run).not.toHaveBeenCalled(); // no boot run on the timer (startup sweeps separately)
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clearAllTimers(handles);
+    }
+    const callsAfterClear = run.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(run.mock.calls.length).toBe(callsAfterClear);
+  });
+
+  test('does not schedule a reflect-worktree sweep when the interval is 0 (off)', () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const handles = startLifecycleTimers(baseTimerDeps({
+      reflectWorktreeSweep: {
+        reflectWorktreesDir: '/tmp/reflect-worktrees',
+        taskStore: new TaskStore(),
+        intervalHours: 0,
+        run,
+      },
+    }) as any);
+    try {
+      expect(handles.reflectWorktreeSweepInterval).toBeNull();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('omitting reflectWorktreeSweep leaves scheduling off', () => {
+    vi.useFakeTimers();
+    const handles = startLifecycleTimers(baseTimerDeps({}) as any);
+    try {
+      expect(handles.reflectWorktreeSweepInterval).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('skips the next reflect-worktree sweep tick when nonCriticalTickPause is elevated', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({ removed: 0, kept: 0 }));
+    let elevated = true;
+    const recordPause = vi.fn();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      reflectWorktreeSweep: {
+        reflectWorktreesDir: '/tmp/reflect-worktrees',
+        taskStore: new TaskStore(),
+        intervalHours: 0.0005 /* 1.8s */,
+        run,
+      },
+      nonCriticalTickPause: {
+        shouldSkipTick: () => elevated,
+        recordPause,
+      },
+    }) as any);
+    try {
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).not.toHaveBeenCalled();
+      expect(recordPause).toHaveBeenCalledWith('reflectWorktreeSweep');
+
+      elevated = false;
+      recordPause.mockClear();
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(recordPause).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   // --- Hourly prod smoke tick wiring (issue #1593) ---
   function stubSmokeTick() {
     return {
