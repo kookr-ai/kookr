@@ -78,3 +78,47 @@ export function detectGrokPermissionPromptUI(display: string): string | null {
   }
   return null;
 }
+
+/**
+ * Upper bound on pane text embedded in handshake-failure logs/errors
+ * (issue #1808). Large enough to see composer vs permission vs streaming
+ * state; small enough to keep launch error bodies readable.
+ */
+export const GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS = 800;
+
+/**
+ * Tail excerpt of a Grok pane for failure diagnosis (issue #1808). Control
+ * sequences are stripped so the log shows readable text; empty panes yield
+ * `(empty)`.
+ */
+export function formatGrokPaneExcerpt(
+  display: string,
+  maxChars: number = GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS,
+): string {
+  const text = stripTerminalControls(display).replace(/\r/g, '').trim();
+  if (!text) return '(empty)';
+  if (text.length <= maxChars) return text;
+  return text.slice(Math.max(0, text.length - maxChars));
+}
+
+/**
+ * True when the pane looks like Grok already accepted the prompt and is
+ * working (or blocked on a permission menu) — i.e. a retry Enter would be
+ * unsafe (issue #1808 handshake retry).
+ *
+ * Narrower than Claude's `esc to interrupt` busy markers: Grok's idle
+ * composer footer also contains that phrase (`› type a message… (esc to
+ * interrupt)`), so a bare match would false-positive and skip a needed
+ * resubmit. Require streaming/thinking indicators, a timed active status
+ * line, or a high-confidence permission menu.
+ */
+export function isGrokBusyOrResponding(display: string): boolean {
+  if (detectGrokPermissionPromptUI(display)) return true;
+  const semantics = analyzePaneSemantics(display);
+  if (semantics.state === 'streaming') return true;
+  const text = stripTerminalControls(display);
+  // Timed status line with elapsed work — not the idle composer footer alone.
+  if (/^[•●].*\(\d+[smh].*\besc to interrupt\)$/im.test(text)) return true;
+  if (/\b(Thinking|Running…|Streaming|Pollinating)\b/i.test(text)) return true;
+  return false;
+}

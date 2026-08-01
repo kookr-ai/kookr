@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { detectGrokBlockingStartupUI, detectGrokPermissionPromptUI } from './grok-readiness.js';
+import {
+  detectGrokBlockingStartupUI,
+  detectGrokPermissionPromptUI,
+  formatGrokPaneExcerpt,
+  isGrokBusyOrResponding,
+  GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS,
+} from './grok-readiness.js';
 
 describe('detectGrokBlockingStartupUI', () => {
   it('returns null for a normal ready composer / benign output', () => {
@@ -70,5 +76,43 @@ describe('detectGrokPermissionPromptUI (issue #1526 Phase C4)', () => {
 
   it('does not fire on a single quoted row label without a reject row', () => {
     expect(detectGrokPermissionPromptUI('The "Allow once" row approves a single invocation')).toBeNull();
+  });
+});
+
+describe('isGrokBusyOrResponding (issue #1808 handshake retry safety)', () => {
+  it('is false for the idle Grok composer (which contains "esc to interrupt")', () => {
+    expect(isGrokBusyOrResponding('› type a message… (esc to interrupt)')).toBe(false);
+    expect(isGrokBusyOrResponding('$ grok --no-alt-screen --model grok-build')).toBe(false);
+    expect(isGrokBusyOrResponding('')).toBe(false);
+  });
+
+  it('is true for streaming / thinking indicators', () => {
+    expect(isGrokBusyOrResponding('Thinking…\n(esc to interrupt)')).toBe(true);
+    expect(isGrokBusyOrResponding('Running… tool call')).toBe(true);
+  });
+
+  it('is true for a timed active status line', () => {
+    expect(isGrokBusyOrResponding('• Working on it (12s · esc to interrupt)')).toBe(true);
+  });
+
+  it('is true for the permission row menu', () => {
+    const pane = ['❯ Allow once', '  Always allow this command', '  Reject'].join('\n');
+    expect(isGrokBusyOrResponding(pane)).toBe(true);
+  });
+});
+
+describe('formatGrokPaneExcerpt', () => {
+  it('returns (empty) for blank panes and strips ANSI', () => {
+    expect(formatGrokPaneExcerpt('')).toBe('(empty)');
+    expect(formatGrokPaneExcerpt('   ')).toBe('(empty)');
+    expect(formatGrokPaneExcerpt('\x1b[1mready\x1b[0m')).toBe('ready');
+  });
+
+  it('keeps a short pane whole and tails a long one', () => {
+    expect(formatGrokPaneExcerpt('composer ready')).toBe('composer ready');
+    const long = 'a'.repeat(GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS + 50);
+    const excerpt = formatGrokPaneExcerpt(long);
+    expect(excerpt.length).toBe(GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS);
+    expect(excerpt).toBe(long.slice(-GROK_HANDSHAKE_PANE_EXCERPT_MAX_CHARS));
   });
 });

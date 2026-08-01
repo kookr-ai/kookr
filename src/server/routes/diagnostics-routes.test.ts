@@ -596,6 +596,43 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/launch-outcomes (issue #1808)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/launch-outcomes', () => {
+    test('returns an empty snapshot when metrics are not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/launch-outcomes');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'launch-outcome-metrics.v1',
+        totalAttempts: 0,
+        totalSuccesses: 0,
+        totalFailures: 0,
+        byAgentType: [],
+      });
+    });
+
+    test('returns per-agent failure rates when metrics are wired', async () => {
+      const { LaunchOutcomeMetrics } = await import('../../core/launch-outcome-metrics.js');
+      const metrics = new LaunchOutcomeMetrics();
+      metrics.record({ agentType: 'grok-build', outcome: 'failure', reason: 'handshake_timeout' });
+      metrics.record({ agentType: 'claude-code', outcome: 'success' });
+      const res = await mkApp({ launchOutcomeMetrics: metrics }).request('/api/diagnostics/launch-outcomes');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.totalAttempts).toBe(2);
+      expect(body.totalFailures).toBe(1);
+      expect(body.byAgentType).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          agentType: 'grok-build',
+          failures: 1,
+          failureRate: 1,
+          lastFailureReason: 'handshake_timeout',
+        }),
+        expect.objectContaining({ agentType: 'claude-code', successes: 1, failures: 0 }),
+      ]));
+    });
+  });
+
   // GET /api/diagnostics/hook-ingestion
   // ---------------------------------------------------------------------------
   describe('GET /api/diagnostics/hook-ingestion', () => {

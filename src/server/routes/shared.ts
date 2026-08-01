@@ -513,6 +513,11 @@ export interface RouteDeps {
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
   /**
+   * Per-agent-type launch outcome counters (issue #1808) for
+   * `GET /api/diagnostics/launch-outcomes`. Absent ⇒ empty snapshot.
+   */
+  launchOutcomeMetrics?: import('../../core/launch-outcome-metrics.js').LaunchOutcomeMetrics;
+  /**
    * Hot-path timing sampler (issue #1781) backing GET
    * {@link HOT_PATHS_ROUTE}. Absent ⇒ the route falls back to the process-wide
    * singleton that instrumentation call sites write into; tests inject a

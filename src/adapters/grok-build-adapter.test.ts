@@ -9,6 +9,7 @@ import {
   GrokLaunchRefusedError,
   GrokAgentBootTimeoutError,
   GROK_STOP_LAST_MESSAGE_MAX_CHARS,
+  GROK_INITIAL_PROMPT_ACK_MARKER,
   AGENT_BOOT_TIMEOUT_MARGIN_MS,
   computeDefaultAgentBootTimeoutMs,
 } from './grok-build-adapter.js';
@@ -184,6 +185,7 @@ describe('GrokBuildAdapter', () => {
       promptReadyTimeoutMs: 0,
       promptSubmitConfirmTimeoutMs: 0,
       promptSubmitRetries: 0,
+      handshakeRetries: 0,
     });
     vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode('\x1b[?2004h'));
 
@@ -191,6 +193,75 @@ describe('GrokBuildAdapter', () => {
     await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/refusing to resend it.*Auth preflight passed/);
     expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
     expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+  });
+
+  test('unconfirmed handshake error names the ack marker and includes a pane excerpt (issue #1808)', async () => {
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 0,
+      promptSubmitRetries: 0,
+      handshakeRetries: 0,
+    });
+    const pane = '\x1b[?2004h\n› type a message… (esc to interrupt)\nvisible-composer-state';
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode(pane));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const task = taskStore.createTask('x', '/workspace');
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(
+      new RegExp(
+        `${GROK_INITIAL_PROMPT_ACK_MARKER.replace(/[()]/g, '\\$&')}.*Pane excerpt:.*visible-composer-state`,
+        's',
+      ),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pane excerpt:'));
+    warn.mockRestore();
+  });
+
+  test('one in-session handshake retry resends Enter on an idle pane and succeeds when the hook arrives (issue #1808)', async () => {
+    // After the first confirm wait times out the adapter logs "ack pending" and
+    // starts the in-session retry wait. Poll for that log (not a fixed sleep)
+    // so the test is independent of DEFAULT_PROMPT_SUBMIT_DELAY_MS (500ms).
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      // Long enough that after we observe the "ack pending" warn we still have
+      // time to inject the hook into the handshake-retry confirm window.
+      promptSubmitConfirmTimeoutMs: 500,
+      promptSubmitRetries: 0,
+      handshakeRetries: 1,
+    });
+    const idlePane = '\x1b[?2004h\n› type a message… (esc to interrupt)';
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode(idlePane));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const task = taskStore.createTask('x', '/workspace');
+    const launchPromise = adapter.launch(task.id, 'x', '/workspace');
+
+    const pollDeadline = Date.now() + 5_000;
+    while (Date.now() < pollDeadline && warn.mock.calls.length === 0) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('initial-prompt ack pending'));
+
+    const sessions = [...backend.sessions.keys()];
+    expect(sessions.length).toBe(1);
+    // Inject during the handshake-retry confirm window.
+    adapter.injectHookEvent(
+      sessions[0],
+      JSON.stringify({ hookEventName: 'user_prompt_submit', sessionId: 'S1', prompt: 'x' }),
+    );
+    const sessionId = await launchPromise;
+    expect(sessionId).toBe(sessions[0]);
+    warn.mockRestore();
   });
 
   test('launch is refused when the kill switch is set', async () => {
@@ -251,13 +322,16 @@ describe('GrokBuildAdapter', () => {
     test('computeDefaultAgentBootTimeoutMs sums the nominal wait chain plus a fixed margin', () => {
       // waitForReadyOrAbort's ready wait + deliverInitialPromptToSession's OWN
       // internal ready wait (readyTimeoutMs threaded through twice) + the
-      // submit-confirmation retries, plus the fixed cushion for the un-timed
-      // captureBytes calls/cleanup around them.
+      // submit-confirmation retries + default handshakeRetries (1), plus the
+      // fixed cushion for the un-timed captureBytes calls/cleanup around them.
       expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0)).toBe(
-        15_000 * 2 + 10_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+        15_000 * 2 + 10_000 * (0 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
       expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 2)).toBe(
-        15_000 * 2 + 10_000 * 3 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+        15_000 * 2 + 10_000 * (2 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      );
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0, 0)).toBe(
+        15_000 * 2 + 10_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
     });
 
@@ -270,9 +344,10 @@ describe('GrokBuildAdapter', () => {
         promptReadyTimeoutMs: 1000,
         promptSubmitConfirmTimeoutMs: 500,
         promptSubmitRetries: 1,
+        handshakeRetries: 1,
       });
       expect((adapter as unknown as { agentBootTimeoutMs: number }).agentBootTimeoutMs).toBe(
-        computeDefaultAgentBootTimeoutMs(1000, 500, 1),
+        computeDefaultAgentBootTimeoutMs(1000, 500, 1, 1),
       );
     });
 
@@ -497,6 +572,7 @@ describe('GrokBuildAdapter', () => {
       promptReadyTimeoutMs: 0,
       promptSubmitConfirmTimeoutMs: 0,
       promptSubmitRetries: 0,
+      handshakeRetries: 0,
     });
     // Ready DECSET present, but the composer is covered by the permission row
     // menu (labels verbatim from the grok 0.2.111 binary's prompter).

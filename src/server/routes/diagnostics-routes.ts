@@ -30,6 +30,10 @@ import {
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
+import {
+  LAUNCH_OUTCOMES_ROUTE,
+  emptyLaunchOutcomeMetricsSnapshot,
+} from '../../core/launch-outcome-metrics.js';
 import { HOT_PATHS_ROUTE, getHotPathSampler } from '../../core/hot-path-sampler.js';
 import { EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT } from '../terminal-input-rtt-metrics.js';
 import { splitHookRequestBody } from '../hook-record-framing.js';
@@ -600,6 +604,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     ingestion: deps.hookIngestion?.getDiagnosticsSnapshot() ?? emptyHookIngestionDiagnosticsSnapshot(),
     watcher: deps.hookWatcher?.getHealthSnapshot() ?? emptyHookWatcherHealthSnapshot(),
   }));
+
+  // Per-agent-type launch success/failure rates (issue #1808): process-local
+  // counters so handshake flakiness is visible without log spelunking.
+  app.get(LAUNCH_OUTCOMES_ROUTE, (c) => (
+    c.json(deps.launchOutcomeMetrics?.snapshot() ?? emptyLaunchOutcomeMetricsSnapshot())
+  ));
 
   app.get('/api/diagnostics/launch-dependencies', (c) => (
     c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
