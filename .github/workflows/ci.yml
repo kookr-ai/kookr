@@ -77,6 +77,13 @@ jobs:
         if: steps.filter.outputs.code != 'false'
         run: pnpm check:e2e
 
+      # Locks in the zero-import-cycle property (issue #1829). Native Tarjan
+      # pass over src/ (<1s); fails on any circular runtime dependency. The
+      # cycle-detector's own correctness tests run in the vitest lane below.
+      - name: Check for import cycles
+        if: steps.filter.outputs.code != 'false'
+        run: pnpm check:cycles
+
       # These validators are cheap (<2s each) and cover docs/skills-only
       # changes, so they run unconditionally.
       - name: Validate skill frontmatter
