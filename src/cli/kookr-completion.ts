@@ -181,6 +181,23 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'queue-feeder',
+    subcommands: ['plan', 'leaves'],
+    flags: [
+      '--input',
+      '--free',
+      '--pending',
+      '--free-threshold',
+      '--umbrella',
+      '--emit',
+      '--kookr-dir',
+      '--no-persist',
+      '--json',
+      '-h',
+      '--help',
+    ],
+  },
+  {
     name: 'retro-verify',
     subcommands: ['status', 'drain', 'enqueue'],
     flags: [
@@ -342,6 +359,8 @@ function renderBashCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const valueDensitySubcommands = subcommandsFor('value-density');
   const valueDensityFlags = flagsFor('value-density');
+  const queueFeederSubcommands = subcommandsFor('queue-feeder');
+  const queueFeederFlags = flagsFor('queue-feeder');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
   const reflectSubcommands = subcommandsFor('reflect');
@@ -507,6 +526,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${valueDensityFlags}" -- "\${cur}") )
       fi
       ;;
+    queue-feeder)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${queueFeederSubcommands} ${queueFeederFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${queueFeederFlags}" -- "\${cur}") )
+      fi
+      ;;
     emission)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${emissionSubcommands} ${emissionFlags}" -- "\${cur}") )
@@ -600,6 +626,8 @@ function renderZshCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const valueDensitySubcommands = subcommandsFor('value-density');
   const valueDensityFlags = flagsFor('value-density');
+  const queueFeederSubcommands = subcommandsFor('queue-feeder');
+  const queueFeederFlags = flagsFor('queue-feeder');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
   const reflectSubcommands = subcommandsFor('reflect');
@@ -720,6 +748,13 @@ _kookr()
         compadd -- ${valueDensitySubcommands} ${valueDensityFlags}
       else
         compadd -- ${valueDensityFlags}
+      fi
+      ;;
+    queue-feeder)
+      if (( CURRENT == 3 )); then
+        compadd -- ${queueFeederSubcommands} ${queueFeederFlags}
+      else
+        compadd -- ${queueFeederFlags}
       fi
       ;;
     emission)
