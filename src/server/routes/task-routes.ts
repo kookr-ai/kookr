@@ -54,7 +54,7 @@ import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
   classifyCompletionReadyClosePolicy,
   listStaleCompletionReadyTasks,
-} from '../../core/completion-ready-cleanup.js';
+} from '../../core/completion/index.js';
 import {
   boundTailText,
   parseTailLinesQuery,

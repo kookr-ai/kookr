@@ -53,7 +53,7 @@ import {
   createDeliveredCompletionTracker,
   type DeliveredCompletionTracker,
 } from './delivered-task-completion-sweep.js';
-import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import type { MergedPrAttribution } from '../core/completion/index.js';
 import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
 // Domain job bodies extracted from this scheduler (issue #1822). Each lives
 // next to its domain owner; this module only registers/clears the timers that

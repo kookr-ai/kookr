@@ -9,9 +9,9 @@ import {
   classifyDeliveredCompletion,
   DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS,
   type MergedPrAttribution,
-} from './delivered-task-completion.js';
+} from './completion/index.js';
 import { deriveStuckReason } from './stuck-reason.js';
-import { listStaleCompletionReadyTasks } from './completion-ready-cleanup.js';
+import { listStaleCompletionReadyTasks } from './completion/index.js';
 import type { Task } from './task-read-model.js';
 
 const T0 = Date.parse('2026-07-28T17:18:00.000Z');

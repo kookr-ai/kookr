@@ -6,8 +6,8 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-  listStaleCompletionReadyTasks,
-} from '../core/completion-ready-cleanup.js';
+  selectAutoClosableCompletionReadyTasks,
+} from '../core/completion/index.js';
 
 export interface AutoCloseStaleCompletionReadyDeps {
   taskStore: TaskStore;
@@ -85,14 +85,14 @@ export async function autoCloseStaleCompletionReadyTasks(
     opts.throttle.lastSweepAt = nowMs;
   }
 
-  const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
+  const entries = selectAutoClosableCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
     thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-    ...(deps.isProviderPaused ? { isProviderPaused: deps.isProviderPaused } : {}),
     ttlMs: opts.ttlMs,
-  })
-    .filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task))
-    .slice(0, opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK);
+    ...(deps.isProviderPaused ? { isProviderPaused: deps.isProviderPaused } : {}),
+    excludeActiveRalph: true,
+    limit: opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK,
+  });
 
   for (const entry of entries) {
     const taskId = entry.task.id;
@@ -152,6 +152,3 @@ async function recordTtlEscalation(
   });
 }
 
-function isActiveRalphLoop(task: Task): boolean {
-  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
-}

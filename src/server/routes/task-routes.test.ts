@@ -13,7 +13,7 @@ import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
 import { performance } from 'node:perf_hooks';
 import type { Anomaly } from '../../core/types.js';
-import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
+import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion/index.js';
 import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 
 vi.mock('../launch-service.js', async (importActual) => {

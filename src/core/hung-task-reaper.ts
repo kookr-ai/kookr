@@ -1,5 +1,5 @@
 import type { Task } from './task-read-model.js';
-import type { MergedPrAttribution } from './delivered-task-completion.js';
+import type { MergedPrAttribution } from './completion/index.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
 
 /** Default silence threshold (issue #1526 Phase A / FM6): 3 hours. */

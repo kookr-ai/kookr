@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
-import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import type { MergedPrAttribution } from '../core/completion/index.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';

@@ -98,7 +98,7 @@ export interface KookrSettings {
    * on purpose: that setting's documented contract is "only affects
    * autoCloseOnSignal tasks", so a short value there must never silently
    * start closing ask-first review-required work. See
-   * docs/adr and completion-ready-cleanup.ts `classifyCompletionReadyClosePolicy`.
+   * docs/adr and core/completion/completion-ready-cleanup.ts `classifyCompletionReadyClosePolicy`.
    *
    * Accepted risk (issue #1526 Phase A review): this deliberately overrides
    * ask-first review for ANY task past the TTL, including one a human

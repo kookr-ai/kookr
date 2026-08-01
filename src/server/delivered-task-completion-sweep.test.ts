@@ -11,7 +11,7 @@ const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { signalOutboxPendingPath } from '../core/signal-outbox.js';
-import { DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS, type MergedPrAttribution } from '../core/delivered-task-completion.js';
+import { DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS, type MergedPrAttribution } from '../core/completion/index.js';
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
