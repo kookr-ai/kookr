@@ -24,6 +24,7 @@ run_lane() {
 # --- Lanes shared with the pre-push gate (same relative order) --------------
 run_lane "Type-checking server" pnpm build:server
 run_lane "Type-checking E2E tests" pnpm check:e2e
+run_lane "Checking for import cycles" pnpm check:cycles
 run_lane "Validating skill frontmatter" pnpm validate:skills
 run_lane "Validating bundled playbooks parse" pnpm validate:playbooks
 run_lane "Validating documented commands" pnpm validate:docs-commands
