@@ -32,6 +32,7 @@ import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-repo
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
 import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
+import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
 import type { RouteDeps } from './shared.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
@@ -444,16 +445,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/health/stt', async (c) => {
     if (!deps.sttUrl) return c.json({ status: 'disabled' }, 200);
-    try {
-      const httpUrl = deps.sttUrl.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
-      const res = await fetch(`${httpUrl}/health`, { signal: AbortSignal.timeout(3000) });
-      return c.json(await res.json());
-    } catch {
-      // Polling endpoint: frontend polls this and reads `status` from the body.
-      // Returning 200 with status:'unavailable' lets the UI render a soft warning
-      // without firing fetch() error handlers. Do not change to non-2xx.
-      return c.json({ status: 'unavailable' }, 200);
-    }
+    // Polling endpoint: frontend polls this and reads `status` from the body.
+    // Returning 200 with status:'unavailable' lets the UI render a soft warning
+    // without firing fetch() error handlers. Do not change to non-2xx.
+    // STT health runs through the `stt` circuit breaker (issue #1772).
+    const body = await probeSttHealth({
+      sttUrl: deps.sttUrl,
+      breaker: deps.circuitBreakerRegistry?.get('stt'),
+    });
+    return c.json(body, 200);
   });
 
   app.get('/api/health/tts', async (c) => {

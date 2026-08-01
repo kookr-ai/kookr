@@ -153,11 +153,13 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerViewerShareRoutes(app, sharedDeps);
 
   const speakEnabled = deps.speakFindingEnabled !== false;
+  const ttsBreaker = deps.circuitBreakerRegistry?.get('tts');
   const speakCache = deps.ttsUrl
     ? new AgentSpeakCache({
         llmClient: deps.llmClient ?? null,
         ttsUrl: deps.ttsUrl,
         voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
+        ttsBreaker,
       })
     : null;
   const taskSpeakCache = deps.ttsUrl
@@ -165,6 +167,7 @@ export function createRoutes(deps: RouteDeps): Hono {
         llmClient: deps.llmClient ?? null,
         ttsUrl: deps.ttsUrl,
         voice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
+        ttsBreaker,
       })
     : null;
   registerSpeechRoutes(app, sharedDeps, {

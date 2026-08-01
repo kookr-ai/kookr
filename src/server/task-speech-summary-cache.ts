@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import type { LlmClient } from '../core/llm-client.js';
+import type { CircuitBreaker } from '../core/circuit-breaker.js';
 import {
   normalizedTaskSpeechSummaryHashInput,
   summarizeTaskForSpeech,
   type TaskSpeechSummaryInput,
 } from '../core/task-speech-summary.js';
-import { synthesize, TTSClientError } from '../adapters/tts-client.js';
+import { TTSClientError } from '../adapters/tts-client.js';
+import { synthesizeWithCircuitBreaker } from '../adapters/circuit-breaker-tts-client.js';
 
 const DEFAULT_MAX_ENTRIES = 64;
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
@@ -27,6 +29,11 @@ export interface TaskSpeechSummaryCacheConfig {
   voice: string;
   maxEntries?: number;
   maxBytes?: number;
+  /**
+   * Optional TTS circuit breaker (issue #1772). When open, fresh synthesis is
+   * skipped immediately; cache hits still serve previously synthesized audio.
+   */
+  ttsBreaker?: CircuitBreaker;
   now?: () => number;
 }
 
@@ -107,7 +114,7 @@ export class TaskSpeechSummaryCache {
     const llmMs = now() - llmStart;
 
     const ttsStart = now();
-    const ttsResult = await synthesize({
+    const ttsResult = await synthesizeWithCircuitBreaker(this.config.ttsBreaker, {
       ttsUrl: this.config.ttsUrl,
       text: summary.text,
       voice: this.config.voice,

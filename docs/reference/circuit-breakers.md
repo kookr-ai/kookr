@@ -31,6 +31,8 @@ The current server bootstrap registers these breakers:
 | `github` | Wraps the GitHub fetcher via `CircuitBreakerGitHubFetcher`. Failed PR, issue, or batch fetches count against the breaker. When open, PR/issue fetches return `null`, and batch fetches return empty `prs` and `issues` arrays. | 5 failures | 60s | 60s |
 | `permission-alert` | Isolates the optional permission-block alert callback used by remote integrations. Callback exceptions count against the breaker. When open, the callback is skipped and event processing continues. | 3 failures | 60s | 30s |
 | `hook-watcher` | Registered for hook-watcher resilience state. As of the current implementation, no production hook-watcher path records failures against this breaker, so it should normally remain `closed`. | 10 failures | 60s | 30s |
+| `tts` | Wraps Pocket TTS `/synthesize` via `synthesizeWithCircuitBreaker` (used by agent-speak and task-speak caches). Provider failures count against the breaker. When open, fresh synthesis is skipped immediately with a degraded `TTSClientError`; cache hits still return previously synthesized audio. | 5 failures | 60s | 30s |
+| `stt` | Wraps server-side STT HTTP health probes via `probeSttHealth` (used by `GET /api/health/stt`). Probe failures count against the breaker. When open, probes degrade to `{ status: 'unavailable' }` without contacting the STT service (browser WebSocket STT traffic is client-direct and does not go through this breaker). | 5 failures | 60s | 30s |
 
 The generic default is 5 failures in 60 seconds, 30 seconds of cooldown, and 2
 half-open successes to close. The rows above list the explicit runtime
