@@ -43,6 +43,49 @@ KOOKR_HOST=127.0.0.1
 Do not put shell syntax such as `export` in this file. systemd environment
 files use `KEY=value` lines.
 
+## Allocator Tuning (glibc)
+
+The unit sets two glibc malloc knobs in the launch environment:
+
+```ini
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
+```
+
+**Why.** On glibc (Linux, e.g. 2.35) the server RSS was observed to sawtooth
+between roughly 2.3 GB and 4.1 GB, climbing toward the 4 GB old-space OOM
+ceiling. Offline measurement (issue #1753) showed the resident task graph and
+the other suspected structures account for only ~170 MB — ~7% of the ~2.6 GB
+post-GC RSS floor. The rest is retained/fragmented allocator memory: glibc
+spins up multiple per-thread arenas under allocation bursts (the snapshot-clone
+churn) and does not return freed pages to the OS, so RSS ratchets up.
+
+- `MALLOC_ARENA_MAX=2` caps the number of malloc arenas. Fewer arenas means less
+  per-thread free-list fragmentation and is the biggest lever on the sawtooth
+  amplitude. The Node.js default lets glibc create up to `8 × nproc` arenas.
+- `MALLOC_TRIM_THRESHOLD_=131072` pins the trim threshold at 128 KiB, disabling
+  glibc's dynamic growth of the top-pad. This makes `free()` return large freed
+  blocks to the OS sooner, lowering the post-GC RSS floor.
+
+These are read once at glibc initialization, so they must be present in the
+process's launch environment — they cannot be applied at runtime. Both are
+low-risk, fully reversible env knobs: remove the two lines and
+`systemctl --user daemon-reload && systemctl --user restart kookr.service` to
+revert. On the systemd path they can be overridden per-host by setting
+`MALLOC_ARENA_MAX` / `MALLOC_TRIM_THRESHOLD_` in `~/.config/kookr/kookr.env`,
+which `EnvironmentFile=` applies after these defaults. The
+`scripts/prod-restart.sh` pid-file fallback path (used only when systemd is not
+managing the unit) exports the same defaults for parity; there it honors any
+value already present in the launching shell's environment rather than
+`kookr.env`.
+
+Verifying the effect without live-prod probing is limited: the `server.log`
+ops-alerts sampler already records `process_rss`, so a before/after comparison
+of the RSS floor and sawtooth peaks across a restart is the intended check.
+Expected direction: a lower and flatter RSS floor. A native periodic
+`malloc_trim(0)` (which needs a compiled addon) is tracked as an optional
+follow-up, not part of this change.
+
 ## Start At Boot
 
 User units normally start when the user logs in. To let the service start after

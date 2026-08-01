@@ -10,6 +10,15 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=%h/git/kookr-prod
 Environment=NODE_ENV=production
+# glibc allocator tuning (issue #1753). The server RSS sawtooths 2.3-4.1 GB on
+# glibc 2.35 — the signature of per-thread arena retention / heap fragmentation,
+# not live object retention (the resident task graph measured ~170 MB). Capping
+# arenas to 2 removes the biggest driver of the sawtooth; the fixed trim
+# threshold (128 KiB) disables glibc's dynamic top-pad growth so freed pages are
+# returned to the OS sooner, lowering the post-GC RSS floor. These are read at
+# glibc init, so they must be set in the launch environment (not at runtime).
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
 EnvironmentFile=-%h/.config/kookr/kookr.env
 ExecStart=/usr/bin/env node dist/server/start.js
 Restart=on-failure
