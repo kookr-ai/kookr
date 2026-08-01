@@ -127,6 +127,12 @@ describe('parseArgs', () => {
     expect(parseArgs(['--no-auto-idempotency']).autoIdempotency).toBe(false);
   });
 
+  it('parses --dry-run (default false) (#1768)', () => {
+    expect(parseArgs([]).dryRun).toBe(false);
+    expect(parseArgs(['--dry-run']).dryRun).toBe(true);
+    expect(parseArgs(['--dry-run', '--json', 'hello']).dryRun).toBe(true);
+  });
+
   it('parses --wait with an optional timeout in seconds', () => {
     expect(parseArgs([]).wait).toBe(false);
     expect(parseArgs(['--wait', 'hello']).wait).toBe(true);
@@ -1464,6 +1470,295 @@ describe('main', () => {
     });
     expect(codes).toEqual([EXIT_OK]);
     expect(logs.join('\n')).toContain('Usage:');
+  });
+
+  // ---- #1768: --dry-run preview (validate + resolve + dedupe, no POST) ----
+
+  it('--dry-run prints the resolved payload and never POSTs (#1768)', async () => {
+    let posts = 0;
+    let gets = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'should-not-create' }) };
+      },
+      undefined,
+      () => {
+        gets += 1;
+        return { status: 200, body: JSON.stringify([]) };
+      },
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '-a', 'codex-cli', '--criteria', 'tests pass', 'hello dry-run'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(0);
+      expect(gets).toBe(1);
+      const rendered = logs.join('\n');
+      expect(rendered).toContain('dry-run: would create task (not launched)');
+      expect(rendered).toContain(`server:        ${baseUrl}`);
+      expect(rendered).toContain(`cwd:           ${tmpCwd}`);
+      expect(rendered).toContain('prompt_source: argv');
+      expect(rendered).toContain('match:         none');
+      expect(rendered).toContain('"prompt": "hello dry-run"');
+      expect(rendered).toContain('"agentType": "codex-cli"');
+      expect(rendered).toContain('"criteria": "tests pass"');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run --json returns a DRY_RUN envelope with the would-be body (#1768)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '--json', '--agent', 'claude-code', 'preview me'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(0);
+      expect(errBucket.errors).toEqual([]);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope).toMatchObject({
+        ok: true,
+        code: 'DRY_RUN',
+        details: {
+          dryRun: true,
+          baseUrl,
+          cwd: tmpCwd,
+          promptSource: 'argv',
+          dedupe: 'warn',
+          duplicate: false,
+          matchingTask: null,
+          body: {
+            prompt: 'preview me',
+            cwd: tmpCwd,
+            agentType: 'claude-code',
+          },
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run --dedupe=block exits 5 on active duplicate without POSTing (#1768)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          {
+            id: 'dup-dry',
+            status: 'inProgress',
+            cwd: tmpCwd,
+            userPrompt: 'hello',
+            agentType: 'claude-code',
+          },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '--dedupe=block', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]);
+      expect(posts).toBe(0);
+      expect(errBucket.errors.join('\n')).toContain('--dedupe=block');
+      expect(logs.join('\n')).toContain('blocked by active duplicate');
+      expect(logs.join('\n')).toContain('dup-dry');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run --json --dedupe=block returns DUPLICATE_BLOCKED with dryRun details (#1768)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 'dup-json-dry', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello' },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '--json', '--dedupe=block', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]);
+      expect(posts).toBe(0);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope).toMatchObject({
+        ok: false,
+        code: 'DUPLICATE_BLOCKED',
+        details: {
+          dryRun: true,
+          duplicate: true,
+          matchingTask: { id: 'dup-json-dry' },
+          body: { prompt: 'hello', cwd: tmpCwd },
+        },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run --dedupe=skip reports a match but exits 0 and never POSTs (#1768)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 'dup-skip', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello' },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '--json', '--dedupe=skip', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(0);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope.ok).toBe(true);
+      expect(envelope.code).toBe('DRY_RUN');
+      expect(envelope.details.duplicate).toBe(true);
+      expect(envelope.details.body.disableDedup).toBe(true);
+      expect(envelope.details.body.metadata).toEqual({ intent: 'keep_as_duplicate' });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dry-run includes auto-derived idempotency key in the would-be body (#1768)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        posts += 1;
+        return { status: 201, body: JSON.stringify({ id: 'nope' }) };
+      },
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dry-run', '--json', '--auto-idempotency', 'stable prompt'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(0);
+      const envelope = parseSingleJsonLog(logs);
+      const expectedKey = deriveAutoIdempotencyKey({
+        prompt: 'stable prompt',
+        cwd: tmpCwd,
+        criteria: null,
+        agent: null,
+      });
+      expect(envelope.details.body.idempotencyKey).toBe(expectedKey);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('HELP_TEXT documents --dry-run (#1768)', async () => {
+    const { io, logs } = makeConsoleCapture();
+    const errBucket = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+    await main({
+      argv: ['--help'],
+      env: {},
+      stdin: ttyStdin(),
+      cwd: tmpCwd,
+      out: io,
+      err: errBucket.io,
+      exit,
+      sleep: async () => {},
+    });
+    expect(codes).toEqual([EXIT_OK]);
+    expect(logs.join('\n')).toContain('--dry-run');
   });
 
   it('exits 2 on empty prompt', async () => {

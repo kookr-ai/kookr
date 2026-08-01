@@ -82,6 +82,7 @@ Options:
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
 | `--unattended` | none | false | Mark the task autonomous: the spawned agent's settings deny interactive tools (`AskUserQuestion` and equivalents) so a blocking call fails fast and flags the task **operator-needed** instead of hanging with nobody to answer (issue #1562). |
 | `-f`, `--prompt-file` | path | unset | Read the prompt from a file instead of positional argv or stdin. |
+| `--dry-run` | none | false | Validate discovery, resolve the prompt/cwd/idempotency key, run the read-only active-duplicate check, print the would-be `POST /api/tasks` body, and exit **without launching**. Exit codes match a real spawn for discovery failures and blocked duplicates (including exit 5). With `--json`, the envelope uses `code: "DRY_RUN"` on success. |
 | `-h`, `--help` | none | false | Print command help and exit. |
 
 Wait for readiness:
@@ -104,6 +105,15 @@ kookr spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppre
 In interactive `warn` mode, `show diff` prints the stored active prompt against the requested prompt before asking again.
 
 In `--json` mode, duplicate `warn` prompts are treated as non-interactive and return `DUPLICATE_BLOCKED` instead of asking for confirmation. Use `--dedupe=skip --json` when automation intentionally wants to keep a duplicate.
+
+Dry-run preview (issue #1768):
+
+```bash
+kookr spawn --dry-run "fix the auth bug"
+kookr spawn --dry-run --json --dedupe=block --prompt-file /tmp/prompt.md
+```
+
+`--dry-run` discovers the instance, resolves the prompt source and cwd, applies auto-idempotency the same way a real spawn would, runs a **read-only** `GET /api/tasks` duplicate check, prints the would-be POST body, and exits without `POST /api/tasks`. Use it to debug discovery ambiguity (exit 3), inspect the resolved payload, or check whether `--dedupe=block` would refuse a launch (exit 5) before creating a task.
 
 Idempotent retries (issue #1526):
 

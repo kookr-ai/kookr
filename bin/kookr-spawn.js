@@ -189,6 +189,10 @@ Options:
       --claim-repo <r>     Home repo for --claim-issue (owner/repo). Optional;
                            the server resolves from cwd when omitted. Pass
                            explicitly from forks / playbooks.
+      --dry-run            Validate + resolve + dedupe, print the would-be
+                           POST body, and exit without creating a task.
+                           Exit codes match a real spawn for discovery and
+                           dedupe (including exit 5 on blocked duplicates).
       --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
 
@@ -226,6 +230,7 @@ Hook-safety inside a Claude Code session:
 
 Exit codes:
   0  Task created (or idempotent dedup against an already-active task).
+     Also: --dry-run preview succeeded (no blocked duplicate).
   2  User error (bad flags, empty prompt, missing cwd, etc.).
   3  No Kookr server reachable.
   4  Server returned an error.
@@ -251,6 +256,7 @@ function parseArgs(argv) {
     unattended: false,
     claimIssue: null,
     claimRepo: null,
+    dryRun: false,
     json: false,
     wait: false,
     waitTimeoutSeconds: null,
@@ -269,6 +275,8 @@ function parseArgs(argv) {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--dry-run') {
+      out.dryRun = true;
     } else if (tok === '-C' || tok === '--cwd') {
       out.cwd = eat();
     } else if (tok === '-a' || tok === '--agent') {
@@ -464,6 +472,18 @@ async function readStdin(stream, maxBytes) {
     chunks.push(buf);
   }
   return Buffer.concat(chunks).toString('utf-8');
+}
+
+/**
+ * Which prompt channel would win under resolvePrompt precedence.
+ * Used by --dry-run reporting; does not read file/stdin contents.
+ * @returns {'prompt-file'|'argv'|'stdin'|null}
+ */
+function resolvePromptSource(args, stdin) {
+  if (args.promptFile !== null) return 'prompt-file';
+  if (args.positional.length > 0) return 'argv';
+  if (stdin && stdin.isTTY === false) return 'stdin';
+  return null;
 }
 
 /**
@@ -664,7 +684,26 @@ function reconcileDelayMs(attempt, retryAfterMs) {
   return Math.min(RECONCILE_MAX_DELAY_MS, backoff);
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null }) {
+/**
+ * Build the JSON body that POST /api/tasks would receive. Shared by the real
+ * launch path and --dry-run so the preview matches the wire payload exactly.
+ */
+function buildTaskPostBody({
+  prompt,
+  cwd,
+  agent = null,
+  effort = null,
+  model = null,
+  criteria = null,
+  disableDedup = false,
+  metadataIntent = null,
+  parentTaskId = null,
+  autoCloseOnSignal = null,
+  unattended = false,
+  idempotencyKey = null,
+  claimIssue = null,
+  claimRepo = null,
+}) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -683,6 +722,206 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
       ...(claimRepo ? { repo: claimRepo } : {}),
     };
   }
+  return body;
+}
+
+/**
+ * #1768: read-only pre-launch dedupe via GET /api/tasks + taskMatchesSpawn.
+ * Mirrors the server's active-duplicate interrupt without POSTing.
+ * Returns:
+ *   { kind: 'match', task }
+ *   { kind: 'none' }
+ *   { kind: 'error', message }
+ */
+async function findActiveDuplicate({ baseUrl, prompt, cwd, agentType = null, fetchTasksImpl = fetchTasks }) {
+  const res = await fetchTasksImpl(baseUrl);
+  if (res.kind !== 'ok') {
+    return { kind: 'error', message: res.message };
+  }
+  const normalizedPrompt = normalizePromptFileReferences(prompt, cwd);
+  const match = res.tasks.find((task) =>
+    taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType }),
+  );
+  return match ? { kind: 'match', task: match } : { kind: 'none' };
+}
+
+/**
+ * Whether a dry-run (or real) spawn should treat a matching active task as
+ * blocked under the caller's --dedupe mode. Interactive warn confirmation is
+ * not offered in dry-run — there is nothing to create after "yes" — so TTY
+ * warn is reported as a non-blocking preview note (exit 0) rather than exit 5.
+ * JSON / non-interactive warn still blocks with exit 5, matching a real spawn.
+ */
+function shouldBlockDuplicate({ dedupe, json, stdin }) {
+  if (dedupe === 'skip') return false;
+  if (dedupe === 'block') return true;
+  // warn: block when non-interactive or --json (same as confirmDuplicateSpawn)
+  if (json) return true;
+  if (!stdin || stdin.isTTY !== true) return true;
+  return false;
+}
+
+/**
+ * #1768: dry-run terminal path — discovery + prompt resolution already done.
+ * Runs the read-only dedupe check, prints the preview (or JSON envelope), and
+ * exits without any POST /api/tasks.
+ */
+async function renderDryRun({
+  args,
+  baseUrl,
+  prompt,
+  cwdAbs,
+  promptSource,
+  body,
+  parentTaskId,
+  out,
+  err,
+  exit,
+  stdin,
+  fetchTasksImpl = fetchTasks,
+}) {
+  const dedupeProbe = await findActiveDuplicate({
+    baseUrl,
+    prompt,
+    cwd: cwdAbs,
+    agentType: args.agent,
+    fetchTasksImpl,
+  });
+
+  if (dedupeProbe.kind === 'error') {
+    const message = `dry-run dedupe check failed: ${dedupeProbe.message}`;
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { dryRun: true, baseUrl, cwd: cwdAbs, promptSource },
+      });
+    }
+    err.error(`kookr-spawn: ${message}`);
+    return exit(EXIT_SERVER_ERROR);
+  }
+
+  const matchingTask = dedupeProbe.kind === 'match' ? dedupeProbe.task : null;
+  const block = matchingTask !== null && shouldBlockDuplicate({
+    dedupe: args.dedupe,
+    json: args.json,
+    stdin,
+  });
+
+  const details = {
+    dryRun: true,
+    baseUrl,
+    cwd: cwdAbs,
+    promptSource,
+    dedupe: args.dedupe,
+    duplicate: matchingTask !== null,
+    matchingTask: matchingTask
+      ? {
+          id: matchingTask.id ?? null,
+          status: matchingTask.status ?? null,
+          cwd: matchingTask.cwd ?? null,
+          agentType: matchingTask.agentType ?? null,
+        }
+      : null,
+    parentTaskId,
+    body,
+  };
+
+  if (block) {
+    const message = args.dedupe === 'block'
+      ? 'Duplicate active prompt blocked by --dedupe=block (dry-run)'
+      : 'Duplicate active prompt blocked in non-interactive dry-run';
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_DUPLICATE_BLOCKED,
+        ok: false,
+        code: 'DUPLICATE_BLOCKED',
+        message,
+        details,
+      });
+    }
+    err.error(formatDuplicateWarning({ task: matchingTask }));
+    err.error(
+      args.dedupe === 'block'
+        ? 'kookr-spawn: duplicate active prompt blocked by --dedupe=block.'
+        : 'kookr-spawn: duplicate active prompt blocked in non-interactive mode. Re-run with --dedupe=skip to keep it as an intentional duplicate.',
+    );
+    // Still print the would-be body on stderr-adjacent stdout so operators
+    // can inspect the payload that would have been sent.
+    out.log(formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask, dedupe: args.dedupe, blocked: true }));
+    return exit(EXIT_DUPLICATE_BLOCKED);
+  }
+
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'DRY_RUN',
+      message: matchingTask
+        ? 'Dry-run: would create task (active duplicate present; not blocked)'
+        : 'Dry-run: would create task (not launched)',
+      details,
+    });
+  }
+
+  out.log(formatDryRunPreview({
+    baseUrl,
+    cwdAbs,
+    promptSource,
+    body,
+    matchingTask,
+    dedupe: args.dedupe,
+    blocked: false,
+  }));
+  return exit(EXIT_OK);
+}
+
+function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask, dedupe, blocked }) {
+  const lines = [
+    blocked
+      ? 'dry-run: would create task — blocked by active duplicate (not launched)'
+      : 'dry-run: would create task (not launched)',
+    `  server:        ${baseUrl}`,
+    `  cwd:           ${cwdAbs}`,
+    `  prompt_source: ${promptSource ?? 'unknown'}`,
+    `  dedupe:        ${dedupe}`,
+  ];
+  if (matchingTask) {
+    lines.push(
+      `  match:         task ${matchingTask.id ?? 'unknown'} (${matchingTask.status ?? 'active'})`,
+    );
+  } else {
+    lines.push('  match:         none');
+  }
+  lines.push('  body:', JSON.stringify(body, null, 2).replace(/^/gm, '    '));
+  return lines.join('\n');
+}
+
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null }) {
+  const body = buildTaskPostBody({
+    prompt,
+    cwd,
+    agent,
+    effort,
+    model,
+    criteria,
+    disableDedup,
+    metadataIntent,
+    parentTaskId,
+    autoCloseOnSignal,
+    unattended,
+    idempotencyKey,
+    claimIssue,
+    claimRepo,
+  });
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -1589,6 +1828,40 @@ async function main({
     });
   }
 
+  // #1768: --dry-run runs discovery + prompt resolution + read-only dedupe,
+  // prints the would-be POST body, and exits without launching.
+  if (args.dryRun) {
+    const body = buildTaskPostBody({
+      prompt,
+      cwd: cwdAbs,
+      agent: args.agent,
+      effort: args.effort,
+      model: args.model,
+      criteria: args.criteria,
+      disableDedup: args.dedupe === 'skip',
+      metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
+      parentTaskId,
+      claimIssue: args.claimIssue,
+      claimRepo: args.claimRepo,
+      autoCloseOnSignal: args.autoCloseOnSignal,
+      unattended: args.unattended,
+      idempotencyKey: effectiveIdempotencyKey,
+    });
+    return renderDryRun({
+      args,
+      baseUrl,
+      prompt,
+      cwdAbs,
+      promptSource: resolvePromptSource(args, stdin),
+      body,
+      parentTaskId,
+      out,
+      err,
+      exit,
+      stdin,
+    });
+  }
+
   let result;
   try {
     result = await postTaskWithReconcile({
@@ -1865,10 +2138,13 @@ export {
   EXIT_WAIT_TIMEOUT,
   HELP_TEXT,
   UsageError,
+  buildTaskPostBody,
   classifyWaitState,
   deriveAutoIdempotencyKey,
+  findActiveDuplicate,
   formatBackpressure429,
   formatDedup,
+  formatDryRunPreview,
   formatSuccess,
   formatWaitOutcome,
   isTruthyEnv,
@@ -1883,6 +2159,8 @@ export {
   parseRetryAfterMs,
   reconcileDelayMs,
   reconcileViaTaskProbe,
+  resolvePromptSource,
+  shouldBlockDuplicate,
   taskMatchesSpawn,
   cwdEquivalent,
   formatReconcileRecovered,
