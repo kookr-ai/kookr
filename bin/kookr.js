@@ -24,6 +24,7 @@ Usage:
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
+  kookr value-density classify|admit|composition|decline  Refactor-class emission/spawn governor + composition (#1846).
   kookr reflect outcomes|ideas [OPTIONS]  Reflection Phase-1 telemetry: 24h outcome tally + ideasFiled resolver.
   kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
@@ -161,6 +162,12 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Value-density governor: refactor-class cap + composition metrics (#1846).
+  if (command === 'value-density') {
+    await runValueDensityCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   // CI-blind-merge debt + retro-verify queue drain (issues #1689 / #1703).
   if (command === 'retro-verify') {
     await runRetroVerifyCommand(rest, { env, out, err });
@@ -294,6 +301,21 @@ async function runEmissionCommand(argv, { env = process.env, out = console, err 
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runEmissionCli(argv, { env, out, err });
+}
+
+async function runValueDensityCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-value-density.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-value-density.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] value-density module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runValueDensityCli(argv, { env, out, err });
 }
 
 async function runRetroVerifyCommand(argv, { env = process.env, out = console, err = console } = {}) {
