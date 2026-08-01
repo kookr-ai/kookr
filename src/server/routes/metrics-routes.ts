@@ -30,6 +30,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       routes: [],
     };
 
+    const nonCriticalTimerPause = deps.nonCriticalTimerPause?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
@@ -43,6 +44,16 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Always-on process-wide ring (issue #1777) — no env flag.
       // Tests may inject deps.taskSaveMetrics to isolate parallel suites.
       taskSave: (deps.taskSaveMetrics ?? taskSaveMetrics).snapshot(),
+      ...(nonCriticalTimerPause
+        ? {
+            nonCriticalTimerPause: {
+              paused: nonCriticalTimerPause.paused,
+              thresholdMs: nonCriticalTimerPause.thresholdMs,
+              lastEventLoopDelayP95Ms: nonCriticalTimerPause.lastEventLoopDelayP95Ms,
+              pausedTicksTotal: nonCriticalTimerPause.pausedTicksTotal,
+            },
+          }
+        : {}),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });

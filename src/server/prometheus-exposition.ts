@@ -29,6 +29,14 @@ export interface TerminalWriteMetricsSnapshot {
   maxPendingWrites: number;
 }
 
+/** Non-critical timer pause gauges/counters (issue #1785). */
+export interface NonCriticalTimerPauseMetricsSnapshot {
+  paused: boolean;
+  thresholdMs: number;
+  lastEventLoopDelayP95Ms: number | null;
+  pausedTicksTotal: number;
+}
+
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
@@ -41,6 +49,7 @@ export interface PrometheusExpositionSnapshot {
   terminalInputRtt?: TerminalInputRttMetricsSnapshot;
   /** Always-on tasks.json / tasks.sqlite save timing (issue #1777). */
   taskSave?: TaskSaveMetricsSnapshot;
+  nonCriticalTimerPause?: NonCriticalTimerPauseMetricsSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -62,6 +71,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendTerminalWriteMetrics(lines, snapshot.terminalWrite);
   appendTerminalInputRttMetrics(lines, snapshot.terminalInputRtt);
   appendTaskSaveMetrics(lines, snapshot.taskSave ?? emptyTaskSaveMetricsSnapshot());
+  appendNonCriticalTimerPauseMetrics(lines, snapshot.nonCriticalTimerPause);
 
   return `${lines.join('\n')}\n`;
 }
@@ -329,6 +339,37 @@ function appendTaskSaveMetrics(lines: string[], snapshot: TaskSaveMetricsSnapsho
     metricLine('kookr_task_save_last_duration_seconds', { phase: 'serialize' }, msToSeconds(last?.serializeMs ?? 0)),
     metricLine('kookr_task_save_last_duration_seconds', { phase: 'write' }, msToSeconds(last?.writeMs ?? 0)),
     metricLine('kookr_task_save_last_duration_seconds', { phase: 'total' }, msToSeconds(last?.totalMs ?? 0)),
+  );
+}
+
+const EMPTY_NON_CRITICAL_TIMER_PAUSE: NonCriticalTimerPauseMetricsSnapshot = {
+  paused: false,
+  thresholdMs: 0,
+  lastEventLoopDelayP95Ms: null,
+  pausedTicksTotal: 0,
+};
+
+function appendNonCriticalTimerPauseMetrics(
+  lines: string[],
+  snapshot: NonCriticalTimerPauseMetricsSnapshot = EMPTY_NON_CRITICAL_TIMER_PAUSE,
+): void {
+  lines.push(
+    '# HELP kookr_non_critical_timer_pause_active Whether non-critical timer ticks are currently skipping (1) due to elevated event-loop delay p95.',
+    '# TYPE kookr_non_critical_timer_pause_active gauge',
+    metricLine('kookr_non_critical_timer_pause_active', {}, snapshot.paused ? 1 : 0),
+    '# HELP kookr_non_critical_timer_pause_threshold_ms Configured event-loop delay p95 threshold (ms); 0 means the gate is disabled.',
+    '# TYPE kookr_non_critical_timer_pause_threshold_ms gauge',
+    metricLine('kookr_non_critical_timer_pause_threshold_ms', {}, snapshot.thresholdMs),
+    '# HELP kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms Last finite event-loop delay p95 sample (ms) fed to the pause gate; -1 when none.',
+    '# TYPE kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms gauge',
+    metricLine(
+      'kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms',
+      {},
+      snapshot.lastEventLoopDelayP95Ms ?? -1,
+    ),
+    '# HELP kookr_non_critical_timer_pauses_total Total non-critical timer ticks skipped because event-loop delay p95 was elevated.',
+    '# TYPE kookr_non_critical_timer_pauses_total counter',
+    metricLine('kookr_non_critical_timer_pauses_total', {}, snapshot.pausedTicksTotal),
   );
 }
 

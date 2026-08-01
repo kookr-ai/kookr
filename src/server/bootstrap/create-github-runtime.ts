@@ -4,7 +4,12 @@ import type { CircuitBreaker } from '../../core/circuit-breaker.js';
 import { formatGitHubAlert } from '../../core/github-alerts.js';
 import type { GitHubFetcher } from '../../core/github-types.js';
 import { DEFAULT_GITHUB_SCANNER_CONFIG, type GitHubStateChange } from '../../core/github-types.js';
-import { GitHubScannerService, type GhUserLoginResolver, type RepoHealthFetcher } from '../../core/github-scanner-service.js';
+import {
+  GitHubScannerService,
+  type GhUserLoginResolver,
+  type NonCriticalTickPauseHook,
+  type RepoHealthFetcher,
+} from '../../core/github-scanner-service.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
@@ -18,6 +23,8 @@ export interface GitHubRuntimeDeps {
   fetcher?: GitHubFetcher;
   repoHealthFetcher?: RepoHealthFetcher;
   ghUserLoginResolver?: GhUserLoginResolver;
+  /** Event-loop pressure gate for periodic scanner ticks (issue #1785). */
+  nonCriticalTickPause?: NonCriticalTickPauseHook;
 }
 
 export interface GitHubRuntime {
@@ -42,6 +49,7 @@ export function createGitHubRuntime(deps: GitHubRuntimeDeps): GitHubRuntime {
     repoHealthFetcher: deps.repoHealthFetcher ?? fetchBatchRepoHealth,
     ghUserLoginResolver: deps.ghUserLoginResolver ?? getGhUserLogin,
     onRepoHealthChanged: deps.onRepoHealthChanged,
+    ...(deps.nonCriticalTickPause ? { nonCriticalTickPause: deps.nonCriticalTickPause } : {}),
     onStateUpdate: (taskId) => {
       const state = githubStateStore.getTaskState(taskId);
       deps.broadcastToAll({

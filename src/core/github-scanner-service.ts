@@ -31,6 +31,18 @@ export type RepoHealthFetchResult = GitHubRepoHealthFetchResult<ProjectRepoHealt
 /** Resolves the authenticated `gh` login (e.g. "jeanibarz") or null if unauthed. */
 export type GhUserLoginResolver = () => Promise<string | null>;
 
+/**
+ * Optional event-loop pressure gate for periodic scanner ticks (issue #1785).
+ * When `shouldSkipTick` returns true the next interval body is skipped so the
+ * loop can serve terminal I/O. On-demand paths (`refreshTaskState`,
+ * `processEventsImmediate`, `processTaskPrompt`) are never gated.
+ */
+export interface NonCriticalTickPauseHook {
+  shouldSkipTick(): boolean;
+  /** Record one skipped tick for the process-lifetime pause metric. */
+  recordPause(timerName: string): void;
+}
+
 export interface GitHubScannerDeps {
   taskStore: TaskStore;
   stateStore: GitHubStateStore;
@@ -50,6 +62,11 @@ export interface GitHubScannerDeps {
   ghUserLoginResolver?: GhUserLoginResolver;
   /** Called whenever the repo-health cache changes so the server can rebroadcast summaries. */
   onRepoHealthChanged?: () => void;
+  /**
+   * When event-loop delay p95 is elevated, skip the next periodic state-fetch /
+   * repo-health tick (issue #1785). Fail-open when omitted.
+   */
+  nonCriticalTickPause?: NonCriticalTickPauseHook;
 }
 
 /**
@@ -67,6 +84,7 @@ export class GitHubScannerService {
   private ghUserLoginResolver?: GhUserLoginResolver;
   private ghUserLogin: string | null = null;
   private onRepoHealthChanged?: () => void;
+  private nonCriticalTickPause?: NonCriticalTickPauseHook;
 
   private scanInterval: ReturnType<typeof setInterval> | null = null;
   private fetchInterval: ReturnType<typeof setInterval> | null = null;
@@ -100,6 +118,19 @@ export class GitHubScannerService {
     this.repoHealthFetcher = deps.repoHealthFetcher;
     this.ghUserLoginResolver = deps.ghUserLoginResolver;
     this.onRepoHealthChanged = deps.onRepoHealthChanged;
+    this.nonCriticalTickPause = deps.nonCriticalTickPause;
+  }
+
+  /**
+   * If the non-critical pause gate says the event loop is elevated, record a
+   * pause metric and return true so the caller skips this interval body.
+   * Fail-open when the gate is not wired.
+   */
+  private shouldSkipPeriodicTick(timerName: string): boolean {
+    const gate = this.nonCriticalTickPause;
+    if (!gate?.shouldSkipTick()) return false;
+    gate.recordPause(timerName);
+    return true;
   }
 
   /** Start the periodic scanner. Idempotent — stops first if already running. Returns false if gh is not available. */
@@ -296,6 +327,9 @@ export class GitHubScannerService {
 
   /** Fetch current state for all refresh-eligible references and emit changes. */
   private async fetchAllStates(): Promise<void> {
+    // Issue #1785: under elevated event-loop delay, skip the periodic batch
+    // so background GraphQL/gh work does not compete with terminal I/O.
+    if (this.shouldSkipPeriodicTick('github-state-fetch')) return;
     const refs = this.stateStore.getAllReferences().filter((ref) => (
       ref.type !== 'pr' || this.stateStore.getPRState(ref)?.status !== 'merged'
     ));
@@ -425,6 +459,8 @@ export class GitHubScannerService {
   private async repoHealthTick(): Promise<void> {
     if (!this.repoHealthFetcher) return;
     if (this.repoHealthInflight) return;
+    // Issue #1785: skip the batch under elevated event-loop delay (fail open).
+    if (this.shouldSkipPeriodicTick('github-repo-health')) return;
     const now = Date.now();
     if (now < this.repoHealthRateLimitedUntilMs) {
       console.warn(`[github] repo-health tick skipped during rate-limit backoff (${this.repoHealthRateLimitedUntilMs - now}ms remaining)`);
