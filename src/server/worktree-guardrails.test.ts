@@ -63,7 +63,8 @@ describe('applyWorktreeGuardrails', () => {
         'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL.',
       );
       expect(prompt).toContain('If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle.');
-      expect(prompt).toContain('The PR is the review gate.');
+      expect(prompt).toContain('EXPLICITLY instructs you to merge the PR');
+      expect(prompt).toContain('do NOT grant merge authority on their own');
       expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
       expect(prompt).toContain('git worktree add');
       expect(prompt).toContain('Do NOT commit to main');

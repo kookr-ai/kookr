@@ -129,3 +129,58 @@ describe('parallel-issue-batch playbook: pipeline-starvation refill (#1715)', ()
     expect(checklistText).toContain('starvation-trigger');
   });
 });
+
+/**
+ * Contract tests for the merge follow-through hardening (2026-08-01 stranded-PR
+ * incident: PRs #1830-#1833 opened and abandoned because a coordinator
+ * paraphrased the child template and dropped every merge instruction, then died
+ * before Phase 7 supervision could recover). These anchors pin the four layers
+ * so an edit that drops any of them fails CI instead of quietly re-opening the
+ * stranded-PR factory.
+ */
+describe('parallel-issue-batch playbook: merge follow-through hardening (2026-08-01)', () => {
+  const playbookPath = join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'plugin',
+    'playbooks',
+    'parallel-issue-batch.md',
+  );
+  const content = readFileSync(playbookPath, 'utf-8');
+
+  test('child template opens with the terminal-state contract and forbids stopping at an open PR', () => {
+    expect(content).toContain('TERMINAL-STATE CONTRACT');
+    expect(content).toMatch(/an open PR is NOT a terminal state/i);
+    expect(content).toMatch(/Ending your turn with an open PR and no\s+recorded blocker is a task failure/);
+  });
+
+  test('template must be copied verbatim and every child prompt passes the spawn-time contract check', () => {
+    expect(content).toContain('Copy the template below VERBATIM');
+    expect(content).toContain('check_child_prompt');
+    // The check binds its own policy variable — it must not depend on an
+    // earlier phase having exported it (the original review found $MERGE_AFTER
+    // referenced but never assigned).
+    expect(content).toContain('MERGE_AFTER="{{mergeAfterImplementation}}"');
+    // The contract header is validated in RESOLVED form so an unsubstituted
+    // <true|false> placeholder fails the check.
+    expect(content).toContain('TERMINAL-STATE CONTRACT (mergeAfterImplementation=${merge_policy})');
+    // The merge-bullet greps target the merge section itself, not strings that
+    // happen to live elsewhere in the template.
+    for (const anchor of ['classify the head-SHA check runs', 'local-verified', 'delete the head branch']) {
+      expect(content).toContain(`"${anchor}"`);
+    }
+  });
+
+  test('Phase 7 open-PR completion gate exists, is selection-scoped, and routes takeover through delivery ownership', () => {
+    expect(content).toContain('Open-PR completion gate (hard rule)');
+    expect(content).toMatch(/intersected with this batch's selection/);
+    expect(content).toMatch(/stale-owner reclaim/);
+  });
+
+  test('stale-owner reclaim requires a verifiably dead child and never a merely idle one', () => {
+    expect(content).toMatch(/verifiably DEAD/);
+    expect(content).toMatch(/never merely idle or slow/);
+    expect(content).toMatch(/when in doubt, treat it as alive/);
+  });
+});

@@ -528,12 +528,23 @@ Spawn at most `maxConcurrentTasks` children at a time. For each selected **work 
    The pack bundles the **primary** (lowest-numbered) issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). For multi-issue units the pack is a partial warm-start — non-primary issue bodies are not packed; the child prompt must still list every issue URL. Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
 
 2. Create a prompt file under `$PROMPTS_DIR/<unit-slug>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `<unit-slug>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
-3. Include this child prompt content, customized for the work unit:
+3. Include this child prompt content, customized for the work unit. **Copy the template below VERBATIM** — customize only the `<placeholders>`; never paraphrase, summarize, or drop sections. The 2026-08-01 stranded-PR incident (PRs #1830–#1833 opened and abandoned) happened because a coordinator rewrote this template in its own words and dropped every merge instruction, so children treated "PR created" as done. After writing each prompt file, run the **spawn-time contract check** (below, after the template) before spawning — a prompt file that fails it is a spawn error to fix, not a warning.
 
 ```markdown
 Implement the following GitHub issue(s) in <owner/repo> end-to-end in **one** PR:
 - Issues: #<N1>[, #<N2>, …]
 - Bundle reason (if multi-issue): <reason_bundled or "single-issue unit">
+
+**TERMINAL-STATE CONTRACT (mergeAfterImplementation=<true|false>):** when `true`,
+an open PR is NOT a terminal state and "The PR is the review gate" does NOT apply
+to you — you hold merge authority. Your unit is complete ONLY when the PR is
+**merged** (`mergedAt` non-null, verified via `gh pr view <n> --json state,mergedAt`)
+or a concrete blocker is recorded on the PR and in your report. After opening the
+PR you MUST continue through the merge steps below (independent merge review →
+check classification → local-verified path when CI never executes → rebase on
+conflict → merge → delete head branch). Ending your turn with an open PR and no
+recorded blocker is a task failure, not a success. When `false`, an open PR with
+green/accepted checks is the terminal state.
 
 A **context pack** is prepended above: a warm-start digest of the issue(s), candidate
 files, base ref, and pre-digested skill excerpts. It is a floor, not a ceiling — the
@@ -647,6 +658,40 @@ Other child tasks are working in the same repo on different work units. Do not r
 Supervisor note:
 If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Do not silently drop an issue from a multi-issue unit — report a blocker instead.
 ```
+
+3b. **Spawn-time contract check (mandatory, mechanical).** Before spawning each child, verify the written prompt file actually carries the load-bearing sections — this is what makes template-paraphrase drift a hard error instead of a silent stranded-PR factory:
+
+   ```bash
+   # --- Child-prompt contract check (2026-08-01 stranded-PR incident) --------
+   # MERGE_AFTER is bound HERE from the playbook parameter — do not rely on an
+   # earlier phase having exported it.
+   MERGE_AFTER="{{mergeAfterImplementation}}"
+   check_child_prompt() {
+     local f="$1" merge_policy="$2" missing=0
+     # The contract header must carry the RESOLVED policy value — an
+     # unsubstituted "<true|false>" placeholder leaves the child to guess
+     # which half of the contract applies.
+     grep -q "TERMINAL-STATE CONTRACT (mergeAfterImplementation=${merge_policy})" "$f" \
+       || { echo "CHILD-PROMPT INVALID: resolved TERMINAL-STATE CONTRACT header missing from $f (placeholder left unsubstituted, or header dropped)" >&2; missing=1; }
+     for pat in "pr_create_guard" "delivery\.lock" "completion-ready"; do
+       grep -q "$pat" "$f" || { echo "CHILD-PROMPT INVALID: '$pat' missing from $f" >&2; missing=1; }
+     done
+     if [ "$merge_policy" = "true" ]; then
+       # Check the merge bullets THEMSELVES, not just strings that happen to
+       # live elsewhere in the template — paraphrase drift that drops the merge
+       # section (the exact 2026-08-01 failure) must fail here.
+       for pat in "independent-merge-review" "classify the head-SHA check runs" "local-verified" "delete the head branch"; do
+         grep -q "$pat" "$f" || { echo "CHILD-PROMPT INVALID: merge step '$pat' missing from $f while mergeAfterImplementation=true" >&2; missing=1; }
+       done
+     fi
+     [ "$missing" -eq 0 ]
+   }
+   check_child_prompt "$PROMPTS_DIR/<unit-slug>.md" "$MERGE_AFTER" \
+     || { echo "SPAWN SKIPPED for <unit-slug>: prompt failed contract check" >&2; \
+          printf 'BLOCKER <unit-slug>: child prompt failed contract check — re-copy template verbatim, re-check, then spawn\n' >> "$STATE_FILE"; }
+   ```
+
+   If the check fails, re-copy the template verbatim and re-run it for that unit; do not spawn that unit until it passes, and do not let one bad prompt file abort the spawning of other healthy units (skip-and-record, not exit).
 
 4. Spawn through the hook-safe CLI. `CHILD_AGENT` may be `default`, `claude-code`, `codex-cli`, or `grok-build`:
 
@@ -862,7 +907,7 @@ For each child:
 
    Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker — with exactly ONE exception: **stale-owner reclaim**. When the owning child task is verifiably DEAD (its task status via `GET /api/tasks/<child-id>` is `terminated`/`cancelled`/`failed`, or `completed` with the unit's PR still open-unmerged — never merely idle or slow), the lock holder can never finish, so the parent may reclaim: record `"delivery": { "owner": "parent", "reclaimedFrom": "<child-id>", "reason": "owner terminal", "at": "<ISO ts>" }` in `children.json`, append the same fact to `state.md`, remove the stale `<unit_id>.delivery.lock` file, claim it fresh, and re-read to confirm — then deliver. A child that is alive in ANY state is never reclaimed from; when in doubt, treat it as alive and record a blocker instead. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green, legitimately pending, or never-executed for budget/billing reasons (non-blocking per the CI policy — local verification is the authoritative gate).
 
 Update `$MONITOR_FILE` with a compact table:
@@ -898,6 +943,8 @@ gh pr list -R "$REPO" --state open --limit 100 --json number,title,url,headRefNa
 ```
 
 Confirm there are no accidental duplicate PRs for selected issues (including partial overlaps where one PR closed only a subset of a multi-issue unit). Also record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
+
+**Open-PR completion gate (hard rule).** When `mergeAfterImplementation=true`, the parent MUST NOT write `DONE`, signal `completion-ready`, or otherwise end its run while ANY **selected-issue** PR is open-unmerged without a recorded blocker. The check is the open-PR listing above **intersected with this batch's selection**: a PR counts only if its head branch or `Closes #N` references match a selected issue/unit in `children.json` — other batches' PRs are NOT yours to gate on or touch (concurrent coordinators are the normal case; the 2026-08-01 incident itself had two). "A child opened it, so it's the child's problem" is not an exit condition. If a child DIED with its PR open, follow Phase 5's delivery-ownership rule — including its stale-owner reclaim path — to take over and finish the merge steps from the child template (independent merge review → check classification → local-verified path → rebase on conflict → merge → delete head branch); if the child is alive but slow, instruct it and wait, per the same rule. Otherwise record a concrete blocker on the PR and in `state.md`. Coordinator death is the residual risk this gate cannot cover — that is what the `pr-merge-rebase-watchdog` schedule is for; the gate covers every case where the parent is alive to enforce it.
 
 Then:
 
