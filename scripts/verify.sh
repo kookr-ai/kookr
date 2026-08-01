@@ -31,6 +31,7 @@ run_lane "Validating rerun-bound docs" pnpm validate:rerun-bound
 run_lane "Rehearsing delivery-ownership invariant" pnpm validate:delivery-ownership
 run_lane "Rehearsing parent-implementer fallback" pnpm validate:parent-fallback
 run_lane "Validating documented environment variables" pnpm validate:docs-env-vars
+run_lane "Validating documented API routes" pnpm validate:docs-api-routes
 run_lane "Validating requirements status matrix" pnpm validate:requirements
 run_lane "Running tests" pnpm test
 

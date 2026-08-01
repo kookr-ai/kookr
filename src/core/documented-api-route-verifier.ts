@@ -84,7 +84,6 @@ export const INTERNAL_API_ROUTES: ReadonlySet<string> = new Set([
   'POST /api/auth/session',
 
   // Readiness probe used by deploy/boot gates; not a product API surface.
-  'GET /api/ready',
 
   // TTS sidecar health (paired with documented STT health when TTS is configured).
   'GET /api/health/tts',
