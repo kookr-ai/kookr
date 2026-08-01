@@ -410,8 +410,9 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
 
 /**
  * Reclaim a reflect task's ephemeral worktree on terminal transition, so it is
- * removed immediately instead of lingering until the next startup sweep. No-op
- * for non-reflect tasks. Fire-and-forget: never blocks or fails the transition;
+ * removed immediately instead of lingering until the next startup or scheduled
+ * lifecycle-timer sweep (issue #1860). No-op for non-reflect tasks.
+ * Fire-and-forget: never blocks or fails the transition;
  * `sweepReflectWorktrees` remains the crash backstop.
  *
  * This is needed even though `cleanupTaskWorktrees` runs on the same task: that

@@ -70,7 +70,10 @@ import {
 import { SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS } from './use-cases/snapshot-projection.js';
 import { type AgentState, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS } from '../core/monitor.js';
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
-import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
+import {
+  resolveReflectWorktreeSweepIntervalHours,
+  sweepReflectWorktrees,
+} from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import { resolveWorkspaceContext } from './use-cases/workspace-context.js';
 import {
@@ -2301,6 +2304,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // production-safe (a live relay's cwd always exists).
       relayOrphanSweep: {
         intervalHours: resolveRelayOrphanSweepIntervalHours(process.env),
+      },
+      // Reflect-worktree orphan sweep (issue #1860). Default 1h so long-lived
+      // instances reclaim crash orphans without a restart; set
+      // KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS=0 to disable. Startup still
+      // sweeps once at boot; this is the periodic backstop. Safe: live source
+      // tasks' reflect worktrees are never reclaimed.
+      reflectWorktreeSweep: {
+        reflectWorktreesDir,
+        taskStore,
+        intervalHours: resolveReflectWorktreeSweepIntervalHours(process.env),
       },
       // Hourly prod smoke tick (issue #1593). Enabled by default only on the
       // canonical prod port (4800) so a fresh deploy is protected with no

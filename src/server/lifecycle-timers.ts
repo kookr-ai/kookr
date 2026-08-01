@@ -71,6 +71,10 @@ import {
   type MaintenancePruneScheduleConfig,
   type RelayOrphanSweepScheduleConfig,
 } from './maintenance-prune-schedule.js';
+import {
+  runScheduledReflectWorktreeSweep,
+  type ReflectWorktreeSweepScheduleConfig,
+} from './use-cases/request-task-reflect.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -243,10 +247,19 @@ export interface TimerDeps {
    */
   relayOrphanSweep?: RelayOrphanSweepScheduleConfig;
   /**
+   * Optional reflect-worktree orphan sweep (issue #1860). When `intervalHours > 0`
+   * (resolved from `KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS`, default 1h), a
+   * dedicated interval reaps ephemeral reflect worktrees whose source task is
+   * gone — the periodic backstop for the startup-only sweep. Worktrees whose
+   * source task still has a live reflect task are never reclaimed. Every sweep
+   * is wrapped so an error is logged and never crashes the server.
+   */
+  reflectWorktreeSweep?: ReflectWorktreeSweepScheduleConfig;
+  /**
    * Optional event-loop pressure gate for non-critical intervals (issue #1785).
-   * When elevated, maintenance prune / relay-orphan / prod-smoke / deploy-lag
-   * ticks skip their body. Critical loops (token scan, watchdog, liveness,
-   * save, snooze, quota) are never gated. Fail-open when omitted.
+   * When elevated, maintenance prune / relay-orphan / reflect-worktree /
+   * prod-smoke / deploy-lag ticks skip their body. Critical loops (token scan,
+   * watchdog, liveness, save, snooze, quota) are never gated. Fail-open when omitted.
    */
   nonCriticalTickPause?: {
     shouldSkipTick(): boolean;
@@ -270,6 +283,8 @@ export interface TimerHandles {
   deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep (issue #1723) was configured. */
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the reflect-worktree orphan sweep (issue #1860) was configured. */
+  reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null;
 }
 
 /**
@@ -1018,6 +1033,27 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Reflect-worktree orphan sweep (issue #1860), optional ---
+  // Reaps ephemeral reflect worktrees whose source task is gone — periodic
+  // backstop for the startup sweep so long-lived instances don't fill disk.
+  // Default interval is 1h when wired from bootstrap; intervalHours <= 0
+  // disables. Deliberately does NOT run at timer start (boot already sweeps).
+  let reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null = null;
+  const reflectWorktreeSweep = deps.reflectWorktreeSweep;
+  if (reflectWorktreeSweep && reflectWorktreeSweep.intervalHours > 0) {
+    const intervalMs = reflectWorktreeSweep.intervalHours * 60 * 60 * 1000;
+    console.log(
+      `[reflect-sweep] scheduled sweep enabled every ${reflectWorktreeSweep.intervalHours}h ` +
+        `(dir=${reflectWorktreeSweep.reflectWorktreesDir})`,
+    );
+    timerHealth?.register('reflectWorktreeSweep', intervalMs);
+    reflectWorktreeSweepInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'reflectWorktreeSweep')) return;
+      timerHealth?.recordFire('reflectWorktreeSweep', intervalMs);
+      void runScheduledReflectWorktreeSweep(reflectWorktreeSweep);
+    }, intervalMs);
+  }
+
   // --- Hourly prod smoke tick (issue #1593), optional ---
   // A cheap in-process liveness check: runs the same bounded smoke suite the
   // deploy gate uses against the live instance, on the tick's own cadence, and
@@ -1073,6 +1109,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     prodSmokeTickInterval,
     deployLagDetectorInterval,
     relayOrphanSweepInterval,
+    reflectWorktreeSweepInterval,
   };
 }
 
@@ -1088,4 +1125,5 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
+  if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);
 }

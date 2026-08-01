@@ -18,6 +18,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'prodSmokeTick',
   'deployLagDetector',
   'relayOrphanSweep',
+  'reflectWorktreeSweep',
 ] as const;
 
 export type LifecycleTimerName = (typeof LIFECYCLE_TIMER_NAMES)[number];
