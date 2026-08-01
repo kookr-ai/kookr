@@ -70,6 +70,10 @@ import {
   isLessonDecisionGateEnabled,
   resolveTaskLessonDecision,
 } from '../../core/lesson-decision.js';
+import {
+  isMergeRequiredGateEnabled,
+  resolveMergeRequiredGate,
+} from '../../core/merge-required.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -774,6 +778,30 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
             409,
           );
         }
+      }
+    }
+
+    // Issue #1836: when the task holds merge authority (TERMINAL-STATE CONTRACT
+    // mergeAfterImplementation=true, or an explicit mergeRequired stamp) and
+    // the hook trail shows a PR was opened whose merge is unverified — refuse
+    // completion-ready unless a PR-BLOCKER marker is present. Opt-in per task
+    // so ordinary "PR is the review gate" work is unaffected.
+    if (body.kind === 'completion_ready' && isMergeRequiredGateEnabled()) {
+      const hooksDir = deps.kookrDir
+        ? hooksDirFromKookrDir(deps.kookrDir)
+        : undefined;
+      const mergeGate = await resolveMergeRequiredGate(task, hooksDir);
+      if (!mergeGate.allow) {
+        return c.json(
+          {
+            error: mergeGate.reason,
+            code: mergeGate.code,
+            hint: mergeGate.hint,
+            ...(mergeGate.prNumbers ? { prNumbers: mergeGate.prNumbers } : {}),
+            ...(mergeGate.evidence ? { evidence: mergeGate.evidence } : {}),
+          },
+          409,
+        );
       }
     }
 
