@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
+import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
@@ -2707,5 +2708,188 @@ describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
   // tree-shaken in some configs (used conceptually by the registry port).
   it('port filters terminal owners via isTerminalStatus', () => {
     expect(isTerminalStatus('completed')).toBe(true);
+  });
+});
+
+describe('launchTask relaunch arbiter + hard lease gate (issue #1711)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+  let arbiter: RelaunchArbiter;
+  let now: number;
+  let events: ClaimEvent[];
+
+  function makePort(taskStore: TaskStore): ClaimTaskPort {
+    return {
+      activeTaskViews: () => taskStore.getAllTasks().map((t): ClaimTaskView => ({
+        id: t.id,
+        status: t.status,
+        ...(t.name !== undefined ? { name: t.name } : {}),
+        ...(t.issueClaim !== undefined ? { issueClaim: t.issueClaim } : {}),
+      })),
+      getTaskView: (taskId) => {
+        const t = taskStore.getTask(taskId);
+        if (!t) return undefined;
+        return {
+          id: t.id,
+          status: t.status,
+          ...(t.name !== undefined ? { name: t.name } : {}),
+          ...(t.issueClaim !== undefined ? { issueClaim: t.issueClaim } : {}),
+        };
+      },
+      setIssueClaim: (taskId, claim) => taskStore.setIssueClaim(taskId, claim),
+      clearIssueClaim: (taskId) => taskStore.clearIssueClaim(taskId),
+    };
+  }
+
+  beforeEach(() => {
+    store = new TaskStore();
+    events = [];
+    now = 2_000_000;
+    arbiter = new RelaunchArbiter({
+      backoffMs: 30_000,
+      now: () => now,
+      isHolderLive: (id) => {
+        const t = store.getTask(id);
+        return t !== undefined && !isTerminalStatus(t.status);
+      },
+    });
+    const registry = new IssueClaimRegistry(makePort(store), (e) => events.push(e));
+    deps = {
+      ...makeDeps(store),
+      issueClaimRegistry: registry,
+      relaunchArbiter: arbiter,
+      resolveClaimRepo: vi.fn(async () => ({ ok: true as const, repo: 'github.com/kookr-ai/kookr' })),
+      flushTasks: vi.fn(async () => undefined),
+    };
+  });
+
+  it('admits a claimIssue launch when the relaunch lease is free and holds both leases', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'work on #1711',
+      cwd: '/tmp',
+      claimIssue: { number: 1711 },
+    });
+    expect(result.task.issueClaim?.number).toBe(1711);
+    expect(arbiter.isHeld({ repo: 'github.com/kookr-ai/kookr', number: 1711 })).toBe(true);
+    expect(arbiter.getLease({ repo: 'github.com/kookr-ai/kookr', number: 1711 })?.holderId).toBe(
+      result.task.id,
+    );
+  });
+
+  it('mutual exclusion: second concurrent claimIssue launch is denied (no task created)', async () => {
+    const first = await launchTask(deps, {
+      prompt: 'actuator-1 on #1711',
+      cwd: '/tmp',
+      claimIssue: { number: 1711 },
+    });
+    expect(first.duplicate).toBeFalsy();
+
+    await expect(
+      launchTask(deps, {
+        prompt: 'actuator-2 on #1711 (different prompt so dedup does not hit)',
+        cwd: '/tmp',
+        claimIssue: { number: 1711 },
+      }),
+    ).rejects.toBeInstanceOf(RelaunchDeniedError);
+
+    const nonFirst = store.listTasks().filter((t) => t.id !== first.task.id);
+    expect(nonFirst).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('rejects with RelaunchDeniedError during backoff after a failed launch releases the lease', async () => {
+    vi.mocked(deps.adapterRegistry.get('claude-code').launch).mockRejectedValueOnce(
+      new Error('spawn failed'),
+    );
+    await expect(
+      launchTask(deps, {
+        prompt: 'will fail then backoff',
+        cwd: '/tmp',
+        claimIssue: { number: 42 },
+      }),
+    ).rejects.toThrow(/spawn failed/);
+
+    // Immediate re-dispatch must not race the same issue (backoff window).
+    await expect(
+      launchTask(deps, {
+        prompt: 'retry during backoff',
+        cwd: '/tmp',
+        claimIssue: { number: 42 },
+      }),
+    ).rejects.toMatchObject({ code: 'relaunch_denied', reason: 'backoff' });
+
+    // After the window, relaunch is admitted again.
+    now += 30_000;
+    const retry = await launchTask(deps, {
+      prompt: 'retry after backoff',
+      cwd: '/tmp',
+      claimIssue: { number: 42 },
+    });
+    expect(retry.task.issueClaim?.number).toBe(42);
+  });
+
+  it('hard gate: claimIssue launch without a held issue-claim lease is rejected', async () => {
+    // Registry that pretends the claim never stuck (ownerRecord always null
+    // after claim "succeeds" would be impossible with the real registry; instead
+    // simulate a missing registry while the arbiter is required — force the
+    // post-CAS hard gate by using a registry whose claim is a no-op grant that
+    // never appears in ownerRecord).
+    const phantomRegistry: NonNullable<LaunchServiceDeps['issueClaimRegistry']> = {
+      ownerRecord: () => null,
+      claim: () => ({ ok: true, reentrant: false }),
+      safeReleaseAllFor: () => [],
+    };
+    deps.issueClaimRegistry = phantomRegistry;
+
+    await expect(
+      launchTask(deps, {
+        prompt: 'claimIssue but lease never held',
+        cwd: '/tmp',
+        claimIssue: { number: 7 },
+      }),
+    ).rejects.toBeInstanceOf(IssueClaimLeaseRequiredError);
+
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    // Arbiter must not leave a dangling hold after the hard-gate rejection.
+    expect(arbiter.isHeld({ repo: 'github.com/kookr-ai/kookr', number: 7 })).toBe(false);
+  });
+
+  it('arbiter-only path: claimIssue still requires a held relaunch lease', async () => {
+    const bare = makeDeps(store);
+    const onlyArbiter = new RelaunchArbiter({ backoffMs: 10_000, now: () => now });
+    const arbiterDeps: LaunchServiceDeps = {
+      ...bare,
+      relaunchArbiter: onlyArbiter,
+      resolveClaimRepo: vi.fn(async () => ({ ok: true as const, repo: 'github.com/acme/r' })),
+    };
+
+    const ok = await launchTask(arbiterDeps, {
+      prompt: 'arbiter-only claim',
+      cwd: '/tmp',
+      claimIssue: { number: 3 },
+    });
+    expect(onlyArbiter.getLease({ repo: 'github.com/acme/r', number: 3 })?.holderId).toBe(
+      ok.task.id,
+    );
+
+    await expect(
+      launchTask(arbiterDeps, {
+        prompt: 'second actuator denied',
+        cwd: '/tmp',
+        claimIssue: { number: 3 },
+      }),
+    ).rejects.toBeInstanceOf(RelaunchDeniedError);
+  });
+
+  it('type guards for new #1711 errors', () => {
+    const denied = new RelaunchDeniedError('backoff', { repo: 'r', number: 1 }, { retryAfterMs: 5 });
+    const lease = new IssueClaimLeaseRequiredError({ repo: 'r', number: 1 });
+    expect(isRelaunchDeniedError(denied)).toBe(true);
+    expect(isRelaunchDeniedError(lease)).toBe(false);
+    expect(isIssueClaimLeaseRequiredError(lease)).toBe(true);
+    expect(isIssueClaimLeaseRequiredError(denied)).toBe(false);
+    expect(denied.code).toBe('relaunch_denied');
+    expect(lease.code).toBe('issue_claim_lease_required');
   });
 });
