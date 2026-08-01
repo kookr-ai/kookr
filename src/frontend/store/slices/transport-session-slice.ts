@@ -157,6 +157,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     maxActiveTasks: 0,
     bypassAllPermissions: false,
     drainStatus: { accepting: true, draining: false },
+    safeMode: { engaged: false },
     coordinator: null,
     dashboardSelection: { selectedTaskId: null, selectedSessionId: null, selectionVersion: 0 },
     taskRelations: [],

@@ -160,6 +160,8 @@ export interface WsConnectionDeps {
   hooksDir?: string;
   userInputDeliveries?: UserInputDeliveryService;
   getDrainStatus?: () => DrainStatusSnapshot;
+  /** Automation kill-switch / SAFE MODE (issue #1710). */
+  getSafeModeStatus?: () => import('../shared/contracts/messages.js').SafeModeStatusSnapshot;
   /**
    * Single owner of WS scope filtering (#809). When a **viewer** connects, the
    * initial-connection burst is served entirely from this factory
@@ -253,6 +255,7 @@ export function handleWsConnection(
     terminalInputCoordinator: deps.terminalInputCoordinator,
     userInputDeliveries: deps.userInputDeliveries,
     getDrainStatus: deps.getDrainStatus,
+    getSafeModeStatus: deps.getSafeModeStatus,
   });
 
   // Initial-connection burst (RFC §"Initial-connection burst (consolidated)").

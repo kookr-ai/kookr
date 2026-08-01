@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { DEFAULT_SETTINGS, type KookrSettings } from '../../core/settings-store.js';
+import { applyKillSwitchTransition } from '../../core/automation-kill-switch.js';
 import { registerSettingsRoutes } from './settings-routes.js';
 import type { RouteDeps } from './shared.js';
 
@@ -44,10 +45,16 @@ function mkRouteDeps(options: {
       getLoadWarnings: () => options.loadWarnings ?? [],
       update: vi.fn(async (settings: KookrSettings) => {
         updateCalls.push(settings);
-        committed = {
-          ...settings,
-          roundRobinIndex: committed.roundRobinIndex,
-        };
+        // Mirror production bookkeeping (index.ts settings.update): preserve
+        // roundRobinIndex and apply kill-switch since transitions.
+        committed = applyKillSwitchTransition(
+          committed,
+          {
+            ...settings,
+            roundRobinIndex: committed.roundRobinIndex,
+          },
+          '2026-08-01T12:00:00.000Z',
+        );
         return options.updateWarnings ?? [];
       }),
     },
@@ -56,6 +63,53 @@ function mkRouteDeps(options: {
 }
 
 describe('settings routes', () => {
+  test('PUT /api/settings audits a capacity-changing mutation (issue #1710)', async () => {
+    const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'settings-audit-'));
+    const auditLogPath = join(dir, 'audit.jsonl');
+    try {
+      const deps = mkRouteDeps({
+        initialSettings: mkSettings({ maxActiveTasks: 10, automationKillSwitch: false }),
+      });
+      (deps as { auditLogPath?: string }).auditLogPath = auditLogPath;
+
+      const res = await mkApp(deps).request('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Kookr-Actor': 'operator-jean',
+        },
+        body: JSON.stringify({
+          ...deps.settings.get(),
+          maxActiveTasks: 12,
+          automationKillSwitch: true,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { automationKillSwitch: boolean; safeModeSince: string | null };
+      expect(body.automationKillSwitch).toBe(true);
+      expect(body.safeModeSince).toBe('2026-08-01T12:00:00.000Z');
+
+      const raw = await readFile(auditLogPath, 'utf-8');
+      const rows = raw.trim().split('\n').map((line) => JSON.parse(line));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].type).toBe('settings.mutation');
+      expect(rows[0].actor).toEqual({ source: 'api', actorId: 'operator-jean' });
+      expect(rows[0].changedKeys).toEqual(
+        expect.arrayContaining(['automationKillSwitch', 'maxActiveTasks', 'safeModeSince']),
+      );
+      expect(rows[0].previous.maxActiveTasks).toBe(10);
+      expect(rows[0].next.maxActiveTasks).toBe(12);
+      expect(rows[0].next.automationKillSwitch).toBe(true);
+      expect(rows[0].next.safeModeSince).toBe('2026-08-01T12:00:00.000Z');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('GET /api/settings returns committed settings, defaults marker, and load warnings', async () => {
     const deps = mkRouteDeps({
       initialSettings: mkSettings({

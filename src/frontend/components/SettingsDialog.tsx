@@ -55,6 +55,10 @@ interface ServerSettings {
   completionReadyTtlMinutes: number;
   hungTaskReapEnabled: boolean;
   hungTaskReapMinutes: number;
+  /** Global automation kill-switch (issue #1710). */
+  automationKillSwitch?: boolean;
+  /** ISO timestamp when SAFE MODE began; null while disengaged. */
+  safeModeSince?: string | null;
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
@@ -1182,6 +1186,28 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           step={1}
                         />
                       </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Automation kill-switch</span>
+                        <span className="settings-desc">
+                          Engage SAFE MODE: halt schedule fires and other autonomous launches while
+                          keeping manual launches available. Use during incidents when automated
+                          actuators must stop. Distinct from drain mode (which refuses all new launches).
+                          {settings.automationKillSwitch && settings.safeModeSince
+                            ? ` Engaged since ${settings.safeModeSince}.`
+                            : ''}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`settings-toggle ${settings.automationKillSwitch ? 'active' : ''}`}
+                        onClick={() => handleToggle('automationKillSwitch')}
+                        aria-label="Automation kill-switch"
+                        aria-pressed={Boolean(settings.automationKillSwitch)}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
                     </div>
                     <div className="settings-row">
                       <div className="settings-row-info">

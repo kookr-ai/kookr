@@ -33,6 +33,7 @@ import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
 import { DrainModeBanner } from './components/DrainModeBanner.js';
+import { SafeModeBanner } from './components/SafeModeBanner.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { ShareViewerDialog } from './components/ShareViewerDialog.js';
@@ -1295,6 +1296,7 @@ export function App() {
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
       <ReadOnlyBanner />
+      <SafeModeBanner />
       <DrainModeBanner />
       <ConnectionBanner />
       <PermissionBypassBanner />

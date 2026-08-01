@@ -59,6 +59,8 @@ export interface RealtimeServicesDeps {
   getDefaultAgentType: () => AgentSelection;
   bypassAllPermissions?: boolean;
   getDrainStatus?: () => DrainStatusSnapshot;
+  /** Automation kill-switch / SAFE MODE (issue #1710). */
+  getSafeModeStatus?: () => import('../../shared/contracts/messages.js').SafeModeStatusSnapshot;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
   /**
@@ -237,6 +239,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
         ...(deps.bypassAllPermissions ? { bypassAllPermissions: true } : {}),
         ...(deps.getDrainStatus ? { drainStatus: deps.getDrainStatus() } : {}),
+        ...(deps.getSafeModeStatus ? { safeMode: deps.getSafeModeStatus() } : {}),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
           ? {

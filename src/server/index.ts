@@ -40,6 +40,7 @@ import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
+import { applyKillSwitchTransition, resolveSafeModeStatus } from '../core/automation-kill-switch.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stats.js';
 import { DetectionStatsStore } from './detection-stats-store.js';
@@ -653,6 +654,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // optional reusable `precomputedClientAgents` (#1398) are the only per-call
   // differences; keeping one factory guarantees the base computed by
   // `computeSnapshotBaseAgents` uses byte-identical agent-affecting deps.
+  const getSafeModeStatus = () => resolveSafeModeStatus({
+    automationKillSwitch: currentSettings.automationKillSwitch,
+    safeModeSince: currentSettings.safeModeSince,
+  });
   const scopedSnapshotDeps = (scope: Scope, precomputedClientAgents?: AgentState[]): SnapshotMessageDeps => ({
     monitor,
     serverCwd,
@@ -660,6 +665,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     bypassAllPermissions,
     relationTaskStore: taskStore,
     drainStatus: drainController.status(),
+    safeMode: getSafeModeStatus(),
     terminalInputSnapshots: terminalInputCoordinator,
     userInputDeliveryProvider: userInputDeliveries,
     ...(precomputedClientAgents ? { precomputedClientAgents } : {}),
@@ -737,6 +743,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     bypassAllPermissions,
     getDrainStatus: () => drainController.status(),
+    getSafeModeStatus,
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
     isActorAllowedTerminalSession,
@@ -1309,6 +1316,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
     idempotencyLedger,
@@ -1519,6 +1527,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     broadcastToAll,
     isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
   });
@@ -1771,6 +1780,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     getAutoCloseCompletionReadyDelayMs,
     getCompletionReadyTtlMs,
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
@@ -1781,10 +1791,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // round-robin cursor, never edited by an operator. A settings PUT
         // carries whatever cursor the client last read, which may be stale;
         // force the live value so a save never rolls the rotation back.
-        const merged: KookrSettings = {
-          ...newSettings,
-          roundRobinIndex: currentSettings.roundRobinIndex,
-        };
+        // Kill-switch since bookkeeping (issue #1710): engage sets
+        // `safeModeSince`; disengage clears it; unrelated saves preserve it.
+        const withKillSwitch = applyKillSwitchTransition(
+          prev,
+          {
+            ...newSettings,
+            roundRobinIndex: currentSettings.roundRobinIndex,
+          },
+          new Date().toISOString(),
+        );
+        const merged: KookrSettings = withKillSwitch;
         // Persist to disk FIRST. If saveSettings (inside applySettingsSideEffects)
         // throws, the in-memory `currentSettings` must not advance — otherwise
         // getMaxActiveTasks and other live getters would diverge from what's
@@ -1797,7 +1814,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           watchdog,
           monitor,
         });
-        currentSettings = { ...newSettings, roundRobinIndex: currentSettings.roundRobinIndex };
+        currentSettings = merged;
         settingsLoadedFromDefaults = false;
         settingsLoadWarnings = [];
         // applySettingsSideEffects wrote `merged` to disk, but a launch may
@@ -2049,6 +2066,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     bypassAllPermissions,
     getDrainStatus: () => drainController.status(),
+    getSafeModeStatus,
     activityMetaProvider: hookIngestion,
     coordinatorAuditTailProvider: hookIngestion,
     coordinatorSuppressions,

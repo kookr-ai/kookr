@@ -18,6 +18,11 @@ export interface ScheduleRuntimeDeps {
   /** Operator drain gate (issue #659): suppress schedule firing while draining. */
   isAccepting?: () => boolean;
   /**
+   * Automation kill-switch (issue #1710): suppress schedule firing while SAFE
+   * MODE is engaged. Manual launches remain accepted.
+   */
+  isAutomationEnabled?: () => boolean;
+  /**
    * Live getter for the scheduled-task starvation dead-man window, in ms
    * (issue #1526 Phase C, `deadManScheduleMinutes` setting). Absent falls
    * back to the module default (120m).
@@ -81,6 +86,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     getActiveCount: () => deps.taskStore.getActiveCount(),
     getMaxActiveTasks: deps.getMaxActiveTasks,
     ...(deps.isAccepting ? { isAccepting: deps.isAccepting } : {}),
+    ...(deps.isAutomationEnabled ? { isAutomationEnabled: deps.isAutomationEnabled } : {}),
     isTaskBlockingSchedule: (taskId) => {
       const task = deps.taskStore.getTask(taskId);
       const blocking = isTaskBlockingSchedule(task);

@@ -176,6 +176,17 @@ export interface DrainStatusSnapshot {
   since?: string;
 }
 
+/**
+ * Automation kill-switch / SAFE MODE snapshot (issue #1710 / #1699 WS0.4).
+ * While engaged, autonomous schedule fires are paused; manual launches remain
+ * accepted. Distinct from {@link DrainStatusSnapshot}.
+ */
+export interface SafeModeStatusSnapshot {
+  engaged: boolean;
+  /** ISO timestamp the current SAFE MODE period began; absent while disengaged. */
+  since?: string;
+}
+
 export interface OperationalAlertEventMetadata {
   /** Stable key for correlating a fire event with its recovery. */
   key: string;
@@ -246,6 +257,11 @@ export type SnapshotMessage = {
   lastSweepRunId?: string;
   /** Operator drain mode: while draining, new launches and schedule fires are paused. */
   drainStatus?: DrainStatusSnapshot;
+  /**
+   * Automation kill-switch / SAFE MODE (issue #1710). While engaged, schedule
+   * fires and other autonomous launches are paused; manual launches continue.
+   */
+  safeMode?: SafeModeStatusSnapshot;
   /**
    * Configured concurrency cap (settings.maxActiveTasks). When the count of
    * inProgress tasks reaches this number, new launches are queued as pending.

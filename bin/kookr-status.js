@@ -164,6 +164,17 @@ function renderReport({ port, health, agents }) {
 
   lines.push(`Cost:    ${formatCost(totalCost)}`);
 
+  // Automation kill-switch / SAFE MODE (issue #1710) — daily-digest line so
+  // operators see the incident-response state without opening the dashboard.
+  const safeMode = health.safeMode;
+  if (safeMode && safeMode.engaged) {
+    lines.push(
+      typeof safeMode.digest === 'string' && safeMode.digest.length > 0
+        ? safeMode.digest
+        : (safeMode.since ? `SAFE MODE since ${safeMode.since}` : 'SAFE MODE'),
+    );
+  }
+
   // CI-blind-merge debt (issue #1703) — surfaced on /api/health as
   // ciBlindDebt / ci_blind_debt so daily reports and operators see unverified
   // merge inventory instead of treating "PRs merged" as fully verified.

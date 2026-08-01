@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -390,6 +390,43 @@ describe('launchTask', () => {
       accepting = true;
       const result = await launchTask(gatedDeps, { prompt: 'second', cwd: '/tmp' });
       expect(result.task.prompt).toBe('second');
+    });
+  });
+
+  describe('automation kill-switch (issue #1710)', () => {
+    it('refuses schedule-sourced launches while SAFE MODE is engaged', async () => {
+      const gated = { ...deps, isAutomationEnabled: () => false };
+      await expect(
+        launchTask(gated, { prompt: 'sched', cwd: '/tmp', launchSource: 'schedule' }),
+      ).rejects.toThrow(AutomationKillSwitchError);
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('still accepts manual launches while SAFE MODE is engaged', async () => {
+      const gated = { ...deps, isAutomationEnabled: () => false };
+      const result = await launchTask(gated, {
+        prompt: 'manual',
+        cwd: '/tmp',
+        launchSource: 'api',
+      });
+      expect(result.task.prompt).toBe('manual');
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('restores schedule launches once the kill-switch is disengaged', async () => {
+      let automationEnabled = false;
+      const gated = { ...deps, isAutomationEnabled: () => automationEnabled };
+      await expect(
+        launchTask(gated, { prompt: 'blocked', cwd: '/tmp', launchSource: 'schedule' }),
+      ).rejects.toThrow(AutomationKillSwitchError);
+      automationEnabled = true;
+      const result = await launchTask(gated, {
+        prompt: 'unblocked',
+        cwd: '/tmp',
+        launchSource: 'schedule',
+      });
+      expect(result.task.prompt).toBe('unblocked');
     });
   });
 

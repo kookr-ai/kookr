@@ -485,6 +485,46 @@ Do the test thing (${marker}).
     expect(launched).toHaveLength(1);
   });
 
+  it('suppresses firing while the automation kill-switch is engaged (issue #1710)', async () => {
+    const schedule = store.create({
+      name: 'SafeMode',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      maxTriggers: 2,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({ isAutomationEnabled: () => false });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_safe_mode');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('safe_mode');
+    expect(store.get(schedule.id)!.latestExecution?.message).toContain('SAFE MODE');
+    expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('fires normally once the automation kill-switch is disengaged', async () => {
+    const schedule = store.create({
+      name: 'SafeModeResumed',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({ isAutomationEnabled: () => true });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+  });
+
   it('fails when playbook file is missing', async () => {
     const schedule = store.create({
       name: 'Missing Playbook',

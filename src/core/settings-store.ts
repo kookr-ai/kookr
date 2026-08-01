@@ -224,6 +224,22 @@ export interface KookrSettings {
    * change applies on the next liveness tick without a restart.
    */
   postMergeCleanupBudgetMinutes: number;
+  /**
+   * Global automation kill-switch (issue #1710 / #1699 WS0.4). When true,
+   * autonomous actuation (schedule fires + schedule-sourced launches) is
+   * halted; manual launches remain accepted. Distinct from drain mode (#659),
+   * which refuses all new launches. Read via a live getter so engage/disengage
+   * takes effect on the next schedule tick / launch without a restart.
+   */
+  automationKillSwitch: boolean;
+  /**
+   * ISO timestamp when the current SAFE MODE period began. Null while the
+   * kill-switch is disengaged. Set on engage and preserved across unrelated
+   * settings saves; cleared on disengage. Surfaces as
+   * `SAFE MODE since <ts>` on `/api/health`, the dashboard banner, and the
+   * status digest line.
+   */
+  safeModeSince: string | null;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -255,6 +271,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   reservedActiveSlots: 2,
   reservedSlotSources: ['kookr'],
   postMergeCleanupBudgetMinutes: 10,
+  automationKillSwitch: false,
+  safeModeSince: null,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -477,6 +495,21 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  const automationKillSwitch = typeof raw.automationKillSwitch === 'boolean'
+    ? raw.automationKillSwitch
+    : DEFAULT_SETTINGS.automationKillSwitch;
+
+  // safeModeSince is only meaningful while engaged. Accept a parseable ISO
+  // string; anything else collapses to null (or, when engaged without a
+  // timestamp, leave null and let the update-path bookkeeping fill it in).
+  let safeModeSince: string | null = null;
+  if (automationKillSwitch && typeof raw.safeModeSince === 'string') {
+    const parsed = Date.parse(raw.safeModeSince);
+    if (Number.isFinite(parsed)) {
+      safeModeSince = new Date(parsed).toISOString();
+    }
+  }
+
   const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
     ? raw.cleanupWorktreeOnComplete
     : DEFAULT_SETTINGS.cleanupWorktreeOnComplete;
@@ -562,6 +595,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       reservedActiveSlots,
       reservedSlotSources,
       postMergeCleanupBudgetMinutes,
+      automationKillSwitch,
+      safeModeSince,
     },
   };
 }

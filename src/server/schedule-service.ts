@@ -103,6 +103,7 @@ export function buildScheduleFailureRecoveryAlert(
  * running/pending (a healthy schedule whose task simply outlives its cron
  * interval, or one coalescing under capacity pressure — exactly when an
  * operator wants LESS noise); `skipped_draining` is an operator drain;
+ * `skipped_safe_mode` is the automation kill-switch (issue #1710);
  * `skipped_manual`/`skipped_stale`/`skipped_capacity`/`deduplicated` are
  * intentional skips; and `unknown_after_restart` is unresolved rather than
  * failed. Counting any of those would mislabel healthy schedules as failing.

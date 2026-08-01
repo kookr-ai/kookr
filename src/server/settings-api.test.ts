@@ -56,6 +56,8 @@ describe('Settings API', () => {
       githubPollingEnabled: true,
       githubPollingIntervalSec: 60,
       autoWatchOssSources: true,
+      automationKillSwitch: false,
+      safeModeSince: null,
       watchdogStaleThresholdSec: 30,
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,

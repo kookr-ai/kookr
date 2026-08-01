@@ -8,7 +8,12 @@ import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { AvailableAgentType, AgentSelection } from '../../core/agent-types.js';
 import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { GitHubReference } from '../../core/github-types.js';
-import type { DrainStatusSnapshot, SnapshotMessage, WorkspaceSweepProgressSnapshot } from '../../shared/contracts/messages.js';
+import type {
+  DrainStatusSnapshot,
+  SafeModeStatusSnapshot,
+  SnapshotMessage,
+  WorkspaceSweepProgressSnapshot,
+} from '../../shared/contracts/messages.js';
 import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
 import {
   projectAgentFieldsForClient,
@@ -119,6 +124,8 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   sweepProgress?: WorkspaceSweepProgressSnapshot;
   lastSweepRunId?: string;
   drainStatus?: DrainStatusSnapshot;
+  /** Automation kill-switch / SAFE MODE (issue #1710). */
+  safeMode?: SafeModeStatusSnapshot;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
   coordinator?: {
@@ -523,6 +530,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.sweepProgress && !projectsScope ? { sweepProgress: deps.sweepProgress } : {}),
     ...(deps.lastSweepRunId && !projectsScope ? { lastSweepRunId: deps.lastSweepRunId } : {}),
     ...(deps.drainStatus && !projectsScope ? { drainStatus: deps.drainStatus } : {}),
+    ...(deps.safeMode && !projectsScope ? { safeMode: deps.safeMode } : {}),
     ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.
     ...(deps.coordinator && !projectsScope ? {

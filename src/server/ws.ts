@@ -82,6 +82,8 @@ export interface MessageRouterDeps {
   getDefaultAgentType?: () => AgentSelection;
   bypassAllPermissions?: boolean;
   getDrainStatus?: () => DrainStatusSnapshot;
+  /** Automation kill-switch / SAFE MODE (issue #1710). */
+  getSafeModeStatus?: () => import('../shared/contracts/messages.js').SafeModeStatusSnapshot;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -279,6 +281,7 @@ export class MessageRouter {
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       bypassAllPermissions: this.deps.bypassAllPermissions,
       drainStatus: this.deps.getDrainStatus?.(),
+      safeMode: this.deps.getSafeModeStatus?.(),
       sttUrl: this.deps.sttUrl,
       ttsUrl: this.deps.ttsUrl,
       workspaceEnabled: this.deps.workspaceEnabled,

@@ -3558,6 +3558,35 @@ kbd {
   color: var(--text-primary);
 }
 
+/* Automation kill-switch / SAFE MODE (issue #1710) — redder than drain. */
+.safe-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: rgba(127, 29, 29, 0.38);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.62);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.safe-mode-banner__badge {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.2);
+  color: var(--danger, #f87171);
+}
+
+.safe-mode-banner__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .connection-banner {
   display: flex;
   align-items: center;

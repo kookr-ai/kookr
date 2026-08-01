@@ -96,6 +96,12 @@ export interface ScheduleRunnerDeps {
    */
   isAccepting?: () => boolean;
   /**
+   * Automation kill-switch (issue #1710 / #1699 WS0.4). When provided and
+   * returning false, schedule firing is suppressed (SAFE MODE) while manual
+   * launches remain accepted. Absent means automation enabled (back-compat).
+   */
+  isAutomationEnabled?: () => boolean;
+  /**
    * Resolve a blocking task's current status (issue #1526 Phase A). Used
    * ONLY to split `isTaskBlockingSchedule`'s single boolean into two distinct
    * ledger outcomes: `pending` → coalesce (`skipped_coalesced`, at most one
@@ -449,6 +455,18 @@ export class ScheduleRunner {
       return { error: 'Server draining' };
     }
 
+    if (this.deps.isAutomationEnabled && !this.deps.isAutomationEnabled()) {
+      console.warn(`[schedule] Skipping "${schedule.name}" — automation kill-switch engaged (issue #1710)`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_safe_mode',
+        'safe_mode',
+        'SAFE MODE — automation kill-switch engaged; schedule fires halted',
+      );
+      return { error: 'SAFE MODE — automation kill-switch engaged' };
+    }
+
     // #1526 Phase A / FM8: no capacity pre-check here anymore. At capacity,
     // the launcher (the normal task-submission path) pends the task instead
     // of launching it — same as any other over-cap POST /api/tasks — so a
@@ -555,7 +573,7 @@ function getCatchUpMode(): 'auto' | 'manual' | 'off' {
   return 'manual';
 }
 
-function mapErrorToReasonCode(err: unknown) {
+function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').ScheduleExecutionReasonCode {
   if (err instanceof ScheduleValidationError) {
     if (err.fieldErrors?.cwd) return 'missing_cwd' as const;
     if (err.fieldErrors?.playbook) return 'missing_playbook' as const;
@@ -565,6 +583,9 @@ function mapErrorToReasonCode(err: unknown) {
   // is recorded as dispatch_failed with its own reason code — never silently
   // dropped, and distinguishable from a broken launcher in the ledger.
   if (isPendingQueueFullError(err)) return 'pending_queue_full' as const;
+  // Defense-in-depth: if a fire reaches the launcher while SAFE MODE is on
+  // (the pre-fire gate above should have short-circuited), map to safe_mode.
+  if (err instanceof Error && err.name === 'AutomationKillSwitchError') return 'safe_mode' as const;
   return 'launch_error' as const;
 }
 
