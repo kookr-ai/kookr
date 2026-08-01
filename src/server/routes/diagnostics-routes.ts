@@ -38,6 +38,7 @@ import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
+import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
 import { buildCapacityLedger } from '../../core/capacity-ledger.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
@@ -57,6 +58,16 @@ import {
   type StaleProcessSummary,
 } from '../../core/orphan-process-scanner.js';
 import { listProcessSnapshots } from '../../adapters/proc-process-lister.js';
+import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
+
+/**
+ * How many missed schedule-runner tick intervals make GET `/api/ready`
+ * `schedulerTick` critical-not-ready (issue #1707 / #1699 WS0). Two intervals
+ * (~2 min at the default 60s cadence) is long enough that a single slow tick
+ * does not flap readiness, and short enough that a dead tick loop is
+ * visible to a process supervisor within a couple of minutes.
+ */
+export const SCHEDULER_TICK_STALE_INTERVALS = 2;
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -369,16 +380,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   // Machine-readable readiness verdict for orchestrators / load balancers
-  // (issue #660, extended by #1721). Unlike /api/health — which always returns
-  // 200 so the dashboard never sees a hard error — /api/ready turns 503 when a
-  // *critical* subsystem is down or unavailable for new work: startup recovery
-  // still in progress, operator drain mode, the terminal/dtach backend in
-  // `error` (manifest-corrupt / dtach-unavailable), or the persistence
-  // directory unwritable.
+  // (issue #660, extended by #1721 / #1707). Unlike /api/health — which always
+  // returns 200 so the dashboard never sees a hard error — /api/ready turns 503
+  // when a *critical* subsystem is down or unavailable for new work: startup
+  // recovery still in progress, operator drain mode, the terminal/dtach backend
+  // in `error` (manifest-corrupt / dtach-unavailable), the persistence
+  // directory unwritable, or the schedule-runner tick loop stale beyond N
+  // tick-intervals (`schedulerTick`, issue #1707).
   // Non-critical degradation (terminal `degraded`) stays 200/ready so
   // transient blips do not cordon a node out of rotation.
   // Read-only and unauthenticated by design: probes must reach it without an
   // admin token.
+  //
+  // Process supervisors for the *engine* MUST probe this path (`GET /api/ready`
+  // on the dashboard server), NOT the detached relay's `/ready` (or historical
+  // `/readyz`) endpoint — relay readiness only sees `dbReachable` +
+  // `emergencyDisabled` and is blind to the schedule-runner (issue #1699 WS0).
   app.get('/api/ready', (c) => {
     const checks: Record<string, ReadinessCheck> = {};
 
@@ -411,6 +428,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     checks.persistence = checkPersistenceWritable(deps.kookrDir);
+
+    // Issue #1707: schedule-runner liveness via lastTickCompletedAt.
+    // Omitted when scheduling is not wired (tests / hermetic boots) so those
+    // contexts stay fail-open.
+    if (deps.scheduleService) {
+      checks.schedulerTick = checkSchedulerTickReadiness(deps.scheduleService.getStatusSnapshot());
+    }
 
     // Fail-open: a check only flips readiness when it is both critical and
     // not-ready. Non-critical checks are reported for visibility only.
@@ -1053,6 +1077,69 @@ function checkPersistenceWritable(kookrDir: string | undefined): ReadinessCheck 
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     return { critical: true, ready: false, status: 'error', reason: typeof code === 'string' ? code : 'unwritable' };
   }
+}
+
+/**
+ * Critical schedule-runner liveness probe for GET `/api/ready` (issue #1707).
+ *
+ * Uses `lastTickCompletedAt` from {@link ScheduleService.getStatusSnapshot},
+ * falling back to `runnerStartedAt` so the grace window before the first tick
+ * does not false-not-ready a freshly started runner. Age beyond
+ * {@link SCHEDULER_TICK_STALE_INTERVALS} × {@link SCHEDULE_TICK_INTERVAL_MS}
+ * flips the check to not-ready (503 overall). Pure + optional `nowMs` for tests.
+ *
+ * When neither timestamp is present (runner not started yet — the brief window
+ * between `markReady` and `startAfterListen`), fail open with
+ * `status: 'starting'` so deploy gates are not blocked by schedule-runner boot
+ * order.
+ */
+export function checkSchedulerTickReadiness(
+  status: Pick<ScheduleStatusSnapshot, 'lastTickCompletedAt' | 'runnerStartedAt'>,
+  nowMs: number = Date.now(),
+  options?: { tickIntervalMs?: number; staleIntervals?: number },
+): ReadinessCheck {
+  const tickIntervalMs = options?.tickIntervalMs ?? SCHEDULE_TICK_INTERVAL_MS;
+  const staleIntervals = options?.staleIntervals ?? SCHEDULER_TICK_STALE_INTERVALS;
+  const maxAgeMs = tickIntervalMs * staleIntervals;
+
+  const lastTick = status.lastTickCompletedAt;
+  const runnerStarted = status.runnerStartedAt;
+  const anchorIso = lastTick ?? runnerStarted;
+  if (!anchorIso) {
+    return {
+      critical: true,
+      ready: true,
+      status: 'starting',
+      reason: 'runner-not-started',
+    };
+  }
+
+  const anchorMs = Date.parse(anchorIso);
+  if (!Number.isFinite(anchorMs)) {
+    return {
+      critical: true,
+      ready: false,
+      status: 'error',
+      reason: 'invalid-timestamp',
+    };
+  }
+
+  const ageMs = nowMs - anchorMs;
+  if (ageMs > maxAgeMs) {
+    return {
+      critical: true,
+      ready: false,
+      status: 'stale',
+      reason: lastTick ? 'tick-stale' : 'no-tick-since-start',
+      detail: `last progress ${Math.round(ageMs / 1000)}s ago (threshold ${Math.round(maxAgeMs / 1000)}s)`,
+    };
+  }
+
+  return {
+    critical: true,
+    ready: true,
+    status: lastTick ? 'ok' : 'awaiting-first-tick',
+  };
 }
 
 function parseDeliveryTraceFilter(c: Context): DeliveryTraceFilter {

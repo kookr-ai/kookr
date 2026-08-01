@@ -84,7 +84,7 @@ systemctl --user restart kookr.service
 `pnpm prod:update` remains the build-and-deploy command. After the build, its
 restart step calls `scripts/prod-restart.sh`; when `kookr.service` is active,
 the script delegates to the same `systemctl --user restart kookr.service`
-command and waits for `/api/health`.
+command and waits for `/api/ready` (see below).
 
 `pnpm prod:restart` behaves the same way. If the unit is inactive or systemd is
 unavailable, the script falls back to the existing pid-file and port-kill
@@ -104,22 +104,51 @@ systemctl --user disable --now kookr.service
 pnpm prod:restart
 ```
 
+## Readiness Probe (engine, not relay)
+
+Process supervisors and deploy gates for the **engine** (this unit /
+`node dist/server/start.js`) MUST probe:
+
+```text
+GET http://127.0.0.1:4800/api/ready
+```
+
+Do **not** point an engine supervisor at the detached relay readiness endpoint
+(`GET /ready` on the relay process — historically also called `/readyz`). Relay
+readiness only checks `dbReachable` + `emergencyDisabled` and has zero
+visibility into the schedule-runner; a supervisor pointed there is false-green
+when the scheduler tick dies (issue #1707 / #1699 WS0).
+
+`GET /api/ready` returns:
+
+- **200** `{ "ready": true, "checks": { … } }` when every *critical* subsystem
+  is ready (startup complete, terminal backend not in `error`, not draining,
+  persistence writable, schedule-runner tick fresh).
+- **503** `{ "ready": false, "checks": { … } }` when any critical check fails.
+  The `schedulerTick` check (issue #1707) flips not-ready when
+  `lastTickCompletedAt` is older than two schedule-runner tick intervals
+  (~2 minutes at the default 60s cadence), so a dead tick loop is visible to a
+  process supervisor within a couple of minutes.
+
+`/api/health` remains a soft always-200 operator surface; do not use it as a
+restart gate.
+
 ## Verify
 
 After installing the unit, verify the basic lifecycle:
 
 ```bash
 systemctl --user status kookr.service
-curl -fsS http://127.0.0.1:4800/api/health
+curl -fsS http://127.0.0.1:4800/api/ready
 systemctl --user kill --signal=SIGKILL kookr.service
 sleep 10
 systemctl --user status kookr.service
-curl -fsS http://127.0.0.1:4800/api/health
+curl -fsS http://127.0.0.1:4800/api/ready
 ```
 
 For reboot validation, reboot the host or restart WSL2, then check:
 
 ```bash
 systemctl --user status kookr.service
-curl -fsS http://127.0.0.1:4800/api/health
+curl -fsS http://127.0.0.1:4800/api/ready
 ```

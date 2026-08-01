@@ -13,7 +13,11 @@ import { recordWaitingOnInputOutcome, resetStuckFlagPrecision } from '../../core
 import { extractRawHookHeader, HookParseError, parseHookEvent } from '../../core/hook-parser.js';
 import { Monitor } from '../../core/monitor.js';
 import { Watchdog } from '../../core/watchdog.js';
-import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
+import {
+  registerDiagnosticsRoutes,
+  SCHEDULER_TICK_STALE_INTERVALS,
+  checkSchedulerTickReadiness,
+} from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
@@ -22,10 +26,12 @@ import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import { DrainController } from '../drain-state.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
+import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
+import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -1197,6 +1203,133 @@ describe('diagnostics routes', () => {
         critical: true,
         ready: true,
         status: 'ready',
+      });
+    });
+
+    // Issue #1707 — schedule-runner tick liveness on /api/ready
+    function scheduleService(snapshot: Partial<ScheduleStatusSnapshot>) {
+      return {
+        getStatusSnapshot: () =>
+          ({
+            timezone: 'UTC',
+            catchUpMode: 'manual' as const,
+            catchUpEnabled: false,
+            schedulerHealthy: true,
+            ...snapshot,
+          }) satisfies ScheduleStatusSnapshot,
+      };
+    }
+
+    test('recent lastTickCompletedAt ⇒ 200 ready with schedulerTick ok (issue #1707)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        scheduleService: scheduleService({
+          lastTickCompletedAt: new Date().toISOString(),
+          runnerStartedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        }) as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.schedulerTick).toEqual({
+        critical: true,
+        ready: true,
+        status: 'ok',
+      });
+    });
+
+    test('stale lastTickCompletedAt beyond N tick-intervals ⇒ 503 not ready (issue #1707)', async () => {
+      const staleAgeMs =
+        SCHEDULE_TICK_INTERVAL_MS * SCHEDULER_TICK_STALE_INTERVALS + 1_000;
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        scheduleService: scheduleService({
+          lastTickCompletedAt: new Date(Date.now() - staleAgeMs).toISOString(),
+          runnerStartedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        }) as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ready).toBe(false);
+      expect(body.checks.schedulerTick).toEqual(expect.objectContaining({
+        critical: true,
+        ready: false,
+        status: 'stale',
+        reason: 'tick-stale',
+      }));
+      expect(typeof body.checks.schedulerTick.detail).toBe('string');
+      // Other critical checks still pass — only schedulerTick flips the verdict.
+      expect(body.checks.terminalBackend.ready).toBe(true);
+      expect(body.checks.persistence.ready).toBe(true);
+    });
+
+    test('fresh runnerStartedAt without a completed tick yet ⇒ 200 awaiting-first-tick (issue #1707)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        scheduleService: scheduleService({
+          runnerStartedAt: new Date().toISOString(),
+        }) as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.schedulerTick).toEqual({
+        critical: true,
+        ready: true,
+        status: 'awaiting-first-tick',
+      });
+    });
+
+    test('no scheduleService wired ⇒ no schedulerTick check (fail-open)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.checks.schedulerTick).toBeUndefined();
+    });
+
+    test('checkSchedulerTickReadiness pure helper: boundary and invalid timestamp', () => {
+      const now = Date.parse('2026-08-01T12:00:00.000Z');
+      const justInside = new Date(
+        now - SCHEDULE_TICK_INTERVAL_MS * SCHEDULER_TICK_STALE_INTERVALS,
+      ).toISOString();
+      const justOutside = new Date(
+        now - SCHEDULE_TICK_INTERVAL_MS * SCHEDULER_TICK_STALE_INTERVALS - 1,
+      ).toISOString();
+
+      expect(checkSchedulerTickReadiness({ lastTickCompletedAt: justInside }, now)).toEqual({
+        critical: true,
+        ready: true,
+        status: 'ok',
+      });
+      expect(checkSchedulerTickReadiness({ lastTickCompletedAt: justOutside }, now)).toEqual(
+        expect.objectContaining({
+          critical: true,
+          ready: false,
+          status: 'stale',
+          reason: 'tick-stale',
+        }),
+      );
+      expect(checkSchedulerTickReadiness({}, now)).toEqual({
+        critical: true,
+        ready: true,
+        status: 'starting',
+        reason: 'runner-not-started',
+      });
+      expect(checkSchedulerTickReadiness({ lastTickCompletedAt: 'not-a-date' }, now)).toEqual({
+        critical: true,
+        ready: false,
+        status: 'error',
+        reason: 'invalid-timestamp',
       });
     });
   });

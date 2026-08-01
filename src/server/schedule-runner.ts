@@ -26,7 +26,13 @@ const scheduleResolutionProbe: ScheduleResolutionProbe = (playbookPath, scope, c
   }
 };
 
-const TICK_INTERVAL_MS = 60_000;
+/**
+ * Schedule-runner tick cadence. Also the unit for the GET `/api/ready`
+ * `schedulerTick` staleness threshold (issue #1707): not-ready after
+ * `SCHEDULER_TICK_STALE_INTERVALS` × this interval without a completed tick.
+ */
+export const SCHEDULE_TICK_INTERVAL_MS = 60_000;
+const TICK_INTERVAL_MS = SCHEDULE_TICK_INTERVAL_MS;
 const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
