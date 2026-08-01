@@ -375,6 +375,12 @@ export interface RouteDeps {
   >;
   /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
+  /**
+   * Lifecycle-timer health (issue #1771). Cheap in-memory last-fired stamps
+   * for each startLifecycleTimers loop. Absent ⇒ GET /api/diagnostics/timer-health
+   * returns an empty loops list (tests / partial harnesses).
+   */
+  timerHealth?: Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'snapshot'>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
   startupRecoverySummary?: CrashRecoveryResult | null;
   /**

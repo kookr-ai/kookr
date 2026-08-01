@@ -519,6 +519,7 @@ instance (issue #1526 Phase B / FM12, FM16).
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
 | `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
+| `GET /api/diagnostics/timer-health` | Per-loop lifecycle-timer health (issue #1771): each `startLifecycleTimers` loop with `lastFiredAt`, `expectedIntervalMs`, and `overdue` (true when progress is older than two expected intervals). Covers tokenScan, watchdog, liveness, snoozeExpiry, save, and any enabled optional loops (quotaPoll, maintenancePrune, …). Cheap in-memory read; empty `loops` when the tracker is not wired |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals (see [above](#get-apitaskscompletion-readystale)) |
 | `POST /api/tasks/:id/complete` | Mark one task complete (see [above](#post-apitasksidcomplete)) — **token-gated** |

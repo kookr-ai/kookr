@@ -463,6 +463,48 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/timer-health (issue #1771)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/timer-health', () => {
+    test('returns empty loops when timer health is not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/timer-health');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({
+        schemaVersion: 'timer-health.v1',
+        generatedAt: expect.any(String),
+        loops: [],
+      });
+    });
+
+    test('returns the tracker snapshot when wired', async () => {
+      const snapshot = {
+        schemaVersion: 'timer-health.v1' as const,
+        generatedAt: '2026-08-01T16:00:00.000Z',
+        loops: [
+          {
+            name: 'tokenScan' as const,
+            lastFiredAt: '2026-08-01T15:59:55.000Z',
+            expectedIntervalMs: 5_000,
+            overdue: false,
+          },
+          {
+            name: 'save' as const,
+            lastFiredAt: null,
+            expectedIntervalMs: 60_000,
+            overdue: true,
+          },
+        ],
+      };
+      const res = await mkApp({
+        timerHealth: { snapshot: () => snapshot },
+      }).request('/api/diagnostics/timer-health');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(snapshot);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/diagnostics/hook-ingestion
   // ---------------------------------------------------------------------------
   describe('GET /api/diagnostics/hook-ingestion', () => {
