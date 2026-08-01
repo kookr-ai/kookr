@@ -256,8 +256,17 @@ describe('ResourceWatchdogService', () => {
       logger: { info: vi.fn(), warn: vi.fn() },
     });
     await service.runOnce();
-    await new Promise((r) => setTimeout(r, 50));
-    const text = readFileSync(auditPath, 'utf-8');
+    // JsonlResourceWatchdogAuditSink appends are fire-and-forget (queued Promise).
+    // Under full-suite load a fixed 50ms sleep races; poll until the spawn line lands.
+    const deadline = Date.now() + 2_000;
+    let text = '';
+    while (Date.now() < deadline) {
+      if (existsSync(auditPath)) {
+        text = readFileSync(auditPath, 'utf-8');
+        if (text.includes('"action":"spawn"')) break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
     expect(text).toContain('"action":"spawn"');
     expect(text).toContain('resource-watchdog-audit.v1');
   });

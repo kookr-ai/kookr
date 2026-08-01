@@ -443,12 +443,14 @@ Body.
     // KB grounding is best-effort augmentation. Lock the three injection
     // points — seed (Phase 3.5), refine (4.3), critique (4.4) — and the
     // per-idea report contract so a regression in any of them fails here.
+    // Phase 3.6 operational-evidence is a sibling seed source (issue #1757).
     expect(parsed.body).toContain('## Knowledge Base Grounding');
     expect(parsed.body).toContain('## Phase 3.5: Domain Knowledge Survey');
+    expect(parsed.body).toContain('## Phase 3.6: Operational Evidence Sweep');
     expect(parsed.body).toContain('### 4.3 Knowledge Base Refinement');
     expect(parsed.body).toContain('### 4.4 Critic Review');
     expect(parsed.body).toContain(
-      'literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, and `## Knowledge base grounding`',
+      'literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`',
     );
   });
 
