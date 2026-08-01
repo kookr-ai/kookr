@@ -1,4 +1,6 @@
+import { performance } from 'node:perf_hooks';
 import type { MonitorAgentState } from '../../core/monitor.js';
+import { recordHotPath } from '../../core/hot-path-sampler.js';
 import { toClientAgentState } from '../../core/monitor-agent-state.js';
 import type { AgentType } from '../../core/agent-types.js';
 import { deriveLatestCompletionSignal } from '../../core/completion-signal.js';
@@ -84,6 +86,9 @@ export function buildSnapshotProjection(deps: {
    */
   excludeTerminalBeforeMs?: number;
 }): AgentState[] {
+  // Hot-path ranking (issue #1781): snapshot rebuild runs on every broadcast and
+  // is a known heavy contributor. Two clock reads + one O(1) record per rebuild.
+  const startedAt = performance.now();
   const sessionIndex = new Map<string, SessionSnapshotMeta>();
   for (const task of deps.tasks) {
     for (const session of task.sessions) {
@@ -155,6 +160,7 @@ export function buildSnapshotProjection(deps: {
   }
 
   annotateFindingCausality(states);
+  recordHotPath('snapshot_rebuild', performance.now() - startedAt);
   return states;
 }
 

@@ -3,6 +3,7 @@ import type { MonitorAgentState } from '../../core/monitor.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import { TaskStore } from '../../core/tasks.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
+import { getHotPathSampler, resetHotPathSamplerForTests } from '../../core/hot-path-sampler.js';
 
 function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
@@ -60,6 +61,23 @@ function needsInput(agentId: string, explanation = 'Waiting') {
 describe('snapshot projection', () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('records snapshot_rebuild into the hot-path sampler on each build (issue #1781)', () => {
+    resetHotPathSamplerForTests();
+    try {
+      const taskStore = new TaskStore();
+      createTaskForMutation(taskStore, 'Fix auth', '/cwd');
+      project(taskStore);
+      project(taskStore);
+      const entry = getHotPathSampler()
+        .snapshot()
+        .windows[0].paths.find((p) => p.label === 'snapshot_rebuild');
+      expect(entry).toBeDefined();
+      expect(entry?.count).toBe(2);
+    } finally {
+      resetHotPathSamplerForTests();
+    }
   });
 
   it('enriches live monitor state with linked task metadata without mutating the raw state', () => {

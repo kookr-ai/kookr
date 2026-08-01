@@ -19,6 +19,7 @@ import {
   checkSchedulerTickReadiness,
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { HotPathSampler } from '../../core/hot-path-sampler.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
@@ -354,6 +355,57 @@ describe('diagnostics routes', () => {
           p99Ms: 20,
         }],
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/hot-paths
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/hot-paths', () => {
+    test('returns a valid schema-versioned snapshot from the process-wide singleton', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/hot-paths');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('hot-path-sampler.v1');
+      expect(Array.isArray(body.windows)).toBe(true);
+      expect(body.windows.map((w: { windowMinutes: number }) => w.windowMinutes)).toEqual([5, 15]);
+    });
+
+    test('ranks the top event-loop contributors from the injected sampler', async () => {
+      const sampler = new HotPathSampler({ windowsMinutes: [5], topK: 10 });
+      sampler.record('snapshot_rebuild', 40);
+      sampler.record('task_save', 100);
+      sampler.record('hook_parse', 5);
+
+      const res = await mkApp({ hotPathSampler: sampler }).request('/api/diagnostics/hot-paths');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.windows[0].paths.map((p: { label: string }) => p.label)).toEqual([
+        'task_save',
+        'snapshot_rebuild',
+        'hook_parse',
+      ]);
+      expect(body.windows[0].paths[0]).toMatchObject({ label: 'task_save', totalMs: 100 });
+    });
+
+    test('honors a ?topK query override', async () => {
+      const sampler = new HotPathSampler({ windowsMinutes: [5], topK: 10 });
+      sampler.record('a', 3);
+      sampler.record('b', 2);
+      sampler.record('c', 1);
+
+      const res = await mkApp({ hotPathSampler: sampler }).request('/api/diagnostics/hot-paths?topK=2');
+      const body = await res.json();
+      expect(body.topK).toBe(2);
+      expect(body.windows[0].paths.map((p: { label: string }) => p.label)).toEqual(['a', 'b']);
+    });
+
+    test('falls back to the default topK when ?topK is non-positive or non-numeric', async () => {
+      const sampler = new HotPathSampler({ windowsMinutes: [5], topK: 10 });
+      for (const q of ['abc', '0', '-3']) {
+        const res = await mkApp({ hotPathSampler: sampler }).request(`/api/diagnostics/hot-paths?topK=${q}`);
+        expect((await res.json()).topK).toBe(10);
+      }
     });
   });
 

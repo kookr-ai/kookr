@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseHookEvent, HookParseError } from './hook-parser.js';
+import { getHotPathSampler, resetHotPathSamplerForTests } from './hot-path-sampler.js';
 
 const fixturesDir = join(import.meta.dirname, '..', '__fixtures__');
 
@@ -10,6 +11,22 @@ function loadFixture(name: string): string {
 }
 
 describe('Hook Event Parser', () => {
+  test('records hook_parse into the hot-path sampler on success and on throw (issue #1781)', () => {
+    resetHotPathSamplerForTests();
+    try {
+      parseHookEvent(loadFixture('hook-session-start.json'));
+      expect(() => parseHookEvent('{not json')).toThrow(HookParseError);
+      const entry = getHotPathSampler()
+        .snapshot()
+        .windows[0].paths.find((p) => p.label === 'hook_parse');
+      expect(entry).toBeDefined();
+      // Both the successful parse and the throwing parse are timed.
+      expect(entry?.count).toBe(2);
+    } finally {
+      resetHotPathSamplerForTests();
+    }
+  });
+
   test('parses SessionStart hook', () => {
     const raw = loadFixture('hook-session-start.json');
     const event = parseHookEvent(raw);

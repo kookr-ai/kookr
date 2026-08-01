@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSy
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { saveTasks, loadTasks, loadTasksWithRecovery, CorruptTaskFileError, serializeSnoozed, deserializeSnoozed, saveTasksWithSnapshotPolicy } from './task-persistence.js';
+import { getHotPathSampler, resetHotPathSamplerForTests } from './hot-path-sampler.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import type { Anomaly, PersistedSnooze } from './types.js';
@@ -74,6 +75,23 @@ describe('Task Persistence', () => {
       totalMs: expect.any(Number),
     });
     expect(metrics.bytes).toBeGreaterThan(0);
+  });
+
+  test('records task_save into the hot-path sampler with the returned totalMs (issue #1781)', async () => {
+    resetHotPathSamplerForTests();
+    try {
+      const store = new TaskStore();
+      createTaskForMutation(store, 'Fix auth', '/cwd');
+      const metrics = await saveTasks(store.getAllTasks(), filePath);
+      const entry = getHotPathSampler()
+        .snapshot()
+        .windows[0].paths.find((p) => p.label === 'task_save');
+      expect(entry).toBeDefined();
+      expect(entry?.count).toBe(1);
+      expect(entry?.totalMs).toBe(metrics.totalMs);
+    } finally {
+      resetHotPathSamplerForTests();
+    }
   });
 
   test('load reads existing tasks.json (round-trip)', async () => {

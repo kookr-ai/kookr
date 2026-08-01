@@ -13,6 +13,7 @@ import type { TerminalSessionDataSource } from '../core/ports/terminal-session-s
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
 import { reconstructAbsoluteTuiScreen } from './absolute-position-tui-screen.js';
+import { getHotPathSampler } from '../core/hot-path-sampler.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -391,10 +392,14 @@ export class SessionBridge {
       const size = this.pendingInitialResize ?? this.lastAppliedResize;
       const seedCols = size?.cols && size.cols > 0 ? size.cols : 200;
       const seedRows = size?.rows && size.rows > 0 ? size.rows : 50;
-      const reconstructed = reconstructAbsoluteTuiScreen(captured, {
-        cols: seedCols,
-        rows: seedRows,
-      });
+      // Hot-path ranking (issue #1781): VT reconstruct is the terminal-lag
+      // suspect the endpoint exists to rank. Timed via the sampler's O(1) wrapper.
+      const reconstructed = getHotPathSampler().time('vt_reconstruct', () =>
+        reconstructAbsoluteTuiScreen(captured, {
+          cols: seedCols,
+          rows: seedRows,
+        }),
+      );
       if (reconstructed && reconstructed.length > 0) {
         replay = reconstructed;
       } else {
