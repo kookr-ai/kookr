@@ -181,6 +181,7 @@ import { createRemoteRelayRuntime, type RemoteRelayRuntime } from './remote-rela
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import { TerminalInputRttMetrics } from './terminal-input-rtt-metrics.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { DeliveryTraceBuffer } from '../core/delivery-trace.js';
 import { SessionHealthTracker } from '../core/session-health.js';
@@ -487,7 +488,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
-  const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+  // Issue #1773: keystroke → write-ack RTT histogram. Owned here so the same
+  // instance both records (via the coordinator) and reports (via route deps).
+  const terminalInputRttMetrics = new TerminalInputRttMetrics();
+  const terminalInputCoordinator = new TerminalInputCoordinator(
+    terminalBackend,
+    undefined,
+    terminalInputRttMetrics,
+  );
   const reflectWorktreesDir = join(kookrDir, 'reflect-worktrees');
   const sessionHealthTracker = new SessionHealthTracker();
   const restartEpoch = Number.isFinite(Date.parse(serverStartedAt)) ? Date.parse(serverStartedAt) : Date.now();
@@ -1765,6 +1773,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     diagnosticRunner,
     terminalBackend,
+    terminalInputRttMetrics,
     sessionReaper,
     resourceWatchdog: resourceWatchdogService,
     deliveryTrace,

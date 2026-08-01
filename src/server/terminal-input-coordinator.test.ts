@@ -255,6 +255,89 @@ describe('TerminalInputCoordinator', () => {
       [0x0d],
     ]);
   });
+
+  // Issue #1773: keystroke → write-ack RTT histogram recording.
+  async function setupWithRecorder(clock: number[], sessionId = 's1') {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: sessionId, command: 'agent', args: [] });
+    const recorded: number[] = [];
+    // Fake monotonic clock: each call consumes the next scheduled reading.
+    const rttMetrics = {
+      now: () => clock.shift() ?? 0,
+      record: (ms: number) => recorded.push(ms),
+    };
+    const coordinator = new TerminalInputCoordinator(backend, undefined, rttMetrics);
+    coordinator.registerSession(sessionId);
+    return { backend, coordinator, recorded, sessionId };
+  }
+
+  it('records a write RTT sample on a successful writeInput (issue #1773)', async () => {
+    // 5ms entry, 12ms on write-ack ⇒ 7ms RTT.
+    const { coordinator, recorded } = await setupWithRecorder([5, 12]);
+
+    await coordinator.writeInput('s1', encoder.encode('x'));
+
+    expect(recorded).toEqual([7]);
+  });
+
+  it('records an RTT sample for an un-paced writeInputSequence but not for empty payloads (issue #1773)', async () => {
+    const { coordinator, recorded } = await setupWithRecorder([100, 130]);
+
+    // Empty payload short-circuits before any backend write → no sample, no clock read.
+    await coordinator.writeInputSequence('s1', []);
+    expect(recorded).toEqual([]);
+
+    await coordinator.writeInputSequence('s1', [encoder.encode('hi')]);
+    expect(recorded).toEqual([30]);
+  });
+
+  it('does not record an RTT sample for a deliberately-paced sequence submit (issue #1773)', async () => {
+    // The paced path's wall-clock is dominated by intentional inter-payload
+    // sleeps, so it is excluded from the histogram to keep the typing-lag
+    // signal clean.
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const recorded: number[] = [];
+    const rttMetrics = {
+      now: () => 0,
+      record: (ms: number) => recorded.push(ms),
+    };
+    const sleepFn = vi.fn(() => Promise.resolve());
+    const coordinator = new TerminalInputCoordinator(backend, sleepFn, rttMetrics);
+    coordinator.registerSession('s1');
+
+    await coordinator.writeInputSequence(
+      's1',
+      [encoder.encode('reply'), Uint8Array.of(0x0d)],
+      { reason: 'test-submit', interPayloadDelayMs: 500 },
+    );
+
+    expect(sleepFn).toHaveBeenCalledWith(500);
+    expect(recorded).toEqual([]);
+  });
+
+  it('does not record an RTT sample when the backend write rejects (issue #1773)', async () => {
+    // A failed write has no write-ack, so it must not enter the latency
+    // histogram — otherwise a 2s WriteTimeoutError would inflate the quantiles.
+    const { backend, coordinator, recorded } = await setupWithRecorder([0, 2000]);
+    const writeSpy = vi.spyOn(backend, 'write').mockRejectedValueOnce(new Error('WriteTimeoutError'));
+
+    await expect(coordinator.writeInput('s1', encoder.encode('x'))).rejects.toThrow('WriteTimeoutError');
+    expect(recorded).toEqual([]);
+    writeSpy.mockRestore();
+  });
+
+  it('completes a write on the default no-recorder path (issue #1773)', async () => {
+    // Default construction wires no recorder; recordRtt short-circuits on the
+    // undefined clock reading, so a successful write completes normally without
+    // ever timing or allocating. Nothing observable to assert beyond that the
+    // metrics-less hot path stays intact.
+    const { coordinator, sessionId } = await setup();
+
+    await expect(coordinator.writeInput(sessionId, encoder.encode('x'))).resolves.toMatchObject({
+      sessionId,
+    });
+  });
 });
 
 describe('TerminalInputCoordinator with real dtach-backed terminal', () => {

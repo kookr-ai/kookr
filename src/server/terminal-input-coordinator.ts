@@ -10,6 +10,16 @@ import type {
   PromptStatus,
 } from '../shared/contracts/terminal-input.js';
 
+/**
+ * Minimal recorder surface the coordinator needs to time writes (issue #1773).
+ * A full {@link TerminalInputRttMetrics} satisfies it; kept narrow so the
+ * coordinator has no hard dependency on the metrics module.
+ */
+export interface TerminalInputRttRecorder {
+  now(): number;
+  record(durationMs: number): void;
+}
+
 interface TerminalInputState {
   sessionId: string;
   inputStateEpoch: string;
@@ -38,6 +48,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
   constructor(
     private readonly backend: Pick<TerminalBackend, 'write' | 'writeSequence' | 'isAlive'>,
     private readonly sleepFn: (ms: number) => Promise<void> = sleep,
+    private readonly rttMetrics?: TerminalInputRttRecorder,
   ) {}
 
   registerSession(sessionId: SessionId): void {
@@ -91,10 +102,17 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     _meta?: { reason?: string },
   ): Promise<TerminalInputWriteResult> {
     this.getOrRegisterState(sessionId);
+    // Issue #1773: time keystroke-enqueue → write-ack (includes queue wait, the
+    // lag users actually feel) so /metrics can surface p50/p95/p99 typing RTT.
+    const startedAt = this.rttMetrics?.now();
     return this.withSessionQueue(sessionId, async (state) => {
       const readinessVersion = this.acceptWrite(state);
       try {
         await this.backend.write(sessionId, bytes);
+        // Record only on a successful ack. A rejected write (e.g. a 2s
+        // WriteTimeoutError) has no round-trip and would otherwise inflate
+        // the latency quantiles with what is really a failure signal.
+        this.recordRtt(startedAt);
       } finally {
         state.pendingWrites -= 1;
       }
@@ -112,11 +130,18 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       const state = this.getOrRegisterState(sessionId);
       return { sessionId, readinessVersion: state.readinessVersion };
     }
+    // Issue #1773: start the RTT clock only once we know a real write follows
+    // (the empty-payload path above returns without touching the backend).
+    const startedAt = this.rttMetrics?.now();
     return this.withSessionQueue(sessionId, async (state) => {
       const readinessVersion = this.acceptWrite(state);
       try {
         const delayMs = meta?.interPayloadDelayMs ?? 0;
         if (delayMs > 0 && payloads.length > 1) {
+          // Deliberately-paced programmatic submit (paste + Enter). Its
+          // wall-clock is dominated by the intentional inter-payload sleeps,
+          // not by write-ack latency, so it is excluded from the RTT
+          // histogram — recording it would corrupt the typing-lag signal.
           await this.backend.write(sessionId, payloads[0]!);
           for (const payload of payloads.slice(1)) {
             await this.sleepFn(delayMs);
@@ -124,6 +149,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
           }
         } else {
           await this.backend.writeSequence(sessionId, payloads);
+          this.recordRtt(startedAt);
         }
       } finally {
         state.pendingWrites -= 1;
@@ -200,6 +226,16 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     }, {
       missing: { kind: 'rejected', intentId: request.intentId, sessionId: request.sessionId, reason: 'session-gone' },
     });
+  }
+
+  /**
+   * Record one write round-trip sample. `startedAt` is undefined when no
+   * recorder is wired, so this is a no-op on the default (metrics-less) path
+   * and never allocates per keystroke.
+   */
+  private recordRtt(startedAt: number | undefined): void {
+    if (startedAt === undefined || this.rttMetrics === undefined) return;
+    this.rttMetrics.record(this.rttMetrics.now() - startedAt);
   }
 
   private acceptWrite(state: TerminalInputState): number {
