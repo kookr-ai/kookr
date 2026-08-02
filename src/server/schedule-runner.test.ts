@@ -1476,6 +1476,81 @@ Do the thing.
     expect(check).toHaveBeenCalledWith(store.list());
   });
 
+  it('the re-queue-after-reset sweep is evaluated once per tick (issue #1896)', async () => {
+    const sweep = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      resetScheduler: { sweep },
+    });
+
+    await runner.tick();
+    await runner.tick();
+
+    expect(sweep).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing reset-scheduler sweep does not abort the tick — due fires still run (issue #1896)', async () => {
+    const schedule = store.create({
+      name: 'Test',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({
+      ...store.get(schedule.id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const launched: string[] = [];
+    const sweep = vi.fn(() => {
+      throw new Error('sweep boom');
+    });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async (opts) => {
+        launched.push(opts.prompt);
+        return { task: { id: `task-${launched.length}` } as any, queued: false };
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      resetScheduler: { sweep },
+    });
+
+    await expect(runner.tick()).resolves.toBeUndefined();
+    expect(sweep).toHaveBeenCalledTimes(1);
+    // The sweep runs before the fire loop; a sweep throw must not prevent the
+    // due schedule from firing.
+    expect(launched).toHaveLength(1);
+  });
+
+  it('suppresses the reset sweep under the automation kill-switch (issue #1896)', async () => {
+    const sweep = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      isAutomationEnabled: () => false,
+      resetScheduler: { sweep },
+    });
+
+    await runner.tick();
+
+    expect(sweep).not.toHaveBeenCalled();
+  });
+
   it('keeps the wall-clock cap below the tick interval (issue #1708 invariant)', () => {
     // The whole decoupling relies on a stalled fire settling within one tick so
     // it can never bleed into the next; the source comment claims "kept below

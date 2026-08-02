@@ -100,6 +100,7 @@ import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
+import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -1506,6 +1507,40 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
   };
 
+  // Re-queue-after-reset scheduler (issue #1896 / #1699 WS1.4): auto-resume a
+  // provider-paused issue at its reset time — jittered + token-bucket-bounded,
+  // with dedup keyed on the issue-claim relaunch lease (NOT the 24h launch
+  // ledger, which cannot span a multi-day pause). The reaper's provider_paused
+  // branch records the held issue (TimerDeps.recordProviderPause, below) and the
+  // schedule-runner sweeps it once per tick.
+  const providerResetScheduler = new ProviderResetScheduler({
+    arbiter: relaunchArbiter,
+    launch: (opts) => launchTask(launchServiceDeps, opts),
+    // Drop a queued resume only when the recorder was DELIVERED (completed) or
+    // deliberately cancelled — re-dispatching those would duplicate work the
+    // lease alone cannot rule out. A `terminated` recorder is the expected
+    // post-reset reap (see lifecycle-timers), so it stays resume-eligible; the
+    // sweep's lease check then decides timing.
+    shouldResume: (entry) => {
+      if (entry.recordedTaskId === undefined) return true;
+      const recorder = taskStore.getTask(entry.recordedTaskId);
+      if (recorder === undefined) return true;
+      return recorder.status !== 'completed' && recorder.status !== 'cancelled';
+    },
+    onEvent: (event) => {
+      if (event.type === 'resume') {
+        console.log(
+          `[provider-reset] resuming ${event.key.repo}#${event.key.number} `
+          + `(resumeAt=${new Date(event.resumeAt).toISOString()})`,
+        );
+      } else if (event.type === 'resume_failed') {
+        console.warn(
+          `[provider-reset] resume launch failed for ${event.key.repo}#${event.key.number}: ${event.error}`,
+        );
+      }
+    },
+  });
+
   // Resource watchdog (issue #1724): host-pressure actuator that spawns a
   // briefed, throttled investigation task. OFF by default
   // (`KOOKR_RESOURCE_WATCHDOG=1` to enable). Spawns go through launchTask so
@@ -1704,6 +1739,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
+    // issue #1896: sweep provider-paused resumes on the runner's existing tick.
+    resetScheduler: providerResetScheduler,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
@@ -2346,6 +2383,39 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
+      // issue #1896: when the reaper detects a provider_paused task, register
+      // its issue for auto-re-dispatch at the quota reset and tell the reaper
+      // whether to keep holding the slot (before reset) or reap it (after reset,
+      // freeing the relaunch lease so the scheduled resume can hand off a fresh
+      // task). No issue-claim → nothing to dedup a resume on, so keep holding.
+      recordProviderPause: (task) => {
+        const claim = task.issueClaim;
+        if (!claim) return { holdForResume: true };
+        const now = Date.now();
+        // `record` LATCHES the reset time at first observation and returns it, so
+        // this comparison flips to false once the latched reset elapses (unlike a
+        // freshly-resolved reset, which is always in the future — see #1896 review).
+        const { resetsAt: latchedResetsAt } = providerResetScheduler.record({
+          key: { repo: claim.repo, number: claim.number },
+          recordedTaskId: task.id,
+          resetsAt: resolveProviderResetMs(quotaAdapter.getLatest(), now),
+          relaunch: buildProviderResumeLaunch({
+            id: task.id,
+            prompt: task.prompt,
+            cwd: task.cwd,
+            criteria: task.criteria,
+            name: task.name,
+            playbookId: task.playbookId,
+            playbookParameterValues: task.playbookParameterValues,
+            projectId: task.projectId,
+            agentType: task.agentType,
+            autoCloseOnSignal: task.autoCloseOnSignal,
+            issueClaim: { repo: claim.repo, number: claim.number },
+            provenance: task.provenance,
+          }),
+        });
+        return { holdForResume: now < latchedResetsAt };
+      },
       getCompletionReadyTtlMs,
       getPendingTaskTtlMs,
       getFinishedAwaitingAckTtlMs,

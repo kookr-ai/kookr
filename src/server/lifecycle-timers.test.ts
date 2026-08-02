@@ -696,6 +696,93 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
   });
 
+  // Issue #1896: provider_paused → recordProviderPause hand-off.
+  const PAUSE_PANE = 'Error: Credit balance is too low';
+
+  test('holds a provider_paused task before reset — records the pause, does not reap', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-paused-hold';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const recordProviderPause = vi.fn(() => ({ holdForResume: true }));
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      PAUSE_PANE,
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, recordProviderPause }),
+      taskStore,
+      lifecycleDeps(taskStore),
+      now,
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(recordProviderPause).toHaveBeenCalledTimes(1);
+    expect(recordProviderPause.mock.calls[0][0].id).toBe(task.id);
+  });
+
+  test('reaps a provider_paused task once its reset has elapsed (frees slot + lease)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-paused-reap';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const recordProviderPause = vi.fn(() => ({ holdForResume: false }));
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      PAUSE_PANE,
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, recordProviderPause }),
+      taskStore,
+      lifecycleDeps(taskStore),
+      now,
+    );
+
+    expect(reaped).toBe(true);
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    expect(recordProviderPause).toHaveBeenCalledTimes(1);
+  });
+
+  test('a throwing recordProviderPause never turns a hold into a reap (safety)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-paused-throw';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const recordProviderPause = vi.fn(() => {
+      throw new Error('hook boom');
+    });
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      PAUSE_PANE,
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, recordProviderPause }),
+      taskStore,
+      lifecycleDeps(taskStore),
+      now,
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  test('with no recordProviderPause wired, a provider_paused task is still never reaped (pre-#1896 / #1667)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-paused-unwired';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      PAUSE_PANE,
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
+      taskStore,
+      lifecycleDeps(taskStore),
+      now,
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
   test('triggers pending-task promotion after reaping', async () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-hung-2';
