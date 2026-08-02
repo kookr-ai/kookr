@@ -37,6 +37,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
 
     const nonCriticalTimerPause = deps.nonCriticalTimerPause?.getSnapshot();
     const snapshotShed = deps.snapshotShed?.getSnapshotShedMetrics();
+    const finishedAwaitingAckReclaim = deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
@@ -56,6 +57,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Pure read of the last warm 24h health-cache snapshot (issue #1857).
       // Never scans hook logs on the scrape path — cold cache omits series.
       lessonYield: collectLessonYield(deps),
+      ...(finishedAwaitingAckReclaim
+        ? { finishedAwaitingAckReclaim: { reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal } }
+        : {}),
       ...(nonCriticalTimerPause
         ? {
             nonCriticalTimerPause: {

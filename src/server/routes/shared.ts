@@ -389,6 +389,15 @@ export interface RouteDeps {
     getSnapshotShedMetrics: () => import('../event-pipeline.js').SnapshotShedMetricsSnapshot;
   };
   /**
+   * finishedAwaitingAck TTL reclaim counter (issue #1884). `/metrics` reads
+   * only `getSnapshot()` — an in-memory cumulative count the liveness-tick
+   * sweep increments; never a fresh scan on the request path.
+   */
+  finishedAwaitingAckTtlReclaimMetrics?: Pick<
+    import('../finished-awaiting-ack-ttl-sweep.js').FinishedAwaitingAckTtlReclaimMetrics,
+    'getSnapshot'
+  >;
+  /**
    * Lesson-yield health cache (issues #1538, #1553, #1857). Diagnostics warms
    * it via bounded background scans; `/metrics` only calls `getCached24h()`
    * and never scans hook logs on the scrape path.

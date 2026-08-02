@@ -176,6 +176,19 @@ export interface KookrSettings {
    */
   pendingTaskTtlMinutes: number;
   /**
+   * finishedAwaitingAck TTL (minutes), issue #1884. A task whose
+   * `finishedAwaitingAck` capacity class (status `inProgress` with a
+   * `completion_ready` pendingSignal) has sat unacknowledged longer than this
+   * is force-completed on the liveness tick — reason `finished_awaiting_ack_ttl`
+   * on the interaction log, an audit row (actor `system:finished-awaiting-ack-ttl`)
+   * — freeing the active concurrency slot it was chronically holding. A task
+   * that still holds an open, unmerged PR (`merge_required` delivery) is
+   * exempt regardless of age. Default 15m; hard-capped at 30m on read so an
+   * operator override can never restore the chronic 30–45m holds this setting
+   * exists to bound.
+   */
+  finishedAwaitingAckTtlMinutes: number;
+  /**
    * Per-source spawn budget (issue #1526 Phase C / C3): max task creations
    * allowed per launch source (cli/api/websocket/…, actor-qualified when the
    * `X-Kookr-Actor` header is present) within a sliding
@@ -266,6 +279,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   scheduleFailureAlertThreshold: 3,
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
+  finishedAwaitingAckTtlMinutes: 15,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
   reservedActiveSlots: 2,
@@ -326,6 +340,13 @@ const MAX_PENDING_TASKS = 200;
 // queue depth.
 const MIN_PENDING_TTL_MIN = 15;
 const MAX_PENDING_TTL_MIN = 2880;
+// finishedAwaitingAck TTL bounds (minutes), issue #1884. Floor of 5 keeps the
+// reclaim from racing a normal ack that just hasn't landed yet; hard ceiling
+// of 30 is the issue's own bound — an operator override can lower the TTL but
+// never raise it back into the chronic 30-45m hold range this setting exists
+// to eliminate.
+const MIN_FINISHED_AWAITING_ACK_TTL_MIN = 5;
+const MAX_FINISHED_AWAITING_ACK_TTL_MIN = 30;
 // Per-source spawn-budget bounds (issue #1526 Phase C / C3). Limit floor of 5
 // keeps interactive use workable; ceiling of 500 keeps the budget meaningful.
 // Window floor of 1 minute, ceiling of 120 minutes (2h).
@@ -450,6 +471,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     pendingTaskTtlMinutes = Math.max(
       MIN_PENDING_TTL_MIN,
       Math.min(MAX_PENDING_TTL_MIN, Math.round(raw.pendingTaskTtlMinutes)),
+    );
+  }
+
+  let finishedAwaitingAckTtlMinutes = DEFAULT_SETTINGS.finishedAwaitingAckTtlMinutes;
+  if (typeof raw.finishedAwaitingAckTtlMinutes === 'number' && Number.isFinite(raw.finishedAwaitingAckTtlMinutes)) {
+    finishedAwaitingAckTtlMinutes = Math.max(
+      MIN_FINISHED_AWAITING_ACK_TTL_MIN,
+      Math.min(MAX_FINISHED_AWAITING_ACK_TTL_MIN, Math.round(raw.finishedAwaitingAckTtlMinutes)),
     );
   }
 
@@ -590,6 +619,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       scheduleFailureAlertThreshold,
       maxPendingTasks,
       pendingTaskTtlMinutes,
+      finishedAwaitingAckTtlMinutes,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
       reservedActiveSlots,

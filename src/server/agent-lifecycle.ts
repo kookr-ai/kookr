@@ -489,6 +489,14 @@ export async function completeTask(
     lessonGateExempt?: string;
     /** When true, do not stamp lessonGateExempt (decision already verified). */
     decisionSatisfied?: boolean;
+    /**
+     * Override the interaction-log `task_completed` reason (default
+     * `'user_marked'`). Used by system-driven force-completes — e.g. the
+     * finishedAwaitingAck TTL reclaim (issue #1884) stamps
+     * `'finished_awaiting_ack_ttl'` so the log distinguishes an autonomous
+     * slot reclaim from a manual ack.
+     */
+    interactionLogReason?: 'user_marked' | 'finished_awaiting_ack_ttl';
   } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
@@ -544,7 +552,7 @@ export async function completeTask(
     type: 'task_completed',
     taskId,
     agentId: task.sessions[0]?.tmuxSession ?? '',
-    reason: 'user_marked',
+    reason: opts.interactionLogReason ?? 'user_marked',
     durationMs: Date.now() - task.createdAt.getTime(),
     timestamp: nowISO(),
   });

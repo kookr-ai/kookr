@@ -87,6 +87,12 @@ export interface PrometheusExpositionSnapshot {
    * hook-log scan. Same fields as `/api/health` `lessonYield`.
    */
   lessonYield?: LessonYieldSnapshot;
+  /**
+   * finishedAwaitingAck TTL reclaim counter (issue #1884). Cumulative count of
+   * finishedAwaitingAck tasks force-completed by the liveness-tick TTL sweep
+   * since process start. Omitted only in harnesses that never wire the sweep.
+   */
+  finishedAwaitingAckReclaim?: { reclaimedTotal: number };
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -113,6 +119,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
   appendCapacityMetrics(lines, snapshot.capacity);
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
+  appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
 
   return `${lines.join('\n')}\n`;
 }
@@ -424,6 +431,24 @@ function appendCapacityMetrics(
         ? -1
         : msToSeconds(snapshot.oldestFinishedAwaitingAckAgeMs),
     ),
+  );
+}
+
+/**
+ * finishedAwaitingAck TTL reclaim counter (issue #1884). Omitted when the
+ * sweep is not wired (lightweight unit harnesses) rather than emitting a
+ * fabricated zero series.
+ */
+function appendFinishedAwaitingAckReclaimMetrics(
+  lines: string[],
+  snapshot: { reclaimedTotal: number } | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_finished_awaiting_ack_ttl_reclaimed_total Total finishedAwaitingAck tasks force-completed by the TTL reclaim since process start.',
+    '# TYPE kookr_finished_awaiting_ack_ttl_reclaimed_total counter',
+    metricLine('kookr_finished_awaiting_ack_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
   );
 }
 

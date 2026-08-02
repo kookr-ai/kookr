@@ -36,6 +36,7 @@ import {
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
+import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
@@ -493,6 +494,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // launch / liveness tick without a restart.
   const getMaxPendingTasks = () => currentSettings.maxPendingTasks;
   const getPendingTaskTtlMs = () => currentSettings.pendingTaskTtlMinutes * 60_000;
+  // Live getter for the finishedAwaitingAck TTL reclaim (issue #1884). Same
+  // live-binding pattern — applies to the next liveness tick without a restart.
+  const getFinishedAwaitingAckTtlMs = () => currentSettings.finishedAwaitingAckTtlMinutes * 60_000;
   // Reserved self-maintenance capacity (issue #1564). Same live-binding
   // pattern — applies to the next launch without a restart.
   const getReservedActiveSlots = () => currentSettings.reservedActiveSlots;
@@ -863,6 +867,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         detectedFrom: pr.ref.detectedFrom,
       })),
     );
+
+  // Stranded-PR / merge_required exemption for the finishedAwaitingAck TTL
+  // reclaim (issue #1884). Fail-safe: only a task with zero PR references, or
+  // with every referenced PR CONFIRMED closed/merged, returns `false` (safe
+  // to reclaim). Any reference GitHub has not yet fetched an open/closed
+  // verdict for returns `undefined` — treated the same as `true` by the
+  // selector, so an unfetched ref never lets a possibly-open PR get clobbered.
+  const isTaskHoldingOpenPr = (task: Task): boolean | undefined => {
+    const prRefs = githubStateStore.getReferences(task.id).filter((ref) => ref.type === 'pr');
+    if (prRefs.length === 0) return false;
+    let sawUnknown = false;
+    for (const ref of prRefs) {
+      const open = githubStateStore.isRefOpen(ref);
+      if (open === true) return true;
+      if (open === undefined) sawUnknown = true;
+    }
+    return sawUnknown ? undefined : false;
+  };
+  const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks — SQLite by default (#1755), with one-shot migration
@@ -1833,6 +1856,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sessionReaper,
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
+    finishedAwaitingAckTtlReclaimMetrics,
     resourceWatchdog: resourceWatchdogService,
     deliveryTrace,
     coordinatorSuppressions,
@@ -2235,6 +2259,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       getCompletionReadyTtlMs,
       getPendingTaskTtlMs,
+      getFinishedAwaitingAckTtlMs,
+      isTaskHoldingOpenPr,
+      finishedAwaitingAckTtlReclaimMetrics,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
