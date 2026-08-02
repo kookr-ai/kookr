@@ -198,7 +198,7 @@ function FindingsResizer({
   onResize,
   onCommit,
 }: {
-  containerRef: React.RefObject<HTMLDivElement | null>;
+  containerRef: React.RefObject<HTMLElement | null>;
   onResizeStateChange: (active: boolean) => void;
   onResize: (width: number) => void;
   onCommit: (width: number) => void;
@@ -340,7 +340,7 @@ export function App() {
   // Persisted desktop split between the findings panel and the terminal
   // viewport. `null` means "use the CSS default width". Live drag updates state
   // for instant feedback; the value is persisted on drag-end / keyboard commit.
-  const mainRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   const [findingsWidth, setFindingsWidth] = useState<number | null>(() => loadFindingsWidth());
   const [isResizingSplit, setIsResizingSplit] = useState(false);
   const commitFindingsWidth = useCallback((width: number) => {
@@ -1326,6 +1326,9 @@ export function App() {
 
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
+      <a href="#main-content" className="skip-link" data-testid="skip-to-content">
+        Skip to content
+      </a>
       <ReadOnlyBanner />
       <SafeModeBanner />
       <DrainModeBanner />
@@ -1387,11 +1390,11 @@ export function App() {
               <span className="mobile-dashboard-badge">{selectedAgent ? 1 : 0}</span>
             </button>
           </div>
-          <div className="main main-mobile">
+          <main id="main-content" tabIndex={-1} className="main main-mobile">
             {projectDetailDrawer}
             {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
-          </div>
+          </main>
           {mobileTab === 'findings' && (
             <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
               <button
@@ -1450,7 +1453,9 @@ export function App() {
           )}
         </>
       ) : (
-        <div
+        <main
+          id="main-content"
+          tabIndex={-1}
           ref={mainRef}
           className={`main${isResizingSplit ? ' main-resizing' : ''}`}
           style={findingsWidth != null
@@ -1470,7 +1475,7 @@ export function App() {
             />
           )}
           {detailPanel}
-        </div>
+        </main>
       )}
       <StatusBar
         findings={findings.length}

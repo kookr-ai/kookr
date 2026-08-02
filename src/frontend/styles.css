@@ -61,10 +61,48 @@ kbd {
   height: 100vh;
 }
 
+/* Skip link: visually hidden until focused so mouse users see no layout shift. */
+.skip-link {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  z-index: 10000;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 8px 12px;
+  clip: auto;
+  overflow: visible;
+  white-space: normal;
+  background: var(--bg-card);
+  color: var(--text-bright);
+  border: 1px solid var(--teal);
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 13px;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.35);
+}
+
 .main {
   flex: 1;
   display: flex;
   overflow: hidden;
+}
+.main:focus {
+  outline: none;
 }
 
 /* --- Top Bar --- */
