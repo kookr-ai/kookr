@@ -6,6 +6,7 @@ Operator and developer references for Kookr:
 - [Auto-Close on Completion Signal](auto-close-on-signal.md)
 - [CLI](cli.md)
 - [Data Directory](data-directory.md)
+- [Deploy Convergence](deploy-convergence.md)
 - [Lesson-decision gate + yield metric](lesson-decision-gate.md)
 - [Merge-required gate](merge-required-gate.md)
 - [Lesson-write spool](lesson-write-spool.md)

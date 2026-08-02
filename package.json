@@ -56,6 +56,7 @@
     "prod:update": "bash scripts/prod-update.sh",
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",
     "prod:logs": "bash scripts/prod-logs.sh",
+    "deploy:convergence": "node --import tsx scripts/deploy-convergence-check.ts",
     "telemetry:report": "node --import tsx scripts/telemetry-report.ts",
     "kb:usage": "node --import tsx scripts/kb-usage-report.ts",
     "coverage:summary": "node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json",
