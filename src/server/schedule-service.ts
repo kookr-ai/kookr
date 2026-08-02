@@ -185,6 +185,7 @@ export class ScheduleService {
   private lastError?: string;
   private catchUpMode: 'auto' | 'manual' | 'off' = 'manual';
   private catchUpEnabled = false;
+  private deadManSelfHeal?: { attempts: number; successes: number; escalated: boolean };
 
   constructor(deps: ScheduleServiceDeps) {
     this.store = deps.store;
@@ -259,6 +260,21 @@ export class ScheduleService {
       schedulerHealthy,
       ...(loadError ? { loadError } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(this.deadManSelfHeal ? { deadManSelfHeal: this.deadManSelfHeal } : {}),
+    };
+  }
+
+  /**
+   * Record the dead-man switch's bounded self-heal counters (issue #1903) so
+   * they surface on {@link getStatusSnapshot}. Pushed by the runner after each
+   * `deadMan.check()`; a plain setter (no broadcast) since the surrounding
+   * `recordTickCompleted()` already broadcasts the fresh snapshot.
+   */
+  setDeadManSelfHealStats(stats: { attempts: number; successes: number; escalated: boolean }): void {
+    this.deadManSelfHeal = {
+      attempts: stats.attempts,
+      successes: stats.successes,
+      escalated: stats.escalated,
     };
   }
 

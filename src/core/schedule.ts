@@ -329,6 +329,17 @@ export interface ScheduleStatusSnapshot {
   schedulerHealthy: boolean;
   loadError?: string;
   lastError?: string;
+  /**
+   * Dead-man bounded self-heal counters (issue #1903). Absent when self-heal is
+   * unconfigured or has never run. `attempts`/`successes` are cumulative;
+   * `escalated` is true while the current starvation episode has exhausted the
+   * self-heal cap and is standing on a durable alert.
+   */
+  deadManSelfHeal?: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+  };
 }
 
 export interface ScheduleListResponse {
