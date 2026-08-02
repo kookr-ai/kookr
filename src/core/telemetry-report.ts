@@ -38,6 +38,19 @@ export interface TelemetryReport {
     highestSwitchRate: number | null;
     sourceBreakdown: Record<string, number>;
   };
+  /**
+   * Terminal attach latency after task switch (client `terminal_switch_latency`).
+   * Percentiles over `selectionToFirstPaintMs` so operators can track the
+   * sub-second attach goal without scraping raw JSONL.
+   */
+  terminalSwitchLatencyMetrics: {
+    sampleCount: number;
+    p50FirstPaintMs: number | null;
+    p95FirstPaintMs: number | null;
+    maxFirstPaintMs: number | null;
+    meanFirstPaintMs: number | null;
+    subSecondRate: number | null;
+  };
 }
 
 const ALL_EVENT_TYPES = [...TELEMETRY_EVENT_TYPES];
@@ -72,6 +85,7 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   let highestSelectionSwitchRate: number | null = null;
   const launchDwells: number[] = [];
   const cwdFieldMethodCounts: Record<string, number> = {};
+  const terminalFirstPaintMs: number[] = [];
 
   for (const event of events) {
     // Count all event types
@@ -145,6 +159,16 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
         }
         break;
       }
+      case 'terminal_switch_latency': {
+        if (
+          typeof event.selectionToFirstPaintMs === 'number'
+          && Number.isFinite(event.selectionToFirstPaintMs)
+          && event.selectionToFirstPaintMs >= 0
+        ) {
+          terminalFirstPaintMs.push(event.selectionToFirstPaintMs);
+        }
+        break;
+      }
     }
   }
 
@@ -203,5 +227,39 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
       highestSwitchRate: highestSelectionSwitchRate,
       sourceBreakdown: selectionFlickerSources,
     },
+    terminalSwitchLatencyMetrics: summarizeTerminalSwitchLatency(terminalFirstPaintMs),
   };
+}
+
+function summarizeTerminalSwitchLatency(samples: number[]): TelemetryReport['terminalSwitchLatencyMetrics'] {
+  if (samples.length === 0) {
+    return {
+      sampleCount: 0,
+      p50FirstPaintMs: null,
+      p95FirstPaintMs: null,
+      maxFirstPaintMs: null,
+      meanFirstPaintMs: null,
+      subSecondRate: null,
+    };
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const sum = sorted.reduce((acc, v) => acc + v, 0);
+  const subSecond = sorted.filter((v) => v < 1000).length;
+  return {
+    sampleCount: sorted.length,
+    p50FirstPaintMs: percentileMs(sorted, 50),
+    p95FirstPaintMs: percentileMs(sorted, 95),
+    maxFirstPaintMs: sorted[sorted.length - 1],
+    meanFirstPaintMs: Math.round((sum / sorted.length) * 100) / 100,
+    subSecondRate: subSecond / sorted.length,
+  };
+}
+
+function percentileMs(sortedAscending: number[], percentileRank: number): number {
+  if (sortedAscending.length === 0) return 0;
+  const index = Math.min(
+    sortedAscending.length - 1,
+    Math.max(0, Math.ceil((percentileRank / 100) * sortedAscending.length) - 1),
+  );
+  return sortedAscending[index];
 }

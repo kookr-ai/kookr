@@ -583,6 +583,93 @@ describe('SessionBridge', () => {
     expect(onReplay).toHaveBeenCalledWith('s1');
   });
 
+  it('paints a warm absolute-TUI seed before captureBytes resolves', async () => {
+    const { TerminalSeedFrameCache } = await import('./terminal-seed-frame-cache.js');
+    const seedCache = new TerminalSeedFrameCache();
+    const seedBytes = new TextEncoder().encode('\x1b[H\x1b[2JSEED-FRAME');
+    seedCache.set('s1', seedBytes, {
+      kind: 'absolute-reconstruct',
+      cols: 200,
+      rows: 50,
+      sourceRingBytes: 999,
+    });
+
+    const backend = await makeReadySession('s1');
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 40) + 1;
+      const col = 10 + (i % 170);
+      return `\x1b[?2026h\x1b[${row};${col}HF\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const originalCapture = backend.captureBytes.bind(backend);
+    backend.captureBytes = async (id) => {
+      await captureGate;
+      return originalCapture(id);
+    };
+
+    const ws = new FakeWs();
+    const onReplay = vi.fn();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 0,
+        liveRedrawNudgeMs: 0,
+        seedFrameCache: seedCache,
+        onBridgeReplay: onReplay,
+      },
+    );
+
+    const startPromise = bridge.start();
+    // Seed must land before capture unblocks — that is the switch-latency win.
+    await new Promise((r) => setTimeout(r, 5));
+    const early = ws.sent
+      .filter((s): s is Buffer => Buffer.isBuffer(s))
+      .map((b) => b.toString('utf-8'))
+      .join('');
+    expect(early).toContain('SEED-FRAME');
+    expect(onReplay).toHaveBeenCalled();
+
+    releaseCapture();
+    await startPromise;
+
+    // Fresh reconstruct should replace / refine the seed in the cache.
+    const cached = seedCache.get('s1');
+    expect(cached).not.toBeNull();
+    expect(cached!.bytes.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(cached!.bytes)).not.toContain('SEED-FRAME');
+  });
+
+  it('records terminal_bridge_start hot-path timings on attach', async () => {
+    resetHotPathSamplerForTests();
+    const backend = await makeReadySession('s1');
+    backend.setCaptureContent('s1', 'hello\n');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { initialResizeWaitMs: 0 },
+    );
+    await bridge.start();
+    const snap = getHotPathSampler().snapshot();
+    const startEntry = snap.windows[0].paths.find((p) => p.label === 'terminal_bridge_start');
+    expect(startEntry).toBeDefined();
+    expect(startEntry?.count).toBeGreaterThanOrEqual(1);
+    resetHotPathSamplerForTests();
+  });
+
   it('debounces post-startup resize thrash to the last size', async () => {
     const backend = await makeReadySession('s1');
     const resizeSpy = vi.spyOn(backend, 'resize');

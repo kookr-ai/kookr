@@ -710,8 +710,11 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       return;
     }
 
+    // Keep the previous session's painted cells until the first byte of the new
+    // session arrives (no blank flash). currentTmuxRef still updates so the next
+    // effect sees a stable session identity.
+    const previousSessionId = currentTmuxRef.current;
     if (tmuxName !== currentTmuxRef.current) {
-      terminal.clear();
       currentTmuxRef.current = tmuxName;
     }
 
@@ -728,6 +731,13 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     // close with 1001/1006, which do retry.
     const SESSION_OVER_CLOSE_CODES = [1000, 1011];
     let notifiedOutage = false;
+    // Attach-latency telemetry: selection/effect start → WS open → first paint.
+    const attachStartedAt = performance.now();
+    let wsOpenAt: number | null = null;
+    let firstByteAt: number | null = null;
+    let firstPaintRecorded = false;
+    /** Reset xterm once, immediately before the first write of this attach. */
+    let pendingInitialReset = true;
 
     const controller = createReconnectingSocket<WebSocket>({
       createSocket: () => {
@@ -742,12 +752,12 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       shouldReconnect: (event) => !SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1),
       backoff: { initialDelayMs: 1_000, maxDelayMs: 10_000 },
       onOpen: (ws) => {
-        // Always reset before the server's ring replay (or live-redraw stream)
-        // arrives. Reconnects used to be the only path that reset — first open
-        // after switching sessions already calls clear(), but a reconnect or a
-        // skip-replay Grok redraw must not paint over stale cells.
-        terminal.reset();
+        // Do NOT reset/clear here — that blanks the pane until the server's
+        // seed/replay arrives. Reset is deferred to the first onMessage write
+        // so the previous task stays visible during the attach handshake.
+        pendingInitialReset = true;
         notifiedOutage = false;
+        wsOpenAt = performance.now();
         if (!visibleRef.current) {
           registerTerminalSend(null);
           return;
@@ -777,6 +787,12 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         registerVisibleTerminalSend();
       },
       onMessage: (event) => {
+        if (pendingInitialReset) {
+          // Drop the previous session's cells immediately before the new seed
+          // lands so we never composite two agents' frames.
+          terminal.reset();
+          pendingInitialReset = false;
+        }
         const atBottomBeforeWrite = syncAtBottom(terminal);
         const newLineCount = atBottomBeforeWrite ? 0 : countTerminalNewLines(event.data);
         // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
@@ -789,6 +805,9 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
           : typeof event.data === 'string'
             ? event.data.length
             : undefined;
+        if (firstByteAt === null) {
+          firstByteAt = performance.now();
+        }
         measureSync('xterm-write', () => {
           if (event.data instanceof ArrayBuffer) {
             const bytes = new Uint8Array(event.data);
@@ -797,6 +816,28 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
             terminal.write(event.data);
           }
         }, { byteLength });
+        if (!firstPaintRecorded) {
+          firstPaintRecorded = true;
+          const paintedAt = performance.now();
+          track({
+            type: 'terminal_switch_latency',
+            fromSessionId: previousSessionId,
+            toSessionId: tmuxName,
+            agentType: absoluteTuiRef.current ? 'grok-build' : (agentType ?? null),
+            selectionToOpenMs: wsOpenAt === null
+              ? null
+              : Math.round((wsOpenAt - attachStartedAt) * 100) / 100,
+            selectionToFirstByteMs: firstByteAt === null
+              ? null
+              : Math.round((firstByteAt - attachStartedAt) * 100) / 100,
+            selectionToFirstPaintMs: Math.round((paintedAt - attachStartedAt) * 100) / 100,
+            openToFirstByteMs: wsOpenAt === null || firstByteAt === null
+              ? null
+              : Math.round((firstByteAt - wsOpenAt) * 100) / 100,
+            firstByteBytes: byteLength ?? null,
+            reconnect: previousSessionId === tmuxName,
+          });
+        }
         scheduleJumpLatest(newLineCount);
       },
       onClose: (event, { wasEstablished }) => {

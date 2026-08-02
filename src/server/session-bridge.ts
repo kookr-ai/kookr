@@ -15,6 +15,12 @@ import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
 import { reconstructAbsoluteTuiScreen } from './absolute-position-tui-screen.js';
 import { getHotPathSampler } from '../core/hot-path-sampler.js';
+import {
+  getTerminalSeedFrameCache,
+  seedFramesEqual,
+  type TerminalSeedFrameCache,
+  type TerminalSeedKind,
+} from './terminal-seed-frame-cache.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -57,8 +63,12 @@ const DEFAULT_BACKPRESSURE_RETRY_MS = 25;
 const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
 const DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
 const DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES = 64 * 1024 * 1024;
-/** Wait for the browser's first FitAddon resize before replaying the ring. */
-const DEFAULT_INITIAL_RESIZE_WAIT_MS = 400;
+/**
+ * Wait for the browser's first FitAddon resize before replaying the ring.
+ * Kept short: TerminalPanel sends resize in onOpen, and a warm absolute-TUI
+ * seed can paint before size arrives. Override via env if needed.
+ */
+const DEFAULT_INITIAL_RESIZE_WAIT_MS = 50;
 /** Coalesce FitAddon/layout thrash so multi-tab owners do not WINCH-storm the agent. */
 const DEFAULT_RESIZE_DEBOUNCE_MS = 80;
 /** Pause between cols-1 and cols when forcing a live TUI repaint. */
@@ -93,6 +103,10 @@ function readNonNegativeIntegerEnv(name: string, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) return fallback;
   return parsed;
+}
+
+function roundTimingMs(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**
@@ -157,9 +171,16 @@ export interface SessionBridgeOptions {
   /**
    * Milliseconds to wait for the browser's first `resize` control frame before
    * deciding on ring replay. Defaults to
-   * `KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS` or 400. Set to 0 in unit tests.
+   * `KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS` or 50. Set to 0 in unit tests.
    */
   initialResizeWaitMs?: number;
+
+  /**
+   * Absolute-TUI seed-frame cache. Defaults to the process-wide cache so
+   * task switches reuse the last reconstructed frame without a ring walk.
+   * Inject a fresh instance in unit tests.
+   */
+  seedFrameCache?: TerminalSeedFrameCache;
 
   /**
    * Coalesce subsequent resize control frames. Defaults to
@@ -204,6 +225,7 @@ export class SessionBridge {
   private readonly initialResizeWaitMs: number;
   private readonly resizeDebounceMs: number;
   private readonly liveRedrawNudgeMs: number;
+  private readonly seedFrameCache: TerminalSeedFrameCache;
   private bridgeHealthStarted = false;
   /** Latest browser-reported size observed before startup settles. */
   private pendingInitialResize: TerminalSize | null = null;
@@ -248,6 +270,7 @@ export class SessionBridge {
         'KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS',
         DEFAULT_LIVE_REDRAW_NUDGE_MS,
       );
+    this.seedFrameCache = options?.seedFrameCache ?? getTerminalSeedFrameCache();
     this.outputBatchMs = options?.outputBatchMs
       ?? readPositiveIntegerEnv('KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS', DEFAULT_OUTPUT_BATCH_MS);
     this.backpressureRetryMs = options?.backpressureRetryMs
@@ -280,6 +303,16 @@ export class SessionBridge {
   }
 
   async start(_cols = 120, _rows = 40): Promise<void> {
+    const startedAt = performance.now();
+    let resizeWaitMs = 0;
+    let captureMs = 0;
+    let reconstructMs = 0;
+    let seedCacheHit = false;
+    let strategy: 'seed-cache' | 'absolute-reconstruct' | 'absolute-frame'
+      | 'absolute-snapshot' | 'full-ring' | 'empty' = 'empty';
+    let replayBytes = 0;
+    let earlySeedBytes = 0;
+
     this.onBridgeOpened?.(this.sessionId);
     this.bridgeHealthStarted = true;
     // Install the ws 'error' listener FIRST — before any awaits or safeSend
@@ -337,16 +370,44 @@ export class SessionBridge {
       return;
     }
 
+    // Instant paint: serve the last absolute-TUI seed before resize/capture.
+    // Scrollback rings are not cached here — only compact reconstructed frames.
+    let earlySeed: Uint8Array | null = null;
+    if (this.ringReplayPolicy !== 'full' && this.ringReplayPolicy !== 'skip-live-redraw') {
+      const cached = this.seedFrameCache.get(this.sessionId);
+      if (cached && cached.bytes.length > 0) {
+        earlySeed = cached.bytes;
+        seedCacheHit = true;
+        earlySeedBytes = cached.bytes.length;
+        strategy = 'seed-cache';
+        if (this.safeSend(Buffer.from(cached.bytes), true)) {
+          this.onBridgeReplay?.(this.sessionId);
+          // Allow live fan-out immediately so the pane is not frozen while we
+          // recompute a fresher seed in the background of this start().
+          replaySent = true;
+        }
+      }
+    }
+
     // Prefer the browser's FitAddon size before replaying absolute-position
     // history. Without this, a 200-col Grok ring paints into a ~100-col xterm.
+    const resizeWaitStarted = performance.now();
     await this.waitForInitialResize();
-    if (this.closed) return;
+    resizeWaitMs = performance.now() - resizeWaitStarted;
+    if (this.closed) {
+      this.recordBridgeTiming({
+        startedAt, resizeWaitMs, captureMs, reconstructMs, seedCacheHit,
+        strategy, replayBytes: earlySeedBytes, earlySeedBytes,
+      });
+      return;
+    }
     // Apply the latest pending size (may have been updated after the wait woke).
     this.applyPendingInitialResizeIfAny();
 
     // The backend owns the single ring buffer; this bridge is a stateless
     // view. `captureBytes` is lock-free and does not force a re-attach.
     let captured: Uint8Array;
+    const captureStarted = performance.now();
     try {
       captured = await this.backend.captureBytes(this.sessionId);
     } catch (err) {
@@ -361,11 +422,19 @@ export class SessionBridge {
       console.error(`[session-bridge] captureBytes failed for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('captureBytes failed');
       return;
+    } finally {
+      captureMs = performance.now() - captureStarted;
     }
 
     // The WS may close while captureBytes awaits; in that case dispose() has
     // already removed the subscriber and there is no client left to replay to.
-    if (this.closed) return;
+    if (this.closed) {
+      this.recordBridgeTiming({
+        startedAt, resizeWaitMs, captureMs, reconstructMs, seedCacheHit,
+        strategy, replayBytes: earlySeedBytes, earlySeedBytes,
+      });
+      return;
+    }
 
     // A late FitAddon frame may have arrived during capture — re-apply before
     // deciding on ring replay / live redraw so nudge uses the freshest size.
@@ -373,6 +442,7 @@ export class SessionBridge {
 
     const skipRingReplay = this.shouldSkipRingReplay(captured);
     let replay: Uint8Array = new Uint8Array(0);
+    let seedKind: TerminalSeedKind | null = null;
     if (skipRingReplay) {
       // Dense absolute-position TUIs (Grok Build): replaying the *entire* ring
       // paints thousands of historical CUP frames at mixed widths. Instead:
@@ -404,14 +474,19 @@ export class SessionBridge {
           rows: seedRows,
         });
       } finally {
-        getHotPathSampler().record('vt_reconstruct', performance.now() - reconstructStarted);
+        reconstructMs = performance.now() - reconstructStarted;
+        getHotPathSampler().record('vt_reconstruct', reconstructMs);
       }
       if (reconstructed && reconstructed.length > 0) {
         replay = reconstructed;
+        seedKind = 'absolute-reconstruct';
+        if (!seedCacheHit) strategy = 'absolute-reconstruct';
       } else {
         const ringFrame = extractLastSubstantialAbsoluteFrame(captured);
         if (ringFrame && ringFrame.length > 0) {
           replay = ringFrame;
+          seedKind = 'absolute-frame';
+          if (!seedCacheHit) strategy = 'absolute-frame';
         }
       }
       if (!this.readOnly) {
@@ -426,35 +501,127 @@ export class SessionBridge {
             const frame = await this.refreshAbsoluteTuiFrame(size);
             if (frame && frame.length > 0) {
               replay = frame;
+              seedKind = 'absolute-snapshot';
+              if (!seedCacheHit) strategy = 'absolute-snapshot';
             }
           }
-        } else if (replay.length === 0) {
+        } else if (replay.length === 0 && !seedCacheHit) {
           console.warn(
             `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
           );
         }
       }
-      if (this.closed) return;
+      if (this.closed) {
+        this.recordBridgeTiming({
+          startedAt, resizeWaitMs, captureMs, reconstructMs, seedCacheHit,
+          strategy, replayBytes: earlySeedBytes, earlySeedBytes,
+        });
+        return;
+      }
       if (replay.length > 0) {
-        if (this.safeSend(Buffer.from(replay), true)) {
-          this.onBridgeReplay?.(this.sessionId);
+        // Refresh only when we did not already paint an identical seed.
+        const shouldSend = !earlySeed || !seedFramesEqual(earlySeed, replay);
+        if (shouldSend) {
+          if (this.safeSend(Buffer.from(replay), true)) {
+            this.onBridgeReplay?.(this.sessionId);
+          }
         }
+        this.rememberSeedFrame(replay, seedKind ?? 'absolute-reconstruct', {
+          cols: seedCols,
+          rows: seedRows,
+          sourceRingBytes: captured.length,
+        });
+        replayBytes = replay.length;
+      } else {
+        replayBytes = earlySeedBytes;
       }
     } else {
       replay = captured;
+      if (!seedCacheHit) strategy = replay.length > 0 ? 'full-ring' : 'empty';
       if (replay.length > 0) {
+        // Drop a stale absolute seed if this session is now a scrollback stream.
+        if (seedCacheHit) this.seedFrameCache.delete(this.sessionId);
         if (this.safeSend(Buffer.from(replay), true)) {
           this.onBridgeReplay?.(this.sessionId);
         }
+        replayBytes = replay.length;
+      } else {
+        replayBytes = earlySeedBytes;
       }
     }
 
+    // If early seed already flipped replaySent, keep live path open; otherwise
+    // open it now after the primary replay frame.
     replaySent = true;
     this.startupComplete = true;
-    const bufferedPreReplay = this.removeReplayOverlap(replay, preReplayChunks);
+    const primaryForOverlap = replay.length > 0 ? replay : (earlySeed ?? new Uint8Array(0));
+    const bufferedPreReplay = this.removeReplayOverlap(primaryForOverlap, preReplayChunks);
     for (const chunk of bufferedPreReplay) {
       this.enqueueOutput(chunk.bytes, chunk.countsAsLive, chunk.countsAsReplay);
     }
+
+    this.recordBridgeTiming({
+      startedAt,
+      resizeWaitMs,
+      captureMs,
+      reconstructMs,
+      seedCacheHit,
+      strategy,
+      replayBytes,
+      earlySeedBytes,
+    });
+  }
+
+  private rememberSeedFrame(
+    bytes: Uint8Array,
+    kind: TerminalSeedKind,
+    meta: { cols: number; rows: number; sourceRingBytes: number },
+  ): void {
+    this.seedFrameCache.set(this.sessionId, bytes, {
+      kind,
+      cols: meta.cols,
+      rows: meta.rows,
+      sourceRingBytes: meta.sourceRingBytes,
+    });
+  }
+
+  private recordBridgeTiming(parts: {
+    startedAt: number;
+    resizeWaitMs: number;
+    captureMs: number;
+    reconstructMs: number;
+    seedCacheHit: boolean;
+    strategy: string;
+    replayBytes: number;
+    earlySeedBytes: number;
+  }): void {
+    const totalMs = performance.now() - parts.startedAt;
+    const sampler = getHotPathSampler();
+    sampler.record('terminal_bridge_start', totalMs);
+    sampler.record('terminal_bridge_resize_wait', parts.resizeWaitMs);
+    sampler.record('terminal_bridge_capture_bytes', parts.captureMs);
+    if (parts.reconstructMs > 0) {
+      // vt_reconstruct already recorded at the walk site; also rank total attach.
+      sampler.record('terminal_bridge_absolute_path', totalMs);
+    }
+    if (parts.seedCacheHit) {
+      sampler.record('terminal_bridge_seed_cache_hit', totalMs);
+    } else {
+      sampler.record('terminal_bridge_seed_cache_miss', totalMs);
+    }
+    console.log(JSON.stringify({
+      msg: 'terminal_bridge_timing',
+      sessionId: this.sessionId,
+      totalMs: roundTimingMs(totalMs),
+      resizeWaitMs: roundTimingMs(parts.resizeWaitMs),
+      captureMs: roundTimingMs(parts.captureMs),
+      reconstructMs: roundTimingMs(parts.reconstructMs),
+      seedCacheHit: parts.seedCacheHit,
+      strategy: parts.strategy,
+      replayBytes: parts.replayBytes,
+      earlySeedBytes: parts.earlySeedBytes,
+      readOnly: this.readOnly,
+    }));
   }
 
   /**

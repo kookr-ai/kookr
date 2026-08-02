@@ -186,6 +186,33 @@ describe('generateTelemetryReport', () => {
     expect(report.tabSwitchCounts).toEqual({ github: 2, terminal: 1 });
   });
 
+  test('summarizes terminal switch latency percentiles', () => {
+    const report = generateTelemetryReport([
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: 40 }),
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: 80 }),
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: 120 }),
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: 1500 }),
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: -1 }), // ignored
+    ]);
+    expect(report.terminalSwitchLatencyMetrics.sampleCount).toBe(4);
+    expect(report.terminalSwitchLatencyMetrics.p50FirstPaintMs).toBe(80);
+    expect(report.terminalSwitchLatencyMetrics.p95FirstPaintMs).toBe(1500);
+    expect(report.terminalSwitchLatencyMetrics.maxFirstPaintMs).toBe(1500);
+    expect(report.terminalSwitchLatencyMetrics.subSecondRate).toBe(0.75);
+  });
+
+  test('empty terminal switch samples yield null percentiles', () => {
+    const report = generateTelemetryReport([makeEvent('agent_clicked')]);
+    expect(report.terminalSwitchLatencyMetrics).toEqual({
+      sampleCount: 0,
+      p50FirstPaintMs: null,
+      p95FirstPaintMs: null,
+      maxFirstPaintMs: null,
+      meanFirstPaintMs: null,
+      subSecondRate: null,
+    });
+  });
+
   test('summarizes selection flicker incidents', () => {
     const report = generateTelemetryReport([
       makeEvent('selection_flicker_incident', {
