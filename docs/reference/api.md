@@ -409,14 +409,17 @@ Body:
 - Offline agents should write-behind via the [signal outbox](./signal-outbox.md)
   rather than treating a connection failure as a task failure.
 
-**Lesson-decision gate (issue #1538).** For `kind: "completion_ready"`, when the
-task has launched sessions and neither a `kb remember` / `kookr lesson remember`
-write nor an explicit `No generic KB lesson:` skip appears in its PreToolUse
-Bash hook trail, the server returns `409` with
-`{"code": "lesson_decision_required", "decision": "search-only"|"no-kb-activity",
-"hint": "…", "counts": {…}}` and does **not** record the signal. Fail-open when
-the task has 0 sessions, `kookrDir` is unset, or
-`KOOKR_LESSON_DECISION_GATE=0|false|off|no`. See
+**Lesson-decision gate (issue #1538 / #1868).** For `kind: "completion_ready"`,
+when the task has launched sessions and neither a `kb remember` /
+`kookr lesson remember` write nor an explicit `No generic KB lesson:` skip
+appears in its PreToolUse Bash hook trail, the server returns `409` and does
+**not** record the signal. Response `code` is
+`lesson_decision_required` when at least one session hook log is on disk, or
+`lesson_decision_hooks_missing` when every session log is absent (pruned,
+rotated, or never written) — still fail-closed, but a distinct diagnosis for
+operators. Body also includes `decision`, `hint`, `counts`, `missingLogs`, and
+`sessionsScanned`. Fail-open when the task has 0 sessions, `kookrDir` is unset,
+or `KOOKR_LESSON_DECISION_GATE=0|false|off|no`. See
 [lesson-decision-gate](./lesson-decision-gate.md). Human Complete
 (`POST /api/tasks/:id/complete`) is not gated.
 

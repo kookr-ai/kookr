@@ -37,8 +37,20 @@ import {
 export { KB_LESSON_SKIP_MARKER };
 export type { LessonDecisionCounts, LessonDecisionState };
 
-/** Machine-readable 409 body code when completion-ready is refused. */
+/** Machine-readable 409 body code when completion-ready is refused (logs present). */
 export const LESSON_DECISION_REQUIRED_CODE = 'lesson_decision_required' as const;
+
+/**
+ * Distinct 409 code when every session hook log is missing on disk
+ * (pruned/rotated or never written) so operators can distinguish
+ * maintenance prune from a missed lesson step (issue #1868). Still
+ * fail-closed — same lifecycle block, different diagnosis.
+ */
+export const LESSON_DECISION_HOOKS_MISSING_CODE = 'lesson_decision_hooks_missing' as const;
+
+export type LessonDecisionGateCode =
+  | typeof LESSON_DECISION_REQUIRED_CODE
+  | typeof LESSON_DECISION_HOOKS_MISSING_CODE;
 
 /** v2 adds per-completion-path buckets + gateExempt accounting (issue #1608). */
 export const LESSON_YIELD_SCHEMA_VERSION = 'lesson-yield.v2' as const;
@@ -229,18 +241,42 @@ export interface LessonDecisionGateInput {
    */
   sessionsScanned: number;
   decision: LessonDecisionState;
+  /**
+   * Sessions whose hook log was missing or unsafe (from
+   * {@link resolveTaskLessonDecision}). When every scanned session is missing
+   * (`missingLogs === sessionsScanned > 0`), the 409 uses
+   * {@link LESSON_DECISION_HOOKS_MISSING_CODE} instead of
+   * {@link LESSON_DECISION_REQUIRED_CODE} so operators can tell pruned/rotated
+   * logs from a missed lesson step (issue #1868). Default 0.
+   */
+  missingLogs?: number;
 }
 
 export interface LessonDecisionGateVerdict {
   allow: boolean;
-  code?: typeof LESSON_DECISION_REQUIRED_CODE;
+  code?: LessonDecisionGateCode;
   reason: string;
   decision: LessonDecisionState;
   hint?: string;
+  /** Echoed when set so 409 bodies can surface coverage diagnostics. */
+  missingLogs?: number;
+  sessionsScanned?: number;
 }
 
 export const LESSON_DECISION_HINT =
   `Emit a post-task lesson decision in the Bash hook trail, then re-signal. `
+  + `Either: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes … `
+  + `or: printf '${KB_LESSON_SKIP_MARKER} %s\\n' '<one-line reason>'.`;
+
+/**
+ * Hint when all session hook logs are absent — points at prune/rotation
+ * rather than telling the agent to re-emit a decision into a missing trail.
+ */
+export const LESSON_DECISION_HOOKS_MISSING_HINT =
+  `All session hook logs are missing on disk (pruned, rotated, or never written). `
+  + `Check hook retention/rotation under ~/.kookr/hooks and whether maintenance `
+  + `swept live <session>.jsonl files. Fail-closed: re-emit a lesson decision `
+  + `into a fresh shell so a live log exists, then re-signal completion-ready. `
   + `Either: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes … `
   + `or: printf '${KB_LESSON_SKIP_MARKER} %s\\n' '<one-line reason>'.`;
 
@@ -252,6 +288,11 @@ export function isLessonDecisionSatisfied(decision: LessonDecisionState): boolea
  * Pure gate. Fail-open when disabled or when the task has no sessions
  * (cannot have produced hook evidence). Fail-closed when sessions exist but
  * neither a lesson write nor an explicit skip is visible in the hook trail.
+ *
+ * When every scanned session has a missing log (`missingLogs ===
+ * sessionsScanned > 0`), still fail-closed but with
+ * {@link LESSON_DECISION_HOOKS_MISSING_CODE} so operators can distinguish
+ * maintenance prune from a missed lesson step (issue #1868).
  */
 export function evaluateLessonDecisionGate(
   input: LessonDecisionGateInput,
@@ -280,6 +321,23 @@ export function evaluateLessonDecisionGate(
       decision: input.decision,
     };
   }
+
+  const missingLogs = input.missingLogs ?? 0;
+  // All logs gone → distinct diagnosis (still 409 / fail-closed).
+  if (missingLogs === input.sessionsScanned && missingLogs > 0) {
+    return {
+      allow: false,
+      code: LESSON_DECISION_HOOKS_MISSING_CODE,
+      reason:
+        `All ${missingLogs} session hook log(s) are missing on disk `
+        + `(pruned, rotated, or never written) — cannot verify a post-task lesson decision.`,
+      decision: input.decision,
+      hint: LESSON_DECISION_HOOKS_MISSING_HINT,
+      missingLogs,
+      sessionsScanned: input.sessionsScanned,
+    };
+  }
+
   return {
     allow: false,
     code: LESSON_DECISION_REQUIRED_CODE,
@@ -289,6 +347,8 @@ export function evaluateLessonDecisionGate(
         : 'Task completed without a post-task lesson decision (no kb activity).',
     decision: input.decision,
     hint: LESSON_DECISION_HINT,
+    missingLogs,
+    sessionsScanned: input.sessionsScanned,
   };
 }
 

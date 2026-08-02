@@ -37,7 +37,8 @@ dev instances on the same host share one queue. Override with
   (no HTTP hop). Pure `signalId` replays are no-ops. `completion_ready`
   entries still run the lesson-decision gate against hook logs (issue #1608)
   before `setPendingSignal`; a rejection is `permanent_fail` (entry dropped),
-  matching the CLI's treatment of HTTP 409 `lesson_decision_required`.
+  matching the CLI's treatment of HTTP 409 `lesson_decision_required` /
+  `lesson_decision_hooks_missing`.
   `completion_ready` entries also run the merge-required gate (issue #1836);
   a rejection is likewise `permanent_fail`, matching HTTP 409 `merge_required`.
   Applied signals are stamped `source: "outbox"` so yield v2 can attribute

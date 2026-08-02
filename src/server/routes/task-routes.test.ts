@@ -2255,7 +2255,38 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(body.code).toBe('lesson_decision_required');
       expect(body.decision).toBe('no-kb-activity');
       expect(body.hint).toMatch(/kb remember/);
+      expect(body.missingLogs).toBe(0);
+      expect(body.sessionsScanned).toBe(1);
       expect(taskStore.getPendingSignal(id)).toBeUndefined();
+    });
+
+    test('rejects completion_ready with lesson_decision_hooks_missing when all logs gone (issue #1868)', async () => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo' });
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-hooks-gone',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      // No hook file under kookrDir/hooks — all logs missing.
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${task.id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('lesson_decision_hooks_missing');
+      expect(body.decision).toBe('no-kb-activity');
+      expect(body.hint).toMatch(/prun|rotat/i);
+      expect(body.missingLogs).toBe(1);
+      expect(body.sessionsScanned).toBe(1);
+      expect(body.code).not.toBe('lesson_decision_required');
+      expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
     });
 
     test('allows completion_ready after a kb remember lesson write', async () => {

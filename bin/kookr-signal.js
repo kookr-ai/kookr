@@ -440,14 +440,23 @@ async function main({
         // ignore
       }
       const message = `server rejected the signal (HTTP ${result.status}): ${result.message}`;
-      const isLessonGate = result.code === 'lesson_decision_required';
+      // lesson_decision_required = logs present, no decision; hooks_missing =
+      // every session log gone (prune/rotation) — both block completion-ready.
+      const isLessonGate =
+        result.code === 'lesson_decision_required'
+        || result.code === 'lesson_decision_hooks_missing';
+      const isHooksMissing = result.code === 'lesson_decision_hooks_missing';
       if (args.json) {
         return exitJson({
           out,
           exit,
           exitCode: EXIT_SERVER_ERROR,
           ok: false,
-          code: isLessonGate ? 'LESSON_DECISION_REQUIRED' : 'SERVER_ERROR',
+          code: isHooksMissing
+            ? 'LESSON_DECISION_HOOKS_MISSING'
+            : isLessonGate
+              ? 'LESSON_DECISION_REQUIRED'
+              : 'SERVER_ERROR',
           message,
           details: {
             status: result.status,
@@ -461,11 +470,18 @@ async function main({
       err.error(`kookr signal: server rejected the signal (HTTP ${result.status}): ${result.message}`);
       if (isLessonGate) {
         if (result.hint) err.error(result.hint);
-        err.error(
-          'Post-task lesson decision is required before completion-ready (issue #1538). '
-            + 'Write a lesson with `kb remember` or print '
-            + '`No generic KB lesson: <reason>`, then re-run this command.',
-        );
+        if (isHooksMissing) {
+          err.error(
+            'All session hook logs are missing (issue #1868) — check prune/rotation under '
+              + '~/.kookr/hooks, re-emit a lesson decision into a live shell trail, then re-run.',
+          );
+        } else {
+          err.error(
+            'Post-task lesson decision is required before completion-ready (issue #1538). '
+              + 'Write a lesson with `kb remember` or print '
+              + '`No generic KB lesson: <reason>`, then re-run this command.',
+          );
+        }
       } else {
         err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
       }

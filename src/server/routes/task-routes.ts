@@ -767,6 +767,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         const gate = evaluateLessonDecisionGate({
           sessionsScanned: resolved.sessionsScanned,
           decision: resolved.decision,
+          missingLogs: resolved.missingLogs,
         });
         if (!gate.allow) {
           return c.json(
@@ -776,6 +777,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
               decision: gate.decision,
               hint: gate.hint,
               counts: resolved.counts,
+              missingLogs: resolved.missingLogs,
+              sessionsScanned: resolved.sessionsScanned,
             },
             409,
           );
