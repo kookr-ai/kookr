@@ -52,6 +52,9 @@ export const DEFAULT_PRODUCT_METRIC_LABELS: readonly string[] = Object.freeze([
   'headline-metric',
   'sec-anchor',
   'sec-acceptance',
+  // Acquisition / failover umbrellas (lucy#1587) rank with product metrics so
+  // idle capacity is not spent on harness polish while report-fetch work waits.
+  'acquisition',
 ]);
 
 /**
@@ -267,8 +270,11 @@ const PRODUCT_METRIC_TITLE_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bedgar\b/i,
   /\bearnings[- ]detection\b/i,
   /\bheadline[- ]metric\b/i,
+  // Product-facing acquisition / failover (queue-feeder ranking for lucy#1587+)
+  /\bacquisition\b/i,
+  /\bfailover\b/i,
+  /\bnewswire\b/i,
 ]);
-
 function emptyByClass(): Record<WorkClass, CompositionBucket> {
   const out = {} as Record<WorkClass, CompositionBucket>;
   for (const c of WORK_CLASSES) {

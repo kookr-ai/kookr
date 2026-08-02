@@ -616,12 +616,123 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * lucy#1587 "acquisition redundancy & failover". Original children (#1515,
+ * #1524, #1522, #1541, #1584) shipped; residual acceptance gaps remain:
+ * pre-window zero-healthy search backends, arm-time EDGAR-only flags, a
+ * measurable EDGAR-only armed-ticker counter, and RFC-012 epic body sync.
+ * Authored by the queue-feeder (2026-08-02) after needsAuthoring blocked emit.
+ * Live GitHub leaves: #2082–#2085. Once those exist, the feeder skips re-emit
+ * via openChildrenCount / title idempotency.
+ */
+export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(acquisition): schedule-readiness flags zero-healthy search backends before window',
+    goal:
+      'Wire runtime zero-healthy web-search backend state into schedule readiness so the ' +
+      'operator sees a degraded/action signal before an armed earnings window opens — not ' +
+      'only after a live fan-out fails mid-watch.',
+    acceptanceCriteria: [
+      '`schedule-readiness` (or the pre-window readiness path it shares) reports a warning ' +
+        'or action when retrieval-health reports healthyCount === 0 with configuredCount > 0, ' +
+        'distinct from the existing "no search backend is configured" config-only check.',
+      'Unit/fixture test covers both: (a) backends configured but all unhealthy → readiness ' +
+        'flags it; (b) backends configured and ≥1 healthy → no false positive.',
+      'Signal is visible via the existing `!bot schedule readiness` (or control-room readiness) ' +
+        'surface without requiring a live publish window.',
+    ],
+    fileHints: [
+      'src/schedule-readiness.js',
+      'src/retrieval-health.js',
+      'src/scheduler-commands.js',
+    ],
+    testHints: [
+      'unit test: inject a zero-healthy retrieval-health snapshot into readiness evaluation; assert problem code + severity',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): flag EDGAR-only tickers at arm/readiness time (0 non-SEC channels)',
+    goal:
+      'Surface EDGAR-only risk at arm / schedule-readiness time using the existing ' +
+      'knownNonSecChannels helper, so a ticker with zero known non-SEC channels is flagged ' +
+      'before the window opens (not only on `!bot acquire status`).',
+    acceptanceCriteria: [
+      'When arming a watch or evaluating schedule readiness for an armed ticker, a ticker ' +
+        'whose knownNonSecChannels(...).edgarOnly === true is flagged (warning or action) ' +
+        'with a remediation hint (`!bot acquire status TICKER` or seed IR/feed/wire).',
+      'The flag reuses knownNonSecChannels from src/acquisition/status.js — no second ' +
+        'counting implementation.',
+      'Unit test: synthetic registry entry with no IR/feed/wire → flagged; entry with ' +
+        'IR+feed → not EDGAR-only flagged.',
+    ],
+    fileHints: [
+      'src/acquisition/status.js',
+      'src/schedule-readiness.js',
+      'arming path (scheduler-commands / watchlist / control-room)',
+    ],
+    testHints: [
+      'unit test: readiness/arm evaluation with edgarOnly fixture; assert problem includes channel count or EDGAR-only label',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'chore(acquisition): sync RFC-012 epic #1157 Phase-0 checkboxes to closed children',
+    goal:
+      'Bring the open RFC-012 epic body in line with reality: Phase-0 children #1158–#1163 ' +
+      'are already closed, but the epic checkboxes still show unchecked — update the epic so ' +
+      'the umbrella trail no longer looks unfinished.',
+    acceptanceCriteria: [
+      'jeanibarz/lucy#1157 body Phase-0 checkboxes for #1158–#1163 are marked done (or ' +
+        'replaced with closed/merged notes) matching each child\'s current GitHub state.',
+      'Any Phase-1+ residual still open is left unchecked and remains discoverable; no false ' +
+        '"all done" if later phases remain.',
+      'No product code change required; PR may be docs-only or a direct issue-body update ' +
+        'with a short note on the epic.',
+    ],
+    fileHints: [
+      'GitHub issue jeanibarz/lucy#1157 body',
+      'optional: rfc/RFC-012-robust-report-acquisition.md status section',
+    ],
+    testHints: [
+      'manual: gh issue view 1157 shows Phase-0 items checked; remaining open work still listed',
+    ],
+    labels: ['acquisition', 'documentation'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): armed-ticker EDGAR-only count as measurable redundancy metric',
+    goal:
+      'Add a durable, testable acquisition-redundancy metric (or readiness counter) for ' +
+      '"armed tickers with 0 known non-SEC channels" so failover health is measurable ' +
+      'day-over-day rather than only as a one-off status line.',
+    acceptanceCriteria: [
+      'A counter/metric (or daily-report field) reports how many currently-armed tickers ' +
+        'are EDGAR-only (knownNonSecChannels.edgarOnly).',
+      'Unit test computes the counter from a fixture set of armed tickers + issuer registry entries.',
+      'Metric appears on an existing operator surface (acquire status summary, daily report, ' +
+        'or control-room readiness) so umbrella #1587 acceptance is measurable in aggregate.',
+    ],
+    fileHints: [
+      'src/acquisition/status.js',
+      'daily-report / metrics emitter if present',
+      'control-room readiness surfaces',
+    ],
+    testHints: ['unit test: N armed tickers, K edgar-only → counter equals K'],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
  */
 export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> = Object.freeze({
   'jeanibarz/lucy#1588': LUCY_1588_LEAF_PLAN,
+  'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
