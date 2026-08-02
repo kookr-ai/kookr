@@ -2325,10 +2325,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         getPayloadDietStats,
       },
-      // Relay-orphan sweep (issue #1723). Off unless
-      // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS is set to a positive number.
-      // Reaps leaked relay/server.ts processes whose task worktree is gone —
-      // production-safe (a live relay's cwd always exists).
+      // Relay-orphan sweep (issue #1723 / #1885). ON by default (1h); set
+      // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS=0 to disable. Reaps leaked
+      // relay/server.ts processes whose task worktree is gone OR which carry a
+      // test-runner env marker — production-safe (a live relay's cwd always
+      // exists and it carries no test marker, so it is never selected).
       relayOrphanSweep: {
         intervalHours: resolveRelayOrphanSweepIntervalHours(process.env),
       },

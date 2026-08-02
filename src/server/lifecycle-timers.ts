@@ -303,6 +303,8 @@ export interface TimerHandles {
   deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep (issue #1723) was configured. */
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the relay-orphan sweep startup reclaim (issue #1885) is pending. */
+  relayOrphanSweepStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the reflect-worktree orphan sweep (issue #1860) was configured. */
   reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null;
 }
@@ -466,6 +468,12 @@ export const TOKEN_SCAN_INTERVAL_MS = 5_000;
 export const WATCHDOG_INTERVAL_MS = 5_000;
 /** Fixed cadence for snooze-expiry restore (issue #1771 timer-health). */
 export const SNOOZE_EXPIRY_INTERVAL_MS = 1_000;
+/**
+ * Delay before the relay-orphan sweep's one-shot startup reclaim (issue #1885).
+ * Long enough to clear the boot I/O spike, short enough that an already-degraded
+ * daemon sheds its accumulated orphans within a minute of coming up.
+ */
+export const RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS = 30_000;
 
 /**
  * Helper for issue #1785: if the optional non-critical pause gate is elevated,
@@ -1057,11 +1065,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
-  // --- Relay-orphan sweep (issue #1723), optional ---
+  // --- Relay-orphan sweep (issue #1723 / #1885), ON by default ---
   // Reaps leaked `relay/server.ts` processes whose task worktree no longer
-  // exists — the backstop for the die-with-parent watchdog. Off unless
-  // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS is a positive number.
+  // exists OR which carry the test-spawn marker (#1885) — the always-on backstop
+  // for the die-with-parent watchdog. Enabled by default (1h); set
+  // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS=0 to disable. Production-safe: a live
+  // relay is never worktree-gone nor test-spawned, so it is never selected.
   let relayOrphanSweepInterval: ReturnType<typeof setInterval> | null = null;
+  let relayOrphanSweepStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const relayOrphanSweep = deps.relayOrphanSweep;
   if (relayOrphanSweep && relayOrphanSweep.intervalHours > 0) {
     const intervalMs = relayOrphanSweep.intervalHours * 60 * 60 * 1000;
@@ -1069,6 +1080,15 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       `[relay-orphan-sweep] scheduled sweep enabled every ${relayOrphanSweep.intervalHours}h`,
     );
     timerHealth?.register('relayOrphanSweep', intervalMs);
+    // Startup reclaim: a long-lived daemon may already be carrying a night's
+    // worth of orphans (#1885 was found at 29 / ~1.5 GB). Run one sweep shortly
+    // after boot — deferred off the startup I/O spike — so the accumulated leak
+    // is cleared without waiting a full interval or a restart.
+    relayOrphanSweepStartupTimer = setTimeout(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'relayOrphanSweep')) return;
+      void runScheduledRelayOrphanSweep(relayOrphanSweep);
+    }, RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS);
+    relayOrphanSweepStartupTimer.unref?.();
     relayOrphanSweepInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'relayOrphanSweep')) return;
       timerHealth?.recordFire('relayOrphanSweep', intervalMs);
@@ -1152,6 +1172,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     prodSmokeTickInterval,
     deployLagDetectorInterval,
     relayOrphanSweepInterval,
+    relayOrphanSweepStartupTimer,
     reflectWorktreeSweepInterval,
   };
 }
@@ -1168,5 +1189,6 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
+  if (handles.relayOrphanSweepStartupTimer) clearTimeout(handles.relayOrphanSweepStartupTimer);
   if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);
 }

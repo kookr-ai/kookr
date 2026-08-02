@@ -66,6 +66,8 @@ import {
   readPendingRetroVerify,
 } from '../../core/retro-verify-queue.js';
 import {
+  evaluateRelayOrphanBound,
+  resolveRelayOrphanBound,
   scanStaleProcesses,
   summarizeStaleProcesses,
   type StaleProcessSummary,
@@ -412,6 +414,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     const staleProcesses = getStaleProcessSummary();
+    // Issue #1885: first-class finding when relay-server orphans exceed the
+    // bound, so sentinel/reflection can cite a stable code instead of
+    // re-deriving a threshold from the raw count. Absent when within bound.
+    const relayOrphanFinding = staleProcesses
+      ? evaluateRelayOrphanBound(staleProcesses, resolveRelayOrphanBound(process.env))
+      : null;
 
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
@@ -455,6 +463,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(staleProcesses ? { staleProcesses } : {}),
+      ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
     });
   });
 

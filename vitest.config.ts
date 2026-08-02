@@ -61,6 +61,13 @@ export default defineConfig({
       // 2026-07-30. A short poll keeps the reap prompt in CI/post-test checks.
       KOOKR_RELAY_DIE_WITH_PARENT: '1',
       KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS: '250',
+      // Issue #1885: the production relay-orphan sweep is ON by default, but it
+      // reaps any aged relay carrying the die-with-parent marker — which is
+      // EVERY relay this suite spawns. Leaving it on would let a booted server's
+      // startup sweep SIGKILL relays another concurrent test is actively using.
+      // Test relays are owned by the die-with-parent watchdog + the post-test
+      // globalSetup reaper, so disable the periodic sweep during the suite.
+      KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '0',
     },
     coverage: {
       provider: 'v8',
