@@ -1,5 +1,5 @@
 import type { TaskStore } from '../../core/tasks.js';
-import { ScheduleStore } from '../../core/schedule.js';
+import { ScheduleStore, type Schedule } from '../../core/schedule.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
@@ -8,6 +8,8 @@ import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 import { bindOperationalAlertSink, OperationalAlertSink } from '../operational-alert-sink.js';
+import type { RalphLoopService } from '../ralph-loop-service.js';
+import { launchLoopedPlaybook } from '../use-cases/looped-playbook-launch.js';
 
 export interface ScheduleRuntimeDeps {
   kookrDir: string;
@@ -48,6 +50,18 @@ export interface ScheduleRuntimeDeps {
    * dedup). Absent means no auto-resume (back-compat for older wiring/tests).
    */
   resetScheduler?: { sweep(now?: number): unknown };
+  /**
+   * Ralph loop service used to arm always-running loops from a schedule with
+   * a loop config (issue #1899 / #1699 WS2.1). When provided, the runner wires
+   * `launchLoopedPlaybook` as its `loopedLauncher`. Absent means loop-configured
+   * schedules fail dispatch with a clear ledger error (no silent one-shot fallthrough).
+   */
+  ralphLoopService?: RalphLoopService;
+  /**
+   * Cleanup hook for a looped-playbook launch that partially fails after task
+   * creation (issue #1899). Typically `cancelTask` from agent-lifecycle.
+   */
+  cleanupFailedTask?: (taskId: string) => Promise<void>;
 }
 
 export interface ScheduleRuntime {
@@ -158,12 +172,42 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // issue #1900 / #1699 WS2.2: gate startup catch-up fires behind the same
     // WS0.5 relaunch arbiter the launch path uses, so a missed run cannot
     // duplicate a concurrent actuator relaunching the schedule's work.
+    // Also gates schedule loop-arming (issue #1899 / WS2.1).
     ...(deps.launchServiceDeps.relaunchArbiter
       ? { relaunchArbiter: deps.launchServiceDeps.relaunchArbiter }
       : {}),
-    // issue #1914: unwind a catch-up fire that lost the relaunch-lease CAS.
+    // issue #1914: unwind a catch-up / loop-arm fire that lost the relaunch-lease CAS.
     terminateCatchUpDuplicate: (taskId, detail) =>
       unwindCatchUpDuplicate(deps.taskStore, taskId, detail),
+    // issue #1899 / #1699 WS2.1: arm always-running Ralph loops from schedules
+    // that carry a loop config. Routes through launchLoopedPlaybook so the
+    // playbook's loopable tag + effectiveLoop apply, and the in-process
+    // duplicate-loop check runs as a second line of defence behind the arbiter.
+    ...(deps.ralphLoopService
+      ? {
+          loopedLauncher: (schedule: Schedule) =>
+            launchLoopedPlaybook(
+              {
+                taskStore: deps.taskStore,
+                ralphLoopService: deps.ralphLoopService!,
+                launchTask: (opts, serverOpts) => launchTask(deps.launchServiceDeps, opts, serverOpts),
+                getMaxActiveTasks: deps.getMaxActiveTasks,
+                ...(deps.cleanupFailedTask ? { cleanupFailedTask: deps.cleanupFailedTask } : {}),
+              },
+              {
+                playbookPath: schedule.playbook.path,
+                parameterValues: schedule.playbook.parameters,
+                cwd: schedule.cwd,
+                ...(schedule.playbook.scope ? { scope: schedule.playbook.scope } : {}),
+                agentType: schedule.agentType,
+                launchSource: 'schedule',
+                scheduleId: schedule.id,
+                ...(schedule.effort ? { effort: schedule.effort } : {}),
+                ...(schedule.model ? { model: schedule.model } : {}),
+              },
+            ),
+        }
+      : {}),
     // issue #1526 Phase C: dead-man switch for scheduled-task starvation,
     // evaluated on the runner's existing tick. Bounded self-heal (issue #1903).
     deadMan: new ScheduleDeadManSwitch({

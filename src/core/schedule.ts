@@ -19,6 +19,62 @@ export interface SchedulePlaybook {
    * rfc-schedule-playbook-resolution R2/R3.
    */
   scope?: PlaybookScope;
+  /**
+   * When present on the playbook reference, the schedule arms an always-running
+   * Ralph loop via `launchLoopedPlaybook` on fire (issue #1899 / #1699 WS2.1).
+   * Prefer the top-level {@link Schedule.loop} field; this nested form is
+   * accepted for create/update convenience and normalized onto the schedule.
+   */
+  loop?: ScheduleLoopConfig;
+}
+
+/**
+ * Always-running (Ralph) loop arming config for a schedule (issue #1899 /
+ * #1699 WS2.1). Presence of this object — even as `{}` — routes `fire()`
+ * through `launchLoopedPlaybook` instead of a one-shot launch, gated behind
+ * the WS0.5 relaunch arbiter so two actuators cannot arm duplicate loops for
+ * the same schedule unit. Optional fields are reserved schedule-level
+ * overrides of playbook loop defaults; the launcher currently uses the
+ * playbook's `effectiveLoop` for the actual iteration budget.
+ */
+export interface ScheduleLoopConfig {
+  iterationCap?: number;
+  zeroDiffConsecutiveIterations?: number;
+  costCapUsd?: number;
+  stopPredicate?: string;
+}
+
+/** True when a schedule is configured to arm a Ralph loop on fire (#1899). */
+export function hasScheduleLoopConfig(
+  schedule: { loop?: ScheduleLoopConfig | null },
+): boolean {
+  return schedule.loop !== undefined && schedule.loop !== null;
+}
+
+/** Coerce a persisted / API loop config blob; drops malformed values. */
+export function normalizeScheduleLoopConfig(raw: unknown): ScheduleLoopConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const out: ScheduleLoopConfig = {};
+  if (typeof candidate.iterationCap === 'number' && Number.isInteger(candidate.iterationCap) && candidate.iterationCap > 0) {
+    out.iterationCap = candidate.iterationCap;
+  }
+  if (
+    typeof candidate.zeroDiffConsecutiveIterations === 'number'
+    && Number.isInteger(candidate.zeroDiffConsecutiveIterations)
+    && candidate.zeroDiffConsecutiveIterations > 0
+  ) {
+    out.zeroDiffConsecutiveIterations = candidate.zeroDiffConsecutiveIterations;
+  }
+  if (typeof candidate.costCapUsd === 'number' && Number.isFinite(candidate.costCapUsd) && candidate.costCapUsd > 0) {
+    out.costCapUsd = candidate.costCapUsd;
+  }
+  if (typeof candidate.stopPredicate === 'string' && candidate.stopPredicate.length > 0) {
+    out.stopPredicate = candidate.stopPredicate;
+  }
+  // Presence alone is meaningful (empty `{}` arms a loop with playbook defaults).
+  return out;
 }
 
 export type ScheduleStopReason = 'trigger_limit_reached';
@@ -268,6 +324,15 @@ export interface Schedule {
    * agent CLI / env default applies.
    */
   model?: string;
+  /**
+   * When present, fire() arms an always-running Ralph loop via
+   * `launchLoopedPlaybook` instead of a one-shot launch (issue #1899 /
+   * #1699 WS2.1). Gated behind the WS0.5 relaunch arbiter so concurrent
+   * actuators cannot arm duplicate loops for the same schedule unit.
+   * An empty object `{}` is enough — the playbook's `effectiveLoop` supplies
+   * iteration budget and stop conditions.
+   */
+  loop?: ScheduleLoopConfig;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -359,6 +424,11 @@ export interface CreateScheduleInput {
   effort?: string;
   /** Optional model pin for every run of this schedule (#1518). */
   model?: string;
+  /**
+   * When present, arms a Ralph loop on fire (issue #1899). May also be
+   * supplied nested under `playbook.loop` — both normalize onto `Schedule.loop`.
+   */
+  loop?: ScheduleLoopConfig;
   enabled?: boolean;
 }
 
@@ -373,6 +443,12 @@ export interface UpdateScheduleDefinitionInput {
   effort?: string;
   /** Set to a string to pin; omit to leave unchanged. */
   model?: string;
+  /**
+   * Set to arm loop-on-fire; pass `null` to clear a previously armed loop
+   * config (issue #1899). Omit to leave unchanged. Nested `playbook.loop` is
+   * also accepted and merges onto the top-level field.
+   */
+  loop?: ScheduleLoopConfig | null;
 }
 
 export class ScheduleValidationError extends Error {
@@ -537,6 +613,8 @@ export class ScheduleStore {
     if (!input.cwd?.trim()) throw new ScheduleValidationError('cwd is required', { cwd: 'Required' });
 
     const now = new Date().toISOString();
+    // Accept loop config at the top level or nested under playbook (issue #1899).
+    const loop = normalizeScheduleLoopConfig(input.loop ?? input.playbook?.loop);
     const schedule: Schedule = {
       id: randomUUID(),
       name: input.name.trim(),
@@ -555,6 +633,7 @@ export class ScheduleStore {
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(loop ? { loop } : {}),
       executionLedger: [],
       createdAt: now,
       updatedAt: now,
@@ -577,26 +656,37 @@ export class ScheduleStore {
       throw new ScheduleValidationError('Invalid trigger limit', { maxTriggers: 'Must be a positive integer' });
     }
 
-    const { maxTriggers, ...rest } = patch;
+    const { maxTriggers, loop: patchLoop, playbook: patchPlaybook, ...rest } = patch;
     const nextTriggerState = computeUpdatedTriggerState(existing, maxTriggers, new Date().toISOString());
+    // Loop config update (issue #1899): top-level `null` clears; nested
+    // `playbook.loop` is accepted; omit leaves the existing value.
+    const nextLoop = resolveUpdatedLoopConfig(patchLoop, patchPlaybook?.loop);
     const updated: Schedule = {
       ...existing,
       ...rest,
       ...nextTriggerState,
-      ...(patch.playbook ? {
+      ...(patchPlaybook ? {
         playbook: {
-          path: patch.playbook.path,
-          parameters: { ...(patch.playbook.parameters ?? {}) },
+          path: patchPlaybook.path,
+          parameters: { ...(patchPlaybook.parameters ?? {}) },
           // Merge-carry, never reconstruct-and-drop: an update that omits
           // `scope` preserves the already-pinned tier (R2). Prevents an API
           // client sending only path+parameters from un-pinning a schedule.
-          ...((patch.playbook.scope ?? existing.playbook.scope)
-            ? { scope: patch.playbook.scope ?? existing.playbook.scope }
+          ...((patchPlaybook.scope ?? existing.playbook.scope)
+            ? { scope: patchPlaybook.scope ?? existing.playbook.scope }
             : {}),
         },
       } : {}),
+      ...(nextLoop !== undefined
+        ? (nextLoop === null ? { loop: undefined } : { loop: nextLoop })
+        : {}),
       updatedAt: new Date().toISOString(),
     };
+    // Explicit clear: spreading `{ loop: undefined }` leaves a key behind on
+    // some runtimes; delete so hasScheduleLoopConfig sees absence.
+    if (nextLoop === null) {
+      delete updated.loop;
+    }
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
     this.bumpRevision();
@@ -698,6 +788,15 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     agentType: normalizeAgentSelection(candidate.agentType),
     ...(typeof candidate.effort === 'string' ? { effort: candidate.effort } : {}),
     ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
+    // Carry a persisted loop config so schedule-armed Ralph loops survive
+    // reload (issue #1899). Nested playbook.loop is also accepted for legacy
+    // writes that stored it under the playbook reference.
+    ...(() => {
+      const loop = normalizeScheduleLoopConfig(
+        candidate.loop ?? (candidate.playbook as SchedulePlaybook | undefined)?.loop,
+      );
+      return loop ? { loop } : {};
+    })(),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),
@@ -885,6 +984,27 @@ function isValidRemainingTriggers(value: unknown): value is number {
  */
 function wasAutoExhausted(existing: Pick<Schedule, 'stopReason' | 'exhaustedAt'>): boolean {
   return existing.stopReason === 'trigger_limit_reached' || existing.exhaustedAt !== undefined;
+}
+
+/**
+ * Resolve the next loop config for an update (issue #1899).
+ * - top-level `null` → clear (`null` sentinel for the caller)
+ * - top-level object → replace
+ * - nested `playbook.loop` only → replace (same as top-level)
+ * - both omitted → leave unchanged (`undefined`)
+ */
+function resolveUpdatedLoopConfig(
+  patchLoop: ScheduleLoopConfig | null | undefined,
+  nestedLoop: ScheduleLoopConfig | undefined,
+): ScheduleLoopConfig | null | undefined {
+  if (patchLoop === null) return null;
+  if (patchLoop !== undefined) {
+    return normalizeScheduleLoopConfig(patchLoop) ?? {};
+  }
+  if (nestedLoop !== undefined) {
+    return normalizeScheduleLoopConfig(nestedLoop) ?? {};
+  }
+  return undefined; // leave unchanged
 }
 
 function computeUpdatedTriggerState(

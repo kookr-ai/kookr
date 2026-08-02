@@ -34,7 +34,22 @@ export interface LaunchLoopedPlaybookDeps {
 }
 
 export interface LaunchLoopedPlaybookInput extends PreparePlaybookLaunchInput {
-  launchSource?: 'cli' | 'ui' | 'api';
+  /**
+   * Launch provenance. Includes `schedule` so a schedule-armed loop (issue
+   * #1899) stamps the same `metadata.launchSource` / spawn-budget exemption
+   * as a one-shot schedule fire.
+   */
+  launchSource?: 'cli' | 'ui' | 'api' | 'schedule';
+  /**
+   * scheduleId of the firing schedule (issue #1899 / #1583). Set only by the
+   * schedule runner alongside `launchSource: 'schedule'`; becomes the
+   * `sourceId` of the created task's schedule provenance.
+   */
+  scheduleId?: string;
+  /** Optional schedule-level effort pin forwarded into the launch (#1518). */
+  effort?: string;
+  /** Optional schedule-level model pin forwarded into the launch (#1518). */
+  model?: string;
 }
 
 export interface ReplaceLoopedPlaybookDeps extends LaunchLoopedPlaybookDeps {
@@ -134,6 +149,10 @@ export async function launchLoopedPlaybook(
       prompt: loopPrompt,
       disableDedup: true,
       launchSource: input.launchSource,
+      // issue #1899 / #1583: schedule-armed loops carry schedule provenance.
+      ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.model ? { model: input.model } : {}),
       // PR4: inject RALPH_VERDICT_FILE on iteration 0 so the agent's first
       // launch can write a verdict. Subsequent iterations get this via
       // launchFreshRuntime's extraEnv. Without this, iteration 0 silently
@@ -308,13 +327,15 @@ export async function replaceLoopedPlaybook(
 
     if (deps.writeReplaceAudit) {
       try {
+        const auditSource: 'cli' | 'ui' | 'api' =
+          input.launchSource === 'cli' || input.launchSource === 'ui' ? input.launchSource : 'api';
         await deps.writeReplaceAudit({
           replacedTaskId: input.replacedTaskId,
           newTaskId: result.task.id,
           oldIteration,
           playbookPath: input.playbookPath,
           cwd: prepared.launchOpts.cwd,
-          source: input.launchSource ?? 'api',
+          source: auditSource,
         });
       } catch (err) {
         console.warn(
