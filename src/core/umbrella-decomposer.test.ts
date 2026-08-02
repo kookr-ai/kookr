@@ -3,6 +3,7 @@ import {
   CURATED_LEAF_PLANS,
   DEFAULT_FREE_SLOTS_THRESHOLD,
   DEFAULT_MAX_LEAVES,
+  LUCY_1586_LEAF_PLAN,
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
   LUCY_1590_LEAF_PLAN,
@@ -433,6 +434,59 @@ describe('lucy#1590 headline metrics residual curated plan', () => {
     });
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1590');
+    expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
+  });
+});
+
+describe('lucy#1586 publish-window-safe issuer acquisition residual curated plan', () => {
+  it('has a vetted 4-leaf residual plan registered, each leaf well-formed', () => {
+    const plan = curatedLeafPlan('jeanibarz/lucy#1586');
+    expect(plan).toBe(LUCY_1586_LEAF_PLAN);
+    expect(plan).toHaveLength(4);
+    const normalized = normalizeLeafPlan(plan);
+    expect(normalized.ok).toBe(true);
+    expect(normalized.leaves).toHaveLength(4);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1586');
+  });
+
+  it('emits lucy#1586 leaves when it has no open children yet', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1586,
+          title:
+            'Umbrella: publish-window-safe issuer acquisition (deadline: Jul 27 AMC wave)',
+          openChildrenCount: 0,
+        }),
+      ],
+    });
+    expect(decision.selected?.ref).toBe('jeanibarz/lucy#1586');
+    expect(decision.selected?.productMetricBlocking).toBe(true);
+    expect(decision.leafCount).toBe(4);
+    expect(decision.selected?.needsAuthoring).toBe(false);
+  });
+
+  it('SKIPS lucy#1586 once residual leaves already exist (idempotent)', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1586,
+          title:
+            'Umbrella: publish-window-safe issuer acquisition (deadline: Jul 27 AMC wave)',
+          openChildrenCount: 4,
+        }),
+      ],
+    });
+    expect(decision.selected).toBeNull();
+    expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1586');
     expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
   });
 });
