@@ -59,6 +59,46 @@ export interface ScheduleRuntime {
   operationalAlertSink: OperationalAlertSink;
 }
 
+/**
+ * Best-effort unwind of a catch-up fire that launched but then LOST the
+ * relaunch-lease CAS (issue #1914). Wired as the schedule runner's
+ * {@link ScheduleRunnerDeps.terminateCatchUpDuplicate} hook.
+ *
+ * The just-fired duplicate is `inProgress` (launched below capacity) or
+ * `pending` (queued at capacity, #1526 Phase A). `terminated` is not a valid
+ * transition FROM `pending` — only `inProgress`/`open` may be terminated (see
+ * VALID_TRANSITIONS in src/core/tasks.ts) — so a pending duplicate, which never
+ * attached a session, is `cancelled` instead. Both are deliberate,
+ * non-recoverable terminal states: crash-recovery skips a `supervisor`
+ * termination (crash-recovery.ts) and never sees a session-less pending/cancelled
+ * task, so neither is relaunched; a terminated in-session duplicate has its
+ * session reclaimed by the terminal-task session reaper (#1720) on the next tick.
+ *
+ * Wrapped best-effort (mirrors the launch-service rollback guard): a losing
+ * transition — e.g. the task went terminal between the status read and the write
+ * — must never abort the once-per-boot catch-up loop this unwind protects.
+ */
+export function unwindCatchUpDuplicate(
+  taskStore: Pick<TaskStore, 'getTask' | 'cancelTask' | 'terminateTask'>,
+  taskId: string,
+  detail: string,
+): void {
+  try {
+    const task = taskStore.getTask(taskId);
+    if (!task) return;
+    if (task.status === 'pending') {
+      taskStore.cancelTask(taskId);
+      return;
+    }
+    taskStore.terminateTask(taskId, {
+      reason: 'supervisor',
+      detail: `catch-up duplicate unwound — ${detail}`,
+    });
+  } catch (err) {
+    console.error(`[schedule] Failed to unwind catch-up duplicate ${taskId}:`, err);
+  }
+}
+
 export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<ScheduleRuntime> {
   const scheduleStore = new ScheduleStore(deps.kookrDir);
   await scheduleStore.load();
@@ -115,6 +155,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.launchServiceDeps.relaunchArbiter
       ? { relaunchArbiter: deps.launchServiceDeps.relaunchArbiter }
       : {}),
+    // issue #1914: unwind a catch-up fire that lost the relaunch-lease CAS.
+    terminateCatchUpDuplicate: (taskId, detail) =>
+      unwindCatchUpDuplicate(deps.taskStore, taskId, detail),
     // issue #1526 Phase C: dead-man switch for scheduled-task starvation,
     // evaluated on the runner's existing tick. Alert-only.
     deadMan: new ScheduleDeadManSwitch({

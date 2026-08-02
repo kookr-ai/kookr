@@ -931,6 +931,124 @@ Do not launch this.
     expect(store.get(schedule.id)!.latestExecution?.message).toContain('backoff');
   });
 
+  it('unwinds the launched catch-up task when a concurrent actuator wins the lease mid-fire (#1914)', async () => {
+    const schedule = store.create({
+      name: 'LeaseLostCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    // Admit before firing, then LOSE the acquire after the task launched — the
+    // window another actuator can take the schedule's lease during `await fire()`.
+    const arbiter = {
+      evaluate: () => ({ admit: true as const }),
+      tryAcquire: () => ({
+        ok: false as const,
+        reason: 'held' as const,
+        lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
+      }),
+    };
+    const unwound: Array<{ taskId: string; detail: string }> = [];
+
+    const runner = createRunner({
+      relaunchArbiter: arbiter,
+      terminateCatchUpDuplicate: (taskId, detail) => {
+        unwound.push({ taskId, detail });
+      },
+    });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launched).toHaveLength(1);
+    });
+    await runner.stop();
+
+    // The just-launched duplicate is unwound under the fired task id, and the
+    // detail names the actuator that won the lease.
+    expect(unwound).toEqual([
+      { taskId: 'task-1', detail: 'relaunch lease taken mid-fire by other-actuator' },
+    ]);
+  });
+
+  it('unwinds the launched catch-up task when the lease enters backoff mid-fire (#1914)', async () => {
+    const schedule = store.create({
+      name: 'LeaseBackoffMidFireCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const arbiter = {
+      evaluate: () => ({ admit: true as const }),
+      tryAcquire: () => ({
+        ok: false as const,
+        reason: 'backoff' as const,
+        retryAfterMs: 90_000,
+        cooldownUntil: new Date(Date.now() + 90_000).toISOString(),
+      }),
+    };
+    const unwound: Array<{ taskId: string; detail: string }> = [];
+
+    const runner = createRunner({
+      relaunchArbiter: arbiter,
+      terminateCatchUpDuplicate: (taskId, detail) => {
+        unwound.push({ taskId, detail });
+      },
+    });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launched).toHaveLength(1);
+    });
+    await runner.stop();
+
+    expect(unwound).toHaveLength(1);
+    expect(unwound[0].taskId).toBe('task-1');
+    expect(unwound[0].detail).toContain('backoff mid-fire');
+  });
+
+  it('leaves the launched catch-up task running when the acquire wins (no unwind) (#1914)', async () => {
+    const schedule = store.create({
+      name: 'LeaseWonCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const arbiter = {
+      evaluate: () => ({ admit: true as const }),
+      tryAcquire: (key: { repo: string; number: number }, holderId: string) => ({
+        ok: true as const,
+        lease: { key, holderId, acquiredAt: '' },
+        reentrant: false,
+      }),
+    };
+    const unwound: string[] = [];
+
+    const runner = createRunner({
+      relaunchArbiter: arbiter,
+      terminateCatchUpDuplicate: (taskId) => {
+        unwound.push(taskId);
+      },
+    });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launched).toHaveLength(1);
+    });
+    await runner.stop();
+
+    // Acquire succeeded → the fired task is the legitimate holder, never unwound.
+    expect(unwound).toEqual([]);
+  });
+
   it('records stale catch-up skips in the execution ledger', async () => {
     const schedule = store.create({
       name: 'StaleCatchup',
