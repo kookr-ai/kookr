@@ -12,6 +12,21 @@ import {
   type UnresolvableScheduleInfo,
 } from './schedule-resolution-alert.js';
 import type { TaskStatus } from '../core/types.js';
+import type { ClaimKey } from '../core/issue-claim-types.js';
+import type { RelaunchArbiter } from './relaunch-arbiter.js';
+
+/**
+ * Synthetic relaunch-arbiter identity for a schedule's startup catch-up fire
+ * (issue #1900 / #1699 WS2.2). The arbiter keys on issue-claim identity
+ * (`repo` + `number`); a catch-up fire has no issue at fire time, so it keys on
+ * the schedule instead — giving the catch-up path its own mutual-exclusion +
+ * backoff slot without colliding with the real `github.com/...` issue keys the
+ * launch-path lease gate uses. Coordinates catch-up against any other actuator
+ * that adopts the same schedule-scoped key (a future WS2 loop-arming caller).
+ */
+function catchUpClaimKey(schedule: Schedule): ClaimKey {
+  return { repo: `schedule:${schedule.id}`, number: 0 };
+}
 
 /**
  * Cross-tier resolution probe for {@link crossTierResolutionHint} (#1661).
@@ -135,6 +150,16 @@ export interface ScheduleRunnerDeps {
    * cap is left to settle in the background so the tick is never frozen.
    */
   fireTimeoutMs?: number;
+  /**
+   * WS0.5 relaunch arbiter (issue #1900 / #1711 / #1699 WS2.2). When provided,
+   * startup catch-up fires are gated behind it: a missed run is admitted only
+   * when the schedule's relaunch lease is free (no concurrent actuator holds
+   * it and no post-release backoff is live), then held under the fired task so
+   * it cannot be duplicated for that task's lifetime. Absent means catch-up
+   * fires ungated (back-compat for older wiring/tests). Only the catch-up path
+   * consults it — the umbrella specifies catch-up runs "after the lease gate".
+   */
+  relaunchArbiter?: Pick<RelaunchArbiter, 'evaluate' | 'tryAcquire'>;
 }
 
 export class ScheduleRunner {
@@ -550,8 +575,7 @@ export class ScheduleRunner {
           console.log(`[schedule] Recording missed run for "${schedule.name}" (due ${scheduledNext.toISOString()}); use Run Now to recover`);
           await this.deps.service.recordCatchUpDeferred(schedule.id, scheduledNext.toISOString(), message);
         } else {
-          console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
-          await this.fire(schedule, 'cron', scheduledNext, 'catch_up');
+          await this.catchUpFire(schedule, scheduledNext);
         }
       } else if (scheduledNext < cutoff) {
         if (options.suppressOnly) {
@@ -565,12 +589,85 @@ export class ScheduleRunner {
       }
     }
   }
+
+  /**
+   * Fire a single missed run for `schedule`, gated behind the WS0.5 relaunch
+   * arbiter when one is wired (issue #1900 / #1699 WS2.2).
+   *
+   * The umbrella specifies startup catch-up runs "after the lease gate": a
+   * missed run must not duplicate a concurrent actuator (crash recovery,
+   * re-dispatch, a future loop-arming caller) already relaunching this
+   * schedule's work. Following the launch-service CAS shape (issue #1711):
+   * evaluate before firing so a denied catch-up creates no task, then acquire
+   * the lease under the fired task id so the schedule is excluded for that
+   * task's lifetime — orphan-reclaim (via the arbiter's `isHolderLive` probe)
+   * starts the post-release backoff when the task goes terminal, so an
+   * immediate second catch-up is refused too. Unlike the launch-service CAS
+   * this does not roll back on a lost acquire: the catch-up key has a single
+   * actuator (this method, once per boot, serially) so the acquire cannot lose
+   * the race today — a lost acquire is logged rather than unwound, since the
+   * task has already launched and the evaluate gate already prevented the only
+   * duplicate that matters.
+   *
+   * Absent an arbiter this is exactly the previous behavior: a single
+   * `catch_up`-tagged fire.
+   */
+  private async catchUpFire(schedule: Schedule, scheduledNext: Date): Promise<void> {
+    const arbiter = this.deps.relaunchArbiter;
+    if (arbiter) {
+      const key = catchUpClaimKey(schedule);
+      const decision = arbiter.evaluate(key);
+      if (!decision.admit) {
+        const message = decision.reason === 'backoff'
+          ? `Catch-up withheld — relaunch lease in backoff for ${Math.ceil(decision.retryAfterMs / 1000)}s`
+          : `Catch-up withheld — relaunch lease held by ${decision.lease.holderId}`;
+        console.log(`[schedule] Skipping catch-up for "${schedule.name}" (was due ${scheduledNext.toISOString()}) — ${message}`);
+        await this.deps.service.recordCatchUpLeaseDenied(schedule.id, scheduledNext.toISOString(), message);
+        return;
+      }
+    }
+
+    console.log(`[schedule] Catching up "${schedule.name}" (was due ${scheduledNext.toISOString()})`);
+    const result = await this.fire(schedule, 'cron', scheduledNext, 'catch_up');
+
+    // Hold the relaunch lease under the fired task so a concurrent actuator is
+    // excluded for its lifetime. A failed fire (no taskId) leaves the lease
+    // free — nothing was launched to protect.
+    if (arbiter && result.taskId) {
+      const acquire = arbiter.tryAcquire(catchUpClaimKey(schedule), result.taskId);
+      if (!acquire.ok) {
+        // Unreachable today (single serial catch-up actuator per boot); logged
+        // rather than unwound because the task has already launched. If a
+        // second schedule-key actuator is ever added, revisit with a rollback.
+        console.warn(
+          `[schedule] Catch-up for "${schedule.name}" launched task ${result.taskId} but could not hold the relaunch lease (${acquire.reason})`,
+        );
+      }
+    }
+  }
 }
 
+/**
+ * Resolve the startup catch-up mode (issue #1900 / #1699 WS2.2).
+ *
+ * Default is `auto`: a schedule that missed its window while the process was
+ * down performs exactly one `catch_up`-tagged run per boot on restart (gated
+ * behind the relaunch arbiter — see {@link ScheduleRunner.catchUpFire}). This
+ * is the flip from the previous `manual` default, so an unsupervised node
+ * self-catches-up without operator action.
+ *
+ * Escape hatches, in precedence order:
+ * - `KOOKR_NO_CATCHUP` — disables catch-up entirely (missed runs suppressed;
+ *   the cron watermark still advances). The retained legacy kill switch.
+ * - `KOOKR_MANUAL_CATCHUP` — records missed startup runs for manual Run Now
+ *   recovery instead of auto-firing (the pre-#1900 default behavior).
+ * - `KOOKR_AUTO_CATCHUP` — now redundant (auto is the default); still honored
+ *   so existing opt-in configs keep working.
+ */
 function getCatchUpMode(): 'auto' | 'manual' | 'off' {
   if (process.env.KOOKR_NO_CATCHUP) return 'off';
-  if (process.env.KOOKR_AUTO_CATCHUP) return 'auto';
-  return 'manual';
+  if (process.env.KOOKR_MANUAL_CATCHUP) return 'manual';
+  return 'auto';
 }
 
 function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').ScheduleExecutionReasonCode {

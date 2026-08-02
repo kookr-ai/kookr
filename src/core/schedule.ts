@@ -67,6 +67,13 @@ export type ScheduleExecutionOutcome =
    * skipped rather than stacking another pending task behind the first.
    */
   | 'skipped_coalesced'
+  /**
+   * A startup catch-up fire was withheld because the WS0.5 relaunch arbiter
+   * denied admission (issue #1900 / #1699 WS2.2): another actuator already
+   * holds the schedule's relaunch lease, or the post-release backoff window is
+   * still live. Prevents a missed run from duplicating a concurrent relaunch.
+   */
+  | 'skipped_relaunch_locked'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -94,6 +101,12 @@ export type ScheduleExecutionReasonCode =
    */
   | 'pending_queue_full'
   | 'stale_catch_up'
+  /**
+   * Reason code for {@link ScheduleExecutionOutcome.skipped_relaunch_locked}
+   * (issue #1900): the WS0.5 relaunch arbiter denied the catch-up fire because
+   * the schedule's relaunch lease is held or in its post-release backoff.
+   */
+  | 'relaunch_lease_held'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

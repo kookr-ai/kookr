@@ -227,7 +227,7 @@ Kookr supports cron-scheduled recurring tasks for maintenance playbooks, periodi
 | F11.3 | **Runner** | `schedule-runner.ts` fires due schedules, spawning a task via the regular launch pipeline. |
 | F11.4 | **UI** | `SchedulesDialog.tsx` + `ScheduleSection.tsx` provide CRUD; the server broadcasts `schedules` on change and `scheduleFired` on each firing. |
 | F11.5 | **Execution ledger** | Schedule responses include a durable per-schedule execution ledger for recent operator-visible run, skip, missed-startup, and catch-up decisions. |
-| F11.6 | **Manual startup recovery** | Missed startup runs are recorded for manual Run Now recovery by default; automatic startup catch-up requires explicit `KOOKR_AUTO_CATCHUP` opt-in. |
+| F11.6 | **Automatic startup catch-up** | A schedule that missed its window while the process was down performs exactly one `catch_up`-tagged run per boot on restart by default (lease-gated behind the relaunch arbiter so it cannot duplicate a concurrent actuator). Set `KOOKR_MANUAL_CATCHUP` to record missed runs for manual Run Now recovery instead, or `KOOKR_NO_CATCHUP` to suppress catch-up entirely. |
 
 ### F12: Contribution Workspace & Worktree Cleanup
 

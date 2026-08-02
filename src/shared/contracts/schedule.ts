@@ -54,6 +54,12 @@ export type ScheduleExecutionOutcome =
    * running) so at most one outstanding queued fire per schedule exists.
    */
   | 'skipped_coalesced'
+  /**
+   * Startup catch-up fire withheld by the WS0.5 relaunch arbiter (issue #1900):
+   * another actuator holds the schedule's relaunch lease or its post-release
+   * backoff window is live. Mirrors `core/schedule`.
+   */
+  | 'skipped_relaunch_locked'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -74,6 +80,8 @@ export type ScheduleExecutionReasonCode =
   /** Fire rejected by the pending-queue depth limit (issue #1526 Phase C / C3) — mirrors `core/schedule`. */
   | 'pending_queue_full'
   | 'stale_catch_up'
+  /** Reason code for `skipped_relaunch_locked` (issue #1900). Mirrors `core/schedule`. */
+  | 'relaunch_lease_held'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

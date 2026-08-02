@@ -429,6 +429,47 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
+  /**
+   * Record a startup catch-up fire withheld by the WS0.5 relaunch arbiter
+   * (issue #1900 / #1699 WS2.2): another actuator holds the schedule's
+   * relaunch lease, or its post-release backoff window is still live. Recorded
+   * as `skipped_relaunch_locked` (decision `catch_up`) so the withheld fire is
+   * operator-visible in the ledger rather than silently dropped. Advances the
+   * cron watermark so the same missed slot is not re-evaluated next tick.
+   */
+  async recordCatchUpLeaseDenied(scheduleId: string, scheduledFor: string, message: string): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    this.store.replace({
+      ...schedule,
+      lastScheduledFor: evaluatedAt,
+      lastCronEvaluatedAt: evaluatedAt,
+      latestExecution: {
+        executionToken: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduledFor,
+        evaluatedAt,
+        trigger: 'cron',
+        outcome: 'skipped_relaunch_locked',
+        reasonCode: 'relaunch_lease_held',
+        message,
+      },
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, {
+        id: ledgerKeyFor(schedule.id, 'cron', scheduledFor),
+        scheduleId: schedule.id,
+        trigger: 'cron',
+        decision: 'catch_up',
+        scheduledFor,
+        evaluatedAt,
+        completedAt: evaluatedAt,
+        outcome: 'skipped_relaunch_locked',
+        reasonCode: 'relaunch_lease_held',
+        message,
+      }),
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
   async suppressCatchUp(scheduleId: string): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const evaluatedAt = new Date().toISOString();

@@ -1300,8 +1300,9 @@ describe('createKookrServer', () => {
         revision: expect.any(Number),
         schedules: [],
         status: expect.objectContaining({
-          catchUpMode: 'manual',
-          catchUpEnabled: false,
+          // #1900: startup catch-up defaults to `auto` (no env override).
+          catchUpMode: 'auto',
+          catchUpEnabled: true,
           schedulerHealthy: expect.any(Boolean),
           timezone: expect.any(String),
         }),

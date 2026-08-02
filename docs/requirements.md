@@ -1045,7 +1045,7 @@ The system SHALL persist a per-schedule execution ledger for cron, manual, skipp
 **Acceptance criteria:**
 - Ledger entries include schedule id, due timestamp when applicable, evaluated time, trigger, decision, outcome, reason code, and related task/blocking task ids when available
 - Skips caused by active previous runs, capacity pressure, missed startup runs awaiting manual recovery, and stale catch-up windows are durable across restarts
-- Missed startup runs SHALL NOT auto-launch unless automatic catch-up is explicitly enabled; the scheduler SHALL advance its cron watermark so the same missed due slot does not replay on the next tick
+- Missed startup runs SHALL auto-launch exactly once per boot by default (a `catch_up`-tagged fire), gated behind the relaunch arbiter so a missed run cannot duplicate a concurrent actuator; `KOOKR_MANUAL_CATCHUP` reverts to record-for-manual-recovery and `KOOKR_NO_CATCHUP` suppresses catch-up. In every mode the scheduler SHALL advance its cron watermark so the same missed due slot does not replay on the next tick
 - The schedule API exposes the ledger with each schedule response
 - The schedules UI surfaces recent ledger entries without replacing the latest execution summary
 
