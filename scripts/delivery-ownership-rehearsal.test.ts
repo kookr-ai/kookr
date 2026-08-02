@@ -9,9 +9,11 @@ import {
   assertOwnershipBeforePush,
   claimDelivery,
   deliverUnit,
+  leaseFile,
   readChildren,
   REQUIRED_DOC_PATTERNS,
   seedChildren,
+  simulateRestart,
   standDownLog,
   validateDeliveryDocs,
 } from './delivery-ownership-rehearsal';
@@ -45,6 +47,34 @@ function readPrAttempts(stateDir: string): string[] {
   const path = join(stateDir, 'pr-attempts.log');
   if (!existsSync(path)) return [];
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
+}
+
+/** Run one delivery attempt as a real, separate OS process (the `deliver` CLI
+ * mode). Used to prove durability across a process/restart boundary. Captures
+ * stderr too so a crashed child surfaces a diagnosable failure instead of a bare
+ * `JSON.parse('')` SyntaxError. */
+function runDeliverProcess(
+  stateDir: string,
+  unitId: string,
+  actor: string,
+  nowIso: string,
+): Promise<{ status: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      ['--import', tsxLoader, scriptPath, 'deliver', stateDir, unitId, actor, nowIso],
+      { env: { ...process.env, TSX_DISABLE_CACHE: '1' } },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d;
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    child.on('close', (status) => resolve({ status: status ?? -1, stdout, stderr }));
+  });
 }
 
 // --- INV-1: single-writer -------------------------------------------------
@@ -216,6 +246,110 @@ describe('INV-4 every delivered unit carries a non-null delivery owner', () => {
       }
       expect(jq.status, `jq stdout=${jq.stdout} stderr=${jq.stderr}`).toBe(0);
       expect(jq.stdout.trim()).toBe('true');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- AC3 (#1904): restart during a batch produces no duplicate PRs --------
+// A faithful restart crosses a real boundary: `simulateRestart` drops the
+// in-memory lease CAS (deletes the `*.claim.lease` files) and replays the durable
+// `delivery` projection from children.json for the still-live owners only —
+// exactly the server's `rebuildFromTasks`. The dedup is therefore driven by the
+// durable projection, not by a lease file that happened to survive.
+describe('AC3 restart during a batch yields no duplicate PRs', () => {
+  it('rebuilds the lease from the durable projection so a live owner still dedups the re-run', () => {
+    const dir = freshStateDir();
+    try {
+      seedUnit(dir, 'u-1904');
+      // Pre-restart: the lease holder delivers once.
+      const before = deliverUnit(dir, 'u-1904', 'kookr-child-1904', '2026-08-02T10:00:00Z');
+      expect(before.delivered).toBe(true);
+      expect(readPrAttempts(dir).length).toBe(1);
+
+      // Restart: the in-memory lease is lost. The owning child is still
+      // non-terminal, so its claim is replayed from the durable children.json
+      // projection — the rebuilt lease is the load-bearing evidence.
+      simulateRestart(dir, ['kookr-child-1904']);
+      expect(existsSync(leaseFile(dir, 'u-1904'))).toBe(true);
+
+      // The re-run (a parent sweep, or a re-spawn) finds the rebuilt lease and
+      // MUST stand down — no second PR across the restart boundary.
+      const afterRestart = deliverUnit(dir, 'u-1904', 'parent', '2026-08-02T10:05:00Z');
+      expect(afterRestart.delivered).toBe(false);
+      expect(afterRestart.standDownLine).toBe(standDownLog('kookr-child-1904', '2026-08-02T10:00:00Z'));
+      expect(readPrAttempts(dir).length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the dedup rides the durable projection: without the persisted owner, the lease is not rebuilt', () => {
+    const dir = freshStateDir();
+    try {
+      seedUnit(dir, 'u-1904b');
+      deliverUnit(dir, 'u-1904b', 'kookr-child-1904b', '2026-08-02T10:00:00Z');
+
+      // Erase the durable projection, THEN restart: with nothing to replay, the
+      // lease cannot be rebuilt — proving the previous test's dedup came from the
+      // durable children.json record, not a stray surviving lease file.
+      const records = readChildren(dir);
+      const rec = records.find((r) => r.unit_id === 'u-1904b');
+      if (rec) rec.delivery = null;
+      seedChildren(dir, records);
+
+      simulateRestart(dir, ['kookr-child-1904b']);
+      expect(existsSync(leaseFile(dir, 'u-1904b'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a terminated owner auto-releases its lease on restart (no held-forever), matching dead_reclaim', () => {
+    const dir = freshStateDir();
+    try {
+      seedUnit(dir, 'u-1905');
+      deliverUnit(dir, 'u-1905', 'kookr-child-1905', '2026-08-02T11:00:00Z');
+
+      // Restart with the owning child TERMINATED (not in the live set): its claim
+      // auto-released, so rebuildFromTasks does NOT replay it — the lease is free.
+      simulateRestart(dir, []);
+      expect(existsSync(leaseFile(dir, 'u-1905'))).toBe(false);
+
+      // The parent reclaims the free lease cleanly (exit 0 in production) and
+      // becomes the single writer — consistent with the playbook's auto-release
+      // semantics, not a lease held forever by a dead owner.
+      const reclaim = claimDelivery(dir, 'u-1905', 'parent', '2026-08-02T11:05:00Z');
+      expect(reclaim.won).toBe(true);
+      expect(reclaim.delivery.owner).toBe('parent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a genuinely restarted OS process stands down against the rebuilt lease (no second PR)', async () => {
+    const dir = freshStateDir();
+    try {
+      seedUnit(dir, 'u-1906');
+      // First process delivers and exits — the pre-restart owner, still live.
+      const first = await runDeliverProcess(dir, 'u-1906', 'kookr-child-1906', '2026-08-02T12:00:00Z');
+      expect(first.status, `stdout:${first.stdout}\nstderr:${first.stderr}`).toBe(0);
+      expect(readPrAttempts(dir).length).toBe(1);
+
+      // Restart across the process boundary: in-memory lease lost, then replayed
+      // from the durable projection for the still-live owner.
+      simulateRestart(dir, ['kookr-child-1906']);
+      expect(existsSync(leaseFile(dir, 'u-1906'))).toBe(true);
+
+      // A fresh process after the restart finds the rebuilt lease and stands
+      // down. One PR attempt total across the restart boundary.
+      const second = await runDeliverProcess(dir, 'u-1906', 'parent', '2026-08-02T12:05:00Z');
+      expect(second.status, `stdout:${second.stdout}\nstderr:${second.stderr}`).toBe(1);
+      const outcome = JSON.parse(second.stdout.trim());
+      expect(outcome.delivered).toBe(false);
+      expect(outcome.standDownLine).toMatch(/standing down$/);
+      expect(readPrAttempts(dir).length).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

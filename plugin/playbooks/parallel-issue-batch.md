@@ -370,10 +370,14 @@ For each candidate, apply these filters before reading the issue body:
      --json number,title,body,headRefName,url
    ```
 
-5. Skip issues that already have an active Kookr issue claim owned by another task when the claims API is available:
+5. Skip issues that already hold an active issue-claim **lease** owned by another
+   task. This is only a soft pre-filter over the same lease the spawn-time gate
+   (#1711) enforces authoritatively — the issue-claim lease is the single dedup
+   source (#1904), so any candidate that slips past this best-effort read is
+   still caught at spawn, where `--claim-issue` admits at most one task per issue:
 
    ```bash
-   curl -fsS "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/issue-claims?provider=github&repo=$REPO" || true
+   curl -fsS "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/issue-claims?repo=$REPO" || true
    ```
 
 Write the filtered list to `$CANDIDATES_FILE`.
@@ -581,15 +585,27 @@ Implementation target:
   `kookr context-pack --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
   and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
-- **Delivery-ownership claim (mandatory, read-before-push).** Before you push or
-  open the PR, claim single-writer delivery ownership for this unit and re-read
-  `children.json` to confirm you own it (schema: **Durable State → Delivery
-  Ownership**). Claim the `<unit_id>.delivery.lock` in the batch state dir; on
-  success record `"delivery": { "owner": "<your task id>", "at": "<ISO ts>" }`
-  on this unit and fsync **before** any `git push` / `gh pr create`. If the lock
-  is already held (the parent sweep or another actor owns delivery), **stand
-  down** — do not push — and log the owner, e.g.
-  `delivery owned by parent since <ts>; standing down`. This blocks the
+- **Delivery-ownership claim (mandatory, read-before-push).** Delivery ownership
+  for this unit is the **issue-claim lease** — the single dedup source
+  (#1711/#1904), not a separate file lock. You were spawned via `--claim-issue`,
+  so you already hold the lease for this unit's primary issue #<primary-N> (no
+  launch proceeds without a held lease). Immediately **before** any `git push` /
+  `gh pr create`, re-confirm you still hold the lease and record it in the durable
+  `delivery` shim (schema: **Durable State → Delivery Ownership**):
+
+  ```bash
+  # Read-before-push: the issue-claim lease is the single writer.
+  kookr issue owner <primary-N> --repo "$REPO"   # must name YOUR $KOOKR_TASK_ID
+  ```
+
+  If the owner is your `$KOOKR_TASK_ID`, record
+  `"delivery": { "owner": "<your task id>", "at": "<ISO ts>" }` on this unit and
+  fsync `children.json` **before** you push. The `delivery` record is a thin shim
+  mirroring the lease holder (audit + the same-task read-before-push checkpoint),
+  never an independent lock. If the lease is held by another task (the parent
+  sweep or another actor), **stand down** — do not push — and log the owner, e.g.
+  `delivery owned by parent since <ts>; standing down`. Together with the lease
+  gate and the pre-`gh pr create` duplicate-guard below, this blocks the
   2026-07-26 same-task double-delivery race (task dd1fbcec).
 - **Pre-`gh pr create` duplicate-guard (mandatory).** Immediately before opening
   the PR, run this guard for the unit's branch and *every* issue it closes. It
@@ -673,7 +689,7 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      # which half of the contract applies.
      grep -q "TERMINAL-STATE CONTRACT (mergeAfterImplementation=${merge_policy})" "$f" \
        || { echo "CHILD-PROMPT INVALID: resolved TERMINAL-STATE CONTRACT header missing from $f (placeholder left unsubstituted, or header dropped)" >&2; missing=1; }
-     for pat in "pr_create_guard" "delivery\.lock" "completion-ready"; do
+     for pat in "pr_create_guard" "kookr issue owner" "completion-ready"; do
        grep -q "$pat" "$f" || { echo "CHILD-PROMPT INVALID: '$pat' missing from $f" >&2; missing=1; }
      done
      if [ "$merge_policy" = "true" ]; then
@@ -751,48 +767,64 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
 }
 ```
 
-### Delivery Ownership (single-writer)
+### Delivery Ownership (single-writer via the issue-claim lease)
 
-`delivery` records **who owns delivery** (push + `gh pr create` + merge) for the
-unit. It is either `null` (unclaimed) or an object:
+Delivery ownership — who may push, `gh pr create`, and merge a unit — is decided
+**solely by the issue-claim lease** (#1711), the single dedup source this
+playbook converges on (#1904). There is exactly one lease-holding task per issue,
+and the #1711 hard admission gate refuses any `--claim-issue` launch that does not
+hold the lease, so a spawned child owns delivery of its unit by construction; the
+durable claim is rebuilt from tasks on restart. The old parallel file lock
+(`<unit_id>.delivery.lock`) is **removed** — `delivery` is now a **thin shim**
+over the lease, recording the lease holder for audit and for the same-task
+read-before-push checkpoint.
+
+`delivery` is either `null` (not yet recorded) or an object:
 
 ```json
 "delivery": { "owner": "parent", "at": "2026-07-26T10:00:00Z" }
 ```
 
-- `owner`: the literal string `parent` when the parent sweep takes over
-  delivery, or the child **task id** when a spawned child owns it.
-- `at`: ISO-8601 timestamp when ownership was claimed.
+- `owner`: the literal string `parent` when the parent/supervisor task holds the
+  lease and takes over delivery, or the child **task id** that holds the lease.
+  It always names the current issue-claim lease holder (`kookr issue owner
+  <primary-N> --repo "$REPO"`), never an independent lock.
+- `at`: ISO-8601 timestamp when ownership was recorded.
 
 This closes the 2026-07-26 same-task double-delivery race (task dd1fbcec): the
 parent's fast-track merge sweep delivered u-1656/u-1659/u-1660, then a second
-in-session actor re-ran `gh pr create` on the same branches minutes later. Both
-actors belonged to the **same task**, so #1230's task-scoped auto-claim did not
-apply and nothing forced the second actor to stand down. `delivery` gives every
-unit a durable single-writer owner.
+in-session actor re-ran `gh pr create` on the same branches minutes later. The
+lease serializes delivery across tasks; the durable `delivery` shim plus the
+pre-`gh pr create` duplicate-guard (#1569) serialize the residual same-task case
+that #1230's task-scoped auto-claim did not cover.
 
-**Write ordering (mandatory).** The `delivery` record MUST land durably in
-`children.json` **before any `git push` / `gh pr create`** for the unit. Claim
-first, persist (write children.json and fsync), then push. Never push and then
-record ownership — a crash between the two reopens the race.
+**Lease is the gate (mandatory).** Only the current lease holder may deliver a
+unit. The parent takes over a unit only after it **holds the lease**: a child's
+lease auto-releases when the child task terminates (`dead_reclaim`), after which
+the parent re-claims it with `kookr issue claim <primary-N> --repo "$REPO"`
+(exit 0 = granted; exit 6 = still held by a live task → do not take over).
+
+**Write ordering (mandatory).** The `delivery` shim MUST land durably in
+`children.json` **before any `git push` / `gh pr create`** for the unit. Confirm
+the lease, persist (write children.json and fsync), then push. Never push and
+then record ownership — a crash between the two reopens the race.
 
 **Read-before-push rule (mandatory).** Every delivery actor — the parent sweep
-**and** every spawned child — MUST re-read `children.json` immediately before
-push/PR and confirm it owns `delivery` for the unit. If it does not own the
-unit, it MUST stand down without pushing and log an explicit line, e.g.:
+**and** every spawned child — MUST, immediately before push/PR, confirm it holds
+the lease (`kookr issue owner <primary-N> --repo "$REPO"` names its own
+`$KOOKR_TASK_ID`) and that `children.json` records it as the `delivery` owner. If
+it does not hold the lease, it MUST stand down without pushing and log an explicit
+line, e.g.:
 
 ```
 delivery owned by parent since 2026-07-26T10:00:00Z; standing down
 ```
 
-The claim itself is a single-writer gate (an O_EXCL lock on
-`<unit_id>.delivery.lock` in the state dir): exactly one actor can create the
-lock and become `owner`; every other actor reads the winner's identity and
-stands down. The executable rehearsal of this protocol — two scripted actors
-racing one unit, the loser standing down, and a jq check that every delivered
-unit carries a non-null `delivery` owner — lives in
-`scripts/delivery-ownership-rehearsal.ts` (+ its test), and the doc-guard
-`pnpm validate:delivery-ownership` fails CI if this contract is dropped here.
+The executable rehearsal of this protocol — concurrent actors racing one unit,
+the losers standing down, and a jq check that every delivered unit carries a
+non-null `delivery` owner — lives in `scripts/delivery-ownership-rehearsal.ts`
+(+ its test), and the doc-guard `pnpm validate:delivery-ownership` fails CI if
+this contract is dropped here.
 
 Completeness check over a rehearsal / live `children.json` (AC #1570):
 
@@ -835,12 +867,16 @@ Every fallback-delivered unit records both:
    Record the trigger reason as a `note` on the `spawn-failed` (and
    `parent-takeover`) entry.
 
-2. **A single-writer delivery owner.** Before the parent pushes or opens the PR
-   it MUST claim `delivery` ownership as `owner: "parent"` and obey the
-   read-before-push rule, exactly as in **Durable State → Delivery Ownership**
-   (#1570). The fallback reuses that single-writer gate; it does not invent a
-   second delivery path. The pre-`gh pr create` duplicate-guard (#1569) still
-   runs unchanged before the PR is opened.
+2. **A single-writer delivery owner via the lease.** Before the parent pushes or
+   opens the PR it MUST hold the issue-claim lease for the unit's primary issue —
+   `kookr issue claim <primary-N> --repo "$REPO"` (the failed child never
+   launched, so it holds no lease to release; a claim grants cleanly — exit 0.
+   Exit 6 means a live task already holds it, so do **not** take over) — then
+   record `delivery` as `owner: "parent"` and obey the read-before-push rule,
+   exactly as in **Durable State → Delivery Ownership** (#1570/#1904). The
+   fallback reuses that single-writer lease gate; it does not invent a second
+   delivery path. The pre-`gh pr create` duplicate-guard (#1569) still runs
+   unchanged before the PR is opened.
 
 **Forbidden.** Do **not** deliver a unit outside this bookkeeping. Every
 fallback-delivered unit must have a recorded delivery owner **and** a status
@@ -907,7 +943,7 @@ For each child:
 
    Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker — with exactly ONE exception: **stale-owner reclaim**. When the owning child task is verifiably DEAD (its task status via `GET /api/tasks/<child-id>` is `terminated`/`cancelled`/`failed`, or `completed` with the unit's PR still open-unmerged — never merely idle or slow), the lock holder can never finish, so the parent may reclaim: record `"delivery": { "owner": "parent", "reclaimedFrom": "<child-id>", "reason": "owner terminal", "at": "<ISO ts>" }` in `children.json`, append the same fact to `state.md`, remove the stale `<unit_id>.delivery.lock` file, claim it fresh, and re-read to confirm — then deliver. A child that is alive in ANY state is never reclaimed from; when in doubt, treat it as alive and record a blocker instead. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker — with exactly ONE exception: **stale-owner reclaim**. When the owning child task is verifiably DEAD (its task status via `GET /api/tasks/<child-id>` is `terminated`/`cancelled`/`failed`, or `completed` with the unit's PR still open-unmerged — never merely idle or slow), the lease holder can never finish, so the parent may reclaim: re-claim the now-auto-released issue-claim lease (`kookr issue claim <primary-N> --repo "$REPO"`; exit 0 = granted, exit 6 = still held by a live task → the child is not actually dead, so stand down and record a blocker), record `"delivery": { "owner": "parent", "reclaimedFrom": "<child-id>", "reason": "owner terminal", "at": "<ISO ts>" }` in `children.json`, append the same fact to `state.md`, and re-read to confirm — then deliver. A child that is alive in ANY state is never reclaimed from; when in doubt, treat it as alive and record a blocker instead. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green, legitimately pending, or never-executed for budget/billing reasons (non-blocking per the CI policy — local verification is the authoritative gate).
 
 Update `$MONITOR_FILE` with a compact table:

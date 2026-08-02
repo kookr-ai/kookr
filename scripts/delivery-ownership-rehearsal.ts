@@ -4,8 +4,10 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
@@ -24,8 +26,19 @@ import { pathToFileURL } from 'node:url';
 // unit, so nothing forced the second actor to stand down. #1230's task-scoped
 // auto-claim would not have helped: both actors belonged to the same task.
 //
-// This module models the fix as real, testable code so the playbook prose is
-// backed by a runnable protocol instead of hand-waving. The invariants it
+// Convergence (issue #1904): delivery ownership is now decided **solely by the
+// issue-claim lease** (#1711) — the single dedup source. The server holds that
+// lease as an in-memory synchronous CAS keyed by (repo, issue), durably projected
+// onto Task.issueClaim and rebuilt on restart. The playbook no longer maintains a
+// separate `<unit_id>.delivery.lock` file; the `delivery` field is a **thin shim**
+// mirroring the lease holder for audit + the same-task read-before-push check.
+// This rehearsal models that single-writer lease locally with an O_EXCL claim
+// file (the cross-process atomic primitive available to a test), which stands in
+// for the server's in-memory lease CAS: exactly one actor wins, everyone else
+// stands down — the property the lease guarantees in production.
+//
+// This module models the protocol as real, testable code so the playbook prose is
+// backed by a runnable contract instead of hand-waving. The invariants it
 // enforces (see the PR body) are:
 //
 //   INV-1 single-writer   at most one actor may own delivery for a unit; a
@@ -74,8 +87,46 @@ function childrenFile(stateDir: string): string {
   return join(stateDir, 'children.json');
 }
 
-function lockFile(stateDir: string, unitId: string): string {
-  return join(stateDir, `${unitId}.delivery.lock`);
+// Local stand-in for the issue-claim lease's single-writer gate (#1711/#1904).
+// The server does this atomically in memory; a cross-process test needs a file
+// primitive, so we model the lease as an O_EXCL claim file. It is NOT the removed
+// `<unit_id>.delivery.lock` — it is a test-only rendering of the lease CAS.
+export function leaseFile(stateDir: string, unitId: string): string {
+  return join(stateDir, `${unitId}.claim.lease`);
+}
+
+/**
+ * Model a server restart across a batch (AC #1904 restart-dedup). Mirrors the
+ * server's boot sequence: the in-memory lease CAS is lost, then the durable
+ * claim projection is rebuilt from tasks. Concretely:
+ *
+ *   1. drop every in-memory lease (delete the `*.claim.lease` files); and
+ *   2. replay the durable `delivery` projection out of children.json to
+ *      re-establish the lease — but ONLY for owners in `liveOwners`. A terminated
+ *      owner's claim auto-released on death (`dead_reclaim`), so `rebuildFromTasks`
+ *      ignores it and its lease stays free.
+ *
+ * The durable children.json record is what survives the restart, so a re-run by
+ * any other actor stands down against the rebuilt lease — no duplicate PR. If the
+ * owner terminated, the lease is free and the parent may reclaim it cleanly
+ * (the residual restart dedup is then the pre-`gh pr create` duplicate-guard,
+ * #1569, which is a live-GitHub check outside this local model).
+ */
+export function simulateRestart(stateDir: string, liveOwners: string[]): void {
+  for (const entry of readdirSync(stateDir)) {
+    if (entry.endsWith('.claim.lease')) unlinkSync(join(stateDir, entry));
+  }
+  for (const rec of readChildren(stateDir)) {
+    const delivery = rec.delivery ?? null;
+    if (!delivery || !liveOwners.includes(delivery.owner)) continue;
+    const fd = openSync(leaseFile(stateDir, rec.unit_id), 'wx');
+    try {
+      writeSync(fd, `${JSON.stringify(delivery)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
 }
 
 export function readChildren(stateDir: string): ChildRecord[] {
@@ -106,13 +157,21 @@ export interface ClaimResult {
 }
 
 /**
- * Attempt to claim delivery ownership of `unitId` for `actor`.
+ * Attempt to claim the issue-claim lease for `unitId` on behalf of `actor`, then
+ * record delivery ownership as the thin `delivery` shim over it.
  *
- * The mutex is an O_EXCL lock file (`openSync(path, 'wx')`): the kernel lets
- * exactly one caller create it, so exactly one actor can ever win a unit
- * (INV-1). The winner then records `delivery` on the unit in children.json
- * durably. The loser reads the winner's identity out of the lock file and
- * returns `won: false` so the caller can stand down.
+ * The single-writer gate is modelled with an O_EXCL claim file
+ * (`openSync(path, 'wx')`): the kernel lets exactly one caller create it, so
+ * exactly one actor can ever win a unit (INV-1) — the local rendering of the
+ * server's in-memory lease CAS (#1711/#1904). The winner then records `delivery`
+ * on the unit in children.json durably. The loser reads the winner's identity out
+ * of the lease file and returns `won: false` so the caller can stand down.
+ *
+ * Restart is modelled by `simulateRestart`, which mirrors the server's
+ * `rebuildFromTasks`: the in-memory CAS (the lease file) is lost, then the
+ * durable `delivery` projection is replayed to re-establish the lease — but only
+ * for **non-terminal** owners, because a terminated owner's claim auto-releases
+ * (`dead_reclaim`). That is what dedups a re-run across a restart boundary.
  */
 export function claimDelivery(
   stateDir: string,
@@ -120,7 +179,7 @@ export function claimDelivery(
   actor: string,
   nowIso: string,
 ): ClaimResult {
-  const lock = lockFile(stateDir, unitId);
+  const lock = leaseFile(stateDir, unitId);
   let fd: number;
   try {
     fd = openSync(lock, 'wx'); // atomic create-if-absent — the single-writer gate.
