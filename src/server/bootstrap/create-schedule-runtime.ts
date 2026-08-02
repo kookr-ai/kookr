@@ -78,6 +78,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
   await scheduleService.reconcileOnStartup(deps.taskStore);
 
   const activeStatuses = new Set(['open', 'pending', 'inProgress']);
+  // Late-bound reference so the dead-man's self-heal action can drive re-fires
+  // on the runner that owns it (issue #1903). The runner is constructed with the
+  // switch, so the switch cannot capture the runner directly — this holder is
+  // assigned immediately below and is always set before any tick (and thus any
+  // self-heal re-fire, which only ever originates from within a tick).
+  let scheduleRunnerRef: ScheduleRunner | undefined;
   const scheduleRunner = new ScheduleRunner({
     store: scheduleStore,
     service: scheduleService,
@@ -103,12 +109,17 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // pending) from skipped_active (actively running).
     getBlockingTaskStatus: (taskId) => deps.taskStore.getTask(taskId)?.status,
     // issue #1526 Phase C: dead-man switch for scheduled-task starvation,
-    // evaluated on the runner's existing tick. Alert-only.
+    // evaluated on the runner's existing tick. Bounded self-heal (issue #1903).
     deadMan: new ScheduleDeadManSwitch({
       broadcast: deps.broadcastToAll,
       // issue #1709 (WS0.3): durable sink so a starvation fire→clear that
       // happens while no dashboard client is connected still leaves a trace.
       recordTransition: recordOperationalAlert,
+      // issue #1903 (WS2.5): bounded self-heal — force the starving schedule(s)
+      // to re-fire (one attempt per dead-man tick), capped per episode; on cap
+      // exhaustion the switch escalates to a standing durable alert (see
+      // ScheduleDeadManSwitch).
+      selfHeal: (scheduleIds) => scheduleRunnerRef?.selfHealRefire(scheduleIds),
       ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
     }),
     // issue #1661: operational alert when a schedule's playbook stops resolving
@@ -119,6 +130,8 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
       broadcast: deps.broadcastToAll,
     }),
   });
+  // Complete the late binding so the dead-man self-heal can kick this runner.
+  scheduleRunnerRef = scheduleRunner;
 
   return { scheduleStore, scheduleValidator, scheduleService, scheduleRunner, operationalAlertSink };
 }

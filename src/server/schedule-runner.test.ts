@@ -1282,6 +1282,138 @@ Do the thing.
     expect(check).toHaveBeenCalledWith(store.list());
   });
 
+  it('pushes the dead-man self-heal stats onto the status snapshot each tick (issue #1903)', async () => {
+    const stats = vi.fn(() => ({
+      attempts: 4,
+      successes: 1,
+      episodeAttempts: 2,
+      escalated: true,
+      firing: true,
+    }));
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check: vi.fn(), stats },
+    });
+
+    await runner.tick();
+
+    expect(stats).toHaveBeenCalled();
+    // Only the observable subset is surfaced (episodeAttempts/firing are internal).
+    expect(service.getStatusSnapshot().deadManSelfHeal).toEqual({
+      attempts: 4,
+      successes: 1,
+      escalated: true,
+    });
+  });
+
+  it('omits deadManSelfHeal from the snapshot until self-heal has acted (issue #1903)', async () => {
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      // stats() always returns an object, but with no activity yet.
+      deadMan: {
+        check: vi.fn(),
+        stats: () => ({ attempts: 0, successes: 0, episodeAttempts: 0, escalated: false, firing: false }),
+      },
+    });
+
+    await runner.tick();
+
+    // Absent when unconfigured / never-run, matching the field's documented contract.
+    expect(service.getStatusSnapshot().deadManSelfHeal).toBeUndefined();
+  });
+
+  it('selfHealRefire() forces a re-fire of the named schedules WITHOUT re-running the dead-man check, and is a no-op after stop() (issue #1903)', async () => {
+    const waitFor = async (cond: () => boolean, ms = 1000): Promise<void> => {
+      const start = Date.now();
+      while (!cond() && Date.now() - start < ms) await new Promise((r) => setTimeout(r, 5));
+    };
+
+    const check = vi.fn();
+    const launched: string[] = [];
+    const sched = store.create({
+      name: 'Starved',
+      cron: '0 0 1 1 *', // far-future due time: NOT due now, so only a forced re-fire launches it
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => {
+        launched.push(sched.id);
+        return { task: { id: 'task-heal' } as any, queued: false };
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check },
+    });
+
+    runner.selfHealRefire([sched.id]);
+    await waitFor(() => launched.length > 0); // let the deferred re-fire + its async fire settle
+
+    expect(launched).toEqual([sched.id]); // exactly one forced re-fire
+    // Crux of the #1903 correctness fix: the actuator must NOT loop back through
+    // deadMan.check() (which would re-arm self-heal and burst the cap).
+    expect(check).not.toHaveBeenCalled();
+
+    await runner.stop();
+    runner.selfHealRefire([sched.id]);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(launched).toEqual([sched.id]); // stopped runner ignores the re-fire
+  });
+
+  it('selfHealRefire() skips a schedule whose cron fire is still in flight — no double launch (issue #1903)', async () => {
+    let launchCount = 0;
+    const sched = store.create({
+      name: 'DueStarved',
+      cron: '* * * * *', // due every minute
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    // Backdate so it is due now.
+    store.replace({ ...store.get(sched.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      fireTimeoutMs: 50, // small wall-clock cap so the hung cron fire releases the tick fast
+      launcher: async () => {
+        launchCount += 1;
+        return new Promise<never>(() => {}); // hang: the cron fire never settles → stays in flight
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check: vi.fn() },
+    });
+
+    // The cron fire launches (once) and hangs; the tick releases at the cap with
+    // the fire still in `inFlightFires`.
+    await runner.tick();
+    expect(launchCount).toBe(1);
+
+    // A self-heal re-fire of the same in-flight schedule must NOT launch a second
+    // task — the in-flight guard skips it (coalesce alone can't: no accepted
+    // taskId yet).
+    runner.selfHealRefire([sched.id]);
+    await new Promise((r) => setTimeout(r, 40)); // let the deferred re-fire run
+    expect(launchCount).toBe(1);
+  });
+
   it('keeps the wall-clock cap below the tick interval (issue #1708 invariant)', () => {
     // The whole decoupling relies on a stalled fire settling within one tick so
     // it can never bleed into the next; the source comment claims "kept below

@@ -11,6 +11,7 @@ import {
   type ScheduleResolutionProbe,
   type UnresolvableScheduleInfo,
 } from './schedule-resolution-alert.js';
+import type { ScheduleDeadManStats } from './schedule-dead-man.js';
 import type { TaskStatus } from '../core/types.js';
 
 /**
@@ -117,8 +118,13 @@ export interface ScheduleRunnerDeps {
    * ledger state and broadcasts); it is still called inside the tick's
    * tracked-work error envelope. Absent means no dead-man (back-compat for
    * older wiring/tests).
+   *
+   * Optional `stats()` (issue #1903) exposes the bounded self-heal
+   * attempt/success counters; when present they are pushed onto the schedule
+   * status snapshot each tick so an operator can observe self-heal activity via
+   * /api/health.
    */
-  deadMan?: { check(schedules: Schedule[]): void };
+  deadMan?: { check(schedules: Schedule[]): void; stats?(): ScheduleDeadManStats };
   /**
    * Unresolvable-playbook operational alerter (issue #1661). When provided,
    * fed the current set of unresolvable schedules on every validation cycle
@@ -141,6 +147,8 @@ export class ScheduleRunner {
   private tickInterval: ReturnType<typeof setInterval> | null = null;
   private pendingWork = new Set<Promise<void>>();
   private firing = false;
+  /** Set by {@link stop}; makes a late {@link selfHealRefire} a no-op (#1903). */
+  private stopped = false;
   private deps: ScheduleRunnerDeps;
   /**
    * Last observed resolution-health per schedule, for seeded transition `warn`
@@ -192,6 +200,7 @@ export class ScheduleRunner {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.tickInterval) {
       clearInterval(this.tickInterval);
       this.tickInterval = null;
@@ -236,6 +245,14 @@ export class ScheduleRunner {
       // not abort the fire loop it exists to protect.
       try {
         this.deps.deadMan?.check(this.deps.store.list());
+        // Surface the bounded self-heal counters on the status snapshot (issue
+        // #1903) so attempt/success activity is observable via /api/health. Only
+        // once self-heal has actually acted — keeps the snapshot field absent
+        // for unconfigured/never-run switches, matching its documented contract.
+        const deadManStats = this.deps.deadMan?.stats?.();
+        if (deadManStats && (deadManStats.attempts > 0 || deadManStats.escalated)) {
+          this.deps.service.setDeadManSelfHealStats(deadManStats);
+        }
       } catch (err) {
         console.error('[schedule] dead-man check failed:', err);
       }
@@ -325,6 +342,60 @@ export class ScheduleRunner {
     const schedule = this.deps.store.get(id);
     if (!schedule) return { error: 'Schedule not found' };
     return this.fire(schedule, 'manual');
+  }
+
+  /**
+   * Dead-man bounded self-heal actuator (issue #1903): force the named starving
+   * schedules to re-fire out of cron cadence. A schedule caught by the
+   * consecutive-failure condition has already fired (and failed) and its next
+   * cron run is in the future, so re-running the normal due-only fire loop would
+   * do nothing — the remediation has to be a forced (manual-trigger) re-fire of
+   * the specific schedule.
+   *
+   * Deliberately does NOT route through {@link tick} / `deadMan.check()`. A
+   * self-heal that re-ran the dead-man check would re-arm itself and consume the
+   * entire per-episode attempt cap in a sub-millisecond burst (escalating almost
+   * immediately, giving no transient stall time to clear). Because `check()`
+   * runs once per interval tick, driving the re-fire straight from there keeps
+   * attempts one tick apart.
+   *
+   * Deferred to a macrotask so it runs after the current tick's synchronous
+   * fire dispatch. To avoid a double-launch when a schedule is both due this
+   * tick AND starving, {@link forceRefire} skips any schedule whose cron
+   * `fire()` is still in flight (see there) — the coalesce guard in {@link fire}
+   * alone is insufficient, because a due schedule's accepted `taskId` is not
+   * written until its launcher resolves, which can be after this deferred
+   * re-fire runs. Each re-fire reuses the same drain / SAFE MODE gates as any
+   * other fire (it cannot launch work an operator has cordoned) and the same
+   * tracked-work error envelope. No-op once stopped or when no ids are given.
+   */
+  selfHealRefire(scheduleIds: string[]): void {
+    if (this.stopped || scheduleIds.length === 0) return;
+    setTimeout(() => {
+      if (this.stopped) return;
+      for (const id of scheduleIds) {
+        this.trackBackgroundWork('Tick', this.forceRefire(id));
+      }
+    }, 0);
+  }
+
+  private async forceRefire(id: string): Promise<void> {
+    const schedule = this.deps.store.get(id);
+    if (!schedule) return;
+    // Don't stack a manual re-fire on top of a cron fire that is still in
+    // flight for this schedule (issue #1903). That cron fire hasn't yet
+    // recorded its accepted task, so fire()'s coalesce guard would not catch
+    // the overlap and both could launch a task for the same occurrence. Once
+    // the cron fire settles, either its accepted task lets a later re-fire
+    // coalesce, or it failed and a re-fire is legitimately needed next tick.
+    if (this.inFlightFires.has(id)) {
+      console.warn(
+        `[schedule] dead-man self-heal: skipping re-fire of "${schedule.name}" — a fire is already in flight (issue #1903)`,
+      );
+      return;
+    }
+    console.warn(`[schedule] dead-man self-heal: forcing re-fire of "${schedule.name}" (issue #1903)`);
+    await this.fire(schedule, 'manual');
   }
 
   /**
