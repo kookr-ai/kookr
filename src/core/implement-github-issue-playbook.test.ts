@@ -27,6 +27,16 @@ describe('implement-github-issue playbook', () => {
     expect(values).toEqual(['false', 'true']);
   });
 
+  test('defaults mergeAfterImplementation to true (autonomous merge when safe)', () => {
+    const param = pb.parameters.find((p) => p.name === 'mergeAfterImplementation');
+    expect(param).toBeDefined();
+    expect(param!.required).toBe(true);
+    expect(param!.default).toBe('true');
+    expect(param!.type).toBe('select');
+    const values = (param!.options ?? []).map((o) => o.value).sort();
+    expect(values).toEqual(['false', 'true']);
+  });
+
   test('Phase 0d enforces the author check before reading the issue body', () => {
     expect(pb.body).toMatch(/Author check/);
     expect(pb.body).toContain('CURRENT_USER');
