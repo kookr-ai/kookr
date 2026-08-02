@@ -1,4 +1,5 @@
 import type { TaskStore } from '../../core/tasks.js';
+import type { AgentSelection } from '../../core/agent-types.js';
 import { ScheduleStore, type Schedule } from '../../core/schedule.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
@@ -19,6 +20,12 @@ export interface ScheduleRuntimeDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   /** Operator drain gate (issue #659): suppress schedule firing while draining. */
   isAccepting?: () => boolean;
+  /**
+   * Live getter for `settings.defaultAgentType`. When a create payload omits
+   * `agentType`, the schedule service pins the schedule to this value rather
+   * than the code constant `DEFAULT_AGENT_TYPE` (`claude-code`).
+   */
+  getDefaultAgentType?: () => AgentSelection;
   /**
    * Automation kill-switch (issue #1710): suppress schedule firing while SAFE
    * MODE is engaged. Manual launches remain accepted.
@@ -135,6 +142,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.getScheduleFailureAlertThreshold
       ? { getFailureAlertThreshold: deps.getScheduleFailureAlertThreshold }
       : {}),
+    ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 

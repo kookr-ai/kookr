@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { TaskStore } from '../core/tasks.js';
 import {
+  DEFAULT_AGENT_TYPE,
+  type AgentSelection,
+} from '../core/agent-types.js';
+import {
   type CreateScheduleInput,
   type Schedule,
   type ScheduleExecutionDecision,
@@ -171,6 +175,14 @@ export interface ScheduleServiceDeps {
    * to {@link DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD} when absent.
    */
   getFailureAlertThreshold?: () => number;
+  /**
+   * Live getter for the operator-configured default coding agent
+   * (`settings.defaultAgentType`). When a create payload omits `agentType`,
+   * schedules follow this — not the code constant `DEFAULT_AGENT_TYPE`
+   * (`claude-code`) — so quota/policy changes take effect without re-editing
+   * every register script.
+   */
+  getDefaultAgentType?: () => AgentSelection;
 }
 
 export class ScheduleService {
@@ -180,6 +192,7 @@ export class ScheduleService {
   private readonly resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
   private readonly emitAlert?: (message: Extract<ServerMessage, { type: 'alert' }>) => void;
   private readonly getFailureAlertThreshold?: () => number;
+  private readonly getDefaultAgentType?: () => AgentSelection;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -194,6 +207,7 @@ export class ScheduleService {
     this.resolveLedgerEnrichment = deps.resolveLedgerEnrichment;
     this.emitAlert = deps.emitAlert;
     this.getFailureAlertThreshold = deps.getFailureAlertThreshold;
+    this.getDefaultAgentType = deps.getDefaultAgentType;
   }
 
   /**
@@ -298,8 +312,18 @@ export class ScheduleService {
   }
 
   async createDefinition(input: CreateScheduleInput) {
-    await this.validator.validateCreate(input);
-    const schedule = this.store.create(input);
+    // Resolve omitted agentType against the live server default before validate
+    // + store. ScheduleStore.create still falls back to DEFAULT_AGENT_TYPE for
+    // direct/test callers that bypass the service.
+    const resolved: CreateScheduleInput = {
+      ...input,
+      agentType:
+        input.agentType ??
+        this.getDefaultAgentType?.() ??
+        DEFAULT_AGENT_TYPE,
+    };
+    await this.validator.validateCreate(resolved);
+    const schedule = this.store.create(resolved);
     await this.store.persist();
     this.broadcastSchedules();
     return this.store.getWithComputed(schedule.id)!;

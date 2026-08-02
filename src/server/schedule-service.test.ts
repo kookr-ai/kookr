@@ -90,6 +90,75 @@ describe('ScheduleService validation', () => {
   });
 });
 
+describe('ScheduleService default agentType', () => {
+  it('uses getDefaultAgentType when create payload omits agentType', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-default-agent-'));
+    try {
+      writePlaybook(dir);
+      const store = new ScheduleStore(dir);
+      const service = new ScheduleService({
+        store,
+        validator: new ScheduleValidator(),
+        getDefaultAgentType: () => 'grok-build',
+      });
+
+      const schedule = await service.createDefinition({
+        name: 'Server default agent',
+        cron: '0 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+      });
+
+      expect(schedule.agentType).toBe('grok-build');
+      expect(store.get(schedule.id)!.agentType).toBe('grok-build');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an explicit agentType over getDefaultAgentType', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-explicit-agent-'));
+    try {
+      writePlaybook(dir);
+      const store = new ScheduleStore(dir);
+      const service = new ScheduleService({
+        store,
+        validator: new ScheduleValidator(),
+        getDefaultAgentType: () => 'grok-build',
+      });
+
+      const schedule = await service.createDefinition({
+        name: 'Explicit agent',
+        cron: '0 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+        agentType: 'codex-cli',
+      });
+
+      expect(schedule.agentType).toBe('codex-cli');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to DEFAULT_AGENT_TYPE when getDefaultAgentType is absent', async () => {
+    await withService(async (service, store, dir) => {
+      writePlaybook(dir);
+
+      const schedule = await service.createDefinition({
+        name: 'Legacy default',
+        cron: '0 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+      });
+
+      // Code constant is still claude-code when no live settings getter is wired.
+      expect(schedule.agentType).toBe('claude-code');
+      expect(store.get(schedule.id)!.agentType).toBe('claude-code');
+    });
+  });
+});
+
 describe('ScheduleService status', () => {
   it('reports healthy after runner start before the first completed tick', () => {
     withService((service) => {
