@@ -374,6 +374,17 @@ function validateEnvPrecedencePairs(env: NodeJS.ProcessEnv): ConfigPreflightIssu
       variables: ['KOOKR_AUTO_CATCHUP', 'KOOKR_NO_CATCHUP'] as const,
       remediation: 'Set only one schedule catch-up flag; KOOKR_NO_CATCHUP takes precedence when both are set.',
     },
+    // issue #1900: catch-up precedence is KOOKR_NO_CATCHUP > KOOKR_MANUAL_CATCHUP
+    // > KOOKR_AUTO_CATCHUP (default auto). Warn on the two remaining conflicting
+    // combinations so a silently-resolved conflict is still operator-visible.
+    {
+      variables: ['KOOKR_MANUAL_CATCHUP', 'KOOKR_NO_CATCHUP'] as const,
+      remediation: 'Set only one schedule catch-up flag; KOOKR_NO_CATCHUP takes precedence when both are set.',
+    },
+    {
+      variables: ['KOOKR_AUTO_CATCHUP', 'KOOKR_MANUAL_CATCHUP'] as const,
+      remediation: 'Set only one schedule catch-up flag; KOOKR_MANUAL_CATCHUP takes precedence over KOOKR_AUTO_CATCHUP.',
+    },
   ];
 
   return pairs.flatMap(({ variables, remediation }) => {

@@ -16,6 +16,9 @@ import { PendingQueueFullError } from './launch-service.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
+/** Synthetic relaunch-arbiter key the catch-up path uses for `scheduleId` (#1900). */
+const catchUpKey = (scheduleId: string) => ({ repo: `schedule:${scheduleId}`, number: 0 });
+
 describe('ScheduleRunner', () => {
   let dir: string;
   let store: ScheduleStore;
@@ -67,6 +70,7 @@ Do the test thing.
     await Promise.all([...runners].map((runner) => runner.stop()));
     delete process.env.KOOKR_NO_CATCHUP;
     delete process.env.KOOKR_AUTO_CATCHUP;
+    delete process.env.KOOKR_MANUAL_CATCHUP;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -678,7 +682,7 @@ Do not launch this.
     expect(result.error).toBe('Schedule not found');
   });
 
-  it('records a missed startup run for manual recovery by default', async () => {
+  it('records a missed startup run for manual recovery when KOOKR_MANUAL_CATCHUP is set', async () => {
     const schedule = store.create({
       name: 'ManualCatchup',
       cron: '* * * * *',
@@ -689,6 +693,7 @@ Do not launch this.
       createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
     });
 
+    process.env.KOOKR_MANUAL_CATCHUP = '1';
     const runner = createRunner();
     runner.start();
     await vi.waitFor(() => {
@@ -735,6 +740,195 @@ Do not launch this.
       decision: 'catch_up',
       outcome: 'running',
     }));
+  });
+
+  it('catches up a missed schedule by default with no env override, exactly once per boot (#1900)', async () => {
+    const schedule = store.create({
+      name: 'DefaultCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    // No KOOKR_AUTO_CATCHUP / KOOKR_MANUAL_CATCHUP / KOOKR_NO_CATCHUP: the
+    // #1900 default is `auto`.
+    const runner = createRunner();
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launched).toHaveLength(1);
+    });
+    await runner.stop();
+
+    expect(service.getStatusSnapshot().catchUpMode).toBe('auto');
+    expect(service.getStatusSnapshot().catchUpEnabled).toBe(true);
+    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+      decision: 'catch_up',
+      outcome: 'running',
+    }));
+
+    // Single-run-per-boot: the next cron tick must not re-fire the same missed
+    // slot (the watermark advanced past it).
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+  });
+
+  it('gates the catch-up fire behind the relaunch arbiter and holds the lease under the fired task (#1900)', async () => {
+    const schedule = store.create({
+      name: 'LeaseGatedCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const acquired: Array<{ key: string; holderId: string }> = [];
+    const arbiter = {
+      evaluate: () => ({ admit: true as const }),
+      tryAcquire: (key: { repo: string; number: number }, holderId: string) => {
+        acquired.push({ key: `${key.repo}#${key.number}`, holderId });
+        return { ok: true as const, lease: { key, holderId, acquiredAt: '' }, reentrant: false };
+      },
+    };
+
+    const runner = createRunner({ relaunchArbiter: arbiter });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(launched).toHaveLength(1);
+    });
+    await runner.stop();
+
+    // The fire went through, and the lease was acquired under the fired task id.
+    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+      decision: 'catch_up',
+      outcome: 'running',
+    }));
+    expect(acquired).toEqual([
+      { key: `schedule:${schedule.id}#0`, holderId: 'task-1' },
+    ]);
+  });
+
+  it('skips the catch-up fire when the relaunch arbiter denies admission (#1900)', async () => {
+    const schedule = store.create({
+      name: 'LeaseHeldCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    let tryAcquireCalled = false;
+    const arbiter = {
+      evaluate: () => ({
+        admit: false as const,
+        reason: 'held' as const,
+        lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
+      }),
+      tryAcquire: () => {
+        tryAcquireCalled = true;
+        return { ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false };
+      },
+    };
+
+    const runner = createRunner({ relaunchArbiter: arbiter });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_relaunch_locked');
+    });
+    await runner.stop();
+
+    // No task was launched (denied before fire), and no lease was acquired.
+    expect(launched).toHaveLength(0);
+    expect(tryAcquireCalled).toBe(false);
+    expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+      decision: 'catch_up',
+      outcome: 'skipped_relaunch_locked',
+      reasonCode: 'relaunch_lease_held',
+      scheduledFor: expect.any(String),
+    }));
+    // The held-branch message names the current holder so the ledger explains
+    // which actuator won the lease.
+    expect(store.get(schedule.id)!.latestExecution?.message).toContain('other-actuator');
+
+    // Watermark advanced: the withheld slot is not re-evaluated next tick.
+    await runner.tick();
+    expect(launched).toHaveLength(0);
+  });
+
+  it('does not acquire the relaunch lease when the catch-up fire launches no task (#1900)', async () => {
+    const schedule = store.create({
+      name: 'FailedCatchupFire',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    let tryAcquireCalled = false;
+    const arbiter = {
+      evaluate: () => ({ admit: true as const }),
+      tryAcquire: () => {
+        tryAcquireCalled = true;
+        return { ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false };
+      },
+    };
+
+    // Launcher throws → fire() records dispatch_failed and returns { error }
+    // with no taskId, so no lease should be acquired (nothing was launched).
+    const runner = createRunner({
+      relaunchArbiter: arbiter,
+      launcher: async () => {
+        throw new Error('boom');
+      },
+    });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+    });
+    await runner.stop();
+
+    expect(tryAcquireCalled).toBe(false);
+  });
+
+  it('denies catch-up with a backoff reason after the arbiter starts a cooldown window (#1900)', async () => {
+    const schedule = store.create({
+      name: 'BackoffCatchup',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const arbiter = {
+      evaluate: () => ({
+        admit: false as const,
+        reason: 'backoff' as const,
+        retryAfterMs: 90_000,
+        cooldownUntil: new Date(Date.now() + 90_000).toISOString(),
+      }),
+      tryAcquire: () => ({ ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false }),
+    };
+
+    const runner = createRunner({ relaunchArbiter: arbiter });
+    runner.start();
+    await vi.waitFor(() => {
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_relaunch_locked');
+    });
+    await runner.stop();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('relaunch_lease_held');
+    expect(store.get(schedule.id)!.latestExecution?.message).toContain('backoff');
   });
 
   it('records stale catch-up skips in the execution ledger', async () => {

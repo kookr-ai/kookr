@@ -321,6 +321,28 @@ describe('runConfigPreflight', () => {
     ]);
     expect(hasFatalConfigPreflightIssues(result)).toBe(false);
   });
+
+  it('warns on the KOOKR_MANUAL_CATCHUP precedence pairs (#1900)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_AUTO_CATCHUP: '1',
+        KOOKR_MANUAL_CATCHUP: '1',
+        KOOKR_NO_CATCHUP: '1',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    const variables = result.issues.map((issue) => issue.variable);
+    expect(variables).toContain('KOOKR_AUTO_CATCHUP/KOOKR_NO_CATCHUP');
+    expect(variables).toContain('KOOKR_MANUAL_CATCHUP/KOOKR_NO_CATCHUP');
+    expect(variables).toContain('KOOKR_AUTO_CATCHUP/KOOKR_MANUAL_CATCHUP');
+    expect(hasFatalConfigPreflightIssues(result)).toBe(false);
+  });
 });
 
 describe('formatConfigPreflightIssue', () => {

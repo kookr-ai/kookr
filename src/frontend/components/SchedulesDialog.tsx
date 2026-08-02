@@ -134,6 +134,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'manual run available';
     case 'skipped_stale':
       return 'skipped: stale';
+    case 'skipped_relaunch_locked':
+      return 'skipped: relaunch locked';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -165,6 +167,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'launch error';
     case 'stale_catch_up':
       return 'stale catch-up';
+    case 'relaunch_lease_held':
+      return 'relaunch lease held';
     case 'reconciled_after_restart':
       return 'reconciled after restart';
     case 'unknown_after_restart':

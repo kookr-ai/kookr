@@ -62,6 +62,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'manual run available';
     case 'skipped_stale':
       return 'skipped: stale';
+    case 'skipped_relaunch_locked':
+      return 'skipped: relaunch locked';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -92,6 +94,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_safe_mode':
     case 'skipped_manual':
     case 'skipped_stale':
+    case 'skipped_relaunch_locked':
     case 'unknown_after_restart':
       return 'schedule-status-fail';
     default:

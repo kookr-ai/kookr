@@ -140,6 +140,21 @@ describe('evaluateScheduleStarvation', () => {
     // entries sit in the window.
     expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
   });
+
+  it('skipped_relaunch_locked is a lease-gated catch-up and never counts as a due fire or a failure (#1900)', () => {
+    const sched = schedule({
+      executionLedger: [
+        entry('dispatch_failed', NOW - 4 * 3_600_000),
+        entry('dispatch_failed', NOW - 3 * 3_600_000),
+        entry('skipped_relaunch_locked', NOW - 90 * 60_000),
+        entry('skipped_relaunch_locked', NOW - 30 * 60_000),
+      ],
+    });
+    // Another actuator holds the relaunch lease → work is being relaunched, not
+    // starving. (a): the tail is only 2 real failures; (b): only lease-locked
+    // entries sit in the window, so no false starvation alert.
+    expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
+  });
 });
 
 describe('ScheduleDeadManSwitch (issue #1526 Phase C)', () => {
