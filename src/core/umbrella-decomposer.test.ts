@@ -6,6 +6,7 @@ import {
   LUCY_1586_LEAF_PLAN,
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
+  LUCY_1589_LEAF_PLAN,
   LUCY_1590_LEAF_PLAN,
   LUCY_1593_LEAF_PLAN,
   QUEUE_FEEDER_SCHEMA,
@@ -542,6 +543,58 @@ describe('lucy#1593 replay-corpus validity residual curated plan', () => {
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1593');
     expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
+  });
+});
+
+describe('lucy#1589 forward-corpus denominator hygiene residual curated plan', () => {
+  it('has a vetted 5-leaf residual plan registered, each leaf well-formed', () => {
+    const plan = curatedLeafPlan('jeanibarz/lucy#1589');
+    expect(plan).toBe(LUCY_1589_LEAF_PLAN);
+    expect(plan).toHaveLength(5);
+    const normalized = normalizeLeafPlan(plan);
+    expect(normalized.ok).toBe(true);
+    expect(normalized.leaves).toHaveLength(5);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1589');
+  });
+
+  it('emits lucy#1589 leaves when it has no open children yet', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1589,
+          title:
+            'Umbrella: forward-corpus denominator hygiene — exclude replays, measure the BMO lane, name the sparse-tape regime',
+          openChildrenCount: 0,
+        }),
+      ],
+    });
+    expect(decision.selected?.ref).toBe('jeanibarz/lucy#1589');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(5);
+  });
+
+  it('SKIPS lucy#1589 once residual leaves already exist (idempotent)', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1589,
+          title:
+            'Umbrella: forward-corpus denominator hygiene — exclude replays, measure the BMO lane, name the sparse-tape regime',
+          openChildrenCount: 5,
+        }),
+      ],
+    });
+    expect(decision.selected).toBeNull();
+    expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1589');
+    expect(decision.skipped[0]!.reason).toMatch(/already has 5 open child/);
   });
 });
 
