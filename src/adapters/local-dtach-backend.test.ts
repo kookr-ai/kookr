@@ -159,6 +159,28 @@ const HAS_PROC = existsSync('/proc/self');
 const skipIfNoProc = DTACH && HAS_PROC ? it : it.skip;
 const skipIfNoSetsidWrapper = process.platform === 'darwin' ? it.skip : it;
 
+// Real-subprocess observation windows for the "expected live" recovery tests
+// (kookr-ai/kookr#1915). These tests spawn a REAL `dtach -a` child and assert
+// that a genuinely-emitting session is observed live within a fixed window. A
+// live agent here ticks ~every 50ms, so the window only has to outlast the fresh
+// attach's first-byte latency — which balloons under full-suite CPU contention
+// (many vitest workers spawning dtach at once, esp. on WSL2), racing the old
+// sub-second windows into a false `recovered-unverified`.
+//
+// The grace window is a CEILING, not a fixed cost: observeRecoveryProgress
+// resolves on the first post-settle byte, so a generous grace adds no wall-clock
+// on a healthy session while removing the race. Widening it does NOT weaken the
+// behavioral distinction the tests assert — a genuinely wedged/silent session
+// still never emits a byte, so it still classifies unverified regardless of how
+// long we wait (covered by the silent-`cat` and spawn-failure cases, whose short
+// windows are intentionally left untouched). KOOKR_TEST_TIMING_SCALE (>= 1) lets
+// an exceptionally slow CI host widen further without code changes.
+const TIMING_SCALE = Math.max(1, Number(process.env.KOOKR_TEST_TIMING_SCALE) || 1);
+/** Settle window: discount the one-shot on-attach redraw before counting progress. */
+const LIVE_SETTLE_MS = Math.round(100 * TIMING_SCALE);
+/** Grace ceiling: outlast fresh-attach first-byte latency under load. */
+const LIVE_GRACE_MS = Math.round(5_000 * TIMING_SCALE);
+
 describe('LocalDtachBackend', () => {
   let tmpDir: string;
   let backend: LocalDtachBackend;
@@ -1547,8 +1569,8 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     try {
       const result = await backend2.verifyRecoveredSession(id, {
         expectWorking: true,
-        settleWindowMs: 100,
-        graceWindowMs: 2_000,
+        settleWindowMs: LIVE_SETTLE_MS,
+        graceWindowMs: LIVE_GRACE_MS,
       });
       expect(result.classification).toBe('recovered-live');
       expect(result.repairAttempts).toBe(0);
@@ -1603,8 +1625,8 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
     const result = await backend.verifyRecoveredSession(id, {
       expectWorking: true,
-      settleWindowMs: 100,
-      graceWindowMs: 800,
+      settleWindowMs: LIVE_SETTLE_MS,
+      graceWindowMs: LIVE_GRACE_MS,
       maxRepairAttempts: 3,
     });
 
@@ -1813,9 +1835,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     unlinkSync(join(tmpDir, 'test', `${broken}.sock`));
 
     const [ra, rb, rbroken] = await Promise.all([
-      backend.verifyRecoveredSession(liveA, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
-      backend.verifyRecoveredSession(liveB, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
-      backend.verifyRecoveredSession(broken, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
+      backend.verifyRecoveredSession(liveA, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
+      backend.verifyRecoveredSession(liveB, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
+      backend.verifyRecoveredSession(broken, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
     ]);
 
     // The two healthy sessions recovered live despite the third failing.
