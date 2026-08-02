@@ -850,6 +850,135 @@ export const LUCY_1590_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * lucy#1586 "publish-window-safe issuer acquisition". Core children #1583
+ * (verification_reject not sticky), #1491 (VZ EX-99 classic gate), and
+ * #1536/#1526 (possible_gate_miss failureCode) shipped; residual acceptance
+ * gaps remain: content_too_short still sticky on IR roots (umbrella taxonomy
+ * residual), an end-to-end multi-poll publish-window fixture, measurable
+ * issuer cooling attribution, and host_cooling_down provenance for weekly
+ * "zero from verification_reject cooling" proof.
+ * Authored by the queue-feeder (2026-08-03) after needsAuthoring blocked emit.
+ * Live GitHub leaves: filed this run; openChildrenCount / title idempotency
+ * prevents re-emit once those exist.
+ */
+export const LUCY_1586_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(acquisition): armed IR root content_too_short must not open durable host circuit',
+    goal:
+      'Finish the host-circuit failure-code taxonomy residual from umbrella #1586: ' +
+      'content-level `content_too_short` on a ticker\'s configured IR root during an ' +
+      'armed window must not open a multi-minute sticky host circuit the way host ' +
+      'outages do — same class of publish-window blind as pre-#1583 verification_reject.',
+    acceptanceCriteria: [
+      'While a watch is armed, consecutive `content_too_short` outcomes against the ' +
+        'resolved issuer IR host do not open a durable host-circuit entry that short-circuits ' +
+        'later polls with `host_cooling_down` for minutes (unit/fixture proof).',
+      'True host walls (`access_denied`, `empty_spa_shell`, `stealth_failed`, rate/upstream) ' +
+        'still open the sticky circuit — taxonomy split is content-level vs host-level, not ' +
+        '"disable all cooling".',
+      'Unit tests cover: (a) armed IR content_too_short chain does not sticky-open; ' +
+        '(b) access_denied still sticky-opens; (c) non-armed or non-IR hosts keep existing ' +
+        'behavior unless a narrower class-wide content rule is documented.',
+    ],
+    fileHints: [
+      'src/acquisition/host-circuit.js',
+      'src/acquisition/acquire.js',
+      'src/document-fetch.js',
+      'src/config.js (acqHostCircuit*)',
+    ],
+    testHints: [
+      'unit test: armed IR root + N content_too_short → isOpen false; access_denied → isOpen true',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'test(acquisition): AXP-class multi-poll publish-window fixture never cools issuer on verification_reject',
+    goal:
+      'Lock umbrella #1586 acceptance with a multi-poll acquire/fixture timeline: ' +
+      'pre-publish IR verification_reject polls, then a usable release — assert the ' +
+      'issuer tier is never short-circuited with host_cooling_down at publication time.',
+    acceptanceCriteria: [
+      'A fixture (or acquire-path integration test) replays ≥3 pre-publish ' +
+        '`verification_reject` outcomes on an IR host followed by a usable issuer doc at ' +
+        'publication; the issuer path is never skipped solely because of ' +
+        '`failureCode=host_cooling_down` from those rejects.',
+      'Assertion fails if sticky host-circuit state for `verification_reject` reappears ' +
+        '(regression of #1583) or if acquire short-circuits the IR host mid-window for that class.',
+      'Test is hermetic (no live network); documents the AXP residual class in a short comment.',
+    ],
+    fileHints: [
+      'test/host-circuit.test.js',
+      'test/acquisition-acquire.test.js',
+      'src/acquisition/host-circuit.js',
+      'src/acquisition/acquire.js',
+    ],
+    testHints: [
+      'integration/unit fixture: multi-poll verification_reject then success; assert no host_cooling_down short-circuit',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): attribute host_cooling_down short-circuits to underlying failureClass',
+    goal:
+      'When a poll is short-circuited with host_cooling_down, record the underlying ' +
+      'sticky failureClass (access_denied, content_too_short, rate_limited, …) on the ' +
+      'outcome/scoreboard so operators can prove cooling causes — not only that cooling happened.',
+    acceptanceCriteria: [
+      'Issuer (or document-fetch) outcomes with failureCode=host_cooling_down include a ' +
+        'stable field for the underlying circuit failureClass (e.g. reason detail, ' +
+        'coolingClass, or nested diagnostic) sourced from host-circuit open state.',
+      'Scoreboard / byFailureCode path either counts host_cooling_down with underlying class ' +
+        'visible, or dual-counts in a documented way so weekly reports can filter "cooling ' +
+        'from verification_reject" (must be zero post-#1583) vs host walls.',
+      'Unit test: open circuit for access_denied → short-circuit outcome exposes access_denied ' +
+        'as underlying class; verification_reject never appears as an open circuit class.',
+    ],
+    fileHints: [
+      'src/acquisition/host-circuit.js',
+      'src/document-fetch.js',
+      'src/acquisition/scoreboard.js',
+      'src/acquisition/acquire.js',
+    ],
+    testHints: [
+      'unit test: isOpen short-circuit payload includes failureClass; scoreboard fixture preserves it',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): weekly metric for issuer tier_blocked_all_window / host_cooling_down',
+    goal:
+      'Make umbrella #1586 acceptance measurable over a full earnings week: a pure ' +
+      'aggregator (or weekly scoreboard field) counts issuer-tier ' +
+      'tier_blocked_all_window and host_cooling_down events from detections/scoreboard ' +
+      'so "drops to zero" is a number, not operator memory.',
+    acceptanceCriteria: [
+      'A pure function (and optional CLI/script) reads detections.jsonl and/or window ' +
+        'scoreboard snapshots and reports counts of issuer-tier tier_blocked_all_window ' +
+        'and host_cooling_down (optionally split by underlying failureClass) for a ' +
+        'configurable week window.',
+      'Unit tests cover a fixture JSONL/scoreboard: known issuer cooling + tier_blocked ' +
+        'events → expected counts; empty input degrades cleanly.',
+      'Output is durable JSON (or weekly-scoreboard field) so daily-report / control-room ' +
+        'can surface "issuer cooling blocks this week: N" without recomputing in prose.',
+    ],
+    fileHints: [
+      'src/acquisition/weekly-scoreboard.js',
+      'src/acquisition/anomaly.js',
+      'src/acquisition/scoreboard.js',
+      'data/detections.jsonl consumers',
+    ],
+    testHints: [
+      'unit test: synthetic detections/scoreboard fixture → issuer cooling + tier_blocked counts match hand totals',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
@@ -858,6 +987,7 @@ export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> =
   'jeanibarz/lucy#1588': LUCY_1588_LEAF_PLAN,
   'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
   'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,
+  'jeanibarz/lucy#1586': LUCY_1586_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
