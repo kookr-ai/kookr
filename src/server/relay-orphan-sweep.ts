@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 
 import { killProcessTree } from '../adapters/process-tree.js';
-import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
+import { listProcessSnapshots, readProcessEnviron } from '../adapters/proc-process-lister.js';
 import {
   scanStaleProcesses,
   selectRelayOrphansToReap,
@@ -57,6 +57,9 @@ function defaultScan(now: number, excludePids?: ReadonlySet<number>): StaleProce
     listProcesses: listProcessSnapshots,
     now,
     cwdExists: (dir) => existsSync(dir),
+    // Probe environ so the sweep can reap test-spawned relays whose worktree
+    // still exists (issue #1885) — read only for relay-server pids.
+    readEnviron: readProcessEnviron,
     ...(excludePids ? { excludePids } : {}),
   });
 }
@@ -96,9 +99,14 @@ export async function runRelayOrphanSweep(
       await reap(proc.pid);
       reaped.push({ pid: proc.pid, ageMs: proc.ageMs, rssBytes: proc.rssBytes, cwd: proc.cwd });
       reapedRssBytes += proc.rssBytes;
+      const reason = proc.testSpawned
+        ? 'test-runner marker, #1885'
+        : proc.cwdExists
+          ? 'age ceiling'
+          : 'worktree gone, #1723';
       logger.warn(
         `[relay-orphan-sweep] reaped relay pid=${proc.pid} age=${formatAge(proc.ageMs)} ` +
-          `rss=${formatRss(proc.rssBytes)} cwd=${proc.cwd ?? 'unknown'} (worktree gone, #1723)`,
+          `rss=${formatRss(proc.rssBytes)} cwd=${proc.cwd ?? 'unknown'} (${reason})`,
       );
     } catch (err) {
       logger.error(
@@ -119,16 +127,27 @@ export async function runRelayOrphanSweep(
 }
 
 /**
+ * Default relay-orphan sweep interval (hours). On by default so a long-lived
+ * production daemon actively reaps stranded relays without an operator flipping
+ * an env var — the gap that let #1723's fix regress into #1885 (the sweep was
+ * the only always-on reaper in production, and it was off by default). Safe:
+ * the sweep only ever selects worktree-gone or test-spawn-marked relays, which
+ * a live production relay is never either of.
+ */
+export const DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS = 1;
+
+/**
  * Resolve the relay-orphan sweep interval (hours) from the environment. Returns
- * 0 (off) when unset, non-numeric, or non-positive — scheduling is strictly
- * opt-in, mirroring the maintenance-prune sweep.
+ * the default (on) when unset or invalid; an explicit `0` (or negative) DISABLES
+ * the timer — mirroring the reflect-worktree sweep (#1860), not the opt-in
+ * maintenance-prune sweep. Change from #1723, where this defaulted to off.
  */
 export function resolveRelayOrphanSweepIntervalHours(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = env.KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS?.trim();
-  if (!raw) return 0;
+  if (!raw) return DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS;
   const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS;
   return value;
 }

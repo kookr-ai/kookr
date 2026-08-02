@@ -1563,6 +1563,64 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }
   });
 
+  // --- Relay-orphan sweep wiring (issue #1723 / #1885) ---
+  test('fires a startup reclaim then the scheduled relay-orphan sweep on its interval', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      relayOrphanSweep: { intervalHours: 0.5, run },
+    }) as any);
+    try {
+      expect(handles.relayOrphanSweepInterval).not.toBeNull();
+      expect(handles.relayOrphanSweepStartupTimer).not.toBeNull();
+      // Startup reclaim (#1885): one sweep fires shortly after boot, well before
+      // the first 30-minute interval tick.
+      expect(run).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(run).toHaveBeenCalledTimes(1);
+      // Then the periodic interval keeps sweeping.
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clearAllTimers(handles);
+    }
+    const callsAfterClear = run.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(run.mock.calls.length).toBe(callsAfterClear);
+  });
+
+  test('clearAllTimers cancels the startup reclaim before it fires', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      relayOrphanSweep: { intervalHours: 0.5, run },
+    }) as any);
+    // Clear BEFORE the 30s startup delay elapses: the startup timer is still
+    // pending, so clearTimeout must actually cancel it (not a no-op).
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(run).not.toHaveBeenCalled();
+    clearAllTimers(handles);
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('does not schedule a relay-orphan sweep when the interval is 0 (disabled)', () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const handles = startLifecycleTimers(baseTimerDeps({
+      relayOrphanSweep: { intervalHours: 0, run },
+    }) as any);
+    try {
+      expect(handles.relayOrphanSweepInterval).toBeNull();
+      expect(handles.relayOrphanSweepStartupTimer).toBeNull();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   // --- Reflect-worktree orphan sweep wiring (issue #1860) ---
   test('fires the scheduled reflect-worktree sweep on its interval with fake clock', async () => {
     vi.useFakeTimers();

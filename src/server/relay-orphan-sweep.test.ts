@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS,
   resolveRelayOrphanSweepIntervalHours,
   runRelayOrphanSweep,
 } from './relay-orphan-sweep.js';
@@ -14,6 +15,7 @@ function relay(overrides: Partial<StaleProcess> & { pid: number }): StaleProcess
     rssBytes: 50 * 1024 * 1024,
     cwd: '/gone',
     cwdExists: false,
+    testSpawned: false,
     ...overrides,
   };
 }
@@ -51,6 +53,28 @@ describe('runRelayOrphanSweep', () => {
     expect(result.reaped).toEqual([]);
     expect(result.candidates).toBe(0);
     expect(result.scanned).toBe(1);
+  });
+
+  it('reaps an aged test-spawned relay whose worktree still exists (#1885)', async () => {
+    const reap = vi.fn().mockResolvedValue(undefined);
+    const warn = vi.fn();
+    const result = await runRelayOrphanSweep({
+      scan: () => [
+        relay({
+          pid: 77,
+          cwd: '/home/x/kookr-smoke', // still on disk — worktree-gone signal is blind here
+          cwdExists: true,
+          testSpawned: true,
+          ageMs: 2 * 60 * 60 * 1000,
+        }),
+      ],
+      reap,
+      logger: { log: vi.fn(), warn, error: vi.fn() },
+    });
+    expect(reap).toHaveBeenCalledWith(77);
+    expect(result.reaped.map((r) => r.pid)).toEqual([77]);
+    // Log attributes the reap to the test-spawn marker, not worktree-gone.
+    expect(warn.mock.calls[0]![0] as string).toContain('test-runner marker, #1885');
   });
 
   it('does not reap a freshly-spawned relay whose cwd just vanished (teardown race)', async () => {
@@ -103,14 +127,23 @@ describe('runScheduledRelayOrphanSweep', () => {
 });
 
 describe('resolveRelayOrphanSweepIntervalHours', () => {
-  it('is off (0) by default and for invalid values', () => {
-    expect(resolveRelayOrphanSweepIntervalHours({})).toBe(0);
-    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '0' })).toBe(0);
-    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '-2' })).toBe(0);
-    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: 'nope' })).toBe(0);
+  it('is ON by default and for invalid values (#1885 — was off in #1723)', () => {
+    expect(resolveRelayOrphanSweepIntervalHours({})).toBe(
+      DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS,
+    );
+    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: 'nope' })).toBe(
+      DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS,
+    );
+    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '-2' })).toBe(
+      DEFAULT_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS,
+    );
   });
 
-  it('reads a positive interval', () => {
+  it('an explicit 0 disables the timer', () => {
+    expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '0' })).toBe(0);
+  });
+
+  it('reads a positive interval override', () => {
     expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '2' })).toBe(2);
     expect(resolveRelayOrphanSweepIntervalHours({ KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS: '0.5' })).toBe(0.5);
   });

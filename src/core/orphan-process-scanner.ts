@@ -40,6 +40,15 @@ export interface StaleProcess {
   cwd: string | null;
   /** Whether the process's working directory still exists on disk. */
   cwdExists: boolean;
+  /**
+   * Whether this relay was spawned under a test RUNNER — a `KOOKR_RELAY_DIE_WITH_PARENT`
+   * or any `VITEST*` env marker (see {@link isTestRunnerSpawnedRelayEnviron}). A
+   * PRODUCTION relay carries neither, so it is a production-safe signal that this
+   * relay is a stranded test child — reapable even when its worktree still exists
+   * (issue #1885). False for `dtach` and whenever the environ was not probed
+   * (`readEnviron` unset in the scan deps).
+   */
+  testSpawned: boolean;
 }
 
 /** Aggregate counts + RSS per class, for `/api/health` diagnostics. */
@@ -72,15 +81,33 @@ export function classifyProcess(cmdline: string): StaleProcessClass | null {
 }
 
 /**
- * Whether a process's environment marks it as a relay spawned BY the test suite
- * (via `KOOKR_RELAY_DIE_WITH_PARENT=1`, set in vitest.config.ts). The post-test
- * reaper uses this to scope its kill strictly to test-suite relays, never a
- * developer's separately-running local/prod relay on the same machine.
+ * Whether a process's environment carries the `KOOKR_RELAY_DIE_WITH_PARENT=1`
+ * marker set by vitest.config.ts (#1723). Narrow, exact-match check.
  */
 export function isTestSpawnedRelayEnviron(env: Record<string, string> | null): boolean {
   if (!env) return false;
   const v = env.KOOKR_RELAY_DIE_WITH_PARENT;
   return v === '1' || v === 'true';
+}
+
+/**
+ * Whether a process's environment marks it as a relay spawned under a test
+ * RUNNER — the broader, production-safe fingerprint the reaper keys on (#1885).
+ *
+ * Matches EITHER the `KOOKR_RELAY_DIE_WITH_PARENT` marker (post-#1723 relays)
+ * OR any `VITEST*` env key. `relay-lifecycle` spawns the relay with
+ * `env: { ...process.env }`, so a relay launched by a vitest worker always
+ * inherits `VITEST` / `VITEST_WORKER_ID` / `VITEST_POOL_ID`. This is what caught
+ * #1885's real leak: 22 stranded relays in the main checkout that carried
+ * `VITEST` but NOT the die marker (they predate it), so the die-marker-only scan
+ * from #1723 was blind to them while they accumulated. A PRODUCTION relay is
+ * never launched under vitest and never carries the die marker, so neither
+ * signal can ever select it — the whole production-safety guarantee.
+ */
+export function isTestRunnerSpawnedRelayEnviron(env: Record<string, string> | null): boolean {
+  if (!env) return false;
+  if (isTestSpawnedRelayEnviron(env)) return true;
+  return Object.keys(env).some((key) => key === 'VITEST' || key.startsWith('VITEST_'));
 }
 
 export interface ScanStaleProcessesDeps {
@@ -92,6 +119,15 @@ export interface ScanStaleProcessesDeps {
   cwdExists?: (dir: string) => boolean;
   /** Pids to exclude from the result (e.g. the scanner's own process tree). */
   excludePids?: ReadonlySet<number>;
+  /**
+   * Read a process's environment (`/proc/<pid>/environ`) to detect the
+   * test-runner fingerprint (`KOOKR_RELAY_DIE_WITH_PARENT` or any `VITEST*` key;
+   * see {@link isTestRunnerSpawnedRelayEnviron}). Only invoked for relay-server
+   * processes, so the reaping sweep pays the environ read for a handful of pids,
+   * never the whole table. When unset (e.g. the `/api/health` summary path,
+   * which only needs counts) every `testSpawned` stays false.
+   */
+  readEnviron?: (pid: number) => Record<string, string> | null;
 }
 
 /**
@@ -107,6 +143,11 @@ export function scanStaleProcesses(deps: ScanStaleProcessesDeps): StaleProcess[]
     const klass = classifyProcess(proc.cmdline);
     if (!klass) continue;
     const ageMs = proc.startTimeMs === null ? null : Math.max(0, deps.now - proc.startTimeMs);
+    // Probe the environ only for relay servers, only when a reader is wired.
+    const testSpawned =
+      klass === 'relay-server' && deps.readEnviron
+        ? isTestRunnerSpawnedRelayEnviron(deps.readEnviron(proc.pid))
+        : false;
     out.push({
       pid: proc.pid,
       klass,
@@ -114,6 +155,7 @@ export function scanStaleProcesses(deps: ScanStaleProcessesDeps): StaleProcess[]
       rssBytes: proc.rssBytes,
       cwd: proc.cwd,
       cwdExists: proc.cwd === null ? false : cwdExists(proc.cwd),
+      testSpawned,
     });
   }
   return out;
@@ -152,10 +194,21 @@ export interface RelayReapPolicy {
 /**
  * Select which relay-server orphans a janitor sweep should reap.
  *
- * Safe by construction: the primary signal is a DELETED working directory (a
- * task worktree removed after `pnpm test`), which a live production relay never
- * has. Only when `maxAgeMs` is explicitly set does age alone qualify a process
- * — callers must opt into that and ensure the production relay is excluded.
+ * Safe by construction — two production-safe kill signals, both of which a live
+ * production relay can never satisfy:
+ *  1. A DELETED working directory (a task worktree removed after `pnpm test`);
+ *     a prod relay's cwd always exists.
+ *  2. The test-runner fingerprint (`p.testSpawned`: `KOOKR_RELAY_DIE_WITH_PARENT`
+ *     or any `VITEST*` marker); a prod relay carries neither. This is the fix
+ *     for issue #1885's
+ *     recurrence: test/e2e relays that outlived their runner while their
+ *     worktree is STILL present (reused worktrees, hourly-smoke ticks) — the
+ *     class the worktree-gone signal alone never reached, so they accumulated
+ *     to 29 orphans / ~1.5 GB after #1723.
+ *
+ * Both require a minimum age so a relay spawned this instant is not raced. Only
+ * when `maxAgeMs` is explicitly set does age alone qualify a process — callers
+ * must opt into that and ensure the production relay is excluded.
  *
  * `dtach` orphans are surfaced for visibility but NOT selected here; their
  * reaping is owned by #1720's session reconciler, which has the task/session
@@ -172,9 +225,61 @@ export function selectRelayOrphansToReap(
     const aged = p.ageMs === null ? false : p.ageMs >= minAgeMs;
     // Worktree gone → orphaned; require a minimum age to avoid a teardown race.
     if (!p.cwdExists && aged) return true;
+    // Test-spawn marker → a stranded test/e2e relay regardless of cwd (#1885).
+    if (p.testSpawned && aged) return true;
     // Age-only reaping is opt-in and never applies to a still-present cwd unless
     // the caller explicitly set a ceiling.
     if (maxAgeMs !== undefined && p.ageMs !== null && p.ageMs >= maxAgeMs) return true;
     return false;
   });
+}
+
+/** Default bound: alert once relay-server orphans exceed this count (#1885). */
+export const DEFAULT_RELAY_ORPHAN_BOUND = 5;
+
+/** First-class finding code emitted when the relay-orphan bound is exceeded. */
+export const RELAY_ORPHAN_FINDING_CODE = 'relay_orphan_accumulation';
+
+/**
+ * A first-class health finding: relay-server orphans have grown past the bound
+ * (issue #1885 acceptance criterion). Lets sentinel/reflection cite a stable
+ * `code` instead of re-deriving a threshold from raw counts every time.
+ */
+export interface RelayOrphanFinding {
+  code: typeof RELAY_ORPHAN_FINDING_CODE;
+  /** Current relay-server orphan count. */
+  count: number;
+  /** The bound that was exceeded. */
+  bound: number;
+  rssBytes: number;
+}
+
+/**
+ * Evaluate the relay-orphan bound against a scan summary. Returns a finding when
+ * `relayServer.count` strictly exceeds `bound`, else null (so the health block
+ * is only present when there is something to act on). Pure.
+ */
+export function evaluateRelayOrphanBound(
+  summary: StaleProcessSummary,
+  bound: number = DEFAULT_RELAY_ORPHAN_BOUND,
+): RelayOrphanFinding | null {
+  if (summary.relayServer.count <= bound) return null;
+  return {
+    code: RELAY_ORPHAN_FINDING_CODE,
+    count: summary.relayServer.count,
+    bound,
+    rssBytes: summary.relayServer.rssBytes,
+  };
+}
+
+/**
+ * Resolve the relay-orphan alert bound from the environment. Returns the
+ * default when unset, non-numeric, or negative — a small non-negative integer.
+ */
+export function resolveRelayOrphanBound(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_RELAY_ORPHAN_ALERT_BOUND?.trim();
+  if (!raw) return DEFAULT_RELAY_ORPHAN_BOUND;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_RELAY_ORPHAN_BOUND;
+  return Math.floor(value);
 }
