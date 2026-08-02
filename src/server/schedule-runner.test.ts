@@ -1415,6 +1415,248 @@ Do the plugin thing.
       expect(warned).toBe(false);
     });
   });
+  describe('schedule loop arming via launchLoopedPlaybook (#1899 / #1699 WS2.1)', () => {
+    it('arms an always-running loop via loopedLauncher when the schedule carries a loop config', async () => {
+      const schedule = store.create({
+        name: 'LoopArm',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: { repo: 'kookr-ai/kookr' } },
+        cwd: dir,
+        loop: {},
+        effort: 'max',
+        model: 'claude-fable-5',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const loopedLaunches: Array<{ id: string; name: string }> = [];
+      const runner = createRunner({
+        // One-shot launcher must NOT be called for loop-configured schedules.
+        launcher: async () => {
+          throw new Error('one-shot launcher must not be used for loop-configured schedules');
+        },
+        loopedLauncher: async (s) => {
+          loopedLaunches.push({ id: s.id, name: s.name });
+          const taskId = `loop-task-${++taskIdCounter}`;
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: { id: taskId } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+
+      expect(loopedLaunches).toEqual([{ id: schedule.id, name: 'LoopArm' }]);
+      expect(launched).toHaveLength(0);
+      expect(store.get(schedule.id)!.latestExecution).toEqual(expect.objectContaining({
+        taskId: 'loop-task-1',
+        outcome: 'running',
+      }));
+      expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+        taskId: 'loop-task-1',
+        outcome: 'running',
+        decision: 'cron_due',
+      }));
+    });
+
+    it('holds the relaunch lease under the armed loop task so a second fire is excluded (#1899)', async () => {
+      const schedule = store.create({
+        name: 'LoopLease',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: { iterationCap: 10 },
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const acquired: Array<{ key: string; holderId: string }> = [];
+      const holders = new Map<string, string>();
+      const arbiter = {
+        evaluate: (key: { repo: string; number: number }) => {
+          const k = `${key.repo}#${key.number}`;
+          const holder = holders.get(k);
+          if (holder) {
+            return {
+              admit: false as const,
+              reason: 'held' as const,
+              lease: { key, holderId: holder, acquiredAt: '' },
+            };
+          }
+          return { admit: true as const };
+        },
+        tryAcquire: (key: { repo: string; number: number }, holderId: string) => {
+          const k = `${key.repo}#${key.number}`;
+          acquired.push({ key: k, holderId });
+          const existing = holders.get(k);
+          if (existing && existing !== holderId) {
+            return {
+              ok: false as const,
+              reason: 'held' as const,
+              lease: { key, holderId: existing, acquiredAt: '' },
+            };
+          }
+          holders.set(k, holderId);
+          return { ok: true as const, lease: { key, holderId, acquiredAt: '' }, reentrant: false };
+        },
+      };
+
+      let loopCalls = 0;
+      const runner = createRunner({
+        relaunchArbiter: arbiter,
+        loopedLauncher: async () => {
+          loopCalls += 1;
+          const taskId = `loop-task-${loopCalls}`;
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: { id: taskId } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+      expect(loopCalls).toBe(1);
+      expect(acquired).toEqual([
+        { key: `schedule:${schedule.id}#0`, holderId: 'loop-task-1' },
+      ]);
+
+      // Clear the previous-run blocking gate so the only mutual-exclusion left
+      // is the relaunch arbiter (AC: arbiter prevents a second loop).
+      activeTaskIds.clear();
+      pendingTaskIds.clear();
+      activeCount = 0;
+      const afterFirst = store.get(schedule.id)!;
+      store.replace({
+        ...afterFirst,
+        latestExecution: afterFirst.latestExecution
+          ? { ...afterFirst.latestExecution, outcome: 'completed', taskId: undefined }
+          : undefined,
+        lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      await runner.tick();
+
+      // Second fire was denied by the arbiter (lease still held by loop-task-1).
+      expect(loopCalls).toBe(1);
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_relaunch_locked');
+      expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('relaunch_lease_held');
+      expect(store.get(schedule.id)!.latestExecution?.message).toContain('loop-task-1');
+    });
+
+    it('skips loop arm when the relaunch arbiter denies admission before launch (#1899)', async () => {
+      const schedule = store.create({
+        name: 'LoopDenied',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      let loopedCalled = false;
+      let tryAcquireCalled = false;
+      const runner = createRunner({
+        relaunchArbiter: {
+          evaluate: () => ({
+            admit: false as const,
+            reason: 'held' as const,
+            lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
+          }),
+          tryAcquire: () => {
+            tryAcquireCalled = true;
+            return { ok: true as const, lease: { key: catchUpKey(schedule.id), holderId: 'x', acquiredAt: '' }, reentrant: false };
+          },
+        },
+        loopedLauncher: async () => {
+          loopedCalled = true;
+          return { task: { id: 'should-not-launch' } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+
+      expect(loopedCalled).toBe(false);
+      expect(tryAcquireCalled).toBe(false);
+      expect(store.get(schedule.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+        outcome: 'skipped_relaunch_locked',
+        reasonCode: 'relaunch_lease_held',
+      }));
+      expect(store.get(schedule.id)!.latestExecution?.message).toContain('other-actuator');
+    });
+
+    it('records dispatch_failed when a loop-configured schedule has no loopedLauncher wired (#1899)', async () => {
+      const schedule = store.create({
+        name: 'LoopUnwired',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      // createRunner without loopedLauncher — loop config must not fall through
+      // to the one-shot launcher (that would silently drop the loop intent).
+      let oneShotCalled = false;
+      const runner = createRunner({
+        launcher: async () => {
+          oneShotCalled = true;
+          return { task: { id: 'one-shot' } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+
+      expect(oneShotCalled).toBe(false);
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+      expect(store.get(schedule.id)!.latestExecution?.message).toMatch(/no looped launcher/i);
+    });
+
+    it('unwinds a loop-arm task that loses the relaunch-lease CAS mid-fire (#1899 / #1914)', async () => {
+      const schedule = store.create({
+        name: 'LoopLeaseLost',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const unwound: Array<{ taskId: string; detail: string }> = [];
+      const runner = createRunner({
+        relaunchArbiter: {
+          evaluate: () => ({ admit: true as const }),
+          tryAcquire: () => ({
+            ok: false as const,
+            reason: 'held' as const,
+            lease: { key: catchUpKey(schedule.id), holderId: 'other-actuator', acquiredAt: '' },
+          }),
+        },
+        terminateCatchUpDuplicate: (taskId, detail) => {
+          unwound.push({ taskId, detail });
+        },
+        loopedLauncher: async () => {
+          const taskId = 'loop-dup-1';
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: { id: taskId } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+
+      expect(unwound).toEqual([
+        { taskId: 'loop-dup-1', detail: 'relaunch lease taken mid-fire by other-actuator' },
+      ]);
+    });
+  });
+
 });
 
 describe('isTaskBlockingSchedule', () => {
@@ -2044,4 +2286,5 @@ Launch and stall.
     // ...but IS in the genuinely-resolved set that gates recovery alerts.
     expect(resolvedIds).toEqual([healthy.id]);
   });
+
 });

@@ -35,7 +35,7 @@ import {
 } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
-import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
+import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
@@ -1741,6 +1741,27 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getScheduleFailureAlertThreshold,
     // issue #1896: sweep provider-paused resumes on the runner's existing tick.
     resetScheduler: providerResetScheduler,
+    // issue #1899 / #1699 WS2.1: arm always-running Ralph loops from schedules
+    // that carry a loop config (gated behind the WS0.5 relaunch arbiter).
+    ralphLoopService,
+    cleanupFailedTask: (taskId) => cancelTask(taskId, {
+      adapter,
+      monitor,
+      taskStore,
+      interactionLog,
+      hookWatcher,
+      watchdog,
+      shadowRegistry,
+      tokenTracker,
+      suppressionTracker,
+      terminalInputCoordinator,
+      onTaskOutcome: (id, outcome) => {
+        onTaskOutcomeHolder?.(id, outcome);
+      },
+      getCleanupWorktreeOnComplete,
+      reflectWorktreesDir,
+      ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
+    }),
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);

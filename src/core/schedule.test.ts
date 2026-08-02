@@ -8,6 +8,8 @@ import {
   scheduleResolutionSignature,
   pruneExecutionLedger,
   isPendingLedgerEntry,
+  hasScheduleLoopConfig,
+  normalizeScheduleLoopConfig,
   MAX_LEDGER_ENTRIES,
   type ScheduleExecutionLedgerEntry,
 } from './schedule.js';
@@ -77,6 +79,55 @@ describe('ScheduleStore', () => {
     });
     expect(schedule.effort).toBeUndefined();
     expect(schedule.model).toBeUndefined();
+  });
+
+  it('persists a loop config (empty {} is enough to arm) and clears it on null (#1899)', async () => {
+    const schedule = store.create({
+      name: 'Always-on batch',
+      cron: '0 * * * *',
+      playbook: { path: 'loopable-batch.md', parameters: {} },
+      cwd: '/tmp',
+      loop: {},
+    });
+    expect(hasScheduleLoopConfig(schedule)).toBe(true);
+    expect(schedule.loop).toEqual({});
+
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    const loaded = reloaded.get(schedule.id)!;
+    expect(hasScheduleLoopConfig(loaded)).toBe(true);
+    expect(loaded.loop).toEqual({});
+
+    // Nested playbook.loop is accepted on create and normalized onto Schedule.loop.
+    const nested = store.create({
+      name: 'Nested loop',
+      cron: '0 * * * *',
+      playbook: { path: 'batch.md', parameters: {}, loop: { iterationCap: 12 } },
+      cwd: '/tmp',
+    });
+    expect(nested.loop).toEqual({ iterationCap: 12 });
+    expect(nested.playbook.loop).toBeUndefined(); // not stored under playbook
+
+    // Explicit null clears the arming flag.
+    const cleared = reloaded.updateDefinition(schedule.id, { loop: null });
+    expect(hasScheduleLoopConfig(cleared)).toBe(false);
+    expect(cleared.loop).toBeUndefined();
+
+    // Update with fields replaces.
+    const withCap = reloaded.updateDefinition(schedule.id, { loop: { iterationCap: 8, costCapUsd: 2.5 } });
+    expect(withCap.loop).toEqual({ iterationCap: 8, costCapUsd: 2.5 });
+  });
+
+  it('normalizeScheduleLoopConfig accepts empty object and drops malformed fields (#1899)', () => {
+    expect(normalizeScheduleLoopConfig({})).toEqual({});
+    expect(normalizeScheduleLoopConfig({ iterationCap: 6, stopPredicate: 'test -f stop' })).toEqual({
+      iterationCap: 6,
+      stopPredicate: 'test -f stop',
+    });
+    expect(normalizeScheduleLoopConfig({ iterationCap: -1, costCapUsd: 'nope' })).toEqual({});
+    expect(normalizeScheduleLoopConfig(null)).toBeUndefined();
+    expect(normalizeScheduleLoopConfig('loop')).toBeUndefined();
   });
 
   it('creates a schedule with a finite cron trigger limit', () => {

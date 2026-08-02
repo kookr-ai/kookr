@@ -1,7 +1,12 @@
 import { existsSync } from 'node:fs';
 import type { ScheduleStore, Schedule } from '../core/schedule.js';
 import { nextRun } from '../core/cron.js';
-import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSignature } from '../core/schedule.js';
+import {
+  ScheduleValidationError,
+  hasScheduleLoopConfig,
+  isTriggerLimitExhausted,
+  scheduleResolutionSignature,
+} from '../core/schedule.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
@@ -17,17 +22,19 @@ import type { ClaimKey } from '../core/issue-claim-types.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
 
 /**
- * Synthetic relaunch-arbiter identity for a schedule's startup catch-up fire
- * (issue #1900 / #1699 WS2.2). The arbiter keys on issue-claim identity
- * (`repo` + `number`); a catch-up fire has no issue at fire time, so it keys on
- * the schedule instead — giving the catch-up path its own mutual-exclusion +
- * backoff slot without colliding with the real `github.com/...` issue keys the
- * launch-path lease gate uses. Coordinates catch-up against any other actuator
- * that adopts the same schedule-scoped key (a future WS2 loop-arming caller).
+ * Synthetic relaunch-arbiter identity for a schedule unit (issue #1900 catch-up
+ * / #1899 loop-arming / #1699 WS2). The arbiter keys on issue-claim identity
+ * (`repo` + `number`); schedule actuators have no GitHub issue at fire time, so
+ * they key on the schedule instead — giving catch-up and loop-arming a shared
+ * mutual-exclusion + backoff slot without colliding with the real
+ * `github.com/...` issue keys the launch-path lease gate uses.
  */
-function catchUpClaimKey(schedule: Schedule): ClaimKey {
+export function scheduleRelaunchClaimKey(schedule: Pick<Schedule, 'id'>): ClaimKey {
   return { repo: `schedule:${schedule.id}`, number: 0 };
 }
+
+/** @deprecated Prefer {@link scheduleRelaunchClaimKey}; alias retained for older call sites. */
+const catchUpClaimKey = scheduleRelaunchClaimKey;
 
 /**
  * Cross-tier resolution probe for {@link crossTierResolutionHint} (#1661).
@@ -167,29 +174,39 @@ export interface ScheduleRunnerDeps {
    */
   fireTimeoutMs?: number;
   /**
-   * WS0.5 relaunch arbiter (issue #1900 / #1711 / #1699 WS2.2). When provided,
-   * startup catch-up fires are gated behind it: a missed run is admitted only
-   * when the schedule's relaunch lease is free (no concurrent actuator holds
-   * it and no post-release backoff is live), then held under the fired task so
-   * it cannot be duplicated for that task's lifetime. Absent means catch-up
-   * fires ungated (back-compat for older wiring/tests). Only the catch-up path
-   * consults it — the umbrella specifies catch-up runs "after the lease gate".
+   * WS0.5 relaunch arbiter (issue #1900 / #1711 / #1699 WS2 / #1899). When
+   * provided:
+   * - startup catch-up fires are gated behind it (a missed run is admitted
+   *   only when the schedule's relaunch lease is free);
+   * - loop-configured schedules arming a Ralph loop via
+   *   {@link loopedLauncher} are gated the same way so two actuators cannot
+   *   arm duplicate always-running loops for the same unit.
+   * In both cases the lease is held under the fired task for that task's
+   * lifetime. Absent means those paths fire ungated (back-compat for older
+   * wiring/tests).
    */
   relaunchArbiter?: Pick<RelaunchArbiter, 'evaluate' | 'tryAcquire'>;
   /**
-   * Unwind a catch-up fire that launched but then LOST the relaunch-lease CAS
-   * (issue #1914). The catch-up path evaluates the lease before firing, but the
-   * `await fire()` between that evaluate and the post-fire `tryAcquire` is a
-   * window in which another actuator (or a post-release backoff) can take the
-   * schedule's lease. When that happens the just-launched `catch_up` task is a
-   * duplicate of work the lease holder already owns; this callback terminates
-   * it (best-effort) so the arbiter's mutual-exclusion invariant is enforced by
-   * code rather than left to the single-serial-actuator assumption. Given a
-   * fired `taskId` and a short operator-facing `detail`. Absent (older
-   * wiring/tests) means a lost acquire is only logged (the prior behavior);
-   * only the catch-up path invokes it.
+   * Unwind a catch-up / loop-arm fire that launched but then LOST the
+   * relaunch-lease CAS (issue #1914 / #1899). The path evaluates the lease
+   * before launching, but the `await launch` between that evaluate and the
+   * post-fire `tryAcquire` is a window in which another actuator (or a
+   * post-release backoff) can take the schedule's lease. When that happens the
+   * just-launched task is a duplicate of work the lease holder already owns;
+   * this callback terminates it (best-effort) so the arbiter's mutual-exclusion
+   * invariant is enforced by code. Given a fired `taskId` and a short
+   * operator-facing `detail`. Absent (older wiring/tests) means a lost acquire
+   * is only logged (the prior behavior).
    */
   terminateCatchUpDuplicate?: (taskId: string, detail: string) => void;
+  /**
+   * Launch an always-running Ralph loop for a schedule that carries a loop
+   * config (issue #1899 / #1699 WS2.1). Wired to `launchLoopedPlaybook` in
+   * production. When a schedule has {@link Schedule.loop} set and this is
+   * absent, the fire records `dispatch_failed` rather than falling through to
+   * a one-shot launch (a one-shot would silently drop the loop intent).
+   */
+  loopedLauncher?: (schedule: Schedule) => Promise<LaunchResult>;
 }
 
 export class ScheduleRunner {
@@ -627,6 +644,14 @@ export class ScheduleRunner {
       return { error: 'SAFE MODE — automation kill-switch engaged' };
     }
 
+    // Always-running (Ralph) loop arming (issue #1899 / #1699 WS2.1): a
+    // schedule with a loop config routes through launchLoopedPlaybook, gated
+    // behind the WS0.5 relaunch arbiter so concurrent actuators cannot arm
+    // duplicate loops for the same schedule unit.
+    if (hasScheduleLoopConfig(schedule)) {
+      return this.fireLooped(schedule, receipt);
+    }
+
     // #1526 Phase A / FM8: no capacity pre-check here anymore. At capacity,
     // the launcher (the normal task-submission path) pends the task instead
     // of launching it — same as any other over-cap POST /api/tasks — so a
@@ -666,25 +691,112 @@ export class ScheduleRunner {
       );
       return { taskId: result.task.id, queued: result.queued };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const reasonCode = mapErrorToReasonCode(err);
-      // issue #1589: a launch that reached the adapter and then timed out/threw
-      // carries its per-phase timings on the error. Stamp them onto the
-      // dispatch_failed ledger row so the failed fire is diagnosable straight
-      // from the ledger — the row would otherwise have no taskId link, since a
-      // failed fire never calls markExecutionAccepted.
-      const launchPhaseTimings = launchPhaseTimingsOf(err);
-      console.error(`[schedule] Error firing "${schedule.name}":`, message);
+      return this.recordFireFailure(schedule, receipt, err);
+    }
+  }
+
+  /**
+   * Arm an always-running Ralph loop for a loop-configured schedule (issue
+   * #1899 / #1699 WS2.1).
+   *
+   * Admission is gated behind the WS0.5 relaunch arbiter when one is wired:
+   * evaluate before launching so a denied arm creates no task, then acquire
+   * the lease under the fired task so a concurrent catch-up / re-dispatch /
+   * second cron tick cannot arm a duplicate loop for this schedule unit.
+   * Mirrors {@link catchUpFire}'s CAS shape (including the mid-fire lose
+   * unwind via {@link ScheduleRunnerDeps.terminateCatchUpDuplicate}).
+   */
+  private async fireLooped(
+    schedule: Schedule,
+    receipt: { id: string },
+  ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+    const arbiter = this.deps.relaunchArbiter;
+    const claimKey = scheduleRelaunchClaimKey(schedule);
+
+    if (arbiter) {
+      const decision = arbiter.evaluate(claimKey);
+      if (!decision.admit) {
+        const message = decision.reason === 'backoff'
+          ? `Loop arm withheld — relaunch lease in backoff for ${Math.ceil(decision.retryAfterMs / 1000)}s`
+          : `Loop arm withheld — relaunch lease held by ${decision.lease.holderId}`;
+        console.log(`[schedule] Skipping loop arm for "${schedule.name}" — ${message}`);
+        await this.deps.service.markExecutionOutcome(
+          schedule.id,
+          receipt.id,
+          'skipped_relaunch_locked',
+          'relaunch_lease_held',
+          message,
+        );
+        return { error: message };
+      }
+    }
+
+    if (!this.deps.loopedLauncher) {
+      const message = 'Schedule carries a loop config but no looped launcher is wired';
+      console.error(`[schedule] Error arming loop for "${schedule.name}":`, message);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
         receipt.id,
         'dispatch_failed',
-        reasonCode,
+        'launch_error',
         message,
-        launchPhaseTimings ? { launchPhaseTimings } : {},
       );
       return { error: message };
     }
+
+    try {
+      const result = await this.deps.loopedLauncher(schedule);
+      await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
+      console.log(
+        `[schedule] Armed loop for "${schedule.name}" → task ${result.task.id}`
+        + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
+      );
+
+      // Hold the relaunch lease under the fired task so a concurrent actuator
+      // (catch-up, re-dispatch, second cron tick) is excluded for its lifetime.
+      if (arbiter && result.task.id) {
+        const acquire = arbiter.tryAcquire(claimKey, result.task.id);
+        if (!acquire.ok) {
+          const detail =
+            acquire.reason === 'backoff'
+              ? `relaunch lease entered backoff mid-fire (retry in ${Math.ceil(acquire.retryAfterMs / 1000)}s)`
+              : `relaunch lease taken mid-fire by ${acquire.lease.holderId}`;
+          console.warn(
+            `[schedule] Loop arm for "${schedule.name}" launched task ${result.task.id} but lost the relaunch lease (${acquire.reason}); unwinding the duplicate — ${detail}`,
+          );
+          this.deps.terminateCatchUpDuplicate?.(result.task.id, detail);
+        }
+      }
+
+      return { taskId: result.task.id, queued: result.queued };
+    } catch (err) {
+      return this.recordFireFailure(schedule, receipt, err);
+    }
+  }
+
+  private async recordFireFailure(
+    schedule: Schedule,
+    receipt: { id: string },
+    err: unknown,
+  ): Promise<{ error: string }> {
+    const message = err instanceof Error ? err.message : String(err);
+    const reasonCode = mapErrorToReasonCode(err);
+    // issue #1589: a launch that reached the adapter and then timed out/threw
+    // carries its per-phase timings on the error. Stamp them onto the
+    // dispatch_failed ledger row so the failed fire is diagnosable straight
+    // from the ledger — the row would otherwise have no taskId link, since a
+    // failed fire never calls markExecutionAccepted.
+    const launchPhaseTimings = launchPhaseTimingsOf(err);
+    console.error(`[schedule] Error firing "${schedule.name}":`, message);
+    await this.deps.service.markExecutionOutcome(
+      schedule.id,
+      receipt.id,
+      'dispatch_failed',
+      reasonCode,
+      message,
+      launchPhaseTimings ? { launchPhaseTimings } : {},
+    );
+    return { error: message };
   }
 
   private async catchUp(options: { manualOnly?: boolean; suppressOnly?: boolean } = {}): Promise<void> {
