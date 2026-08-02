@@ -13,6 +13,9 @@ import {
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
   DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+  DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+  DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
 } from '../config.js';
 import type { RouteDeps } from './shared.js';
 
@@ -185,6 +188,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
         circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+        providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+        providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
         sustainSamples: 3,
       },
       default: {
@@ -195,6 +201,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
         circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+        providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+        providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
         sustainSamples: 3,
       },
     });
@@ -218,6 +227,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: 1_000,
         circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+        providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+        providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
         sustainSamples: 2,
       },
       default: {
@@ -228,6 +240,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
         circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+        providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+        providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
         sustainSamples: 3,
       },
     });
@@ -239,6 +254,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: 1_000,
       circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+      providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+      providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+      providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
       sustainSamples: 2,
     });
   });
@@ -263,6 +281,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         'dataDirectoryFreePercent',
         'dataDirectoryFreeBytes',
         'circuitBreakerOpenMs',
+        'providerFallbackSubstitutions',
+        'providerFallbackWindowMs',
+        'providerPausedMs',
         'sustainSamples',
       ],
     });
@@ -274,6 +295,9 @@ describe('admin operational-alert-config routes (issue #737)', () => {
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
       circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+      providerFallbackSubstitutions: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+      providerFallbackWindowMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+      providerPausedMs: DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
       sustainSamples: 3,
     });
   });

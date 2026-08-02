@@ -8,6 +8,8 @@ import type { OperationalAlertConfig } from './config.js';
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 import type { CircuitBreakerSnapshot, CircuitBreakerState } from '../shared/contracts/circuit-breaker.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
+import { ProviderHealthTracker } from '../core/provider-health.js';
+import type { ProviderHealthSnapshot } from '../shared/contracts/provider-health.js';
 
 const DISABLED: OperationalAlertConfig = {
   cpuPercent: 0,
@@ -17,6 +19,9 @@ const DISABLED: OperationalAlertConfig = {
   dataDirectoryFreePercent: 0,
   dataDirectoryFreeBytes: 0,
   circuitBreakerOpenMs: 0,
+  providerFallbackSubstitutions: 0,
+  providerFallbackWindowMs: 0,
+  providerPausedMs: 0,
   sustainSamples: 3,
 };
 
@@ -667,5 +672,191 @@ describe('OperationalAlertEvaluator', () => {
     expect(fired).toHaveLength(1);
     expect(fired[0].summary).toContain('detection-stats');
     expect(fired[0].details).toContain('ENOSPC');
+  });
+
+  test('hasEnabledRules reflects provider-health thresholds paired with a getter', () => {
+    const tracker = new ProviderHealthTracker();
+    // A paused-duration threshold with a getter enables the rule.
+    expect(
+      createOperationalAlertEvaluator(
+        { ...DISABLED, providerPausedMs: 60_000 },
+        undefined,
+        () => tracker.snapshot(),
+      ).hasEnabledRules(),
+    ).toBe(true);
+    // A getter alone (all provider thresholds 0) is not enough.
+    expect(
+      createOperationalAlertEvaluator(DISABLED, undefined, () => tracker.snapshot()).hasEnabledRules(),
+    ).toBe(false);
+    // A substitution count without a positive window does not enable the rule.
+    expect(
+      createOperationalAlertEvaluator(
+        { ...DISABLED, providerFallbackSubstitutions: 3, providerFallbackWindowMs: 0 },
+        undefined,
+        () => tracker.snapshot(),
+      ).hasEnabledRules(),
+    ).toBe(false);
+  });
+
+  test('provider-health fires after N fallback substitutions within the window and clears when they age out', () => {
+    const tracker = new ProviderHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 3, providerFallbackWindowMs: 60_000, providerPausedMs: 0 },
+      undefined,
+      () => tracker.snapshot(),
+    );
+
+    // Baseline sample establishes the counter origin; nothing counted yet.
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:00.000Z' }))).toEqual([]);
+
+    tracker.recordSubstitution();
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:10.000Z' }))).toEqual([]);
+    tracker.recordSubstitution();
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:20.000Z' }))).toEqual([]);
+    tracker.recordSubstitution();
+
+    const fired = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:30.000Z' }));
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ agentId: OPERATIONAL_ALERT_AGENT_ID, severity: 'warning' });
+    expect(fired[0].summary).toContain('Provider pool degraded');
+    expect(fired[0].summary).toContain('3 fallback substitutions');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'fired',
+    });
+
+    // Standing alert: further breaching ticks do not re-alert.
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:40.000Z' }))).toEqual([]);
+
+    // Once all three substitutions age out of the 60s window, the alert clears.
+    const cleared = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:01:31.000Z' }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info' });
+    expect(cleared[0].summary).toContain('Recovered provider pool');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'recovered',
+    });
+  });
+
+  test('provider-health does not fire below the substitution threshold', () => {
+    const tracker = new ProviderHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 5, providerFallbackWindowMs: 60_000, providerPausedMs: 0 },
+      undefined,
+      () => tracker.snapshot(),
+    );
+
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:00.000Z' }))).toEqual([]);
+    tracker.recordSubstitution(2);
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:10.000Z' }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:20.000Z' }))).toEqual([]);
+  });
+
+  test('provider-health fires on paused-duration threshold and clears on resume', () => {
+    const tracker = new ProviderHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 0, providerFallbackWindowMs: 0, providerPausedMs: 60_000 },
+      undefined,
+      () => tracker.snapshot(),
+    );
+
+    tracker.setPaused(true, Date.parse('2026-05-13T00:00:00.000Z'));
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:59.999Z' }))).toEqual([]);
+
+    const fired = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:01:00.000Z' }));
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ agentId: OPERATIONAL_ALERT_AGENT_ID, severity: 'warning' });
+    expect(fired[0].summary).toContain('provider pool paused for');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'fired',
+    });
+
+    tracker.setPaused(false, Date.parse('2026-05-13T00:01:10.000Z'));
+    const cleared = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:01:11.000Z' }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info' });
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'recovered',
+    });
+
+    // A fresh pause episode after recovery must re-arm and fire again (proves the
+    // edge-trigger `firing` flag reset on recovery, not left latched).
+    tracker.setPaused(true, Date.parse('2026-05-13T00:02:00.000Z'));
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:02:30.000Z' }))).toEqual([]);
+    const refired = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:03:00.000Z' }));
+    expect(refired).toHaveLength(1);
+    expect(refired[0]).toMatchObject({ severity: 'warning' });
+    expect(refired[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'fired',
+    });
+  });
+
+  test('provider-health recovery text omits the disabled sub-rule (no "below 0 per 0ms")', () => {
+    const tracker = new ProviderHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 0, providerFallbackWindowMs: 0, providerPausedMs: 60_000 },
+      undefined,
+      () => tracker.snapshot(),
+    );
+
+    tracker.setPaused(true, Date.parse('2026-05-13T00:00:00.000Z'));
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:01:00.000Z' }))).toHaveLength(1);
+    tracker.setPaused(false, Date.parse('2026-05-13T00:01:10.000Z'));
+
+    const cleared = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:01:11.000Z' }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0].details).toContain('pool pause below');
+    expect(cleared[0].details).not.toContain('fallback substitutions');
+    expect(cleared[0].details).not.toContain('per 0ms');
+  });
+
+  test('provider-health rebases on a counter reset without firing phantom substitutions', () => {
+    const snapshot: ProviderHealthSnapshot = { substitutionCount: 10, pausedSince: null };
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 2, providerFallbackWindowMs: 600_000, providerPausedMs: 0 },
+      undefined,
+      () => snapshot,
+    );
+
+    // First observation of a high counter is a baseline, not 10 substitutions.
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:00.000Z' }))).toEqual([]);
+    // Producer restarts and the counter drops: a rebase, not negative deltas.
+    snapshot.substitutionCount = 1;
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:10.000Z' }))).toEqual([]);
+    // From the new baseline, two real substitutions fire.
+    snapshot.substitutionCount = 2;
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:20.000Z' }))).toEqual([]);
+    snapshot.substitutionCount = 3;
+    const fired = alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:30.000Z' }));
+    expect(fired).toHaveLength(1);
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'provider:health',
+      metric: 'provider_health',
+      state: 'fired',
+    });
+  });
+
+  test('provider-health rule is inert when both thresholds are 0', () => {
+    const snapshot: ProviderHealthSnapshot = {
+      substitutionCount: 1000,
+      pausedSince: Date.parse('2020-01-01T00:00:00.000Z'),
+    };
+    const evaluator = createOperationalAlertEvaluator(
+      { ...DISABLED, providerFallbackSubstitutions: 0, providerFallbackWindowMs: 0, providerPausedMs: 0 },
+      undefined,
+      () => snapshot,
+    );
+
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:00:00.000Z' }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ sampledAt: '2026-05-13T00:05:00.000Z' }))).toEqual([]);
   });
 });

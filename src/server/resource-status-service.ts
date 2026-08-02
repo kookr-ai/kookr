@@ -26,6 +26,14 @@ export interface ResourceStatusServiceDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   /** Optional operational-alert evaluator fed each broadcast sample. */
   alertEvaluator?: ResourceAlertEvaluator;
+  /**
+   * Optional durable sink for operational-alert fire/clear transitions (#1699
+   * WS0.3 JSONL sink). Called for every alert carrying `operationalAlert`
+   * metadata so a fire→clear that happens while no dashboard client is
+   * listening still leaves an on-disk trace. Fire-and-forget: the callback
+   * owns its own error handling and must not throw.
+   */
+  onOperationalAlert?: (alert: AlertMessage) => void;
   /** Optional provider for dependency breaker snapshots sampled with each resource tick. */
   getCircuitBreakerSnapshots?: () => CircuitBreakerSnapshot[];
   /**
@@ -70,6 +78,7 @@ export class ResourceStatusService {
   private readonly sampler: ResourceStatusSampler;
   private readonly broadcastToAll: (msg: ServerMessage) => void;
   private readonly alertEvaluator: ResourceAlertEvaluator | null;
+  private readonly onOperationalAlert: ((alert: AlertMessage) => void) | null;
   private readonly getCircuitBreakerSnapshots: (() => CircuitBreakerSnapshot[]) | null;
   private readonly onEventLoopDelaySample: ((delayMs: number | null) => void) | null;
   private readonly intervalMs: number;
@@ -92,6 +101,7 @@ export class ResourceStatusService {
     this.sampler = deps.sampler;
     this.broadcastToAll = deps.broadcastToAll;
     this.alertEvaluator = deps.alertEvaluator ?? null;
+    this.onOperationalAlert = deps.onOperationalAlert ?? null;
     this.getCircuitBreakerSnapshots = deps.getCircuitBreakerSnapshots ?? null;
     this.onEventLoopDelaySample = deps.onEventLoopDelaySample ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
@@ -168,6 +178,15 @@ export class ResourceStatusService {
         if (alert.type === 'alert') {
           this.logger.warn('[ops-alerts]', alert.summary);
           this.recordOperationalAlert(alert);
+          if (this.onOperationalAlert && alert.operationalAlert) {
+            // Durable JSONL sink is fire-and-forget and owns its error handling,
+            // but guard here too so a throwing sink can never kill the tick loop.
+            try {
+              this.onOperationalAlert(alert);
+            } catch (err) {
+              this.logger.warn('[resource-status] operational-alert sink threw; continuing', err);
+            }
+          }
         }
         this.broadcastToAll(alert);
       }

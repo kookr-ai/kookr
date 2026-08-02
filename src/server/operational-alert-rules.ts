@@ -7,6 +7,7 @@ import type {
   PersistenceHealthTarget,
   PersistenceTargetHealth,
 } from '../core/persistence-health.js';
+import type { ProviderHealthSnapshot } from '../shared/contracts/provider-health.js';
 
 /**
  * Synthetic agent id used for host-level operational alerts that are not tied
@@ -20,7 +21,8 @@ export type OperationalAlertMetric =
   | 'memory'
   | 'event_loop_delay'
   | 'process_rss'
-  | 'data_directory_disk_free';
+  | 'data_directory_disk_free'
+  | 'provider_health';
 
 const PERSISTENCE_TARGET_LABELS: Record<PersistenceHealthTarget, string> = {
   task_state: 'task-state',
@@ -73,6 +75,24 @@ interface CircuitBreakerRuleState {
   configKey: string | null;
 }
 
+/** One windowed fallback-substitution increment: how many happened, and when. */
+interface SubstitutionWindowEntry {
+  atMs: number;
+  delta: number;
+}
+
+/** Mutable edge-trigger state for the provider-health rule. */
+interface ProviderHealthRuleState {
+  /** Whether the standing provider-health alert is currently firing. */
+  firing: boolean;
+  /** Threshold tuple that owns the current firing state. */
+  configKey: string | null;
+  /** Last observed monotonic substitution counter, or `null` before the first sample. */
+  lastSubstitutionCount: number | null;
+  /** Recent substitution increments retained for windowed counting. */
+  substitutionWindow: SubstitutionWindowEntry[];
+}
+
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
  * signals (CPU, memory, event-loop delay, process RSS, data-directory disk
@@ -100,13 +120,22 @@ export class OperationalAlertEvaluator {
   private readonly getPersistenceHealth: (() => PersistenceHealthSnapshot) | null;
   private readonly persistenceStates = new Map<PersistenceHealthTarget, PersistenceRuleState>();
   private readonly circuitBreakerStates = new Map<string, CircuitBreakerRuleState>();
+  private readonly getProviderHealth: (() => ProviderHealthSnapshot) | null;
+  private readonly providerHealthState: ProviderHealthRuleState = {
+    firing: false,
+    configKey: null,
+    lastSubstitutionCount: null,
+    substitutionWindow: [],
+  };
 
   constructor(
     config: OperationalAlertConfig | (() => OperationalAlertConfig),
     getPersistenceHealth?: () => PersistenceHealthSnapshot,
+    getProviderHealth?: () => ProviderHealthSnapshot,
   ) {
     this.getConfig = typeof config === 'function' ? config : () => config;
     this.getPersistenceHealth = getPersistenceHealth ?? null;
+    this.getProviderHealth = getProviderHealth ?? null;
     this.rules = [
       {
         metric: 'cpu',
@@ -139,7 +168,7 @@ export class OperationalAlertEvaluator {
     this.persistenceStates.set('detection_stats', { firing: false, configKey: null });
   }
 
-  /** Whether any host-resource or persistence-health rule is enabled. */
+  /** Whether any host-resource, persistence-health, or provider-health rule is enabled. */
   hasEnabledRules(): boolean {
     const config = this.getConfig();
     return this.getPersistenceHealth !== null
@@ -147,7 +176,15 @@ export class OperationalAlertEvaluator {
       || config.processRssBytes > 0
       || config.dataDirectoryFreePercent > 0
       || config.dataDirectoryFreeBytes > 0
-      || config.circuitBreakerOpenMs > 0;
+      || config.circuitBreakerOpenMs > 0
+      || (this.getProviderHealth !== null && this.providerHealthRulesEnabled(config));
+  }
+
+  /** Whether either provider-health sub-rule (substitution window / paused duration) is configured. */
+  private providerHealthRulesEnabled(config: OperationalAlertConfig): boolean {
+    const substitutionEnabled = config.providerFallbackSubstitutions > 0 && config.providerFallbackWindowMs > 0;
+    const pausedEnabled = config.providerPausedMs > 0;
+    return substitutionEnabled || pausedEnabled;
   }
 
   /**
@@ -198,6 +235,7 @@ export class OperationalAlertEvaluator {
     messages.push(...this.evaluateDataDirectoryDiskPressure(status, config, sustainSamples));
     messages.push(...this.evaluatePersistenceHealth(sustainSamples));
     messages.push(...this.evaluateCircuitBreakers(status, config));
+    messages.push(...this.evaluateProviderHealth(status, config));
     return messages;
   }
 
@@ -407,6 +445,106 @@ export class OperationalAlertEvaluator {
     return messages;
   }
 
+  /**
+   * Provider-health rule (issue #1897, WS1.5 of #1699). Fires a single standing
+   * `warning` alert once the provider pool looks chronically degraded — either
+   * `providerFallbackSubstitutions` fallback substitutions land inside a rolling
+   * `providerFallbackWindowMs` window, OR the pool has been paused for at least
+   * `providerPausedMs`. Clears with one `info` alert when both signals fall back
+   * below their thresholds.
+   *
+   * Windowing is owned here so producers only maintain a monotonic substitution
+   * counter (WS1.3): each tick, the positive delta of that counter is stamped
+   * with the sample time and old entries slide out of the window. A counter
+   * decrease (producer reset / process restart) rebases without emitting
+   * phantom substitutions. Paused-duration reuses the circuit-breaker approach —
+   * `sampledAt` minus the snapshot's `pausedSince` edge.
+   *
+   * Fail-open: a missing getter or a disabled config resets the rule and never
+   * fires; a non-finite counter is ignored for that tick.
+   */
+  private evaluateProviderHealth(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+  ): ServerMessage[] {
+    if (!this.getProviderHealth) return [];
+    const state = this.providerHealthState;
+    const substitutionThreshold = config.providerFallbackSubstitutions;
+    const windowMs = config.providerFallbackWindowMs;
+    const pausedThresholdMs = config.providerPausedMs;
+    const substitutionRuleEnabled = substitutionThreshold > 0 && windowMs > 0;
+    const pausedRuleEnabled = pausedThresholdMs > 0;
+
+    if (!substitutionRuleEnabled && !pausedRuleEnabled) {
+      resetProviderHealthState(state);
+      return [];
+    }
+
+    const configKey = `provider-health:${substitutionThreshold}:${windowMs}:${pausedThresholdMs}`;
+    if (state.configKey !== null && state.configKey !== configKey) {
+      resetProviderHealthState(state);
+    }
+    state.configKey = configKey;
+
+    const snapshot = this.getProviderHealth();
+    const sampledAtMs = Date.parse(status.sampledAt);
+    const nowMs = Number.isFinite(sampledAtMs) ? sampledAtMs : Date.now();
+
+    let substitutionsInWindow = 0;
+    if (substitutionRuleEnabled) {
+      const count = snapshot.substitutionCount;
+      if (Number.isFinite(count)) {
+        if (state.lastSubstitutionCount === null || count < state.lastSubstitutionCount) {
+          // First observation or a counter reset (producer restart): rebase to
+          // the current value without counting the jump as substitutions.
+          state.substitutionWindow = [];
+        } else if (count > state.lastSubstitutionCount) {
+          state.substitutionWindow.push({ atMs: nowMs, delta: count - state.lastSubstitutionCount });
+        }
+        state.lastSubstitutionCount = count;
+        const cutoff = nowMs - windowMs;
+        state.substitutionWindow = state.substitutionWindow.filter((entry) => entry.atMs >= cutoff);
+        substitutionsInWindow = state.substitutionWindow.reduce((sum, entry) => sum + entry.delta, 0);
+      }
+    } else {
+      state.substitutionWindow = [];
+      state.lastSubstitutionCount = null;
+    }
+
+    let pausedForMs: number | null = null;
+    if (pausedRuleEnabled && snapshot.pausedSince !== null && Number.isFinite(snapshot.pausedSince)) {
+      pausedForMs = Math.max(0, nowMs - snapshot.pausedSince);
+    }
+
+    const substitutionBreached = substitutionRuleEnabled && substitutionsInWindow >= substitutionThreshold;
+    const pausedBreached = pausedForMs !== null && pausedForMs >= pausedThresholdMs;
+    const breached = substitutionBreached || pausedBreached;
+
+    if (breached && !state.firing) {
+      state.firing = true;
+      return [buildProviderHealthBreachAlert({
+        substitutionsInWindow,
+        substitutionThreshold,
+        windowMs,
+        pausedForMs,
+        pausedThresholdMs,
+        substitutionBreached,
+        pausedBreached,
+      })];
+    }
+    if (!breached && state.firing) {
+      state.firing = false;
+      return [buildProviderHealthRecoveryAlert({
+        substitutionThreshold,
+        windowMs,
+        pausedThresholdMs,
+        substitutionRuleEnabled,
+        pausedRuleEnabled,
+      })];
+    }
+    return [];
+  }
+
   private getCircuitBreakerState(name: string): CircuitBreakerRuleState {
     let state = this.circuitBreakerStates.get(name);
     if (!state) {
@@ -431,6 +569,13 @@ function resetPersistenceState(state: PersistenceRuleState): void {
 function resetCircuitBreakerState(state: CircuitBreakerRuleState): void {
   state.firing = false;
   state.configKey = null;
+}
+
+function resetProviderHealthState(state: ProviderHealthRuleState): void {
+  state.firing = false;
+  state.configKey = null;
+  state.lastSubstitutionCount = null;
+  state.substitutionWindow = [];
 }
 
 function formatValue(rule: Pick<ActiveRuleDefinition, 'unit'>, value: number): string {
@@ -695,6 +840,83 @@ function buildCircuitBreakerRecoveryAlert(
   };
 }
 
+const PROVIDER_HEALTH_ALERT_KEY = 'provider:health';
+
+function describeProviderSubstitutions(count: number, threshold: number, windowMs: number): string {
+  return `${formatCount(count, 'fallback substitution')} within ${formatDuration(windowMs)} (threshold ${threshold})`;
+}
+
+function buildProviderHealthBreachAlert(args: {
+  substitutionsInWindow: number;
+  substitutionThreshold: number;
+  windowMs: number;
+  pausedForMs: number | null;
+  pausedThresholdMs: number;
+  substitutionBreached: boolean;
+  pausedBreached: boolean;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  const reasons: string[] = [];
+  if (args.substitutionBreached) {
+    reasons.push(
+      describeProviderSubstitutions(args.substitutionsInWindow, args.substitutionThreshold, args.windowMs),
+    );
+  }
+  if (args.pausedBreached && args.pausedForMs !== null) {
+    reasons.push(`provider pool paused for ${formatDuration(args.pausedForMs)} (threshold ${formatDuration(args.pausedThresholdMs)})`);
+  }
+  const reasonText = reasons.join(' and ');
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Provider pool degraded: ${reasonText}`,
+    details:
+      `Standing operational alert: the provider pool is degraded — ${reasonText}. ` +
+      'Repeated fallback substitutions or a sustained pause indicate a chronic upstream/provider ' +
+      'outage that failover is masking. Inspect provider credentials/quota and the dispatch fallback ' +
+      'chain; the alert clears automatically once substitutions fall out of the window and the pool resumes.',
+    severity,
+    operationalAlert: {
+      key: PROVIDER_HEALTH_ALERT_KEY,
+      metric: 'provider_health',
+      state: 'fired',
+    },
+  };
+}
+
+function buildProviderHealthRecoveryAlert(args: {
+  substitutionThreshold: number;
+  windowMs: number;
+  pausedThresholdMs: number;
+  substitutionRuleEnabled: boolean;
+  pausedRuleEnabled: boolean;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  // Only describe the sub-rules that are actually enabled, so a paused-only or
+  // substitution-only configuration does not render a nonsensical "below 0 per
+  // 0ms" clause for the disabled half.
+  const parts: string[] = [];
+  if (args.substitutionRuleEnabled) {
+    parts.push(`fallback substitutions back below ${args.substitutionThreshold} per ${formatDuration(args.windowMs)}`);
+  }
+  if (args.pausedRuleEnabled) {
+    parts.push(`pool pause below ${formatDuration(args.pausedThresholdMs)}`);
+  }
+  const detail = parts.join(' and ');
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: 'Recovered provider pool: back below degradation thresholds',
+    details: `Operational alert cleared: provider pool healthy — ${detail}.`,
+    severity,
+    operationalAlert: {
+      key: PROVIDER_HEALTH_ALERT_KEY,
+      metric: 'provider_health',
+      state: 'recovered',
+    },
+  };
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   const seconds = ms / 1000;
@@ -708,6 +930,7 @@ function formatDuration(ms: number): string {
 export function createOperationalAlertEvaluator(
   config: OperationalAlertConfig | (() => OperationalAlertConfig),
   getPersistenceHealth?: () => PersistenceHealthSnapshot,
+  getProviderHealth?: () => ProviderHealthSnapshot,
 ): OperationalAlertEvaluator {
-  return new OperationalAlertEvaluator(config, getPersistenceHealth);
+  return new OperationalAlertEvaluator(config, getPersistenceHealth, getProviderHealth);
 }

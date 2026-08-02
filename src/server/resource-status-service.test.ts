@@ -141,6 +141,95 @@ describe('ResourceStatusService', () => {
     }
   });
 
+  test('routes operational alerts with metadata to the durable sink hook, skipping generic alerts', () => {
+    vi.useFakeTimers();
+    try {
+      const sunk: ServerMessage[] = [];
+      const genericAlert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'generic dashboard alert (no operational metadata)',
+        severity: 'warning',
+      };
+      const firedAlert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'Provider pool degraded',
+        severity: 'warning',
+        operationalAlert: { key: 'provider:health', metric: 'provider_health', state: 'fired' },
+      };
+      const recoveredAlert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'Recovered provider pool',
+        severity: 'info',
+        operationalAlert: { key: 'provider:health', metric: 'provider_health', state: 'recovered' },
+      };
+      const emissions: ServerMessage[][] = [[genericAlert], [firedAlert], [recoveredAlert]];
+      let calls = 0;
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: vi.fn(),
+        alertEvaluator: { evaluate: () => emissions[calls++] ?? [] },
+        onOperationalAlert: (alert) => sunk.push(alert),
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+      });
+
+      service.start(); // emits the generic alert (no metadata) — must not reach the sink
+      vi.advanceTimersByTime(2_000); // fired
+      vi.advanceTimersByTime(2_000); // recovered
+
+      expect(sunk).toEqual([firedAlert, recoveredAlert]);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a throwing durable sink hook never kills the tick loop', () => {
+    vi.useFakeTimers();
+    try {
+      const firedAlert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'Provider pool degraded',
+        severity: 'warning',
+        operationalAlert: { key: 'provider:health', metric: 'provider_health', state: 'fired' },
+      };
+      const broadcasts: ServerMessage[] = [];
+      const warn = vi.fn();
+      let calls = 0;
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: (msg) => broadcasts.push(msg),
+        alertEvaluator: { evaluate: () => (++calls === 1 ? [firedAlert] : []) },
+        onOperationalAlert: () => {
+          throw new Error('sink is on fire');
+        },
+        logger: { warn },
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+      });
+
+      service.start();
+      // The alert still broadcasts despite the throwing sink, and the next tick runs.
+      expect(broadcasts).toContainEqual(firedAlert);
+      // The throw was caught by the intended guard (not swallowed elsewhere).
+      expect(warn).toHaveBeenCalledWith(
+        '[resource-status] operational-alert sink threw; continuing',
+        expect.any(Error),
+      );
+      vi.advanceTimersByTime(2_000);
+      expect(broadcasts.filter((m) => m.type === 'resourceStatus')).toHaveLength(2);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('retains operational alert fire and recovery events in a bounded history', () => {
     vi.useFakeTimers();
     try {
