@@ -268,18 +268,33 @@ export function normalizeAgentSelection(value: string | undefined | null): Agent
  * filtered to `available` so the rotation only ever yields a launchable agent
  * — and collapses to a single agent (or {@link DEFAULT_AGENT_TYPE} when none
  * are registered) when fewer than two are present.
+ *
+ * `deprioritized` is the failover precondition of issue #1898 (WS1.6): agent
+ * types whose recent boot-latency signal is unhealthy (see
+ * `AgentBootLatencyMonitor`). Such agents are skipped by the rotation — so a
+ * boot-unreliable grok-build is not selected only to hang until the fire()
+ * wall-clock cap (#1708) trips — BUT only while at least one non-deprioritized
+ * agent remains launchable. When every available agent is deprioritized the
+ * full rotation is used unchanged: something must launch, and the fire() cap
+ * stays the backstop for a sole-but-unhealthy agent.
  */
 export function resolveRoundRobinAgent(
   cursor: number,
   available: readonly AgentType[],
+  deprioritized: readonly AgentType[] = [],
 ): AgentType {
   const rotation = AVAILABLE_AGENT_TYPES
     .map((entry) => entry.type)
     .filter((type) => available.includes(type));
   if (rotation.length === 0) return DEFAULT_AGENT_TYPE;
+  let effective = rotation;
+  if (deprioritized.length > 0) {
+    const healthy = rotation.filter((type) => !deprioritized.includes(type));
+    if (healthy.length > 0) effective = healthy;
+  }
   const safeCursor = Number.isInteger(cursor) && cursor >= 0 ? cursor : 0;
-  const index = safeCursor % rotation.length;
-  return rotation[index] ?? DEFAULT_AGENT_TYPE;
+  const index = safeCursor % effective.length;
+  return effective[index] ?? DEFAULT_AGENT_TYPE;
 }
 
 /**

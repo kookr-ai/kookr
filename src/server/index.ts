@@ -45,6 +45,7 @@ import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { LaunchOutcomeMetrics } from '../core/launch-outcome-metrics.js';
+import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -1393,6 +1394,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // launch service (writers) and diagnostics routes (readers).
   const launchOutcomeMetrics = new LaunchOutcomeMetrics();
 
+  // Boot-reliability (launch-latency) signal (issue #1898, WS1.6) — fed one
+  // `agent-boot` sample per finalized launch from the #1589 phase timings, and
+  // read at round-robin resolution to deprioritize an agent (the motivating
+  // case: grok-build's >90s boot hang, #1642) whose recent boots are unhealthy
+  // instead of selecting it and relying on the fire() wall-clock cap (#1708).
+  const agentBootLatency = new AgentBootLatencyMonitor();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1402,6 +1410,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     getDefaultAgentType,
     roundRobinCursor,
+    getDeprioritizedAgentTypes: (available) => agentBootLatency.deprioritizedTypes(available),
+    recordLaunchBootLatency: (agentType, timings) => agentBootLatency.record(agentType, timings),
     interactionLog,
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
@@ -1785,6 +1795,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     launchOutcomeMetrics,
+    agentBootLatency,
     taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,

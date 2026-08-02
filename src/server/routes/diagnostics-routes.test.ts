@@ -634,6 +634,38 @@ describe('diagnostics routes', () => {
     });
   });
 
+  // GET /api/diagnostics/agent-boot-latency (issue #1898)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/agent-boot-latency', () => {
+    test('returns an empty agents list when the monitor is not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/agent-boot-latency');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'agent-boot-latency-diagnostics-route.v1',
+        agents: [],
+      });
+    });
+
+    test('surfaces which agents the failover is deprioritizing and why', async () => {
+      const { AgentBootLatencyMonitor } = await import('../../core/agent-boot-latency.js');
+      const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 2, now: () => 1_000 });
+      const hung = {
+        phases: [{ phase: 'agent-boot' as const, durationMs: 90_000, completed: false }],
+        totalMs: 90_000,
+        incompletePhase: 'agent-boot' as const,
+      };
+      monitor.record('grok-build', hung);
+      monitor.record('grok-build', hung);
+      const res = await mkApp({ agentBootLatency: monitor }).request('/api/diagnostics/agent-boot-latency');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('agent-boot-latency-diagnostics-route.v1');
+      expect(body.agents).toEqual([
+        { agentType: 'grok-build', samples: 2, slowSamples: 2, unhealthy: true },
+      ]);
+    });
+  });
+
   // GET /api/diagnostics/hook-ingestion
   // ---------------------------------------------------------------------------
   describe('GET /api/diagnostics/hook-ingestion', () => {
