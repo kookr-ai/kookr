@@ -978,6 +978,109 @@ export const LUCY_1586_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   }),
 ]);
 
+
+/**
+ * lucy#1593 "replay-corpus validity — backtesting-audit P0.3/P1 roadmap".
+ * P0.3 experiment-verify gate (#1233) and core price-audit/extremum CLI (#1234)
+ * shipped; residual acceptance gaps: expected_move_missing named regime + dual
+ * metrics (P1.3), unresolved extrema as report warnings (P1.2 residual),
+ * per-row label-audit trail (P1.1), second-provider OHLC plumbing (P1.1).
+ * Authored by the queue-feeder (2026-08-02) after needsAuthoring blocked emit.
+ * Live GitHub leaves: #2106–#2109; openChildrenCount / title idempotency
+ * prevents re-emit once those exist.
+ */
+export const LUCY_1593_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(backtest): name expected_move_missing regime; dual score with/without fallback rows',
+    goal:
+      'Treat missing point-in-time expected move as a named regime (expected_move_missing), ' +
+      'not a silent ±1% band, and report scorecard metrics both with and without fallback rows ' +
+      'so n_fallback is countable and zero silent ±1% labels remain (umbrella #1593 P1.3).',
+    acceptanceCriteria: [
+      'When dossier expectedMove is absent/null, the label records a stable regime/flag (e.g. expected_move_missing or materialBandSource=fallback_1pct) rather than only applying ±1% with no provenance.',
+      'score/html-report (or scorecard) expose n_fallback (count of rows using the fallback band) and dual headline metrics: full corpus vs excluding expected_move_missing fallback rows.',
+      'Unit tests: (a) row without expected move is tagged and counted in n_fallback; (b) dual metrics differ when fallback rows change realizedDir; (c) rows with real expected move are not counted as fallback.',
+    ],
+    fileHints: [
+      'backtest/label.js',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'backtest/LABEL-SPEC.md',
+    ],
+    testHints: [
+      'unit test: fixture rows with/without expMove → n_fallback + dual precision match hand counts',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): surface unresolved price-audit extrema as html-report warnings',
+    goal:
+      'Wire the existing backtest:price-audit extremum output into score/html-report so ' +
+      'unresolved extrema and acted misses are first-class report warnings/artifacts, ' +
+      'not only a standalone CLI JSON dump (umbrella #1593 P1.2 residual).',
+    acceptanceCriteria: [
+      'html-report (or score path) can ingest a price-audit report (or run auditPriceRows on the scored set) and renders a warning section when any extremum/acted-miss row has status unresolved or missing independent confirmation.',
+      'A durable audit artifact path is documented or written (JSON under the experiment dir or report sibling) so extremum-audit output is committed/attachable as the umbrella acceptance requires.',
+      'Unit/fixture test: audit fixture with one unresolved extremum → report HTML/text contains a visible warning and the key; all-confirmed fixture → no unresolved warning.',
+    ],
+    fileHints: [
+      'backtest/price-audit.js',
+      'backtest/html-report.js',
+      'backtest/score.js',
+    ],
+    testHints: [
+      'unit test: inject price-audit report with unresolved row → html-report warning panel present',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): persist per-row label-audit trail (SEC agreement, candidates, chosen-anchor)',
+    goal:
+      'Persist an auditable per-row label trail covering raw SEC header/JSON agreement, ' +
+      'issuer/newswire candidate timestamps, chosen-anchor reason, and price request/response ' +
+      'hashes so label choices are reconstructable without re-fetch (umbrella #1593 P1.1).',
+    acceptanceCriteria: [
+      'Each labeled row (or sidecar audit record) retains: SEC acceptance/header agreement fields when available, candidate timestamps considered, chosen-anchor reason/code, and price provenance hashes already produced by the price path.',
+      'Audit records are durable JSON/JSONL (per-row or experiment-level) loadable offline; schema version is documented.',
+      'Unit tests cover a fixture label path: known candidates + chosen reason + hash → trail fields present; missing SEC data degrades with explicit nulls rather than silent omission of the trail object.',
+    ],
+    fileHints: [
+      'backtest/label.js',
+      'backtest/acceptance-anchor-verify.js',
+      'backtest/yahoo.js / reaction-window price provenance',
+    ],
+    testHints: [
+      'unit test: label fixture emits labelAudit with candidates, chosen-anchor reason, price hashes',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): second-provider OHLC comparison plumbing for price-audit (operator-gated)',
+    goal:
+      'Add plumbing so price-audit can consume a second OHLC provider comparison when the ' +
+      'operator supplies credentials/export — provider choice stays operator-gated; no new ' +
+      'mandatory paid API (umbrella #1593 P1.1 plumbing only).',
+    acceptanceCriteria: [
+      'Documented adapter/CLI path feeds independent OHLC confirmations into auditPriceRows (existing --confirmations or a thin second-provider export script) without hard-coding a single paid vendor in production defaults.',
+      'Comparison results attach absolute/relative deltas and agreement status per audited row; missing second provider yields explicit \'no independent confirmation\' rather than false agreement.',
+      'Unit tests: mock confirmation map → agreement/disagreement flags; empty confirmations → all audited rows flagged missing confirmation without throwing.',
+    ],
+    fileHints: [
+      'backtest/price-audit.js',
+      'backtest/yahoo.js',
+      'docs/backtesting-runbook.md (operator second-provider section)',
+    ],
+    testHints: [
+      'unit test: confirm adapter fixture → priceAudit agreement fields; empty confirm → unresolved',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+]);
+
 /**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
@@ -988,6 +1091,7 @@ export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> =
   'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
   'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,
   'jeanibarz/lucy#1586': LUCY_1586_LEAF_PLAN,
+  'jeanibarz/lucy#1593': LUCY_1593_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
