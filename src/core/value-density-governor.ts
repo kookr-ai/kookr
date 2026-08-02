@@ -269,7 +269,9 @@ const PRODUCT_METRIC_TITLE_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bsec[- ]acceptance\b/i,
   /\bedgar\b/i,
   /\bearnings[- ]detection\b/i,
-  /\bheadline[- ]metric\b/i,
+  // Singular or plural — lucy#1590 titles use "headline metrics"
+  /\bheadline[- ]metrics?\b/i,
+  /\bdetection[- ]lead\b/i,
   // Product-facing acquisition / failover (queue-feeder ranking for lucy#1587+)
   /\bacquisition\b/i,
   /\bfailover\b/i,

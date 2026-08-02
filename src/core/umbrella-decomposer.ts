@@ -726,6 +726,130 @@ export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * lucy#1590 "headline metrics in tested code". Core children #1513 / #1540 /
+ * #1966 / #1967 / #1999 / host-circuits #1548 shipped; residual acceptance gaps
+ * remain: threshold alerts on anchorCoverage/sessionHitRate, first-class
+ * search-backend + tier degraded signals in the control room, per-tier block
+ * attribution during armed windows, and a durable weekly acquisition scoreboard.
+ * Authored by the queue-feeder (2026-08-02) after needsAuthoring blocked emit.
+ * Live GitHub leaves: filed this run; openChildrenCount / title idempotency
+ * prevents re-emit once those exist.
+ */
+export const LUCY_1590_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(metrics): alert when anchorCoverage or sessionHitRate drops below threshold',
+    goal:
+      'Post a durable operator warning via the existing safeSend chokepoint when ' +
+      'detection-rollup anchorCoverage or earnings-date sessionHitRate falls below ' +
+      'configured thresholds, so low product-metric health is not only visible in ' +
+      'status text but actively alerted.',
+    acceptanceCriteria: [
+      'When the latest detection-rollup row has anchorCoverage below a documented ' +
+        'threshold (default or config), Lucy emits one warning path through safeSend ' +
+        '(or the shared alert helper it uses) with the measured value and denominator.',
+      'When buildEarningsDateReliabilityMetrics (or the acquire-status path that wraps it) ' +
+        'reports sessionHitRate below a documented threshold with a measurable sample, ' +
+        'the same alert path fires (session hits / measurable n in the message).',
+      'Unit/fixture tests cover: (a) below threshold → alert; (b) at/above threshold → ' +
+        'no alert; (c) null/unmeasurable rate → no false alert.',
+    ],
+    fileHints: [
+      'src/message-footer.js / safeSend path',
+      'scripts/detection-report.mjs or rollup consumer',
+      'src/earnings-date/metrics.js',
+      'src/acquisition/status.js',
+    ],
+    testHints: [
+      'unit test: inject rollup row + reliability metrics fixture; assert alert fired/not',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): control-room first-class search-backend and tier degraded health',
+    goal:
+      'Surface search-backend health and acquisition-tier health as first-class ' +
+      'degraded signals in the control room (and keep `!bot acquire sources` / ' +
+      'status consistent) so operators see retrieval degradation without grepping logs.',
+    acceptanceCriteria: [
+      'Control-room snapshot exposes search-backend health (healthy/configured counts ' +
+        'or equivalent from retrieval-health / searchBackendHealthSnapshot) and ' +
+        'per-tier degraded/blocked status for the current or last armed window.',
+      'Control-room UI renders those signals as explicit degraded badges/rows (not only ' +
+        'buried in free-text status), distinct from the host-circuits strip.',
+      '`!bot acquire sources` (or acquire status) remains consistent with the same ' +
+        'underlying health helpers — no second counting implementation.',
+      'Unit or control-room fixture test: unhealthy backend / blocked tier appears in ' +
+        'snapshot + render path.',
+    ],
+    fileHints: [
+      'src/retrieval-health.js',
+      'src/control-room-snapshot-compose.js',
+      'src/control-room/',
+      'src/acquisition/status.js',
+    ],
+    testHints: [
+      'unit test: compose snapshot with unhealthy search backend; assert field + panel render',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): per-tier block attribution in control room during armed windows',
+    goal:
+      'Extend the #1548 host-circuits control-room surface so an operator can answer ' +
+      '"why didn\'t the issuer tier win for ticker X" from the control room alone — ' +
+      'per-tier failureCode / block attribution while windows are armed.',
+    acceptanceCriteria: [
+      'During an armed window (or from job.lastRun / scoreboard state), control-room ' +
+        'shows per-tier attempts/ok/blocked and top failureCode counts (reuse ' +
+        'src/acquisition/scoreboard.js — no parallel aggregation).',
+      'At least one issuer-tier (or IR) block path is attributed with failureCode so ' +
+        'the operator sees *which* tier failed and *why*, not only host-level circuits.',
+      'Unit/fixture test: scoreboard with IR blocked by a known failureCode → control-room ' +
+        'payload/render includes that tier + code.',
+    ],
+    fileHints: [
+      'src/acquisition/scoreboard.js',
+      'src/control-room-snapshot-compose.js',
+      'src/control-room/host-circuits-panel.js (or sibling panel)',
+      'src/scheduler.js job.lastRun scoreboard',
+    ],
+    testHints: [
+      'unit test: scoreboard fixture → snapshot field; optional panel render assertion',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title: 'feat(metrics): weekly acquisition scoreboard from detections.jsonl',
+    goal:
+      'Add a tested pure aggregator that builds a weekly acquisition scoreboard ' +
+      '(per-tier win rate, first-seen latency distribution, failureCode histogram) ' +
+      'from detections.jsonl so longitudinal tier performance is measurable in code, ' +
+      'not operator memory.',
+    acceptanceCriteria: [
+      'A pure function (and optional CLI/script) reads detections.jsonl (or event-latency ' +
+        'spans) and emits per-tier win rate, first-seen latency summary, and failureCode ' +
+        'histogram for a configurable week window.',
+      'Unit tests cover a fixture JSONL: known per-tier wins/blocks → expected rates and ' +
+        'histogram buckets; empty input degrades cleanly.',
+      'Output is durable (JSON/JSONL under data/ or printed via npm script) so daily-report ' +
+        'or control-room can consume it later without recomputing in prose.',
+    ],
+    fileHints: [
+      'src/acquisition/scoreboard.js (reuse fold helpers where possible)',
+      'scripts/ or src/ acquisition weekly scoreboard module',
+      'data/detections.jsonl schema consumers',
+    ],
+    testHints: [
+      'unit test: synthetic detections fixture → weekly scoreboard totals match hand counts',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
@@ -733,6 +857,7 @@ export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> = Object.freeze({
   'jeanibarz/lucy#1588': LUCY_1588_LEAF_PLAN,
   'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
+  'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
