@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import type { AgentEvent, CodexHookCapabilities, HookEventName } from './types.js';
-import { unwrapProviderUserPrompt } from '../shared/user-prompt-text.js';
+import { unwrapProviderUserPrompt } from '../shared/contracts/user-prompt-text.js';
 import { recordHotPath } from './hot-path-sampler.js';
 
 export class HookParseError extends Error {

@@ -19,19 +19,25 @@ const USER_QUERY_CLOSE = '</user_query>';
 const TASK_NOTIFICATION_PREFIX = '<task-notification';
 const SYSTEM_REMINDER_PREFIX = '<system-reminder';
 
+/**
+ * @returns `null` only for pure synthetic scaffolding (caller should drop the
+ * event). Plain empty prompts return `""` so signal-only UserPromptSubmit
+ * hooks still flow through (anomaly clear, delivery observe, etc.).
+ */
 export function unwrapProviderUserPrompt(prompt: string): string | null {
-  if (typeof prompt !== 'string') return null;
+  if (typeof prompt !== 'string') return '';
 
   const trimmedStart = prompt.trimStart();
-  if (trimmedStart.length === 0) return null;
 
   // Pure synthetic scaffolding — not something the user typed.
   if (trimmedStart.startsWith(TASK_NOTIFICATION_PREFIX)) return null;
   if (trimmedStart.startsWith(SYSTEM_REMINDER_PREFIX)) return null;
 
   let text = prompt;
+  let wasUserQueryEnvelope = false;
 
   if (trimmedStart.startsWith(USER_QUERY_OPEN)) {
+    wasUserQueryEnvelope = true;
     // Drop leading whitespace and the open tag (and an optional following newline).
     const afterOpen = trimmedStart.slice(USER_QUERY_OPEN.length).replace(/^\r?\n/, '');
     const closeIdx = afterOpen.indexOf(USER_QUERY_CLOSE);
@@ -52,6 +58,11 @@ export function unwrapProviderUserPrompt(prompt: string): string | null {
   // the open tag (already stripped above); trim only a residual leading newline.
   text = text.replace(/^\n+/, '');
 
-  if (text.trim().length === 0) return null;
+  // Empty body inside a real <user_query> envelope is not user content — drop.
+  if (wasUserQueryEnvelope && text.trim().length === 0) return null;
+  // Plain empty / whitespace-only prompts become "" so signal-only hooks still
+  // clear anomalies (historical UserPromptSubmit with missing prompt field)
+  // without polluting the activity panel with blank "You" rows.
+  if (text.trim().length === 0) return '';
   return text;
 }

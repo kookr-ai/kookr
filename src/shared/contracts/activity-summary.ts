@@ -1,7 +1,7 @@
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
-import { unwrapProviderUserPrompt } from '../user-prompt-text.js';
+import { unwrapProviderUserPrompt } from './user-prompt-text.js';
 
 // ── Activity item types ──────────────────────────────────────────────
 

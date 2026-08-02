@@ -31,7 +31,7 @@
  */
 import { HookParseError } from '../core/hook-parser.js';
 import type { AgentEvent } from '../core/agent-events.js';
-import { unwrapProviderUserPrompt } from '../shared/user-prompt-text.js';
+import { unwrapProviderUserPrompt } from '../shared/contracts/user-prompt-text.js';
 
 /**
  * Documented Claude→Grok tool-name aliases (POC-A constraint 2). Grok accepts

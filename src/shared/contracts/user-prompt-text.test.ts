@@ -62,9 +62,12 @@ describe('unwrapProviderUserPrompt', () => {
     expect(unwrapProviderUserPrompt(raw)).toBe(body);
   });
 
-  test('returns null for empty / whitespace-only after unwrap', () => {
-    expect(unwrapProviderUserPrompt('')).toBeNull();
-    expect(unwrapProviderUserPrompt('   \n  ')).toBeNull();
+  test('keeps plain empty prompts as empty string (signal-only hooks still flow)', () => {
+    expect(unwrapProviderUserPrompt('')).toBe('');
+    expect(unwrapProviderUserPrompt('   \n  ')).toBe('');
+  });
+
+  test('returns null for empty body inside a user_query envelope', () => {
     expect(unwrapProviderUserPrompt('<user_query>\n\n</user_query>')).toBeNull();
   });
 });
