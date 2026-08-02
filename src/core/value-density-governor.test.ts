@@ -63,7 +63,9 @@ describe('isProductMetricBlocking', () => {
   it('matches labels and title keywords', () => {
     expect(isProductMetricBlocking('anything', ['product-metric'])).toBe(true);
     expect(isProductMetricBlocking('anything', ['sec-anchor'])).toBe(true);
+    expect(isProductMetricBlocking('anything', ['acquisition'])).toBe(true);
     expect(isProductMetricBlocking('Umbrella: SEC-anchor acceptance truth')).toBe(true);
+    expect(isProductMetricBlocking('Umbrella: acquisition redundancy & failover')).toBe(true);
     expect(isProductMetricBlocking('chore: tidy logs')).toBe(false);
   });
 });
