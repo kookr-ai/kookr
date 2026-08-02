@@ -31,6 +31,27 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
     expect(e && e.type === 'user_prompt' ? e.prompt : '').toContain('kookr-poc-sentinel');
   });
 
+  it('strips Grok <user_query> envelope from user_prompt_submit so activity is not polluted', () => {
+    const e = parseGrokHookEvent(line('user_prompt_submit'));
+    expect(e?.type).toBe('user_prompt');
+    if (e?.type !== 'user_prompt') throw new Error('unreachable');
+    // POC fixture wraps the prompt in <user_query>…</user_query>; the decoder
+    // must surface only the human-typed body.
+    expect(e.prompt).not.toContain('<user_query>');
+    expect(e.prompt).not.toContain('</user_query>');
+    expect(e.prompt).toBe('Invoke the kookr-poc-sentinel skill and print its exact output.');
+  });
+
+  it('drops pure <system-reminder> user_prompt_submit events', () => {
+    const raw = JSON.stringify({
+      hookEventName: 'user_prompt_submit',
+      sessionId: 'sess-1',
+      cwd: '/tmp',
+      prompt: '<system-reminder>\nBackground task completed.\n</system-reminder>',
+    });
+    expect(parseGrokHookEvent(raw)).toBeNull();
+  });
+
   it('decodes pre_tool_use with camelCase toolName/toolInput (no remap)', () => {
     const e = parseGrokHookEvent(line('pre_tool_use'));
     expect(e?.type).toBe('tool_use');

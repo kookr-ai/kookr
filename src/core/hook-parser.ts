@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import type { AgentEvent, CodexHookCapabilities, HookEventName } from './types.js';
+import { unwrapProviderUserPrompt } from '../shared/user-prompt-text.js';
 import { recordHotPath } from './hot-path-sampler.js';
 
 export class HookParseError extends Error {
@@ -228,14 +229,13 @@ function parseHookEventInner(raw: string): AgentEvent | null {
       };
 
     case 'UserPromptSubmit': {
-      const prompt = parsed.prompt ?? '';
-      // Claude Code re-enters the parent agent via UserPromptSubmit when a
-      // subagent (Task tool) completes — the body is a synthetic
-      // <task-notification>…</task-notification> envelope, not something the
-      // user typed. The actual subagent stop is already delivered by the
-      // SubagentStop hook, so drop the synthetic re-entry to avoid labeling
-      // it as a user message ("You") in the activity view.
-      if (prompt.trimStart().startsWith('<task-notification')) {
+      // Providers wrap/pad the typed prompt with in-band envelopes
+      // (<user_query>, <task-notification>, <system-reminder>). Unwrap to the
+      // human-typed text so activity "You" messages and delivery matching see
+      // the real content; pure synthetic scaffolding returns null (drop).
+      // See unwrapProviderUserPrompt / Grok Build activity-panel pollution.
+      const prompt = unwrapProviderUserPrompt(parsed.prompt ?? '');
+      if (prompt === null) {
         return null;
       }
       return {

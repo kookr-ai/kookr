@@ -31,6 +31,7 @@
  */
 import { HookParseError } from '../core/hook-parser.js';
 import type { AgentEvent } from '../core/agent-events.js';
+import { unwrapProviderUserPrompt } from '../shared/user-prompt-text.js';
 
 /**
  * Documented Claude→Grok tool-name aliases (POC-A constraint 2). Grok accepts
@@ -183,13 +184,19 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
         ...(cwd ? { cwd } : {}),
       };
 
-    case 'user_prompt_submit':
+    case 'user_prompt_submit': {
+      // Grok wraps every typed prompt in <user_query>…</user_query> and may
+      // append <system-reminder> scaffolding. Unwrap so the activity panel
+      // and delivery-match path see the human-typed text, not the tags.
+      const prompt = unwrapProviderUserPrompt(str(parsed.prompt) ?? '');
+      if (prompt === null) return null;
       return {
         type: 'user_prompt',
         sessionId,
-        prompt: str(parsed.prompt) ?? '',
+        prompt,
         ...(cwd ? { cwd } : {}),
       };
+    }
 
     case 'pre_tool_use':
       return {

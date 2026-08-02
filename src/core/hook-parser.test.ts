@@ -221,6 +221,24 @@ describe('Hook Event Parser', () => {
     expect(parseHookEvent(raw)).toBeNull();
   });
 
+  test('strips <user_query> envelope from UserPromptSubmit prompt text', () => {
+    const base = JSON.parse(loadFixture('hook-user-prompt-submit.json')) as Record<string, unknown>;
+    base.prompt = '<user_query>\nsay hello\n</user_query>';
+    const event = parseHookEvent(JSON.stringify(base));
+    expect(event).toEqual({
+      type: 'user_prompt',
+      sessionId: '8ee8ff7c-c7ef-4abf-8b03-ff8777ff8916',
+      prompt: 'say hello',
+      cwd: '/workspace/kookr',
+    });
+  });
+
+  test('drops pure <system-reminder> UserPromptSubmit bodies', () => {
+    const base = JSON.parse(loadFixture('hook-user-prompt-submit.json')) as Record<string, unknown>;
+    base.prompt = '<system-reminder>\nBackground task completed.\n</system-reminder>';
+    expect(parseHookEvent(JSON.stringify(base))).toBeNull();
+  });
+
   test('parses StopFailure hook', () => {
     const raw = loadFixture('hook-stop-failure.json');
     const event = parseHookEvent(raw);

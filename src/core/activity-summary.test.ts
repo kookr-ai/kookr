@@ -161,6 +161,20 @@ describe('summarizeActivity', () => {
     expect(items[0]).toEqual({ type: 'user_message', text: 'Fix the bug' });
   });
 
+  test('strips provider <user_query> tags from user messages in the activity panel', () => {
+    const items = summarizeActivity([
+      userPrompt('<user_query>\nmerge it\n</user_query>'),
+    ]);
+    expect(items).toEqual([{ type: 'user_message', text: 'merge it' }]);
+  });
+
+  test('skips pure system-reminder user_prompt events in the activity panel', () => {
+    const items = summarizeActivity([
+      userPrompt('<system-reminder>\nBackground task done.\n</system-reminder>'),
+    ]);
+    expect(items).toEqual([]);
+  });
+
   test('extracts agent messages from stop events', () => {
     const items = summarizeActivity([stop('Done fixing the bug')]);
     expect(items).toHaveLength(1);

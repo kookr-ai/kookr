@@ -1,6 +1,7 @@
 import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
+import { unwrapProviderUserPrompt } from '../user-prompt-text.js';
 
 // ── Activity item types ──────────────────────────────────────────────
 
@@ -324,14 +325,19 @@ export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
     switch (event.type) {
       case 'user_prompt': {
         flushTools();
-        if (isSingleLinePrompt(event.prompt)) {
+        // Defense for events already in memory that still carry provider
+        // envelopes (Grok <user_query>, trailing system-reminders). Parsers
+        // unwrap at ingest; this keeps the activity panel clean either way.
+        const prompt = unwrapProviderUserPrompt(event.prompt);
+        if (prompt === null) break;
+        if (isSingleLinePrompt(prompt)) {
           // Defer — a long enough run of these is a paste burst.
-          pendingUserPrompts.push(event.prompt);
+          pendingUserPrompts.push(prompt);
         } else {
           // A multiline prompt is a deliberate message; it also ends any
           // run of single-line prompts that preceded it.
           flushUserPrompts();
-          items.push({ type: 'user_message', text: event.prompt });
+          items.push({ type: 'user_message', text: prompt });
         }
         break;
       }
