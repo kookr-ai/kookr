@@ -32,6 +32,9 @@ const THRESHOLD_FIELDS = [
   'dataDirectoryFreePercent',
   'dataDirectoryFreeBytes',
   'circuitBreakerOpenMs',
+  'providerFallbackSubstitutions',
+  'providerFallbackWindowMs',
+  'providerPausedMs',
 ] as const;
 const UPDATE_FIELDS = [...THRESHOLD_FIELDS, 'sustainSamples'] as const;
 

@@ -16,6 +16,22 @@ export const DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS = 30 * 1000;
  */
 export const DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES = 3 * 1024 * 1024 * 1024;
 
+/**
+ * Provider-health durable-alert defaults (issue #1897, WS1.5 of #1699). Failover
+ * masks a chronic provider outage; these thresholds decide when the masking
+ * becomes a standing operational alert. Enabled by default — inert until the
+ * WS1.3 substitution counter / pool-pause producer feeds real signals, so
+ * turning them on now means the alert "just works" once that lands.
+ *
+ * `KOOKR_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS` substitutions within
+ * `KOOKR_ALERT_PROVIDER_FALLBACK_WINDOW_MS`, OR a pool pause lasting at least
+ * `KOOKR_ALERT_PROVIDER_PAUSED_MS`, fires the alert. Set the count and the
+ * paused-ms to `0` to disable the respective rule.
+ */
+export const DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS = 5;
+export const DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS = 10 * 60 * 1000;
+export const DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS = 5 * 60 * 1000;
+
 /** Default maximum JSON request body size accepted by the dashboard server. */
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1_000_000;
 
@@ -39,6 +55,22 @@ export interface OperationalAlertConfig {
   dataDirectoryFreeBytes: number;
   /** Circuit-breaker OPEN duration threshold in milliseconds (`0` disables). */
   circuitBreakerOpenMs: number;
+  /**
+   * Provider fallback-substitution count that, within
+   * {@link providerFallbackWindowMs}, fires the standing provider-health alert
+   * (`0` disables the substitution rule).
+   */
+  providerFallbackSubstitutions: number;
+  /**
+   * Rolling window in milliseconds over which {@link providerFallbackSubstitutions}
+   * substitutions are counted (`0` disables the substitution rule).
+   */
+  providerFallbackWindowMs: number;
+  /**
+   * Provider-pool paused-duration threshold in milliseconds that fires the
+   * standing provider-health alert (`0` disables the paused-duration rule).
+   */
+  providerPausedMs: number;
   /** Consecutive breaching samples required before firing (>= 1). */
   sustainSamples: number;
 }
@@ -85,6 +117,18 @@ export function readOperationalAlertConfigFromEnv(
     circuitBreakerOpenMs: readNonNegativeNumber(
       env.KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS,
       DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+    ),
+    providerFallbackSubstitutions: readNonNegativeNumber(
+      env.KOOKR_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+      DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_SUBSTITUTIONS,
+    ),
+    providerFallbackWindowMs: readNonNegativeNumber(
+      env.KOOKR_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+      DEFAULT_OPERATIONAL_ALERT_PROVIDER_FALLBACK_WINDOW_MS,
+    ),
+    providerPausedMs: readNonNegativeNumber(
+      env.KOOKR_ALERT_PROVIDER_PAUSED_MS,
+      DEFAULT_OPERATIONAL_ALERT_PROVIDER_PAUSED_MS,
     ),
     sustainSamples: readPositiveInt(
       env.KOOKR_ALERT_SUSTAIN_SAMPLES,

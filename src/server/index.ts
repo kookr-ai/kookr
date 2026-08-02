@@ -100,6 +100,8 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { bindOperationalAlertSink } from './operational-alert-sink.js';
+import { ProviderHealthTracker } from '../core/provider-health.js';
 import { loadavg, cpus } from 'node:os';
 import { readMaxHostLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
@@ -1622,7 +1624,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.warn('[reflect-sweep] startup sweep failed:', err instanceof Error ? err.message : err);
   }
 
-  const { scheduleStore, scheduleService, scheduleRunner } = await createScheduleRuntime({
+  const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
     launchServiceDeps,
@@ -1998,9 +2000,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   };
 
   const operationalAlertConfig = resetOperationalAlertConfig();
+  // Provider-pool health tracker (#1897, WS1.5 of #1699). The dispatch/failover
+  // path (WS1.3 substitution counter + pool-pause edges) feeds this; the
+  // evaluator reads its snapshot each resource tick to raise a standing durable
+  // alert when failover is chronically masking a provider outage.
+  const providerHealthTracker = new ProviderHealthTracker();
+  // Durable JSONL sink (#1699 WS0.3): every operational-alert fire/clear edge is
+  // appended to `operational-alerts.jsonl` so an incident is reconstructable
+  // from disk even when no dashboard client was connected during it. Reuse the
+  // single sink instance the schedule runtime already owns (rather than minting
+  // a second one on the same file) so status()/lastFailure stay unified.
+  const recordOperationalAlertToSink = bindOperationalAlertSink(operationalAlertSink);
   const operationalAlertEvaluator = createOperationalAlertEvaluator(
     getOperationalAlertConfig,
     () => persistenceHealth.snapshot(),
+    () => providerHealthTracker.snapshot(),
   );
   if (operationalAlertEvaluator.hasEnabledRules()) {
     const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
@@ -2013,7 +2027,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         `${operationalAlertConfig.dataDirectoryFreeBytes || 'off'}B ` +
         `persistence=on ` +
         `(sampled-resource alerts fire after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained); ` +
-        `circuitBreakerOpen=${operationalAlertConfig.circuitBreakerOpenMs || 'off'}ms`,
+        `circuitBreakerOpen=${operationalAlertConfig.circuitBreakerOpenMs || 'off'}ms ` +
+        `providerFallback=${operationalAlertConfig.providerFallbackSubstitutions || 'off'}` +
+        `/${operationalAlertConfig.providerFallbackWindowMs || 'off'}ms ` +
+        `providerPaused=${operationalAlertConfig.providerPausedMs || 'off'}ms`,
     );
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
@@ -2032,6 +2049,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
     alertEvaluator: operationalAlertEvaluator,
+    onOperationalAlert: recordOperationalAlertToSink,
     getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
     // #1725 / #1785 / #1775: feed the same sampled event-loop delay p95 into
