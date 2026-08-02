@@ -169,6 +169,17 @@ export class ScheduleRunner {
    */
   private inFlightFires = new Set<string>();
 
+  /**
+   * Latches true once the bounded self-heal has acted at least once (issue
+   * #1903). Before that, the snapshot's `deadManSelfHeal` field stays absent
+   * (its documented "absent until acted" contract). After it, the runner pushes
+   * the counters every tick so a recovery — attempts reset to 0, `escalated`
+   * cleared, `successes` incremented — overwrites the stale in-episode value
+   * instead of freezing it (e.g. a cap=0 escalate→recover previously left
+   * `escalated:true` standing forever).
+   */
+  private selfHealStatsSurfaced = false;
+
   constructor(deps: ScheduleRunnerDeps) {
     this.deps = deps;
   }
@@ -250,8 +261,21 @@ export class ScheduleRunner {
         // once self-heal has actually acted — keeps the snapshot field absent
         // for unconfigured/never-run switches, matching its documented contract.
         const deadManStats = this.deps.deadMan?.stats?.();
-        if (deadManStats && (deadManStats.attempts > 0 || deadManStats.escalated)) {
-          this.deps.service.setDeadManSelfHealStats(deadManStats);
+        if (deadManStats) {
+          if (
+            deadManStats.attempts > 0 ||
+            deadManStats.successes > 0 ||
+            deadManStats.escalated
+          ) {
+            this.selfHealStatsSurfaced = true;
+          }
+          // Absent until self-heal has acted; once surfaced, keep it in sync
+          // every tick so a recovery (attempts→0, escalated cleared, successes
+          // incremented) overwrites the stale in-episode value instead of
+          // freezing it.
+          if (this.selfHealStatsSurfaced) {
+            this.deps.service.setDeadManSelfHealStats(deadManStats);
+          }
         }
       } catch (err) {
         console.error('[schedule] dead-man check failed:', err);

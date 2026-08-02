@@ -301,6 +301,21 @@ describe('ScheduleDeadManSwitch bounded self-heal (issue #1903)', () => {
     expect(deadMan.stats()).toMatchObject({ attempts: 3, successes: 0, escalated: true, episodeAttempts: 3 });
   });
 
+  it('self-heals EVERY consecutive-failure schedule, not just the first (issue #1903)', () => {
+    // Regression: condition (a) used to `return` on the first starving schedule,
+    // so with several schedules in the consecutive-failure state only the first
+    // was ever re-fired and the episode cap was spent on it while the others
+    // stayed starved. The verdict must now carry every starving schedule's id.
+    const { selfHeal, deadMan } = makeSwitch({ cap: 3 });
+    const starvingA = schedule({ id: 'sched-a', name: 'A', executionLedger: FAILURE_TAIL() });
+    const starvingB = schedule({ id: 'sched-b', name: 'B', executionLedger: FAILURE_TAIL() });
+
+    deadMan.check([starvingA, starvingB]);
+
+    expect(selfHeal).toHaveBeenCalledTimes(1);
+    expect(selfHeal).toHaveBeenNthCalledWith(1, ['sched-a', 'sched-b']);
+  });
+
   it('escalates immediately with no re-fire when the cap is 0 (documented edge)', () => {
     const { broadcast, selfHeal, deadMan } = makeSwitch({ cap: 0 });
     const starving = schedule({ executionLedger: FAILURE_TAIL() });

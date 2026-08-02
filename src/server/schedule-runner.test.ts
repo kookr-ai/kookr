@@ -1334,6 +1334,36 @@ Do the thing.
     expect(service.getStatusSnapshot().deadManSelfHeal).toBeUndefined();
   });
 
+  it('clears the snapshot self-heal state on recovery once it has surfaced (issue #1903)', async () => {
+    // Regression: the push was gated on `attempts > 0 || escalated`, so the
+    // recovery tick (attempts→0, escalated cleared) was dropped and the stale
+    // in-episode value froze — e.g. a cap=0 escalate→recover left escalated:true
+    // standing on /api/health forever. Once surfaced, every tick must re-sync.
+    const stats = vi
+      .fn()
+      // Tick 1: escalated episode in flight (surfaces the field).
+      .mockReturnValueOnce({ attempts: 0, successes: 0, episodeAttempts: 0, escalated: true, firing: true })
+      // Tick 2: recovered — everything reset.
+      .mockReturnValueOnce({ attempts: 0, successes: 0, episodeAttempts: 0, escalated: false, firing: false });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check: vi.fn(), stats },
+    });
+
+    await runner.tick();
+    expect(service.getStatusSnapshot().deadManSelfHeal).toEqual({ attempts: 0, successes: 0, escalated: true });
+
+    await runner.tick();
+    // Not frozen at escalated:true — the recovery is reflected.
+    expect(service.getStatusSnapshot().deadManSelfHeal).toEqual({ attempts: 0, successes: 0, escalated: false });
+  });
+
   it('selfHealRefire() forces a re-fire of the named schedules WITHOUT re-running the dead-man check, and is a no-op after stop() (issue #1903)', async () => {
     const waitFor = async (cond: () => boolean, ms = 1000): Promise<void> => {
       const start = Date.now();

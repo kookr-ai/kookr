@@ -286,7 +286,13 @@ export function evaluateScheduleStarvation(
 ): StarvationVerdict {
   const enabled = schedules.filter((schedule) => schedule.enabled);
 
-  // Condition (a): consecutive capacity/dispatch failures on one schedule.
+  // Condition (a): consecutive capacity/dispatch failures. Collect EVERY
+  // schedule in this state (issue #1903) — a single episode's self-heal cap must
+  // be shared across all starving schedules, not spent re-firing only the first
+  // one encountered while the rest stay starved (matches condition (b), which
+  // already accumulates all windowed ids).
+  const consecutiveFailureIds: string[] = [];
+  let firstConsecutiveReason: string | undefined;
   for (const schedule of enabled) {
     const relevant = schedule.executionLedger.filter(
       (entry) => entry.outcome !== 'skipped_draining' && entry.outcome !== 'skipped_safe_mode',
@@ -294,13 +300,23 @@ export function evaluateScheduleStarvation(
     if (relevant.length < DEAD_MAN_CONSECUTIVE_FAILURES) continue;
     const tail = relevant.slice(-DEAD_MAN_CONSECUTIVE_FAILURES);
     if (tail.every((entry) => STARVATION_OUTCOMES.has(entry.outcome))) {
-      const outcomes = tail.map((entry) => entry.outcome).join(', ');
-      return {
-        starving: true,
-        reason: `schedule "${schedule.name}" — last ${DEAD_MAN_CONSECUTIVE_FAILURES} outcomes were capacity/dispatch failures (${outcomes})`,
-        scheduleIds: [schedule.id],
-      };
+      consecutiveFailureIds.push(schedule.id);
+      if (firstConsecutiveReason === undefined) {
+        const outcomes = tail.map((entry) => entry.outcome).join(', ');
+        firstConsecutiveReason = `schedule "${schedule.name}" — last ${DEAD_MAN_CONSECUTIVE_FAILURES} outcomes were capacity/dispatch failures (${outcomes})`;
+      }
     }
+  }
+  if (consecutiveFailureIds.length > 0) {
+    const more = consecutiveFailureIds.length - 1;
+    return {
+      starving: true,
+      reason:
+        more > 0
+          ? `${firstConsecutiveReason} (+${more} other schedule(s) also starving)`
+          : (firstConsecutiveReason as string),
+      scheduleIds: consecutiveFailureIds,
+    };
   }
 
   // Condition (b): fires were due in the window, none dispatched/completed.
