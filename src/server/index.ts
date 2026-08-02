@@ -39,6 +39,13 @@ import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from '.
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
+import {
+  countDeliveredPullRequests,
+  createLoopDeliveryWatchdogRegistry,
+  readLoopDeliveryWatchdogConfigFromEnv,
+  type DeliverySnapshot,
+} from '../core/loop-delivery-watchdog.js';
+import { gitIn } from '../core/git-helpers.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
@@ -871,6 +878,39 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       })),
     );
 
+  // Delivery-aware loop watchdog (issue #1902, WS2.4 of #1699). Judges a Ralph
+  // loop on POSITIVE delivery progress with hysteresis: sampled once per
+  // iteration (in ralph-loop-service) with the loop's cumulative delivery
+  // counters, it flags a loop that stops delivering for N consecutive
+  // iterations while never flagging a quiet-but-progressing loop.
+  const loopDeliveryWatchdog = createLoopDeliveryWatchdogRegistry(
+    readLoopDeliveryWatchdogConfigFromEnv(process.env),
+  );
+  const resolveDeliverySnapshot = async (task: Task): Promise<DeliverySnapshot | null> => {
+    // Commit count on the loop's branch is the delivery signal that advances
+    // through the dominant phase of a real loop — open one PR, then iterate
+    // many times pushing commits until it merges. PR/merge COUNTS are coarse
+    // milestones that stay flat across those iterations, so PR counts alone
+    // would flag a healthy mid-PR loop as hung. Prompt-cited PRs are excluded
+    // (mirrors delivered-completion #1560) so a loop that merely mentions an
+    // external PR is never counted as its own delivery.
+    const { prsOpened, prsMerged } = countDeliveredPullRequests(
+      githubStateStore.getTaskState(task.id).prs.map((pr) => ({
+        status: pr.status,
+        detectedFrom: pr.ref.detectedFrom,
+      })),
+    );
+    const commitOut = await gitIn(task.cwd, 'rev-list', '--count', 'HEAD');
+    const commits = commitOut === null ? NaN : Number.parseInt(commitOut, 10);
+    if (!Number.isFinite(commits)) {
+      // Couldn't read the commit count this iteration (transient git failure /
+      // not a worktree). Skip the sample rather than judge on PR milestones
+      // alone — missing delivery data must never flag a loop.
+      return null;
+    }
+    return { commits, prsOpened, prsMerged };
+  };
+
   // Stranded-PR / merge_required exemption for the finishedAwaitingAck TTL
   // reclaim (issue #1884). Fail-safe: only a task with zero PR references, or
   // with every referenced PR CONFIRMED closed/merged, returns `false` (safe
@@ -1525,6 +1565,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     tokenTracker,
     launchFreshTaskSession: (task, prompt, opts) => launchFreshTaskSession(launchServiceDeps, task, prompt, opts),
+    loopDeliveryWatchdog,
+    resolveDeliverySnapshot,
     completeTask: (taskId) => completeTask(taskId, {
       adapter,
       monitor,
@@ -2293,6 +2335,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
+      loopDeliveryWatchdog,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       // Silent-failure integrity (issue #1712): bounded auto-retry + operator
