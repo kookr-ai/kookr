@@ -63,6 +63,10 @@ import {
   createAutoCloseSweepThrottle,
 } from './completion-ready-sweep.js';
 import { expirePendingTasks } from './pending-ttl-sweep.js';
+import {
+  reclaimAgedFinishedAwaitingAckTasks,
+  type FinishedAwaitingAckTtlReclaimMetrics,
+} from './finished-awaiting-ack-ttl-sweep.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import {
@@ -148,6 +152,22 @@ export interface TimerDeps {
    * tick. Falls back to the module default when absent (older wiring/tests).
    */
   getPendingTaskTtlMs?: () => number;
+  /**
+   * Live getter for the finishedAwaitingAck TTL, in milliseconds (issue
+   * #1884, `finishedAwaitingAckTtlMinutes` setting). Read on every liveness
+   * tick. Falls back to the module default (15m) when absent.
+   */
+  getFinishedAwaitingAckTtlMs?: () => number;
+  /**
+   * Stranded-PR / `merge_required` exemption predicate for the
+   * finishedAwaitingAck TTL reclaim (issue #1884), backed by
+   * `GitHubStateStore`. Absent ⇒ every candidate is treated as a possible PR
+   * hold and never reclaimed (fail-safe default — see
+   * `core/finished-awaiting-ack-ttl.ts`).
+   */
+  isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /** Optional counter for the finishedAwaitingAck TTL reclaim, exposed via `/metrics` (issue #1884). */
+  finishedAwaitingAckTtlReclaimMetrics?: Pick<FinishedAwaitingAckTtlReclaimMetrics, 'recordReclaimed'>;
   /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
   reportsDir?: string;
   /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
@@ -832,6 +852,28 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         { ttlMs: deps.getPendingTaskTtlMs?.() },
       );
 
+      // finishedAwaitingAck TTL reclaim (issue #1884): force-complete tasks
+      // that finished their work and raised completion_ready but sat
+      // unacknowledged past the TTL, chronically holding an active
+      // concurrency slot. The stranded-PR exemption (isTaskHoldingOpenPr)
+      // keeps a merge_required delivery from ever being clobbered.
+      const finishedAwaitingAckTtlResult = await reclaimAgedFinishedAwaitingAckTasks(
+        {
+          taskStore,
+          lifecycleDeps: {
+            ...lifecycleDeps,
+            ...(deps.agentLifecycleDeps?.interactionLog
+              ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+              : {}),
+          },
+          auditLogPath: deps.auditLogPath,
+          broadcastToAll: deps.broadcastToAll,
+          isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+          metrics: deps.finishedAwaitingAckTtlReclaimMetrics,
+        },
+        { ttlMs: deps.getFinishedAwaitingAckTtlMs?.() },
+      );
+
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
       // the agent-lifecycle wrappers, so this additive call is where claims
@@ -906,6 +948,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || autoCloseResult.closedTaskIds.length > 0
         || deliveredResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
+        || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).

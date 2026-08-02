@@ -78,6 +78,7 @@ describe('Settings API', () => {
       scheduleFailureAlertThreshold: 3,
       maxPendingTasks: 24,
       pendingTaskTtlMinutes: 240,
+      finishedAwaitingAckTtlMinutes: 15,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,
       reservedActiveSlots: 2,

@@ -267,6 +267,18 @@ describe('validateSettings', () => {
     expect(validateSettings({ pendingTaskTtlMinutes: 'forever' }).pendingTaskTtlMinutes).toBe(240);
   });
 
+  it('defaults finishedAwaitingAckTtlMinutes to 15 and clamps to the 5-30 range, hard-capped at 30 (issue #1884)', () => {
+    expect(validateSettings({}).finishedAwaitingAckTtlMinutes).toBe(15);
+    expect(DEFAULT_SETTINGS.finishedAwaitingAckTtlMinutes).toBe(15);
+    expect(validateSettings({ finishedAwaitingAckTtlMinutes: 10 }).finishedAwaitingAckTtlMinutes).toBe(10);
+    expect(validateSettings({ finishedAwaitingAckTtlMinutes: 1 }).finishedAwaitingAckTtlMinutes).toBe(5);
+    // Hard max: an operator override can never restore the chronic 30-45m
+    // holds this setting exists to bound.
+    expect(validateSettings({ finishedAwaitingAckTtlMinutes: 45 }).finishedAwaitingAckTtlMinutes).toBe(30);
+    expect(validateSettings({ finishedAwaitingAckTtlMinutes: 99_999 }).finishedAwaitingAckTtlMinutes).toBe(30);
+    expect(validateSettings({ finishedAwaitingAckTtlMinutes: 'forever' }).finishedAwaitingAckTtlMinutes).toBe(15);
+  });
+
   it('defaults spawnBurstLimit to 30 and clamps to the 5–500 range (issue #1526 Phase C / C3)', () => {
     expect(validateSettings({}).spawnBurstLimit).toBe(30);
     expect(DEFAULT_SETTINGS.spawnBurstLimit).toBe(30);
@@ -521,6 +533,7 @@ describe('loadSettings / saveSettings', () => {
       scheduleFailureAlertThreshold: 5,
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,
+      finishedAwaitingAckTtlMinutes: 20,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
       reservedActiveSlots: 3,
