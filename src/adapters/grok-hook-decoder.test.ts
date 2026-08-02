@@ -75,10 +75,51 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
     const end = parseGrokHookEvent(line('stop[end_turn]'));
     expect(end?.type).toBe('stop');
     expect(end && end.type === 'stop' ? end.stopReason : undefined).toBe('end_turn');
+    // Older POC-A stop fixtures omit lastAssistantMessage — empty is fine so
+    // the adapter can fall back to a pane tail.
+    expect(end && end.type === 'stop' ? end.lastMessage : undefined).toBe('');
     for (const key of ['stop[error]', 'stop[cancelled]', 'stop[shutdown]']) {
       const e = parseGrokHookEvent(line(key));
       expect(e?.type).toBe('stop');
     }
+  });
+
+  it('maps lastAssistantMessage on stop into lastMessage for the activity panel', () => {
+    // Live Grok (≥0.2.x) includes the final assistant turn as camelCase
+    // lastAssistantMessage. Without this mapping the activity panel only
+    // shows "You" rows and the operator has to read the terminal for answers.
+    const raw = JSON.stringify({
+      hookEventName: 'stop',
+      sessionId: 'sess-1',
+      cwd: '/tmp',
+      reason: 'end_turn',
+      promptId: 'turn-1',
+      lastAssistantMessage: '## Done\n\nThe fix is deployed and verified.',
+    });
+    const e = parseGrokHookEvent(raw);
+    expect(e).toMatchObject({
+      type: 'stop',
+      sessionId: 'sess-1',
+      stopReason: 'end_turn',
+      lastMessage: '## Done\n\nThe fix is deployed and verified.',
+      turnId: 'turn-1',
+    });
+  });
+
+  it('maps lastAssistantMessage on subagent_stop into lastMessage', () => {
+    const raw = JSON.stringify({
+      hookEventName: 'subagent_stop',
+      sessionId: 'sess-1',
+      subagentId: 'child-1',
+      subagentType: 'explore',
+      lastAssistantMessage: 'Found 3 matching files.',
+    });
+    const e = parseGrokHookEvent(raw);
+    expect(e).toMatchObject({
+      type: 'subagent_stop',
+      agentId: 'child-1',
+      lastMessage: 'Found 3 matching files.',
+    });
   });
 
   it('decodes stop_failure with the HTTP error text', () => {
