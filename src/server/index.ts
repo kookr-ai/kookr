@@ -1739,6 +1739,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
+    getDefaultAgentType,
     // issue #1896: sweep provider-paused resumes on the runner's existing tick.
     resetScheduler: providerResetScheduler,
     // issue #1899 / #1699 WS2.1: arm always-running Ralph loops from schedules
