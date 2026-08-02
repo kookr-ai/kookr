@@ -578,4 +578,42 @@ describe('makeGitRunner + resolveGitTarget against a real repo', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Regression: makeGitRunner must target `dir` even when the ambient
+  // environment exports GIT_DIR/GIT_WORK_TREE (as git hook processes like
+  // .hooks/pre-push do). GIT_DIR overrides `-C <dir>` for repo discovery, so an
+  // unscrubbed runner would commit into the *parent* repo — exactly how PR
+  // #1891 picked up stray "A"/"B" commits from this suite when it ran under the
+  // pre-push hook. The runner scrubs GIT_DIR/GIT_WORK_TREE, so the decoy stays
+  // empty and the target repo gets the commit.
+  test('ignores an ambient GIT_DIR/GIT_WORK_TREE (does not leak into a parent repo)', () => {
+    const target = mkdtempSync(join(tmpdir(), 'conv-git-target-'));
+    const decoy = mkdtempSync(join(tmpdir(), 'conv-git-decoy-'));
+    const savedGitDir = process.env.GIT_DIR;
+    const savedWorkTree = process.env.GIT_WORK_TREE;
+    try {
+      makeGitRunner(target)(['init', '--quiet']);
+      makeGitRunner(decoy)(['init', '--quiet']);
+
+      // Simulate the hook environment: point the ambient GIT_DIR at the decoy.
+      process.env.GIT_DIR = join(decoy, '.git');
+      process.env.GIT_WORK_TREE = decoy;
+
+      // Runner captures (scrubbed) env at creation; build it AFTER setting the
+      // ambient vars so the test proves the scrub, not creation-time absence.
+      const git = makeGitRunner(target);
+      git(['-c', 'user.email=t@e.com', '-c', 'user.name=t', 'commit', '--allow-empty', '--quiet', '-m', 'X']);
+
+      // The commit landed in `target`, and the decoy (ambient GIT_DIR) is empty.
+      expect(git(['rev-parse', 'HEAD'])).toBeTruthy();
+      expect(makeGitRunner(decoy)(['rev-parse', 'HEAD'])).toBeNull();
+    } finally {
+      if (savedGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = savedGitDir;
+      if (savedWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = savedWorkTree;
+      rmSync(target, { recursive: true, force: true });
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
 });

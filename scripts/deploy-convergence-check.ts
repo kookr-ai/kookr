@@ -158,10 +158,21 @@ async function fetchJson(
 // Default git runner: bounded execFileSync with array args (shell-safe, matching
 // scripts/generate-build-info.ts). Returns trimmed stdout, or null on any
 // failure so callers can degrade gracefully instead of throwing.
+//
+// `GIT_DIR`/`GIT_WORK_TREE` are scrubbed (and cwd pinned to `dir`) so the
+// command always targets `dir`, not a parent repo. This matters because git
+// hook processes (e.g. `.hooks/pre-push`) EXPORT `GIT_DIR` into the environment,
+// and `GIT_DIR` OVERRIDES `-C <dir>` for repo discovery — so without scrubbing,
+// a probe run from a hook, or a unit test that inits a temp repo, would operate
+// on the parent repo instead of `dir`. Mirrors the `gitEnv` guard in
+// src/server/routes/deploy-routes.ts.
 export function makeGitRunner(dir: string): GitRunner {
+  const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
   return (args: string[]) => {
     try {
       return execFileSync('git', ['-C', dir, ...args], {
+        cwd: dir,
+        env,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 10_000,
