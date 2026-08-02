@@ -1082,6 +1082,164 @@ export const LUCY_1593_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * lucy#1589 "forward-corpus denominator hygiene — exclude replays, measure the
+ * BMO lane, name the sparse-tape regime". Residual after #1486 open items and
+ * prior PRs (#1481/#1482/#1508/#1572/#1558/#1571): structural captureMode
+ * provenance, BMO session-stamp contract, unusable-row regime taxonomy,
+ * blockingQualityFlags canary on real ledger shape, weekly denominator report.
+ * Skips operator-only NBBO entitlement fork (decision memo remains OPERATOR).
+ * Authored by the queue-feeder (2026-08-03) after needsAuthoring blocked emit.
+ * Live GitHub leaves: #2114–#2118; openChildrenCount / title
+ * idempotency prevents re-emit once those exist.
+ */
+export const LUCY_1589_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(outcomes): structural captureMode live|recovery_sweep at ledger write',
+    goal:
+      'Stamp every forward outcome with structural captureMode (live | recovery_sweep) ' +
+      'at write time so product denominators can filter recovery-sweep replays without ' +
+      'hand-listed symbols (umbrella #1589 / #1486 checkbox (c)).',
+    acceptanceCriteria: [
+      'Outcome / forward-ledger write path records a stable captureMode field with ' +
+        'allowed values live and recovery_sweep (or equivalent documented enum); recovery ' +
+        'sweeps and recapture/replay writers set recovery_sweep, normal publish-window ' +
+        'first-write sets live.',
+      'At least one product denominator filter (scorecard, digest, or weekly report ' +
+        'helper) excludes recovery_sweep by default or documents an explicit include-replays ' +
+        'flag — RF/PNC/COF-class sweep rows no longer count as capture-eligible n without ' +
+        'an opt-in.',
+      'Unit tests: (a) live write → captureMode=live; (b) recovery_sweep writer → ' +
+        'captureMode=recovery_sweep; (c) denominator helper drops recovery_sweep from ' +
+        'eligible n when filter is on.',
+    ],
+    fileHints: [
+      'src/verdict-outcomes.js',
+      'src/scheduler-pending-verdict-recovery.js',
+      'backtest/reaction-window.js',
+      'data/detections.jsonl consumers / outcome ledger writers',
+    ],
+    testHints: [
+      'unit test: writeOutcome fixture with recovery path vs live path sets captureMode; filter counts match',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'fix(outcomes): BMO session stamp only for true pre_market publications',
+    goal:
+      'Stop labeling regular-hours / mid-afternoon publications as -bmo: define and ' +
+      'enforce the BMO measurability contract so 14:40 ET rows cannot get a BMO session ' +
+      'suffix (umbrella #1589 / #1486 checkbox (d)).',
+    acceptanceCriteria: [
+      'Session / eventId stamping treats BMO only when publication (or scheduled session) ' +
+        'is true pre-market BMO; a 14:40 ET (18:40Z) publication must not produce a -bmo ' +
+        'eventId/session label.',
+      'Regression test locks TMUS/FCX-class counterexample (publicationTsUtc ~18:40Z, ' +
+        'pre-window drift 0) → not classified as BMO product lane; a genuine BMO pre_market ' +
+        'fixture still stamps BMO.',
+      'One-time or scripted audit path (test or CLI) can list existing ledger rows that ' +
+        'violate the contract (optional write-up in PR body with count), without requiring ' +
+        'destructive rewrite of history in this leaf.',
+    ],
+    fileHints: [
+      'src/verdict-identity.js',
+      'src/verdict-outcomes.js',
+      'src/scheduled-analysis-delivery.js',
+      'docs/calibration.md (BMO measurability contract note)',
+    ],
+    testHints: [
+      'unit test: 14:40 ET publication → no -bmo; pre_market BMO fixture → -bmo retained',
+    ],
+    labels: ['product-metric', 'enhancement', 'bug'],
+  }),
+  Object.freeze({
+    title:
+      'feat(outcomes): unusable-row regime taxonomy sparse_after_hours_tape etc.',
+    goal:
+      'Give every unusable forward row a named regime tag (sparse_after_hours_tape, ' +
+      'missing_baseline, stale_baseline, no_entitlement_nbbo, …) surfaced per-row and ' +
+      'aggregated so unusable rows self-explain instead of silent exclusion (umbrella #1589).',
+    acceptanceCriteria: [
+      'Unusable / non-product-usable rows carry a stable regime (or equivalent enum field) ' +
+        'from a documented taxonomy including at least sparse_after_hours_tape, ' +
+        'missing_baseline, stale_baseline, and no_entitlement_nbbo (plus optional ' +
+        'recovery_sweep / mislabeled_session when derived elsewhere).',
+      'Digest, html-report, or weekly helper aggregates counts by regime; a fixture with ' +
+        'mixed unusable causes yields non-zero per-regime counts that match hand totals.',
+      'Unit tests cover mapping from qualityFlags / blocking flags / session state into ' +
+        'regime tags and prove unknown causes get an explicit other/unknown regime rather ' +
+        'than null silence.',
+    ],
+    fileHints: [
+      'backtest/reaction-window.js',
+      'backtest/reaction-pnl.js',
+      'src/verdict-outcomes.js',
+      'backtest/html-report.js',
+    ],
+    testHints: [
+      'unit test: fixture rows with sparse/missing/stale/no-entitlement flags → correct regime + aggregate counts',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'test(outcomes): blockingQualityFlags canary on real ledger row shape',
+    goal:
+      'Prove #1508 blockingQualityFlags survives onto REAL ledger/outcome row shape ' +
+      '(not only reaction-window internals) with a canary fixture so unusable rows remain ' +
+      'diagnosable from the stored record (umbrella #1589 / #1486 checkbox (b)).',
+    acceptanceCriteria: [
+      'A canary fixture (or integration unit) builds or loads a ledger/outcome row in the ' +
+        'production shape written by verdict-outcomes and asserts blockingQualityFlags is ' +
+        'present, non-empty for a known blocking case, and distinct from non-blocking ' +
+        'qualityFlags noise (e.g. terminal_noise_high alone does not satisfy the canary).',
+      'If production write path still drops blockingQualityFlags, the leaf fails the canary ' +
+        'and fixes the write path so emitted rows retain the field (closes the #1486 gap).',
+      'Test is hermetic (fixture JSON or in-memory writer); documents the post-#1508 ' +
+        'contract in a short comment or assertion message.',
+    ],
+    fileHints: [
+      'src/verdict-outcomes.js',
+      'backtest/reaction-window.js',
+      'test/ (verdict-outcomes / reaction-window canary)',
+      'PR #1508 prior art',
+    ],
+    testHints: [
+      'canary unit: synthetic blocking reaction → ledger row.blockingQualityFlags includes expected codes',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): weekly forward-denominator integrity report JSONL',
+    goal:
+      'Ship a weekly denominator-integrity report: capture-eligible n, per-regime ' +
+      'exclusions, usable n, and days-to-gate-threshold projection so product n is a ' +
+      'durable number (umbrella #1589; pairs with headline metrics U5).',
+    acceptanceCriteria: [
+      'A pure aggregator (and optional CLI) reads outcome/detection ledger JSONL and emits ' +
+        'durable weekly JSON/JSONL with: captureEligibleN (post captureMode filter), ' +
+        'exclusionsByRegime, usableN, and a simple days-to-threshold projection given ' +
+        'current weekly usable rate and docs/calibration.md gate (~20–30).',
+      'Unit tests: synthetic week fixture with known live/recovery_sweep/regime mix → ' +
+        'hand-computed fields match; empty input degrades cleanly.',
+      'Output path is documented (e.g. data/ or experiment dir) so daily-report / ' +
+        'control-room can surface it without re-deriving in prose.',
+    ],
+    fileHints: [
+      'src/acquisition/weekly-scoreboard.js (or sibling weekly-denominator.js)',
+      'docs/calibration.md',
+      'data/detections.jsonl / outcome ledger readers',
+    ],
+    testHints: [
+      'unit test: fixture week → captureEligibleN, exclusionsByRegime, usableN, projection match hand totals',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
@@ -1092,6 +1250,7 @@ export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> =
   'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,
   'jeanibarz/lucy#1586': LUCY_1586_LEAF_PLAN,
   'jeanibarz/lucy#1593': LUCY_1593_LEAF_PLAN,
+  'jeanibarz/lucy#1589': LUCY_1589_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
