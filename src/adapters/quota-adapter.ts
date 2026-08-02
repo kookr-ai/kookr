@@ -47,6 +47,24 @@ export class QuotaAdapter {
     return this.latest;
   }
 
+  /**
+   * Live headroom snapshot for launch admission (issue #1894 / #1699 WS1.2).
+   *
+   * Forces a poll of the Anthropic OAuth usage endpoint and returns the
+   * resulting snapshot **only when the live poll succeeded**. Never returns a
+   * stale {@link getLatest} snapshot: if the poll fails (auth, network, 429,
+   * missing credentials), returns `null` so the admission gate can fail-open
+   * rather than deny/admit on outdated data.
+   *
+   * Display paths should keep using {@link getLatest} + the lifecycle timer
+   * poller; only launch gating should call this.
+   */
+  async getLiveHeadroom(): Promise<QuotaStatus | null> {
+    const updated = await this.poll();
+    if (!updated || !this.latest) return null;
+    return this.latest;
+  }
+
   /** Get the current poller state for diagnostics. */
   getState(): PollerState {
     return this.state;

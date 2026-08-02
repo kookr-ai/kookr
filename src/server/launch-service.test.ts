@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -2548,6 +2548,119 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         // getHostLoadSample intentionally absent.
       };
       const result = await launchTask(deps, { prompt: 'no sampler', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+    });
+  });
+
+  describe('live quota-headroom admission (issue #1894)', () => {
+    function quotaDeps(
+      store: TaskStore,
+      sample: { fiveHour: { utilization: number; resetsAt?: string } | null; sevenDay: { utilization: number; resetsAt?: string } | null } | null,
+    ): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        getLiveQuotaHeadroom: vi.fn().mockResolvedValue(sample),
+      };
+    }
+
+    it('denies a claude-code launch when live headroom is exhausted, before any task record', async () => {
+      const store = new TaskStore();
+      const sample = {
+        fiveHour: { utilization: 97, resetsAt: '2026-08-02T18:00:00Z' },
+        sevenDay: { utilization: 40, resetsAt: '2026-08-09T00:00:00Z' },
+      };
+      const deps = quotaDeps(store, sample);
+      const before = store.listTasks().length;
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'no headroom', cwd: '/tmp', agentType: 'claude-code' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isQuotaHeadroomAdmissionError(thrown)).toBe(true);
+      const err = thrown as QuotaHeadroomAdmissionError;
+      expect(err.code).toBe('quota_headroom_admission');
+      expect(err.maxUtilization).toBe(97);
+      expect(err.threshold).toBe(90);
+      expect(err.resetsAt).toBe('2026-08-02T18:00:00Z');
+      expect(err.capacity).toBeDefined();
+      // Live getter must have been consulted (not a silent skip).
+      expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+      // A rejected launch must leave no task record behind.
+      expect(store.listTasks().length).toBe(before);
+    });
+
+    it('admits a claude-code launch when live headroom is available', async () => {
+      const store = new TaskStore();
+      const deps = quotaDeps(store, {
+        fiveHour: { utilization: 40, resetsAt: '2026-08-02T18:00:00Z' },
+        sevenDay: { utilization: 10 },
+      });
+      const result = await launchTask(deps, {
+        prompt: 'plenty of quota',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      expect(result.queued).toBe(false);
+      expect(store.getTask(result.task.id)).toBeDefined();
+      expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails open when the live poll returns null (no stale-snapshot deny)', async () => {
+      const store = new TaskStore();
+      const deps = quotaDeps(store, null);
+      const result = await launchTask(deps, {
+        prompt: 'poll failed',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      expect(result.queued).toBe(false);
+      expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not gate non-claude agents (QuotaAdapter is Anthropic-only)', async () => {
+      const store = new TaskStore();
+      const getter = vi.fn().mockResolvedValue({
+        fiveHour: { utilization: 100 },
+        sevenDay: null,
+      });
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getLiveQuotaHeadroom: getter,
+      };
+      const result = await launchTask(deps, {
+        prompt: 'codex path',
+        cwd: '/tmp',
+        agentType: 'codex-cli',
+      });
+      expect(result.queued).toBe(false);
+      expect(getter).not.toHaveBeenCalled();
+    });
+
+    it('still gates schedule-fired claude-code launches (no schedule exemption)', async () => {
+      const store = new TaskStore();
+      const deps = quotaDeps(store, {
+        fiveHour: { utilization: 95, resetsAt: 'later' },
+        sevenDay: null,
+      });
+      await expect(
+        launchTask(deps, {
+          prompt: 'scheduled into empty quota',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+          launchSource: 'schedule',
+        }),
+      ).rejects.toMatchObject({ code: 'quota_headroom_admission' });
+    });
+
+    it('is inert when the live getter is not wired', async () => {
+      const store = new TaskStore();
+      const deps = makeDeps(store);
+      const result = await launchTask(deps, {
+        prompt: 'no getter',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
       expect(result.queued).toBe(false);
     });
   });

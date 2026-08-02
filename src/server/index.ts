@@ -2275,6 +2275,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
+  // Live headroom for claude-code launch admission (issue #1894 / #1699 WS1.2).
+  // Wired after the adapter is constructed; the launch-service deps object is
+  // already shared with every launcher, so mutating the optional getter here
+  // is enough. getLiveHeadroom() forces a poll — never a stale getLatest().
+  //
+  // Skip under Vitest: QuotaAdapter reads the real ~/.claude credentials and
+  // would hit Anthropic's usage API on every integration launch, making the
+  // suite non-hermetic (and fail-closed when the operator's plan is near the
+  // exhaustion threshold). Unit tests inject getLiveQuotaHeadroom directly.
+  if (!process.env.VITEST) {
+    launchServiceDeps.getLiveQuotaHeadroom = () => quotaAdapter.getLiveHeadroom();
+  }
 
   const wsConnectionDeps: WsConnectionDeps = {
     taskStore, queue, monitor, adapter, adapterRegistry,

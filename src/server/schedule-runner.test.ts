@@ -1494,7 +1494,13 @@ Do the thing.
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    // force:true still races a hung fire writing into the dir mid-rm; retry once.
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch {
+      await new Promise((r) => setTimeout(r, 50));
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('a launcher rejection shaped like LaunchTimeoutError records dispatch_failed / launch_error', async () => {
@@ -1728,11 +1734,16 @@ Do the thing.
     });
     // Backdate so it is due now.
     store.replace({ ...store.get(sched.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+    // Cap must sit above real fs-persist cost under full-suite load (same
+    // rationale as the hung-fire wall-clock test below). A 50ms cap could
+    // expire during reserveExecution, so tick() returned before the hung
+    // launcher was entered and launchCount stayed 0.
+    const CAP = 1_000;
     const runner = new ScheduleRunner({
       store,
       service,
       validator,
-      fireTimeoutMs: 50, // small wall-clock cap so the hung cron fire releases the tick fast
+      fireTimeoutMs: CAP,
       launcher: async () => {
         launchCount += 1;
         return new Promise<never>(() => {}); // hang: the cron fire never settles → stays in flight
@@ -1754,6 +1765,10 @@ Do the thing.
     runner.selfHealRefire([sched.id]);
     await new Promise((r) => setTimeout(r, 40)); // let the deferred re-fire run
     expect(launchCount).toBe(1);
+
+    // Stop so afterEach can rm the temp dir without racing the hung fire's
+    // rollup write (ENOTEMPTY under suite load).
+    await runner.stop();
   });
 
   it('the re-queue-after-reset sweep is evaluated once per tick (issue #1896)', async () => {

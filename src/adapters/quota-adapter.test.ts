@@ -374,4 +374,53 @@ describe('QuotaAdapter', () => {
     expect(adapter.getState()).toBe('backoff');
     expect(adapter.getLastError()).toContain('503');
   });
+
+  describe('getLiveHeadroom (issue #1894)', () => {
+    test('returns the fresh snapshot when the live poll succeeds', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'test-token' },
+      }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 12, resets_at: '2026-08-02T18:00:00Z' },
+          seven_day: { utilization: 3, resets_at: '2026-08-09T00:00:00Z' },
+        }),
+      }));
+
+      const live = await adapter.getLiveHeadroom();
+
+      expect(live).not.toBeNull();
+      expect(live!.fiveHour).toEqual({ utilization: 12, resetsAt: '2026-08-02T18:00:00Z' });
+      expect(live!.sevenDay).toEqual({ utilization: 3, resetsAt: '2026-08-09T00:00:00Z' });
+      // Same object reference as getLatest after a successful live poll.
+      expect(live).toBe(adapter.getLatest());
+    });
+
+    test('returns null on poll failure — never a stale getLatest() snapshot', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'test-token' },
+      }));
+      // Seed a successful poll so getLatest() is non-null (stale snapshot).
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 50, resets_at: '2026-08-02T12:00:00Z' },
+          seven_day: null,
+        }),
+      }));
+      expect(await adapter.poll()).toBe(true);
+      expect(adapter.getLatest()).not.toBeNull();
+
+      // Live poll fails (network) — admission must not see the stale 50%.
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+      const live = await adapter.getLiveHeadroom();
+
+      expect(live).toBeNull();
+      // Stale display snapshot remains available for the dashboard.
+      expect(adapter.getLatest()?.fiveHour?.utilization).toBe(50);
+    });
+  });
 });

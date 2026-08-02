@@ -32,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1214,6 +1214,27 @@ describe('POST /api/tasks error paths', () => {
       capacity: backpressureLedger,
     });
     expect(body.error).toMatch(/Host CPU load/);
+  });
+
+  test('maps QuotaHeadroomAdmissionError to 429 with code, ledger, and utilization fields (issue #1894)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new QuotaHeadroomAdmissionError(backpressureLedger, 97, 90, '2026-08-02T18:00:00Z'),
+    );
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'quota_headroom_admission',
+      maxUtilization: 97,
+      threshold: 90,
+      resetsAt: '2026-08-02T18:00:00Z',
+      capacity: backpressureLedger,
+    });
+    expect(body.error).toMatch(/Anthropic plan quota is exhausted/);
   });
 
   test('forwards the X-Kookr-Actor header as launchActorId for actor-qualified budgets (issue #1526 C3)', async () => {
