@@ -1932,9 +1932,8 @@ describe('TerminalPanel', () => {
 
   test('reconnects after an abnormal close and resets the terminal before the ring-buffer replay', () => {
     // Server restart / host offline: the byte stream must come back on its
-    // own, and because the server replays the session ring buffer on every
-    // connect (or nudges a live redraw), the terminal must reset on every
-    // open or stale cells / duplicated scrollback remain.
+    // own. Reset is deferred until the first server byte of each attach so the
+    // pane stays painted during the handshake (no blank flash).
     vi.useFakeTimers();
     try {
       act(() => {
@@ -1944,6 +1943,12 @@ describe('TerminalPanel', () => {
       const first = mocks.webSocketInstances[0];
       act(() => {
         first.onopen?.();
+      });
+      // Open alone must not blank the pane.
+      expect(terminal.reset).toHaveBeenCalledTimes(0);
+
+      act(() => {
+        first.onmessage?.({ data: 'seed-a' });
       });
       expect(terminal.reset).toHaveBeenCalledTimes(1);
 
@@ -1963,6 +1968,11 @@ describe('TerminalPanel', () => {
       const second = mocks.webSocketInstances[1];
       act(() => {
         second.onopen?.();
+      });
+      // Second open still defers reset until first byte of the new attach.
+      expect(terminal.reset).toHaveBeenCalledTimes(1);
+      act(() => {
+        second.onmessage?.({ data: 'seed-b' });
       });
       expect(terminal.reset).toHaveBeenCalledTimes(2);
     } finally {
@@ -1984,7 +1994,8 @@ describe('TerminalPanel', () => {
       act(() => {
         ws.onopen?.();
       });
-      expect(terminal.reset).toHaveBeenCalledTimes(1);
+      // No server bytes yet → no reset (keeps prior paint until attach fails).
+      expect(terminal.reset).toHaveBeenCalledTimes(0);
       act(() => {
         ws.onclose?.({ code });
       });
@@ -1996,8 +2007,8 @@ describe('TerminalPanel', () => {
         vi.advanceTimersByTime(120_000);
       });
       expect(mocks.webSocketInstances).toHaveLength(1);
-      // No reconnect ⇒ no additional reset beyond the initial open.
-      expect(terminal.reset).toHaveBeenCalledTimes(1);
+      // No reconnect and no first-byte paint ⇒ still no reset.
+      expect(terminal.reset).toHaveBeenCalledTimes(0);
     } finally {
       vi.useRealTimers();
     }

@@ -31,6 +31,11 @@ export const TELEMETRY_EVENT_TYPES = [
   'websocket_stale_event',
   'selection_flicker_incident',
   'suggestion_lifecycle',
+  /**
+   * End-to-end terminal attach latency after a task switch: selection → WS open
+   * → first server byte → xterm write. Used to track sub-second attach goals.
+   */
+  'terminal_switch_latency',
 ] as const;
 
 export type TelemetryEventType = typeof TELEMETRY_EVENT_TYPES[number];
