@@ -298,6 +298,57 @@ export function resolveRoundRobinAgent(
 }
 
 /**
+ * Outcome of resolving a *pinned* schedule agent against the currently
+ * launchable set (issue #1895 / #1699 WS1.3). Round-robin already filters via
+ * {@link resolveRoundRobinAgent}; pinned selections used to pass through and
+ * fail at `adapterRegistry.get` as `dispatch_failed`. This is the schedule-
+ * level counterpart: keep the pin when it is launchable, substitute a healthy
+ * registered alternative when it is not, or report unavailability so the
+ * caller can park the fire (WS0 `provider_paused`) instead of dispatching
+ * into a known-missing agent.
+ *
+ * `deprioritized` reuses the #1898 boot-reliability signal: a pin whose agent
+ * is registered but currently unhealthy is treated as unavailable while a
+ * healthier alternative remains — same rule as round-robin.
+ */
+export type PinnedAgentResolution =
+  | { kind: 'available'; agentType: AgentType; substituted: false }
+  | { kind: 'substituted'; agentType: AgentType; substituted: true; from: AgentType }
+  | { kind: 'unavailable'; from: AgentType };
+
+/**
+ * Resolve a pinned agent pin against registered (and optionally deprioritized)
+ * adapters. Returns the pin unchanged when it is launchable; otherwise the
+ * first healthy agent in canonical order ({@link AVAILABLE_AGENT_TYPES}); or
+ * `unavailable` when no substitute can launch.
+ */
+export function resolvePinnedAgentFallback(
+  pinned: AgentType,
+  available: readonly AgentType[],
+  deprioritized: readonly AgentType[] = [],
+): PinnedAgentResolution {
+  const registered = AVAILABLE_AGENT_TYPES
+    .map((entry) => entry.type)
+    .filter((type) => available.includes(type));
+  if (registered.length === 0) {
+    return { kind: 'unavailable', from: pinned };
+  }
+  let effective = registered;
+  if (deprioritized.length > 0) {
+    const healthy = registered.filter((type) => !deprioritized.includes(type));
+    if (healthy.length > 0) effective = healthy;
+  }
+  if (effective.includes(pinned)) {
+    return { kind: 'available', agentType: pinned, substituted: false };
+  }
+  const substitute = effective[0];
+  if (!substitute) {
+    return { kind: 'unavailable', from: pinned };
+  }
+  return { kind: 'substituted', agentType: substitute, substituted: true, from: pinned };
+}
+
+/**
  * Build the agent-picker option list for the UI. Appends the
  * {@link ROUND_ROBIN_OPTION} only when at least two concrete agents are
  * available — round-robin is meaningless with a single agent.

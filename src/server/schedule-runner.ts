@@ -7,6 +7,13 @@ import {
   isTriggerLimitExhausted,
   scheduleResolutionSignature,
 } from '../core/schedule.js';
+import {
+  isAgentType,
+  ROUND_ROBIN_AGENT_TYPE,
+  resolvePinnedAgentFallback,
+  type AgentType,
+  type PinnedAgentResolution,
+} from '../core/agent-types.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
@@ -167,6 +174,27 @@ export interface ScheduleRunnerDeps {
    * older wiring/tests).
    */
   resetScheduler?: { sweep(now?: number): unknown };
+  /**
+   * Currently registered (launchable) agent types (issue #1895 / #1699 WS1.3).
+   * When provided, a schedule pinned to an unavailable agent substitutes to an
+   * available one (or parks via `provider_paused`) instead of dispatching into
+   * a known-missing adapter and recording `dispatch_failed`. Absent means the
+   * historical pass-through (back-compat for older wiring/tests).
+   */
+  getAvailableAgentTypes?: () => readonly AgentType[];
+  /**
+   * Boot-reliability deprioritization (issue #1898) consulted when resolving a
+   * pinned schedule agent. Same shape as launch-service's dep. Absent means no
+   * deprioritization (pin is only unavailable when not registered).
+   */
+  getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Record one provider fallback substitution (issue #1895 → WS1.5 counter).
+   * Wired to {@link ProviderHealthTracker.recordSubstitution} in production.
+   * Fire-and-forget; must not throw. Absent means substitution still happens
+   * and is ledger-stamped, but the pool-health counter is not incremented.
+   */
+  recordAgentSubstitution?: () => void;
   /**
    * Per-fire wall-clock cap in ms (issue #1708). Parameterized for tests;
    * defaults to {@link FIRE_WALL_CLOCK_CAP_MS}. A launcher that hangs past this
@@ -652,6 +680,14 @@ export class ScheduleRunner {
       return this.fireLooped(schedule, receipt);
     }
 
+    // issue #1895 / #1699 WS1.3: pinned-agent availability. Round-robin is
+    // resolved inside launchTask; a concrete pin must not pass through to a
+    // missing/paused adapter and surface as dispatch_failed.
+    const agentResolution = this.resolveScheduleAgent(schedule);
+    if (agentResolution?.kind === 'unavailable') {
+      return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
+    }
+
     // #1526 Phase A / FM8: no capacity pre-check here anymore. At capacity,
     // the launcher (the normal task-submission path) pends the task instead
     // of launching it — same as any other over-cap POST /api/tasks — so a
@@ -660,6 +696,10 @@ export class ScheduleRunner {
     // markExecutionAccepted for the resulting `queued_capacity` outcome.
     try {
       const launch = await this.deps.validator.resolveLaunch(schedule);
+      const agentType = agentResolution?.agentType ?? schedule.agentType;
+      const substituted = agentResolution?.kind === 'substituted';
+      // Effort/model pins target the original agent; drop them on substitution
+      // so an invalid pin for the substitute cannot reintroduce dispatch_failed.
       const result = await this.deps.launcher({
         prompt: launch.prompt,
         cwd: launch.cwd,
@@ -667,11 +707,11 @@ export class ScheduleRunner {
         name: launch.name,
         playbookId: launch.playbookId,
         projectId: launch.projectId,
-        agentType: schedule.agentType,
+        agentType,
         // #1518: forward schedule-level effort/model pins into the spawned
         // task. launchTask still validates them against the resolved agent.
-        ...(schedule.effort ? { effort: schedule.effort } : {}),
-        ...(schedule.model ? { model: schedule.model } : {}),
+        ...(!substituted && schedule.effort ? { effort: schedule.effort } : {}),
+        ...(!substituted && schedule.model ? { model: schedule.model } : {}),
         disableDedup: true,
         // issue #1526 Phase C / C3: mark schedule provenance. This (a)
         // exempts the fire from the per-source spawn burst budget — schedules
@@ -684,7 +724,30 @@ export class ScheduleRunner {
         scheduleId: schedule.id,
       });
 
-      await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
+      const acceptDetails = substituted && agentResolution.kind === 'substituted'
+        ? {
+            reasonCode: 'agent_substituted' as const,
+            message: `Substituted unavailable agent ${agentResolution.from} → ${agentResolution.agentType}`,
+          }
+        : {};
+      if (substituted) {
+        try {
+          this.deps.recordAgentSubstitution?.();
+        } catch (err) {
+          console.error('[schedule] recordAgentSubstitution failed:', err);
+        }
+        console.warn(
+          `[schedule] Substituted unavailable agent for "${schedule.name}": `
+          + `${agentResolution.kind === 'substituted' ? agentResolution.from : '?'} → ${agentType}`,
+        );
+      }
+      await this.deps.service.markExecutionAccepted(
+        schedule.id,
+        receipt.id,
+        result.task.id,
+        result.queued,
+        acceptDetails,
+      );
       console.log(
         `[schedule] Fired "${schedule.name}" → task ${result.task.id}`
         + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
@@ -744,9 +807,49 @@ export class ScheduleRunner {
       return { error: message };
     }
 
+    // issue #1895: same pinned-agent fallback as one-shot fire — loop arming
+    // must not dispatch into a missing adapter either. On substitution, drop
+    // effort/model pins (they target the original agent); create-schedule-runtime
+    // forwards them into launchLoopedPlaybook and an invalid pin would reintroduce
+    // dispatch_failed after a successful agent substitution.
+    const agentResolution = this.resolveScheduleAgent(schedule);
+    if (agentResolution?.kind === 'unavailable') {
+      return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
+    }
+    let scheduleForLaunch: Schedule = schedule;
+    if (agentResolution?.kind === 'substituted') {
+      const { effort: _effort, model: _model, ...rest } = schedule;
+      scheduleForLaunch = { ...rest, agentType: agentResolution.agentType };
+    } else if (agentResolution?.kind === 'available') {
+      scheduleForLaunch = { ...schedule, agentType: agentResolution.agentType };
+    }
+
     try {
-      const result = await this.deps.loopedLauncher(schedule);
-      await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
+      const result = await this.deps.loopedLauncher(scheduleForLaunch);
+      const acceptDetails = agentResolution?.kind === 'substituted'
+        ? {
+            reasonCode: 'agent_substituted' as const,
+            message: `Substituted unavailable agent ${agentResolution.from} → ${agentResolution.agentType}`,
+          }
+        : {};
+      if (agentResolution?.kind === 'substituted') {
+        try {
+          this.deps.recordAgentSubstitution?.();
+        } catch (err) {
+          console.error('[schedule] recordAgentSubstitution failed:', err);
+        }
+        console.warn(
+          `[schedule] Substituted unavailable agent for loop arm "${schedule.name}": `
+          + `${agentResolution.from} → ${agentResolution.agentType}`,
+        );
+      }
+      await this.deps.service.markExecutionAccepted(
+        schedule.id,
+        receipt.id,
+        result.task.id,
+        result.queued,
+        acceptDetails,
+      );
       console.log(
         `[schedule] Armed loop for "${schedule.name}" → task ${result.task.id}`
         + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
@@ -795,6 +898,45 @@ export class ScheduleRunner {
       reasonCode,
       message,
       launchPhaseTimings ? { launchPhaseTimings } : {},
+    );
+    return { error: message };
+  }
+
+  /**
+   * Resolve a concrete pinned schedule agent against the registered adapter
+   * set (issue #1895 / #1699 WS1.3). Returns `null` when availability is not
+   * wired (back-compat) or the schedule uses the round-robin sentinel (resolved
+   * inside launchTask).
+   */
+  private resolveScheduleAgent(schedule: Schedule): PinnedAgentResolution | null {
+    if (!this.deps.getAvailableAgentTypes) return null;
+    if (schedule.agentType === ROUND_ROBIN_AGENT_TYPE) return null;
+    if (!isAgentType(schedule.agentType)) return null;
+    const available = this.deps.getAvailableAgentTypes();
+    const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
+    return resolvePinnedAgentFallback(schedule.agentType, available, deprioritized);
+  }
+
+  /**
+   * Park a fire whose pinned agent is unavailable and has no substitute
+   * (issue #1895). Uses the WS0 `provider_paused` reason so the operator sees
+   * an explicit pause rather than a `dispatch_failed` launch error.
+   */
+  private async parkUnavailableAgent(
+    schedule: Schedule,
+    receipt: { id: string },
+    from: AgentType,
+  ): Promise<{ error: string }> {
+    const message =
+      `Pinned agent ${from} is unavailable and no substitute is registered — `
+      + 'fire parked (provider_paused)';
+    console.warn(`[schedule] Parking "${schedule.name}": ${message}`);
+    await this.deps.service.markExecutionOutcome(
+      schedule.id,
+      receipt.id,
+      'skipped_provider_paused',
+      'provider_paused',
+      message,
     );
     return { error: message };
   }

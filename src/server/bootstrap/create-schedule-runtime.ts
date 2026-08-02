@@ -27,6 +27,11 @@ export interface ScheduleRuntimeDeps {
    */
   getDefaultAgentType?: () => AgentSelection;
   /**
+   * Record one provider fallback substitution for the WS1.5 health counter
+   * (issue #1895 / #1699 WS1.3). Typically `providerHealthTracker.recordSubstitution`.
+   */
+  recordAgentSubstitution?: () => void;
+  /**
    * Automation kill-switch (issue #1710): suppress schedule firing while SAFE
    * MODE is engaged. Manual launches remain accepted.
    */
@@ -239,6 +244,14 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     }),
     // issue #1896: auto-resume provider-paused issues on the runner's tick.
     ...(deps.resetScheduler ? { resetScheduler: deps.resetScheduler } : {}),
+    // issue #1895 / #1699 WS1.3: schedule-level pinned-agent fallback.
+    getAvailableAgentTypes: () => deps.launchServiceDeps.adapterRegistry.getTypes(),
+    ...(deps.launchServiceDeps.getDeprioritizedAgentTypes
+      ? { getDeprioritizedAgentTypes: deps.launchServiceDeps.getDeprioritizedAgentTypes }
+      : {}),
+    ...(deps.recordAgentSubstitution
+      ? { recordAgentSubstitution: deps.recordAgentSubstitution }
+      : {}),
   });
   // Complete the late binding so the dead-man self-heal can kick this runner.
   scheduleRunnerRef = scheduleRunner;

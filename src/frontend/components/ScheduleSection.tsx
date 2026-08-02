@@ -64,6 +64,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'skipped: stale';
     case 'skipped_relaunch_locked':
       return 'skipped: relaunch locked';
+    case 'skipped_provider_paused':
+      return 'skipped: provider paused';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -95,6 +97,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_manual':
     case 'skipped_stale':
     case 'skipped_relaunch_locked':
+    case 'skipped_provider_paused':
     case 'unknown_after_restart':
       return 'schedule-status-fail';
     default:
