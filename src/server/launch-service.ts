@@ -36,6 +36,10 @@ import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
 import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
+import {
+  evaluateQuotaHeadroomAdmission,
+  type QuotaHeadroomSample,
+} from '../core/quota-headroom-admission.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import {
   classifyLaunchFailureReason,
@@ -194,6 +198,18 @@ export interface LaunchServiceDeps {
    * when {@link getMaxHostLoadPerCpu} returns a positive threshold.
    */
   getHostLoadSample?: () => HostLoadSample;
+  /**
+   * Live Anthropic quota headroom for claude-code admission (issue #1894 /
+   * #1699 WS1.2). When provided, a `claude-code` launch is rejected with
+   * {@link QuotaHeadroomAdmissionError} while any plan window is at/above the
+   * exhausted threshold — so we refuse to launch into a known-empty quota
+   * rather than start a session that will fail mid-run. Must return a *live*
+   * sample (adapter `getLiveHeadroom()`), never a stale periodic-poll
+   * snapshot; return `null` when the live poll fails so the gate fails open.
+   * Other agent types are not gated (QuotaAdapter is Anthropic-only). Absent
+   * (older wiring/tests) ⇒ no quota gate.
+   */
+  getLiveQuotaHeadroom?: () => Promise<QuotaHeadroomSample | null>;
   /**
    * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
    * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
@@ -586,6 +602,42 @@ export class HostLoadAdmissionError extends Error {
 /** Type guard for {@link HostLoadAdmissionError}, for callers mapping to 429. */
 export function isHostLoadAdmissionError(err: unknown): err is HostLoadAdmissionError {
   return err instanceof HostLoadAdmissionError;
+}
+
+/**
+ * Thrown by {@link launchTask} when live quota-headroom admission (issue #1894)
+ * rejects a claude-code launch because a plan window is exhausted. Same
+ * 429-with-ledger shape as the other backpressure rejections, distinct code so
+ * a caller can tell "Anthropic quota is empty" apart from "host is
+ * CPU-saturated". Thrown before any task record exists.
+ */
+export class QuotaHeadroomAdmissionError extends Error {
+  readonly code = 'quota_headroom_admission';
+  constructor(
+    /** Capacity-ledger snapshot at rejection time. */
+    readonly capacity: CapacityLedger,
+    /** Highest window utilization (0–100) that triggered the deny. */
+    readonly maxUtilization: number,
+    /** Exhaustion threshold that was met or exceeded. */
+    readonly threshold: number,
+    /** Binding window reset time when known (ISO 8601), else null. */
+    readonly resetsAt: string | null,
+  ) {
+    const resetHint = resetsAt
+      ? ` Retry after the binding window resets (${resetsAt}).`
+      : ' Retry once plan quota resets.';
+    super(
+      `Anthropic plan quota is exhausted (utilization ${maxUtilization.toFixed(0)}% ` +
+      `≥ threshold ${threshold.toFixed(0)}%) — launch rejected so the session is ` +
+      `not started into a known-empty window.${resetHint}`,
+    );
+    this.name = 'QuotaHeadroomAdmissionError';
+  }
+}
+
+/** Type guard for {@link QuotaHeadroomAdmissionError}, for callers mapping to 429. */
+export function isQuotaHeadroomAdmissionError(err: unknown): err is QuotaHeadroomAdmissionError {
+  return err instanceof QuotaHeadroomAdmissionError;
 }
 
 /**
@@ -1169,13 +1221,39 @@ async function launchTaskCore(
     resolvedClaimKey = { repo: resolution.repo, number };
   }
 
-  // --- Server-side backpressure (issue #1526 Phase C / C3, #1630) ---
+  // --- Server-side backpressure (issue #1526 Phase C / C3, #1630, #1894) ---
   // These guards run AFTER dedup (an idempotent replay of an existing task
   // must never be rejected — it creates nothing) and BEFORE createTask (a
-  // rejected launch must leave no task record). No await sits between these
-  // checks and createTask, so the counts they read cannot go stale.
+  // rejected launch must leave no task record). The live quota poll below is
+  // the only await in this block; the subsequent capacity/host-load checks
+  // stay synchronous with createTask so the counts they read cannot go stale
+  // relative to each other.
   //
-  // 0) CPU-aware admission (issue #1630). Checked first so a host-saturation
+  // 0) Live quota-headroom admission (issue #1894 / #1699 WS1.2). Claude Code
+  //    only — QuotaAdapter polls the Anthropic plan window. Checked before
+  //    host-load / burst tokens so an exhausted-quota reject never consumes
+  //    spawn budget. Unlike host-load, schedule fires are NOT exempt: the
+  //    whole point of this gate is to stop autonomous dispatch into a known
+  //    empty window. Fail-open when the live poll returns null.
+  if (deps.getLiveQuotaHeadroom && agentType === 'claude-code') {
+    const sample = await deps.getLiveQuotaHeadroom();
+    const decision = evaluateQuotaHeadroomAdmission(sample);
+    if (!decision.admit) {
+      console.warn(
+        `[backpressure] Anthropic quota utilization ${decision.maxUtilization.toFixed(0)}% ` +
+        `≥ threshold ${decision.threshold.toFixed(0)}% — rejecting claude-code launch` +
+        (decision.resetsAt ? ` (resets ${decision.resetsAt})` : ''),
+      );
+      throw new QuotaHeadroomAdmissionError(
+        snapshotCapacityLedger(deps, maxActive),
+        decision.maxUtilization,
+        decision.threshold,
+        decision.resetsAt,
+      );
+    }
+  }
+
+  // 1) CPU-aware admission (issue #1630). Checked next so a host-saturation
   //    rejection never consumes a per-source burst token. Opt-in and
   //    disabled by default (threshold 0), and — unlike the guards below —
   //    independent of active-task count: a handful of compile/test-heavy
@@ -1198,7 +1276,7 @@ async function launchTaskCore(
     }
   }
 
-  // 1) Per-source spawn budget. Checked before the queue-depth guard: it
+  // 2) Per-source spawn budget. Checked before the queue-depth guard: it
   //    identifies the misbehaving CALLER, which is more actionable than the
   //    shared-queue state — a runaway burst should see "you are bursting"
   //    even once it has also
@@ -1230,7 +1308,7 @@ async function launchTaskCore(
     }
   }
 
-  // 2) Pending-queue depth limit (FM3). Only bites when the launch would
+  // 3) Pending-queue depth limit (FM3). Only bites when the launch would
   //    actually pend (node at capacity): below capacity the task launches
   //    immediately and queue depth is irrelevant, so behavior is unchanged.
   if (taskStore.getActiveCount() >= effectiveMaxActive) {

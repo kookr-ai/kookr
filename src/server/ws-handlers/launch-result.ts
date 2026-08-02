@@ -4,10 +4,12 @@ import {
   isPendingQueueFullError,
   isSpawnBurstLimitError,
   isHostLoadAdmissionError,
+  isQuotaHeadroomAdmissionError,
   type LaunchResult,
   type PendingQueueFullError,
   type SpawnBurstLimitError,
   type HostLoadAdmissionError,
+  type QuotaHeadroomAdmissionError,
 } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
@@ -45,10 +47,12 @@ function isGrokAuthPreflightError(err: unknown): boolean {
  * `capacity` carry, not just a bare error string.
  */
 function describeBackpressure(
-  err: PendingQueueFullError | SpawnBurstLimitError | HostLoadAdmissionError,
+  err: PendingQueueFullError | SpawnBurstLimitError | HostLoadAdmissionError | QuotaHeadroomAdmissionError,
 ): string {
   const cap = err.capacity;
-  const headline = isHostLoadAdmissionError(err)
+  const headline = isQuotaHeadroomAdmissionError(err)
+    ? 'Anthropic plan quota is exhausted — nothing was launched.'
+    : isHostLoadAdmissionError(err)
     ? 'The host is CPU-saturated — nothing was launched.'
     : err.code === 'pending_queue_full'
     ? 'The pending queue is full — nothing was launched.'
@@ -61,7 +65,15 @@ function describeBackpressure(
     `- Pending queue: ${cap.pendingQueueDepth} task(s)` +
       (isPendingQueueFullError(err) ? ` (limit ${err.maxPendingTasks}).` : '.'),
   ];
-  if (isHostLoadAdmissionError(err)) {
+  if (isQuotaHeadroomAdmissionError(err)) {
+    lines.push(
+      `- Plan utilization: ${err.maxUtilization.toFixed(0)}% ` +
+      `(threshold ${err.threshold.toFixed(0)}%).` +
+      (err.resetsAt
+        ? ` Retry after the binding window resets (${err.resetsAt}).`
+        : ' Retry once plan quota resets.'),
+    );
+  } else if (isHostLoadAdmissionError(err)) {
     lines.push(
       `- Host load: ${err.loadPerCpu.toFixed(2)} per core (threshold ${err.maxLoadPerCpu.toFixed(2)}). ` +
       'Retry once host load drops, or raise/disable KOOKR_MAX_HOST_LOAD_PER_CPU.',
@@ -100,7 +112,8 @@ export function handleLaunchResult(
   if (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
-    const details = isPendingQueueFullError(err) || isSpawnBurstLimitError(err) || isHostLoadAdmissionError(err)
+    const details = isPendingQueueFullError(err) || isSpawnBurstLimitError(err)
+      || isHostLoadAdmissionError(err) || isQuotaHeadroomAdmissionError(err)
       ? describeBackpressure(err)
       : isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
@@ -122,8 +135,9 @@ export function handleLaunchResult(
       summary: `Error starting "${promptExcerpt}": ${message}`,
       details,
       // Backpressure rejections are deliberate policy refusals with a retry
-      // path, not launch failures — warn, don't page (issue #1526 Phase C, #1630).
-      severity: isPendingQueueFullError(err) || isSpawnBurstLimitError(err) || isHostLoadAdmissionError(err)
+      // path, not launch failures — warn, don't page (issue #1526 Phase C, #1630, #1894).
+      severity: isPendingQueueFullError(err) || isSpawnBurstLimitError(err)
+        || isHostLoadAdmissionError(err) || isQuotaHeadroomAdmissionError(err)
         ? 'warning'
         : 'critical',
     });

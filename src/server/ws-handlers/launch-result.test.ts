@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
-import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError } from '../launch-service.js';
+import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
 
 function collect(): { send: (msg: ServerMessage) => void; sent: ServerMessage[] } {
@@ -116,6 +116,22 @@ describe('handleLaunchResult', () => {
     expect(alert.details).toContain('The host is CPU-saturated');
     expect(alert.details).toContain('2.00 per core (threshold 0.90)');
     expect(alert.details).toContain('KOOKR_MAX_HOST_LOAD_PER_CPU');
+    expect(alert.details).toContain('10/10 slots occupied');
+  });
+
+  it('renders the quota-headroom line as a warning alert for an exhausted-plan rejection (issue #1894)', () => {
+    const { send, sent } = collect();
+    const err = new QuotaHeadroomAdmissionError(ledger, 97, 90, '2026-08-02T18:00:00Z');
+
+    handleLaunchResult(send, 'quota launch', undefined, err);
+
+    const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
+    expect(alert.severity).toBe('warning');
+    expect(alert.summary).toContain('Anthropic plan quota is exhausted');
+    expect(alert.details).toContain('Anthropic plan quota is exhausted');
+    expect(alert.details).toContain('97%');
+    expect(alert.details).toContain('threshold 90%');
+    expect(alert.details).toContain('2026-08-02T18:00:00Z');
     expect(alert.details).toContain('10/10 slots occupied');
   });
 });

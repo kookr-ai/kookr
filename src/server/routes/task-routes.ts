@@ -24,6 +24,7 @@ import {
   isPendingQueueFullError,
   isSpawnBurstLimitError,
   isHostLoadAdmissionError,
+  isQuotaHeadroomAdmissionError,
   isIssueClaimHeldError,
   isIssueClaimRepoError,
 } from '../launch-service.js';
@@ -607,6 +608,20 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           capacity: err.capacity,
           loadPerCpu: err.loadPerCpu,
           maxLoadPerCpu: err.maxLoadPerCpu,
+        }, 429);
+      }
+      // Live quota-headroom admission (issue #1894): Anthropic plan window
+      // exhausted — refuse the launch rather than start a session that will
+      // fail mid-run. Same 429 + ledger shape; utilization/threshold/resetsAt
+      // let the caller render WHEN to retry.
+      if (isQuotaHeadroomAdmissionError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          maxUtilization: err.maxUtilization,
+          threshold: err.threshold,
+          resetsAt: err.resetsAt,
         }, 429);
       }
       const message = err instanceof Error ? err.message : String(err);
