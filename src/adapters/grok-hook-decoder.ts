@@ -104,6 +104,8 @@ interface RawGrokHookPayload {
   isInterrupt?: unknown;
   // Stop / SessionEnd
   reason?: unknown;
+  /** Final assistant text on stop / subagent_stop (live Grok ≥0.2.x). */
+  lastAssistantMessage?: unknown;
   // Notification
   notificationType?: unknown;
   message?: unknown;
@@ -231,15 +233,15 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       };
 
     case 'stop':
-      // Grok's stop payload carries NO final-assistant-message field (POC-A
-      // fixture), so the pure decoder cannot populate lastMessage. The
-      // GrokBuildAdapter substitutes a bounded pane tail for live events
-      // (issue #1526 Phase C4) so hook-driven completion-signal
-      // classification (#1324) is not starved by a hardcoded ''.
+      // Live Grok stop payloads carry `lastAssistantMessage` (camelCase) with
+      // the final assistant turn — that is what the activity panel renders as
+      // the agent reply. Older POC-A fixtures lacked the field; when missing,
+      // leave '' so GrokBuildAdapter can fall back to a bounded pane tail
+      // (issue #1526 Phase C4) for completion-signal classification (#1324).
       return {
         type: 'stop',
         sessionId,
-        lastMessage: '',
+        lastMessage: str(parsed.lastAssistantMessage) ?? '',
         ...(cwd ? { cwd } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
         ...(str(parsed.promptId) ? { turnId: str(parsed.promptId) } : {}),
@@ -252,7 +254,7 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
         type: 'stop_failure',
         sessionId,
         error: str(parsed.error) ?? 'unknown',
-        lastMessage: '',
+        lastMessage: str(parsed.lastAssistantMessage) ?? '',
         ...(cwd ? { cwd } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
         ...(str(parsed.promptId) ? { turnId: str(parsed.promptId) } : {}),
@@ -316,7 +318,9 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
         sessionId,
         agentId: str(parsed.subagentId) ?? '',
         agentType: str(parsed.subagentType) ?? '',
-        lastMessage: str(parsed.message) ?? '',
+        // Live Grok uses lastAssistantMessage; keep `message` as a secondary
+        // key for older shapes that may have used it.
+        lastMessage: str(parsed.lastAssistantMessage) ?? str(parsed.message) ?? '',
         ...(transcriptPath ? { agentTranscriptPath: transcriptPath } : {}),
         ...(cwd ? { cwd } : {}),
       };

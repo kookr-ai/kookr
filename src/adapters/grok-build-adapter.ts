@@ -870,10 +870,10 @@ export class GrokBuildAdapter implements AgentAdapter {
 
   /**
    * Bounded pane-tail fallback for Grok stop/stop_failure `lastMessage`
-   * (issue #1526 Phase C4). Grok's Stop hook payload has no
-   * `last_assistant_message` analog, and the hardcoded '' the decoder emits
-   * starved hook-driven completion-signal classification (#1324) for every
-   * Grok task. The best synchronous source is the last captured display
+   * (issue #1526 Phase C4). Live Grok payloads usually include
+   * `lastAssistantMessage` (decoded into `lastMessage`); this path only runs
+   * when that field is empty so completion-signal classification (#1324) is
+   * not starved. The best synchronous source is the last captured display
    * (refreshed at most 5s ago by the watchdog tick): volatile UI rows are
    * stripped via the shared pane normalizer, then the tail is capped at
    * {@link GROK_STOP_LAST_MESSAGE_MAX_CHARS}.
@@ -943,11 +943,10 @@ export class GrokBuildAdapter implements AgentAdapter {
       };
     }
 
-    // Live Grok stop/stop_failure events carry no final message in the
-    // payload — substitute the bounded pane tail (issue #1526 Phase C4).
-    // Replays are left untouched: at replay time the pane no longer shows the
-    // original turn, and enriching from the CURRENT pane would change
-    // completion-signal fingerprints across restarts.
+    // When lastAssistantMessage is missing/empty, substitute a bounded pane
+    // tail (issue #1526 Phase C4). Replays are left untouched: at replay time
+    // the pane no longer shows the original turn, and enriching from the
+    // CURRENT pane would change completion-signal fingerprints across restarts.
     if (
       (event.type === 'stop' || event.type === 'stop_failure')
       && event.lastMessage === ''
