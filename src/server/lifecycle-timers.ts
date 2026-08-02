@@ -48,6 +48,7 @@ import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-ta
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
+import { pruneLoopDeliveryWatchdog, type LoopDeliveryWatchdogRegistry } from '../core/loop-delivery-watchdog.js';
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
@@ -285,6 +286,14 @@ export interface TimerDeps {
     shouldSkipTick(): boolean;
     recordPause(timerName: string): void;
   };
+  /**
+   * Delivery-aware loop watchdog registry (issue #1902). The registry is
+   * SAMPLED per-iteration in {@link ../server/ralph-loop-service}; here the
+   * liveness tick only PRUNES entries for loops that are no longer running, so
+   * terminated loops don't leak watchdog state. Absent (or a `0` threshold) ⇒
+   * no pruning is needed.
+   */
+  loopDeliveryWatchdog?: LoopDeliveryWatchdogRegistry;
 }
 
 
@@ -774,6 +783,16 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+
+      // Prune delivery-watchdog entries for loops no longer active (issue
+      // #1902). The registry is sampled per-iteration in ralph-loop-service;
+      // this keeps terminated loops from leaking watchdog state while retaining
+      // paused loops so a resume continues the same streak. Cheap: one pass
+      // over tasks per liveness tick, only when the watchdog is enabled.
+      if (deps.loopDeliveryWatchdog) {
+        pruneLoopDeliveryWatchdog(taskStore.getAllTasks(), deps.loopDeliveryWatchdog);
+      }
+
       // Orphan/terminal-task session reaper (issue #1720) — runs after every
       // reconcile so a session whose owning task JUST reached a terminal
       // status (or that reconcile just re-confirmed is unowned) is swept

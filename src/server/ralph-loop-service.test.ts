@@ -12,6 +12,10 @@ import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { AgentEvent } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { RalphLoopService, validateRalphLoopRequest } from './ralph-loop-service.js';
+import {
+  LoopDeliveryWatchdogRegistry,
+  type DeliverySnapshot,
+} from '../core/loop-delivery-watchdog.js';
 
 function baseLoop(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
   return {
@@ -36,6 +40,8 @@ function mkService(deps: {
   ralphCycler?: { handleStop: ReturnType<typeof vi.fn> };
   launchFreshTaskSession?: ConstructorParameters<typeof RalphLoopService>[0]['launchFreshTaskSession'];
   completeTask?: ConstructorParameters<typeof RalphLoopService>[0]['completeTask'];
+  loopDeliveryWatchdog?: ConstructorParameters<typeof RalphLoopService>[0]['loopDeliveryWatchdog'];
+  resolveDeliverySnapshot?: ConstructorParameters<typeof RalphLoopService>[0]['resolveDeliverySnapshot'];
 } = {}): {
   store: TaskStore;
   service: RalphLoopService;
@@ -58,6 +64,8 @@ function mkService(deps: {
       /* no-op */
     },
     interactionLog: deps.interactionLog as never,
+    ...(deps.loopDeliveryWatchdog ? { loopDeliveryWatchdog: deps.loopDeliveryWatchdog } : {}),
+    ...(deps.resolveDeliverySnapshot ? { resolveDeliverySnapshot: deps.resolveDeliverySnapshot } : {}),
   });
   return { store, service, terminalBackend, monitor };
 }
@@ -727,6 +735,123 @@ describe('RalphLoopService', () => {
   });
 });
 
+
+describe('delivery-aware loop watchdog wiring (issue #1902)', () => {
+  const workDir = '/repo';
+
+  function addOwnedSession(store: TaskStore, taskId: string): void {
+    store.addSession(taskId, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: workDir,
+      createdAt: new Date('2026-08-02T00:00:00Z'),
+      lastStatus: 'running',
+      claudeSessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+    });
+  }
+
+  async function driveIteration(
+    service: RalphLoopService,
+    monitor: Monitor,
+    task: ReturnType<TaskStore['createTask']>,
+    turn: number,
+  ): Promise<void> {
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+      turnId: `turn-${turn}`,
+      lastMessage: `iteration ${turn}`,
+    };
+    monitor.processEvents('agent-1', [stopEvent]);
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: null });
+  }
+
+  test('flags a loop that stops delivering for N consecutive iterations', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 3, recoverSamples: 2 });
+    // Delivery never advances — a delivered-then-hung loop.
+    const stalled: DeliverySnapshot = { commits: 1, prsOpened: 1, prsMerged: 0 };
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      resolveDeliverySnapshot: () => stalled,
+    });
+    const task = store.createTask('stalled loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    // Iteration 1 is the baseline; iterations 2-4 are three consecutive
+    // no-progress samples, so the flag engages on iteration 4.
+    await driveIteration(service, monitor, task, 1);
+    expect(registry.isFlagged(task.id)).toBe(false);
+    await driveIteration(service, monitor, task, 2);
+    await driveIteration(service, monitor, task, 3);
+    expect(registry.isFlagged(task.id)).toBe(false);
+    await driveIteration(service, monitor, task, 4);
+    expect(registry.isFlagged(task.id)).toBe(true);
+  });
+
+  test('never flags a quiet-but-progressing loop', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 3, recoverSamples: 2 });
+    let commits = 0;
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      // Advances a delivery counter every iteration — quiet (no chatter is an
+      // input) but genuinely progressing.
+      resolveDeliverySnapshot: () => ({ commits: ++commits, prsOpened: 0, prsMerged: 0 }),
+    });
+    const task = store.createTask('progressing loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    for (let turn = 1; turn <= 8; turn++) {
+      await driveIteration(service, monitor, task, turn);
+      expect(registry.isFlagged(task.id)).toBe(false);
+    }
+  });
+
+  test('a null-returning resolver never flags the loop (missing delivery data is fail-open)', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    // Threshold 1 would flag on the very first no-progress sample — prove that
+    // a resolver that can't read delivery data (returns null) never gets there.
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 1, recoverSamples: 1 });
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      resolveDeliverySnapshot: () => null,
+    });
+    const task = store.createTask('unreadable delivery', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    for (let turn = 1; turn <= 4; turn++) {
+      await driveIteration(service, monitor, task, turn);
+    }
+    expect(registry.isFlagged(task.id)).toBe(false);
+  });
+
+  test('no resolver wired ⇒ watchdog is never sampled (fail-open)', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 1, recoverSamples: 1 });
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      // resolveDeliverySnapshot deliberately omitted.
+    });
+    const task = store.createTask('unsampled loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    await driveIteration(service, monitor, task, 1);
+    await driveIteration(service, monitor, task, 2);
+    expect(registry.size).toBe(0);
+    expect(registry.isFlagged(task.id)).toBe(false);
+  });
+});
 
 describe('Ralph escape hatch closure (issue #1461)', () => {
   test('ralph-loop-service production source does not call getTaskForMutation', () => {

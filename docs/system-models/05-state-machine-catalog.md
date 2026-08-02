@@ -226,6 +226,7 @@ stateDiagram-v2
 | Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |
 | Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |
 | Watchdog verdict | `healthy`, `grace_period`, `needs_input`, `permission_blocked`, `tool_running`, `quiet_working`, `mcp_starting`, `stale_agent`, `hook_disconnected` | `src/core/watchdog.ts` | Verdict union is converted into queue anomalies by `Monitor.applyWatchdogVerdict()` when actionable |
+| Delivery watchdog | `unflagged`, `flagged` (hysteresis: N consecutive no-progress samples to engage, M consecutive progress samples to clear) | `src/core/loop-delivery-watchdog.ts`, sampled per iteration in `src/server/ralph-loop-service.ts` | Judges a Ralph loop on positive delivery progress (branch commits / PRs opened / PRs merged), not liveness — silence never flags. Observability-only (one warn line per transition); disabled at threshold 0 (issue #1902) |
 
 ## Transition Ownership Table
 

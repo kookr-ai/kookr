@@ -18,6 +18,10 @@ import {
 import { renderIterationPrompt } from '../core/ralph-iteration-template.js';
 import { isStopFromMainTaskSession, ralphStopFingerprint } from './ralph/stop-event-ownership.js';
 import type { Monitor } from '../core/monitor.js';
+import type {
+  DeliverySnapshot,
+  LoopDeliveryWatchdogRegistry,
+} from '../core/loop-delivery-watchdog.js';
 import {
   claimRalphLoopOwner,
   type RalphLoopState,
@@ -61,6 +65,23 @@ export interface RalphLoopServiceDeps {
   tokenTracker: TokenTracker;
   launchFreshTaskSession: (task: Task, prompt: string, opts?: { tmuxName?: string; extraEnv?: Record<string, string> }) => Promise<string>;
   completeTask: (taskId: string) => Promise<void>;
+  /**
+   * Delivery-aware loop watchdog (issue #1902). Sampled once per iteration
+   * boundary with the loop's cumulative delivery snapshot. Absent (or a `0`
+   * threshold) ⇒ delivery-stall detection is off. Paired with
+   * {@link resolveDeliverySnapshot}; both must be present for sampling to run.
+   */
+  loopDeliveryWatchdog?: LoopDeliveryWatchdogRegistry;
+  /**
+   * Resolves a task's cumulative delivery snapshot (commits / PRs opened / PRs
+   * merged) for the delivery watchdog. Wired at bootstrap to read the loop's
+   * branch commit count + `GitHubStateStore`; may be async (it runs git).
+   * Absent ⇒ the watchdog is never sampled. A `null` result skips the sample
+   * (fail-open — a delivery source that can't be read must never flag a loop).
+   */
+  resolveDeliverySnapshot?: (
+    task: Task,
+  ) => DeliverySnapshot | null | Promise<DeliverySnapshot | null>;
 }
 
 export interface RalphStopHandlingOptions {
@@ -769,6 +790,14 @@ export class RalphLoopService {
       });
       // Fire any interaction-log events the cycler decided should fire.
       this.fireCyclerEvents(action.events);
+
+      // Delivery-aware loop watchdog (issue #1902). A stop event is one
+      // completed iteration — the natural cadence for judging DELIVERY
+      // progress (commits/PRs/merges), which is coarse (minutes/iterations),
+      // not the 5s liveness cadence. Fail-open: never let a sampling error
+      // interrupt the loop.
+      await this.sampleDeliveryProgress(currentTask.id);
+
       const currentLoop = this.deps.taskStore.runRalphMutation(currentTask.id, (t) => t.ralphLoop);
       if (
         !currentLoop
@@ -1015,6 +1044,39 @@ export class RalphLoopService {
     for (const e of events) {
       const event: InteractionEvent = { ...e, timestamp: ts };
       void this.deps.interactionLog.append(event).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Feed one delivery snapshot to the loop watchdog for a just-completed
+   * iteration (issue #1902). No-op unless both the watchdog registry and the
+   * snapshot resolver are wired and the watchdog is enabled. On the sample
+   * where a loop flips to (or out of) flagged, emit a single warn line — once
+   * per transition, never per sample, to avoid a log storm on a chronically
+   * stalled loop. Never throws.
+   */
+  private async sampleDeliveryProgress(taskId: string): Promise<void> {
+    const registry = this.deps.loopDeliveryWatchdog;
+    const resolve = this.deps.resolveDeliverySnapshot;
+    if (!registry?.enabled || !resolve) return;
+    try {
+      const task = this.deps.taskStore.getTask(taskId);
+      if (!task?.ralphLoop || task.ralphLoop.status !== 'running') return;
+      const snapshot = await resolve(task);
+      const result = registry.sample(taskId, snapshot);
+      if (!result.transitioned) return;
+      if (result.flagged) {
+        console.warn(
+          `[loop-delivery-watchdog] task ${taskId} flagged: no delivery progress `
+          + `(commit/PR/merge) over ${result.consecutiveNoProgress} consecutive iterations`,
+        );
+      } else {
+        console.warn(
+          `[loop-delivery-watchdog] task ${taskId} recovered: delivery progress resumed`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[loop-delivery-watchdog] delivery sampling failed for task ${taskId}:`, err);
     }
   }
 
