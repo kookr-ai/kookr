@@ -21,15 +21,15 @@ parameters:
     type: select
     source: tracked-projects
   - name: mergeAfterImplementation
-    description: "Merge policy after the implementation PR is ready"
+    description: "Merge policy after the implementation PR is ready. Default merges when safe so autonomous runs do not strand open PRs for a human."
     required: true
-    default: "false"
+    default: "true"
     type: select
     options:
+      - label: "Merge when safe (default)"
+        value: "true"
       - label: "Open PR only"
         value: "false"
-      - label: "Merge when safe"
-        value: "true"
   - name: assignee
     description: "GitHub username to assign the PR (leave empty for current user)"
     required: false
