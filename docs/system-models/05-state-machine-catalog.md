@@ -221,7 +221,7 @@ stateDiagram-v2
 
 | Entity | States | Owner | Notes |
 |---|---|---|---|
-| Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed |
+| Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed. On a terminal exit the relaunch policy (`src/core/ralph-terminal-relaunch-policy.ts`, issue #1901) either re-arms a capped/stalled loop back to `running` (arbiter-gated via `RelaunchArbiter`) or stamps a `needsHuman` marker on budget exhaustion (`cost_cap`/`iteration_cost_cap`), surfaced through the task snapshot |
 | Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify running/completed/cancelled/deduplicated/dispatch-failed/skipped-active/skipped-capacity/unknown-after-restart states for the UI |
 | Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |
 | Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |

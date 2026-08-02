@@ -7,8 +7,15 @@ import { nowISO, type DeferredInteractionLogWriter, type InteractionEvent } from
 import {
   appendIterationRecord,
   readIterationLog,
+  type RalphIterationExitReason,
   type RalphIterationRecord,
 } from '../core/ralph-iteration-log.js';
+import {
+  classifyTerminalExit,
+  escalationDetail,
+} from '../core/ralph-terminal-relaunch-policy.js';
+import type { RalphNeedsHumanReason } from '../shared/contracts/ralph.js';
+import type { RelaunchArbiter } from './relaunch-arbiter.js';
 import {
   canonicalizeTarget,
   defaultVerdictPath,
@@ -34,6 +41,15 @@ import type { TokenTracker } from '../core/token-tracker.js';
 import type { AgentEvent, TokenUsage } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+
+/**
+ * Default cap on automatic terminal relaunches before a loop escalates to
+ * `needs-human` (`relaunch_exhausted`). Bounds runaway relaunch of a
+ * structurally-stuck loop that has no cost cap to backstop it. Overridable via
+ * `terminalRelaunchMax` (env `KOOKR_LOOP_TERMINAL_RELAUNCH_MAX`); `0` disables
+ * the cap (unbounded relaunch).
+ */
+const DEFAULT_TERMINAL_RELAUNCH_MAX = 20;
 
 export interface RalphLoopRequest {
   prompt: string;
@@ -82,6 +98,28 @@ export interface RalphLoopServiceDeps {
   resolveDeliverySnapshot?: (
     task: Task,
   ) => DeliverySnapshot | null | Promise<DeliverySnapshot | null>;
+  /**
+   * WS0.5 lease-gated relaunch arbiter (issue #1711). When wired, the
+   * terminal-relaunch policy (issue #1901) consults it before re-arming a
+   * capped/stalled loop so concurrent actuators cannot double-launch the same
+   * issue and a post-run cooldown throttles thundering-herd relaunch. Absent ⇒
+   * automatic terminal relaunch is disabled (escalation still fires).
+   */
+  relaunchArbiter?: Pick<RelaunchArbiter, 'tryAcquire' | 'release'>;
+  /**
+   * Kill-switch for automatic terminal relaunch (issue #1901). `false` disables
+   * re-arming on a relaunch-eligible terminal exit (needs-human escalation on
+   * budget exhaustion still fires). Absent / any other value ⇒ enabled.
+   */
+  terminalRelaunchEnabled?: boolean;
+  /**
+   * Cap on cumulative automatic terminal relaunches before a loop escalates to
+   * needs-human (`relaunch_exhausted`) instead of re-arming again (issue #1901).
+   * `0` disables the cap (unbounded). Absent ⇒ {@link DEFAULT_TERMINAL_RELAUNCH_MAX}.
+   */
+  terminalRelaunchMax?: number;
+  /** Override clock for the needs-human `since` stamp (tests). */
+  now?: () => number;
 }
 
 export interface RalphStopHandlingOptions {
@@ -798,6 +836,16 @@ export class RalphLoopService {
       // interrupt the loop.
       await this.sampleDeliveryProgress(currentTask.id);
 
+      // Terminal-loop relaunch policy (issue #1901 / WS2.3). On a `terminate`
+      // action the cycler has already written a terminal `loop.status`; decide
+      // whether to re-arm (arbiter-gated) or escalate to a visible needs-human
+      // state. This runs BEFORE the running-status guard below, which would
+      // otherwise return early on any terminal status.
+      if (action.kind === 'terminate') {
+        await this.handleTerminalExit(currentTask.id, action.reason, stopFingerprint);
+        return;
+      }
+
       const currentLoop = this.deps.taskStore.runRalphMutation(currentTask.id, (t) => t.ralphLoop);
       if (
         !currentLoop
@@ -1077,6 +1125,189 @@ export class RalphLoopService {
       }
     } catch (err) {
       console.warn(`[loop-delivery-watchdog] delivery sampling failed for task ${taskId}:`, err);
+    }
+  }
+
+  /**
+   * Terminal-loop relaunch policy consumer (issue #1901 / WS2.3). Called once
+   * per `terminate` action from the cycler. Classifies the exit reason and
+   * either re-arms the loop (arbiter-gated) or escalates it to a visible
+   * needs-human state. `stop` dispositions (clean completion, user stops,
+   * crashes owned elsewhere) are left untouched — the cycler already wrote the
+   * terminal status.
+   */
+  private async handleTerminalExit(
+    taskId: string,
+    reason: RalphIterationExitReason,
+    stopFingerprint: string,
+  ): Promise<void> {
+    const decision = classifyTerminalExit(reason);
+    if (decision.disposition === 'stop') return;
+    if (decision.disposition === 'escalate') {
+      this.escalateNeedsHuman(taskId, reason, decision.escalationReason ?? 'budget_exhausted');
+      return;
+    }
+    await this.tryTerminalRelaunch(taskId, reason, stopFingerprint);
+  }
+
+  /**
+   * Move a terminated loop into an explicit needs-human state (issue #1901).
+   * The cycler left `status` terminal (usually `completed`); this stamps the
+   * `needsHuman` marker so the snapshot surfaces the loop as escalated rather
+   * than silently done, emits an audit event, and warns once.
+   */
+  private escalateNeedsHuman(
+    taskId: string,
+    exitReason: RalphIterationExitReason,
+    reason: RalphNeedsHumanReason,
+  ): void {
+    const now = (this.deps.now ?? Date.now)();
+    const updated = this.deps.taskStore.runRalphMutation(taskId, (t) => {
+      const loop = t.ralphLoop;
+      if (!loop) return false;
+      loop.needsHuman = {
+        reason,
+        exitReason,
+        since: now,
+        detail: escalationDetail(reason, exitReason),
+      };
+      t.updatedAt = new Date(now);
+      return true;
+    });
+    if (!updated) return;
+    // Release the relaunch lease so a needs-human issue is not pinned against
+    // the task's liveness. Without this, a loop that already relaunched (and so
+    // holds the lease under `taskId`) would keep the lease until the task itself
+    // reaches a terminal status — silently denying every other actuator,
+    // including a human manual re-dispatch, with `reason: 'held'`. Releasing
+    // starts the arbiter cooldown and lets a human intervene after it. Idempotent
+    // (no-op when this task does not hold the lease).
+    this.releaseRelaunchLease(taskId);
+    console.warn(
+      `[ralph-terminal-policy] task ${taskId} needs human: ${reason} (exit=${exitReason})`,
+    );
+    void this.deps.interactionLog?.append({
+      type: 'ralph_loop_needs_human',
+      taskId,
+      exitReason,
+      reason,
+      timestamp: nowISO(),
+    }).catch(() => undefined);
+    this.broadcastSnapshot();
+  }
+
+  /**
+   * Release the relaunch lease held by `taskId` for its issue claim, if any
+   * (issue #1901). Safe no-op when no arbiter is wired, the task has no issue
+   * claim, or the lease is held by someone else.
+   */
+  private releaseRelaunchLease(taskId: string): void {
+    const arbiter = this.deps.relaunchArbiter;
+    if (!arbiter) return;
+    const claim = this.deps.taskStore.getTask(taskId)?.issueClaim;
+    if (!claim) return;
+    arbiter.release({ repo: claim.repo, number: claim.number }, taskId);
+  }
+
+  /**
+   * Re-arm a capped/stalled loop, gated by the WS0.5 relaunch arbiter
+   * (issue #1711). Requires both a wired arbiter and an issue claim on the task
+   * (the arbiter keys on issue identity). On admission the loop is re-armed in
+   * place with a fresh iteration budget and a new agent session is launched; on
+   * denial (another actuator holds the issue, or a cooldown is active) no
+   * relaunch happens — the arbiter is the single mutual-exclusion layer that
+   * prevents duplicate PRs.
+   */
+  private async tryTerminalRelaunch(
+    taskId: string,
+    reason: RalphIterationExitReason,
+    stopFingerprint: string,
+  ): Promise<void> {
+    const arbiter = this.deps.relaunchArbiter;
+    // Actuation off (no arbiter wired, or kill-switch): leave the loop
+    // terminal. Not a needs-human case — a capped loop with nothing relaunching
+    // it is the pre-#1901 default, not a budget failure.
+    if (!arbiter || this.deps.terminalRelaunchEnabled === false) return;
+
+    const task = this.deps.taskStore.getTask(taskId);
+    const claim = task?.issueClaim;
+    // No issue identity ⇒ nothing to arbitrate on; skip (in-place relaunch of a
+    // claimless loop would bypass the single dedup layer by design).
+    if (!claim) return;
+    const key = { repo: claim.repo, number: claim.number };
+
+    // Runaway guard: a structurally-stuck loop (repeated iteration_cap /
+    // target_stalled) with no cost cap would otherwise re-arm forever. Once the
+    // cumulative relaunch count reaches the cap, escalate to needs-human instead
+    // of re-arming. `max <= 0` disables the cap (unbounded relaunch).
+    const max = this.deps.terminalRelaunchMax ?? DEFAULT_TERMINAL_RELAUNCH_MAX;
+    const priorCount = task?.ralphLoop?.terminalRelaunchCount ?? 0;
+    if (max > 0 && priorCount >= max) {
+      this.escalateNeedsHuman(taskId, reason, 'relaunch_exhausted');
+      return;
+    }
+
+    const acquire = arbiter.tryAcquire(key, taskId);
+    if (!acquire.ok) {
+      void this.deps.interactionLog?.append({
+        type: 'ralph_terminal_relaunch',
+        taskId,
+        exitReason: reason,
+        outcome: acquire.reason === 'backoff' ? 'skipped_backoff' : 'skipped_held',
+        timestamp: nowISO(),
+      }).catch(() => undefined);
+      return;
+    }
+
+    // Admitted: re-arm in place with a fresh iteration budget. Clearing burned
+    // targets and cost streaks gives the relaunch a clean slate; a fresh
+    // `currentIteration` restores headroom under the iteration cap.
+    const now = (this.deps.now ?? Date.now)();
+    const rearmed = this.deps.taskStore.runRalphMutation(taskId, (t) => {
+      const loop = t.ralphLoop;
+      if (!loop) return null;
+      loop.status = 'running';
+      loop.currentIteration = 0;
+      loop.zeroDiffStreak = 0;
+      loop.consecutiveIterationCostCapStreak = 0;
+      loop.burnedOutTargets = [];
+      // Cumulative across re-arms (NOT reset with currentIteration) so the
+      // runaway guard can bound total relaunches.
+      loop.terminalRelaunchCount = (loop.terminalRelaunchCount ?? 0) + 1;
+      delete loop.needsHuman;
+      delete loop.handlingStopFingerprint;
+      loop.lastHandledStopFingerprint = stopFingerprint;
+      loop.lastIterationStartedAt = now;
+      t.updatedAt = new Date(now);
+      return t;
+    });
+    if (!rearmed) {
+      arbiter.release(key, taskId);
+      return;
+    }
+
+    try {
+      const newSessionId = await this.launchFreshRuntime(rearmed, rearmed.ralphLoop!.prompt);
+      this.deps.monitor.refreshRalphZeroDiffStreak(newSessionId);
+      void this.deps.interactionLog?.append({
+        type: 'ralph_terminal_relaunch',
+        taskId,
+        exitReason: reason,
+        outcome: 'relaunched',
+        timestamp: nowISO(),
+      }).catch(() => undefined);
+      this.broadcastSnapshot();
+    } catch (err) {
+      // Launch failed: release the lease so the cooldown starts and another
+      // actuator can retry after it, and mark the loop failed.
+      arbiter.release(key, taskId);
+      this.deps.taskStore.runRalphMutation(taskId, (t) => {
+        if (t.ralphLoop?.status === 'running') {
+          t.ralphLoop.status = 'failed';
+        }
+      });
+      if (err instanceof RalphLaunchInterruptedError) return;
+      throw err;
     }
   }
 

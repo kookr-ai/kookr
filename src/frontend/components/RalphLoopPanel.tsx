@@ -81,6 +81,7 @@ export function RalphLoopPanel({ taskId }: Props) {
   const verdictWarningCount = ralphLoop?.verdictWarningCount ?? 0;
   const lastVerdictWarningReason = ralphLoop?.lastVerdictWarningReason;
   const iterationCostWarningCount = ralphLoop?.iterationCostWarningCount ?? 0;
+  const needsHuman = ralphLoop?.needsHuman;
 
   const updatePrompt = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -179,6 +180,14 @@ export function RalphLoopPanel({ taskId }: Props) {
             </button>
           </div>
         </form>
+      )}
+
+      {needsHuman && (
+        <div className="ralph-needs-human" role="alert">
+          <span className="ralph-needs-human-badge">Needs human</span>{' '}
+          {needsHuman.detail}
+          <span className="ralph-needs-human-exit"> (exit: {needsHuman.exitReason})</span>
+        </div>
       )}
 
       <div className="ralph-summary-grid">
@@ -341,6 +350,8 @@ function exitTone(exitReason: string): 'ok' | 'warn' | 'stop' | 'neutral' {
     case 'predicate_error':
     case 'kookr_crash':
     case 'session_dead':
+    case 'cost_cap':
+    case 'iteration_cost_cap':
       return 'warn';
     case 'cancelled':
     case 'paused':
