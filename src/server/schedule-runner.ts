@@ -130,6 +130,16 @@ export interface ScheduleRunnerDeps {
    */
   resolutionAlerter?: { check(unresolvable: UnresolvableScheduleInfo[], resolvedIds: string[]): void };
   /**
+   * Re-queue-after-reset sweep (issue #1896 / #1699 WS1.4). When provided,
+   * evaluated once per tick — piggybacking the existing 60s interval, no timer
+   * of its own — so a provider-paused issue whose `resetsAt` has elapsed is
+   * auto-re-dispatched (jittered + token-bucket-bounded, lease-keyed dedup)
+   * without operator action. `sweep` must never throw; it is still wrapped in
+   * the tick's defensive envelope. Absent means no auto-resume (back-compat for
+   * older wiring/tests).
+   */
+  resetScheduler?: { sweep(now?: number): unknown };
+  /**
    * Per-fire wall-clock cap in ms (issue #1708). Parameterized for tests;
    * defaults to {@link FIRE_WALL_CLOCK_CAP_MS}. A launcher that hangs past this
    * cap is left to settle in the background so the tick is never frozen.
@@ -238,6 +248,22 @@ export class ScheduleRunner {
         this.deps.deadMan?.check(this.deps.store.list());
       } catch (err) {
         console.error('[schedule] dead-man check failed:', err);
+      }
+
+      // Re-queue-after-reset sweep (issue #1896): auto-resume provider-paused
+      // issues whose reset time has elapsed. Decoupled from the fire loop for
+      // the same reason as the dead-man (issue #1708) — a hung fire must not
+      // delay a due resume — and wrapped defensively even though `sweep` is
+      // contractually non-throwing. Suppressed under SAFE MODE (kill-switch)
+      // like schedule fires: the resume replays as a `schedule` launch, so
+      // launchTask would reject it anyway; gating here avoids burning a resume
+      // token + logging a spurious failure on every disabled tick.
+      if (this.deps.isAutomationEnabled?.() ?? true) {
+        try {
+          this.deps.resetScheduler?.sweep();
+        } catch (err) {
+          console.error('[schedule] reset-scheduler sweep failed:', err);
+        }
       }
 
       const now = new Date();

@@ -105,6 +105,22 @@ export interface TimerDeps {
   taskTailStore?: import('../core/task-tail-store.js').TaskTailStore;
   /** Optional quota adapter for plan usage polling. */
   quotaAdapter?: QuotaAdapter;
+  /**
+   * Re-queue-after-reset hook (issue #1896 / #1699 WS1.4). Invoked when the
+   * reaper detects a `provider_paused` task it is holding for resume. It
+   * registers the paused issue for auto-re-dispatch at its provider reset
+   * (jittered + token-bucket-bounded, lease-keyed dedup — see
+   * {@link ProviderResetScheduler}) and returns whether the reaper should keep
+   * holding the slot:
+   *  - `holdForResume: true`  → reset not yet elapsed; refuse to reap (hold the
+   *    slot/lease so the {@link ProviderResetScheduler} can hand off at reset).
+   *  - `holdForResume: false` → reset elapsed; the reaper should proceed to reap
+   *    the wedged task, freeing its slot + relaunch lease so the scheduled
+   *    resume can re-dispatch a fresh task on the issue.
+   * Absent (older wiring/tests) means the reaper keeps its pre-#1896 behavior of
+   * never reaping a `provider_paused` task (#1667). Must not throw.
+   */
+  recordProviderPause?: (task: Task, detail: string | undefined) => { holdForResume: boolean } | void;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
   /**
@@ -421,11 +437,33 @@ export async function maybeReapHungTask(
       : [];
   const pause = classifyProviderPause({ events, texts: [paneContent] });
   if (pause.paused) {
+    // Issue #1896: register the held issue for auto-re-dispatch at its provider
+    // reset (so the operator no longer re-dispatches by hand), and learn whether
+    // the reset has elapsed. Before reset → keep holding the slot. After reset →
+    // stop holding and fall through to reap, which frees the slot + relaunch
+    // lease so the ProviderResetScheduler can hand off a fresh task. Defensive:
+    // a throw here must never turn a "hold for resume" into an accidental reap,
+    // so on any error we default to holding (the pre-#1896 #1667 behavior).
+    let holdForResume = true;
+    try {
+      const decision = deps.recordProviderPause?.(task, pause.detail);
+      if (decision && decision.holdForResume === false) holdForResume = false;
+    } catch (err) {
+      console.error(`[hung-task-reaper] recordProviderPause failed for task ${task.id}:`, err);
+      holdForResume = true;
+    }
+    if (holdForResume) {
+      console.warn(
+        `[hung-task-reaper] skipping reap for task ${task.id} — provider_paused `
+        + `(${pause.detail ?? 'billing/quota'}); holding slot until provider reset`,
+      );
+      return false;
+    }
     console.warn(
-      `[hung-task-reaper] skipping reap for task ${task.id} — provider_paused `
-      + `(${pause.detail ?? 'billing/quota'}); holding slot for resume`,
+      `[hung-task-reaper] reaping provider_paused task ${task.id} — provider reset elapsed `
+      + `(${pause.detail ?? 'billing/quota'}); freeing slot + lease for auto-resume`,
     );
-    return false;
+    // fall through to the normal reap below
   }
 
   console.warn(
