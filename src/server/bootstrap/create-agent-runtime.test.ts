@@ -112,3 +112,90 @@ describe('createAgentRuntime — grok-build registration policy', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('grok-build binary unreachable'));
   });
 });
+
+/**
+ * Registration policy for codex-cli mirrors grok-build (issue #1893, #1699
+ * WS1.1): registered exactly when its binary preflight passes. An absent codex
+ * must stay out of the picker and round-robin (a registered-but-absent codex
+ * would wedge the rotation on a guaranteed-failing slot) without crashing
+ * startup; an explicitly configured KOOKR_CODEX_BIN that is unreachable stays
+ * fail-loud.
+ */
+describe('createAgentRuntime — codex-cli registration policy', () => {
+  let settingsDir: string;
+  let logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(join(tmpdir(), 'agent-runtime-test-'));
+    logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  });
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  function baseDeps(overrides: Partial<AgentRuntimeDeps> = {}): AgentRuntimeDeps {
+    return {
+      terminalBackend: new FakeTerminalBackend(),
+      taskStore: new TaskStore(),
+      hooksDir: settingsDir,
+      settingsDir,
+      serverPort: 0,
+      // Present claude stand-in; grok stays deterministically absent (default
+      // PATH, ENOENT probe) so these tests exercise only the codex policy.
+      agentBin: '/bin/echo',
+      grokEnv: {} as NodeJS.ProcessEnv,
+      grokProbeExec: async () => {
+        const e = new Error('spawn grok ENOENT') as NodeJS.ErrnoException;
+        e.code = 'ENOENT';
+        throw e;
+      },
+      preflightLogger: logger,
+      preflightOnFatal: ((): never => {
+        throw new Error('fatal preflight');
+      }) as AgentRuntimeDeps['preflightOnFatal'],
+      ...overrides,
+    };
+  }
+
+  test('registers codex-cli when the binary preflight passes', async () => {
+    // Hermetic ok-path: stub the probe so preflight passes without spawning a
+    // real binary (mirrors the grok ok-test's grokInstalledState bypass).
+    const runtime = await createAgentRuntime(
+      baseDeps({
+        codexBin: '/fake/codex',
+        codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
+      }),
+    );
+    expect(runtime.adapterRegistry.getTypes()).toContain('codex-cli');
+    expect(runtime.agentPreflight['codex-cli']?.status).toBe('ok');
+  });
+
+  test('skips registration with a warning when the default codex binary is absent', async () => {
+    const enoent = async () => {
+      const e = new Error('spawn codex ENOENT') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    };
+    const runtime = await createAgentRuntime(
+      // codexBin undefined → configuredVia 'default' → warn-and-skip.
+      baseDeps({ codexBin: undefined, codexProbeExec: enoent }),
+    );
+    expect(runtime.adapterRegistry.getTypes()).not.toContain('codex-cli');
+    expect(runtime.agentPreflight['codex-cli']).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('codex-cli is not registered'));
+    // The adapter object still exists for diagnostics even when unregistered.
+    expect(runtime.codexCliAdapter).toBeDefined();
+  });
+
+  test('is fatal when KOOKR_CODEX_BIN is explicitly configured but unreachable', async () => {
+    const enoent = async () => {
+      const e = new Error('spawn /missing/codex ENOENT') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    };
+    await expect(
+      createAgentRuntime(baseDeps({ codexBin: '/missing/codex', codexProbeExec: enoent })),
+    ).rejects.toThrow('fatal preflight');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('codex-cli binary unreachable'));
+  });
+});
