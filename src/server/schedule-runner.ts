@@ -176,6 +176,20 @@ export interface ScheduleRunnerDeps {
    * consults it — the umbrella specifies catch-up runs "after the lease gate".
    */
   relaunchArbiter?: Pick<RelaunchArbiter, 'evaluate' | 'tryAcquire'>;
+  /**
+   * Unwind a catch-up fire that launched but then LOST the relaunch-lease CAS
+   * (issue #1914). The catch-up path evaluates the lease before firing, but the
+   * `await fire()` between that evaluate and the post-fire `tryAcquire` is a
+   * window in which another actuator (or a post-release backoff) can take the
+   * schedule's lease. When that happens the just-launched `catch_up` task is a
+   * duplicate of work the lease holder already owns; this callback terminates
+   * it (best-effort) so the arbiter's mutual-exclusion invariant is enforced by
+   * code rather than left to the single-serial-actuator assumption. Given a
+   * fired `taskId` and a short operator-facing `detail`. Absent (older
+   * wiring/tests) means a lost acquire is only logged (the prior behavior);
+   * only the catch-up path invokes it.
+   */
+  terminateCatchUpDuplicate?: (taskId: string, detail: string) => void;
 }
 
 export class ScheduleRunner {
@@ -723,12 +737,18 @@ export class ScheduleRunner {
    * the lease under the fired task id so the schedule is excluded for that
    * task's lifetime — orphan-reclaim (via the arbiter's `isHolderLive` probe)
    * starts the post-release backoff when the task goes terminal, so an
-   * immediate second catch-up is refused too. Unlike the launch-service CAS
-   * this does not roll back on a lost acquire: the catch-up key has a single
-   * actuator (this method, once per boot, serially) so the acquire cannot lose
-   * the race today — a lost acquire is logged rather than unwound, since the
-   * task has already launched and the evaluate gate already prevented the only
-   * duplicate that matters.
+   * immediate second catch-up is refused too.
+   *
+   * The `await fire()` between the pre-fire evaluate and the post-fire acquire
+   * is a window in which another actuator (or a post-release backoff) can take
+   * the schedule's lease, so the acquire can lose *after* a `catch_up` task has
+   * already launched (issue #1914). The launcher cannot pre-create the task the
+   * way launch-service's synchronous CAS does, so the window cannot be closed
+   * here; instead the invariant is enforced on the losing side — mirroring the
+   * launch-service rollback — by unwinding the just-launched duplicate via
+   * {@link ScheduleRunnerDeps.terminateCatchUpDuplicate} (best-effort) so it
+   * cannot run alongside the lease holder. Absent that callback, a lost acquire
+   * is only logged (the prior behavior).
    *
    * Absent an arbiter this is exactly the previous behavior: a single
    * `catch_up`-tagged fire.
@@ -757,12 +777,21 @@ export class ScheduleRunner {
     if (arbiter && result.taskId) {
       const acquire = arbiter.tryAcquire(catchUpClaimKey(schedule), result.taskId);
       if (!acquire.ok) {
-        // Unreachable today (single serial catch-up actuator per boot); logged
-        // rather than unwound because the task has already launched. If a
-        // second schedule-key actuator is ever added, revisit with a rollback.
+        // Lost the lease CAS (issue #1914): a concurrent actuator took the
+        // schedule's relaunch lease (or a post-release backoff opened) during
+        // the `await fire()` window, so the task we just launched duplicates
+        // work the lease holder already owns. Unwind it (best-effort) rather
+        // than letting the duplicate run — the terminal transition flips the
+        // task's record and the terminal-task session reaper (#1720) reclaims
+        // its session. Absent the unwind hook, keep the prior log-only behavior.
+        const detail =
+          acquire.reason === 'backoff'
+            ? `relaunch lease entered backoff mid-fire (retry in ${Math.ceil(acquire.retryAfterMs / 1000)}s)`
+            : `relaunch lease taken mid-fire by ${acquire.lease.holderId}`;
         console.warn(
-          `[schedule] Catch-up for "${schedule.name}" launched task ${result.taskId} but could not hold the relaunch lease (${acquire.reason})`,
+          `[schedule] Catch-up for "${schedule.name}" launched task ${result.taskId} but lost the relaunch lease (${acquire.reason}); unwinding the duplicate — ${detail}`,
         );
+        this.deps.terminateCatchUpDuplicate?.(result.taskId, detail);
       }
     }
   }
