@@ -3,6 +3,7 @@ import {
   normalizeAgentType,
   normalizeAgentSelection,
   resolveRoundRobinAgent,
+  resolvePinnedAgentFallback,
   buildAgentSelectionOptions,
   DEFAULT_AGENT_TYPE,
   AVAILABLE_AGENT_TYPES,
@@ -177,6 +178,67 @@ describe('resolveRoundRobinAgent', () => {
     test('ignores a deprioritized agent that is not registered', () => {
       expect(resolveRoundRobinAgent(0, both, ['grok-build'])).toBe('claude-code');
       expect(resolveRoundRobinAgent(1, both, ['grok-build'])).toBe('codex-cli');
+    });
+  });
+});
+
+describe('resolvePinnedAgentFallback (issue #1895 / #1699 WS1.3)', () => {
+  const both: ReadonlyArray<'claude-code' | 'codex-cli'> = ['claude-code', 'codex-cli'];
+  const all: ReadonlyArray<'claude-code' | 'codex-cli' | 'grok-build'> = [
+    'claude-code',
+    'codex-cli',
+    'grok-build',
+  ];
+
+  test('pass-through when the pin is registered and healthy', () => {
+    expect(resolvePinnedAgentFallback('codex-cli', both)).toEqual({
+      kind: 'available',
+      agentType: 'codex-cli',
+      substituted: false,
+    });
+  });
+
+  test('substitutes when the pin is not registered', () => {
+    expect(resolvePinnedAgentFallback('codex-cli', ['claude-code'])).toEqual({
+      kind: 'substituted',
+      agentType: 'claude-code',
+      substituted: true,
+      from: 'codex-cli',
+    });
+  });
+
+  test('substitutes a deprioritized pin when a healthy alternative remains', () => {
+    expect(resolvePinnedAgentFallback('grok-build', all, ['grok-build'])).toEqual({
+      kind: 'substituted',
+      agentType: 'claude-code',
+      substituted: true,
+      from: 'grok-build',
+    });
+  });
+
+  test('keeps a deprioritized pin when every agent is deprioritized', () => {
+    // Same rule as resolveRoundRobinAgent: something must launch.
+    expect(resolvePinnedAgentFallback('grok-build', all, all)).toEqual({
+      kind: 'available',
+      agentType: 'grok-build',
+      substituted: false,
+    });
+  });
+
+  test('reports unavailable when no agents are registered', () => {
+    expect(resolvePinnedAgentFallback('codex-cli', [])).toEqual({
+      kind: 'unavailable',
+      from: 'codex-cli',
+    });
+  });
+
+  test('picks the first healthy agent in canonical order as substitute', () => {
+    // Pin grok; only codex + grok registered; grok deprioritized → codex.
+    expect(resolvePinnedAgentFallback('grok-build', ['codex-cli', 'grok-build'], ['grok-build'])).toEqual({
+      kind: 'substituted',
+      agentType: 'codex-cli',
+      substituted: true,
+      from: 'grok-build',
     });
   });
 });

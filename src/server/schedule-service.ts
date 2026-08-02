@@ -109,8 +109,10 @@ export function buildScheduleFailureRecoveryAlert(
  * operator wants LESS noise); `skipped_draining` is an operator drain;
  * `skipped_safe_mode` is the automation kill-switch (issue #1710);
  * `skipped_manual`/`skipped_stale`/`skipped_capacity`/`deduplicated` are
- * intentional skips; and `unknown_after_restart` is unresolved rather than
- * failed. Counting any of those would mislabel healthy schedules as failing.
+ * intentional skips; `skipped_provider_paused` is a deliberate park when a
+ * pinned agent is unavailable with no substitute (issue #1895); and
+ * `unknown_after_restart` is unresolved rather than failed. Counting any of
+ * those would mislabel healthy schedules as failing.
  */
 const SCHEDULE_RUN_FAILURE_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set(['dispatch_failed']);
 
@@ -530,13 +532,24 @@ export class ScheduleService {
    * FM8), that only ever happens because the node was at capacity, so it is
    * recorded as `queued_capacity` (reasonCode `capacity`) rather than the
    * legacy generic `queued`.
+   *
+   * `details.reasonCode` (issue #1895) lets the runner stamp an observability
+   * code that is not implied by `queued` alone — e.g. `agent_substituted`
+   * when a pinned-but-unavailable agent was rotated to a launchable one.
+   * When omitted, the historical `capacity` / `none` mapping is preserved.
    */
-  async markExecutionAccepted(scheduleId: string, receiptId: string, taskId: string, queued: boolean): Promise<void> {
+  async markExecutionAccepted(
+    scheduleId: string,
+    receiptId: string,
+    taskId: string,
+    queued: boolean,
+    details: { reasonCode?: ScheduleExecutionReasonCode; message?: string } = {},
+  ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
     const triggeredAt = new Date().toISOString();
     const outcome = queued ? 'queued_capacity' : 'running';
-    const reasonCode = queued ? 'capacity' : 'none';
+    const reasonCode = details.reasonCode ?? (queued ? 'capacity' : 'none');
     const latestExecution: ScheduleLatestExecutionStatus = {
       receiptId,
       executionToken: receipt.executionToken,
@@ -547,6 +560,7 @@ export class ScheduleService {
       taskId,
       outcome,
       reasonCode,
+      ...(details.message ? { message: details.message } : {}),
     };
     this.store.replace({
       ...schedule,
@@ -562,6 +576,7 @@ export class ScheduleService {
         {
           completedAt: triggeredAt,
           taskId,
+          ...(details.message ? { message: details.message } : {}),
         },
       )),
       currentExecution: {

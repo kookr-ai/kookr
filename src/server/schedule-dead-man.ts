@@ -88,6 +88,9 @@ const DELIBERATE_SUPPRESSION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = n
   'skipped_draining',
   'skipped_safe_mode',
   'skipped_relaunch_locked',
+  // issue #1895: parked because the pin has no launchable substitute — not
+  // starvation of the launch pipeline; the fire intentionally did not run.
+  'skipped_provider_paused',
 ]);
 
 export interface ScheduleDeadManDeps {

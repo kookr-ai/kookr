@@ -60,6 +60,12 @@ export type ScheduleExecutionOutcome =
    * backoff window is live. Mirrors `core/schedule`.
    */
   | 'skipped_relaunch_locked'
+  /**
+   * Pinned schedule agent unavailable with no substitute (issue #1895 /
+   * #1699 WS1.3). Fire parked via WS0 provider_paused — not a failure.
+   * Mirrors `core/schedule`.
+   */
+  | 'skipped_provider_paused'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -82,6 +88,10 @@ export type ScheduleExecutionReasonCode =
   | 'stale_catch_up'
   /** Reason code for `skipped_relaunch_locked` (issue #1900). Mirrors `core/schedule`. */
   | 'relaunch_lease_held'
+  /** Pinned agent substituted to an available agent (issue #1895). Mirrors `core/schedule`. */
+  | 'agent_substituted'
+  /** Parked fire — no substitute for unavailable pin (issue #1895). Mirrors `core/schedule`. */
+  | 'provider_paused'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

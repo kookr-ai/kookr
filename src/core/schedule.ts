@@ -130,6 +130,12 @@ export type ScheduleExecutionOutcome =
    * still live. Prevents a missed run from duplicating a concurrent relaunch.
    */
   | 'skipped_relaunch_locked'
+  /**
+   * Pinned schedule agent was unavailable and no substitute could launch
+   * (issue #1895 / #1699 WS1.3). Fire is parked via the WS0 provider-paused
+   * guard rather than recorded as `dispatch_failed`.
+   */
+  | 'skipped_provider_paused'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -163,6 +169,18 @@ export type ScheduleExecutionReasonCode =
    * the schedule's relaunch lease is held or in its post-release backoff.
    */
   | 'relaunch_lease_held'
+  /**
+   * Pinned agent was unavailable; fire launched on a substitute agent
+   * (issue #1895 / #1699 WS1.3). Feeds the WS1.5 provider-health substitution
+   * counter and the schedule ledger.
+   */
+  | 'agent_substituted'
+  /**
+   * Reason code for {@link ScheduleExecutionOutcome.skipped_provider_paused}
+   * (issue #1895): no launchable substitute for an unavailable pin — fire
+   * parked rather than dispatched into a known-missing agent.
+   */
+  | 'provider_paused'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

@@ -136,6 +136,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: stale';
     case 'skipped_relaunch_locked':
       return 'skipped: relaunch locked';
+    case 'skipped_provider_paused':
+      return 'skipped: provider paused';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -149,6 +151,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'capacity';
     case 'draining':
       return 'draining';
+    case 'safe_mode':
+      return 'SAFE MODE';
     case 'previous_run_active':
       return 'previous run active';
     case 'previous_run_pending':
@@ -165,10 +169,16 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'deduplicated';
     case 'launch_error':
       return 'launch error';
+    case 'pending_queue_full':
+      return 'pending queue full';
     case 'stale_catch_up':
       return 'stale catch-up';
     case 'relaunch_lease_held':
       return 'relaunch lease held';
+    case 'agent_substituted':
+      return 'agent substituted';
+    case 'provider_paused':
+      return 'provider paused';
     case 'reconciled_after_restart':
       return 'reconciled after restart';
     case 'unknown_after_restart':

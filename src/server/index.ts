@@ -1442,6 +1442,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // instead of selecting it and relying on the fire() wall-clock cap (#1708).
   const agentBootLatency = new AgentBootLatencyMonitor();
 
+  // Provider-pool health tracker (#1897, WS1.5 of #1699). Created before the
+  // schedule runtime so WS1.3 (#1895) can feed substitution events into the
+  // same counter the operational-alert evaluator thresholds on.
+  const providerHealthTracker = new ProviderHealthTracker();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1740,6 +1745,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
+    // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
+    // the WS1.5 provider-health counter.
+    recordAgentSubstitution: () => providerHealthTracker.recordSubstitution(),
     // issue #1896: sweep provider-paused resumes on the runner's existing tick.
     resetScheduler: providerResetScheduler,
     // issue #1899 / #1699 WS2.1: arm always-running Ralph loops from schedules
@@ -2130,16 +2138,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   };
 
   const operationalAlertConfig = resetOperationalAlertConfig();
-  // Provider-pool health tracker (#1897, WS1.5 of #1699). The dispatch/failover
-  // path (WS1.3 substitution counter + pool-pause edges) feeds this; the
-  // evaluator reads its snapshot each resource tick to raise a standing durable
-  // alert when failover is chronically masking a provider outage.
-  const providerHealthTracker = new ProviderHealthTracker();
-  // Durable JSONL sink (#1699 WS0.3): every operational-alert fire/clear edge is
-  // appended to `operational-alerts.jsonl` so an incident is reconstructable
-  // from disk even when no dashboard client was connected during it. Reuse the
-  // single sink instance the schedule runtime already owns (rather than minting
-  // a second one on the same file) so status()/lastFailure stay unified.
+  // providerHealthTracker is constructed earlier (before createScheduleRuntime)
+  // so schedule-level substitutions (#1895) and the ops-alert evaluator share
+  // one counter. Durable JSONL sink (#1699 WS0.3): every operational-alert
+  // fire/clear edge is appended to `operational-alerts.jsonl` so an incident is
+  // reconstructable from disk even when no dashboard client was connected
+  // during it. Reuse the single sink instance the schedule runtime already owns
+  // (rather than minting a second one on the same file) so status()/lastFailure
+  // stay unified.
   const recordOperationalAlertToSink = bindOperationalAlertSink(operationalAlertSink);
   const operationalAlertEvaluator = createOperationalAlertEvaluator(
     getOperationalAlertConfig,
