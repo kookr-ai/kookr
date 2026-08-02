@@ -19,4 +19,13 @@ describe('frontend stylesheet loading', () => {
 
     expect(criticalCss.size).toBeLessThanOrEqual(30_000);
   });
+
+  test('ships skip-link styles in critical CSS so first paint has no layout shift', () => {
+    const critical = readFileSync(join(frontendDir, 'critical.css'), 'utf8');
+    const full = readFileSync(join(frontendDir, 'styles.css'), 'utf8');
+
+    expect(critical).toContain('.skip-link');
+    expect(critical).toContain('.skip-link:focus');
+    expect(full).toContain('.skip-link');
+  });
 });
