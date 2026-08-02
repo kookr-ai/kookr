@@ -7,6 +7,7 @@ import {
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
   LUCY_1590_LEAF_PLAN,
+  LUCY_1593_LEAF_PLAN,
   QUEUE_FEEDER_SCHEMA,
   buildLeafIssueBody,
   buildQueueFeederRecord,
@@ -487,6 +488,59 @@ describe('lucy#1586 publish-window-safe issuer acquisition residual curated plan
     });
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1586');
+    expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
+  });
+});
+
+
+describe('lucy#1593 replay-corpus validity residual curated plan', () => {
+  it('has a vetted 4-leaf residual plan registered, each leaf well-formed', () => {
+    const plan = curatedLeafPlan('jeanibarz/lucy#1593');
+    expect(plan).toBe(LUCY_1593_LEAF_PLAN);
+    expect(plan).toHaveLength(4);
+    const normalized = normalizeLeafPlan(plan);
+    expect(normalized.ok).toBe(true);
+    expect(normalized.leaves).toHaveLength(4);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1593');
+  });
+
+  it('emits lucy#1593 leaves when it has no open children yet', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1593,
+          title:
+            'Umbrella: replay-corpus validity — backtesting-audit P0.3/P1 roadmap',
+          openChildrenCount: 0,
+        }),
+      ],
+    });
+    expect(decision.selected?.ref).toBe('jeanibarz/lucy#1593');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(4);
+  });
+
+  it('SKIPS lucy#1593 once residual leaves already exist (idempotent)', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1593,
+          title:
+            'Umbrella: replay-corpus validity — backtesting-audit P0.3/P1 roadmap',
+          openChildrenCount: 4,
+        }),
+      ],
+    });
+    expect(decision.selected).toBeNull();
+    expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1593');
     expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
   });
 });
