@@ -459,15 +459,16 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   // Machine-readable readiness verdict for orchestrators / load balancers
-  // (issue #660, extended by #1721 / #1707). Unlike /api/health — which always
-  // returns 200 so the dashboard never sees a hard error — /api/ready turns 503
-  // when a *critical* subsystem is down or unavailable for new work: startup
-  // recovery still in progress, operator drain mode, the terminal/dtach backend
-  // in `error` (manifest-corrupt / dtach-unavailable), the persistence
+  // (issue #660, extended by #1721 / #1707 / #1870). Unlike /api/health — which
+  // always returns 200 so the dashboard never sees a hard error — /api/ready
+  // turns 503 when a *critical* subsystem is down or unavailable for new work:
+  // startup recovery still in progress, operator drain mode, the terminal/dtach
+  // backend in `error` (manifest-corrupt / dtach-unavailable), the persistence
   // directory unwritable, or the schedule-runner tick loop stale beyond N
   // tick-intervals (`schedulerTick`, issue #1707).
-  // Non-critical degradation (terminal `degraded`) stays 200/ready so
-  // transient blips do not cordon a node out of rotation.
+  // Non-critical degradation (terminal `degraded`, hook-ingestion lag) stays
+  // 200/ready so transient blips do not cordon a node out of rotation —
+  // `hookIngestion` (issue #1870) is reported for visibility only.
   // Read-only and unauthenticated by design: probes must reach it without an
   // admin token.
   //
@@ -513,6 +514,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // contexts stay fail-open.
     if (deps.scheduleService) {
       checks.schedulerTick = checkSchedulerTickReadiness(deps.scheduleService.getStatusSnapshot());
+    }
+
+    // Issue #1870: non-critical hook-ingestion lag visibility. Surfaces stalled
+    // lag on the readiness probe without flipping overall ready/503 — a blind
+    // supervisor still accepts work, but operators/orchestrators can see lag.
+    // Omitted when hook ingestion is not wired (tests / hermetic boots).
+    if (deps.hookIngestion) {
+      checks.hookIngestion = checkHookIngestionReadiness(deps.hookIngestion.getDiagnosticsSnapshot());
     }
 
     // Fail-open: a check only flips readiness when it is both critical and
@@ -1259,6 +1268,43 @@ export function checkSchedulerTickReadiness(
     critical: true,
     ready: true,
     status: lastTick ? 'ok' : 'awaiting-first-tick',
+  };
+}
+
+/**
+ * Non-critical hook-ingestion lag probe for GET `/api/ready` (issue #1870).
+ *
+ * Uses the existing {@link HookIngestion.getDiagnosticsSnapshot} surface: a
+ * session is "stalled" when its last measured lag exceeds
+ * `lagWarningThresholdMs`. Always `critical: false` so lag is visible in
+ * `checks.hookIngestion` without cordoning the node (overall ready stays 200
+ * when only this check fails). Pure for unit tests.
+ */
+export function checkHookIngestionReadiness(
+  snapshot: Pick<HookIngestionDiagnosticsSnapshot, 'lagWarningThresholdMs' | 'sessionCount' | 'sessions'>,
+): ReadinessCheck {
+  const thresholdMs = snapshot.lagWarningThresholdMs;
+  const stalled = snapshot.sessions.filter(
+    (session) => session.lag.lastMs != null && session.lag.lastMs > thresholdMs,
+  );
+
+  if (stalled.length === 0) {
+    return {
+      critical: false,
+      ready: true,
+      status: snapshot.sessionCount === 0 ? 'idle' : 'ok',
+    };
+  }
+
+  const worstLagMs = Math.max(
+    ...stalled.map((session) => session.lag.lastMs as number),
+  );
+  return {
+    critical: false,
+    ready: false,
+    status: 'stalled',
+    reason: 'ingestion-lag',
+    detail: `last lag ${worstLagMs}ms exceeds threshold ${thresholdMs}ms across ${stalled.length} session(s)`,
   };
 }
 

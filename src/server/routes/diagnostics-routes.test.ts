@@ -17,6 +17,7 @@ import {
   registerDiagnosticsRoutes,
   SCHEDULER_TICK_STALE_INTERVALS,
   checkSchedulerTickReadiness,
+  checkHookIngestionReadiness,
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
@@ -1629,6 +1630,131 @@ describe('diagnostics routes', () => {
         ready: false,
         status: 'error',
         reason: 'invalid-timestamp',
+      });
+    });
+
+    // Issue #1870 — non-critical hook-ingestion lag visibility on /api/ready
+    function sessionLag(lastMs: number | null, overrides: { kookrSessionId?: string } = {}) {
+      return {
+        kookrSessionId: overrides.kookrSessionId ?? 'kookr-1',
+        totalArrivals: 1,
+        dispatchedArrivals: 1,
+        duplicateArrivals: 0,
+        missingWriteTimestampCount: 0,
+        invalidWriteTimestampCount: 0,
+        futureWriteTimestampCount: 0,
+        notableLagCount: lastMs != null && lastMs > 2000 ? 1 : 0,
+        startupReplayArrivalCount: 0,
+        lastProcessedAt: '2026-08-01T12:00:00.000Z',
+        lastWriteTimestampAt: '2026-08-01T12:00:00.000Z',
+        lastWriteTimestampSource: 'payload' as const,
+        lag: { count: 1, lastMs, meanMs: lastMs, maxMs: lastMs, p95Ms: lastMs },
+        sourceCounts: { file: 1, http: 0 },
+        writeTimestampSourceCounts: { payload: 1, file_mtime: 0, missing: 0, invalid: 0 },
+      };
+    }
+
+    test('healthy hook ingestion lag ⇒ 200 ready with non-critical hookIngestion ok (issue #1870)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        hookIngestion: {
+          getDiagnosticsSnapshot: () => ({
+            schemaVersion: 'hook-ingestion-diagnostics.v1',
+            generatedAt: '2026-08-01T12:00:00.000Z',
+            lagWarningThresholdMs: 2000,
+            sessionCount: 1,
+            totalArrivals: 1,
+            missingWriteTimestampCount: 0,
+            notableLagCount: 0,
+            sessions: [sessionLag(500)],
+          }),
+        } as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.hookIngestion).toEqual({
+        critical: false,
+        ready: true,
+        status: 'ok',
+      });
+    });
+
+    test('stalled hook ingestion lag ⇒ check ready:false but overall 200 (non-critical, issue #1870)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        hookIngestion: {
+          getDiagnosticsSnapshot: () => ({
+            schemaVersion: 'hook-ingestion-diagnostics.v1',
+            generatedAt: '2026-08-01T12:00:00.000Z',
+            lagWarningThresholdMs: 2000,
+            sessionCount: 1,
+            totalArrivals: 2,
+            missingWriteTimestampCount: 0,
+            notableLagCount: 1,
+            sessions: [sessionLag(5000)],
+          }),
+        } as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.hookIngestion).toEqual({
+        critical: false,
+        ready: false,
+        status: 'stalled',
+        reason: 'ingestion-lag',
+        detail: 'last lag 5000ms exceeds threshold 2000ms across 1 session(s)',
+      });
+      // Critical checks still pass — only hookIngestion is not-ready.
+      expect(body.checks.terminalBackend.ready).toBe(true);
+      expect(body.checks.persistence.ready).toBe(true);
+    });
+
+    test('no hookIngestion wired ⇒ no hookIngestion check (fail-open)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.checks.hookIngestion).toBeUndefined();
+    });
+
+    test('checkHookIngestionReadiness pure helper: idle, ok, stalled', () => {
+      expect(
+        checkHookIngestionReadiness({
+          lagWarningThresholdMs: 2000,
+          sessionCount: 0,
+          sessions: [],
+        }),
+      ).toEqual({ critical: false, ready: true, status: 'idle' });
+
+      expect(
+        checkHookIngestionReadiness({
+          lagWarningThresholdMs: 2000,
+          sessionCount: 1,
+          sessions: [sessionLag(2000)],
+        }),
+      ).toEqual({ critical: false, ready: true, status: 'ok' });
+
+      expect(
+        checkHookIngestionReadiness({
+          lagWarningThresholdMs: 2000,
+          sessionCount: 2,
+          sessions: [sessionLag(100, { kookrSessionId: 'a' }), sessionLag(9000, { kookrSessionId: 'b' })],
+        }),
+      ).toEqual({
+        critical: false,
+        ready: false,
+        status: 'stalled',
+        reason: 'ingestion-lag',
+        detail: 'last lag 9000ms exceeds threshold 2000ms across 1 session(s)',
       });
     });
   });

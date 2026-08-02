@@ -166,7 +166,9 @@ when the scheduler tick dies (issue #1707 / #1699 WS0).
 
 - **200** `{ "ready": true, "checks": { … } }` when every *critical* subsystem
   is ready (startup complete, terminal backend not in `error`, not draining,
-  persistence writable, schedule-runner tick fresh).
+  persistence writable, schedule-runner tick fresh). Non-critical checks such
+  as `hookIngestion` lag (issue #1870) may report `ready:false` without
+  changing the overall verdict or HTTP status.
 - **503** `{ "ready": false, "checks": { … } }` when any critical check fails.
   The `schedulerTick` check (issue #1707) flips not-ready when
   `lastTickCompletedAt` is older than two schedule-runner tick intervals
