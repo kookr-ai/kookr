@@ -1555,6 +1555,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
+  // Terminal-relaunch cap (issue #1901): a non-negative integer bounds runaway
+  // relaunch; `0` disables the cap. Invalid/blank values fall back to the
+  // service default. Left undefined so the service applies its own default.
+  const terminalRelaunchMaxRaw = process.env.KOOKR_LOOP_TERMINAL_RELAUNCH_MAX;
+  const terminalRelaunchMaxParsed =
+    terminalRelaunchMaxRaw !== undefined ? Number.parseInt(terminalRelaunchMaxRaw, 10) : NaN;
+  const terminalRelaunchMax =
+    Number.isInteger(terminalRelaunchMaxParsed) && terminalRelaunchMaxParsed >= 0
+      ? terminalRelaunchMaxParsed
+      : undefined;
+
   const ralphLoopService = new RalphLoopService({
     taskStore,
     monitor,
@@ -1567,6 +1578,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     launchFreshTaskSession: (task, prompt, opts) => launchFreshTaskSession(launchServiceDeps, task, prompt, opts),
     loopDeliveryWatchdog,
     resolveDeliverySnapshot,
+    // Terminal-loop relaunch policy (issue #1901 / WS2.3): re-arm capped/stalled
+    // loops through the same WS0.5 arbiter that gates every other relaunch
+    // actuator. Disable auto-relaunch with KOOKR_LOOP_TERMINAL_RELAUNCH=false
+    // (needs-human escalation on budget exhaustion still fires).
+    relaunchArbiter,
+    terminalRelaunchEnabled: process.env.KOOKR_LOOP_TERMINAL_RELAUNCH !== 'false',
+    ...(terminalRelaunchMax !== undefined ? { terminalRelaunchMax } : {}),
     completeTask: (taskId) => completeTask(taskId, {
       adapter,
       monitor,
