@@ -15,6 +15,8 @@ import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
+import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
+import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -1663,6 +1665,134 @@ describe('launchTask round-robin', () => {
     const result = await launchTask(soloDeps, { prompt: 'solo', cwd: '/tmp' });
     expect(result.task.agentType).toBe('codex-cli');
     expect(registry.get('codex-cli').launch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('launchTask boot-reliability failover precondition (#1898)', () => {
+  function mockAdapter(agentType: string, tmux: string) {
+    return {
+      agentType,
+      launch: vi.fn().mockResolvedValue(tmux),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+    } as any;
+  }
+
+  /** All three agents registered; the round-robin cursor parked on grok's slot (index 2). */
+  function threeAgentDeps(monitor: AgentBootLatencyMonitor): {
+    deps: LaunchServiceDeps;
+    registry: AdapterRegistry;
+  } {
+    const store = new TaskStore();
+    const registry = new AdapterRegistry();
+    registry.register(mockAdapter('claude-code', 'tmux-claude'));
+    registry.register(mockAdapter('codex-cli', 'tmux-codex'));
+    registry.register(mockAdapter('grok-build', 'tmux-grok'));
+    const deps: LaunchServiceDeps = {
+      ...makeDeps(store),
+      adapterRegistry: registry,
+      roundRobinCursor: { peek: () => 2, advance: () => {} },
+      getDeprioritizedAgentTypes: (available) => monitor.deprioritizedTypes(available),
+      recordLaunchBootLatency: (agentType, timings) => monitor.record(agentType, timings),
+    };
+    return { deps, registry };
+  }
+
+  const hungBoot: LaunchPhaseTimings = {
+    phases: [{ phase: 'agent-boot', durationMs: 90_000, completed: false }],
+    totalMs: 90_000,
+    incompletePhase: 'agent-boot',
+  };
+
+  const fastBoot: LaunchPhaseTimings = {
+    phases: [{ phase: 'agent-boot', durationMs: 2_000, completed: true }],
+    totalMs: 2_000,
+  };
+
+  it('deprioritizes grok-build in round-robin when its recent boot latency is unhealthy', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 2, now: () => 1_000 });
+    // Two prior grok launches hung in agent-boot (the #1642 shape), fed through
+    // the SAME record() API the launch service uses on every finalization.
+    monitor.record('grok-build', hungBoot);
+    monitor.record('grok-build', hungBoot);
+    const { deps, registry } = threeAgentDeps(monitor);
+
+    const result = await launchTask(deps, { prompt: 'rr', cwd: '/tmp', agentType: 'round-robin' });
+
+    // Cursor 2 would normally pick grok-build; the unhealthy boot signal makes
+    // the rotation choose a healthy agent instead of hanging until the cap.
+    expect(result.task.agentType).toBe('claude-code');
+    expect(registry.get('grok-build').launch).not.toHaveBeenCalled();
+    expect(registry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('still selects grok-build at the same cursor when its recent boots are healthy (control)', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 2, now: () => 1_000 });
+    // Genuinely-healthy samples (fast completed boots), not merely an empty
+    // window — proves healthy boot latency does NOT deprioritize.
+    monitor.record('grok-build', fastBoot);
+    monitor.record('grok-build', fastBoot);
+    const { deps, registry } = threeAgentDeps(monitor);
+
+    const result = await launchTask(deps, { prompt: 'rr', cwd: '/tmp', agentType: 'round-robin' });
+
+    // No unhealthy signal → the deprioritization changes nothing: cursor 2 → grok.
+    expect(result.task.agentType).toBe('grok-build');
+    expect(registry.get('grok-build').launch).toHaveBeenCalledOnce();
+  });
+
+  it('feeds each finalized launch back into the boot-reliability monitor', async () => {
+    // A grok adapter whose launch emits the agent-boot phase then hangs, so the
+    // launch-service failure path records a real hung boot-latency sample.
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 2, now: () => 1_000 });
+    const { deps, registry } = threeAgentDeps(monitor);
+    const grok = registry.get('grok-build');
+    grok.launch = vi.fn(async (_id, _prompt, _cwd, _resume, opts) => {
+      opts?.onPhase?.('session-create');
+      opts?.onPhase?.('agent-boot');
+      throw new Error('grok boot hang');
+    }) as any;
+
+    // Explicitly target grok twice so both launches feed a hung sample.
+    for (let i = 0; i < 2; i += 1) {
+      await expect(
+        launchTask(deps, { prompt: `grok ${i}`, cwd: '/tmp', agentType: 'grok-build' }),
+      ).rejects.toThrow('grok boot hang');
+    }
+
+    // The monitor now sees grok as unhealthy purely from the launch feed.
+    expect(monitor.isUnhealthy('grok-build')).toBe(true);
+    expect(monitor.deprioritizedTypes(['claude-code', 'codex-cli', 'grok-build'])).toEqual([
+      'grok-build',
+    ]);
+  });
+
+  it('routes a round-robin launch away from grok after real hung launches feed the monitor (end-to-end)', async () => {
+    // The full production sequence with NO direct monitor.record() seeding:
+    // hung grok launches feed the signal through launch-service, then a
+    // round-robin launch at grok's cursor routes to a healthy agent instead.
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 2, now: () => 1_000 });
+    const { deps, registry } = threeAgentDeps(monitor);
+    registry.get('grok-build').launch = vi.fn(async (_id, _prompt, _cwd, _resume, opts) => {
+      opts?.onPhase?.('agent-boot');
+      throw new Error('grok boot hang');
+    }) as any;
+
+    for (let i = 0; i < 2; i += 1) {
+      await expect(
+        launchTask(deps, { prompt: `grok ${i}`, cwd: '/tmp', agentType: 'grok-build' }),
+      ).rejects.toThrow('grok boot hang');
+    }
+    // Cursor 2 would pick grok; the fed-back hung boots now deprioritize it.
+    const result = await launchTask(deps, { prompt: 'rr', cwd: '/tmp', agentType: 'round-robin' });
+
+    expect(result.task.agentType).toBe('claude-code');
+    expect(registry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 });
 

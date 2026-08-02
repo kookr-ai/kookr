@@ -642,6 +642,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     c.json(deps.launchOutcomeMetrics?.snapshot() ?? emptyLaunchOutcomeMetricsSnapshot())
   ));
 
+  // Per-agent-type boot-latency reliability signal (issue #1898): which agents
+  // the round-robin failover is deprioritizing and the slow/hung sample counts
+  // behind that decision, so a deprioritized grok-build is diagnosable live.
+  app.get('/api/diagnostics/agent-boot-latency', (c) => c.json({
+    schemaVersion: 'agent-boot-latency-diagnostics-route.v1',
+    agents: deps.agentBootLatency?.snapshot() ?? [],
+  }));
+
   app.get('/api/diagnostics/launch-dependencies', (c) => (
     c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
   ));

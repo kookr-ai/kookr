@@ -138,6 +138,47 @@ describe('resolveRoundRobinAgent', () => {
     expect(resolveRoundRobinAgent(-1, both)).toBe('claude-code');
     expect(resolveRoundRobinAgent(1.5, both)).toBe('claude-code');
   });
+
+  describe('boot-reliability deprioritization (#1898)', () => {
+    const all: ReadonlyArray<'claude-code' | 'codex-cli' | 'grok-build'> = [
+      'claude-code',
+      'codex-cli',
+      'grok-build',
+    ];
+
+    test('skips a deprioritized agent at the cursor that would otherwise pick it', () => {
+      // Cursor 2 lands on grok-build in the full three-agent rotation...
+      expect(resolveRoundRobinAgent(2, all)).toBe('grok-build');
+      // ...but with grok-build deprioritized the rotation is [claude, codex]:
+      // 2 % 2 === 0 → claude-code, never the unhealthy agent.
+      expect(resolveRoundRobinAgent(2, all, ['grok-build'])).toBe('claude-code');
+      expect(resolveRoundRobinAgent(3, all, ['grok-build'])).toBe('codex-cli');
+    });
+
+    test('never yields a deprioritized agent while a healthy one remains', () => {
+      for (let cursor = 0; cursor < 6; cursor += 1) {
+        expect(resolveRoundRobinAgent(cursor, all, ['grok-build'])).not.toBe('grok-build');
+      }
+    });
+
+    test('collapses to the sole healthy agent when all others are deprioritized', () => {
+      // Two of three deprioritized, exactly one healthy → every cursor yields it.
+      for (let cursor = 0; cursor < 5; cursor += 1) {
+        expect(resolveRoundRobinAgent(cursor, all, ['codex-cli', 'grok-build'])).toBe('claude-code');
+      }
+    });
+
+    test('falls back to the full rotation when every agent is deprioritized', () => {
+      // Something must launch; the fire() wall-clock cap is the backstop.
+      expect(resolveRoundRobinAgent(2, all, all)).toBe('grok-build');
+      expect(resolveRoundRobinAgent(0, ['grok-build'], ['grok-build'])).toBe('grok-build');
+    });
+
+    test('ignores a deprioritized agent that is not registered', () => {
+      expect(resolveRoundRobinAgent(0, both, ['grok-build'])).toBe('claude-code');
+      expect(resolveRoundRobinAgent(1, both, ['grok-build'])).toBe('codex-cli');
+    });
+  });
 });
 
 describe('buildAgentSelectionOptions', () => {

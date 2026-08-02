@@ -541,6 +541,13 @@ export interface RouteDeps {
    */
   launchOutcomeMetrics?: import('../../core/launch-outcome-metrics.js').LaunchOutcomeMetrics;
   /**
+   * Per-agent-type boot-latency reliability signal (issue #1898) for
+   * `GET /api/diagnostics/agent-boot-latency`, so an operator can see which
+   * agents the round-robin failover is deprioritizing and why. Absent ⇒ empty
+   * snapshot.
+   */
+  agentBootLatency?: Pick<import('../../core/agent-boot-latency.js').AgentBootLatencyMonitor, 'snapshot'>;
+  /**
    * Hot-path timing sampler (issue #1781) backing GET
    * {@link HOT_PATHS_ROUTE}. Absent ⇒ the route falls back to the process-wide
    * singleton that instrumentation call sites write into; tests inject a

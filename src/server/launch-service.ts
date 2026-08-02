@@ -75,6 +75,22 @@ export interface LaunchServiceDeps {
    * the alternation.
    */
   roundRobinCursor?: { peek: () => number; advance: () => void };
+  /**
+   * Boot-reliability failover precondition (issue #1898, WS1.6). Given the set
+   * of currently-registered adapter types, returns the subset whose recent
+   * boot-latency signal is unhealthy — passed to {@link resolveRoundRobinAgent}
+   * so the rotation deprioritizes them (while a healthy alternative remains)
+   * instead of selecting a boot-unreliable agent that then hangs until the
+   * fire() wall-clock cap (#1708) trips. Omitted in tests / deployments without
+   * the monitor: the rotation then applies no deprioritization.
+   */
+  getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Feed one launch's boot latency (from the #1589 phase timings) into the
+   * boot-reliability monitor, at every launch finalization (success or
+   * abandonment). Best-effort; never called with an unresolved sentinel agent.
+   */
+  recordLaunchBootLatency?: (agentType: AgentType, timings: LaunchPhaseTimings) => void;
   interactionLog?: DeferredInteractionLogWriter;
   dependencyPreflightRunner?: DependencyPreflightRunner;
   /**
@@ -1038,6 +1054,9 @@ async function launchTaskCore(
     ? resolveRoundRobinAgent(
         deps.roundRobinCursor?.peek() ?? 0,
         adapterRegistry.getTypes(),
+        // Boot-reliability failover precondition (#1898): skip agents whose
+        // recent boot latency is unhealthy while a healthier one is registered.
+        deps.getDeprioritizedAgentTypes?.(adapterRegistry.getTypes()) ?? [],
       )
     : requestedAgent;
 
@@ -1449,6 +1468,13 @@ async function launchTaskCore(
       outcome: 'failure',
       reason: classifyLaunchFailureReason(err),
     });
+    // Boot-reliability failover precondition (#1898): a launch abandoned in
+    // `agent-boot` is exactly the boot-latency evidence the rotation uses to
+    // deprioritize this agent on the next round-robin selection. Recorded here
+    // — after the #1588 disposition/terminate bookkeeping and alongside the
+    // other best-effort metrics — so instrumentation can never pre-empt the
+    // queryable disposition or mask the original launch error.
+    deps.recordLaunchBootLatency?.(agentType, phaseTimings);
     markDisposedTask(err, task.id);
     throw err;
   }
@@ -1458,7 +1484,11 @@ async function launchTaskCore(
   // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
   // task so a slow-but-successful launch is as diagnosable as a failed one.
   phaseTracker.complete();
-  taskStore.setLaunchPhaseTimings(task.id, phaseTracker.snapshot());
+  const successPhaseTimings = phaseTracker.snapshot();
+  taskStore.setLaunchPhaseTimings(task.id, successPhaseTimings);
+  // Boot-reliability failover precondition (#1898): a healthy `agent-boot`
+  // sample lets a previously-deprioritized agent self-heal back into rotation.
+  deps.recordLaunchBootLatency?.(agentType, successPhaseTimings);
   if (bypassAllPermissions) {
     const launchPermissionPosture = {
       bypassAllPermissions: true as const,

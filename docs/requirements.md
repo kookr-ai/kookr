@@ -583,14 +583,14 @@ The system SHOULD allow the user to set a dashboard-wide default coding agent fo
 - Settings exposes a Default agent control listing server-supported agent types, plus a **Round robin** option when at least two agents are available.
 - The selected default is persisted in Kookr settings and survives server restart.
 - Manual Launch, Quick Launch, Playbook launch, Schedule creation, REST API launch, and `kookr-spawn` inherit the persisted default when they do not provide an explicit agent type.
-- When the resolved selection is Round robin, the system alternates between Claude Code and Codex CLI across launches; the rotation cursor is persisted and survives server restart. Each launched task records a concrete agent type, never the round-robin sentinel.
+- When the resolved selection is Round robin, the system rotates across the registered agent types (Claude Code, Codex CLI, and grok-build when its binary preflight passed); the rotation cursor is persisted and survives server restart. An agent whose recent boot latency is unhealthy is deprioritized (skipped) while a healthy alternative remains registered, and self-heals back into rotation once its boots recover or age out; when every available agent is deprioritized the full rotation is used. Each launched task records a concrete agent type, never the round-robin sentinel.
 - Round robin is also selectable as an explicit per-launch choice in every launch surface.
 - Explicit per-launch agent choices override the persisted default.
 - Telegram launches keep the stricter `KOOKR_REMOTE_CHAT_ALLOW_CODEX=1` guard when the default resolves to Codex CLI.
 
 **Rationale:** Agent-spawned child tasks and CLI launches cannot read browser-local preferences. A server-side default keeps Kookr's UI, API, and child-task behavior coherent. Round robin lets users on both a Claude plan and a Codex plan spread launch usage across both.
 
-**Evidence:** `src/core/settings-store.ts`, `src/shared/contracts/agent-types.ts`, `src/server/launch-service.ts`, `src/server/index.ts`, `src/frontend/components/SettingsDialog.tsx`, tests in `src/core/settings-store.test.ts`, `src/core/agent-types.test.ts`, `src/server/settings-api.test.ts`, `src/server/launch-service.test.ts`, and `src/frontend/components/SettingsDialog.test.ts`.
+**Evidence:** `src/core/settings-store.ts`, `src/shared/contracts/agent-types.ts`, `src/core/agent-boot-latency.ts`, `src/server/launch-service.ts`, `src/server/index.ts`, `src/frontend/components/SettingsDialog.tsx`, tests in `src/core/settings-store.test.ts`, `src/core/agent-types.test.ts`, `src/core/agent-boot-latency.test.ts`, `src/server/settings-api.test.ts`, `src/server/launch-service.test.ts`, and `src/frontend/components/SettingsDialog.test.ts`.
 
 ### R4b.5b: Telegram Task Read-Back — SHOULD — `done`
 
