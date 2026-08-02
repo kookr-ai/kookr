@@ -21,14 +21,24 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
    - other `kb ` traffic → **search-only**
    - neither → **no-kb-activity**
 3. If the task has ≥1 session and the decision is not wrote-lesson/explicit-skip,
-   responds **409** with:
+   responds **409**. The body distinguishes **logs present, no decision** from
+   **all hook logs missing** (issue #1868) so operators can tell a missed lesson
+   step from maintenance prune/rotation — both stay **fail-closed**:
+
+   | Coverage | `code` | Hint points at |
+   |----------|--------|----------------|
+   | At least one session log on disk | `lesson_decision_required` | Emit `kb remember` or `No generic KB lesson:` then re-signal |
+   | Every session log missing (`missingLogs === sessionsScanned > 0`) | `lesson_decision_hooks_missing` | Check prune/rotation under `~/.kookr/hooks`; re-emit a decision into a live trail |
+
    ```json
    {
      "error": "…",
-     "code": "lesson_decision_required",
+     "code": "lesson_decision_required" | "lesson_decision_hooks_missing",
      "decision": "search-only" | "no-kb-activity",
-     "hint": "Emit a post-task lesson decision …",
-     "counts": { "lessonWrites": 0, "lessonSkips": 0, "kbSearches": 0 }
+     "hint": "…",
+     "counts": { "lessonWrites": 0, "lessonSkips": 0, "kbSearches": 0 },
+     "missingLogs": 0,
+     "sessionsScanned": 1
    }
    ```
 4. Otherwise records the signal as before (auto-close / TTL machinery unchanged).
@@ -40,6 +50,9 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
 | Task has 0 sessions (never launched) | Allow — unit fixtures / pre-launch |
 | `kookrDir` not configured on the route | Allow — test seams without a data dir |
 | `KOOKR_LESSON_DECISION_GATE=0\|false\|off\|no` | Allow — emergency kill-switch |
+
+Missing logs are **not** fail-open: when sessions exist but every hook file is
+gone, the gate still returns 409 with `lesson_decision_hooks_missing`.
 
 Human Complete (UI / REST complete without the agent signal) is **not** gated —
 only the agent → user `completion_ready` path.

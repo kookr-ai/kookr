@@ -9,7 +9,10 @@ import {
   isLessonDecisionGateEnabled,
   isLessonDecisionSatisfied,
   LESSON_DECISION_GATE_ENV,
+  LESSON_DECISION_HOOKS_MISSING_CODE,
+  LESSON_DECISION_HOOKS_MISSING_HINT,
   LESSON_DECISION_REQUIRED_CODE,
+  LESSON_DECISION_HINT,
   resolveCompletionPath,
   resolveTaskLessonDecision,
   scanHookLogForLessonDecision,
@@ -73,9 +76,40 @@ describe('evaluateLessonDecisionGate', () => {
     expect(v.hint).toContain(KB_LESSON_SKIP_MARKER);
   });
 
-  test('rejects no-kb-activity', () => {
+  test('rejects no-kb-activity when logs are present', () => {
     const v = evaluateLessonDecisionGate({
       sessionsScanned: 2,
+      missingLogs: 0,
+      decision: 'no-kb-activity',
+    });
+    expect(v.allow).toBe(false);
+    expect(v.code).toBe(LESSON_DECISION_REQUIRED_CODE);
+    expect(v.hint).toBe(LESSON_DECISION_HINT);
+  });
+
+  test('rejects all-logs-missing with lesson_decision_hooks_missing (issue #1868)', () => {
+    const v = evaluateLessonDecisionGate({
+      sessionsScanned: 2,
+      missingLogs: 2,
+      decision: 'no-kb-activity',
+    });
+    expect(v.allow).toBe(false);
+    expect(v.code).toBe(LESSON_DECISION_HOOKS_MISSING_CODE);
+    expect(v.hint).toBe(LESSON_DECISION_HOOKS_MISSING_HINT);
+    expect(v.hint).toMatch(/prun|rotat/i);
+    expect(v.reason).toMatch(/missing on disk/i);
+    expect(v.missingLogs).toBe(2);
+    expect(v.sessionsScanned).toBe(2);
+    // Distinct from the logs-present branch.
+    expect(v.code).not.toBe(LESSON_DECISION_REQUIRED_CODE);
+    expect(v.hint).not.toBe(LESSON_DECISION_HINT);
+  });
+
+  test('partial missing logs still uses lesson_decision_required (issue #1868)', () => {
+    // At least one log present → operator path is "missed decision", not prune.
+    const v = evaluateLessonDecisionGate({
+      sessionsScanned: 2,
+      missingLogs: 1,
       decision: 'no-kb-activity',
     });
     expect(v.allow).toBe(false);

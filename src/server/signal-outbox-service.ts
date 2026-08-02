@@ -237,10 +237,11 @@ export class SignalOutboxService {
           const gate = evaluateLessonDecisionGate({
             sessionsScanned: resolved.sessionsScanned,
             decision: resolved.decision,
+            missingLogs: resolved.missingLogs,
           });
           if (!gate.allow) {
             this.log(
-              `[signal-outbox] drop completion_ready for ${entry.taskId}: ${gate.reason}`,
+              `[signal-outbox] drop completion_ready for ${entry.taskId}: ${gate.code ?? 'gate'} — ${gate.reason}`,
             );
             return {
               outcome: 'permanent_fail',
