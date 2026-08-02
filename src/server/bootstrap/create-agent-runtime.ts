@@ -30,6 +30,8 @@ export interface AgentRuntimeDeps {
   serverPort: number;
   agentBin?: string;
   codexBin?: string;
+  /** Test seam: probe runner for the codex-cli binary preflight. */
+  codexProbeExec?: ProbeExecRunner;
   /** Grok Build binary path/command (`KOOKR_GROK_BIN`). */
   grokBin?: string;
   bypassAllPermissions?: boolean;
@@ -57,6 +59,7 @@ export interface AgentRuntimeDeps {
 
 export interface AgentRuntime {
   claudeCodeAdapter: ClaudeCodeAdapter;
+  /** Always constructed; registered (and thus launchable) only when its binary preflight passed. */
   codexCliAdapter: CodexCliAdapter;
   /** Always constructed; registered (and thus launchable) only when its binary preflight passed. */
   grokBuildAdapter: GrokBuildAdapter;
@@ -86,11 +89,43 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     agentBin: deps.codexBin,
     bypassAllPermissions: deps.bypassAllPermissions,
     resolveDefaultEffort: () => deps.getAgentEffort?.()['codex-cli'],
+    probeExec: deps.codexProbeExec,
   });
 
   const adapterRegistry = new AdapterRegistry();
+  const preflightLogger = deps.preflightLogger ?? console;
   adapterRegistry.register(claudeCodeAdapter);
-  adapterRegistry.register(codexCliAdapter);
+
+  // Codex CLI adapter — registered only when its binary preflight passes, the
+  // same policy grok-build uses below (issue #1893, #1699 WS1.1). Registration
+  // is what feeds the frontend picker and the round-robin rotation
+  // (AVAILABLE_AGENT_TYPES ∩ registry); a registered-but-absent codex would put
+  // a guaranteed-failing slot into the rotation (the cursor only advances on
+  // successful launches, so it would wedge there). A missing default (PATH)
+  // binary therefore degrades to a warn-and-skip; an explicitly configured
+  // KOOKR_CODEX_BIN that is unreachable stays fail-loud, matching
+  // runAdapterPreflights' env-misconfig policy.
+  const codexPreflight = await codexCliAdapter.preflight();
+  if (codexPreflight.kind === 'ok') {
+    adapterRegistry.register(codexCliAdapter);
+  } else if (codexPreflight.configuredVia === 'env') {
+    preflightLogger.error(
+      `[fatal] codex-cli binary unreachable: ${codexPreflight.reason}\n` +
+        `  Set ${codexPreflight.envVarName}=<path> or unset it to fall back to PATH.`,
+    );
+    (deps.preflightOnFatal ?? ((): never => process.exit(1)))({
+      agentType: 'codex-cli',
+      status: 'absent',
+      reason: codexPreflight.reason,
+      configuredVia: codexPreflight.configuredVia,
+      envVarName: codexPreflight.envVarName,
+    });
+  } else {
+    preflightLogger.warn(
+      `[startup] warning: codex binary not found on PATH (${codexPreflight.reason}); ` +
+        `codex-cli is not registered — it stays out of the agent picker and round-robin.`,
+    );
+  }
 
   // Grok Build adapter (issue #1343, GA). Registered by default like the other
   // agents — but ONLY when its binary is actually present: registration is what
@@ -115,7 +150,6 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     probeExec: deps.grokProbeExec,
     installedStateOverride: deps.grokInstalledState,
   });
-  const preflightLogger = deps.preflightLogger ?? console;
   const grokPreflight = await grokBuildAdapter.preflight();
   if (grokPreflight.kind === 'ok') {
     adapterRegistry.register(grokBuildAdapter);
