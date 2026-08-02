@@ -808,15 +808,21 @@ export class ScheduleRunner {
     }
 
     // issue #1895: same pinned-agent fallback as one-shot fire — loop arming
-    // must not dispatch into a missing adapter either.
+    // must not dispatch into a missing adapter either. On substitution, drop
+    // effort/model pins (they target the original agent); create-schedule-runtime
+    // forwards them into launchLoopedPlaybook and an invalid pin would reintroduce
+    // dispatch_failed after a successful agent substitution.
     const agentResolution = this.resolveScheduleAgent(schedule);
     if (agentResolution?.kind === 'unavailable') {
       return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
     }
-    const scheduleForLaunch: Schedule =
-      agentResolution?.kind === 'substituted' || agentResolution?.kind === 'available'
-        ? { ...schedule, agentType: agentResolution.agentType }
-        : schedule;
+    let scheduleForLaunch: Schedule = schedule;
+    if (agentResolution?.kind === 'substituted') {
+      const { effort: _effort, model: _model, ...rest } = schedule;
+      scheduleForLaunch = { ...rest, agentType: agentResolution.agentType };
+    } else if (agentResolution?.kind === 'available') {
+      scheduleForLaunch = { ...schedule, agentType: agentResolution.agentType };
+    }
 
     try {
       const result = await this.deps.loopedLauncher(scheduleForLaunch);

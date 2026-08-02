@@ -1591,6 +1591,50 @@ Do the plugin thing.
       }));
     });
 
+    it('substitutes an unavailable pin on loop arm and drops effort/model pins (#1895)', async () => {
+      const schedule = store.create({
+        name: 'LoopSubstitute',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+        agentType: 'codex-cli',
+        // codex-only effort — must not travel with the claude substitute.
+        effort: 'minimal',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const looped: Array<{ agentType?: string; effort?: string; model?: string }> = [];
+      const substitutions: number[] = [];
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code'],
+        recordAgentSubstitution: () => {
+          substitutions.push(1);
+        },
+        launcher: async () => {
+          throw new Error('one-shot launcher must not be used for loop-configured schedules');
+        },
+        loopedLauncher: async (s) => {
+          looped.push({ agentType: s.agentType, effort: s.effort, model: s.model });
+          const taskId = `loop-task-${++taskIdCounter}`;
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: { id: taskId } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+
+      expect(looped).toEqual([{ agentType: 'claude-code', effort: undefined, model: undefined }]);
+      expect(substitutions).toHaveLength(1);
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'running',
+        reasonCode: 'agent_substituted',
+      });
+    });
+
     it('holds the relaunch lease under the armed loop task so a second fire is excluded (#1899)', async () => {
       const schedule = store.create({
         name: 'LoopLease',
