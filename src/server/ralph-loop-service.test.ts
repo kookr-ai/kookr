@@ -12,6 +12,11 @@ import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { AgentEvent } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { RalphLoopService, validateRalphLoopRequest } from './ralph-loop-service.js';
+import { RelaunchArbiter } from './relaunch-arbiter.js';
+import {
+  LoopDeliveryWatchdogRegistry,
+  type DeliverySnapshot,
+} from '../core/loop-delivery-watchdog.js';
 
 function baseLoop(overrides: Partial<RalphLoopState> = {}): RalphLoopState {
   return {
@@ -36,6 +41,12 @@ function mkService(deps: {
   ralphCycler?: { handleStop: ReturnType<typeof vi.fn> };
   launchFreshTaskSession?: ConstructorParameters<typeof RalphLoopService>[0]['launchFreshTaskSession'];
   completeTask?: ConstructorParameters<typeof RalphLoopService>[0]['completeTask'];
+  loopDeliveryWatchdog?: ConstructorParameters<typeof RalphLoopService>[0]['loopDeliveryWatchdog'];
+  resolveDeliverySnapshot?: ConstructorParameters<typeof RalphLoopService>[0]['resolveDeliverySnapshot'];
+  relaunchArbiter?: ConstructorParameters<typeof RalphLoopService>[0]['relaunchArbiter'];
+  terminalRelaunchEnabled?: boolean;
+  terminalRelaunchMax?: number;
+  now?: () => number;
 } = {}): {
   store: TaskStore;
   service: RalphLoopService;
@@ -58,6 +69,12 @@ function mkService(deps: {
       /* no-op */
     },
     interactionLog: deps.interactionLog as never,
+    ...(deps.loopDeliveryWatchdog ? { loopDeliveryWatchdog: deps.loopDeliveryWatchdog } : {}),
+    ...(deps.resolveDeliverySnapshot ? { resolveDeliverySnapshot: deps.resolveDeliverySnapshot } : {}),
+    ...(deps.relaunchArbiter ? { relaunchArbiter: deps.relaunchArbiter } : {}),
+    ...(deps.terminalRelaunchEnabled !== undefined ? { terminalRelaunchEnabled: deps.terminalRelaunchEnabled } : {}),
+    ...(deps.terminalRelaunchMax !== undefined ? { terminalRelaunchMax: deps.terminalRelaunchMax } : {}),
+    ...(deps.now ? { now: deps.now } : {}),
   });
   return { store, service, terminalBackend, monitor };
 }
@@ -727,6 +744,397 @@ describe('RalphLoopService', () => {
   });
 });
 
+
+describe('delivery-aware loop watchdog wiring (issue #1902)', () => {
+  const workDir = '/repo';
+
+  function addOwnedSession(store: TaskStore, taskId: string): void {
+    store.addSession(taskId, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: workDir,
+      createdAt: new Date('2026-08-02T00:00:00Z'),
+      lastStatus: 'running',
+      claudeSessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+    });
+  }
+
+  async function driveIteration(
+    service: RalphLoopService,
+    monitor: Monitor,
+    task: ReturnType<TaskStore['createTask']>,
+    turn: number,
+  ): Promise<void> {
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+      turnId: `turn-${turn}`,
+      lastMessage: `iteration ${turn}`,
+    };
+    monitor.processEvents('agent-1', [stopEvent]);
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: null });
+  }
+
+  test('flags a loop that stops delivering for N consecutive iterations', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 3, recoverSamples: 2 });
+    // Delivery never advances — a delivered-then-hung loop.
+    const stalled: DeliverySnapshot = { commits: 1, prsOpened: 1, prsMerged: 0 };
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      resolveDeliverySnapshot: () => stalled,
+    });
+    const task = store.createTask('stalled loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    // Iteration 1 is the baseline; iterations 2-4 are three consecutive
+    // no-progress samples, so the flag engages on iteration 4.
+    await driveIteration(service, monitor, task, 1);
+    expect(registry.isFlagged(task.id)).toBe(false);
+    await driveIteration(service, monitor, task, 2);
+    await driveIteration(service, monitor, task, 3);
+    expect(registry.isFlagged(task.id)).toBe(false);
+    await driveIteration(service, monitor, task, 4);
+    expect(registry.isFlagged(task.id)).toBe(true);
+  });
+
+  test('never flags a quiet-but-progressing loop', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 3, recoverSamples: 2 });
+    let commits = 0;
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      // Advances a delivery counter every iteration — quiet (no chatter is an
+      // input) but genuinely progressing.
+      resolveDeliverySnapshot: () => ({ commits: ++commits, prsOpened: 0, prsMerged: 0 }),
+    });
+    const task = store.createTask('progressing loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    for (let turn = 1; turn <= 8; turn++) {
+      await driveIteration(service, monitor, task, turn);
+      expect(registry.isFlagged(task.id)).toBe(false);
+    }
+  });
+
+  test('a null-returning resolver never flags the loop (missing delivery data is fail-open)', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    // Threshold 1 would flag on the very first no-progress sample — prove that
+    // a resolver that can't read delivery data (returns null) never gets there.
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 1, recoverSamples: 1 });
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      resolveDeliverySnapshot: () => null,
+    });
+    const task = store.createTask('unreadable delivery', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    for (let turn = 1; turn <= 4; turn++) {
+      await driveIteration(service, monitor, task, turn);
+    }
+    expect(registry.isFlagged(task.id)).toBe(false);
+  });
+
+  test('no resolver wired ⇒ watchdog is never sampled (fail-open)', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const registry = new LoopDeliveryWatchdogRegistry({ noProgressSamples: 1, recoverSamples: 1 });
+    const { store, service, monitor } = mkService({
+      ralphCycler: { handleStop },
+      loopDeliveryWatchdog: registry,
+      // resolveDeliverySnapshot deliberately omitted.
+    });
+    const task = store.createTask('unsampled loop', workDir);
+    addOwnedSession(store, task.id);
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1' }));
+
+    await driveIteration(service, monitor, task, 1);
+    await driveIteration(service, monitor, task, 2);
+    expect(registry.size).toBe(0);
+    expect(registry.isFlagged(task.id)).toBe(false);
+  });
+});
+
+describe('Terminal-loop relaunch policy (issue #1901 / WS2.3)', () => {
+  const CLAIM = { repo: 'github.com/kookr-ai/kookr', number: 1901 };
+
+  /**
+   * Wire a running single-iteration Ralph loop whose stop is owned by session
+   * `agent-1`, then drive one Stop through the service with a cycler that
+   * terminates with `reason` (mirroring the real cycler, which writes a
+   * terminal `loop.status` before returning `terminate`).
+   */
+  function setupTerminating(reason: string, opts: {
+    withClaim?: boolean;
+    relaunchArbiter?: RelaunchArbiter;
+    terminalRelaunchEnabled?: boolean;
+    terminalRelaunchMax?: number;
+    loopOverrides?: Partial<RalphLoopState>;
+    launchError?: Error;
+    now?: () => number;
+  } = {}) {
+    const interactionLog = { append: vi.fn(async () => undefined) };
+    const launchFreshTaskSession = vi.fn(async (t: ReturnType<TaskStore['createTask']>, _prompt: string, o?: { tmuxName?: string }) => {
+      if (opts.launchError) throw opts.launchError;
+      const tmuxSession = o?.tmuxName ?? 'agent-2';
+      store.addSession(t.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: t.cwd,
+        createdAt: new Date('2026-08-02T00:01:00Z'),
+        lastStatus: 'running',
+      });
+      return tmuxSession;
+    });
+    // Mirror the real cycler: it writes a terminal loop.status BEFORE returning.
+    const handleStop = vi.fn(async (s: TaskStore, o: { taskId: string }) => {
+      s.runRalphMutation(o.taskId, (t) => {
+        if (t.ralphLoop) t.ralphLoop.status = 'completed';
+      });
+      return { kind: 'terminate' as const, reason, events: [] };
+    });
+
+    const built = mkService({
+      ralphCycler: { handleStop },
+      launchFreshTaskSession,
+      interactionLog,
+      ...(opts.relaunchArbiter ? { relaunchArbiter: opts.relaunchArbiter } : {}),
+      ...(opts.terminalRelaunchEnabled !== undefined ? { terminalRelaunchEnabled: opts.terminalRelaunchEnabled } : {}),
+      ...(opts.terminalRelaunchMax !== undefined ? { terminalRelaunchMax: opts.terminalRelaunchMax } : {}),
+      ...(opts.now ? { now: opts.now } : {}),
+    });
+    const { store, service, monitor } = built;
+    const task = store.createTask('iterate', '/repo');
+    store.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-08-02T00:00:00Z'),
+      lastStatus: 'running',
+      claudeSessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+    });
+    if (opts.withClaim !== false) {
+      store.getTaskForMutation(task.id)!.issueClaim = { ...CLAIM, claimedAt: '2026-08-02T00:00:00Z' };
+    }
+    setStoredLoop(store, task.id, baseLoop({ ownerSessionId: 'agent-1', currentIteration: 5, iterationCap: 5, ...opts.loopOverrides }));
+
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-1',
+      transcriptPath: '/root.jsonl',
+      turnId: 'turn-1',
+      lastMessage: 'done',
+    };
+    monitor.processEvents('agent-1', [stopEvent]);
+
+    return { store, service, task, stopEvent, launchFreshTaskSession, interactionLog };
+  }
+
+  test('relaunch-on-eligible: a capped loop re-arms in place via the arbiter', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent, launchFreshTaskSession, interactionLog } =
+      setupTerminating('iteration_cap', { relaunchArbiter: arbiter });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    // Re-armed: fresh iteration budget, running again, no needs-human marker.
+    const loop = store.getTask(task.id)!.ralphLoop!;
+    expect(loop.status).toBe('running');
+    expect(loop.currentIteration).toBe(0);
+    expect(loop.needsHuman).toBeUndefined();
+    // A fresh agent session was launched (the actual re-arm).
+    expect(launchFreshTaskSession).toHaveBeenCalledTimes(1);
+    // The relaunch went through the arbiter — the lease is now held by the task.
+    expect(arbiter.isHeld(CLAIM)).toBe(true);
+    expect(arbiter.getLease(CLAIM)?.holderId).toBe(task.id);
+    // Audit trail records the relaunch.
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_terminal_relaunch',
+      taskId: task.id,
+      exitReason: 'iteration_cap',
+      outcome: 'relaunched',
+    }));
+  });
+
+  test('escalate-on-budget-exhausted: a cost-capped loop lands in a visible needs-human state, not silence', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent, launchFreshTaskSession, interactionLog } =
+      setupTerminating('cost_cap', { relaunchArbiter: arbiter, now: () => 1_700_000_000_000 });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 99 });
+
+    const loop = store.getTask(task.id)!.ralphLoop!;
+    // Explicit, visible needs-human terminal state (not relaunched).
+    expect(loop.needsHuman).toMatchObject({
+      reason: 'budget_exhausted',
+      exitReason: 'cost_cap',
+      since: 1_700_000_000_000,
+    });
+    expect(loop.needsHuman!.detail).toMatch(/cost cap/i);
+    // No relaunch: the arbiter lease was never acquired, no fresh session.
+    expect(launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(arbiter.isHeld(CLAIM)).toBe(false);
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_loop_needs_human',
+      taskId: task.id,
+      reason: 'budget_exhausted',
+      exitReason: 'cost_cap',
+    }));
+  });
+
+  test('escalation releases the arbiter lease so a needs-human issue is not pinned against the task', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent } =
+      setupTerminating('cost_cap', { relaunchArbiter: arbiter });
+    // The task holds the issue lease, as it would after its original claimIssue
+    // launch (or a prior terminal relaunch).
+    expect(arbiter.tryAcquire(CLAIM, task.id).ok).toBe(true);
+    expect(arbiter.isHeld(CLAIM)).toBe(true);
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 99 });
+
+    expect(store.getTask(task.id)!.ralphLoop!.needsHuman).toMatchObject({ reason: 'budget_exhausted' });
+    // Released: the lease is no longer pinned, so a human manual re-dispatch is
+    // not silently denied 'held' while the loop waits on a human.
+    expect(arbiter.isHeld(CLAIM)).toBe(false);
+  });
+
+  test('arbiter is the single gate: an eligible exit does not relaunch when another actuator holds the issue', async () => {
+    const arbiter = new RelaunchArbiter();
+    // Another actuator already owns the relaunch lease for this issue.
+    expect(arbiter.tryAcquire(CLAIM, 'other-actuator').ok).toBe(true);
+
+    const { store, service, task, stopEvent, launchFreshTaskSession, interactionLog } =
+      setupTerminating('all_targets_stalled', { relaunchArbiter: arbiter });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    // No double-launch; the loop stays terminal.
+    expect(launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
+    expect(arbiter.getLease(CLAIM)?.holderId).toBe('other-actuator');
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_terminal_relaunch',
+      outcome: 'skipped_held',
+    }));
+  });
+
+  test('arbiter cooldown: an eligible exit does not relaunch while a post-release backoff is active', async () => {
+    const arbiter = new RelaunchArbiter();
+    // A prior holder released, starting the cooldown window — tryAcquire now
+    // returns `backoff` until it elapses (the thundering-herd throttle).
+    arbiter.tryAcquire(CLAIM, 'prior');
+    arbiter.release(CLAIM, 'prior');
+
+    const { store, service, task, stopEvent, launchFreshTaskSession, interactionLog } =
+      setupTerminating('iteration_cap', { relaunchArbiter: arbiter });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    expect(launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_terminal_relaunch',
+      outcome: 'skipped_backoff',
+    }));
+  });
+
+  test('relaunch launch failure: the lease is released and the loop is marked failed', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent } =
+      setupTerminating('iteration_cap', { relaunchArbiter: arbiter, launchError: new Error('boom') });
+
+    // The launch throws; the error propagates out of the stop handler.
+    await expect(
+      service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 }),
+    ).rejects.toThrow('boom');
+
+    // Critically: the lease is released (so the cooldown starts and no actuator
+    // is jammed behind a dead lease), and the loop lands in a terminal state.
+    expect(arbiter.isHeld(CLAIM)).toBe(false);
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('failed');
+  });
+
+  test('kill-switch: terminalRelaunchEnabled=false suppresses relaunch but still escalates budget exhaustion', async () => {
+    const arbiter = new RelaunchArbiter();
+    const eligible = setupTerminating('iteration_cap', { relaunchArbiter: arbiter, terminalRelaunchEnabled: false });
+    await eligible.service.handleStopEvent(eligible.task, 'agent-1', eligible.stopEvent, { cumulativeCostUsd: 1 });
+    expect(eligible.launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(eligible.store.getTask(eligible.task.id)!.ralphLoop!.status).toBe('completed');
+
+    const budget = setupTerminating('iteration_cost_cap', { relaunchArbiter: arbiter, terminalRelaunchEnabled: false });
+    await budget.service.handleStopEvent(budget.task, 'agent-1', budget.stopEvent, { cumulativeCostUsd: 1 });
+    expect(budget.store.getTask(budget.task.id)!.ralphLoop!.needsHuman).toMatchObject({ reason: 'budget_exhausted' });
+  });
+
+  test('relaunch increments the cumulative terminal-relaunch counter', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent } =
+      setupTerminating('iteration_cap', { relaunchArbiter: arbiter, loopOverrides: { terminalRelaunchCount: 2 } });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    expect(store.getTask(task.id)!.ralphLoop!.terminalRelaunchCount).toBe(3);
+  });
+
+  test('runaway guard: a loop at the relaunch cap escalates to needs-human instead of re-arming', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent, launchFreshTaskSession, interactionLog } =
+      setupTerminating('iteration_cap', {
+        relaunchArbiter: arbiter,
+        terminalRelaunchMax: 3,
+        loopOverrides: { terminalRelaunchCount: 3 },
+      });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    // Capped: no re-arm, no lease acquired, escalated to a visible needs-human state.
+    expect(launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(arbiter.isHeld(CLAIM)).toBe(false);
+    expect(store.getTask(task.id)!.ralphLoop!.needsHuman).toMatchObject({
+      reason: 'relaunch_exhausted',
+      exitReason: 'iteration_cap',
+    });
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ralph_loop_needs_human',
+      reason: 'relaunch_exhausted',
+    }));
+  });
+
+  test('runaway guard disabled (max 0): a loop past 20 relaunches still re-arms', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent, launchFreshTaskSession } =
+      setupTerminating('iteration_cap', {
+        relaunchArbiter: arbiter,
+        terminalRelaunchMax: 0,
+        loopOverrides: { terminalRelaunchCount: 999 },
+      });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    expect(launchFreshTaskSession).toHaveBeenCalledTimes(1);
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('running');
+  });
+
+  test('no issue claim: an eligible exit does not relaunch (nothing to arbitrate on)', async () => {
+    const arbiter = new RelaunchArbiter();
+    const { store, service, task, stopEvent, launchFreshTaskSession } =
+      setupTerminating('target_stalled', { relaunchArbiter: arbiter, withClaim: false });
+
+    await service.handleStopEvent(task, 'agent-1', stopEvent, { cumulativeCostUsd: 1 });
+
+    expect(launchFreshTaskSession).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)!.ralphLoop!.status).toBe('completed');
+  });
+});
 
 describe('Ralph escape hatch closure (issue #1461)', () => {
   test('ralph-loop-service production source does not call getTaskForMutation', () => {

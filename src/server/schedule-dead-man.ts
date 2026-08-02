@@ -77,6 +77,19 @@ const HEALTHY_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'cancelled',
 ]);
 
+/**
+ * Deliberate, operator/actuator-driven suppressions — NOT starvation. Excluded
+ * from both the consecutive-failure tail (a) and the "nothing dispatched in the
+ * window" check (b) so a drain, SAFE MODE, or a lease-gated catch-up
+ * (`skipped_relaunch_locked`, issue #1900 — another actuator is already
+ * relaunching the work) cannot masquerade as scheduled-task starvation.
+ */
+const DELIBERATE_SUPPRESSION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
+  'skipped_draining',
+  'skipped_safe_mode',
+  'skipped_relaunch_locked',
+]);
+
 export interface ScheduleDeadManDeps {
   broadcast: (msg: ServerMessage) => void;
   /**
@@ -295,7 +308,7 @@ export function evaluateScheduleStarvation(
   let firstConsecutiveReason: string | undefined;
   for (const schedule of enabled) {
     const relevant = schedule.executionLedger.filter(
-      (entry) => entry.outcome !== 'skipped_draining' && entry.outcome !== 'skipped_safe_mode',
+      (entry) => !DELIBERATE_SUPPRESSION_OUTCOMES.has(entry.outcome),
     );
     if (relevant.length < DEAD_MAN_CONSECUTIVE_FAILURES) continue;
     const tail = relevant.slice(-DEAD_MAN_CONSECUTIVE_FAILURES);
@@ -325,7 +338,7 @@ export function evaluateScheduleStarvation(
   const windowedScheduleIds = new Set<string>();
   for (const schedule of enabled) {
     for (const entry of schedule.executionLedger) {
-      if (entry.outcome === 'skipped_draining' || entry.outcome === 'skipped_safe_mode') continue;
+      if (DELIBERATE_SUPPRESSION_OUTCOMES.has(entry.outcome)) continue;
       const evaluatedAtMs = Date.parse(entry.evaluatedAt);
       if (Number.isFinite(evaluatedAtMs) && evaluatedAtMs >= windowStart) {
         windowed.push(entry);

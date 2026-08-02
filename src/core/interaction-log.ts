@@ -195,6 +195,28 @@ export type InteractionEvent =
       iteration: number;
       via: 'progress_verdict' | 'patch_burned_targets' | 'decay';
       timestamp: string;
+    }
+  // --- Terminal-loop relaunch policy events (issue #1901 / WS2.3) ---
+  | {
+      type: 'ralph_terminal_relaunch';
+      taskId: string;
+      /** Terminal exit reason that triggered the relaunch evaluation. */
+      exitReason: string;
+      /**
+       * `relaunched` — arbiter admitted and the loop was re-armed in place.
+       * `skipped_held` / `skipped_backoff` — arbiter denied (another actuator
+       * owns the issue, or a post-run cooldown is active); no double-launch.
+       */
+      outcome: 'relaunched' | 'skipped_held' | 'skipped_backoff';
+      timestamp: string;
+    }
+  | {
+      type: 'ralph_loop_needs_human';
+      taskId: string;
+      /** Terminal exit reason that triggered the escalation. */
+      exitReason: string;
+      reason: 'budget_exhausted' | 'relaunch_exhausted';
+      timestamp: string;
     };
 
 // --- Substantive event detection ---

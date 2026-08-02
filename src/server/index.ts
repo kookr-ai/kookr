@@ -39,6 +39,13 @@ import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from '.
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
+import {
+  countDeliveredPullRequests,
+  createLoopDeliveryWatchdogRegistry,
+  readLoopDeliveryWatchdogConfigFromEnv,
+  type DeliverySnapshot,
+} from '../core/loop-delivery-watchdog.js';
+import { gitIn } from '../core/git-helpers.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
@@ -93,6 +100,7 @@ import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
+import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -871,6 +879,39 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       })),
     );
 
+  // Delivery-aware loop watchdog (issue #1902, WS2.4 of #1699). Judges a Ralph
+  // loop on POSITIVE delivery progress with hysteresis: sampled once per
+  // iteration (in ralph-loop-service) with the loop's cumulative delivery
+  // counters, it flags a loop that stops delivering for N consecutive
+  // iterations while never flagging a quiet-but-progressing loop.
+  const loopDeliveryWatchdog = createLoopDeliveryWatchdogRegistry(
+    readLoopDeliveryWatchdogConfigFromEnv(process.env),
+  );
+  const resolveDeliverySnapshot = async (task: Task): Promise<DeliverySnapshot | null> => {
+    // Commit count on the loop's branch is the delivery signal that advances
+    // through the dominant phase of a real loop — open one PR, then iterate
+    // many times pushing commits until it merges. PR/merge COUNTS are coarse
+    // milestones that stay flat across those iterations, so PR counts alone
+    // would flag a healthy mid-PR loop as hung. Prompt-cited PRs are excluded
+    // (mirrors delivered-completion #1560) so a loop that merely mentions an
+    // external PR is never counted as its own delivery.
+    const { prsOpened, prsMerged } = countDeliveredPullRequests(
+      githubStateStore.getTaskState(task.id).prs.map((pr) => ({
+        status: pr.status,
+        detectedFrom: pr.ref.detectedFrom,
+      })),
+    );
+    const commitOut = await gitIn(task.cwd, 'rev-list', '--count', 'HEAD');
+    const commits = commitOut === null ? NaN : Number.parseInt(commitOut, 10);
+    if (!Number.isFinite(commits)) {
+      // Couldn't read the commit count this iteration (transient git failure /
+      // not a worktree). Skip the sample rather than judge on PR milestones
+      // alone — missing delivery data must never flag a loop.
+      return null;
+    }
+    return { commits, prsOpened, prsMerged };
+  };
+
   // Stranded-PR / merge_required exemption for the finishedAwaitingAck TTL
   // reclaim (issue #1884). Fail-safe: only a task with zero PR references, or
   // with every referenced PR CONFIRMED closed/merged, returns `false` (safe
@@ -1466,6 +1507,40 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
   };
 
+  // Re-queue-after-reset scheduler (issue #1896 / #1699 WS1.4): auto-resume a
+  // provider-paused issue at its reset time — jittered + token-bucket-bounded,
+  // with dedup keyed on the issue-claim relaunch lease (NOT the 24h launch
+  // ledger, which cannot span a multi-day pause). The reaper's provider_paused
+  // branch records the held issue (TimerDeps.recordProviderPause, below) and the
+  // schedule-runner sweeps it once per tick.
+  const providerResetScheduler = new ProviderResetScheduler({
+    arbiter: relaunchArbiter,
+    launch: (opts) => launchTask(launchServiceDeps, opts),
+    // Drop a queued resume only when the recorder was DELIVERED (completed) or
+    // deliberately cancelled — re-dispatching those would duplicate work the
+    // lease alone cannot rule out. A `terminated` recorder is the expected
+    // post-reset reap (see lifecycle-timers), so it stays resume-eligible; the
+    // sweep's lease check then decides timing.
+    shouldResume: (entry) => {
+      if (entry.recordedTaskId === undefined) return true;
+      const recorder = taskStore.getTask(entry.recordedTaskId);
+      if (recorder === undefined) return true;
+      return recorder.status !== 'completed' && recorder.status !== 'cancelled';
+    },
+    onEvent: (event) => {
+      if (event.type === 'resume') {
+        console.log(
+          `[provider-reset] resuming ${event.key.repo}#${event.key.number} `
+          + `(resumeAt=${new Date(event.resumeAt).toISOString()})`,
+        );
+      } else if (event.type === 'resume_failed') {
+        console.warn(
+          `[provider-reset] resume launch failed for ${event.key.repo}#${event.key.number}: ${event.error}`,
+        );
+      }
+    },
+  });
+
   // Resource watchdog (issue #1724): host-pressure actuator that spawns a
   // briefed, throttled investigation task. OFF by default
   // (`KOOKR_RESOURCE_WATCHDOG=1` to enable). Spawns go through launchTask so
@@ -1515,6 +1590,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
+  // Terminal-relaunch cap (issue #1901): a non-negative integer bounds runaway
+  // relaunch; `0` disables the cap. Invalid/blank values fall back to the
+  // service default. Left undefined so the service applies its own default.
+  const terminalRelaunchMaxRaw = process.env.KOOKR_LOOP_TERMINAL_RELAUNCH_MAX;
+  const terminalRelaunchMaxParsed =
+    terminalRelaunchMaxRaw !== undefined ? Number.parseInt(terminalRelaunchMaxRaw, 10) : NaN;
+  const terminalRelaunchMax =
+    Number.isInteger(terminalRelaunchMaxParsed) && terminalRelaunchMaxParsed >= 0
+      ? terminalRelaunchMaxParsed
+      : undefined;
+
   const ralphLoopService = new RalphLoopService({
     taskStore,
     monitor,
@@ -1525,6 +1611,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     tokenTracker,
     launchFreshTaskSession: (task, prompt, opts) => launchFreshTaskSession(launchServiceDeps, task, prompt, opts),
+    loopDeliveryWatchdog,
+    resolveDeliverySnapshot,
+    // Terminal-loop relaunch policy (issue #1901 / WS2.3): re-arm capped/stalled
+    // loops through the same WS0.5 arbiter that gates every other relaunch
+    // actuator. Disable auto-relaunch with KOOKR_LOOP_TERMINAL_RELAUNCH=false
+    // (needs-human escalation on budget exhaustion still fires).
+    relaunchArbiter,
+    terminalRelaunchEnabled: process.env.KOOKR_LOOP_TERMINAL_RELAUNCH !== 'false',
+    ...(terminalRelaunchMax !== undefined ? { terminalRelaunchMax } : {}),
     completeTask: (taskId) => completeTask(taskId, {
       adapter,
       monitor,
@@ -1644,6 +1739,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
+    // issue #1896: sweep provider-paused resumes on the runner's existing tick.
+    resetScheduler: providerResetScheduler,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
@@ -2286,6 +2383,39 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
+      // issue #1896: when the reaper detects a provider_paused task, register
+      // its issue for auto-re-dispatch at the quota reset and tell the reaper
+      // whether to keep holding the slot (before reset) or reap it (after reset,
+      // freeing the relaunch lease so the scheduled resume can hand off a fresh
+      // task). No issue-claim → nothing to dedup a resume on, so keep holding.
+      recordProviderPause: (task) => {
+        const claim = task.issueClaim;
+        if (!claim) return { holdForResume: true };
+        const now = Date.now();
+        // `record` LATCHES the reset time at first observation and returns it, so
+        // this comparison flips to false once the latched reset elapses (unlike a
+        // freshly-resolved reset, which is always in the future — see #1896 review).
+        const { resetsAt: latchedResetsAt } = providerResetScheduler.record({
+          key: { repo: claim.repo, number: claim.number },
+          recordedTaskId: task.id,
+          resetsAt: resolveProviderResetMs(quotaAdapter.getLatest(), now),
+          relaunch: buildProviderResumeLaunch({
+            id: task.id,
+            prompt: task.prompt,
+            cwd: task.cwd,
+            criteria: task.criteria,
+            name: task.name,
+            playbookId: task.playbookId,
+            playbookParameterValues: task.playbookParameterValues,
+            projectId: task.projectId,
+            agentType: task.agentType,
+            autoCloseOnSignal: task.autoCloseOnSignal,
+            issueClaim: { repo: claim.repo, number: claim.number },
+            provenance: task.provenance,
+          }),
+        });
+        return { holdForResume: now < latchedResetsAt };
+      },
       getCompletionReadyTtlMs,
       getPendingTaskTtlMs,
       getFinishedAwaitingAckTtlMs,
@@ -2293,6 +2423,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
+      loopDeliveryWatchdog,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       // Silent-failure integrity (issue #1712): bounded auto-retry + operator

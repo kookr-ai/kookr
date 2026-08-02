@@ -41,6 +41,13 @@ export interface ScheduleRuntimeDeps {
    * same sink.
    */
   operationalAlertSink?: OperationalAlertSink;
+  /**
+   * Re-queue-after-reset scheduler (issue #1896 / #1699 WS1.4). When provided,
+   * its `sweep()` runs once per schedule-runner tick so provider-paused issues
+   * auto-resume at their reset time (jittered, token-bucket-bounded, lease-keyed
+   * dedup). Absent means no auto-resume (back-compat for older wiring/tests).
+   */
+  resetScheduler?: { sweep(now?: number): unknown };
 }
 
 export interface ScheduleRuntime {
@@ -108,6 +115,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // status the runner uses to distinguish skipped_coalesced (still
     // pending) from skipped_active (actively running).
     getBlockingTaskStatus: (taskId) => deps.taskStore.getTask(taskId)?.status,
+    // issue #1900 / #1699 WS2.2: gate startup catch-up fires behind the same
+    // WS0.5 relaunch arbiter the launch path uses, so a missed run cannot
+    // duplicate a concurrent actuator relaunching the schedule's work.
+    ...(deps.launchServiceDeps.relaunchArbiter
+      ? { relaunchArbiter: deps.launchServiceDeps.relaunchArbiter }
+      : {}),
     // issue #1526 Phase C: dead-man switch for scheduled-task starvation,
     // evaluated on the runner's existing tick. Bounded self-heal (issue #1903).
     deadMan: new ScheduleDeadManSwitch({
@@ -129,6 +142,8 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     resolutionAlerter: new ScheduleResolutionAlerter({
       broadcast: deps.broadcastToAll,
     }),
+    // issue #1896: auto-resume provider-paused issues on the runner's tick.
+    ...(deps.resetScheduler ? { resetScheduler: deps.resetScheduler } : {}),
   });
   // Complete the late binding so the dead-man self-heal can kick this runner.
   scheduleRunnerRef = scheduleRunner;
