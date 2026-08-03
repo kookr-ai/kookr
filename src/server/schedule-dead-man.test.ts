@@ -142,6 +142,18 @@ describe('evaluateScheduleStarvation', () => {
     expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
   });
 
+  it('skipped_server_restarting is intentional redeploy and never counts as starvation (issue #1983)', () => {
+    const sched = schedule({
+      executionLedger: [
+        entry('dispatch_failed', NOW - 4 * 3_600_000),
+        entry('dispatch_failed', NOW - 3 * 3_600_000),
+        entry('skipped_server_restarting', NOW - 90 * 60_000),
+        entry('skipped_server_restarting', NOW - 30 * 60_000),
+      ],
+    });
+    expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
+  });
+
   it('skipped_relaunch_locked is a lease-gated catch-up and never counts as a due fire or a failure (#1900)', () => {
     const sched = schedule({
       executionLedger: [

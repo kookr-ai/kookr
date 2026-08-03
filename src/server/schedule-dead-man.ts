@@ -24,7 +24,8 @@ import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
  *     execution was dispatched or completed in that window. "Dispatched"
  *     (`running`) deliberately counts as healthy: a fire that launched a
  *     long-running task is a slow task, not scheduler starvation.
- *     `skipped_draining` / `skipped_safe_mode` entries are ignored entirely —
+ *     `skipped_draining` / `skipped_server_restarting` / `skipped_safe_mode`
+ *     entries are ignored entirely —
  *     an operator drain or automation kill-switch (issue #1710) is
  *     intentional and must not trip the dead man.
  *
@@ -86,6 +87,9 @@ const HEALTHY_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
  */
 const DELIBERATE_SUPPRESSION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'skipped_draining',
+  // issue #1983: intentional redeploy (pre-stop drain + restart marker) —
+  // not starvation of the launch pipeline.
+  'skipped_server_restarting',
   'skipped_safe_mode',
   'skipped_relaunch_locked',
   // issue #1895: parked because the pin has no launchable substitute — not

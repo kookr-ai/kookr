@@ -680,6 +680,55 @@ Do the test thing (${marker}).
     expect(store.get(schedule.id)!.enabled).toBe(true);
   });
 
+  it('records skipped_server_restarting when drain coincides with restart marker (issue #1983)', async () => {
+    const schedule = store.create({
+      name: 'Restarting',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      maxTriggers: 2,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      isAccepting: () => false,
+      isServerRestarting: () => true,
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_server_restarting');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('server_restarting');
+    expect(store.get(schedule.id)!.latestExecution?.message).toMatch(/restarting|redeploy/i);
+    // Same non-fire guarantee as drain: budget untouched, schedule stays enabled.
+    expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('keeps generic skipped_draining when drain is set but restart marker is absent (issue #1983)', async () => {
+    const schedule = store.create({
+      name: 'ManualDrain',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      isAccepting: () => false,
+      isServerRestarting: () => false,
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_draining');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('draining');
+  });
+
   it('fires normally once the server stops draining', async () => {
     const schedule = store.create({
       name: 'Resumed',

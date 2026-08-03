@@ -131,6 +131,16 @@ export interface ScheduleRunnerDeps {
    */
   isAccepting?: () => boolean;
   /**
+   * Intentional process-restart signal (issue #1983). When provided and true
+   * *while* the drain gate is closed, the skip is recorded as
+   * `skipped_server_restarting` instead of generic `skipped_draining` so the
+   * operator UI can distinguish redeploy from a manual cordon. Typically
+   * backed by the short-lived `server-restarting.json` marker that
+   * `prod-restart` writes before pre-stop drain. Absent means every drain skip
+   * is recorded as `skipped_draining` (back-compat).
+   */
+  isServerRestarting?: () => boolean;
+  /**
    * Automation kill-switch (issue #1710 / #1699 WS0.4). When provided and
    * returning false, schedule firing is suppressed (SAFE MODE) while manual
    * launches remain accepted. Absent means automation enabled (back-compat).
@@ -666,6 +676,22 @@ export class ScheduleRunner {
     }
 
     if (this.deps.isAccepting && !this.deps.isAccepting()) {
+      // Issue #1983: when pre-stop drain is part of an intentional restart
+      // (marker present), record a distinct last-miss reason so operators do
+      // not treat redeploy as an outage. Generic operator drain keeps the
+      // original skipped_draining outcome. Never fire either way.
+      const restarting = this.deps.isServerRestarting?.() === true;
+      if (restarting) {
+        console.warn(`[schedule] Skipping "${schedule.name}" — server restarting (issue #1983)`);
+        await this.deps.service.markExecutionOutcome(
+          schedule.id,
+          receipt.id,
+          'skipped_server_restarting',
+          'server_restarting',
+          'Server restarting — not accepting new launches during redeploy',
+        );
+        return { error: 'Server restarting' };
+      }
       console.warn(`[schedule] Skipping "${schedule.name}" — server draining (issue #659)`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,

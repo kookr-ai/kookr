@@ -42,6 +42,12 @@ export type ScheduleExecutionOutcome =
   | 'skipped_capacity'
   | 'skipped_draining'
   /**
+   * Pre-stop drain during intentional process restart / redeploy (issue #1983).
+   * Distinct from operator `skipped_draining` so the UI can surface a durable
+   * "missed due to redeploy" last-miss reason. Mirrors `core/schedule`.
+   */
+  | 'skipped_server_restarting'
+  /**
    * Operator automation kill-switch engaged (issue #1710 / #1699 WS0.4).
    * Schedule fire suppressed while SAFE MODE is on; not a failure.
    */
@@ -72,6 +78,11 @@ export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
   | 'draining'
+  /**
+   * Reason code for `skipped_server_restarting` (issue #1983). Mirrors
+   * `core/schedule`.
+   */
+  | 'server_restarting'
   /** Reason code for `skipped_safe_mode` (issue #1710). */
   | 'safe_mode'
   | 'previous_run_active'

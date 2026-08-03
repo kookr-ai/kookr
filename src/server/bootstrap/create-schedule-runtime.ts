@@ -11,6 +11,7 @@ import { ScheduleValidator } from '../schedule-validator.js';
 import { bindOperationalAlertSink, OperationalAlertSink } from '../operational-alert-sink.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import { launchLoopedPlaybook } from '../use-cases/looped-playbook-launch.js';
+import { isServerRestartingActive } from '../server-restart-marker.js';
 
 export interface ScheduleRuntimeDeps {
   kookrDir: string;
@@ -175,6 +176,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     getActiveCount: () => deps.taskStore.getActiveCount(),
     getMaxActiveTasks: deps.getMaxActiveTasks,
     ...(deps.isAccepting ? { isAccepting: deps.isAccepting } : {}),
+    // Issue #1983: distinguish pre-stop redeploy drain from a manual cordon
+    // via the short-lived marker written by scripts/prod-restart.sh.
+    isServerRestarting: () => isServerRestartingActive(deps.kookrDir),
     ...(deps.isAutomationEnabled ? { isAutomationEnabled: deps.isAutomationEnabled } : {}),
     isTaskBlockingSchedule: (taskId) => {
       const task = deps.taskStore.getTask(taskId);

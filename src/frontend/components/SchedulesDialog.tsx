@@ -128,6 +128,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: already queued';
     case 'skipped_draining':
       return 'skipped: draining';
+    case 'skipped_server_restarting':
+      return 'skipped: server restarting';
     case 'skipped_safe_mode':
       return 'skipped: SAFE MODE';
     case 'skipped_manual':
@@ -151,6 +153,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'capacity';
     case 'draining':
       return 'draining';
+    case 'server_restarting':
+      return 'server restarting';
     case 'safe_mode':
       return 'SAFE MODE';
     case 'previous_run_active':

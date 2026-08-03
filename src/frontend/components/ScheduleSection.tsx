@@ -56,6 +56,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'skipped: already queued';
     case 'skipped_draining':
       return 'skipped: draining';
+    case 'skipped_server_restarting':
+      return 'skipped: server restarting';
     case 'skipped_safe_mode':
       return 'skipped: SAFE MODE';
     case 'skipped_manual':
@@ -93,6 +95,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_capacity':
     case 'skipped_coalesced':
     case 'skipped_draining':
+    case 'skipped_server_restarting':
     case 'skipped_safe_mode':
     case 'skipped_manual':
     case 'skipped_stale':

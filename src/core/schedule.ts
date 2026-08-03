@@ -109,6 +109,14 @@ export type ScheduleExecutionOutcome =
   | 'skipped_capacity'
   | 'skipped_draining'
   /**
+   * Pre-stop drain during an intentional process restart / redeploy
+   * (issue #1983). Distinct from a manual operator drain (`skipped_draining`)
+   * so the schedule UI can show "missed due to redeploy" instead of a generic
+   * drain. Detected via the short-lived `server-restarting.json` marker that
+   * `prod-restart` writes before entering drain.
+   */
+  | 'skipped_server_restarting'
+  /**
    * Operator automation kill-switch engaged (issue #1710 / #1699 WS0.4).
    * Schedule fire suppressed while SAFE MODE is on; not a failure.
    */
@@ -142,6 +150,11 @@ export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
   | 'draining'
+  /**
+   * Reason code for {@link ScheduleExecutionOutcome.skipped_server_restarting}
+   * (issue #1983) — intentional redeploy, not a bare operator drain.
+   */
+  | 'server_restarting'
   /** Reason code for `skipped_safe_mode` (issue #1710). */
   | 'safe_mode'
   | 'previous_run_active'
