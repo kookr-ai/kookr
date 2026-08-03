@@ -47,7 +47,7 @@ import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../s
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
 import { TIMER_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/timer-health.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
-import { buildCapacityLedger } from '../../core/capacity-ledger.js';
+import { buildCapacityLedger, evaluateHungSuspectCapacityFinding } from '../../core/capacity-ledger.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import {
@@ -421,6 +421,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ? evaluateRelayOrphanBound(staleProcesses, resolveRelayOrphanBound(process.env))
       : null;
 
+    // Issue #1935: first-class finding when hungSuspect occupancy wastes
+    // capacity (count ≥ 3 or ratio ≥ 0.3). Surfaces phantom waste even when
+    // utilization looks healthy — the 7-hung/6-working grid must never
+    // classify as purely healthy_throughput.
+    const hungSuspectCapacityFinding = evaluateHungSuspectCapacityFinding(capacity);
+
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
     // this process is *actually* serving without digging into `build`.
@@ -464,6 +470,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(staleProcesses ? { staleProcesses } : {}),
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
+      ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
     });
   });
 

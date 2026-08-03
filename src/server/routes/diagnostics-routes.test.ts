@@ -1147,6 +1147,8 @@ describe('diagnostics routes', () => {
           active: 4,
           free: 6,
           byClass: { working: 1, finishedAwaitingAck: 1, hungSuspect: 1, launching: 1 },
+          effectiveWorking: 2, // working + launching
+          phantomActive: 2, // hungSuspect + finishedAwaitingAck
           pendingQueueDepth: 2,
           oldestPendingAgeMs: 90_000,
           oldestFinishedAwaitingAckAgeMs: 5 * 60_000,

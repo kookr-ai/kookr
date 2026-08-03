@@ -156,6 +156,12 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.finishedAwaitingAckTtlMinutes}min)`,
     );
   }
+  if (prevSettings.hungSuspectTtlMinutes !== newSettings.hungSuspectTtlMinutes) {
+    console.log(
+      `[settings] hungSuspectTtlMinutes → ${newSettings.hungSuspectTtlMinutes}min `
+      + `(was ${prevSettings.hungSuspectTtlMinutes}min)`,
+    );
+  }
   if (prevSettings.spawnBurstLimit !== newSettings.spawnBurstLimit) {
     console.log(
       `[settings] spawnBurstLimit → ${newSettings.spawnBurstLimit} `

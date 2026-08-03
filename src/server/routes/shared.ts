@@ -398,6 +398,14 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * hungSuspect TTL reclaim counter (issue #1935). `/metrics` reads only
+   * `getSnapshot()` — same in-memory cumulative convention as the FAA reclaim.
+   */
+  hungSuspectTtlReclaimMetrics?: Pick<
+    import('../hung-suspect-ttl-sweep.js').HungSuspectTtlReclaimMetrics,
+    'getSnapshot'
+  >;
+  /**
    * Lesson-yield health cache (issues #1538, #1553, #1857). Diagnostics warms
    * it via bounded background scans; `/metrics` only calls `getCached24h()`
    * and never scans hook logs on the scrape path.

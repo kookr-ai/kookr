@@ -68,6 +68,11 @@ import {
   reclaimAgedFinishedAwaitingAckTasks,
   type FinishedAwaitingAckTtlReclaimMetrics,
 } from './finished-awaiting-ack-ttl-sweep.js';
+import {
+  reclaimAgedHungSuspectTasks,
+  type HungSuspectTtlReclaimMetrics,
+} from './hung-suspect-ttl-sweep.js';
+import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import {
@@ -185,6 +190,14 @@ export interface TimerDeps {
   isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
   /** Optional counter for the finishedAwaitingAck TTL reclaim, exposed via `/metrics` (issue #1884). */
   finishedAwaitingAckTtlReclaimMetrics?: Pick<FinishedAwaitingAckTtlReclaimMetrics, 'recordReclaimed'>;
+  /**
+   * Live getter for the hungSuspect TTL, in milliseconds (issue #1935,
+   * `hungSuspectTtlMinutes` setting). Read on every liveness tick. Falls back
+   * to the module default (25m) when absent.
+   */
+  getHungSuspectTtlMs?: () => number;
+  /** Optional counter for the hungSuspect TTL reclaim, exposed via `/metrics` (issue #1935). */
+  hungSuspectTtlReclaimMetrics?: Pick<HungSuspectTtlReclaimMetrics, 'recordReclaimed'>;
   /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
   reportsDir?: string;
   /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
@@ -939,6 +952,52 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         { ttlMs: deps.getFinishedAwaitingAckTtlMs?.() },
       );
 
+      // hungSuspect TTL reclaim (issue #1935): terminate tasks classified
+      // hungSuspect that have been all-channels-silent past the short TTL,
+      // freeing phantom-active concurrency slots. Soft reclaim (terminate +
+      // needs-human/obsolete disposition), never force-complete incomplete work.
+      // Stranded-PR exemption reuses the FAA predicate. Classification reuses
+      // the same resolveTaskAttentionSignals path /api/health uses so reclaim
+      // only acts on tasks already reported as hungSuspect.
+      const hungSuspectNowMs = Date.now();
+      // Resolve attention signals once per task (isHungSuspect + liveness +
+      // queued anomaly + provider pause all come from the same hot-path lookup).
+      const hungSuspectSignalsCache = new Map<string, ReturnType<typeof resolveTaskAttentionSignals>>();
+      const hungSuspectSignals = (task: Task) => {
+        let signals = hungSuspectSignalsCache.get(task.id);
+        if (!signals) {
+          signals = resolveTaskAttentionSignals(
+            task,
+            { queue: deps.queue, watchdog: deps.watchdog },
+            hungSuspectNowMs,
+          );
+          hungSuspectSignalsCache.set(task.id, signals);
+        }
+        return signals;
+      };
+      const hungSuspectTtlResult = await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps: {
+            ...lifecycleDeps,
+            ...(deps.agentLifecycleDeps?.interactionLog
+              ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+              : {}),
+          },
+          auditLogPath: deps.auditLogPath,
+          dispositionLedgerPath: deps.dispositionLedgerPath,
+          broadcastToAll: deps.broadcastToAll,
+          isHungSuspect: (task) => hungSuspectSignals(task).hungSuspect,
+          getLiveness: (task) => hungSuspectSignals(task).liveness,
+          getQueuedAnomalyType: (task) => hungSuspectSignals(task).queuedAnomalyType,
+          isProviderPaused: (task) => hungSuspectSignals(task).providerPaused,
+          isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+          resolveMergedPr: deps.resolveMergedPr,
+          metrics: deps.hungSuspectTtlReclaimMetrics,
+        },
+        { ttlMs: deps.getHungSuspectTtlMs?.() },
+      );
+
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
       // the agent-lifecycle wrappers, so this additive call is where claims
@@ -1014,6 +1073,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || deliveredResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
+        || hungSuspectTtlResult.reclaimedTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).

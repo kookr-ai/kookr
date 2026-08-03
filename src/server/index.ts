@@ -37,6 +37,7 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
+import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -509,6 +510,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the finishedAwaitingAck TTL reclaim (issue #1884). Same
   // live-binding pattern — applies to the next liveness tick without a restart.
   const getFinishedAwaitingAckTtlMs = () => currentSettings.finishedAwaitingAckTtlMinutes * 60_000;
+  // Live getter for the hungSuspect TTL reclaim (issue #1935). Same pattern.
+  const getHungSuspectTtlMs = () => currentSettings.hungSuspectTtlMinutes * 60_000;
   // Reserved self-maintenance capacity (issue #1564). Same live-binding
   // pattern — applies to the next launch without a restart.
   const getReservedActiveSlots = () => currentSettings.reservedActiveSlots;
@@ -931,6 +934,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return sawUnknown ? undefined : false;
   };
   const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
+  const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks — SQLite by default (#1755), with one-shot migration
@@ -1998,6 +2002,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
+    hungSuspectTtlReclaimMetrics,
     resourceWatchdog: resourceWatchdogService,
     deliveryTrace,
     coordinatorSuppressions,
@@ -2465,6 +2470,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getFinishedAwaitingAckTtlMs,
       isTaskHoldingOpenPr,
       finishedAwaitingAckTtlReclaimMetrics,
+      getHungSuspectTtlMs,
+      hungSuspectTtlReclaimMetrics,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
       loopDeliveryWatchdog,
