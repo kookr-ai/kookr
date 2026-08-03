@@ -341,6 +341,14 @@ export class GrokBuildAdapter implements AgentAdapter {
   private sessionHomes = new Map<string, string>();
   private initialPromptSubmitResolvers = new Map<string, () => void>();
   /**
+   * Resolvers for the first parent {@code session_start} hook per launching
+   * session. Grok's TUI can emit {@code ESC[?2004h} (bracketed-paste enable)
+   * before init finishes reading stdin for probes; Kookr must not inject the
+   * initial prompt until the session actor is live enough to fire SessionStart
+   * (and thus accept composer input / UserPromptSubmit).
+   */
+  private sessionStartResolvers = new Map<string, () => void>();
+  /**
    * Last captured display per session, refreshed by {@link captureDisplay}
    * (the server's 5s watchdog tick calls it for every tracked agent). Used
    * synchronously by {@link injectHookEvent} to substitute a bounded pane
@@ -583,6 +591,10 @@ export class GrokBuildAdapter implements AgentAdapter {
     const bypassPermissions = opts?.bypassPermissions ?? this.bypassAllPermissions;
     const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: bypassPermissions });
 
+    // Arm handshake signals *before* spawn so a fast SessionStart cannot be missed.
+    const sessionStarted = this.armSessionStartSignal(tmuxName);
+    const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
+
     await this.backend.createSession({
       id: tmuxName,
       command: state.identity.canonicalPath,
@@ -602,10 +614,9 @@ export class GrokBuildAdapter implements AgentAdapter {
     // hung/blocked launch (blocking startup UI, or a wedged terminal
     // capture) fails fast instead of holding POST /api/tasks open for up to
     // the 180s top-level launch timeout.
-    const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
     try {
       await raceWithDeadline(
-        this.runAgentBootSequence(tmuxName, prompt, submitConfirmed),
+        this.runAgentBootSequence(tmuxName, prompt, submitConfirmed, sessionStarted),
         this.agentBootTimeoutMs,
         () => new GrokAgentBootTimeoutError(taskId, tmuxName, this.agentBootTimeoutMs),
       );
@@ -614,6 +625,7 @@ export class GrokBuildAdapter implements AgentAdapter {
       throw err;
     } finally {
       this.initialPromptSubmitResolvers.delete(tmuxName);
+      this.sessionStartResolvers.delete(tmuxName);
     }
 
     // Phase instrumentation (issue #1589): ack — Grok acknowledged the prompt.
@@ -638,19 +650,52 @@ export class GrokBuildAdapter implements AgentAdapter {
   }
 
   /**
-   * Wait for Grok's TUI to signal readiness (`ESC[?2004h`, the bracketed-paste
-   * enable it emits at startup — POC-A pty capture), then abort if the captured
-   * screen is an auth/update UI rather than the ready composer. Fail-open on the
-   * ready wait (proceed on timeout) but fail-closed on a detected auth screen.
+   * Wait until Grok is safe to receive the initial prompt:
+   * 1. `ESC[?2004h` — bracketed-paste mode enabled (TUI will honor paste markers)
+   * 2. parent `session_start` hook — session actor is live
+   *
+   * Both are required. Paste-mode alone was racy when Grok emitted 2004h
+   * before CSI cursor preflight finished reading stdin (Kookr's paste was
+   * consumed as probe input). SessionStart alone is not enough either: paste
+   * markers must be honored.
+   *
+   * Fail-open if either signal times out (proceed to delivery; UserPromptSubmit
+   * confirmation still refuses blind resends). Fail-closed on a detected
+   * auth/update screen.
    */
-  private async waitForReadyOrAbort(tmuxName: string): Promise<void> {
-    const deadline = Date.now() + this.promptReadyTimeoutMs;
-    let ready = false;
-    while (Date.now() <= deadline) {
-      const bytes = await this.backend.captureBytes(tmuxName);
-      if (isBracketedPasteModeEnabled(bytes)) { ready = true; break; }
-      await sleep(Math.min(DEFAULT_READY_POLL_MS, Math.max(0, deadline - Date.now())));
+  private async waitForReadyOrAbort(
+    tmuxName: string,
+    sessionStarted: Promise<void>,
+  ): Promise<void> {
+    // Dual handshake (paste-mode + SessionStart) only when we will inject a
+    // bracketed prompt. timeoutMs <= 0 is an explicit skip (unit tests).
+    // Production uses a multi-second window. Non-paste launches only need the
+    // auth/update UI guard below.
+    if (this.promptBracketedPaste && this.promptReadyTimeoutMs > 0) {
+      const deadline = Date.now() + this.promptReadyTimeoutMs;
+      let pasteReady = false;
+      let sessionReady = false;
+      void sessionStarted.then(() => {
+        sessionReady = true;
+      });
+
+      while (Date.now() <= deadline) {
+        if (!pasteReady) {
+          const bytes = await this.backend.captureBytes(tmuxName);
+          if (isBracketedPasteModeEnabled(bytes)) pasteReady = true;
+        }
+        if (pasteReady && sessionReady) break;
+        await sleep(Math.min(DEFAULT_READY_POLL_MS, Math.max(0, deadline - Date.now())));
+      }
+
+      if (!pasteReady || !sessionReady) {
+        console.warn(
+          `[grok-build-adapter] ready handshake incomplete for ${tmuxName}: ` +
+            `pasteReady=${pasteReady} sessionStart=${sessionReady}; proceeding fail-open`,
+        );
+      }
     }
+
     const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
     const blocker = detectGrokBlockingStartupUI(display);
     if (blocker) {
@@ -661,10 +706,6 @@ export class GrokBuildAdapter implements AgentAdapter {
         `(chat access requires a console.x.ai grant) or a pending CLI update.`,
       );
     }
-    // `ready === false` here means the DECSET never arrived within the window;
-    // delivery still proceeds fail-open, while the hook-backed confirmation
-    // guard refuses to resend an unacknowledged prompt.
-    void ready;
   }
 
   /**
@@ -678,13 +719,16 @@ export class GrokBuildAdapter implements AgentAdapter {
     tmuxName: string,
     prompt: string,
     submitConfirmed: Promise<void>,
+    sessionStarted: Promise<void>,
   ): Promise<void> {
-    await this.waitForReadyOrAbort(tmuxName);
+    await this.waitForReadyOrAbort(tmuxName, sessionStarted);
     const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
     const delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
       inputWriter: this.inputWriter,
       bracketedPaste: this.promptBracketedPaste,
-      waitForReady: this.promptBracketedPaste,
+      // Adapter already waited for paste-mode + SessionStart; do not re-gate on
+      // paste-mode alone (that race was the bug).
+      waitForReady: false,
       awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
       submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
       submitRetries: this.promptSubmitRetries,
@@ -837,8 +881,17 @@ export class GrokBuildAdapter implements AgentAdapter {
     });
   }
 
+  private armSessionStartSignal(tmuxName: string): Promise<void> {
+    const existing = this.sessionStartResolvers.get(tmuxName);
+    if (existing) existing();
+    return new Promise<void>((resolve) => {
+      this.sessionStartResolvers.set(tmuxName, resolve);
+    });
+  }
+
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
     this.initialPromptSubmitResolvers.delete(tmuxName);
+    this.sessionStartResolvers.delete(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
     this.lastDisplays.delete(tmuxName);
@@ -883,6 +936,9 @@ export class GrokBuildAdapter implements AgentAdapter {
     const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
     if (resolver) resolver();
     this.initialPromptSubmitResolvers.delete(tmuxName);
+    const startResolver = this.sessionStartResolvers.get(tmuxName);
+    if (startResolver) startResolver();
+    this.sessionStartResolvers.delete(tmuxName);
     // Extract token telemetry BEFORE the ephemeral GROK_HOME is torn down —
     // this is the last point at which the session transcript still exists.
     await this.recordSessionTokenUsage(tmuxName);
@@ -1062,6 +1118,15 @@ export class GrokBuildAdapter implements AgentAdapter {
             }
           })
           .catch(() => { /* graceful degradation */ });
+      }
+    }
+
+    // Parent SessionStart: release the launch-path ready handshake.
+    if (event.type === 'session_start' && parentage === 'parent') {
+      const startResolver = this.sessionStartResolvers.get(tmuxName);
+      if (startResolver) {
+        this.sessionStartResolvers.delete(tmuxName);
+        startResolver();
       }
     }
 
