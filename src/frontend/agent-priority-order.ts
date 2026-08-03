@@ -7,6 +7,8 @@ export interface AgentOrderOptions {
   chipTaskIds?: ReadonlySet<string>;
   originalIndex?: ReadonlyMap<string, number>;
   includeSeverity?: boolean;
+  /** Precomputed startedAt → ms; when set, comparators skip Date parsing. */
+  startedMsByAgentId?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -57,7 +59,7 @@ export function compareRoutableAgents(
   const byProject = projectRank(left, options.projectPriorityRanks) - projectRank(right, options.projectPriorityRanks);
   if (byProject !== 0) return byProject;
 
-  const byTime = startedAtMs(left) - startedAtMs(right);
+  const byTime = resolveStartedAtMs(left, options.startedMsByAgentId) - resolveStartedAtMs(right, options.startedMsByAgentId);
   if (byTime !== 0) return byTime;
 
   const leftId = left.taskId ?? left.agentId;
@@ -81,10 +83,20 @@ function projectRank(agent: AgentState, projectPriorityRanks: ReadonlyMap<string
   return projectPriorityRanks.get(agent.projectId) ?? UNRANKED_PROJECT;
 }
 
-function startedAtMs(agent: AgentState): number {
+/** Parse startedAt once; unknown/invalid → UNKNOWN_TIME (sorts last). */
+export function computeStartedAtMs(agent: AgentState): number {
   if (!agent.startedAt) return UNKNOWN_TIME;
   const ms = new Date(agent.startedAt).getTime();
   return Number.isFinite(ms) ? ms : UNKNOWN_TIME;
+}
+
+function resolveStartedAtMs(
+  agent: AgentState,
+  startedMsByAgentId: ReadonlyMap<string, number> | undefined,
+): number {
+  const cached = startedMsByAgentId?.get(agent.agentId);
+  if (cached !== undefined) return cached;
+  return computeStartedAtMs(agent);
 }
 
 function originalRank(agent: AgentState, originalIndex: ReadonlyMap<string, number> | undefined): number {

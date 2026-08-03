@@ -118,4 +118,47 @@ describe('agent buckets', () => {
       'alpha',
     ]);
   });
+
+  test('large fleet: healthy order is startedAt ascending then id (parse-once path)', () => {
+    const fleet: AgentState[] = [];
+    // Reverse insertion so array order ≠ sort order; mix valid / missing / invalid times.
+    for (let i = 49; i >= 0; i -= 1) {
+      fleet.push(agent(`healthy-${String(i).padStart(2, '0')}`, 'project-a', {
+        startedAt: `2026-06-20T${String(10 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      }));
+    }
+    fleet.push(agent('no-start', 'project-a')); // unknown time → last among same priority
+    fleet.push(agent('bad-start', 'project-a', { startedAt: 'not-a-date' }));
+    fleet.push(agent('completed-old', 'project-a', {
+      taskStatus: 'completed',
+      finishedAt: '2026-06-19T12:00:00.000Z',
+    }));
+    fleet.push(agent('completed-new', 'project-a', {
+      taskStatus: 'completed',
+      finishedAt: '2026-06-21T12:00:00.000Z',
+    }));
+    fleet.push(agent('completed-fallback', 'project-a', {
+      taskStatus: 'completed',
+      startedAt: '2026-06-20T08:00:00.000Z',
+    }));
+
+    const buckets = buildAgentBuckets(fleet, null);
+
+    // startedAt ascending by index; unknown/invalid times sort last, tie-break by id
+    // ('bad-start' < 'no-start').
+    expect(buckets.healthy.map((a) => a.agentId)).toEqual([
+      ...Array.from({ length: 50 }, (_, i) => `healthy-${String(i).padStart(2, '0')}`),
+      'bad-start',
+      'no-start',
+    ]);
+    expect(buckets.completed.map((a) => a.agentId)).toEqual([
+      'completed-new',
+      'completed-fallback',
+      'completed-old',
+    ]);
+    // Re-run is stable (parse-once maps rebuilt identically each call).
+    const again = buildAgentBuckets(fleet, null);
+    expect(again.healthy.map((a) => a.agentId)).toEqual(buckets.healthy.map((a) => a.agentId));
+    expect(again.completed.map((a) => a.agentId)).toEqual(buckets.completed.map((a) => a.agentId));
+  });
 });
