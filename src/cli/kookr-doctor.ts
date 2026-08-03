@@ -16,7 +16,7 @@ import {
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
-type DoctorCategory = 'runtime' | 'launch-dependency' | 'agent' | 'github';
+type DoctorCategory = 'runtime' | 'launch-dependency' | 'agent' | 'github' | 'ops';
 
 export interface DoctorCheck {
   id: string;
@@ -40,6 +40,9 @@ interface CommandRunner {
   (file: string, args: readonly string[], options?: { timeoutMs?: number }): Promise<DependencyCommandResult>;
 }
 
+/** Live probe of resourceWatchdog.enabled from /api/health. null = unreachable / unknown. */
+type ResourceWatchdogEnabledProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | null>;
+
 interface RunDoctorDeps {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
@@ -47,6 +50,11 @@ interface RunDoctorDeps {
   commandRunner?: CommandRunner;
   access?: (path: string, mode?: number) => Promise<void>;
   now?: () => Date;
+  /**
+   * Optional override for the live /api/health resourceWatchdog probe.
+   * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
+   */
+  probeResourceWatchdogEnabled?: ResourceWatchdogEnabledProbe;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -60,7 +68,8 @@ Options:
   -h, --help   Show this help.
 
 Without --json, prints a human-readable table of each check (status, summary,
-recommended action) covering runtime tools, gh auth, kb, and agent binaries.
+recommended action) covering runtime tools, gh auth, kb, agent binaries, and
+ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off).
 `;
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -146,6 +155,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGhAuth(run));
   checks.push(...await checkKbLaunchDependency(run));
   checks.push(...await checkAgentBinaries(env, run));
+  checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
 
   const status = aggregateStatus(checks);
   return {
@@ -240,6 +250,98 @@ async function checkGhAuth(run: CommandRunner): Promise<DoctorCheck> {
     detail: firstNonEmpty(result.stderr, result.stdout),
     recommendedAction: 'Run `gh auth login` if you want GitHub PR/issue monitoring and automation.',
   };
+}
+
+/**
+ * Advisory ops check (issue #1988): surface that host-pressure auto-investigation
+ * is off by default. Prefer live /api/health when reachable; otherwise env flag.
+ * Never fails required checks — warn only.
+ */
+async function checkResourceWatchdog(
+  env: NodeJS.ProcessEnv,
+  probe: ResourceWatchdogEnabledProbe | undefined,
+): Promise<DoctorCheck> {
+  const envEnabled = isTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG);
+  const probeFn = probe ?? defaultProbeResourceWatchdogEnabled;
+  let liveEnabled: boolean | null = null;
+  try {
+    liveEnabled = await probeFn(env);
+  } catch {
+    liveEnabled = null;
+  }
+
+  const enabled = liveEnabled ?? envEnabled;
+  if (enabled) {
+    return okCheck(
+      'ops.resource-watchdog',
+      'Resource watchdog',
+      'ops',
+      liveEnabled === true
+        ? 'enabled (GET /api/health resourceWatchdog.enabled=true)'
+        : 'enabled (KOOKR_RESOURCE_WATCHDOG is truthy)',
+      false,
+    );
+  }
+
+  return {
+    id: 'ops.resource-watchdog',
+    label: 'Resource watchdog',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary: 'host-pressure auto-investigation is disabled',
+    detail: liveEnabled === false
+      ? 'GET /api/health reports resourceWatchdog.enabled=false'
+      : 'KOOKR_RESOURCE_WATCHDOG is unset or not truthy (disabled by default)',
+    recommendedAction:
+      'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server to enable host-pressure auto-investigation.',
+  };
+}
+
+/** Same truthy semantics as `readResourceWatchdogConfigFromEnv` (1/true/yes/on). */
+function isTruthyEnvFlag(raw: string | undefined): boolean {
+  if (raw == null) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Best-effort live probe. Only hits the network when the operator has pointed
+ * at a server (`KOOKR_API_BASE_URL` or numeric `KOOKR_PORT`) — no auto 4800/4801
+ * scan, so hermetic unit tests with empty env stay offline.
+ */
+async function defaultProbeResourceWatchdogEnabled(env: NodeJS.ProcessEnv): Promise<boolean | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { resourceWatchdog?: { enabled?: unknown } };
+    if (typeof body?.resourceWatchdog?.enabled === 'boolean') {
+      return body.resourceWatchdog.enabled;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveOptionalHealthBase(env: NodeJS.ProcessEnv): string | null {
+  const apiBase = env.KOOKR_API_BASE_URL?.trim();
+  if (apiBase) return apiBase.replace(/\/$/, '');
+  const portRaw = env.KOOKR_PORT?.trim();
+  if (!portRaw || portRaw.toLowerCase() === 'auto') return null;
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return `http://127.0.0.1:${port}`;
 }
 
 async function checkKbLaunchDependency(run: CommandRunner): Promise<DoctorCheck[]> {

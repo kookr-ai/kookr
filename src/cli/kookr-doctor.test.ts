@@ -16,6 +16,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.claude',
   'agent.codex',
   'agent.codex-plugin-dir',
+  'ops.resource-watchdog',
 ] as const;
 
 function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: string; exitCode?: number }>) {
@@ -47,7 +48,7 @@ function happyFixtures() {
 }
 
 describe('kookr doctor --json', () => {
-  it('emits a passing JSON report for required launch prerequisites', async () => {
+  it('emits a passing JSON report for required launch prerequisites (watchdog advisory when off)', async () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
@@ -55,11 +56,14 @@ describe('kookr doctor --json', () => {
       commandRunner: run,
       access: async () => {},
       now: () => new Date('2026-06-21T07:30:00.000Z'),
+      // Hermetic: no live server probe (env-only path).
+      probeResourceWatchdogEnabled: async () => null,
     });
 
     expect(report).toMatchObject({
       ok: true,
-      status: 'ok',
+      // Resource watchdog is off by default → advisory warn, not a hard failure.
+      status: 'warn',
       generatedAt: '2026-06-21T07:30:00.000Z',
     });
     expect(report.checks.map((check) => check.id)).toEqual(expect.arrayContaining([
@@ -72,8 +76,87 @@ describe('kookr doctor --json', () => {
       'agent.claude',
       'agent.codex',
       'agent.codex-plugin-dir',
+      'ops.resource-watchdog',
     ]));
-    expect(report.checks.every((check) => check.status === 'ok')).toBe(true);
+    expect(report.checks.filter((c) => c.id !== 'ops.resource-watchdog').every((c) => c.status === 'ok')).toBe(true);
+    expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'host-pressure auto-investigation is disabled',
+    });
+  });
+
+  it('reports ops.resource-watchdog ok when KOOKR_RESOURCE_WATCHDOG is truthy', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('enabled'),
+    });
+  });
+
+  it('prefers live /api/health resourceWatchdog.enabled over the env flag', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const disabledLive = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => false,
+    });
+    expect(disabledLive.ok).toBe(true);
+    expect(disabledLive.status).toBe('warn');
+    expect(disabledLive.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'warn',
+      required: false,
+      detail: expect.stringContaining('resourceWatchdog.enabled=false'),
+    });
+
+    const enabledLive = await buildDoctorJsonReport({
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => true,
+    });
+    expect(enabledLive.ok).toBe(true);
+    expect(enabledLive.status).toBe('ok');
+    expect(enabledLive.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('resourceWatchdog.enabled=true'),
+    });
+  });
+
+  it('keeps resource-watchdog advisory: warn does not fail exit / ok', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli(['--json'], {
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: () => {},
+      },
+    });
+
+    expect(code).toBe(0);
+    const body = JSON.parse(logs[0]!);
+    expect(body).toMatchObject({ ok: true, status: 'warn' });
+    expect(body.checks.find((c: { id: string }) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'warn',
+      required: false,
+    });
   });
 
   it('keeps KB doctor failures advisory and uses the launch dependency taxonomy', async () => {
@@ -88,7 +171,12 @@ describe('kookr doctor --json', () => {
       },
     });
 
-    const report = await buildDoctorJsonReport({ env: {}, commandRunner: run, access: async () => {} });
+    const report = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
+    });
     const kb = report.checks.find((check) => check.id === 'launch.kb-doctor');
 
     expect(report.ok).toBe(true);
@@ -107,7 +195,12 @@ describe('kookr doctor --json', () => {
       [JSON.stringify(['node', ['--version']])]: { stdout: 'v20.0.0\n' },
     });
 
-    const report = await buildDoctorJsonReport({ env: {}, commandRunner: run, access: async () => {} });
+    const report = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
+    });
 
     expect(report.ok).toBe(false);
     expect(report.status).toBe('fail');
@@ -121,11 +214,12 @@ describe('kookr doctor --json', () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {
         throw new Error('missing vendored dtach');
       },
+      probeResourceWatchdogEnabled: async () => null,
     });
 
     expect(report.ok).toBe(true);
@@ -141,9 +235,10 @@ describe('kookr doctor --json', () => {
     const errors: string[] = [];
 
     const code = await runDoctorCli(['--json'], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),
@@ -163,9 +258,10 @@ describe('kookr doctor --json', () => {
     const logs: string[] = [];
 
     const code = await runDoctorCli(['--json'], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
       out: {
         log: (msg: string) => logs.push(msg),
         error: () => {},
@@ -182,9 +278,10 @@ describe('kookr doctor --json', () => {
 
     const run = commandRunner(happyFixtures());
     const report = await buildDoctorJsonReport({
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
     });
 
     for (const check of report.checks) {
@@ -250,10 +347,11 @@ describe('kookr doctor (human)', () => {
     const errors: string[] = [];
 
     const code = await runDoctorCli([], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
       now: () => new Date('2026-06-21T07:30:00.000Z'),
+      probeResourceWatchdogEnabled: async () => null,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),
@@ -278,9 +376,10 @@ describe('kookr doctor (human)', () => {
     const logs: string[] = [];
 
     const code = await runDoctorCli([], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
       out: {
         log: (msg: string) => logs.push(msg),
         error: () => {},
@@ -298,9 +397,10 @@ describe('kookr doctor (human)', () => {
     const errors: string[] = [];
 
     await runDoctorCli([], {
-      env: {},
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),
