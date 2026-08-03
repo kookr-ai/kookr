@@ -21,6 +21,7 @@ import {
   updateToolkitPlugin as requestPluginUpdate,
   type DeployStatus,
 } from '../api/index.js';
+import { loadDeployIntent } from '../store/deploy-intent-storage.js';
 
 interface Props {
   findings: number;
@@ -85,18 +86,35 @@ export function TopBar({
   scheduleHintActive = false,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
+  const {
+    connected,
+    buildInfo,
+    serverStartedAt,
+    totalSpendUsd,
+    circuitBreakers,
+    diagnosticReport,
+    coordinator,
+    deploying,
+    setDeploying,
+  } = useKookrStore();
   const paletteHint = commandPaletteHint(detectShortcutPlatform());
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
-  const [deploying, setDeploying] = useState(false);
   const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
   const [pluginUpdating, setPluginUpdating] = useState(false);
   const [pluginUpdateMessage, setPluginUpdateMessage] = useState<string | null>(null);
   const [pluginUpdateError, setPluginUpdateError] = useState<string | null>(null);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Restore sticky pre-deploy commit after remount so completion clear still works.
+  useEffect(() => {
+    const intent = loadDeployIntent();
+    if (intent?.preDeployCommit) {
+      preDeployCommitRef.current = intent.preDeployCommit;
+    }
+  }, []);
 
   // Close popover on outside click
   useEffect(() => {
@@ -117,7 +135,19 @@ export function TopBar({
       const { ok, body: data } = await getDeployStatus();
       if (ok) {
         setDeployStatus(data);
-        if (data.deploying) setDeploying(true);
+        if (data.deploying) {
+          setDeploying(true);
+        } else if (useKookrStore.getState().deploying) {
+          // Clear sticky intent once status reports idle — but not while we still
+          // have a pre-deploy commit matching the live build (in-flight button
+          // deploy / race with a concurrent status poll on the old process).
+          const pre = preDeployCommitRef.current;
+          const current = useKookrStore.getState().buildInfo?.commitShort;
+          if (!pre || (current && current !== 'dev' && current !== pre)) {
+            setDeploying(false);
+            preDeployCommitRef.current = null;
+          }
+        }
       } else {
         setDeployStatus({ ...data, error: data.error ?? 'Failed to check status' });
       }
@@ -126,7 +156,7 @@ export function TopBar({
     } finally {
       setDeployLoading(false);
     }
-  }, []);
+  }, [setDeploying]);
 
   useEffect(() => {
     checkDeployStatus();
@@ -152,15 +182,17 @@ export function TopBar({
       setDeployStatus(null);
       preDeployCommitRef.current = null;
     }
-  }, [connected, buildInfo, deploying]);
+  }, [connected, buildInfo, deploying, setDeploying]);
 
   async function triggerDeploy() {
-    preDeployCommitRef.current = buildInfo?.commitShort ?? null;
-    setDeploying(true);
+    const preCommit = buildInfo?.commitShort ?? null;
+    preDeployCommitRef.current = preCommit;
+    setDeploying(true, preCommit);
     try {
       const { ok, body: data } = await requestDeploy();
       if (!ok) {
         setDeploying(false);
+        preDeployCommitRef.current = null;
         setDeployStatus((prev) => prev ? { ...prev, error: data?.error ?? 'Deploy failed' } : null);
       }
     } catch {
