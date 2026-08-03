@@ -28,6 +28,7 @@ fi
 
 SUFFIX="c$$-$(date +%s%N 2>/dev/null || date +%s)"
 REPO="acme/widget-$SUFFIX"
+REPO_BARE="widget-$SUFFIX"
 BRANCH="feature-$SUFFIX"
 STATE_FILE="/dev/shm/.pr-gate-widget-$SUFFIX-${BRANCH}-pre-done"
 
@@ -37,9 +38,20 @@ FAILED=()
 cleanup() { rm -f "$STATE_FILE" 2>/dev/null || true; }
 trap cleanup EXIT
 
+# Issue #1968: empty touch is rejected; mint a producer-token pre-done marker.
+write_valid_state() {
+  local home="$1"
+  mkdir -p "$home/.kookr"
+  HOME="$home" KOOKR_REVIEW_MARKER_SECRET_FILE="$home/.kookr/review-marker-secret" \
+    bash "$REPO_ROOT/scripts/write-pr-gate-marker.sh" \
+      --repo "$REPO_BARE" --branch "$BRANCH" --sha "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
+      >/dev/null
+}
+
 # --- Build a bin dir with the tools the hook needs, minus kookr. -------------
 TOOLS_BIN=$(mktemp -d)
-for t in bash sh jq git date tr sed grep head cut dirname basename cat mkdir rm env printf; do
+# openssl is required by review-marker-auth.sh HMAC verification (issue #1968).
+for t in bash sh jq git date tr sed grep head cut dirname basename cat mkdir rm env printf openssl awk readlink; do
   p=$(command -v "$t" 2>/dev/null || true)
   [ -n "$p" ] && ln -sf "$p" "$TOOLS_BIN/$t"
 done
@@ -83,7 +95,7 @@ CMD="gh pr create -R $REPO --head $BRANCH --body \"- [x] <!-- pr:mbse --> x\""
 # 1. Default OFF (no env, no scope file): gate is a no-op, kookr is never
 #    called, and (state file present) the PR is allowed.
 # ---------------------------------------------------------------------------
-H=$(mktemp -d); mkdir -p "$H/.kookr"; touch "$STATE_FILE"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; write_valid_state "$H"
 CALLED="$H/called"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_CALLED="$CALLED")
 grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0
@@ -109,7 +121,7 @@ rm -rf "$H"
 # ---------------------------------------------------------------------------
 # 3. Enabled (env) + engine returns 0 → allow (state file lets pre-PR gate pass).
 # ---------------------------------------------------------------------------
-H=$(mktemp -d); mkdir -p "$H/.kookr"; touch "$STATE_FILE"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; write_valid_state "$H"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN:$KOOKR_BIN" \
       KOOKR_PR_CHECKLIST=1 FAKE_KOOKR_RC=0)
 grep -q '"permissionDecision": "deny"' <<<"$OUT" && r=0 || r=1
@@ -120,7 +132,7 @@ rm -rf "$H"; rm -f "$STATE_FILE"
 # 4. Enabled (env) + kookr NOT on PATH → fail OPEN: allowed, a visible degrade
 #    line on stderr, and a JSONL record in pr-checklist-degrade.log.
 # ---------------------------------------------------------------------------
-H=$(mktemp -d); mkdir -p "$H/.kookr"; touch "$STATE_FILE"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; write_valid_state "$H"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN" KOOKR_PR_CHECKLIST=1)
 grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0
 grep -q 'checklist gate degraded' <<<"$OUT" && s=1 || s=0
@@ -134,7 +146,7 @@ rm -rf "$H"; rm -f "$STATE_FILE"
 # 5. Kill-switch KOOKR_PR_CHECKLIST=0 wins even when the scope file lists the
 #    repo → gate OFF, kookr never called.
 # ---------------------------------------------------------------------------
-H=$(mktemp -d); mkdir -p "$H/.kookr"; touch "$STATE_FILE"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; write_valid_state "$H"
 printf '["%s"]\n' "$REPO" > "$H/.kookr/pr-checklist-repos.json"
 CALLED="$H/called"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN:$KOOKR_BIN" \
@@ -162,7 +174,7 @@ rm -rf "$H"
 # 7. Scope file present but this repo NOT listed (no env) → gate OFF, kookr
 #    never called (the scope "out" branch).
 # ---------------------------------------------------------------------------
-H=$(mktemp -d); mkdir -p "$H/.kookr"; touch "$STATE_FILE"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; write_valid_state "$H"
 printf '["someone/other-repo"]\n' > "$H/.kookr/pr-checklist-repos.json"
 CALLED="$H/called"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_CALLED="$CALLED")

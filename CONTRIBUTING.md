@@ -89,7 +89,7 @@ A useful rule of thumb: if the diff exceeds a few hundred lines outside generate
 
 1. **`.review-state` files in the index → reject.** These markers are local-only; remove with `git rm --cached`.
 2. **`node_modules` missing → self-heal.** Runs `pnpm install --frozen-lockfile` first.
-3. **Reviewer-specialist gate** for non-trivial diffs. The gate inspects the merge-base diff against `origin/main` and skips an allowlist (top-level `*.md`, `docs/`, `.github/`, test files, tsconfig, `.gitignore`). Non-trivial pushes need a SHA-bound marker at `.review-state/<branch>.json` written by running the `kookr-pre-push` skill in Claude Code (it spawns reviewer specialists in parallel and writes `{sha, status: "approved" | "bypass", reason}`). The marker SHA must match `HEAD`.
+3. **Reviewer-specialist gate** for non-trivial diffs. The gate inspects the merge-base diff against `origin/main` and skips an allowlist (top-level `*.md`, `docs/`, `.github/`, test files, tsconfig, `.gitignore`). Non-trivial pushes need a SHA-bound marker at `.review-state/<branch>.json`. Write **approved** markers only via `bash scripts/write-review-state-marker.sh --status approved --specialists "…"` after real specialist fan-out (raw `cat > .review-state/...` with only sha+status is rejected — issue #1968). A **bypass** marker with a non-empty `reason` remains the human escape hatch. The marker SHA must match `HEAD`.
 4. **Server type-check** — `pnpm build:server` (`tsc`).
 5. **E2E type-check** — `pnpm check:e2e` (`tsc -p tsconfig.e2e.json`).
 6. **Validators** — skill frontmatter, documented commands, and requirements status checks always run.

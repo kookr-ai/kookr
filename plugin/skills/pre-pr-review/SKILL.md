@@ -403,16 +403,31 @@ Important: the hook parses the raw shell command text before the shell expands v
 # typically have dir names like `kookr-feature-x` while the remote and the
 # hook agree on `kookr`; using the basename there produces a key the hook
 # never looks up. See issue #406.
+#
+# Issue #1968: do NOT raw-touch the pre-done file. The gate requires a
+# producer-token JSON marker from the writer script (empty touch is rejected).
 REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || true)
 REPO_NAME=$(basename -s .git "${REMOTE_URL:-$(git rev-parse --show-toplevel)}")
-SAFE_BRANCH=${PR_HEAD_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
-SAFE_BRANCH=$(printf '%s' "$SAFE_BRANCH" | tr '/' '-')
-touch "/dev/shm/.pr-gate-${REPO_NAME}-${SAFE_BRANCH}-pre-done"
+PR_HEAD=${PR_HEAD_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
+# Prefer the repo-local writer when present; fall back to the toolkit-relative
+# path for plugin installs that ship the script next to this skill.
+if [ -f scripts/write-pr-gate-marker.sh ]; then
+  bash scripts/write-pr-gate-marker.sh --repo "$REPO_NAME" --branch "$PR_HEAD"
+elif [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/scripts/write-pr-gate-marker.sh" ]; then
+  bash "$(git rev-parse --show-toplevel)/scripts/write-pr-gate-marker.sh" \
+    --repo "$REPO_NAME" --branch "$PR_HEAD"
+else
+  echo "ERROR: scripts/write-pr-gate-marker.sh not found — cannot mint a producer-token gate marker." >&2
+  echo "Install/update kookr (or copy the script) rather than forging /dev/shm/.pr-gate-*-pre-done." >&2
+  exit 1
+fi
 ```
 
 **Do NOT create the state file if any mandatory check failed.** Fix the issue first, re-run the checks, then create it.
 
-The state file is the contract between this skill and the `pr-workflow-gate` hook. The hook checks for its existence before allowing `gh pr create`.
+**Do NOT** `touch /dev/shm/.pr-gate-*-pre-done` by hand — the hook rejects empty/forged markers (issue #1968).
+
+The state file is the contract between this skill and the `pr-workflow-gate` hook. The hook verifies a producer HMAC token before allowing `gh pr create`.
 
 ## Output Contract
 

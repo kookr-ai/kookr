@@ -50,8 +50,8 @@ git -C "$TMPDIR" add plugin/playbooks/guarded.md
 git -C "$TMPDIR" commit -q -m "add guarded plugin playbook"
 
 HEAD_SHA=$(git -C "$TMPDIR" rev-parse HEAD)
-mkdir -p "$TMPDIR/.review-state"
-printf '{"sha":"%s","status":"approved"}\n' "$HEAD_SHA" > "$TMPDIR/.review-state/feature.json"
+bash "$REPO_ROOT/scripts/write-review-state-marker.sh" \
+  --repo-root "$TMPDIR" --status approved --specialists "test" --key "feature" >/dev/null
 
 cat > "$TMPDIR/bin/pnpm" <<'PNPM'
 #!/usr/bin/env bash

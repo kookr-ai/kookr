@@ -46,6 +46,19 @@ track_state_file() {
   CREATED_STATE_FILES+=("$1")
 }
 
+# Write a producer-token pre-done marker (issue #1968). HOME must point at the
+# case tmpdir so the HMAC secret stays isolated from the operator's real secret.
+write_valid_pre_done() {
+  local home="$1"
+  local repo="$2"
+  local branch="$3"
+  local sha="${4:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}"
+  mkdir -p "$home/.kookr"
+  HOME="$home" KOOKR_REVIEW_MARKER_SECRET_FILE="$home/.kookr/review-marker-secret" \
+    bash "$REPO_ROOT/scripts/write-pr-gate-marker.sh" \
+      --repo "$repo" --branch "$branch" --sha "$sha" >/dev/null
+}
+
 # Build a PreToolUse payload for `gh pr create`. Positional args:
 #   $1 command        — the full shell command string
 #   $2 cwd (optional) — defaults to /tmp
@@ -100,17 +113,17 @@ record_fail() {
 printf '\nRunning pr-workflow-gate regression tests\n\n'
 
 # ---------------------------------------------------------------------
-# 1. Allow when state file exists — and state file is sticky (not consumed).
+# 1. Allow when producer-token state file exists — sticky (not consumed).
 # ---------------------------------------------------------------------
 run_case_1() {
-  local name="1: state file present → allow (state sticky)"
+  local name="1: valid producer-token state → allow (state sticky)"
   local tmpdir; tmpdir=$(mktemp -d)
   local repo="repoA-$SUFFIX"
   local branch="branchA"
   local state="/dev/shm/.pr-gate-${repo}-${branch}-pre-done"
   track_state_file "$state"
   rm -f "$state"
-  touch "$state"
+  write_valid_pre_done "$tmpdir" "$repo" "$branch"
 
   local cmd="gh pr create -R testowner/${repo} --head ${branch} --title t --body b"
   local payload; payload=$(mk_payload "$cmd")
@@ -128,6 +141,36 @@ run_case_1() {
   rm -rf "$tmpdir"
 }
 run_case_1
+
+# ---------------------------------------------------------------------
+# 1b. Raw touch (empty pre-done) is forgery → deny (issue #1968).
+# ---------------------------------------------------------------------
+run_case_1b() {
+  local name="1b: raw touch pre-done → deny (forgery)"
+  local tmpdir; tmpdir=$(mktemp -d)
+  local repo="repoA2-$SUFFIX"
+  local branch="branchA2"
+  local state="/dev/shm/.pr-gate-${repo}-${branch}-pre-done"
+  track_state_file "$state"
+  rm -f "$state"
+  touch "$state"
+
+  local cmd="gh pr create -R testowner/${repo} --head ${branch} --title t --body b"
+  local payload; payload=$(mk_payload "$cmd")
+  local out; out=$(run_hook "$payload" "$tmpdir")
+
+  if [ "$(classify "$out")" != "deny" ]; then
+    record_fail "$name" "expected deny for empty touch, got allow"
+  elif ! printf '%s' "$out" | grep -qiE 'producer token|forgery|write-pr-gate-marker'; then
+    record_fail "$name" "deny reason missing forgery/token guidance: $(printf '%s' "$out" | head -c 300)"
+  else
+    record_pass "$name"
+  fi
+
+  rm -f "$state"
+  rm -rf "$tmpdir"
+}
+run_case_1b
 
 # ---------------------------------------------------------------------
 # 2. Deny with expected reason when state file is missing.
@@ -289,7 +332,7 @@ run_case_5b() {
   local state="/dev/shm/.pr-gate-testrepo-$SUFFIX-feature-pre-done"
   track_state_file "$state"
   rm -f "$state"
-  touch "$state"
+  write_valid_pre_done "$tmpdir" "testrepo-$SUFFIX" "feature"
 
   printf '%s\n' '#!/usr/bin/env bash' 'pwd > "$CHECKLIST_PWD_FILE"' 'exit 0' > "$tmpdir/bin/kookr"
   chmod +x "$tmpdir/bin/kookr"

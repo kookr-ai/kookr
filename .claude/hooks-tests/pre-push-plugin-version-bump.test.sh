@@ -55,8 +55,8 @@ run_case() {
 
   local HEAD_SHA
   HEAD_SHA=$(git -C "$TMPDIR" rev-parse HEAD)
-  mkdir -p "$TMPDIR/.review-state"
-  printf '{"sha":"%s","status":"approved"}\n' "$HEAD_SHA" > "$TMPDIR/.review-state/feature.json"
+  bash "$REPO_ROOT/scripts/write-review-state-marker.sh" \
+    --repo-root "$TMPDIR" --status approved --specialists "test" --key "feature" >/dev/null
 
   printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR/bin/pnpm"
   chmod +x "$TMPDIR/bin/pnpm"
