@@ -7,7 +7,11 @@
 #   - oss-stale-scout-gate.sh — blocks gh pr create that references a
 #     closed upstream issue. (PreToolUse / Bash)
 #   - pr-workflow-gate.sh — blocks gh pr create until the pre-pr-review
-#     skill has produced a state file proving pre-PR checks ran.
+#     skill has produced a producer-token state file proving pre-PR checks ran.
+#     (PreToolUse / Bash)
+#   - gh-pr-merge-gate.sh — blocks bare `gh pr merge` in Kookr-managed
+#     sessions (KOOKR_TASK_ID set) when KOOKR_MERGE_REQUIRE_REVIEW is on;
+#     steers agents to `pnpm merge` / scripts/kookr-merge.sh (issue #1968).
 #     (PreToolUse / Bash)
 #   - oss-contribution-gate.sh — rate-limits external OSS PRs (default
 #     1/day/repo) and enforces the blocked-repo list. Reads
@@ -64,6 +68,7 @@ HOOKS=(
   $'oss-stale-scout-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'pr-workflow-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'oss-contribution-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
+  $'gh-pr-merge-gate.sh\tPreToolUse\tBash\tBash(gh pr merge*)'
   $'post-merge-keyword-scan.sh\tUserPromptSubmit\t\t'
   $'kb-context-inject.sh\tUserPromptSubmit\t\t'
 )

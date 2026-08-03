@@ -52,40 +52,23 @@ This is intentionally earlier than the `gh pr create` hook. The hook is the back
 
 The repo's `.hooks/pre-push` blocks any push of non-trivial source changes that does not have a SHA-bound review marker at `.review-state/<branch>.json` (slashes in branch names flattened to underscores). The marker proves that reviewer specialists ran against the *current* HEAD, not a stale earlier commit.
 
-After the reviewer specialists complete and any blocking findings are addressed, write the marker atomically (`tmp` + `mv` so a concurrent `git push` can't read a half-written file):
+After the reviewer specialists complete and any blocking findings are addressed, write the marker via the producer script (issue #1968). **Do NOT** `cat > .review-state/...` with only `sha`+`status` — the pre-push gate rejects approved markers that lack a valid producer HMAC token.
 
 ```bash
-mkdir -p .review-state
-# Same key derivation as the hook (.hooks/pre-push):
-#   - on a branch  → branch name with [^A-Za-z0-9.-] flattened to '_'
-#   - detached HEAD → "detached-<short-sha>"
-# Use printf '%s' (no trailing newline) so tr doesn't pick up a stray '\n'
-# and append an extra '_'.
-if BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null); then
-  KEY=$(printf '%s' "$BRANCH" | tr -c 'A-Za-z0-9.-' '_')
-else
-  KEY="detached-$(git rev-parse --short HEAD)"
-fi
-TMP=".review-state/$KEY.json.tmp"
-DST=".review-state/$KEY.json"
-cat > "$TMP" <<EOF
-{ "sha": "$(git rev-parse HEAD)", "status": "approved" }
-EOF
-mv "$TMP" "$DST"
+# List the specialists that actually ran (must be non-empty for approved).
+bash scripts/write-review-state-marker.sh --status approved \
+  --specialists "correctness,lint-like,test"
 ```
 
-The hook validates only `sha` and `status` — additional fields are ignored, so the schema stays minimal. If you want to leave breadcrumbs for yourself (specialists run, findings, timestamp), add them to the JSON; the hook won't reject extras.
+The writer derives the same marker key as `.hooks/pre-push` (branch name with `[^A-Za-z0-9.-]` → `_`, or `detached-<short-sha>`), binds the token to HEAD, and writes atomically.
 
 The hook auto-skips the marker requirement for trivial paths (`docs/`, `.github/`, top-level `*.md`, `docs/**/*.md`, `*.test.*`, `*.spec.*`, `tsconfig*.json`, `.gitignore`). Any source file outside that list (`src/**`, `plugin/**`, `.hooks/**`, root config TS, lockfiles) requires the marker. Lockfile changes are deliberately gated — supply-chain attack surface — even for routine bumps.
 
-For genuinely-trivial-but-not-allowlisted changes (e.g. a one-line comment in `src/`, a string-literal typo, a routine dependency version bump) write a `bypass` marker with a `reason` that's specific enough to be useful in `git log` (the hook logs `BYPASS for <ref> — <reason>` on every push):
+For genuinely-trivial-but-not-allowlisted changes (e.g. a one-line comment in `src/`, a string-literal typo, a routine dependency version bump) write a `bypass` marker with a `reason` that's specific enough to be useful in `git log` (the hook logs `BYPASS for <ref> — <reason>` on every push). Bypass does **not** require a producer token (human escape hatch):
 
 ```bash
-cat > "$TMP" <<EOF
-{ "sha": "$(git rev-parse HEAD)", "status": "bypass",
-  "reason": "<specific justification — e.g. 'pnpm-lock-only bump for axios 1.7.2 → 1.7.3, no transitive changes'>" }
-EOF
-mv "$TMP" "$DST"
+bash scripts/write-review-state-marker.sh --status bypass \
+  --reason "<specific justification — e.g. 'pnpm-lock-only bump for axios 1.7.2 → 1.7.3, no transitive changes'>"
 ```
 
 The reason field is mandatory for bypass markers — the hook rejects bypass markers without a `reason`.

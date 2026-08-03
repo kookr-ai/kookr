@@ -87,8 +87,14 @@ fi
 # are blocked. Fail-CLOSED.
 #
 # Marker layout (.review-state/<key>.json — gitignored):
-#   { "sha": "<full HEAD sha>", "status": "approved" | "bypass",
-#     "reason": "..." }   // reason required for bypass
+#   approved (producer-token required — issue #1968):
+#     { "sha", "status":"approved", "specialists":"...", "producer":"kookr-write-review-marker",
+#       "token":"<hmac>" }
+#   bypass (human escape hatch; reason required; no token):
+#     { "sha", "status":"bypass", "reason":"..." }
+#
+# Write APPROVED markers via scripts/write-review-state-marker.sh after real
+# specialist fan-out. Raw `cat > .review-state/...` with only sha+status fails.
 #
 # Why: across recent PRs in this and adjacent repos (kb-mcp-server, LRA),
 # 10/10 substantive Codex findings (incl. 2 P1) would have been caught by
@@ -186,7 +192,8 @@ if [ -n "$NONTRIVIAL" ]; then
     echo "  mkdir -p \"$MARKER_DIR\""
     echo "  printf '{\"sha\":\"$HEAD_SHA\",\"status\":\"bypass\",\"reason\":\"REPLACE: why you are bypassing\"}\n' > \"$MARKER_FILE\""
     echo ""
-    echo "  (use \"status\":\"approved\" instead once a real review has passed.)"
+    echo "  For a real APPROVED marker (after specialist review), use the writer:"
+    echo "  bash scripts/write-review-state-marker.sh --status approved --specialists \"correctness,lint-like,test\""
     exit 1
   fi
 
@@ -216,6 +223,42 @@ if [ -n "$NONTRIVIAL" ]; then
 
   case "$MARKER_STATUS" in
     approved)
+      # Issue #1968: approved markers must be producer-token-backed so a raw
+      # `cat > .review-state/...` with only sha+status cannot pass the gate.
+      # Resolve the auth lib from this hook's source tree (not $REPO_ROOT): hook
+      # tests invoke the real `.hooks/pre-push` against a scratch repo, and the
+      # validation code must still load.
+      _HOOK_SRC="${BASH_SOURCE[0]:-}"
+      _HOOK_DIR=$(cd "$(dirname "$_HOOK_SRC")" 2>/dev/null && pwd -P) || _HOOK_DIR=""
+      _AUTH_LIB=""
+      if [ -n "$_HOOK_DIR" ] && [ -f "$_HOOK_DIR/../scripts/lib/review-marker-auth.sh" ]; then
+        _AUTH_LIB="$_HOOK_DIR/../scripts/lib/review-marker-auth.sh"
+      elif [ -f "$REPO_ROOT/scripts/lib/review-marker-auth.sh" ]; then
+        _AUTH_LIB="$REPO_ROOT/scripts/lib/review-marker-auth.sh"
+      fi
+      if [ -n "$_AUTH_LIB" ]; then
+        # shellcheck disable=SC1090
+        . "$_AUTH_LIB"
+        if ! validate_review_state_approved_file "$MARKER_FILE" "$HEAD_SHA"; then
+          echo ""
+          echo "Push rejected: approved marker is missing a valid producer token."
+          echo "  File: $MARKER_FILE"
+          echo ""
+          echo "Raw shell forgery (cat > .review-state/...) no longer works."
+          echo "After real reviewer specialists finish, write the marker with:"
+          echo ""
+          echo "  bash scripts/write-review-state-marker.sh --status approved \\"
+          echo "    --specialists \"correctness,lint-like,test\""
+          echo ""
+          echo "For a deliberate human skip, use a bypass marker with a reason"
+          echo "(recipe printed when the marker file is missing)."
+          exit 1
+        fi
+      else
+        echo ""
+        echo "Push rejected: scripts/lib/review-marker-auth.sh missing; cannot validate approved marker."
+        exit 1
+      fi
       echo "[pre-push] review-gate: APPROVED for $DISPLAY_REF"
       ;;
     bypass)

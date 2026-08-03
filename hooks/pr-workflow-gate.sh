@@ -333,9 +333,50 @@ if [ -f "$BYPASS_FILE" ]; then
   exit 0
 fi
 
-# --- Check if pre-PR review was completed ---
+# --- Check if pre-PR review was completed (producer-token required, #1968) ---
+# A raw `touch /dev/shm/.pr-gate-*-pre-done` is no longer enough: the state
+# file must be JSON minted by scripts/write-pr-gate-marker.sh (HMAC token).
 if [ -f "$STATE_FILE" ]; then
-  # State file exists — pre-PR review was done. Allow.
+  AUTH_LIB=""
+  # Prefer repo-local auth lib when cwd is a kookr checkout; fall back to the
+  # install-hooks symlink target next to this script (user-global install).
+  if [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ]; then
+    _cwd_root=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$_cwd_root" ] && [ -f "$_cwd_root/scripts/lib/review-marker-auth.sh" ]; then
+      AUTH_LIB="$_cwd_root/scripts/lib/review-marker-auth.sh"
+    fi
+  fi
+  if [ -z "$AUTH_LIB" ]; then
+    _hook_src=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    _hook_repo=$(cd "$(dirname "$_hook_src")/.." 2>/dev/null && pwd -P) || _hook_repo=""
+    if [ -n "$_hook_repo" ] && [ -f "$_hook_repo/scripts/lib/review-marker-auth.sh" ]; then
+      AUTH_LIB="$_hook_repo/scripts/lib/review-marker-auth.sh"
+    fi
+  fi
+
+  if [ -n "$AUTH_LIB" ]; then
+    # shellcheck disable=SC1090
+    . "$AUTH_LIB"
+    # SAFE_BRANCH already flattened; pr-gate material uses the same key parts.
+    if validate_pr_gate_pre_done_file "$STATE_FILE" "$REPO_NAME" "$SAFE_BRANCH"; then
+      exit 0
+    fi
+    # File present but forged / stale / empty — fall through to deny with a
+    # specific reason so agents stop touching empty files.
+    cat <<'HOOKOUTPUT'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Pre-PR gate marker is missing a valid producer token (raw touch/forgery is rejected). After pre-pr-review checks pass, run: bash scripts/write-pr-gate-marker.sh — then retry gh pr create. One-time human bypass: touch /dev/shm/.pr-gate-<repo>-<branch>-bypass"
+  }
+}
+HOOKOUTPUT
+    exit 0
+  fi
+
+  # Auth lib unavailable (non-kookr install without the script tree) — fail
+  # open to existence-only check so we do not brick external installs mid-rollout.
   exit 0
 fi
 
@@ -345,7 +386,7 @@ cat <<'HOOKOUTPUT'
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "Pre-PR review has not been completed for this branch. Run the pre-pr-review skill first, then retry gh pr create. To exempt this repo from the gate, remove it from ~/.kookr/pr-gated-repos.json (or delete the file to fall back to gate-everything)."
+    "permissionDecisionReason": "Pre-PR review has not been completed for this branch. Run the pre-pr-review skill first (it writes the producer-token gate marker via scripts/write-pr-gate-marker.sh), then retry gh pr create. To exempt this repo from the gate, remove it from ~/.kookr/pr-gated-repos.json (or delete the file to fall back to gate-everything)."
   }
 }
 HOOKOUTPUT

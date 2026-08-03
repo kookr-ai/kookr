@@ -85,10 +85,8 @@ assert_validators_run() {
 write_review_marker() {
   local repo="$1"
   local branch="$2"
-  local head_sha
-  head_sha=$(git -C "$repo" rev-parse HEAD)
-  mkdir -p "$repo/.review-state"
-  printf '{"sha":"%s","status":"approved"}\n' "$head_sha" > "$repo/.review-state/$branch.json"
+  bash "$REPO_ROOT/scripts/write-review-state-marker.sh" \
+    --repo-root "$repo" --status approved --specialists "test" --key "$branch" >/dev/null
 }
 
 docs_repo="$TMPDIR/docs-only"

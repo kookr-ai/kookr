@@ -108,10 +108,15 @@ case "${STATE_KEY}" in
     ;;
 esac
 
-# Produce the state file the skill would touch.
+# Produce the state file the skill would write (producer-token, issue #1968).
 STATE_FILE="/dev/shm/.pr-gate-${STATE_KEY}-pre-done"
-touch "${STATE_FILE}"
-trap 'rm -f "${STATE_FILE}" "/dev/shm/.pr-gate-${STATE_KEY}-bypass" 2>/dev/null || true; rm -rf "${SCRATCH_PARENT}"' EXIT
+HOME_ISOLATE=$(mktemp -d)
+mkdir -p "${HOME_ISOLATE}/.kookr"
+HOME="${HOME_ISOLATE}" KOOKR_REVIEW_MARKER_SECRET_FILE="${HOME_ISOLATE}/.kookr/review-marker-secret" \
+  bash "${REPO_ROOT}/scripts/write-pr-gate-marker.sh" \
+    --repo "${REPO_NAME}" --branch "$(git -C "${SCRATCH_DIR}" rev-parse --abbrev-ref HEAD)" \
+    --sha "$(git -C "${SCRATCH_DIR}" rev-parse HEAD)" >/dev/null
+trap 'rm -f "${STATE_FILE}" "/dev/shm/.pr-gate-${STATE_KEY}-bypass" 2>/dev/null || true; rm -rf "${SCRATCH_PARENT}" "${HOME_ISOLATE}"' EXIT
 
 # ---------------------------------------------------------------------
 # Case 2: pr-workflow-gate.sh sees `-R kookr-ai/kookr --head feat/x-<tag>`,
@@ -122,7 +127,10 @@ PAYLOAD=$(jq -n \
   --arg cmd "gh pr create -R kookr-ai/kookr --head feat/x-${TEST_TAG} --title t --body b" \
   '{ tool_name: "Bash", cwd: $cwd, tool_input: { command: $cmd } }')
 
-OUT=$(printf '%s' "${PAYLOAD}" | bash "${HOOK}" 2>&1) || true
+OUT=$(
+  HOME="${HOME_ISOLATE}" KOOKR_REVIEW_MARKER_SECRET_FILE="${HOME_ISOLATE}/.kookr/review-marker-secret" \
+    bash -c 'printf "%s" "$1" | bash "$2"' _ "${PAYLOAD}" "${HOOK}" 2>&1
+) || true
 
 if printf '%s' "${OUT}" | grep -q '"permissionDecision": "deny"'; then
   report FAIL "2: hook allows when remote-derived state file exists" \
@@ -151,7 +159,10 @@ WRONG_KEY="scratch-kookr-feature-x-feat-x-${TEST_TAG}"
 WRONG_STATE="/dev/shm/.pr-gate-${WRONG_KEY}-pre-done"
 touch "${WRONG_STATE}"
 
-OUT2=$(printf '%s' "${PAYLOAD}" | bash "${HOOK}" 2>&1) || true
+OUT2=$(
+  HOME="${HOME_ISOLATE}" KOOKR_REVIEW_MARKER_SECRET_FILE="${HOME_ISOLATE}/.kookr/review-marker-secret" \
+    bash -c 'printf "%s" "$1" | bash "$2"' _ "${PAYLOAD}" "${HOOK}" 2>&1
+) || true
 rm -f "${WRONG_STATE}"
 
 if printf '%s' "${OUT2}" | grep -q '"permissionDecision": "deny"'; then
@@ -163,7 +174,10 @@ else
 fi
 
 # Restore the correct state file so case 2's trap-cleanup still matches.
-touch "${STATE_FILE}"
+HOME="${HOME_ISOLATE}" KOOKR_REVIEW_MARKER_SECRET_FILE="${HOME_ISOLATE}/.kookr/review-marker-secret" \
+  bash "${REPO_ROOT}/scripts/write-pr-gate-marker.sh" \
+    --repo "${REPO_NAME}" --branch "$(git -C "${SCRATCH_DIR}" rev-parse --abbrev-ref HEAD)" \
+    --sha "$(git -C "${SCRATCH_DIR}" rev-parse HEAD)" >/dev/null
 
 printf '\nResults: %d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [ "${FAIL}" -gt 0 ]; then
