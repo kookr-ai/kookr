@@ -81,34 +81,38 @@ die() {
   exit 2
 }
 
-# Millisecond epoch. Prefer node (always present in this repo), then python3.
-# Avoid GNU-only date +%s%3N for macOS portability.
-now_ms() {
-  if command -v node >/dev/null 2>&1; then
-    node -e 'process.stdout.write(String(Date.now()))'
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import time; print(int(time.time() * 1000))'
-  else
-    # Second resolution only — still reports a number, just coarser.
-    echo $(($(date +%s) * 1000))
-  fi
-}
+# Millisecond epoch. Resolve the backend ONCE so a 10ms loop is not dominated
+# by spawning node/python every sample. Prefer bash 5 EPOCHREALTIME (no
+# subprocess). Avoid GNU-only date +%s%3N for macOS portability.
+if [ "${BASH_VERSINFO[0]:-0}" -ge 5 ]; then
+  now_ms() {
+    # EPOCHREALTIME is seconds.fraction (e.g. 1722700000.123456).
+    local s f
+    s=${EPOCHREALTIME%.*}
+    f=${EPOCHREALTIME#*.}000
+    f=${f:0:3}
+    printf '%s\n' "$((10#$s * 1000 + 10#$f))"
+  }
+elif command -v node >/dev/null 2>&1; then
+  now_ms() { node -e 'process.stdout.write(String(Date.now()))'; }
+elif command -v python3 >/dev/null 2>&1; then
+  now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+else
+  now_ms() { echo $(($(date +%s) * 1000)); }
+fi
 
 # Sleep INTERVAL_MS without requiring bash 4 or GNU sleep features beyond
 # fractional seconds (supported on Linux GNU coreutils and modern macOS).
 sleep_interval() {
   local ms="$1"
-  if [ "$ms" -le 0 ]; then
-    return 0
-  fi
   # awk formats seconds with a leading 0 when needed (e.g. 0.010).
   local sec
   sec="$(awk -v ms="$ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
   sleep "$sec"
 }
 
-# Probe once. Exit 0 when the health endpoint is reachable with HTTP 2xx/3xx
-# under curl -f; non-zero when connection fails, times out, or HTTP is 4xx/5xx.
+# Probe once. Exit 0 when curl -f succeeds (HTTP 2xx; -f fails on 4xx/5xx);
+# non-zero when connection fails, times out, or HTTP is an error.
 probe_up() {
   # Bounded so a hung server cannot stall the loop forever. Keep generous
   # enough that a single slow health sample under load is not a false DOWN
@@ -117,7 +121,7 @@ probe_up() {
     --connect-timeout 0.2 \
     --max-time 1.0 \
     -o /dev/null \
-    "$URL" 2>/dev/null
+    --url "$URL" 2>/dev/null
 }
 
 while [ "$#" -gt 0 ]; do
@@ -166,8 +170,11 @@ if [ "$ONCE" -eq 1 ]; then
 fi
 
 case "$INTERVAL_MS" in
-  '' | *[!0-9]*) die "--interval-ms must be a non-negative integer" ;;
+  '' | *[!0-9]*) die "--interval-ms must be a positive integer" ;;
 esac
+if [ "$INTERVAL_MS" -lt 1 ]; then
+  die "--interval-ms must be >= 1 (refuse busy-poll)"
+fi
 case "$TIMEOUT_S" in
   '' | *[!0-9]*) die "--timeout-s must be a non-negative integer" ;;
 esac

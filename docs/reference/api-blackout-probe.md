@@ -7,7 +7,7 @@ unreachable during an intentional restart (`pnpm prod:restart` /
 ## Why
 
 Redeploys briefly drop the HTTP listener. Without a local measurement recipe,
-the **ideal &lt;1s / max &lt;5s** claim is not operator-verifiable, and
+the **ideal <1s / max <5s** claim is not operator-verifiable, and
 orchestrators can treat planned restarts as outages. Backend literature often
 probes downtime at **~10ms** intervals; this recipe matches that cadence.
 
@@ -53,8 +53,8 @@ blackout_ms=842  down_at_ms=1722700000123  up_at_ms=1722700001965
 
 Interpret:
 
-- **ideal:** `blackout_ms` &lt; 1000
-- **max (SLO):** `blackout_ms` &lt; 5000
+- **ideal:** `blackout_ms` < 1000
+- **max (SLO):** `blackout_ms` < 5000
 - Values above 5000 print a non-fatal `# WARN` on stderr (same spirit as
   `prod-restart.sh`).
 

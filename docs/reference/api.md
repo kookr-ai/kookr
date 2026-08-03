@@ -826,6 +826,8 @@ may include:
 Source: `{dataDir}/last-restart-metrics.json` (`~/.kookr` on port 4800, or
 `~/.kookr-<port>` otherwise). Missing or corrupt file ⇒ field omitted (never 500).
 
+To measure blackout independently with a 10ms curl loop (not a CI gate), see [API Blackout Probe](api-blackout-probe.md).
+
 ### Reasoning effort
 
 `agentEffort` is a per-agent-type map in settings (`~/.kookr/settings.json`,
