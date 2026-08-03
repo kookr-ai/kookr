@@ -195,10 +195,43 @@ interface GraphQLIssueNode {
   comments?: { totalCount?: unknown } | null;
 }
 
+/** Log every Nth consecutive per-repo batch failure (1st, then every Nth with running count). */
+const FETCH_STATE_FAIL_LOG_EVERY = 10;
+/** Consecutive non-rate-limit batch failures per `owner/repo` (cleared on success). */
+const fetchStateFailCounts = new Map<string, number>();
+
+/** Test-only: reset per-repo failure log throttle state. */
+export function resetFetchStateFailureThrottleForTests(): void {
+  fetchStateFailCounts.clear();
+}
+
+function logFetchStateBatchFailure(owner: string, repo: string, err: unknown): void {
+  const key = `${owner}/${repo}`;
+  const count = (fetchStateFailCounts.get(key) ?? 0) + 1;
+  fetchStateFailCounts.set(key, count);
+  // Throttle spam: first occurrence + every Nth thereafter, with running count.
+  if (count === 1 || count % FETCH_STATE_FAIL_LOG_EVERY === 0) {
+    const suffix = count === 1 ? '' : ` (x${count})`;
+    console.error(`Failed to fetch GitHub state batch for ${owner}/${repo}${suffix}:`, err);
+  }
+}
+
+function clearFetchStateBatchFailure(owner: string, repo: string): void {
+  fetchStateFailCounts.delete(`${owner}/${repo}`);
+}
+
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 /** Fetch all requested PR and issue states using one GraphQL request per repository. */
 export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchBatchResult> {
   const result: GitHubFetchBatchResult = { prs: [], issues: [] };
-  for (const group of groupRefsByRepo(refs)) {
+  const groups = groupRefsByRepo(refs);
+  const failures: Error[] = [];
+  let successGroups = 0;
+
+  for (const group of groups) {
     try {
       const query = buildRepoStateBatchQuery(group.refs);
       const { stdout } = await execGh([
@@ -221,6 +254,8 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
       const batch = parseRepoStateBatchResponse(parsed, group.refs);
       result.prs.push(...batch.prs);
       result.issues.push(...batch.issues);
+      clearFetchStateBatchFailure(group.owner, group.repo);
+      successGroups++;
       const headerRateLimit = classifyGitHubRateLimit(response.headers);
       if (headerRateLimit) {
         result.rateLimit = mergeRateLimits(result.rateLimit, headerRateLimit);
@@ -234,9 +269,20 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
         console.warn(`[github] rate limited while fetching state for ${group.owner}/${group.repo}: ${rateLimit.message}`);
         return result;
       }
-      console.error(`Failed to fetch GitHub state batch for ${group.owner}/${group.repo}:`, err);
+      logFetchStateBatchFailure(group.owner, group.repo, err);
+      failures.push(toError(err));
     }
   }
+
+  // Total-batch non-rate-limit failure: rethrow so CircuitBreakerGitHubFetcher.breaker.call observes it.
+  // Partial success (any repo group succeeded) still returns results; rate-limit returns early above.
+  if (groups.length > 0 && successGroups === 0 && failures.length === groups.length) {
+    throw new AggregateError(
+      failures,
+      `Failed to fetch GitHub state for all ${failures.length} repo group(s)`,
+    );
+  }
+
   return result;
 }
 
