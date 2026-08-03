@@ -520,10 +520,13 @@ write_last_restart_metrics() {
     at_iso="unknown"
   fi
 
-  mkdir -p "$KOOKR_DIR" 2>/dev/null || true
-  tmp="$(mktemp "${KOOKR_DIR}/last-restart-metrics.XXXXXX" 2>/dev/null || true)"
+  # Fully best-effort under set -e: never abort a healthy restart on metrics I/O.
+  set +e
+  mkdir -p "$KOOKR_DIR" 2>/dev/null
+  tmp="$(mktemp "${KOOKR_DIR}/last-restart-metrics.XXXXXX" 2>/dev/null)"
   if [[ -z "$tmp" ]]; then
     echo "WARN: could not write ${metrics_file} (mktemp failed)" >&2
+    set -e
     return 0
   fi
   # Numbers only from our phase vars / awk; path_mode is a fixed enum from callers.
@@ -542,12 +545,13 @@ write_last_restart_metrics() {
   "dominantPhase": "${dominant}"
 }
 EOF
-  if mv -f "$tmp" "$metrics_file" 2>/dev/null; then
+  if [[ $? -eq 0 ]] && mv -f "$tmp" "$metrics_file" 2>/dev/null; then
     echo "Wrote restart metrics → ${metrics_file}"
   else
-    rm -f -- "$tmp" 2>/dev/null || true
+    rm -f -- "$tmp" 2>/dev/null
     echo "WARN: could not write ${metrics_file}" >&2
   fi
+  set -e
 }
 
 wait_for_health() {

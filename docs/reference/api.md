@@ -798,9 +798,33 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
 | `POST /api/oss-attempts/refresh` | Refresh PR and issue state for tracked OSS attempts |
 | `POST /api/oss-attempts/events` | Record an OSS attempt event, used by hooks |
-| `GET /api/deploy/status` | Production-update job status plus user-global toolkit symlink freshness |
+| `GET /api/deploy/status` | Production-update job status, toolkit/plugin freshness, and optional `lastRestart` phase timings from the last successful `prod:restart` |
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
+
+#### `GET /api/deploy/status` — `lastRestart` (optional)
+
+After a successful `pnpm prod:restart` / `scripts/prod-restart.sh`, the response
+may include:
+
+```json
+{
+  "lastRestart": {
+    "at": "2026-08-03T12:00:00Z",
+    "m1Seconds": 5,
+    "m2Seconds": 40,
+    "apiBlackoutSeconds": 3.0,
+    "dominantPhase": "M2-ready",
+    "portFreeSeconds": 2,
+    "smokeSeconds": 45,
+    "totalSeconds": 45,
+    "path": "script"
+  }
+}
+```
+
+Source: `{dataDir}/last-restart-metrics.json` (`~/.kookr` on port 4800, or
+`~/.kookr-<port>` otherwise). Missing or corrupt file ⇒ field omitted (never 500).
 
 ### Reasoning effort
 
