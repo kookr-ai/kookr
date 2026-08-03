@@ -8,6 +8,7 @@ import {
   getOperationalAlertConfigState,
   setOperationalAlertConfig,
 } from '../operational-alert-config.js';
+import { timingSafeTokenEqual } from '../admin-token.js';
 
 const ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 
@@ -41,7 +42,7 @@ export function isAuthorizedAdminRequest(
   tokenHeader: string | undefined,
 ): boolean {
   const configured = process.env.KOOKR_ADMIN_TOKEN?.trim();
-  if (configured && tokenHeader === configured) return true;
+  if (configured && timingSafeTokenEqual(configured, tokenHeader)) return true;
   return remoteAddress !== undefined && isLoopbackAddress(remoteAddress);
 }
 

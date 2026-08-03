@@ -50,6 +50,22 @@ describe('isAuthorizedAdminRequest', () => {
     process.env.KOOKR_ADMIN_TOKEN = 'secret';
     expect(isAuthorizedAdminRequest('10.0.0.5', 'nope')).toBe(false);
   });
+
+  test('rejects a missing token header from a non-loopback address when configured', () => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    expect(isAuthorizedAdminRequest('10.0.0.5', undefined)).toBe(false);
+  });
+
+  test('still trusts loopback when a wrong token is presented', () => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    expect(isAuthorizedAdminRequest('127.0.0.1', 'nope')).toBe(true);
+  });
+
+  test('rejects a length-mismatched token from a non-loopback address', () => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    expect(isAuthorizedAdminRequest('10.0.0.5', 'secre')).toBe(false);
+    expect(isAuthorizedAdminRequest('10.0.0.5', 'secret!')).toBe(false);
+  });
 });
 
 describe('admin operational-alert history route (issue #1256)', () => {

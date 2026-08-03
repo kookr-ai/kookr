@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { accessSync, constants as fsConstants, existsSync } from 'node:fs';
+import { timingSafeTokenEqual } from '../admin-token.js';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
@@ -1370,17 +1370,6 @@ function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adm
   const configuredAdminToken = process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN?.trim();
   if (configuredAdminToken && timingSafeTokenEqual(configuredAdminToken, adminTokenHeader)) return true;
   return remoteAddress !== undefined && isLoopbackAddress(remoteAddress);
-}
-
-function timingSafeTokenEqual(expected: string, presented: string | undefined): boolean {
-  if (presented === undefined) return false;
-  const expectedBytes = Buffer.from(expected, 'utf8');
-  const presentedBytes = Buffer.from(presented, 'utf8');
-  const expectedDigest = createHash('sha256').update(expectedBytes).digest();
-  const presentedDigest = createHash('sha256').update(presentedBytes).digest();
-  const equalLength = expectedBytes.length === presentedBytes.length;
-  const equalDigest = timingSafeEqual(expectedDigest, presentedDigest);
-  return equalLength && equalDigest;
 }
 
 function getRemoteAddress(c: Context): string | undefined {
