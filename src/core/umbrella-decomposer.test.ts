@@ -9,6 +9,7 @@ import {
   LUCY_1589_LEAF_PLAN,
   LUCY_1590_LEAF_PLAN,
   LUCY_1593_LEAF_PLAN,
+  LUCY_1594_LEAF_PLAN,
   QUEUE_FEEDER_SCHEMA,
   buildLeafIssueBody,
   buildQueueFeederRecord,
@@ -594,6 +595,58 @@ describe('lucy#1589 forward-corpus denominator hygiene residual curated plan', (
     });
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1589');
+    expect(decision.skipped[0]!.reason).toMatch(/already has 5 open child/);
+  });
+});
+
+describe('lucy#1594 pre-registered forward contracts + frozen holdout residual curated plan', () => {
+  it('has a vetted 5-leaf residual plan registered, each leaf well-formed', () => {
+    const plan = curatedLeafPlan('jeanibarz/lucy#1594');
+    expect(plan).toBe(LUCY_1594_LEAF_PLAN);
+    expect(plan).toHaveLength(5);
+    const normalized = normalizeLeafPlan(plan);
+    expect(normalized.ok).toBe(true);
+    expect(normalized.leaves).toHaveLength(5);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1594');
+  });
+
+  it('emits lucy#1594 leaves when it has no open children yet', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1594,
+          title:
+            'Umbrella: pre-registered forward contracts + frozen holdout — backtesting-audit P2',
+          openChildrenCount: 0,
+        }),
+      ],
+    });
+    expect(decision.selected?.ref).toBe('jeanibarz/lucy#1594');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(5);
+  });
+
+  it('SKIPS lucy#1594 once residual leaves already exist (idempotent)', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1594,
+          title:
+            'Umbrella: pre-registered forward contracts + frozen holdout — backtesting-audit P2',
+          openChildrenCount: 5,
+        }),
+      ],
+    });
+    expect(decision.selected).toBeNull();
+    expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1594');
     expect(decision.skipped[0]!.reason).toMatch(/already has 5 open child/);
   });
 });
