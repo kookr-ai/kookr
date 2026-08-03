@@ -268,3 +268,40 @@ describe('parseBatchOutcomeRecord', () => {
     expect(parseBatchOutcomeRecord(null)).toBeNull();
   });
 });
+
+
+describe('nextPipelineStarvationState skip reason (PR1)', () => {
+  test('records lastSpawnSkipReason when scout is skipped', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 60_000,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.spawnScout).toBe(false);
+    const state = nextPipelineStarvationState('jeanibarz/lucy', null, decision, { nowMs: NOW });
+    expect(state.lastSpawnSkipReason).toMatch(/successful ideation/i);
+    expect(state.lastSpawnSkipAt).toBe(new Date(NOW).toISOString());
+  });
+
+  test('clears lastSpawnSkipReason when scout is spawned', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: prior({
+        lastSpawnSkipReason: 'scout already running or queued for this repo',
+        lastSpawnSkipAt: new Date(NOW - 1000).toISOString(),
+      }),
+    });
+    expect(decision.spawnScout).toBe(true);
+    const state = nextPipelineStarvationState(
+      'jeanibarz/lucy',
+      prior({ lastSpawnSkipReason: 'old', lastSpawnSkipAt: new Date(NOW - 1000).toISOString() }),
+      decision,
+      { nowMs: NOW, spawnedTaskId: 'scout-1' },
+    );
+    expect(state.lastSpawnSkipReason).toBeUndefined();
+    expect(state.lastStarvationScoutTaskId).toBe('scout-1');
+  });
+});

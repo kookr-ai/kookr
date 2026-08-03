@@ -66,6 +66,11 @@ import {
   readPendingRetroVerify,
 } from '../../core/retro-verify-queue.js';
 import {
+  listPipelineStarvationHealth,
+  type PipelineStarvationHealthRepo,
+} from '../../core/pipeline-starvation-state.js';
+import { defaultPipelineStarvationStateDir } from '../../core/pipeline-starvation.js';
+import {
   evaluateRelayOrphanBound,
   resolveRelayOrphanBound,
   scanStaleProcesses,
@@ -413,6 +418,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ciBlindDebtBlock = undefined;
     }
 
+    // Pipeline starvation projection (RFC overnight-throughput PR1 / #1715).
+    // Small per-repo JSON under playbook-state; soft-omit on failure.
+    let pipelineStarvationBlock:
+      | { schemaVersion: 'pipeline-starvation.v1'; repos: Record<string, PipelineStarvationHealthRepo> }
+      | undefined;
+    try {
+      const stateDir = deps.kookrDir
+        ? `${deps.kookrDir}/playbook-state/pipeline-starvation`
+        : defaultPipelineStarvationStateDir();
+      const repos = await listPipelineStarvationHealth({ stateDir });
+      if (Object.keys(repos).length > 0) {
+        pipelineStarvationBlock = { schemaVersion: 'pipeline-starvation.v1', repos };
+      }
+    } catch {
+      pipelineStarvationBlock = undefined;
+    }
+
     const staleProcesses = getStaleProcessSummary();
     // Issue #1885: first-class finding when relay-server orphans exceed the
     // bound, so sentinel/reflection can cite a stable code instead of
@@ -460,6 +482,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(ciBlindDebtBlock
         ? { ciBlindDebt: ciBlindDebtBlock, ci_blind_debt: ciBlindDebtBlock }
         : {}),
+      ...(pipelineStarvationBlock ? { pipelineStarvation: pipelineStarvationBlock } : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       terminalWrite: terminalWriteBlock,
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),

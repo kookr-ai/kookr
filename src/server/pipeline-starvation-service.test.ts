@@ -168,8 +168,13 @@ describe('PipelineStarvationService (#1715)', () => {
 
   test('skips spawn when a successful ideation run finished recently', async () => {
     const runDir = join(ideaScoutBase, 'recent-run');
-    await mkdir(runDir, { recursive: true });
+    await mkdir(join(runDir, 'recommendations', '01-leaf'), { recursive: true });
     await writeFile(join(runDir, 'state.md'), '# scout\n\n<promise>DONE</promise>\n', 'utf-8');
+    await writeFile(
+      join(runDir, 'recommendations', '01-leaf', 'issue-created.json'),
+      JSON.stringify({ number: 42, title: 'feat: real leaf issue' }),
+      'utf-8',
+    );
 
     const result = await service.handleBatchOutcome({
       outcome: outcome(),
@@ -178,6 +183,23 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(result.decision.spawnScout).toBe(false);
     expect(result.decision.spawnSkipReason).toMatch(/successful ideation/i);
     expect(launches).toHaveLength(0);
+    // PR1: decision audit always written (including skips).
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_decision');
+    expect(audit).toContain('successful ideation');
+  });
+
+  test('DONE without issue-created does NOT suppress spawn (content-blind fix)', async () => {
+    const runDir = join(ideaScoutBase, 'empty-done');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'state.md'), '# scout\n\n<promise>DONE</promise>\n', 'utf-8');
+
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'empty-done-run' }),
+      localPath: checkout,
+    });
+    expect(result.decision.spawnScout).toBe(true);
+    expect(launches).toHaveLength(1);
   });
 
   test('non-blocked-empty outcomes are no-ops', async () => {
