@@ -166,10 +166,13 @@ export async function requestTaskReflect(
 
   let result: { task: Task; queued: boolean };
   try {
+    // Omit agentType so launch-service resolves the configured default
+    // (settings.defaultAgentType / round-robin / adapter default) instead of
+    // hardcoding Claude Code. Reflect tasks should run on whatever the operator
+    // already chose as their coding agent.
     result = await deps.launchTask({
       prompt,
       cwd: worktreePath,
-      agentType: 'claude-code',
       disableDedup: true,
       launchSource: 'api',
       sandboxProfile: 'reflect',

@@ -113,8 +113,10 @@ describe('requestTaskReflect', () => {
     const sourceTask = store.createTask({ prompt: 'finish feature', cwd: repoDir, agentType: 'codex-cli' });
     const launchTask = vi.fn(async (opts: LaunchOpts) => {
       createdWorktree = opts.cwd;
+      // Simulate launch-service resolving the configured default when agentType is omitted.
+      const resolvedAgent = opts.agentType ?? 'grok-build';
       return {
-        task: store.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: 'claude-code' }),
+        task: store.createTask({ prompt: opts.prompt, cwd: opts.cwd, agentType: resolvedAgent as 'grok-build' }),
         queued: false,
       };
     });
@@ -133,11 +135,12 @@ describe('requestTaskReflect', () => {
     expect(launchTask).toHaveBeenCalledOnce();
     const launchOpts = launchTask.mock.calls[0][0];
     expect(launchOpts).toMatchObject({
-      agentType: 'claude-code',
       disableDedup: true,
       launchSource: 'api',
       sandboxProfile: 'reflect',
     });
+    // Reflect must not pin Claude Code; omit agentType so launch-service uses the operator default.
+    expect(launchOpts.agentType).toBeUndefined();
     expect(launchOpts.cwd).toContain(reflectWorktreesDir);
     expect(launchOpts.cwd).not.toBe(repoDir);
     expect(existsSync(join(launchOpts.cwd, REFLECT_IDENTITY_FILE))).toBe(true);
@@ -149,6 +152,7 @@ describe('requestTaskReflect', () => {
       direction: 'up',
       worktreePath: launchOpts.cwd,
     });
+    expect(reflectTask?.agentType).toBe('grok-build');
   });
 
   it('falls back to origin/main when the local main branch is absent', async () => {
