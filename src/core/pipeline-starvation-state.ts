@@ -5,8 +5,8 @@
  * (user-scoped, same tree as other playbook-state artifacts).
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import {
   defaultPipelineStarvationStateDir,
   emptyPipelineStarvationState,
@@ -14,6 +14,76 @@ import {
   pipelineStarvationStatePath,
   type PipelineStarvationRepoState,
 } from './pipeline-starvation.js';
+
+/** Compact health/projection row for one repo (RFC overnight-throughput PR1). */
+export interface PipelineStarvationHealthRepo {
+  repo: string;
+  consecutiveBlockedEmpty: number;
+  lastBlockedEmptyAt: string | null;
+  lastSpawnSkipReason: string | null;
+  lastSpawnSkipAt: string | null;
+  lastStarvationScoutTaskId: string | null;
+  lastStarvationScoutAt: string | null;
+  lastStarvationAlertAt: string | null;
+  updatedAt: string;
+}
+
+/**
+ * Load all durable pipeline-starvation state files for health projection.
+ * Soft-fails empty/missing dirs; skips unreadable rows.
+ */
+export async function listPipelineStarvationHealth(
+  opts: { stateDir?: string; nowMs?: number } = {},
+): Promise<Record<string, PipelineStarvationHealthRepo>> {
+  const stateDir = opts.stateDir ?? defaultPipelineStarvationStateDir();
+  const nowMs = opts.nowMs ?? Date.now();
+  let names: string[];
+  try {
+    names = await readdir(stateDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+
+  const out: Record<string, PipelineStarvationHealthRepo> = {};
+  for (const name of names) {
+    if (!name.endsWith('.json') || name.startsWith('.')) continue;
+    try {
+      const raw = await readFile(join(stateDir, name), 'utf-8');
+      const parsed = JSON.parse(raw) as Partial<PipelineStarvationRepoState>;
+      if (parsed.schemaVersion !== PIPELINE_STARVATION_STATE_SCHEMA || typeof parsed.repo !== 'string') {
+        continue;
+      }
+      const blocked = Array.isArray(parsed.blockedEmptyAt)
+        ? parsed.blockedEmptyAt.filter((x): x is string => typeof x === 'string')
+        : [];
+      out[parsed.repo] = {
+        repo: parsed.repo,
+        consecutiveBlockedEmpty: blocked.length,
+        lastBlockedEmptyAt: blocked.length > 0 ? blocked[blocked.length - 1]! : null,
+        lastSpawnSkipReason: typeof parsed.lastSpawnSkipReason === 'string'
+          ? parsed.lastSpawnSkipReason
+          : null,
+        lastSpawnSkipAt: typeof parsed.lastSpawnSkipAt === 'string' ? parsed.lastSpawnSkipAt : null,
+        lastStarvationScoutTaskId: typeof parsed.lastStarvationScoutTaskId === 'string'
+          ? parsed.lastStarvationScoutTaskId
+          : null,
+        lastStarvationScoutAt: typeof parsed.lastStarvationScoutAt === 'string'
+          ? parsed.lastStarvationScoutAt
+          : null,
+        lastStarvationAlertAt: typeof parsed.lastStarvationAlertAt === 'string'
+          ? parsed.lastStarvationAlertAt
+          : null,
+        updatedAt: typeof parsed.updatedAt === 'string'
+          ? parsed.updatedAt
+          : new Date(nowMs).toISOString(),
+      };
+    } catch {
+      // skip corrupt row
+    }
+  }
+  return out;
+}
 
 export async function loadPipelineStarvationState(
   repo: string,
@@ -45,6 +115,12 @@ export async function loadPipelineStarvationState(
         : undefined,
       lastStarvationAlertAt: typeof parsed.lastStarvationAlertAt === 'string'
         ? parsed.lastStarvationAlertAt
+        : undefined,
+      lastSpawnSkipReason: typeof parsed.lastSpawnSkipReason === 'string'
+        ? parsed.lastSpawnSkipReason
+        : undefined,
+      lastSpawnSkipAt: typeof parsed.lastSpawnSkipAt === 'string'
+        ? parsed.lastSpawnSkipAt
         : undefined,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(nowMs).toISOString(),
     };

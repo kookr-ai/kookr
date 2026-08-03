@@ -23,7 +23,7 @@ import {
   type PipelineStarvationRepoState,
 } from '../core/pipeline-starvation.js';
 import {
-  findRecentSuccessfulIdeationAtMs,
+  findRecentSuccessfulIdeationDetails,
   isIdeaScoutInFlightForRepo,
 } from '../core/pipeline-starvation-ideation.js';
 import {
@@ -90,10 +90,11 @@ export class PipelineStarvationService {
     });
 
     const ideaScoutDir = this.deps.ideaScoutStateDirForRepo?.(outcome.repo);
-    const recentSuccessfulIdeationAtMs = await findRecentSuccessfulIdeationAtMs(outcome.repo, {
+    const ideationHit = await findRecentSuccessfulIdeationDetails(outcome.repo, {
       nowMs,
       ideaScoutStateDir: ideaScoutDir,
     });
+    const recentSuccessfulIdeationAtMs = ideationHit?.atMs ?? null;
     const scoutInFlight = isIdeaScoutInFlightForRepo(outcome.repo, this.deps.taskStore.listTasks());
 
     const decision = evaluatePipelineStarvationRefill(outcome, {
@@ -101,6 +102,36 @@ export class PipelineStarvationService {
       recentSuccessfulIdeationAtMs,
       scoutInFlight,
       prior,
+    });
+
+    const decisionInputs = {
+      scoutInFlight,
+      recentEligibleIdeationAt: ideationHit
+        ? new Date(ideationHit.atMs).toISOString()
+        : null,
+      issueCreatedCountInLookback: ideationHit?.issueCreatedCount ?? 0,
+      ideationRunKey: ideationHit?.runKey ?? null,
+      disqualifierSummary: summarizeDisqualifiers(outcome.disqualified),
+    };
+
+    // Always audit the decision path (RFC overnight-throughput PR1 R2) —
+    // including non-applicable and alreadyHandled so nights are debuggable.
+    await appendAuditRow(this.auditPath(), {
+      action: 'pipeline_starvation_decision',
+      provenance: STARVATION_TRIGGER_PROVENANCE,
+      repo: outcome.repo,
+      runKey: outcome.runKey,
+      outcome: outcome.outcome,
+      applicable: decision.applicable,
+      alreadyHandled: decision.alreadyHandled,
+      spawnScout: decision.spawnScout,
+      spawnSkipReason: decision.spawnSkipReason ?? null,
+      emitStarvationAlert: decision.emitStarvationAlert,
+      alertSkipReason: decision.alertSkipReason ?? null,
+      consecutiveBlockedEmpty: decision.consecutiveBlockedEmpty,
+      openIssueCount: outcome.openIssueCount ?? null,
+      ...decisionInputs,
+      at: new Date(nowMs).toISOString(),
     });
 
     if (!decision.applicable) {
@@ -149,7 +180,7 @@ export class PipelineStarvationService {
           taskId: spawnedScoutTaskId,
           queued: scoutQueued === true,
           openIssueCount: outcome.openIssueCount ?? null,
-          disqualifierSummary: summarizeDisqualifiers(outcome.disqualified),
+          disqualifierSummary: decisionInputs.disqualifierSummary,
           at: new Date(nowMs).toISOString(),
         });
       } catch (err) {
@@ -179,7 +210,8 @@ export class PipelineStarvationService {
         runKey: outcome.runKey,
         consecutiveBlockedEmpty: decision.consecutiveBlockedEmpty,
         openIssueCount: outcome.openIssueCount ?? null,
-        disqualifierSummary: summarizeDisqualifiers(outcome.disqualified),
+        disqualifierSummary: decisionInputs.disqualifierSummary,
+        spawnSkipReason: decision.spawnSkipReason ?? null,
         at: new Date(nowMs).toISOString(),
       });
     }

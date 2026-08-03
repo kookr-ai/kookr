@@ -78,6 +78,13 @@ export interface PipelineStarvationRepoState {
   lastStarvationScoutTaskId?: string;
   /** When we last emitted a pipeline-starvation alert for this repo. */
   lastStarvationAlertAt?: string;
+  /**
+   * Last spawn skip reason from handle (RFC overnight-throughput PR1).
+   * Durable so /api/health can answer "why no scout?" without reading audit.jsonl.
+   */
+  lastSpawnSkipReason?: string;
+  /** When lastSpawnSkipReason was written. */
+  lastSpawnSkipAt?: string;
   updatedAt: string;
 }
 
@@ -153,12 +160,14 @@ export function summarizeDisqualifiers(
 }
 
 /**
- * Pure decision function — no I/O. See issue #1715 acceptance criteria.
+ * Pure decision function — no I/O. See issue #1715 acceptance criteria and
+ * RFC overnight-throughput closed loop (PR1 lookback semantics live in
+ * {@link findRecentSuccessfulIdeationAtMs}: requires issue-created ≥1).
  *
  * Spawn when:
  *   - outcome is blocked-empty, AND
  *   - no scout currently running/queued for the repo, AND
- *   - no successful ideation in the last 4h, AND
+ *   - no successful ideation (with published issues) in the last 4h, AND
  *   - no starvation-triggered scout in the last 4h.
  *
  * Alert when:
@@ -300,6 +309,15 @@ export function nextPipelineStarvationState(
   if (opts.spawnedTaskId) {
     next.lastStarvationScoutAt = nowIso;
     next.lastStarvationScoutTaskId = opts.spawnedTaskId;
+    // Clear skip reason when we successfully spawn.
+    next.lastSpawnSkipReason = undefined;
+    next.lastSpawnSkipAt = undefined;
+  } else if (decision.spawnSkipReason && decision.applicable && !decision.alreadyHandled) {
+    next.lastSpawnSkipReason = decision.spawnSkipReason;
+    next.lastSpawnSkipAt = nowIso;
+  } else {
+    next.lastSpawnSkipReason = prior?.lastSpawnSkipReason;
+    next.lastSpawnSkipAt = prior?.lastSpawnSkipAt;
   }
   if (opts.alertEmitted) {
     next.lastStarvationAlertAt = nowIso;
