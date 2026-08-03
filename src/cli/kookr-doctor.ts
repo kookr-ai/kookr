@@ -49,19 +49,64 @@ interface RunDoctorDeps {
   now?: () => Date;
 }
 
-const HELP_TEXT = `kookr doctor — run machine-readable launch preflight checks.
+const HELP_TEXT = `kookr doctor — run launch preflight checks.
 
 Usage:
+  kookr doctor
   kookr doctor --json
 
 Options:
-  --json       Print one JSON report to stdout.
+  --json       Print one JSON report to stdout (machine-readable).
   -h, --help   Show this help.
+
+Without --json, prints a human-readable table of each check (status, summary,
+recommended action) covering runtime tools, gh auth, kb, and agent binaries.
 `;
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
 const AGENT_PROBE_TIMEOUT_MS = 2_000;
 const KB_SMOKE_QUERY = 'kookr launch dependency smoke';
+const STATUS_LABEL: Record<DoctorCheckStatus, string> = {
+  ok: 'OK',
+  warn: 'WARN',
+  fail: 'FAIL',
+};
+
+/**
+ * Render a doctor report as an aligned text table (mirrors scripts/doctor.sh
+ * print_row: fixed-width label + status + summary, then recommended actions).
+ */
+export function formatDoctorReport(report: DoctorJsonReport): string {
+  const lines: string[] = [
+    'Kookr doctor — launch preflight',
+    '',
+  ];
+
+  for (const check of report.checks) {
+    const status = STATUS_LABEL[check.status];
+    // label 22 | status 4 | two spaces | summary — same spirit as print_row
+    lines.push(`${check.label.padEnd(22)} ${status.padEnd(4)}  ${check.summary}`);
+    if (check.detail) {
+      lines.push(`${''.padEnd(22)} ${''.padEnd(4)}  ${check.detail}`);
+    }
+  }
+
+  const actions = report.checks
+    .filter((check) => check.status !== 'ok' && check.recommendedAction)
+    .map((check) => check.recommendedAction!);
+
+  if (actions.length > 0) {
+    lines.push('');
+    lines.push('Recommended actions:');
+    for (const action of actions) {
+      lines.push(`  - ${action}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`Overall: ${STATUS_LABEL[report.status]}${report.ok ? '' : ' (required checks failed)'}`);
+  return lines.join('\n');
+}
 
 export async function runDoctorCli(argv = process.argv.slice(2), deps: RunDoctorDeps = {}): Promise<number> {
   const args = parseArgs(argv);
@@ -78,14 +123,12 @@ export async function runDoctorCli(argv = process.argv.slice(2), deps: RunDoctor
     return 2;
   }
 
-  if (!args.json) {
-    out.error('`kookr doctor` currently requires --json. Use `pnpm doctor` for the human-readable shell report.');
-    out.error(HELP_TEXT);
-    return 2;
-  }
-
   const report = await buildDoctorJsonReport(deps);
-  out.log(JSON.stringify(report, null, 2));
+  if (args.json) {
+    out.log(JSON.stringify(report, null, 2));
+  } else {
+    out.log(formatDoctorReport(report));
+  }
   return report.ok ? 0 : 1;
 }
 

@@ -647,7 +647,7 @@ The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as 
 | --- | --- |
 | exit 0 | All required checks passed (`ok` may still include advisory `warn` checks). |
 | exit 1 | One or more required checks failed (`ok: false` in the JSON report). |
-| exit 2 | Usage error (missing `--json`, unknown flag, or help-only path when help is not requested). |
+| exit 2 | Usage error (unknown flag). |
 
 ### `kookr logs`
 
@@ -706,13 +706,16 @@ Exit behavior:
 
 ## `kookr doctor`
 
-Run machine-readable launch preflight checks — the CI/bootstrap counterpart to the human-readable shell report from `pnpm doctor` (see [Related Commands](#related-commands)).
+Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, and agent binary resolution. Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI.
+
+This is complementary to `pnpm doctor` (`scripts/doctor.sh`), which covers env/build preflight (ports, docker, node-pty). The two check sets are not identical — `kookr doctor` is the launch-dependency path (see [Related Commands](#related-commands)).
 
 ```bash
+kookr doctor
 kookr doctor --json
 ```
 
-`--json` is **required**. Without it the command prints a short usage note pointing at `pnpm doctor` and exits `2`. Use this form in scripts and CI; use `pnpm doctor` for an interactive human report.
+Without `--json`, prints aligned status rows for each check plus any recommended actions, then an overall status line. With `--json`, prints the JSON envelope below (shape is stable for scripts).
 
 JSON envelope shape:
 
@@ -770,14 +773,14 @@ Options:
 
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
-| `--json` | none | required | Print one machine-readable JSON report to stdout. |
+| `--json` | none | false | Print one machine-readable JSON report to stdout. Without this flag, prints a human-readable table. |
 | `-h`, `--help` | none | false | Print command help and exit `0`. |
 
 Exit behavior:
 
 - `0` when all required checks pass (`ok: true`; advisory warnings allowed).
 - `1` when one or more required checks fail (`ok: false`).
-- `2` for usage errors, including missing `--json` or an unknown argument.
+- `2` for usage errors (unknown argument).
 
 ## `kookr logs`
 
@@ -1202,6 +1205,7 @@ Options:
 pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
-pnpm doctor          # human-readable shell report (scripts/doctor.sh)
-kookr doctor --json  # machine-readable launch preflight (CI/bootstrap) — see `kookr doctor`
+pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/build preflight
+kookr doctor         # human-readable launch preflight (gh/kb/agent binaries)
+kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 ```

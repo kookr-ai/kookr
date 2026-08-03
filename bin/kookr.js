@@ -10,7 +10,7 @@ const HELP_TEXT = `kookr - local AI agent supervisor.
 Usage:
   kookr                         Start the built Kookr server.
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
-  kookr doctor --json           Run machine-readable launch preflight checks.
+  kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
@@ -44,14 +44,18 @@ Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
 `;
 
-const DOCTOR_HELP_TEXT = `kookr doctor — run machine-readable launch preflight checks.
+const DOCTOR_HELP_TEXT = `kookr doctor — run launch preflight checks.
 
 Usage:
+  kookr doctor
   kookr doctor --json
 
 Options:
-  --json       Print one JSON report to stdout.
+  --json       Print one JSON report to stdout (machine-readable).
   -h, --help   Show this help.
+
+Without --json, prints a human-readable table of each check (status, summary,
+recommended action) covering runtime tools, gh auth, kb, and agent binaries.
 `;
 
 async function main({
