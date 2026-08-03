@@ -1977,6 +1977,8 @@ Do the thing.
           active: 10,
           free: 0,
           byClass: { working: 1, finishedAwaitingAck: 8, hungSuspect: 1, launching: 0 },
+          effectiveWorking: 1,
+          phantomActive: 9,
           pendingQueueDepth: 24,
           oldestPendingAgeMs: 60_000,
           oldestFinishedAwaitingAckAgeMs: null,

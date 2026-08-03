@@ -279,6 +279,16 @@ describe('validateSettings', () => {
     expect(validateSettings({ finishedAwaitingAckTtlMinutes: 'forever' }).finishedAwaitingAckTtlMinutes).toBe(15);
   });
 
+  it('defaults hungSuspectTtlMinutes to 25 and clamps to the 10-60 range, hard-capped at 60 (issue #1935)', () => {
+    expect(validateSettings({}).hungSuspectTtlMinutes).toBe(25);
+    expect(DEFAULT_SETTINGS.hungSuspectTtlMinutes).toBe(25);
+    expect(validateSettings({ hungSuspectTtlMinutes: 20 }).hungSuspectTtlMinutes).toBe(20);
+    expect(validateSettings({ hungSuspectTtlMinutes: 1 }).hungSuspectTtlMinutes).toBe(10);
+    expect(validateSettings({ hungSuspectTtlMinutes: 90 }).hungSuspectTtlMinutes).toBe(60);
+    expect(validateSettings({ hungSuspectTtlMinutes: 99_999 }).hungSuspectTtlMinutes).toBe(60);
+    expect(validateSettings({ hungSuspectTtlMinutes: 'forever' }).hungSuspectTtlMinutes).toBe(25);
+  });
+
   it('defaults spawnBurstLimit to 30 and clamps to the 5–500 range (issue #1526 Phase C / C3)', () => {
     expect(validateSettings({}).spawnBurstLimit).toBe(30);
     expect(DEFAULT_SETTINGS.spawnBurstLimit).toBe(30);
@@ -534,6 +544,7 @@ describe('loadSettings / saveSettings', () => {
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,
       finishedAwaitingAckTtlMinutes: 20,
+      hungSuspectTtlMinutes: 30,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
       reservedActiveSlots: 3,

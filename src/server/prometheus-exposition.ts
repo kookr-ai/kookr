@@ -93,6 +93,12 @@ export interface PrometheusExpositionSnapshot {
    * since process start. Omitted only in harnesses that never wire the sweep.
    */
   finishedAwaitingAckReclaim?: { reclaimedTotal: number };
+  /**
+   * hungSuspect TTL reclaim counter (issue #1935). Cumulative count of
+   * hungSuspect tasks terminated by the liveness-tick TTL sweep since process
+   * start. Omitted only in harnesses that never wire the sweep.
+   */
+  hungSuspectReclaim?: { reclaimedTotal: number };
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -120,6 +126,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendCapacityMetrics(lines, snapshot.capacity);
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
+  appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
 
   return `${lines.join('\n')}\n`;
 }
@@ -383,6 +390,8 @@ const EMPTY_CAPACITY: CapacityLedger = {
     hungSuspect: 0,
     launching: 0,
   },
+  effectiveWorking: 0,
+  phantomActive: 0,
   pendingQueueDepth: 0,
   oldestPendingAgeMs: null,
   oldestFinishedAwaitingAckAgeMs: null,
@@ -403,6 +412,14 @@ function appendCapacityMetrics(
     '# HELP kookr_capacity_max Configured max active tasks (settings.maxActiveTasks).',
     '# TYPE kookr_capacity_max gauge',
     metricLine('kookr_capacity_max', {}, snapshot.maxActiveTasks),
+    // Productive vs phantom split (issue #1935) — scrapers can alert on
+    // phantom occupancy without re-deriving hungSuspect + FAA from by_class.
+    '# HELP kookr_capacity_effective_working Productive occupancy (working + launching); excludes hungSuspect / finishedAwaitingAck phantoms.',
+    '# TYPE kookr_capacity_effective_working gauge',
+    metricLine('kookr_capacity_effective_working', {}, snapshot.effectiveWorking),
+    '# HELP kookr_capacity_phantom_active Phantom occupancy (hungSuspect + finishedAwaitingAck) holding slots without forward progress.',
+    '# TYPE kookr_capacity_phantom_active gauge',
+    metricLine('kookr_capacity_phantom_active', {}, snapshot.phantomActive),
     '# HELP kookr_capacity_by_class Tasks occupying a concurrency slot by capacity class (fixed TaskCapacityClass set).',
     '# TYPE kookr_capacity_by_class gauge',
   );
@@ -449,6 +466,23 @@ function appendFinishedAwaitingAckReclaimMetrics(
     '# HELP kookr_finished_awaiting_ack_ttl_reclaimed_total Total finishedAwaitingAck tasks force-completed by the TTL reclaim since process start.',
     '# TYPE kookr_finished_awaiting_ack_ttl_reclaimed_total counter',
     metricLine('kookr_finished_awaiting_ack_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
+  );
+}
+
+/**
+ * hungSuspect TTL reclaim counter (issue #1935). Omitted when the sweep is
+ * not wired — same optional convention as the FAA reclaim counter.
+ */
+function appendHungSuspectReclaimMetrics(
+  lines: string[],
+  snapshot: { reclaimedTotal: number } | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_hung_suspect_ttl_reclaimed_total Total hungSuspect tasks terminated by the TTL reclaim since process start.',
+    '# TYPE kookr_hung_suspect_ttl_reclaimed_total counter',
+    metricLine('kookr_hung_suspect_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
   );
 }
 

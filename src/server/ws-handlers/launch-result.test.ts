@@ -63,6 +63,8 @@ describe('handleLaunchResult', () => {
     active: 10,
     free: 0,
     byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+    effectiveWorking: 2,
+    phantomActive: 8,
     pendingQueueDepth: 24,
     oldestPendingAgeMs: 120_000,
     oldestFinishedAwaitingAckAgeMs: 3_600_000,

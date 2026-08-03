@@ -189,6 +189,20 @@ export interface KookrSettings {
    */
   finishedAwaitingAckTtlMinutes: number;
   /**
+   * hungSuspect TTL (minutes), issue #1935. A task whose `hungSuspect` capacity
+   * class (status `inProgress`, no `completion_ready`, watchdog reports hung)
+   * has been all-channels-silent longer than this is terminated on the
+   * liveness tick — disposition reason `hung_suspect_ttl`, audit actor
+   * `system:hung-suspect-ttl` — freeing the active concurrency slot it was
+   * chronically holding. A task that still holds an open, unmerged PR is
+   * exempt regardless of silence age. Default 25m; hard-capped at 60m on read
+   * so an operator override can lengthen the grace window for long tools but
+   * never restore multi-hour phantom holds. Distinct from
+   * {@link hungTaskReapMinutes} (the hard 3h reaper): this is the short
+   * capacity reclaim for already-classified hungSuspect slots.
+   */
+  hungSuspectTtlMinutes: number;
+  /**
    * Per-source spawn budget (issue #1526 Phase C / C3): max task creations
    * allowed per launch source (cli/api/websocket/…, actor-qualified when the
    * `X-Kookr-Actor` header is present) within a sliding
@@ -280,6 +294,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
   finishedAwaitingAckTtlMinutes: 15,
+  hungSuspectTtlMinutes: 25,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
   reservedActiveSlots: 2,
@@ -347,6 +362,12 @@ const MAX_PENDING_TTL_MIN = 2880;
 // to eliminate.
 const MIN_FINISHED_AWAITING_ACK_TTL_MIN = 5;
 const MAX_FINISHED_AWAITING_ACK_TTL_MIN = 30;
+// hungSuspect TTL bounds (minutes), issue #1935. Floor of 10 stays above the
+// watchdog's unconditional stale threshold (~10m) so classification can settle
+// before reclaim races it; hard ceiling of 60 bounds multi-hour phantom holds
+// while still allowing long-tool grace.
+const MIN_HUNG_SUSPECT_TTL_MIN = 10;
+const MAX_HUNG_SUSPECT_TTL_MIN = 60;
 // Per-source spawn-budget bounds (issue #1526 Phase C / C3). Limit floor of 5
 // keeps interactive use workable; ceiling of 500 keeps the budget meaningful.
 // Window floor of 1 minute, ceiling of 120 minutes (2h).
@@ -479,6 +500,13 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     finishedAwaitingAckTtlMinutes = Math.max(
       MIN_FINISHED_AWAITING_ACK_TTL_MIN,
       Math.min(MAX_FINISHED_AWAITING_ACK_TTL_MIN, Math.round(raw.finishedAwaitingAckTtlMinutes)),
+    );
+  }
+  let hungSuspectTtlMinutes = DEFAULT_SETTINGS.hungSuspectTtlMinutes;
+  if (typeof raw.hungSuspectTtlMinutes === 'number' && Number.isFinite(raw.hungSuspectTtlMinutes)) {
+    hungSuspectTtlMinutes = Math.max(
+      MIN_HUNG_SUSPECT_TTL_MIN,
+      Math.min(MAX_HUNG_SUSPECT_TTL_MIN, Math.round(raw.hungSuspectTtlMinutes)),
     );
   }
 
@@ -620,6 +648,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       maxPendingTasks,
       pendingTaskTtlMinutes,
       finishedAwaitingAckTtlMinutes,
+      hungSuspectTtlMinutes,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
       reservedActiveSlots,

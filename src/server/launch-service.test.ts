@@ -2449,6 +2449,8 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         active: 1,
         free: 0,
         byClass: { working: 0, finishedAwaitingAck: 1, hungSuspect: 0, launching: 0 },
+        effectiveWorking: 0,
+        phantomActive: 1,
         pendingQueueDepth: 1,
         oldestPendingAgeMs: 1234,
         oldestFinishedAwaitingAckAgeMs: 5678,

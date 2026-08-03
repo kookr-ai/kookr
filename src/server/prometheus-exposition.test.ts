@@ -443,6 +443,8 @@ describe('renderPrometheusExposition', () => {
           hungSuspect: 1,
           launching: 1,
         },
+        effectiveWorking: 3,
+        phantomActive: 2,
         pendingQueueDepth: 3,
         oldestPendingAgeMs: 45_000,
         oldestFinishedAwaitingAckAgeMs: 120_000,
@@ -453,6 +455,8 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_capacity_active 5');
     expect(output).toContain('kookr_capacity_free 7');
     expect(output).toContain('kookr_capacity_max 12');
+    expect(output).toContain('kookr_capacity_effective_working 3');
+    expect(output).toContain('kookr_capacity_phantom_active 2');
     expect(output).toContain('# TYPE kookr_capacity_by_class gauge');
     expect(output).toContain('kookr_capacity_by_class{class="working"} 2');
     expect(output).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 1');

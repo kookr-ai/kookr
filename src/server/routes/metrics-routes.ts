@@ -38,6 +38,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const nonCriticalTimerPause = deps.nonCriticalTimerPause?.getSnapshot();
     const snapshotShed = deps.snapshotShed?.getSnapshotShedMetrics();
     const finishedAwaitingAckReclaim = deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
+    const hungSuspectReclaim = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
@@ -59,6 +60,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       lessonYield: collectLessonYield(deps),
       ...(finishedAwaitingAckReclaim
         ? { finishedAwaitingAckReclaim: { reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal } }
+        : {}),
+      ...(hungSuspectReclaim
+        ? { hungSuspectReclaim: { reclaimedTotal: hungSuspectReclaim.reclaimedTotal } }
         : {}),
       ...(nonCriticalTimerPause
         ? {

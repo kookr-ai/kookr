@@ -49,6 +49,20 @@ export interface CapacityLedger {
   active: number;
   free: number;
   byClass: Record<TaskCapacityClass, number>;
+  /**
+   * Productive occupancy (issue #1935): `working + launching`. Excludes
+   * phantom-active classes (`hungSuspect` + `finishedAwaitingAck`) so
+   * utilization consumers can tell "slots busy doing work" from "slots held
+   * by stalled/hung tasks". Always present; equals `active` when no phantoms.
+   */
+  effectiveWorking: number;
+  /**
+   * Phantom occupancy (issue #1935): `hungSuspect + finishedAwaitingAck`.
+   * These hold real concurrency slots but produce no forward progress —
+   * the 2026-08-03 reflection's 7 hung / 6 working grid had 50% phantom.
+   * Always present; 0 when every active task is productive.
+   */
+  phantomActive: number;
   pendingQueueDepth: number;
   oldestPendingAgeMs: number | null;
   oldestFinishedAwaitingAckAgeMs: number | null;
@@ -64,14 +78,24 @@ export interface CapacityLedger {
   reservedSlotSources?: readonly string[];
   /**
    * Free slots a privileged (reserved) source may still launch into. Equals
-   * {@link free}: privileged launches see the whole pool.
+   * {@link free}: privileged launches see the whole pool (real occupancy).
    */
   freeForReservedSources?: number;
   /**
-   * Free slots a general (non-privileged) source may still launch into —
-   * `maxActiveTasks - reservedActiveSlots - active`, floored at 0. When this
-   * hits 0 while {@link freeForReservedSources} is still positive, the
-   * reservation is actively protecting kookr self-maintenance headroom.
+   * Free slots a general (non-privileged) source may still launch into,
+   * computed from **non-phantom** occupancy (issue #1935):
+   * `maxActiveTasks - reservedActiveSlots - effectiveWorking`, floored at 0.
+   *
+   * Phantom-active tasks (`hungSuspect` / `finishedAwaitingAck`) are excluded
+   * so queue-feeder / supervisor / velocity probes see capacity that reclaim
+   * will free — not the inflated "slots full" picture that hid a 43% phantom
+   * hold. Real launch admission still uses `TaskStore.getActiveCount()` (all
+   * inProgress tasks), so this field is observability + feeder signal only;
+   * it can read higher than {@link free} while phantoms are still resident.
+   *
+   * When this hits 0 while {@link freeForReservedSources} is still positive,
+   * the reservation is actively protecting kookr self-maintenance headroom
+   * against genuine productive load (not just phantom hold).
    */
   freeForGeneralSources?: number;
 }
@@ -157,11 +181,19 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     }
   }
 
-  const active = byClass.working + byClass.finishedAwaitingAck + byClass.hungSuspect + byClass.launching;
+  // Productive vs phantom split (issue #1935). active = both; free still uses
+  // real occupancy so privileged free and the raw free gauge never oversell
+  // slots still held by hungSuspect / finishedAwaitingAck.
+  const effectiveWorking = byClass.working + byClass.launching;
+  const phantomActive = byClass.hungSuspect + byClass.finishedAwaitingAck;
+  const active = effectiveWorking + phantomActive;
   const free = Math.max(0, deps.maxActiveTasks - active);
 
   // Reserved self-maintenance capacity (issue #1564). Reported only when a
   // reservation is configured, keeping the block additive-optional.
+  // freeForGeneralSources uses non-phantom occupancy (issue #1935) so a
+  // 7-hung/6-working grid no longer reports freeForGeneralSources=0 while
+  // half the pool is phantom.
   const reservedActiveSlots =
     deps.reservedActiveSlots !== undefined
       ? Math.max(0, Math.min(deps.maxActiveTasks, deps.reservedActiveSlots))
@@ -172,7 +204,7 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
           reservedActiveSlots,
           reservedSlotSources: deps.reservedSlotSources ?? [],
           freeForReservedSources: free,
-          freeForGeneralSources: Math.max(0, deps.maxActiveTasks - reservedActiveSlots - active),
+          freeForGeneralSources: Math.max(0, deps.maxActiveTasks - reservedActiveSlots - effectiveWorking),
         }
       : undefined;
 
@@ -181,9 +213,61 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     active,
     free,
     byClass,
+    effectiveWorking,
+    phantomActive,
     pendingQueueDepth,
     oldestPendingAgeMs: oldestPendingAt !== undefined ? deps.now - oldestPendingAt : null,
     oldestFinishedAwaitingAckAgeMs: oldestFinishedAwaitingAckAt !== undefined ? deps.now - oldestFinishedAwaitingAckAt : null,
     ...(reservation ?? {}),
+  };
+}
+
+/** Default thresholds for the hung_suspect_capacity health finding (issue #1935). */
+export const DEFAULT_HUNG_SUSPECT_CAPACITY_COUNT_BOUND = 3;
+export const DEFAULT_HUNG_SUSPECT_CAPACITY_RATIO_BOUND = 0.3;
+
+/** First-class finding code when hungSuspect occupancy wastes capacity (issue #1935). */
+export const HUNG_SUSPECT_CAPACITY_FINDING_CODE = 'hung_suspect_capacity' as const;
+
+/**
+ * A first-class health finding: hungSuspect tasks are consuming a material
+ * share of active capacity (issue #1935). Fires when `hungSuspect ≥ countBound`
+ * (default 3) OR `hungSuspect/active ≥ ratioBound` (default 0.3), even when
+ * utilization is high — the 7-hung/6-working grid must never classify as
+ * purely healthy.
+ */
+export interface HungSuspectCapacityFinding {
+  code: typeof HUNG_SUSPECT_CAPACITY_FINDING_CODE;
+  hungSuspect: number;
+  active: number;
+  /** hungSuspect / active, or 0 when active is 0. */
+  ratio: number;
+  effectiveWorking: number;
+  phantomActive: number;
+}
+
+/**
+ * Evaluate hungSuspect capacity waste against a ledger snapshot. Returns a
+ * finding when either absolute or ratio bound is exceeded, else null (so the
+ * health block is only present when there is something to act on). Pure.
+ */
+export function evaluateHungSuspectCapacityFinding(
+  ledger: Pick<CapacityLedger, 'byClass' | 'active' | 'effectiveWorking' | 'phantomActive'>,
+  opts: { countBound?: number; ratioBound?: number } = {},
+): HungSuspectCapacityFinding | null {
+  const hungSuspect = ledger.byClass.hungSuspect;
+  const active = ledger.active;
+  const countBound = opts.countBound ?? DEFAULT_HUNG_SUSPECT_CAPACITY_COUNT_BOUND;
+  const ratioBound = opts.ratioBound ?? DEFAULT_HUNG_SUSPECT_CAPACITY_RATIO_BOUND;
+  if (hungSuspect <= 0) return null;
+  const ratio = active > 0 ? hungSuspect / active : 0;
+  if (hungSuspect < countBound && ratio < ratioBound) return null;
+  return {
+    code: HUNG_SUSPECT_CAPACITY_FINDING_CODE,
+    hungSuspect,
+    active,
+    ratio,
+    effectiveWorking: ledger.effectiveWorking,
+    phantomActive: ledger.phantomActive,
   };
 }

@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { buildCapacityLedger, classifyTaskCapacity, isReservedSlotLaunch, type TaskCapacityClass } from './capacity-ledger.js';
+import {
+  buildCapacityLedger,
+  classifyTaskCapacity,
+  evaluateHungSuspectCapacityFinding,
+  isReservedSlotLaunch,
+  HUNG_SUSPECT_CAPACITY_FINDING_CODE,
+  type TaskCapacityClass,
+} from './capacity-ledger.js';
 import type { Task } from './task-read-model.js';
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z');
@@ -115,6 +122,8 @@ describe('buildCapacityLedger', () => {
       launching: 1,
     } satisfies Record<TaskCapacityClass, number>);
     expect(ledger.active).toBe(5); // 2 + 1 + 1 + 1
+    expect(ledger.effectiveWorking).toBe(3); // working 2 + launching 1
+    expect(ledger.phantomActive).toBe(2); // FAA 1 + hungSuspect 1
     expect(ledger.maxActiveTasks).toBe(10);
     expect(ledger.free).toBe(5);
     expect(ledger.pendingQueueDepth).toBe(2);
@@ -170,7 +179,46 @@ describe('buildCapacityLedger', () => {
     const ledger = byClassOf([]);
     expect(ledger.byClass).toEqual({ working: 0, finishedAwaitingAck: 0, hungSuspect: 0, launching: 0 });
     expect(ledger.active).toBe(0);
+    expect(ledger.effectiveWorking).toBe(0);
+    expect(ledger.phantomActive).toBe(0);
     expect(ledger.free).toBe(10);
+  });
+
+  test('issue #1935: 7 hung / 6 working grid reports phantomActive and freeForGeneralSources from non-phantom', () => {
+    // Live incident shape: utilization looks high (13/16) but half is phantom.
+    const tasks: Task[] = [
+      ...Array.from({ length: 6 }, (_, i) => task({ id: `w${i}`, status: 'inProgress' })),
+      ...Array.from({ length: 7 }, (_, i) => task({ id: `h${i}`, status: 'inProgress' })),
+      task({
+        id: 'faa',
+        status: 'inProgress',
+        pendingSignal: { kind: 'completion_ready', raisedAt: '2026-07-24T11:00:00.000Z' },
+      }),
+    ];
+    const hungIds = new Set(Array.from({ length: 7 }, (_, i) => `h${i}`));
+    const ledger = buildCapacityLedger(tasks, {
+      now: NOW,
+      maxActiveTasks: 16,
+      isHungSuspect: (t) => hungIds.has(t.id),
+      isLaunching: () => false,
+      reservedActiveSlots: 2,
+      reservedSlotSources: ['kookr'],
+    });
+
+    expect(ledger.byClass).toEqual({
+      working: 6,
+      finishedAwaitingAck: 1,
+      hungSuspect: 7,
+      launching: 0,
+    });
+    expect(ledger.active).toBe(14);
+    expect(ledger.effectiveWorking).toBe(6);
+    expect(ledger.phantomActive).toBe(8); // 7 hung + 1 FAA
+    expect(ledger.free).toBe(2); // real free slots only
+    // freeForGeneralSources excludes phantoms: 16 - 2 reserved - 6 working = 8
+    expect(ledger.freeForGeneralSources).toBe(8);
+    // Privileged free still sees real occupancy.
+    expect(ledger.freeForReservedSources).toBe(2);
   });
 
   describe('reserved self-maintenance capacity (issue #1564)', () => {
@@ -229,6 +277,52 @@ describe('buildCapacityLedger', () => {
       expect(ledger.reservedActiveSlots).toBe(0);
       expect(ledger.freeForGeneralSources).toBe(ledger.freeForReservedSources);
       expect(ledger.freeForGeneralSources).toBe(2);
+    });
+  });
+
+  describe('evaluateHungSuspectCapacityFinding (issue #1935)', () => {
+    function ledgerOf(hungSuspect: number, working: number) {
+      return buildCapacityLedger(
+        [
+          ...Array.from({ length: working }, (_, i) => task({ id: `w${i}` })),
+          ...Array.from({ length: hungSuspect }, (_, i) => task({ id: `h${i}` })),
+        ],
+        {
+          now: NOW,
+          maxActiveTasks: 16,
+          isHungSuspect: (t) => t.id.startsWith('h'),
+          isLaunching: () => false,
+        },
+      );
+    }
+
+    test('fires on absolute count bound (≥3) even when ratio is low', () => {
+      // 3 hung of 16 active-ish (3 hung + 13 working) → ratio 0.1875 < 0.3, count hits
+      const finding = evaluateHungSuspectCapacityFinding(ledgerOf(3, 13));
+      expect(finding).toMatchObject({
+        code: HUNG_SUSPECT_CAPACITY_FINDING_CODE,
+        hungSuspect: 3,
+        active: 16,
+      });
+    });
+
+    test('fires on ratio bound (≥0.3) even when absolute count is below 3', () => {
+      // 2 hung of 6 active = 0.333 ≥ 0.3
+      const finding = evaluateHungSuspectCapacityFinding(ledgerOf(2, 4));
+      expect(finding?.code).toBe(HUNG_SUSPECT_CAPACITY_FINDING_CODE);
+      expect(finding?.ratio).toBeCloseTo(2 / 6, 5);
+    });
+
+    test('does not fire for a healthy grid (1 hung / 10 working)', () => {
+      expect(evaluateHungSuspectCapacityFinding(ledgerOf(1, 10))).toBeNull();
+    });
+
+    test('7-hung/6-working grid is never purely healthy', () => {
+      const finding = evaluateHungSuspectCapacityFinding(ledgerOf(7, 6));
+      expect(finding).not.toBeNull();
+      expect(finding!.hungSuspect).toBe(7);
+      expect(finding!.effectiveWorking).toBe(6);
+      expect(finding!.phantomActive).toBe(7);
     });
   });
 });
