@@ -480,6 +480,18 @@ export type ServerMessage =
       kind: 'resyncNeeded' | 'loadShedActive' | 'loadShedRecovered';
       scopeKey?: string;
       eventLoopDelayP95Ms?: number | null;
+    }
+  | {
+      /**
+       * Pre-blackout deploy notice (issue #1980). Broadcast on successful
+       * `POST /api/deploy/trigger` *before* `prod-update` is spawned so
+       * connected clients can set the sticky session deploy flag
+       * (ConnectionBanner) while the WebSocket is still open. Older clients
+       * ignore unknown `type`s safely. Script-path `prod:restart` without the
+       * trigger route does not emit this event.
+       */
+      type: 'deployLifecycle';
+      phase: 'starting';
     };
 
 export type ClientMessage =
@@ -621,6 +633,7 @@ export const SERVER_MESSAGE_TYPES = [
   'diagnosticReport',
   'ossAttempts',
   'wsBackpressureNotice',
+  'deployLifecycle',
 ] as const satisfies readonly ServerMessage['type'][];
 
 /** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */

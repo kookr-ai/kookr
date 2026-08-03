@@ -216,6 +216,10 @@ const serverMessageCases = [
     kind: 'loadShedActive',
     eventLoopDelayP95Ms: 1800,
   }),
+  serverMessageCase({
+    type: 'deployLifecycle',
+    phase: 'starting',
+  }),
   // Delta envelope (#1754, Stage 1) — ships dark, but part of the wire contract.
   serverMessageCase({
     type: 'delta',

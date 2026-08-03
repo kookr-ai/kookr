@@ -408,6 +408,12 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
       return c.json({ error: 'Production directory not found' }, 400);
     }
 
+    // Issue #1980: mark in-flight and notify connected clients *before* the
+    // child starts so dashboards still receive deployLifecycle over a live WS.
+    // Script-path prod:restart (no trigger) does not emit this event.
+    deploying = true;
+    deps.broadcastToAll?.({ type: 'deployLifecycle', phase: 'starting' });
+
     let child;
     try {
       child = spawn('bash', [prodUpdateScript], {
@@ -417,10 +423,10 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         env: { ...process.env, KOOKR_PROD_DIR: prodDir, KOOKR_PORT: String(PROD_PORT) },
       });
     } catch (err) {
+      deploying = false;
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
 
-    deploying = true;
     child.unref();
 
     // Reset deploying flag when the child exits or after a timeout safety net

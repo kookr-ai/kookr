@@ -8,6 +8,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { registerDeployRoutes, resolveProdDir } from './deploy-routes.js';
 import type { DeployRouteDeps } from './shared.js';
 import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
+import type { ServerMessage } from '../../shared/contracts/messages.js';
 
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
 const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
@@ -504,6 +505,47 @@ describe('deploy-routes', () => {
 
       const res2 = await app.request('/api/deploy/trigger', { method: 'POST' });
       expect(res2.status).toBe(409);
+    });
+
+    it('broadcasts deployLifecycle starting on successful trigger (issue #1980)', async () => {
+      await mkdir(prodDir, { recursive: true });
+      const events: string[] = [];
+      const messages: ServerMessage[] = [];
+      const app = new Hono();
+      registerDeployRoutes(app, {
+        serverCwd: mainDir,
+        serverPort: 4800,
+        broadcastToAll: (msg) => {
+          events.push('broadcast');
+          messages.push(msg);
+        },
+      } satisfies DeployRouteDeps);
+
+      const res = await app.request('/api/deploy/trigger', { method: 'POST' });
+      events.push('http-response');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { status: string };
+      expect(body.status).toBe('deploying');
+      // Broadcast lands before the HTTP response returns (still-connected window).
+      // Handler code places it before spawn as well (see deploy-routes.ts).
+      expect(events).toEqual(['broadcast', 'http-response']);
+      expect(messages).toEqual([{ type: 'deployLifecycle', phase: 'starting' }]);
+    });
+
+    it('does not broadcast deployLifecycle when the prod dir is missing', async () => {
+      const messages: ServerMessage[] = [];
+      const app = new Hono();
+      registerDeployRoutes(app, {
+        serverCwd: mainDir,
+        serverPort: 4800,
+        broadcastToAll: (msg) => {
+          messages.push(msg);
+        },
+      } satisfies DeployRouteDeps);
+
+      const res = await app.request('/api/deploy/trigger', { method: 'POST' });
+      expect(res.status).toBe(400);
+      expect(messages).toEqual([]);
     });
   });
 
