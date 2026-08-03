@@ -523,6 +523,14 @@ export interface RouteDeps {
   /** Recent operational-alert fire/recovery history for admin introspection. */
   getOperationalAlertHistory?: () => OperationalAlertHistorySnapshot;
   /**
+   * Durable ops-status card writer (issue #1995). `/api/ready` records a
+   * ready_degrade edge when the verdict flips not-ready so operators have a
+   * last-known-good digest on disk when Discord is down. Absent in light tests.
+   */
+  opsStatusWriter?: {
+    noteReadyVerdict(ready: boolean, detail?: string): Promise<unknown>;
+  };
+  /**
    * Latest already-sampled resource snapshot (issue #1590). Threaded to
    * task-routes so the `POST /api/tasks` admission gate can read the sampled
    * event-loop delay p95 without standing up a second monitor.

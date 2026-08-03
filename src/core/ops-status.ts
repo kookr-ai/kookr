@@ -1,0 +1,329 @@
+/**
+ * Durable last-known-good ops card at `~/.kookr/ops-status.json` (issue #1995).
+ *
+ * When Discord (or any remote page channel) is down, operators still need a
+ * single on-disk digest of ready/hung/starvation/safeMode for post-hoc
+ * diagnosis. This module owns:
+ *
+ * - the v1 schema (read-only fields only — no secrets)
+ * - pure builders + schema guard
+ * - edge-triggered atomic writes (best-effort; disk-full is never fatal)
+ *
+ * Critical edges that update the file:
+ * - ready degrade (`GET /api/ready` flips to not-ready)
+ * - schedule dead-man fire
+ * - pipeline starvation fire
+ * - SAFE MODE engage
+ */
+
+import { join } from 'node:path';
+
+import { atomicWriteFile } from './persistence-utils.js';
+import type { SafeModeStatus } from './automation-kill-switch.js';
+
+export const OPS_STATUS_SCHEMA_VERSION = 'ops-status.v1' as const;
+export const OPS_STATUS_FILE_NAME = 'ops-status.json';
+export const OPS_STATUS_MAX_EDGES = 20;
+
+/** Stable edge kinds that update the card. */
+export type OpsStatusEdgeKind =
+  | 'ready_degrade'
+  | 'dead_man_fire'
+  | 'starvation_fire'
+  | 'safe_mode_engage';
+
+export interface OpsStatusEdge {
+  kind: OpsStatusEdgeKind;
+  /** ISO-8601 timestamp the edge was recorded. */
+  at: string;
+  /** Short operator-facing note; never secrets. */
+  detail?: string;
+}
+
+/**
+ * On-disk card. Every field is operator-readable and free of credentials,
+ * tokens, paths to private keys, or agent transcripts.
+ */
+export interface OpsStatusSnapshot {
+  schemaVersion: typeof OPS_STATUS_SCHEMA_VERSION;
+  /** ISO-8601 timestamp of the most recent write. */
+  updatedAt: string;
+  /** Serving git SHA (or null when unknown / dev). */
+  sha: string | null;
+  /** Current hungSuspect capacity count, or null when unavailable. */
+  hungSuspectCount: number | null;
+  /** Free space on the data directory, percent of capacity (0–100), or null. */
+  dataDirectoryFreePercent: number | null;
+  /** Free space on the data directory in bytes, or null. */
+  dataDirectoryFreeBytes: number | null;
+  /** Live SAFE MODE / automation kill-switch status. */
+  safeMode: SafeModeStatus;
+  /** Ring of recent critical edges (newest last). */
+  lastEdges: OpsStatusEdge[];
+}
+
+/** Live fields sampled at write time (outside the pure edge ring). */
+export interface OpsStatusLiveFields {
+  sha: string | null;
+  hungSuspectCount: number | null;
+  dataDirectoryFreePercent: number | null;
+  dataDirectoryFreeBytes: number | null;
+  safeMode: SafeModeStatus;
+}
+
+const EDGE_KINDS: ReadonlySet<string> = new Set([
+  'ready_degrade',
+  'dead_man_fire',
+  'starvation_fire',
+  'safe_mode_engage',
+]);
+
+export function opsStatusPath(kookrDir: string): string {
+  return join(kookrDir, OPS_STATUS_FILE_NAME);
+}
+
+/** Append one edge, keeping at most `maxEdges` (newest last). */
+export function appendOpsStatusEdge(
+  previous: readonly OpsStatusEdge[],
+  edge: OpsStatusEdge,
+  maxEdges: number = OPS_STATUS_MAX_EDGES,
+): OpsStatusEdge[] {
+  const cap = Number.isFinite(maxEdges) && maxEdges > 0 ? Math.floor(maxEdges) : OPS_STATUS_MAX_EDGES;
+  const next = [...previous, edge];
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
+/** Build a full snapshot from live fields + edge ring. */
+export function buildOpsStatusSnapshot(
+  fields: OpsStatusLiveFields,
+  lastEdges: readonly OpsStatusEdge[],
+  updatedAt: string,
+): OpsStatusSnapshot {
+  return {
+    schemaVersion: OPS_STATUS_SCHEMA_VERSION,
+    updatedAt,
+    sha: fields.sha,
+    hungSuspectCount: fields.hungSuspectCount,
+    dataDirectoryFreePercent: fields.dataDirectoryFreePercent,
+    dataDirectoryFreeBytes: fields.dataDirectoryFreeBytes,
+    safeMode: fields.safeMode.engaged
+      ? (fields.safeMode.since
+          ? { engaged: true, since: fields.safeMode.since }
+          : { engaged: true })
+      : { engaged: false },
+    lastEdges: lastEdges.map((edge) => ({
+      kind: edge.kind,
+      at: edge.at,
+      ...(edge.detail ? { detail: edge.detail } : {}),
+    })),
+  };
+}
+
+/**
+ * Map an operational-alert fire to an ops-status edge kind.
+ * Recovery transitions and non-critical metrics return null.
+ */
+export function opsStatusEdgeFromOperationalAlert(alert: {
+  operationalAlert?: { metric?: string; state?: string; key?: string } | undefined;
+  summary?: string;
+}): { kind: OpsStatusEdgeKind; detail?: string } | null {
+  const meta = alert.operationalAlert;
+  if (!meta || meta.state !== 'fired') return null;
+
+  const metric = typeof meta.metric === 'string' ? meta.metric : '';
+  let kind: OpsStatusEdgeKind | null = null;
+  if (metric === 'schedule_starvation') kind = 'dead_man_fire';
+  else if (metric === 'pipeline_starvation') kind = 'starvation_fire';
+  if (!kind) return null;
+
+  const detail =
+    typeof alert.summary === 'string' && alert.summary.trim().length > 0
+      ? alert.summary.trim().slice(0, 240)
+      : typeof meta.key === 'string' && meta.key.length > 0
+        ? meta.key
+        : undefined;
+  return detail ? { kind, detail } : { kind };
+}
+
+/** Runtime schema guard for unit tests and defensive readers. */
+export function isOpsStatusSnapshot(value: unknown): value is OpsStatusSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  if (v.schemaVersion !== OPS_STATUS_SCHEMA_VERSION) return false;
+  if (typeof v.updatedAt !== 'string' || v.updatedAt.length === 0) return false;
+  if (!(v.sha === null || typeof v.sha === 'string')) return false;
+  if (!(v.hungSuspectCount === null || isNonNegInt(v.hungSuspectCount))) return false;
+  if (!(v.dataDirectoryFreePercent === null || isFiniteNumber(v.dataDirectoryFreePercent))) return false;
+  if (!(v.dataDirectoryFreeBytes === null || isNonNegInt(v.dataDirectoryFreeBytes))) return false;
+  if (!isSafeModeShape(v.safeMode)) return false;
+  if (!Array.isArray(v.lastEdges)) return false;
+  for (const edge of v.lastEdges) {
+    if (!isEdgeShape(edge)) return false;
+  }
+  return true;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNonNegInt(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isSafeModeShape(value: unknown): value is SafeModeStatus {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  if (typeof s.engaged !== 'boolean') return false;
+  if (s.since !== undefined && typeof s.since !== 'string') return false;
+  return true;
+}
+
+function isEdgeShape(value: unknown): value is OpsStatusEdge {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const e = value as Record<string, unknown>;
+  if (typeof e.kind !== 'string' || !EDGE_KINDS.has(e.kind)) return false;
+  if (typeof e.at !== 'string' || e.at.length === 0) return false;
+  if (e.detail !== undefined && typeof e.detail !== 'string') return false;
+  return true;
+}
+
+export interface OpsStatusWriterDeps {
+  /** Absolute path to ops-status.json. Prefer {@link opsStatusPath}. */
+  filePath: string;
+  /** Sample live fields at each write. Must not throw. */
+  getLiveFields: () => OpsStatusLiveFields;
+  now?: () => Date;
+  /** Injected for tests; defaults to {@link atomicWriteFile}. */
+  writeFileAtomically?: (filePath: string, data: string) => Promise<void>;
+  logger?: Pick<typeof console, 'warn'>;
+  maxEdges?: number;
+}
+
+/**
+ * Edge-triggered writer. Keeps an in-memory edge ring so successive critical
+ * edges accumulate (last N) rather than overwrite each other. Every write is
+ * atomic (temp + fsync + rename) and best-effort: disk-full / permission
+ * errors are logged and never rethrown.
+ */
+export class OpsStatusWriter {
+  private readonly filePath: string;
+  private readonly getLiveFields: () => OpsStatusLiveFields;
+  private readonly now: () => Date;
+  private readonly writeFileAtomically: (filePath: string, data: string) => Promise<void>;
+  private readonly logger: Pick<typeof console, 'warn'>;
+  private readonly maxEdges: number;
+  private lastEdges: OpsStatusEdge[] = [];
+  private lastWritten: OpsStatusSnapshot | null = null;
+  /** Last observed ready verdict — used for ready true→false edge detection. */
+  private lastReady: boolean | null = null;
+  /** Last observed SAFE MODE engagement — used for false→true edge detection. */
+  private lastSafeModeEngaged: boolean | null = null;
+  /** Serialize concurrent edge notes so the ring stays ordered. */
+  private writeChain: Promise<void> = Promise.resolve();
+
+  constructor(deps: OpsStatusWriterDeps) {
+    this.filePath = deps.filePath;
+    this.getLiveFields = deps.getLiveFields;
+    this.now = deps.now ?? (() => new Date());
+    this.writeFileAtomically = deps.writeFileAtomically ?? atomicWriteFile;
+    this.logger = deps.logger ?? console;
+    this.maxEdges = deps.maxEdges ?? OPS_STATUS_MAX_EDGES;
+  }
+
+  /** Most recent successfully written snapshot (null until first success). */
+  getLastWritten(): OpsStatusSnapshot | null {
+    return this.lastWritten;
+  }
+
+  /**
+   * Record a synthetic critical edge and rewrite the card.
+   * Returns the snapshot on success, null when the write failed.
+   */
+  noteEdge(kind: OpsStatusEdgeKind, detail?: string): Promise<OpsStatusSnapshot | null> {
+    const edge: OpsStatusEdge = {
+      kind,
+      at: this.now().toISOString(),
+      ...(detail && detail.trim().length > 0 ? { detail: detail.trim().slice(0, 240) } : {}),
+    };
+    return this.enqueueWrite(edge);
+  }
+
+  /**
+   * Observe a ready verdict. Writes only on the healthy→degraded edge
+   * (true→false, or first observation of false).
+   */
+  noteReadyVerdict(ready: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
+    const prev = this.lastReady;
+    this.lastReady = ready;
+    if (ready) return Promise.resolve(null);
+    // First sample already degraded, or true→false transition.
+    if (prev === false) return Promise.resolve(null);
+    return this.noteEdge('ready_degrade', detail);
+  }
+
+  /**
+   * Observe SAFE MODE engagement. Writes only on the false→true edge.
+   */
+  noteSafeModeEngaged(engaged: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
+    const prev = this.lastSafeModeEngaged;
+    this.lastSafeModeEngaged = engaged;
+    if (!engaged) return Promise.resolve(null);
+    if (prev === true) return Promise.resolve(null);
+    return this.noteEdge('safe_mode_engage', detail);
+  }
+
+  /**
+   * Observe an operational-alert message. Writes only for dead-man / pipeline
+   * starvation *fire* transitions; recovery and other metrics are ignored.
+   */
+  noteFromAlert(alert: {
+    operationalAlert?: { metric?: string; state?: string; key?: string } | undefined;
+    summary?: string;
+  }): Promise<OpsStatusSnapshot | null> {
+    const mapped = opsStatusEdgeFromOperationalAlert(alert);
+    if (!mapped) return Promise.resolve(null);
+    return this.noteEdge(mapped.kind, mapped.detail);
+  }
+
+  private enqueueWrite(edge: OpsStatusEdge): Promise<OpsStatusSnapshot | null> {
+    const run = this.writeChain.then(() => this.writeEdge(edge));
+    // Keep the chain alive even when a write fails so later edges still serialize.
+    this.writeChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async writeEdge(edge: OpsStatusEdge): Promise<OpsStatusSnapshot | null> {
+    let fields: OpsStatusLiveFields;
+    try {
+      fields = this.getLiveFields();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[ops-status] getLiveFields threw; writing with empty fields: ${message}`);
+      fields = {
+        sha: null,
+        hungSuspectCount: null,
+        dataDirectoryFreePercent: null,
+        dataDirectoryFreeBytes: null,
+        safeMode: { engaged: false },
+      };
+    }
+
+    const lastEdges = appendOpsStatusEdge(this.lastEdges, edge, this.maxEdges);
+    const snapshot = buildOpsStatusSnapshot(fields, lastEdges, edge.at);
+
+    try {
+      await this.writeFileAtomically(this.filePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+      this.lastEdges = lastEdges;
+      this.lastWritten = snapshot;
+      return snapshot;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[ops-status] atomic write failed (best-effort): ${message}`);
+      return null;
+    }
+  }
+}

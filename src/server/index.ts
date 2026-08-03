@@ -21,7 +21,7 @@ import {
 } from '../core/resource-watchdog-audit.js';
 import type { ResourceWatchdogConfig } from '../core/resource-watchdog-types.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
-import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
+import type { ServerMessage, SnapshotMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
@@ -63,6 +63,7 @@ import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { applyKillSwitchTransition, resolveSafeModeStatus } from '../core/automation-kill-switch.js';
+import { OpsStatusWriter, opsStatusPath } from '../core/ops-status.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stats.js';
 import { DetectionStatsStore } from './detection-stats-store.js';
@@ -1741,6 +1742,33 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.warn('[reflect-sweep] startup sweep failed:', err instanceof Error ? err.message : err);
   }
 
+  // Durable ops-status card (issue #1995): last-known-good digest on disk for
+  // when Discord is down. Live fields are sampled at each edge write; the
+  // resource-status service is bound later (TDZ-safe — only called at edge time).
+  let getLatestResourceStatusForOps: () => SystemResourceStatus | null = () => null;
+  const opsStatusWriter = new OpsStatusWriter({
+    filePath: opsStatusPath(kookrDir),
+    getLiveFields: () => {
+      const capacity = launchServiceDeps.getCapacityLedger?.() ?? null;
+      const latest = getLatestResourceStatusForOps();
+      const disk = latest?.host?.dataDirectory;
+      const sha =
+        buildInfo.commitHash && buildInfo.commitHash !== 'dev' ? buildInfo.commitHash : null;
+      return {
+        sha,
+        hungSuspectCount: capacity?.byClass.hungSuspect ?? null,
+        dataDirectoryFreePercent: disk?.diskFreePercent ?? null,
+        dataDirectoryFreeBytes: disk?.diskFreeBytes ?? null,
+        safeMode: getSafeModeStatus(),
+      };
+    },
+  });
+  const noteOpsStatusAlert = (
+    alert: Extract<ServerMessage, { type: 'alert' }>,
+  ): void => {
+    void opsStatusWriter.noteFromAlert(alert);
+  };
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
@@ -1752,6 +1780,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
+    // issue #1995: dead-man fire/clear also refreshes the on-disk ops-status card.
+    onOperationalAlert: noteOpsStatusAlert,
     // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
     // the WS1.5 provider-health counter.
     recordAgentSubstitution: () => providerHealthTracker.recordSubstitution(),
@@ -1902,13 +1932,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const pipelineStarvation = new PipelineStarvationService({
     taskStore,
     launcher: (opts) => launchTask(launchServiceDeps, opts),
-    broadcast: broadcastToAll,
+    // issue #1995: starvation fire edges also refresh the on-disk ops-status card.
+    broadcast: (msg) => {
+      broadcastToAll(msg);
+      if (msg.type === 'alert') noteOpsStatusAlert(msg);
+    },
     kookrDir,
     log: (line) => console.log(line),
   });
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
+    opsStatusWriter,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -2082,6 +2117,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         currentSettings = merged;
         settingsLoadedFromDefaults = false;
         settingsLoadWarnings = [];
+        // Issue #1995: SAFE MODE engage edge writes the durable ops-status card
+        // so a kill-switch flip is visible on disk when Discord is down.
+        if (!prev.automationKillSwitch && merged.automationKillSwitch) {
+          void opsStatusWriter.noteEdge(
+            'safe_mode_engage',
+            merged.safeModeSince ? `since ${merged.safeModeSince}` : undefined,
+          );
+        }
         // applySettingsSideEffects wrote `merged` to disk, but a launch may
         // have advanced the cursor during the await above — that snapshot's
         // `roundRobinIndex` is then stale. Re-persist the live settings
@@ -2163,7 +2206,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // during it. Reuse the single sink instance the schedule runtime already owns
   // (rather than minting a second one on the same file) so status()/lastFailure
   // stay unified.
-  const recordOperationalAlertToSink = bindOperationalAlertSink(operationalAlertSink);
+  const recordOperationalAlertToSink = bindOperationalAlertSink(
+    operationalAlertSink,
+    noteOpsStatusAlert,
+  );
   const operationalAlertEvaluator = createOperationalAlertEvaluator(
     getOperationalAlertConfig,
     () => persistenceHealth.snapshot(),
@@ -2213,6 +2259,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       nonCriticalTimerPauseGate.noteSample(delayMs);
     },
   });
+  // Issue #1995: bind the live resource sample for ops-status free-disk fields.
+  getLatestResourceStatusForOps = () => resourceStatusService.getLatest();
   getEventLoopDelayP95MsForSnapshotShed = () =>
     resourceStatusService.getLatest()?.server.eventLoopDelayP95Ms ?? null;
 

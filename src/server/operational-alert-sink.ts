@@ -117,11 +117,24 @@ export class OperationalAlertSink {
  * (e.g. {@link ScheduleDeadManSwitch}). Failures are already logged inside
  * {@link OperationalAlertSink.append}, so the returned promise is deliberately
  * swallowed here.
+ *
+ * `also` is an optional side-effect hook (e.g. the durable ops-status card,
+ * issue #1995). It is invoked for every alert that reaches the binder — the
+ * sink still filters on `operationalAlert` metadata internally, and the hook
+ * is expected to do the same. Throws from `also` are swallowed so a bad
+ * side-effect can never suppress the durable JSONL write or the WS path.
  */
 export function bindOperationalAlertSink(
   sink: OperationalAlertSink,
+  also?: (alert: AlertMessage) => void,
 ): (alert: AlertMessage) => void {
   return (alert: AlertMessage): void => {
     void sink.append(alert);
+    if (!also) return;
+    try {
+      also(alert);
+    } catch {
+      // Side-effects must never take down the operational-alert path.
+    }
   };
 }
