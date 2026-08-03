@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   OPS_STATUS_FILE_NAME,
@@ -17,6 +17,7 @@ import {
   type OpsStatusLiveFields,
   type OpsStatusSnapshot,
 } from './ops-status.js';
+import { atomicWriteFile } from './persistence-utils.js';
 
 const LIVE: OpsStatusLiveFields = {
   sha: 'abc1234deadbeef',
@@ -133,19 +134,12 @@ describe('opsStatusEdgeFromOperationalAlert', () => {
 });
 
 describe('OpsStatusWriter', () => {
-  const dirs: string[] = [];
-  afterEach(async () => {
-    // tmp dirs are under os.tmpdir; leave cleanup to the OS for hermetic speed.
-    dirs.length = 0;
-  });
-
   async function makeWriter(opts?: {
     fields?: OpsStatusLiveFields;
     nowIso?: string;
     writeFileAtomically?: (filePath: string, data: string) => Promise<void>;
   }): Promise<{ writer: OpsStatusWriter; filePath: string; dir: string }> {
     const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
-    dirs.push(dir);
     const filePath = opsStatusPath(dir);
     const writer = new OpsStatusWriter({
       filePath,
@@ -267,6 +261,35 @@ describe('OpsStatusWriter', () => {
     await expect(writer.noteEdge('dead_man_fire')).resolves.toBeNull();
     expect(warn).toHaveBeenCalled();
     expect(writer.getLastWritten()).toBeNull();
+  });
+
+  it('retries ready_degrade after ENOSPC so disk-full does not suppress the episode', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    let failOnce = true;
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      writeFileAtomically: async (path, data) => {
+        if (failOnce) {
+          failOnce = false;
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        await atomicWriteFile(path, data);
+      },
+      logger: { warn: vi.fn() },
+    });
+
+    // First degrade while disk is full — de-dupe must NOT lock.
+    await expect(writer.noteReadyVerdict(false, 'persistence unwritable')).resolves.toBeNull();
+    // Still degraded: retry and land the card once space is free.
+    const snap = await writer.noteReadyVerdict(false, 'persistence unwritable');
+    expect(snap).not.toBeNull();
+    expect(snap?.lastEdges[0]?.kind).toBe('ready_degrade');
+    expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
+    // Now locked: further degraded polls do not re-write.
+    expect(await writer.noteReadyVerdict(false)).toBeNull();
   });
 
   it('ignores recovered operational alerts so the card is not flapped', async () => {

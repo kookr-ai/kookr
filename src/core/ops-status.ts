@@ -251,26 +251,37 @@ export class OpsStatusWriter {
 
   /**
    * Observe a ready verdict. Writes only on the healthy→degraded edge
-   * (true→false, or first observation of false).
+   * (true→false, or first observation of false). De-dupe state advances only
+   * after a successful write so a disk-full blip still retries on the next poll.
    */
-  noteReadyVerdict(ready: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
-    const prev = this.lastReady;
-    this.lastReady = ready;
-    if (ready) return Promise.resolve(null);
-    // First sample already degraded, or true→false transition.
-    if (prev === false) return Promise.resolve(null);
-    return this.noteEdge('ready_degrade', detail);
+  async noteReadyVerdict(ready: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
+    if (ready) {
+      this.lastReady = true;
+      return null;
+    }
+    // Already known-degraded (and previously recorded) → skip.
+    if (this.lastReady === false) return null;
+    const snap = await this.noteEdge('ready_degrade', detail);
+    // Only lock de-dupe after the durable write lands; leave lastReady as the
+    // previous healthy/null value so a failed write retries on the next poll.
+    if (snap) this.lastReady = false;
+    return snap;
   }
 
   /**
    * Observe SAFE MODE engagement. Writes only on the false→true edge.
+   * De-dupe advances only after a successful write (same retry contract as
+   * {@link noteReadyVerdict}).
    */
-  noteSafeModeEngaged(engaged: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
-    const prev = this.lastSafeModeEngaged;
-    this.lastSafeModeEngaged = engaged;
-    if (!engaged) return Promise.resolve(null);
-    if (prev === true) return Promise.resolve(null);
-    return this.noteEdge('safe_mode_engage', detail);
+  async noteSafeModeEngaged(engaged: boolean, detail?: string): Promise<OpsStatusSnapshot | null> {
+    if (!engaged) {
+      this.lastSafeModeEngaged = false;
+      return null;
+    }
+    if (this.lastSafeModeEngaged === true) return null;
+    const snap = await this.noteEdge('safe_mode_engage', detail);
+    if (snap) this.lastSafeModeEngaged = true;
+    return snap;
   }
 
   /**

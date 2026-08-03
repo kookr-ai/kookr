@@ -1780,7 +1780,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
-    // issue #1995: dead-man fire/clear also refreshes the on-disk ops-status card.
+    // issue #1995: dead-man fire also refreshes the on-disk ops-status card.
     onOperationalAlert: noteOpsStatusAlert,
     // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
     // the WS1.5 provider-health counter.
@@ -2119,12 +2119,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         settingsLoadWarnings = [];
         // Issue #1995: SAFE MODE engage edge writes the durable ops-status card
         // so a kill-switch flip is visible on disk when Discord is down.
-        if (!prev.automationKillSwitch && merged.automationKillSwitch) {
-          void opsStatusWriter.noteEdge(
-            'safe_mode_engage',
-            merged.safeModeSince ? `since ${merged.safeModeSince}` : undefined,
-          );
-        }
+        void opsStatusWriter.noteSafeModeEngaged(
+          merged.automationKillSwitch,
+          merged.safeModeSince ? `since ${merged.safeModeSince}` : undefined,
+        );
         // applySettingsSideEffects wrote `merged` to disk, but a launch may
         // have advanced the cursor during the await above — that snapshot's
         // `roundRobinIndex` is then stale. Re-persist the live settings
