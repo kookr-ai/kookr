@@ -82,15 +82,12 @@ function computeNonMruRate(counts: Record<string, number>): number | null {
 }
 
 /** Resolve warm|cold from client event fields (seed hit or client warm). */
-export function resolveAttachWarmLabel(event: {
-  clientWarm?: unknown;
-  seedCacheHit?: unknown;
-  warmLabel?: unknown;
-}): 'warm' | 'cold' {
-  if (event.warmLabel === 'warm' || event.warmLabel === 'cold') {
-    return event.warmLabel;
+export function resolveAttachWarmLabel(event: TelemetryEvent | Record<string, unknown>): 'warm' | 'cold' {
+  const warmLabel = event['warmLabel'];
+  if (warmLabel === 'warm' || warmLabel === 'cold') {
+    return warmLabel;
   }
-  if (event.clientWarm === true || event.seedCacheHit === true) return 'warm';
+  if (event['clientWarm'] === true || event['seedCacheHit'] === true) return 'warm';
   return 'cold';
 }
 
