@@ -191,6 +191,33 @@ KOOKR_STT_DEVICE=gpu
 KOOKR_STT_HEALTH_TIMEOUT_S=600
 ```
 
+### Speech sidecars and production restart
+
+Bundled STT/TTS Docker containers **outlive the Kookr Node process** on routine
+SIGTERM / `pnpm prod:restart` / `pnpm prod:update`. Warm restarts reuse healthy
+sidecars without `docker compose down` / cold model load.
+
+| Goal | Command |
+|---|---|
+| Restart Node only (leave GPU speech warm) | `pnpm prod:restart` or `pnpm prod:update` |
+| Stop Node and leave sidecars running | `pnpm prod:stop` (prints a GPU hint) |
+| Stop Node **and** free GPU / remove speech containers | `pnpm prod:stop --with-sidecars` |
+
+**Config changes that require a hard speech recycle** (model, device, image, ports):
+run `pnpm prod:stop --with-sidecars`, then start again. Health-only reuse does
+not always re-verify the Whisper model when `docker inspect` is unavailable;
+prefer stop-with-sidecars after changing `WHISPER_MODEL` / `KOOKR_STT_DEVICE` /
+compose inputs.
+
+**External URL mode** (`KOOKR_STT_URL` / `KOOKR_TTS_URL`): Kookr does not own
+those containers. `prod:stop --with-sidecars` skips compose down for stacks that
+are only URL-configured so foreign containers are not clobbered.
+
+**Docker `restart: unless-stopped`:** after detach, sidecars can return on a
+Docker or host reboot even while Kookr is down. That is intentional for warm
+speech survival; reclaim with `pnpm prod:stop --with-sidecars` when you need the
+GPU free.
+
 Recording the demo video also requires a color emoji font and `ffmpeg >=5.0`; Docker is needed only when recording with bundled TTS.
 
 ## Telegram Remote Chat

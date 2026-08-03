@@ -16,13 +16,16 @@ else
   READY_URL=""
   READY_URL_EXPLICIT=0
 fi
-# Startup gate deadline (issue #1721). The server binds its listener only after
-# full recovery (task load, session reattach, event replay) — measured at ~10.5
-# minutes on a 727-task instance, which raced the old 720s default. Keep the
-# default comfortably above observed startup so a loaded box doesn't fail the
-# deploy and tempt a retry that kills the almost-ready server.
+# Startup gate deadline (issue #1721). Listen-early already landed: the server
+# binds the HTTP listener before deferred recovery finishes, and this script
+# waits on /api/ready until ready is no longer `startup-in-progress`. Recovery
+# on a ~727-task instance was measured multi-minute and raced the old 720s
+# default — keep the default comfortably above observed M2 so a loaded box
+# doesn't fail the deploy and tempt a retry that kills the almost-ready server.
 STARTUP_TIMEOUT_SECONDS="${KOOKR_STARTUP_TIMEOUT_SECONDS:-1800}"
-CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-2}"
+# Early poll for fast warm restarts (RFC fast-prod-restart R4): default ≤200ms.
+# Override with KOOKR_STARTUP_CHECK_INTERVAL_SECONDS (fractional seconds ok).
+CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-0.2}"
 # Per-probe curl bound for the liveness gate (issue #1553). The deadline loop
 # only re-checks BETWEEN curls, so one unbounded curl against a hung
 # /api/health defeats STARTUP_TIMEOUT_SECONDS and wedges the deploy forever.
@@ -382,19 +385,82 @@ ready_probe_phase_hint() {
   echo "probe pending"
 }
 
+# Probe GET /api/health for M1 process liveness (HTTP 200). Connection failure
+# keeps waiting. Writes body to $1 when a probe reaches the server.
+probe_health_for_m1() {
+  local body_file="$1"
+  local http_code=""
+  local curl_status=0
+
+  set +e
+  http_code="$(
+    curl -sS --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" \
+      -o "$body_file" -w '%{http_code}' \
+      "$HEALTH_URL" 2>/dev/null
+  )"
+  curl_status=$?
+  set -e
+  if (( curl_status != 0 )) || [[ -z "$http_code" ]]; then
+    http_code="000"
+  fi
+  [[ "$http_code" == "200" ]]
+}
+
+# Print phase timings + dominant phase (RFC fast-prod-restart R5).
+# Args are wall-clock seconds (integers preferred; fractional ok as strings).
+print_restart_phase_timings() {
+  local port_free_s="$1"
+  local m1_s="$2"
+  local m2_s="$3"
+  local smoke_s="$4"
+  local total_s="$5"
+
+  # Derive phase durations (clamped at 0).
+  local d_port d_m1 d_m2 d_smoke
+  d_port="$port_free_s"
+  d_m1="$(awk -v a="$m1_s" -v b="$port_free_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+  d_m2="$(awk -v a="$m2_s" -v b="$m1_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+  d_smoke="$(awk -v a="$smoke_s" -v b="$m2_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+
+  echo "Restart phase timings:"
+  echo "  port free (stop→listen free):  ${d_port}s"
+  echo "  M1 first /api/health 200:      ${m1_s}s wall (Δ ${d_m1}s after port free)"
+  echo "  M2 deploy-ready /api/ready:    ${m2_s}s wall (Δ ${d_m2}s after M1)"
+  echo "  smoke end:                     ${smoke_s}s wall (Δ ${d_smoke}s after M2)"
+  echo "  total script:                  ${total_s}s"
+
+  # Dominant phase among stop, M1-gap, M2-gap, smoke-gap.
+  local dominant="port-free" dominant_val="$d_port"
+  awk -v p="$d_port" -v m1="$d_m1" -v m2="$d_m2" -v sm="$d_smoke" 'BEGIN {
+    max=p+0; name="port-free"
+    if (m1+0 > max) { max=m1+0; name="M1-health" }
+    if (m2+0 > max) { max=m2+0; name="M2-ready" }
+    if (sm+0 > max) { max=sm+0; name="smoke" }
+    printf "  dominant phase: %s (%.1fs)\n", name, max
+  }'
+}
+
 wait_for_health() {
+  # Populates PHASE_M1_S / PHASE_M2_S as wall seconds since RESTART_T0.
+  # Default RESTART_T0 when sourced by unit tests that call wait_for_health alone.
+  : "${RESTART_T0:=$SECONDS}"
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   local start_pid=""
   local body_file=""
   local last_heartbeat=$SECONDS
   local phase_hint=""
+  local m1_seen=0
+  local health_body=""
+
+  PHASE_M1_S=""
+  PHASE_M2_S=""
 
   while (( SECONDS < deadline )); do
     if [[ -s "$PID_FILE" ]]; then
       start_pid="$(cat "$PID_FILE")"
       break
     fi
-    sleep 1
+    sleep "$CHECK_INTERVAL_SECONDS"
   done
 
   if [[ -z "$start_pid" ]]; then
@@ -403,19 +469,37 @@ wait_for_health() {
   fi
 
   body_file="$(mktemp "${TMPDIR:-/tmp}/kookr-ready-probe.XXXXXX")"
+  health_body="$(mktemp "${TMPDIR:-/tmp}/kookr-health-probe.XXXXXX")"
 
   last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! kill -0 "$start_pid" 2>/dev/null; then
-      rm -f -- "$body_file"
+      rm -f -- "$body_file" "$health_body"
       echo "Kookr prod server exited before becoming healthy"
       echo "--- last 100 lines of ${LOG_FILE} ---"
       tail -n 100 "$LOG_FILE" || true
       exit 1
     fi
+
+    # M1: first successful /api/health (process liveness).
+    if (( m1_seen == 0 )); then
+      if probe_health_for_m1 "$health_body"; then
+        m1_seen=1
+        PHASE_M1_S=$((SECONDS - RESTART_T0))
+        echo "M1: ${HEALTH_URL} OK at +${PHASE_M1_S}s"
+      fi
+    fi
+
     if probe_ready_for_deploy "$body_file"; then
-      rm -f -- "$body_file" "$PID_FILE"
+      PHASE_M2_S=$((SECONDS - RESTART_T0))
+      if (( m1_seen == 0 )); then
+        # Ready implies listener is up; backfill M1 if health probe lagged.
+        PHASE_M1_S="$PHASE_M2_S"
+        m1_seen=1
+      fi
+      rm -f -- "$body_file" "$health_body" "$PID_FILE"
+      echo "M2: ${READY_URL} deploy-ready at +${PHASE_M2_S}s"
       echo " Kookr prod restarted successfully"
       return 0
     fi
@@ -426,7 +510,7 @@ wait_for_health() {
     fi
   done
 
-  rm -f -- "$body_file" "$PID_FILE"
+  rm -f -- "$body_file" "$health_body" "$PID_FILE"
   echo "Health check failed after ${STARTUP_TIMEOUT_SECONDS}s"
   echo "--- last 100 lines of ${LOG_FILE} ---"
   tail -n 100 "$LOG_FILE" || true
@@ -444,24 +528,47 @@ restart_systemd_unit() {
 }
 
 wait_for_systemd_health() {
+  # Populates PHASE_M1_S / PHASE_M2_S as wall seconds since RESTART_T0.
+  : "${RESTART_T0:=$SECONDS}"
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   local body_file=""
+  local health_body=""
   local last_heartbeat=$SECONDS
   local phase_hint=""
+  local m1_seen=0
+
+  PHASE_M1_S=""
+  PHASE_M2_S=""
 
   body_file="$(mktemp "${TMPDIR:-/tmp}/kookr-ready-probe.XXXXXX")"
+  health_body="$(mktemp "${TMPDIR:-/tmp}/kookr-health-probe.XXXXXX")"
 
   last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! systemctl --user is-active --quiet kookr.service >/dev/null 2>&1; then
-      rm -f -- "$body_file"
+      rm -f -- "$body_file" "$health_body"
       echo "Kookr systemd service kookr.service is not active after restart"
       systemctl --user status kookr.service --no-pager || true
       exit 1
     fi
+
+    if (( m1_seen == 0 )); then
+      if probe_health_for_m1 "$health_body"; then
+        m1_seen=1
+        PHASE_M1_S=$((SECONDS - RESTART_T0))
+        echo "M1: ${HEALTH_URL} OK at +${PHASE_M1_S}s"
+      fi
+    fi
+
     if probe_ready_for_deploy "$body_file"; then
-      rm -f -- "$body_file"
+      PHASE_M2_S=$((SECONDS - RESTART_T0))
+      if (( m1_seen == 0 )); then
+        PHASE_M1_S="$PHASE_M2_S"
+        m1_seen=1
+      fi
+      rm -f -- "$body_file" "$health_body"
+      echo "M2: ${READY_URL} deploy-ready at +${PHASE_M2_S}s"
       echo " Kookr systemd service restarted successfully"
       return 0
     fi
@@ -472,7 +579,7 @@ wait_for_systemd_health() {
     fi
   done
 
-  rm -f -- "$body_file"
+  rm -f -- "$body_file" "$health_body"
   echo "Health check failed after ${STARTUP_TIMEOUT_SECONDS}s for systemd unit kookr.service"
   systemctl --user status kookr.service --no-pager || true
   exit 1
@@ -689,20 +796,45 @@ if [[ "${KOOKR_PROD_RESTART_TEST_ONLY:-}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# Phase timing anchors (RFC fast-prod-restart R5 / R12).
+RESTART_T0=$SECONDS
+PHASE_PORT_FREE_S=""
+PHASE_M1_S=""
+PHASE_M2_S=""
+PHASE_SMOKE_S=""
+
 if systemd_unit_active; then
   load_systemd_env_file
   configure_port_derived_values
   capture_predeploy_log_activity systemd
   restart_systemd_unit
+  # systemctl restart is stop+start; port free is approximate at this point.
+  PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
   wait_for_systemd_health
   run_post_restart_checks
   run_post_deploy_smoke systemd
+  PHASE_SMOKE_S=$((SECONDS - RESTART_T0))
+  print_restart_phase_timings \
+    "${PHASE_PORT_FREE_S:-0}" \
+    "${PHASE_M1_S:-${PHASE_PORT_FREE_S:-0}}" \
+    "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
+    "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
+    "$((SECONDS - RESTART_T0))"
   exit 0
 fi
 
 capture_predeploy_log_activity script
 stop_existing_server
+PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
+echo "Port ${PORT} free at +${PHASE_PORT_FREE_S}s"
 start_server
 wait_for_health
 run_post_restart_checks
 run_post_deploy_smoke script
+PHASE_SMOKE_S=$((SECONDS - RESTART_T0))
+print_restart_phase_timings \
+  "${PHASE_PORT_FREE_S:-0}" \
+  "${PHASE_M1_S:-${PHASE_PORT_FREE_S:-0}}" \
+  "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
+  "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
+  "$((SECONDS - RESTART_T0))"

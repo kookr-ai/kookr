@@ -260,6 +260,27 @@ For configuration-only changes:
 pnpm prod:restart
 ```
 
+To stop the production Node process without tearing down speech containers:
+
+```bash
+pnpm prod:stop
+```
+
+To stop Node **and** free GPU / remove bundled STT/TTS containers:
+
+```bash
+pnpm prod:stop --with-sidecars
+```
+
+Routine restart no longer frees the GPU. If `nvidia-smi` still shows Whisper /
+TTS after you stopped Kookr, that is expected until you run stop with
+`--with-sidecars`. After speech model/device/image changes, use
+`pnpm prod:stop --with-sidecars` before the next start.
+
+`pnpm prod:restart` prints phase timings (port free, M1 `/api/health`, M2
+`/api/ready`, smoke) and a dominant-phase line so you can see whether wait time
+is speech cold-start vs deferred recovery vs smoke.
+
 If a long-lived production or scratch worktree disappears when its task
 completes, protect it with the root-level `.kookr-protected` marker. See
 [Protecting A Worktree From Automatic Cleanup](user-guide.md#protecting-a-worktree-from-automatic-cleanup)

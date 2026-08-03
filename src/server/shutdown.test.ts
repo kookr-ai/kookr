@@ -2,10 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { createShutdownHandler, type ShutdownHandlerDeps } from './shutdown.js';
 
 /**
- * Issue #1320: the graceful-shutdown handler must be re-entrancy-safe. A
- * single SIGINT/SIGTERM runs the full graceful path exactly once; a second
- * signal arriving while that path is still in flight must force-exit(1) rather
- * than re-run the container stops concurrently.
+ * Issue #1320 + fast-prod-restart P1: the graceful-shutdown handler must be
+ * re-entrancy-safe and must **detach** bundled STT/TTS (no compose down on
+ * routine SIGTERM).
  */
 
 interface Harness {
@@ -17,27 +16,27 @@ interface Harness {
   exit: ReturnType<typeof vi.fn>;
   logs: string[];
   warns: string[];
-  /** Resolve the STT stop() to let a gated graceful path proceed. */
-  releaseStt: () => void;
+  /** Resolve the server close() to let a gated graceful path proceed. */
+  releaseClose: () => void;
 }
 
-function makeHarness(opts: { gateStt?: boolean } = {}): Harness {
+function makeHarness(opts: { gateClose?: boolean } = {}): Harness {
   const logs: string[] = [];
   const warns: string[] = [];
   const abort = vi.fn();
   let release = () => {};
-  const sttStop = vi.fn(
+  const sttStop = vi.fn(() => Promise.resolve());
+  const ttsStop = vi.fn(() => Promise.resolve());
+  const serverClose = vi.fn(
     () =>
       new Promise<void>((resolve) => {
-        if (opts.gateStt) {
+        if (opts.gateClose) {
           release = resolve;
         } else {
           resolve();
         }
       }),
   );
-  const ttsStop = vi.fn(() => Promise.resolve());
-  const serverClose = vi.fn(() => Promise.resolve());
   const exit = vi.fn();
   const deps: ShutdownHandlerDeps = {
     lifecycleAc: { abort },
@@ -47,41 +46,39 @@ function makeHarness(opts: { gateStt?: boolean } = {}): Harness {
     exit,
     logger: { log: (m: string) => logs.push(m), warn: (m: string) => warns.push(m) },
   };
-  return { deps, abort, sttStop, ttsStop, serverClose, exit, logs, warns, releaseStt: () => release() };
+  return { deps, abort, sttStop, ttsStop, serverClose, exit, logs, warns, releaseClose: () => release() };
 }
 
 describe('createShutdownHandler', () => {
-  it('runs the full graceful path once and exits 0', async () => {
+  it('runs the full graceful path once, detaches sidecars, and exits 0', async () => {
     const h = makeHarness();
     const shutdown = createShutdownHandler(h.deps);
 
     await shutdown('SIGINT');
 
     expect(h.abort).toHaveBeenCalledTimes(1);
-    expect(h.sttStop).toHaveBeenCalledTimes(1);
-    expect(h.ttsStop).toHaveBeenCalledTimes(1);
+    // P1 detach: routine SIGTERM/SIGINT must not tear down speech containers.
+    expect(h.sttStop).not.toHaveBeenCalled();
+    expect(h.ttsStop).not.toHaveBeenCalled();
     expect(h.serverClose).toHaveBeenCalledTimes(1);
     expect(h.exit).toHaveBeenCalledTimes(1);
     expect(h.exit).toHaveBeenCalledWith(0);
     expect(h.warns).toHaveLength(0);
+    expect(h.logs.some((l) => /sidecars left running/i.test(l))).toBe(true);
 
-    // Lock the documented ordering invariant: abort BEFORE the container stops
-    // (issue #188 clean warmup-cancel) and stops BEFORE server.close() (the
-    // restart-script port race). Count-only assertions would survive a reorder.
-    expect(h.abort.mock.invocationCallOrder[0]).toBeLessThan(h.sttStop.mock.invocationCallOrder[0]);
-    expect(h.sttStop.mock.invocationCallOrder[0]).toBeLessThan(h.ttsStop.mock.invocationCallOrder[0]);
-    expect(h.ttsStop.mock.invocationCallOrder[0]).toBeLessThan(h.serverClose.mock.invocationCallOrder[0]);
+    // abort BEFORE server.close() (issue #188 clean warmup-cancel).
+    expect(h.abort.mock.invocationCallOrder[0]).toBeLessThan(h.serverClose.mock.invocationCallOrder[0]);
   });
 
   it('force-exits(1) on a repeated signal without re-running the graceful path', async () => {
-    const h = makeHarness({ gateStt: true });
+    const h = makeHarness({ gateClose: true });
     const shutdown = createShutdownHandler(h.deps);
 
-    // First signal enters the graceful path and blocks in sttManager.stop().
-    // The handler runs synchronously up to its first `await`, so sttStop() has
-    // already been invoked (and `shuttingDown` set) by the time this returns.
+    // First signal enters the graceful path and blocks in server.close().
     const first = shutdown('SIGTERM');
-    expect(h.sttStop).toHaveBeenCalledTimes(1);
+    // Yield so the first handler reaches the await on server.close.
+    await Promise.resolve();
+    expect(h.serverClose).toHaveBeenCalledTimes(1);
 
     // Second signal arrives mid-shutdown: it must escalate, not re-enter.
     await shutdown('SIGTERM');
@@ -90,14 +87,13 @@ describe('createShutdownHandler', () => {
     expect(h.exit).toHaveBeenCalledWith(1);
     expect(h.warns).toHaveLength(1);
     expect(h.warns[0]).toMatch(/forcing immediate exit/i);
-    // The container stops were NOT invoked a second time.
-    expect(h.sttStop).toHaveBeenCalledTimes(1);
+    expect(h.serverClose).toHaveBeenCalledTimes(1);
+    expect(h.sttStop).not.toHaveBeenCalled();
     expect(h.ttsStop).not.toHaveBeenCalled();
 
-    // Release the gate so the first (graceful) path completes cleanly.
-    h.releaseStt();
+    h.releaseClose();
     await first;
-    expect(h.sttStop).toHaveBeenCalledTimes(1);
+    expect(h.serverClose).toHaveBeenCalledTimes(1);
     expect(h.exit).toHaveBeenCalledWith(0);
   });
 
@@ -127,11 +123,9 @@ describe('createShutdownHandler', () => {
 
     await shutdown('SIGTERM');
 
-    // No second graceful path: container stops/close still ran exactly once.
-    expect(h.sttStop).toHaveBeenCalledTimes(1);
-    expect(h.ttsStop).toHaveBeenCalledTimes(1);
+    expect(h.sttStop).not.toHaveBeenCalled();
+    expect(h.ttsStop).not.toHaveBeenCalled();
     expect(h.serverClose).toHaveBeenCalledTimes(1);
-    // The later signal escalated to a force-exit.
     expect(h.exit).toHaveBeenCalledWith(1);
     expect(h.warns).toHaveLength(1);
     expect(h.warns[0]).toMatch(/forcing immediate exit/i);
