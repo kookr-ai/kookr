@@ -116,6 +116,28 @@ export interface PipelineStarvationContext {
   prior: PipelineStarvationRepoState | null;
 }
 
+/**
+ * Light starvation class for audit + spawn policy (RFC overnight-throughput PR3).
+ * Not a full taxonomy — only what changes spawn behavior in the first ship.
+ */
+export type StarvationClass =
+  | 'waiting_on_open_prs'
+  | 'umbrella_only'
+  | 'other';
+
+/**
+ * Follow-on action hint for handle/service (PR3 audit; PR4 batch kick).
+ * - `idea_scout` — spawn on-demand idea-scout
+ * - `cannot_refill` — policy terminal (e.g. all open PRs); do not thrash scouts
+ * - `batch_kick_only` — recent eligible ideation exists; kick implement, not scout
+ * - `none` — no product action
+ */
+export type StarvationFollowOnAction =
+  | 'idea_scout'
+  | 'cannot_refill'
+  | 'batch_kick_only'
+  | 'none';
+
 export interface PipelineStarvationDecision {
   /**
    * Only true for **product** `blocked-empty`. Concurrent empties and non-empty
@@ -140,6 +162,10 @@ export interface PipelineStarvationDecision {
   handledRunKeysAfter: string[];
   /** Resolved empty class for blocked-empty (audit / callers). */
   emptyClass?: BatchEmptyClass;
+  /** Light product class (PR3) — audit + spawn suppress. */
+  starvationClass?: StarvationClass;
+  /** Derived follow-on for service/audit (PR3/PR4). */
+  followOnAction?: StarvationFollowOnAction;
 }
 
 /**
@@ -171,6 +197,26 @@ export function looksLikeConcurrentBatchEmpty(outcome: BatchOutcomeRecord): bool
     if (row.title && CONCURRENT_EMPTY_REASON_RE.test(row.title)) return true;
   }
   return false;
+}
+
+const OPEN_PR_DISQUALIFIER_RE = /already has open PR|open PR #|has open pull request/i;
+const UMBRELLA_DISQUALIFIER_RE = /umbrella|tracking\/meta|label:umbrella|not a single-PR/i;
+
+/**
+ * Light starvation class from disqualifier histogram (PR3).
+ * - waiting_on_open_prs: every itemized disqualifier is open-PR covered
+ * - umbrella_only: every itemized disqualifier is umbrella/meta (no open-PR mix)
+ * - other: mixed / empty / unknown
+ */
+export function classifyStarvationLight(outcome: BatchOutcomeRecord): StarvationClass {
+  const rows = outcome.disqualified ?? [];
+  if (rows.length === 0) return 'other';
+  const allOpenPr = rows.every((r) => OPEN_PR_DISQUALIFIER_RE.test(r.reason || ''));
+  if (allOpenPr) return 'waiting_on_open_prs';
+  const allUmbrella = rows.every((r) => UMBRELLA_DISQUALIFIER_RE.test(r.reason || '')
+    || UMBRELLA_DISQUALIFIER_RE.test(r.title || ''));
+  if (allUmbrella) return 'umbrella_only';
+  return 'other';
 }
 
 /** Default path for a batch run's outcome.json (runKey usually = task id). */
@@ -318,19 +364,30 @@ export function evaluatePipelineStarvationRefill(
   const handledRunKeysAfter = [...priorKeys, outcome.runKey].slice(-blockedEmptyAtAfter.length);
   const consecutiveBlockedEmpty = blockedEmptyAtAfter.length;
 
+  const starvationClass = classifyStarvationLight(outcome);
+
   // --- spawn decision ---
   let spawnScout = true;
   let spawnSkipReason: string | undefined;
+  let followOnAction: StarvationFollowOnAction = 'idea_scout';
 
-  if (ctx.scoutInFlight) {
+  // PR3: all open-PR covered → cannot_refill (no thrash scouts).
+  if (starvationClass === 'waiting_on_open_prs') {
+    spawnScout = false;
+    spawnSkipReason = 'starvationClass=waiting_on_open_prs — all itemized issues already have open PRs';
+    followOnAction = 'cannot_refill';
+  } else if (ctx.scoutInFlight) {
     spawnScout = false;
     spawnSkipReason = 'scout already running or queued for this repo';
+    followOnAction = 'none';
   } else if (
     ctx.recentSuccessfulIdeationAtMs !== null
     && nowMs - ctx.recentSuccessfulIdeationAtMs < SUCCESSFUL_IDEATION_LOOKBACK_MS
   ) {
     spawnScout = false;
     spawnSkipReason = `successful ideation within last ${Math.round(SUCCESSFUL_IDEATION_LOOKBACK_MS / 3_600_000)}h`;
+    // PR4: kick implement instead of re-scouting when supply already exists.
+    followOnAction = 'batch_kick_only';
   } else {
     const lastScoutMs = ctx.prior?.lastStarvationScoutAt
       ? Date.parse(ctx.prior.lastStarvationScoutAt)
@@ -338,13 +395,19 @@ export function evaluatePipelineStarvationRefill(
     if (Number.isFinite(lastScoutMs) && nowMs - lastScoutMs < STARVATION_SCOUT_DEDUP_MS) {
       spawnScout = false;
       spawnSkipReason = `starvation-triggered scout already spawned within last ${Math.round(STARVATION_SCOUT_DEDUP_MS / 3_600_000)}h`;
+      followOnAction = 'none';
     }
   }
 
   // --- alert decision ---
-  let emitStarvationAlert = consecutiveBlockedEmpty >= 2;
+  // Policy cannot_refill (waiting_on_open_prs): still ledger the empty, but do not
+  // fire warning-level product starvation alert (info path left to recovered/ops).
+  let emitStarvationAlert = consecutiveBlockedEmpty >= 2
+    && starvationClass !== 'waiting_on_open_prs';
   let alertSkipReason: string | undefined;
-  if (!emitStarvationAlert) {
+  if (starvationClass === 'waiting_on_open_prs') {
+    alertSkipReason = 'waiting_on_open_prs — policy terminal, no product starvation warning';
+  } else if (!emitStarvationAlert) {
     alertSkipReason = consecutiveBlockedEmpty === 1
       ? 'first blocked-empty in window — alert deferred until second consecutive'
       : 'no blocked-empty events in window';
@@ -370,6 +433,8 @@ export function evaluatePipelineStarvationRefill(
     blockedEmptyAtAfter,
     handledRunKeysAfter,
     emptyClass,
+    starvationClass,
+    followOnAction: spawnScout ? 'idea_scout' : followOnAction,
   };
 }
 

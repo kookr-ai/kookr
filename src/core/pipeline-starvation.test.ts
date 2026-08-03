@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   BATCH_OUTCOME_SCHEMA_VERSION,
+  classifyStarvationLight,
   evaluatePipelineStarvationRefill,
   looksLikeConcurrentBatchEmpty,
   nextPipelineStarvationState,
@@ -391,5 +392,56 @@ describe('nextPipelineStarvationState skip reason (PR1)', () => {
     );
     expect(state.lastSpawnSkipReason).toBeUndefined();
     expect(state.lastStarvationScoutTaskId).toBe('scout-1');
+  });
+});
+
+describe('classifyStarvationLight + waiting_on_open_prs (PR3)', () => {
+  test('all open-PR disqualifiers → waiting_on_open_prs and no spawn', () => {
+    const o = blockedEmpty({
+      disqualified: [
+        { issue: 1, reason: 'already has open PR #10' },
+        { issue: 2, reason: 'already has open PR #11' },
+      ],
+    });
+    expect(classifyStarvationLight(o)).toBe('waiting_on_open_prs');
+    const decision = evaluatePipelineStarvationRefill(o, {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.followOnAction).toBe('cannot_refill');
+    expect(decision.emitStarvationAlert).toBe(false);
+    expect(decision.spawnSkipReason).toMatch(/waiting_on_open_prs/);
+  });
+
+  test('umbrella-only disqualifiers → umbrella_only but still may spawn', () => {
+    const o = blockedEmpty({
+      disqualified: [
+        { issue: 1, reason: 'umbrella/tracking/meta — not a single-PR work unit' },
+        { issue: 2, reason: 'label:umbrella' },
+      ],
+    });
+    expect(classifyStarvationLight(o)).toBe('umbrella_only');
+    const decision = evaluatePipelineStarvationRefill(o, {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.spawnScout).toBe(true);
+    expect(decision.followOnAction).toBe('idea_scout');
+  });
+
+  test('successful ideation skip sets followOnAction batch_kick_only', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 60_000,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.followOnAction).toBe('batch_kick_only');
   });
 });
