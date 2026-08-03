@@ -567,8 +567,8 @@ describe('kookr issue main — R25 unreachable-server handling', () => {
     expect(sleep.calls).toEqual([1000, 3000, 9000]);
     expect(errs.join('\n')).toMatch(/no Kookr server reachable after 4 attempts/);
     expect(errs.join('\n')).toMatch(/do NOT start work on this issue/);
-    // 4 attempts (initial + 3 retries) * 2 ports probed per resolveBaseUrl call.
-    expect(fetchMock.mock.calls.length).toBe(8);
+    // 4 attempts (initial + 3 retries) * (2 health + 2 deploy/status) per resolveBaseUrl call (#1975).
+    expect(fetchMock.mock.calls.length).toBe(16);
   });
 
   it('release retries 3 times with 1s/3s/9s backoff, then exits 3', async () => {
@@ -613,7 +613,8 @@ describe('kookr issue main — R25 unreachable-server handling', () => {
     }
     expect(exit.calls).toEqual([EXIT_NO_SERVER]);
     expect(sleep.calls).toEqual([]);
-    expect(fetchMock.mock.calls.length).toBe(2); // one resolveBaseUrl attempt, two ports probed
+    // one resolveBaseUrl attempt: 2 health + 2 deploy/status probes (#1975)
+    expect(fetchMock.mock.calls.length).toBe(4);
     expect(errs.join('\n')).not.toMatch(/after 4 attempts/);
   });
 
