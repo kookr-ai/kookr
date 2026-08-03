@@ -11,23 +11,36 @@
  *
  * PR2 (overnight-throughput): concurrent emptyClass ignored for product
  * starvation; terminal reconcile for missed product blocked-empty handles.
+ *
+ * PR4 (overnight-throughput R5): capacity-gated parallel-issue-batch re-entry
+ * on `batch_kick_only` handle path and on idea-scout terminal, behind
+ * `KOOKR_PIPELINE_BATCH_KICK` (default off).
  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appendAuditRow } from '../core/audit-log.js';
 import {
+  clearKickBatchPending,
   defaultCheckoutGuess,
   defaultParallelIssueBatchOutcomePath,
   evaluatePipelineStarvationRefill,
+  hasOpenStarvationEpisode,
+  isBatchKickInCooldown,
+  isIdeaScoutPlaybookId,
+  isKickBatchPendingArmed,
+  isParallelIssueBatchInFlightForRepo,
   isParallelIssueBatchPlaybookId,
+  isPipelineBatchKickEnabled,
   nextPipelineStarvationState,
   parseBatchOutcomeRecord,
   resolveBatchEmptyClass,
   STARVATION_ALERT_WINDOW_MS,
+  starvationBatchKickIdempotencyKey,
   starvationScoutIdempotencyKey,
   summarizeDisqualifiers,
   type BatchOutcomeRecord,
+  type PipelineBatchKickResult,
   type PipelineStarvationDecision,
   type PipelineStarvationRepoState,
 } from '../core/pipeline-starvation.js';
@@ -50,6 +63,10 @@ import { preparePlaybookLaunchWithMetadata } from './use-cases/playbook-launch.j
 export const STARVATION_TRIGGER_PROVENANCE = 'starvation-trigger' as const;
 /** Safety-net handle invoked when a batch task terminals without a prior handle. */
 export const RECONCILE_TERMINAL_SOURCE = 'reconcile_terminal' as const;
+/** Batch kick triggered from handle-time `batch_kick_only` follow-on. */
+export const BATCH_KICK_HANDLE_SOURCE = 'batch_kick_handle' as const;
+/** Batch kick triggered when an idea-scout for an open episode completes. */
+export const BATCH_KICK_SCOUT_COMPLETE_SOURCE = 'batch_kick_scout_complete' as const;
 
 export type PipelineStarvationHandleSource =
   | typeof STARVATION_TRIGGER_PROVENANCE
@@ -101,9 +118,24 @@ export interface HandleBatchOutcomeResult {
   scoutQueued?: boolean;
   alertEmitted: boolean;
   recoveredAlertEmitted?: boolean;
+  /** Result of an attempted batch re-entry kick (PR4), if considered. */
+  batchKickResult?: PipelineBatchKickResult;
+  batchKickTaskId?: string;
   /** Human-readable one-liner for the batch state.md. */
   summary: string;
 }
+
+export interface BatchKickAttemptResult {
+  result: PipelineBatchKickResult;
+  taskId?: string;
+  queued?: boolean;
+  error?: string;
+}
+
+export type BatchKickTrigger =
+  | typeof BATCH_KICK_HANDLE_SOURCE
+  | typeof BATCH_KICK_SCOUT_COMPLETE_SOURCE
+  | string;
 
 export class PipelineStarvationService {
   private readonly deps: PipelineStarvationServiceDeps;
@@ -150,6 +182,14 @@ export class PipelineStarvationService {
       source,
     };
 
+    const batchKickEnabled = isPipelineBatchKickEnabled();
+    // When followOn would kick implement but flag is off, surface that on the
+    // decision row (RFC PR4) so dry-run nights stay forensically complete.
+    const batchKickSkipped =
+      decision.followOnAction === 'batch_kick_only' && !batchKickEnabled
+        ? 'flag_off'
+        : null;
+
     // Always audit the decision path (RFC overnight-throughput PR1 R2) —
     // including non-applicable and alreadyHandled so nights are debuggable.
     await appendAuditRow(this.auditPath(), {
@@ -170,6 +210,8 @@ export class PipelineStarvationService {
       openIssueCount: outcome.openIssueCount ?? null,
       starvationClass: decision.starvationClass ?? null,
       followOnAction: decision.followOnAction ?? null,
+      batchKickSkipped,
+      batchKickEnabled,
       ...decisionInputs,
       at: new Date(nowMs).toISOString(),
     });
@@ -212,6 +254,8 @@ export class PipelineStarvationService {
     let scoutQueued: boolean | undefined;
     let spawnError: string | undefined;
     let alertEmitted = false;
+    let batchKickResult: PipelineBatchKickResult | undefined;
+    let batchKickTaskId: string | undefined;
 
     if (decision.spawnScout) {
       try {
@@ -255,6 +299,23 @@ export class PipelineStarvationService {
       }
     }
 
+    // PR4 / R5: handle-time batch re-entry when recent eligible ideation exists.
+    // Always audit when followOn is batch_kick_only (including flag_off).
+    if (decision.followOnAction === 'batch_kick_only') {
+      const kick = await this.tryKickBatch({
+        repo: outcome.repo,
+        localPath: input.localPath?.trim() || outcome.localPath?.trim() || undefined,
+        parentTaskId: input.parentTaskId,
+        agentType: input.agentType,
+        trigger: BATCH_KICK_HANDLE_SOURCE,
+        runKey: outcome.runKey,
+        priorState: prior,
+        nowMs,
+      });
+      batchKickResult = kick.result;
+      batchKickTaskId = kick.taskId;
+    }
+
     if (decision.emitStarvationAlert) {
       const alert = buildPipelineStarvationAlert(outcome, decision);
       this.deps.broadcast(alert);
@@ -279,6 +340,7 @@ export class PipelineStarvationService {
       nowMs,
       spawnedTaskId: spawnedScoutTaskId,
       alertEmitted,
+      batchKicked: batchKickResult === 'batch_kicked',
     });
     await savePipelineStarvationState(state, { stateDir: this.deps.stateDir });
 
@@ -288,6 +350,8 @@ export class PipelineStarvationService {
       alertEmitted,
       spawnError,
       source,
+      batchKickResult,
+      batchKickTaskId,
     });
     return {
       decision,
@@ -296,8 +360,290 @@ export class PipelineStarvationService {
       scoutQueued,
       alertEmitted,
       recoveredAlertEmitted,
+      batchKickResult,
+      batchKickTaskId,
       summary,
     };
+  }
+
+  /**
+   * Scout-complete batch kick (RFC R5 trigger 1): when an idea-scout for a
+   * repo terminals successfully and starvation state has a pending kick flag,
+   * matching lastStarvationScoutTaskId, or an open episode, try the same
+   * admission-gated batch launch. Always clears the pending flag on terminal
+   * (success or failure) + drops TTL-expired arms without kicking.
+   *
+   * Safe to call from onTaskOutcome — never throws to the caller.
+   */
+  async maybeKickBatchOnScoutTerminal(
+    taskId: string,
+    terminalOutcome: TelegramTaskOutcome,
+  ): Promise<BatchKickAttemptResult | null> {
+    if (
+      terminalOutcome.kind !== 'completed'
+      && terminalOutcome.kind !== 'failed'
+      && terminalOutcome.kind !== 'cancelled'
+    ) {
+      return null;
+    }
+
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task) return null;
+    if (!isIdeaScoutPlaybookId(task.playbookId)) {
+      // Prompt fallback for CLI-spawned scouts without playbookId stamp.
+      const prompt = (task.prompt ?? '').toLowerCase();
+      if (!prompt.includes('repository idea scout') && !prompt.includes('idea-scout')) {
+        return null;
+      }
+    }
+
+    const repo = resolveRepoFromTask(task);
+    if (!repo) return null;
+
+    const nowMs = this.deps.now?.() ?? Date.now();
+    const prior = await loadPipelineStarvationState(repo, {
+      stateDir: this.deps.stateDir,
+      nowMs,
+    });
+
+    const pendingArmed = isKickBatchPendingArmed(prior, nowMs);
+    const matchesStarvationScout = prior.lastStarvationScoutTaskId === taskId;
+    const openEpisode = hasOpenStarvationEpisode(prior, nowMs);
+    const shouldConsiderKick =
+      pendingArmed || matchesStarvationScout || (openEpisode && terminalOutcome.kind === 'completed');
+
+    // Always clear a stale/TTL-expired or terminal pending arm.
+    const hadPending = prior.kickBatchWhenScoutCompletes === true;
+    if (!shouldConsiderKick && !hadPending) {
+      return null;
+    }
+
+    // Terminal failure/cancel: clear flag only, no kick.
+    if (terminalOutcome.kind !== 'completed') {
+      if (hadPending) {
+        const cleared = clearKickBatchPending(prior, { nowMs });
+        await savePipelineStarvationState(cleared, { stateDir: this.deps.stateDir });
+        this.deps.log?.(
+          `[pipeline-starvation] scout terminal=${terminalOutcome.kind} for ${repo} `
+          + `— cleared kickBatchWhenScoutCompletes without kick`,
+        );
+      }
+      return null;
+    }
+
+    if (!shouldConsiderKick) {
+      // Pending flag set but TTL expired and no other trigger.
+      if (hadPending) {
+        const cleared = clearKickBatchPending(prior, { nowMs });
+        await savePipelineStarvationState(cleared, { stateDir: this.deps.stateDir });
+      }
+      return null;
+    }
+
+    const localPath =
+      task.playbookParameterValues?.localPath?.trim()
+      || task.cwd
+      || undefined;
+
+    const kick = await this.tryKickBatch({
+      repo,
+      localPath,
+      parentTaskId: taskId,
+      trigger: BATCH_KICK_SCOUT_COMPLETE_SOURCE,
+      runKey: taskId,
+      priorState: prior,
+      nowMs,
+    });
+
+    const next = clearKickBatchPending(prior, {
+      nowMs,
+      batchKicked: kick.result === 'batch_kicked',
+    });
+    await savePipelineStarvationState(next, { stateDir: this.deps.stateDir });
+    return kick;
+  }
+
+  /**
+   * Shared admission + launch for starvation batch re-entry (R5).
+   * Concurrent single-flight + optional cooldown; flag default off.
+   */
+  async tryKickBatch(input: {
+    repo: string;
+    localPath?: string;
+    parentTaskId?: string;
+    agentType?: LaunchOpts['agentType'];
+    trigger: BatchKickTrigger;
+    runKey?: string;
+    priorState?: PipelineStarvationRepoState | null;
+    nowMs?: number;
+  }): Promise<BatchKickAttemptResult> {
+    const nowMs = input.nowMs ?? this.deps.now?.() ?? Date.now();
+    const prior = input.priorState
+      ?? await loadPipelineStarvationState(input.repo, {
+        stateDir: this.deps.stateDir,
+        nowMs,
+      });
+
+    if (!isPipelineBatchKickEnabled()) {
+      const result: PipelineBatchKickResult = 'batch_skipped_flag_off';
+      await this.auditBatchKick({
+        repo: input.repo,
+        result,
+        trigger: input.trigger,
+        runKey: input.runKey,
+        nowMs,
+      });
+      return { result };
+    }
+
+    if (isParallelIssueBatchInFlightForRepo(input.repo, this.deps.taskStore.listTasks())) {
+      const result: PipelineBatchKickResult = 'batch_skipped_concurrent';
+      await this.auditBatchKick({
+        repo: input.repo,
+        result,
+        trigger: input.trigger,
+        runKey: input.runKey,
+        nowMs,
+      });
+      return { result };
+    }
+
+    if (isBatchKickInCooldown(prior, nowMs)) {
+      const result: PipelineBatchKickResult = 'batch_skipped_cooldown';
+      await this.auditBatchKick({
+        repo: input.repo,
+        result,
+        trigger: input.trigger,
+        runKey: input.runKey,
+        nowMs,
+        lastBatchKickAt: prior.lastBatchKickAt,
+      });
+      return { result };
+    }
+
+    try {
+      const launch = await this.spawnParallelIssueBatch({
+        repo: input.repo,
+        localPath: input.localPath,
+        parentTaskId: input.parentTaskId,
+        agentType: input.agentType,
+        nowMs,
+        trigger: input.trigger,
+      });
+      const taskId = launch.task.id;
+      this.deps.log?.(
+        `[pipeline-starvation] batch kick for ${input.repo} → task ${taskId}`
+        + `${launch.queued ? ' (queued)' : ''} trigger=${input.trigger}`,
+      );
+      await this.auditBatchKick({
+        repo: input.repo,
+        result: 'batch_kicked',
+        trigger: input.trigger,
+        runKey: input.runKey,
+        taskId,
+        queued: launch.queued === true,
+        nowMs,
+      });
+      return {
+        result: 'batch_kicked',
+        taskId,
+        queued: launch.queued === true,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.deps.log?.(
+        `[pipeline-starvation] batch kick failed for ${input.repo}: ${message}`,
+      );
+      await this.auditBatchKick({
+        repo: input.repo,
+        result: 'batch_kick_failed',
+        trigger: input.trigger,
+        runKey: input.runKey,
+        error: message,
+        nowMs,
+      });
+      return { result: 'batch_kick_failed', error: message };
+    }
+  }
+
+  private async auditBatchKick(row: {
+    repo: string;
+    result: PipelineBatchKickResult;
+    trigger: BatchKickTrigger;
+    runKey?: string;
+    taskId?: string;
+    queued?: boolean;
+    error?: string;
+    lastBatchKickAt?: string;
+    nowMs: number;
+  }): Promise<void> {
+    await appendAuditRow(this.auditPath(), {
+      action: 'pipeline_starvation_batch_kick',
+      provenance: STARVATION_TRIGGER_PROVENANCE,
+      repo: row.repo,
+      result: row.result,
+      trigger: row.trigger,
+      runKey: row.runKey ?? null,
+      taskId: row.taskId ?? null,
+      queued: row.queued ?? false,
+      error: row.error ?? null,
+      lastBatchKickAt: row.lastBatchKickAt ?? null,
+      at: new Date(row.nowMs).toISOString(),
+    });
+  }
+
+  private async spawnParallelIssueBatch(input: {
+    repo: string;
+    localPath?: string;
+    parentTaskId?: string;
+    agentType?: LaunchOpts['agentType'];
+    nowMs: number;
+    trigger: BatchKickTrigger;
+  }): Promise<LaunchResult<Task>> {
+    const localPath = input.localPath?.trim() || '';
+    const projectId = projectIdFromRepoSpecifier(input.repo) ?? undefined;
+    const taskTargetCwd = localPath || defaultCheckoutGuess(input.repo);
+
+    // Production schedule defaults for lucy-class batches: modest target,
+    // merge when safe, autonomous headless-safe onAmbiguity (headless gate
+    // also covers ask, but prefer auto-safe-subset for starvation kicks).
+    const prepared = await preparePlaybookLaunchWithMetadata({
+      cwd: taskTargetCwd,
+      playbookPath: 'parallel-issue-batch.md',
+      scope: 'plugin',
+      parameterValues: {
+        repoFullName: input.repo,
+        localPath: localPath || '',
+        issueSelector: '',
+        targetIssueCount: '4',
+        maxConcurrentTasks: '3',
+        mergeAfterImplementation: 'true',
+        allowOtherAuthors: 'false',
+        childAgent: 'default',
+        onAmbiguity: 'auto-safe-subset',
+        extraInstruction:
+          `On-demand batch re-entry after pipeline starvation refill `
+          + `(trigger=${input.trigger}, provenance=${STARVATION_TRIGGER_PROVENANCE}). `
+          + `Prefer single-PR-safe leaves; do not invent low-product work.`,
+      },
+      taskTargetCwd,
+      taskTargetCwdExplicit: true,
+      agentType: input.agentType,
+    });
+
+    const launchOpts: LaunchOpts = {
+      ...prepared.launchOpts,
+      parentTaskId: input.parentTaskId,
+      playbookId: prepared.launchOpts.playbookId ?? 'parallel-issue-batch.md',
+      projectId: prepared.launchOpts.projectId ?? projectId,
+      launchSource: 'api',
+      disableDedup: true,
+      autoCloseOnSignal: true,
+      idempotencyKey: starvationBatchKickIdempotencyKey(input.repo, input.nowMs),
+      name: `Parallel issue batch (starvation kick): ${input.repo}`,
+    };
+
+    return this.deps.launcher(launchOpts);
   }
 
   /**
@@ -558,6 +904,8 @@ function formatHandleSummary(
     alertEmitted: boolean;
     spawnError?: string;
     source?: string;
+    batchKickResult?: PipelineBatchKickResult;
+    batchKickTaskId?: string;
   },
 ): string {
   const parts: string[] = [
@@ -576,10 +924,33 @@ function formatHandleSummary(
   } else if (decision.spawnSkipReason) {
     parts.push(`scout skipped (${decision.spawnSkipReason})`);
   }
+  if (bits.batchKickResult === 'batch_kicked' && bits.batchKickTaskId) {
+    parts.push(`batch kicked taskId=${bits.batchKickTaskId}`);
+  } else if (bits.batchKickResult) {
+    parts.push(`batch kick ${bits.batchKickResult}`);
+  }
   if (bits.alertEmitted) {
     parts.push('starvation alert emitted');
   } else if (decision.alertSkipReason) {
     parts.push(`alert skipped (${decision.alertSkipReason})`);
   }
   return parts.join('; ');
+}
+
+/** Extract owner/repo from a task's playbook params / projectId / name / prompt. */
+function resolveRepoFromTask(task: Task): string | null {
+  const fromParams =
+    task.playbookParameterValues?.repoFullName?.trim()
+    || task.playbookParameterValues?.repo?.trim()
+    || '';
+  if (fromParams.includes('/')) return fromParams;
+
+  // projectId is often github.com/owner/repo
+  const pid = task.projectId?.trim() ?? '';
+  const pidMatch = pid.match(/(?:github\.com\/)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i);
+  if (pidMatch?.[1]) return pidMatch[1];
+
+  const hay = `${task.name ?? ''} ${task.prompt ?? ''}`;
+  const nameMatch = hay.match(/\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/);
+  return nameMatch?.[1] ?? null;
 }

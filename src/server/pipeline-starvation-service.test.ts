@@ -8,6 +8,8 @@ import {
   type BatchOutcomeRecord,
 } from '../core/pipeline-starvation.js';
 import {
+  BATCH_KICK_HANDLE_SOURCE,
+  BATCH_KICK_SCOUT_COMPLETE_SOURCE,
   PipelineStarvationService,
   RECONCILE_TERMINAL_SOURCE,
   STARVATION_TRIGGER_PROVENANCE,
@@ -71,6 +73,7 @@ describe('PipelineStarvationService (#1715)', () => {
           playbookId: opts.playbookId,
           projectId: opts.projectId,
           parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
         });
         const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
         return result;
@@ -183,11 +186,18 @@ describe('PipelineStarvationService (#1715)', () => {
     });
     expect(result.decision.spawnScout).toBe(false);
     expect(result.decision.spawnSkipReason).toMatch(/successful ideation/i);
+    expect(result.decision.followOnAction).toBe('batch_kick_only');
+    // Flag default off: no launch, but audit records flag_off (PR4).
     expect(launches).toHaveLength(0);
+    expect(result.batchKickResult).toBe('batch_skipped_flag_off');
     // PR1: decision audit always written (including skips).
     const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('pipeline_starvation_decision');
     expect(audit).toContain('successful ideation');
+    expect(audit).toContain('batchKickSkipped');
+    expect(audit).toContain('flag_off');
+    expect(audit).toContain('pipeline_starvation_batch_kick');
+    expect(audit).toContain('batch_skipped_flag_off');
   });
 
   test('DONE without issue-created does NOT suppress spawn (content-blind fix)', async () => {
@@ -401,6 +411,201 @@ describe('PipelineStarvationService (#1715)', () => {
     const result = await service.maybeReconcileBatchTaskTerminal(task.id, { kind: 'completed' });
     expect(result).toBeNull();
     expect(launches).toHaveLength(0);
+  });
+
+  describe('PR4 batch kick (R5)', () => {
+    let prevBatchKick: string | undefined;
+
+    beforeEach(() => {
+      prevBatchKick = process.env.KOOKR_PIPELINE_BATCH_KICK;
+    });
+
+    afterEach(() => {
+      if (prevBatchKick === undefined) delete process.env.KOOKR_PIPELINE_BATCH_KICK;
+      else process.env.KOOKR_PIPELINE_BATCH_KICK = prevBatchKick;
+    });
+
+    async function seedSuccessfulIdeation(): Promise<void> {
+      const runDir = join(ideaScoutBase, 'eligible-run');
+      await mkdir(join(runDir, 'recommendations', '01-leaf'), { recursive: true });
+      await writeFile(join(runDir, 'state.md'), '# scout\n\n<promise>DONE</promise>\n', 'utf-8');
+      await writeFile(
+        join(runDir, 'recommendations', '01-leaf', 'issue-created.json'),
+        JSON.stringify({ number: 99, title: 'feat: implementable leaf' }),
+        'utf-8',
+      );
+    }
+
+    test('flag on + batch_kick_only launches parallel-issue-batch', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      await seedSuccessfulIdeation();
+
+      const result = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'kick-run-1' }),
+        localPath: checkout,
+      });
+
+      expect(result.decision.followOnAction).toBe('batch_kick_only');
+      expect(result.decision.spawnScout).toBe(false);
+      expect(result.batchKickResult).toBe('batch_kicked');
+      expect(result.batchKickTaskId).toBeTruthy();
+      expect(launches).toHaveLength(1);
+      expect(launches[0]!.playbookId).toMatch(/parallel-issue-batch/);
+      expect(launches[0]!.idempotencyKey).toMatch(/^starvation-batch-kick:jeanibarz-lucy:/);
+      expect(result.state.lastBatchKickAt).toBe(new Date(clock).toISOString());
+      expect(result.summary).toMatch(/batch kicked taskId=/);
+
+      const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+      expect(audit).toContain('pipeline_starvation_batch_kick');
+      expect(audit).toContain('batch_kicked');
+      expect(audit).toContain(BATCH_KICK_HANDLE_SOURCE);
+    });
+
+    test('flag off still audits batch_skipped_flag_off without launch', async () => {
+      delete process.env.KOOKR_PIPELINE_BATCH_KICK;
+      await seedSuccessfulIdeation();
+
+      const result = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'flag-off-run' }),
+        localPath: checkout,
+      });
+      expect(result.batchKickResult).toBe('batch_skipped_flag_off');
+      expect(launches).toHaveLength(0);
+      expect(result.state.lastBatchKickAt).toBeUndefined();
+    });
+
+    test('concurrent in-flight batch skips with batch_skipped_concurrent', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      await seedSuccessfulIdeation();
+      store.createTask({
+        prompt: 'Parallel Issue Batch for jeanibarz/lucy',
+        cwd: checkout,
+        playbookId: 'parallel-issue-batch.md',
+        playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+        projectId: 'github.com/jeanibarz/lucy',
+        name: 'Batch: jeanibarz/lucy',
+      });
+
+      const result = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'concurrent-kick' }),
+        localPath: checkout,
+      });
+      expect(result.batchKickResult).toBe('batch_skipped_concurrent');
+      expect(launches).toHaveLength(0);
+
+      const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+      expect(audit).toContain('batch_skipped_concurrent');
+    });
+
+    test('cooldown skips second kick within window', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      await seedSuccessfulIdeation();
+
+      const first = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'cd-1' }),
+        localPath: checkout,
+      });
+      expect(first.batchKickResult).toBe('batch_kicked');
+      // Prior kick must be terminal so concurrent single-flight does not win
+      // over cooldown (production: prior batch finished quickly / failed).
+      expect(first.batchKickTaskId).toBeTruthy();
+      store.startTask(first.batchKickTaskId!);
+      store.completeTask(first.batchKickTaskId!);
+
+      clock = NOW + 60_000; // +1m still inside 30m cooldown
+      const second = await service.handleBatchOutcome({
+        outcome: outcome({
+          runKey: 'cd-2',
+          generatedAt: new Date(clock).toISOString(),
+        }),
+        localPath: checkout,
+      });
+      expect(second.batchKickResult).toBe('batch_skipped_cooldown');
+      expect(launches).toHaveLength(1);
+    });
+
+    test('scout spawn arms kickBatchWhenScoutCompletes', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      const result = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'arm-pending' }),
+        localPath: checkout,
+      });
+      expect(result.spawnedScoutTaskId).toBeTruthy();
+      expect(result.state.kickBatchWhenScoutCompletes).toBe(true);
+      expect(result.state.kickBatchWhenScoutCompletesAt).toBe(new Date(clock).toISOString());
+    });
+
+    test('scout-complete kick launches batch when pending flag set', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      // First empty arms scout + pending kick flag.
+      const first = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'scout-arm' }),
+        localPath: checkout,
+      });
+      expect(first.spawnedScoutTaskId).toBeTruthy();
+      expect(first.state.kickBatchWhenScoutCompletes).toBe(true);
+      const scoutTaskId = first.spawnedScoutTaskId!;
+
+      // Scout task already exists in store from launcher mock.
+      const kick = await service.maybeKickBatchOnScoutTerminal(scoutTaskId, { kind: 'completed' });
+      expect(kick).not.toBeNull();
+      expect(kick!.result).toBe('batch_kicked');
+      expect(kick!.taskId).toBeTruthy();
+      // idea-scout launch + batch kick
+      expect(launches).toHaveLength(2);
+      expect(launches[1]!.playbookId).toMatch(/parallel-issue-batch/);
+
+      const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+      expect(audit).toContain(BATCH_KICK_SCOUT_COMPLETE_SOURCE);
+      expect(audit).toContain('batch_kicked');
+    });
+
+    test('scout-complete failure clears pending without kick', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      const first = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'scout-fail' }),
+        localPath: checkout,
+      });
+      const scoutTaskId = first.spawnedScoutTaskId!;
+
+      const kick = await service.maybeKickBatchOnScoutTerminal(scoutTaskId, { kind: 'failed' });
+      expect(kick).toBeNull();
+      expect(launches).toHaveLength(1); // scout only
+
+      // Reload state via another handle that is alreadyHandled-ish path: load by replaying
+      // a second empty after flag clear — or just read the state file.
+      const stateRaw = await readFile(
+        join(stateDir, 'jeanibarz-lucy.json'),
+        'utf-8',
+      );
+      const state = JSON.parse(stateRaw) as { kickBatchWhenScoutCompletes?: boolean };
+      expect(state.kickBatchWhenScoutCompletes).toBeUndefined();
+    });
+
+    test('scout-complete concurrent skip still clears pending', async () => {
+      process.env.KOOKR_PIPELINE_BATCH_KICK = '1';
+      const first = await service.handleBatchOutcome({
+        outcome: outcome({ runKey: 'scout-conc' }),
+        localPath: checkout,
+      });
+      const scoutTaskId = first.spawnedScoutTaskId!;
+
+      store.createTask({
+        prompt: 'Parallel Issue Batch for jeanibarz/lucy',
+        cwd: checkout,
+        playbookId: 'parallel-issue-batch.md',
+        playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+      });
+
+      const kick = await service.maybeKickBatchOnScoutTerminal(scoutTaskId, { kind: 'completed' });
+      expect(kick?.result).toBe('batch_skipped_concurrent');
+      // no additional batch launch
+      expect(launches).toHaveLength(1);
+
+      const stateRaw = await readFile(join(stateDir, 'jeanibarz-lucy.json'), 'utf-8');
+      const state = JSON.parse(stateRaw) as { kickBatchWhenScoutCompletes?: boolean };
+      expect(state.kickBatchWhenScoutCompletes).toBeUndefined();
+    });
   });
 
   test('done after starvation alert emits recovered operational alert', async () => {

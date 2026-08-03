@@ -1,8 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import {
+  BATCH_KICK_COOLDOWN_MS,
   BATCH_OUTCOME_SCHEMA_VERSION,
   classifyStarvationLight,
+  clearKickBatchPending,
   evaluatePipelineStarvationRefill,
+  isBatchKickInCooldown,
+  isKickBatchPendingArmed,
+  isParallelIssueBatchInFlightForRepo,
+  isPipelineBatchKickEnabled,
+  KICK_BATCH_PENDING_TTL_MS,
   looksLikeConcurrentBatchEmpty,
   nextPipelineStarvationState,
   parseBatchOutcomeRecord,
@@ -443,5 +450,103 @@ describe('classifyStarvationLight + waiting_on_open_prs (PR3)', () => {
     });
     expect(decision.spawnScout).toBe(false);
     expect(decision.followOnAction).toBe('batch_kick_only');
+  });
+});
+
+describe('PR4 batch kick helpers', () => {
+  test('isPipelineBatchKickEnabled defaults off', () => {
+    expect(isPipelineBatchKickEnabled({})).toBe(false);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: '0' })).toBe(false);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'false' })).toBe(false);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: '1' })).toBe(true);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'true' })).toBe(true);
+    expect(isPipelineBatchKickEnabled({ KOOKR_PIPELINE_BATCH_KICK: 'on' })).toBe(true);
+  });
+
+  test('isParallelIssueBatchInFlightForRepo detects non-terminal batch', () => {
+    const tasks = [
+      {
+        status: 'inProgress',
+        playbookId: 'parallel-issue-batch.md',
+        playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+      },
+      {
+        status: 'completed',
+        playbookId: 'parallel-issue-batch.md',
+        playbookParameterValues: { repoFullName: 'other/repo' },
+      },
+    ];
+    expect(isParallelIssueBatchInFlightForRepo('jeanibarz/lucy', tasks)).toBe(true);
+    expect(isParallelIssueBatchInFlightForRepo('other/repo', tasks)).toBe(false);
+    expect(isParallelIssueBatchInFlightForRepo('kookr-ai/kookr', tasks)).toBe(false);
+  });
+
+  test('nextState arms kickBatchWhenScoutCompletes on scout spawn', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    const state = nextPipelineStarvationState('jeanibarz/lucy', null, decision, {
+      nowMs: NOW,
+      spawnedTaskId: 'scout-xyz',
+    });
+    expect(state.kickBatchWhenScoutCompletes).toBe(true);
+    expect(state.kickBatchWhenScoutCompletesAt).toBe(new Date(NOW).toISOString());
+    expect(state.lastStarvationScoutTaskId).toBe('scout-xyz');
+  });
+
+  test('nextState stamps lastBatchKickAt when batchKicked', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 60_000,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.followOnAction).toBe('batch_kick_only');
+    const state = nextPipelineStarvationState('jeanibarz/lucy', null, decision, {
+      nowMs: NOW,
+      batchKicked: true,
+    });
+    expect(state.lastBatchKickAt).toBe(new Date(NOW).toISOString());
+    expect(state.kickBatchWhenScoutCompletes).toBeUndefined();
+  });
+
+  test('isKickBatchPendingArmed respects TTL', () => {
+    const armed = prior({
+      kickBatchWhenScoutCompletes: true,
+      kickBatchWhenScoutCompletesAt: new Date(NOW - 60_000).toISOString(),
+    });
+    expect(isKickBatchPendingArmed(armed, NOW)).toBe(true);
+    const expired = prior({
+      kickBatchWhenScoutCompletes: true,
+      kickBatchWhenScoutCompletesAt: new Date(NOW - KICK_BATCH_PENDING_TTL_MS - 1).toISOString(),
+    });
+    expect(isKickBatchPendingArmed(expired, NOW)).toBe(false);
+  });
+
+  test('isBatchKickInCooldown', () => {
+    expect(isBatchKickInCooldown(prior(), NOW)).toBe(false);
+    expect(isBatchKickInCooldown(
+      prior({ lastBatchKickAt: new Date(NOW - 60_000).toISOString() }),
+      NOW,
+    )).toBe(true);
+    expect(isBatchKickInCooldown(
+      prior({ lastBatchKickAt: new Date(NOW - BATCH_KICK_COOLDOWN_MS - 1).toISOString() }),
+      NOW,
+    )).toBe(false);
+  });
+
+  test('clearKickBatchPending clears flag and optionally stamps kick', () => {
+    const s = prior({
+      kickBatchWhenScoutCompletes: true,
+      kickBatchWhenScoutCompletesAt: new Date(NOW).toISOString(),
+    });
+    const cleared = clearKickBatchPending(s, { nowMs: NOW + 1000 });
+    expect(cleared.kickBatchWhenScoutCompletes).toBeUndefined();
+    expect(cleared.kickBatchWhenScoutCompletesAt).toBeUndefined();
+    const kicked = clearKickBatchPending(s, { nowMs: NOW + 1000, batchKicked: true });
+    expect(kicked.lastBatchKickAt).toBe(new Date(NOW + 1000).toISOString());
   });
 });

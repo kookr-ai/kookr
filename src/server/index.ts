@@ -2730,8 +2730,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   const telegramHandle = remoteChatTrigger.handle;
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
-  // Compose remote-chat notify with pipeline-starvation terminal reconcile (PR2 R6):
-  // product blocked-empty outcomes that never POSTed handle are caught once here.
+  // Compose remote-chat notify with pipeline-starvation terminal hooks:
+  // - PR2 R6: product blocked-empty outcomes that never POSTed handle
+  // - PR4 R5: idea-scout complete → capacity-gated batch kick when episode open
   const remoteChatOnTaskOutcome = remoteChatTrigger.onTaskOutcome;
   onTaskOutcomeHolder = (taskId, outcome) => {
     try {
@@ -2742,6 +2743,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     void pipelineStarvation.maybeReconcileBatchTaskTerminal(taskId, outcome).catch((err) => {
       console.warn(
         '[pipeline-starvation] terminal reconcile failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+    void pipelineStarvation.maybeKickBatchOnScoutTerminal(taskId, outcome).catch((err) => {
+      console.warn(
+        '[pipeline-starvation] scout-complete batch kick failed:',
         err instanceof Error ? err.message : err,
       );
     });

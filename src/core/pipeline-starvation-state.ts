@@ -15,7 +15,7 @@ import {
   type PipelineStarvationRepoState,
 } from './pipeline-starvation.js';
 
-/** Compact health/projection row for one repo (RFC overnight-throughput PR1). */
+/** Compact health/projection row for one repo (RFC overnight-throughput PR1/PR4). */
 export interface PipelineStarvationHealthRepo {
   repo: string;
   consecutiveBlockedEmpty: number;
@@ -25,6 +25,8 @@ export interface PipelineStarvationHealthRepo {
   lastStarvationScoutTaskId: string | null;
   lastStarvationScoutAt: string | null;
   lastStarvationAlertAt: string | null;
+  lastBatchKickAt: string | null;
+  kickBatchWhenScoutCompletes: boolean;
   updatedAt: string;
 }
 
@@ -74,6 +76,10 @@ export async function listPipelineStarvationHealth(
         lastStarvationAlertAt: typeof parsed.lastStarvationAlertAt === 'string'
           ? parsed.lastStarvationAlertAt
           : null,
+        lastBatchKickAt: typeof parsed.lastBatchKickAt === 'string'
+          ? parsed.lastBatchKickAt
+          : null,
+        kickBatchWhenScoutCompletes: parsed.kickBatchWhenScoutCompletes === true,
         updatedAt: typeof parsed.updatedAt === 'string'
           ? parsed.updatedAt
           : new Date(nowMs).toISOString(),
@@ -121,6 +127,15 @@ export async function loadPipelineStarvationState(
         : undefined,
       lastSpawnSkipAt: typeof parsed.lastSpawnSkipAt === 'string'
         ? parsed.lastSpawnSkipAt
+        : undefined,
+      lastBatchKickAt: typeof parsed.lastBatchKickAt === 'string'
+        ? parsed.lastBatchKickAt
+        : undefined,
+      kickBatchWhenScoutCompletes: parsed.kickBatchWhenScoutCompletes === true
+        ? true
+        : undefined,
+      kickBatchWhenScoutCompletesAt: typeof parsed.kickBatchWhenScoutCompletesAt === 'string'
+        ? parsed.kickBatchWhenScoutCompletesAt
         : undefined,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(nowMs).toISOString(),
     };

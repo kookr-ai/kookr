@@ -13,6 +13,8 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { projectIdFromRepoSpecifier } from './project-identity.js';
+import { isTerminalStatus } from './task-status.js';
 
 /** Max one starvation-triggered scout per repo per this window. */
 export const STARVATION_SCOUT_DEDUP_MS = 4 * 60 * 60 * 1000; // 4h
@@ -25,6 +27,18 @@ export const SUCCESSFUL_IDEATION_LOOKBACK_MS = STARVATION_SCOUT_DEDUP_MS;
 
 /** Second consecutive blocked-empty inside this window raises the alert. */
 export const STARVATION_ALERT_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h
+
+/**
+ * Per-repo cooldown between starvation-triggered batch kicks (RFC R5).
+ * Prevents thrash when handle + scout-complete both fire close together.
+ */
+export const BATCH_KICK_COOLDOWN_MS = 30 * 60 * 1000; // 30m
+
+/**
+ * Max age of `kickBatchWhenScoutCompletes` before it is cleared without a kick
+ * (scout never terminal, or stuck pending flag).
+ */
+export const KICK_BATCH_PENDING_TTL_MS = STARVATION_SCOUT_DEDUP_MS; // 4h
 
 /** Schema version for durable per-repo state files. */
 export const PIPELINE_STARVATION_STATE_SCHEMA = 1 as const;
@@ -97,8 +111,31 @@ export interface PipelineStarvationRepoState {
   lastSpawnSkipReason?: string;
   /** When lastSpawnSkipReason was written. */
   lastSpawnSkipAt?: string;
+  /**
+   * When we last capacity-gated kicked a parallel-issue-batch for this repo (PR4 / R5).
+   * Used for kick cooldown; last result lives in audit, not a state forest.
+   */
+  lastBatchKickAt?: string;
+  /**
+   * When true, try batch kick when the starvation scout (or matching idea-scout)
+   * completes. Armed when a starvation scout is spawned; cleared on terminal
+   * success/failure + max-age TTL (PR4 / R5).
+   */
+  kickBatchWhenScoutCompletes?: boolean;
+  /** When kickBatchWhenScoutCompletes was armed (for TTL). */
+  kickBatchWhenScoutCompletesAt?: string;
   updatedAt: string;
 }
+
+/**
+ * Result enum for `pipeline_starvation_batch_kick` audit rows (PR4 / R5).
+ */
+export type PipelineBatchKickResult =
+  | 'batch_kicked'
+  | 'batch_skipped_flag_off'
+  | 'batch_skipped_concurrent'
+  | 'batch_skipped_cooldown'
+  | 'batch_kick_failed';
 
 export interface PipelineStarvationContext {
   nowMs: number;
@@ -240,6 +277,111 @@ export function isParallelIssueBatchPlaybookId(playbookId: string | undefined): 
   if (!playbookId) return false;
   const base = playbookId.replace(/\\/g, '/').split('/').pop() ?? playbookId;
   return base === 'parallel-issue-batch.md' || base === 'parallel-issue-batch';
+}
+
+/** True when playbookId looks like repository-idea-scout (starvation or scheduled). */
+export function isIdeaScoutPlaybookId(playbookId: string | undefined): boolean {
+  if (!playbookId) return false;
+  const lower = playbookId.replace(/\\/g, '/').toLowerCase();
+  const base = lower.split('/').pop() ?? lower;
+  return (
+    base === 'repository-idea-scout.md'
+    || base === 'repository-idea-scout'
+    || base.includes('idea-scout')
+  );
+}
+
+/**
+ * Feature flag for R5 batch re-entry. Default **off** (unset / `0` / `false`).
+ * Enable with `KOOKR_PIPELINE_BATCH_KICK=1` (or `true` / `on` / `yes`).
+ */
+export function isPipelineBatchKickEnabled(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.KOOKR_PIPELINE_BATCH_KICK;
+  if (raw === undefined || raw === null) return false;
+  const v = String(raw).trim().toLowerCase();
+  if (v === '' || v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+  return v === '1' || v === 'true' || v === 'on' || v === 'yes';
+}
+
+/**
+ * True when any non-terminal task is a parallel-issue-batch for the given repo
+ * (playbookId + repoFullName / projectId / name+prompt fallback).
+ * Shared concurrent single-flight for schedules and starvation kicks (R5).
+ */
+export function isParallelIssueBatchInFlightForRepo(
+  repo: string,
+  tasks: readonly {
+    status: string;
+    playbookId?: string;
+    projectId?: string;
+    name?: string;
+    prompt?: string;
+    playbookParameterValues?: Record<string, string>;
+  }[],
+): boolean {
+  const projectId = projectIdFromRepoSpecifier(repo)?.toLowerCase() ?? null;
+  const slug = repoToPlaybookSlug(repo);
+  const repoLower = repo.trim().toLowerCase();
+
+  for (const task of tasks) {
+    if (isTerminalStatus(task.status as Parameters<typeof isTerminalStatus>[0])) continue;
+    if (!isParallelIssueBatchPlaybookId(task.playbookId)) continue;
+
+    const paramRepo = (
+      task.playbookParameterValues?.repoFullName
+      ?? task.playbookParameterValues?.repo
+      ?? ''
+    ).trim().toLowerCase();
+    if (paramRepo && paramRepo === repoLower) return true;
+    if (projectId && task.projectId?.toLowerCase() === projectId) return true;
+    const hay = `${task.projectId ?? ''} ${task.name ?? ''} ${task.prompt ?? ''}`.toLowerCase();
+    if (hay.includes(repoLower) || hay.includes(slug)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a pending scout-complete kick is still armed (flag true and within TTL).
+ */
+export function isKickBatchPendingArmed(
+  state: PipelineStarvationRepoState | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!state?.kickBatchWhenScoutCompletes) return false;
+  if (!state.kickBatchWhenScoutCompletesAt) return true;
+  const armedMs = Date.parse(state.kickBatchWhenScoutCompletesAt);
+  if (!Number.isFinite(armedMs)) return true;
+  return nowMs - armedMs < KICK_BATCH_PENDING_TTL_MS;
+}
+
+/**
+ * Open product-starvation episode: at least one blocked-empty still inside the
+ * alert window (used for scout-complete re-entry after scheduled scouts).
+ */
+export function hasOpenStarvationEpisode(
+  state: PipelineStarvationRepoState | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!state?.blockedEmptyAt?.length) return false;
+  const windowStart = nowMs - STARVATION_ALERT_WINDOW_MS;
+  for (let i = state.blockedEmptyAt.length - 1; i >= 0; i--) {
+    const ms = Date.parse(state.blockedEmptyAt[i]!);
+    if (Number.isFinite(ms) && ms >= windowStart) return true;
+  }
+  return false;
+}
+
+/** True when last batch kick is still inside the per-repo cooldown. */
+export function isBatchKickInCooldown(
+  state: PipelineStarvationRepoState | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!state?.lastBatchKickAt) return false;
+  const lastMs = Date.parse(state.lastBatchKickAt);
+  if (!Number.isFinite(lastMs)) return false;
+  return nowMs - lastMs < BATCH_KICK_COOLDOWN_MS;
 }
 
 const REPO_FULL_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -451,6 +593,8 @@ export function nextPipelineStarvationState(
     nowMs: number;
     spawnedTaskId?: string;
     alertEmitted?: boolean;
+    /** True when a batch was successfully kicked in this handle (PR4). */
+    batchKicked?: boolean;
   },
 ): PipelineStarvationRepoState {
   const nowIso = new Date(opts.nowMs).toISOString();
@@ -462,6 +606,9 @@ export function nextPipelineStarvationState(
     lastStarvationScoutAt: prior?.lastStarvationScoutAt,
     lastStarvationScoutTaskId: prior?.lastStarvationScoutTaskId,
     lastStarvationAlertAt: prior?.lastStarvationAlertAt,
+    lastBatchKickAt: prior?.lastBatchKickAt,
+    kickBatchWhenScoutCompletes: prior?.kickBatchWhenScoutCompletes,
+    kickBatchWhenScoutCompletesAt: prior?.kickBatchWhenScoutCompletesAt,
     updatedAt: nowIso,
   };
   if (opts.spawnedTaskId) {
@@ -470,6 +617,9 @@ export function nextPipelineStarvationState(
     // Clear skip reason when we successfully spawn.
     next.lastSpawnSkipReason = undefined;
     next.lastSpawnSkipAt = undefined;
+    // Arm scout-complete batch kick (PR4 / R5).
+    next.kickBatchWhenScoutCompletes = true;
+    next.kickBatchWhenScoutCompletesAt = nowIso;
   } else if (decision.spawnSkipReason && decision.applicable && !decision.alreadyHandled) {
     next.lastSpawnSkipReason = decision.spawnSkipReason;
     next.lastSpawnSkipAt = nowIso;
@@ -477,10 +627,40 @@ export function nextPipelineStarvationState(
     next.lastSpawnSkipReason = prior?.lastSpawnSkipReason;
     next.lastSpawnSkipAt = prior?.lastSpawnSkipAt;
   }
+  if (opts.batchKicked) {
+    next.lastBatchKickAt = nowIso;
+    // Handle-time kick already re-entered implement — clear pending scout flag.
+    next.kickBatchWhenScoutCompletes = undefined;
+    next.kickBatchWhenScoutCompletesAt = undefined;
+  }
   if (opts.alertEmitted) {
     next.lastStarvationAlertAt = nowIso;
   }
   return next;
+}
+
+/**
+ * Clear pending scout-complete kick flag (and optionally stamp lastBatchKickAt).
+ * Used by scout-terminal path on success/failure/TTL expiry.
+ */
+export function clearKickBatchPending(
+  state: PipelineStarvationRepoState,
+  opts: { nowMs: number; batchKicked?: boolean },
+): PipelineStarvationRepoState {
+  const nowIso = new Date(opts.nowMs).toISOString();
+  return {
+    ...state,
+    kickBatchWhenScoutCompletes: undefined,
+    kickBatchWhenScoutCompletesAt: undefined,
+    lastBatchKickAt: opts.batchKicked ? nowIso : state.lastBatchKickAt,
+    updatedAt: nowIso,
+  };
+}
+
+/** Idempotency key for starvation-triggered batch kicks (per-repo cooldown bucket). */
+export function starvationBatchKickIdempotencyKey(repo: string, nowMs: number): string {
+  const bucket = Math.floor(nowMs / BATCH_KICK_COOLDOWN_MS);
+  return `starvation-batch-kick:${repoToPlaybookSlug(repo)}:${bucket}`;
 }
 
 /** Default durable state root under the user-scoped playbook-state tree. */
