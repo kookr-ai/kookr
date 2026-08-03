@@ -865,9 +865,12 @@ describe('SessionBridge', () => {
     expect(timingLogs[0]).toMatchObject({
       msg: 'terminal_bridge_timing',
       attachId: 'client-attach-abc',
-      strategy: 'full-ring',
+      strategy: 'viewport-ring',
       seedCacheHit: false,
       recoveryUsed: false,
+      attachSeed: 'viewport',
+      historyAvailable: false,
+      protocolVersion: 1,
     });
 
     const control = ws.sent.find(
@@ -878,9 +881,12 @@ describe('SessionBridge', () => {
     expect(frame).toMatchObject({
       type: 'attach_timing',
       attachId: 'client-attach-abc',
-      strategy: 'full-ring',
+      strategy: 'viewport-ring',
       seedCacheHit: false,
       recoveryUsed: false,
+      attachSeed: 'viewport',
+      historyAvailable: false,
+      protocolVersion: 1,
     });
     log.mockRestore();
   });
@@ -1779,6 +1785,208 @@ describe('SessionBridge', () => {
       const written = backend.getWrittenBytes('s1');
       expect(written.length).toBe(1);
       expect(Array.from(written[0])).toEqual([0x61, 0x0d]);
+    });
+  });
+
+  // Viewport-first streaming attach (RFC Phase 1 / C4, issue #1934).
+  describe('viewport-first streaming attach', () => {
+    it('default attach seeds last N KB, not the full ring', async () => {
+      const backend = await makeReadySession('s1');
+      // 200 bytes of unique prefix + 40-byte tail; viewport budget = 40.
+      const prefix = 'P'.repeat(200);
+      const tail = 'TAIL_VIEWPORT_MARKER______________'; // 32 chars — pad
+      const tail40 = (tail + '!!!!!!!!').slice(0, 40);
+      backend.setCaptureContent('s1', prefix + tail40);
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        { initialResizeWaitMs: 0, streamingAttachViewportBytes: 40 },
+      );
+      await bridge.start();
+
+      const bins = ws.sent.filter((s): s is Buffer => Buffer.isBuffer(s));
+      expect(bins.length).toBeGreaterThanOrEqual(1);
+      const replay = bins[0]!.toString('utf-8');
+      expect(replay.length).toBeLessThanOrEqual(40);
+      expect(replay).toBe(tail40);
+      expect(replay.includes('P'.repeat(20))).toBe(false);
+
+      const control = ws.sent.find(
+        (s) => typeof s === 'string' && s.includes('"attach_timing"'),
+      );
+      const frame = JSON.parse(String(control));
+      expect(frame.strategy).toBe('viewport-ring');
+      expect(frame.attachSeed).toBe('viewport');
+      expect(frame.historyAvailable).toBe(true);
+      expect(frame.protocolVersion).toBe(1);
+      expect(frame.replayBytes).toBeLessThanOrEqual(40);
+    });
+
+    it('forceFullRingAttach (rollback) sends the full ring for streaming', async () => {
+      const backend = await makeReadySession('s1');
+      const body = `FULL-${'x'.repeat(120)}-END`;
+      backend.setCaptureContent('s1', body);
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        {
+          initialResizeWaitMs: 0,
+          streamingAttachViewportBytes: 20,
+          forceFullRingAttach: true,
+        },
+      );
+      await bridge.start();
+      const bins = ws.sent.filter((s): s is Buffer => Buffer.isBuffer(s));
+      expect(bins[0]!.toString('utf-8')).toBe(body);
+      const control = ws.sent.find(
+        (s) => typeof s === 'string' && s.includes('"attach_timing"'),
+      );
+      const frame = JSON.parse(String(control));
+      expect(frame.strategy).toBe('full-ring');
+      expect(frame.attachSeed).toBe('full');
+      expect(frame.historyAvailable).toBe(false);
+    });
+
+    it('KOOKR_TERMINAL_ATTACH_FULL_RING env forces full-ring streaming attach', async () => {
+      await withEnv({ KOOKR_TERMINAL_ATTACH_FULL_RING: '1' }, async () => {
+        const backend = await makeReadySession('s1');
+        const body = `ENVFULL-${'y'.repeat(80)}`;
+        backend.setCaptureContent('s1', body);
+        const ws = new FakeWs();
+        const bridge = new SessionBridge(
+          's1',
+          ws as unknown as never,
+          backend,
+          undefined,
+          undefined,
+          undefined,
+          { initialResizeWaitMs: 0, streamingAttachViewportBytes: 16 },
+        );
+        await bridge.start();
+        const bins = ws.sent.filter((s): s is Buffer => Buffer.isBuffer(s));
+        expect(bins[0]!.toString('utf-8')).toBe(body);
+        const control = ws.sent.find(
+          (s) => typeof s === 'string' && s.includes('"attach_timing"'),
+        );
+        expect(JSON.parse(String(control)).strategy).toBe('full-ring');
+      });
+    });
+
+    it('request-history delivers full ring after viewport seed', async () => {
+      const backend = await makeReadySession('s1');
+      const prefix = 'HISTORY_PREFIX_BLOCK________';
+      const tail = 'VIEWPORT_TAIL_ONLY__________';
+      backend.setCaptureContent('s1', prefix + tail);
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        { initialResizeWaitMs: 0, streamingAttachViewportBytes: tail.length },
+      );
+      await bridge.start();
+
+      const afterAttachBins = ws.sent.filter((s): s is Buffer => Buffer.isBuffer(s));
+      expect(afterAttachBins[0]!.toString('utf-8')).toBe(tail);
+
+      ws.emit('message', JSON.stringify({ type: 'request-history' }), false);
+      await waitForOutputFlush();
+
+      const historyControl = ws.sent.find(
+        (s) => typeof s === 'string' && s.includes('"history"') && s.includes('"byteLength"'),
+      );
+      expect(historyControl).toBeDefined();
+      const hFrame = JSON.parse(String(historyControl));
+      expect(hFrame).toMatchObject({
+        type: 'history',
+        status: 'ok',
+        mode: 'full',
+        byteLength: prefix.length + tail.length,
+      });
+
+      const allBins = ws.sent.filter((s): s is Buffer => Buffer.isBuffer(s));
+      const lastBin = allBins[allBins.length - 1]!.toString('utf-8');
+      expect(lastBin).toBe(prefix + tail);
+    });
+
+    it('request-history is refused for absolute-TUI attach seeds', async () => {
+      const { TerminalSeedFrameCache } = await import('./terminal-seed-frame-cache.js');
+      const seedCache = new TerminalSeedFrameCache();
+      const backend = await makeReadySession('s1');
+      // Dense CUP ring → absolute path (reconstruct), not streaming.
+      const cups = Array.from({ length: 220 }, (_, i) => {
+        const row = (i % 40) + 1;
+        const col = 10 + (i % 170);
+        return `\x1b[?2026h\x1b[${row};${col}HF\x1b[?2026l`;
+      }).join('');
+      backend.setCaptureContent('s1', cups);
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        {
+          ringReplay: 'auto',
+          initialResizeWaitMs: 0,
+          liveRedrawNudgeMs: 0,
+          seedFrameCache: seedCache,
+        },
+      );
+      await bridge.start();
+
+      const attachControl = ws.sent.find(
+        (s) => typeof s === 'string' && s.includes('"attach_timing"'),
+      );
+      const attachFrame = JSON.parse(String(attachControl));
+      // Absolute strategies must not be full-ring.
+      expect(attachFrame.strategy).not.toBe('full-ring');
+      expect(attachFrame.attachSeed).toBe('absolute');
+      expect(attachFrame.historyAvailable).toBe(false);
+
+      ws.emit('message', JSON.stringify({ type: 'request-history' }), false);
+      await waitForOutputFlush();
+
+      const historyControl = ws.sent.find(
+        (s) => typeof s === 'string' && s.includes('"status":"unavailable"'),
+      );
+      expect(historyControl).toBeDefined();
+      expect(JSON.parse(String(historyControl!)).type).toBe('history');
+    });
+
+    it('unknown control frame types are not forwarded as PTY keystrokes', async () => {
+      const { TerminalSeedFrameCache } = await import('./terminal-seed-frame-cache.js');
+      const backend = await makeReadySession('s1');
+      backend.setCaptureContent('s1', 'hello\n');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        { initialResizeWaitMs: 0, seedFrameCache: new TerminalSeedFrameCache() },
+      );
+      await bridge.start();
+      ws.emit('message', JSON.stringify({ type: 'future-control-v2', payload: 1 }), false);
+      await waitForOutputFlush(5);
+      expect(backend.getWrittenBytes('s1')).toHaveLength(0);
     });
   });
 

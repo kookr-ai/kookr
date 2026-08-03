@@ -22,12 +22,34 @@ import {
   type TerminalSeedFrameCache,
   type TerminalSeedKind,
 } from './terminal-seed-frame-cache.js';
+import {
+  cutStreamingAttachSeed,
+  DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
+} from './streaming-attach-seed.js';
 
 /**
  * Server → browser text control frame for attach join keys (RFC Phase 0.0).
  * Binary frames remain raw PTY output; clients must ignore JSON with this type.
  */
 export const ATTACH_TIMING_CONTROL_TYPE = 'attach_timing' as const;
+
+/**
+ * Browser → server control frame: load full streaming scrollback after a
+ * viewport-first attach (RFC Phase 1 / C4). Unknown to older servers — clients
+ * must only send this when `historyAvailable` was true on attach_timing.
+ */
+export const REQUEST_HISTORY_CONTROL_TYPE = 'request-history' as const;
+
+/**
+ * Server → browser control frame preceding a full-history binary payload.
+ * Older clients ignore unknown JSON text frames when they only parse
+ * `attach_timing`; new clients should clear the terminal before applying the
+ * following binary frame.
+ */
+export const HISTORY_CONTROL_TYPE = 'history' as const;
+
+/** Bump when attach wire semantics change in a non-ignorable way. */
+export const TERMINAL_ATTACH_PROTOCOL_VERSION = 1 as const;
 
 export interface AttachTimingControlFrame {
   type: typeof ATTACH_TIMING_CONTROL_TYPE;
@@ -41,6 +63,24 @@ export interface AttachTimingControlFrame {
   reconstructMs: number;
   replayBytes: number;
   earlySeedBytes: number;
+  /**
+   * Protocol version for partial-deploy safety. Clients that do not understand
+   * extra fields ignore them; those that do gate `request-history` on
+   * `historyAvailable` + this version.
+   */
+  protocolVersion: typeof TERMINAL_ATTACH_PROTOCOL_VERSION;
+  /** True when more ring bytes exist than the attach seed (streaming only). */
+  historyAvailable: boolean;
+  /** How the default attach seed was chosen. */
+  attachSeed: 'viewport' | 'full' | 'absolute' | 'empty';
+}
+
+export interface HistoryControlFrame {
+  type: typeof HISTORY_CONTROL_TYPE;
+  attachId: string;
+  status: 'ok' | 'empty' | 'unavailable';
+  byteLength: number;
+  mode: 'full';
 }
 
 /**
@@ -108,9 +148,16 @@ export function resetAbsoluteTuiRecoveryForTests(): void {
  *                     JSON text control frames:
  *                       `{"type":"resize","cols":N,"rows":M,"attachId"?:string}`
  *                       `{"type":"paste","text":"..."}`  (see kookr #356)
+ *                       `{"type":"request-history"}`  (streaming full scrollback; #1934)
  *   Server → Browser: binary frames carrying raw child PTY output, plus a
- *                     single JSON text `attach_timing` control frame after
- *                     attach settles (join key for client telemetry).
+ *                     JSON text `attach_timing` control frame after attach
+ *                     settles (join key for client telemetry), and optional
+ *                     `history` control + binary on request-history.
+ *
+ * Streaming attach (Claude/Codex-style scrollback) defaults to the last N KB
+ * with a safe cut (see `cutStreamingAttachSeed`). Absolute-position TUIs keep
+ * reconstruct/seed and never full-ring smash. Rollback: env
+ * `KOOKR_TERMINAL_ATTACH_FULL_RING=1` or option `forceFullRingAttach`.
  */
 
 /**
@@ -140,6 +187,24 @@ const DEFAULT_LIVE_REDRAW_NUDGE_MS = 40;
 const ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS = [16, 32, 64] as const;
 
 export type RingReplayPolicy = 'auto' | 'full' | 'skip-live-redraw';
+
+type AttachStrategy =
+  | 'seed-cache'
+  | 'absolute-reconstruct'
+  | 'absolute-frame'
+  | 'absolute-snapshot'
+  | 'viewport-ring'
+  | 'full-ring'
+  | 'empty';
+
+type AttachSeedKind = AttachTimingControlFrame['attachSeed'];
+
+function envFlagEnabled(name: string): boolean {
+  const value = process.env[name];
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
 
 interface PreReplayChunk {
   bytes: Buffer;
@@ -224,13 +289,29 @@ export interface SessionBridgeOptions {
 
   /**
    * How to handle ring-buffer replay on connect:
-   * - `auto` (default): skip + live WINCH redraw when the ring looks like a
-   *   dense absolute-position TUI (Grok); otherwise full replay.
-   * - `full`: always replay `captureBytes` (legacy behaviour).
+   * - `auto` (default): skip + reconstruct/seed when the ring looks like a
+   *   dense absolute-position TUI (Grok); otherwise viewport-first streaming
+   *   seed (last N KB with safe cut). Full 1 MiB is not the default.
+   * - `full`: always replay full `captureBytes` for streaming rings (legacy
+   *   smash path for absolute rings as well — prefer `forceFullRingAttach`
+   *   for streaming-only rollback).
    * - `skip-live-redraw`: never replay; always nudge a live redraw when the
    *   bridge is writable.
    */
   ringReplay?: RingReplayPolicy;
+
+  /**
+   * Force streaming attaches to send the full ring (rollback of viewport-first).
+   * Does **not** force absolute-TUI full-ring smash. Defaults from env
+   * `KOOKR_TERMINAL_ATTACH_FULL_RING` or `KOOKR_TERMINAL_ATTACH_ALWAYS_HISTORY`.
+   */
+  forceFullRingAttach?: boolean;
+
+  /**
+   * Max bytes for the default streaming attach seed. Defaults to
+   * `KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES` or 64 KiB.
+   */
+  streamingAttachViewportBytes?: number;
 
   /**
    * Milliseconds to wait for the browser's first `resize` control frame before
@@ -286,6 +367,8 @@ export class SessionBridge {
   private readonly onBridgeLiveBytes?: (sessionId: SessionId) => void;
   private readonly onBridgeClosed?: (sessionId: SessionId) => void;
   private readonly ringReplayPolicy: RingReplayPolicy;
+  private readonly forceFullRingAttach: boolean;
+  private readonly streamingAttachViewportBytes: number;
   private readonly initialResizeWaitMs: number;
   private readonly resizeDebounceMs: number;
   private readonly liveRedrawNudgeMs: number;
@@ -307,6 +390,12 @@ export class SessionBridge {
   private attachId: string | null = null;
   /** True when attach used inputful recovery (absolute-snapshot / Ctrl+L path). */
   private recoveryUsed = false;
+  /** Last attach seed kind for history / telemetry. */
+  private lastAttachSeed: AttachSeedKind = 'empty';
+  /** True when attach seed was a proper suffix of a larger streaming ring. */
+  private historyAvailable = false;
+  /** True once a request-history full payload has been sent on this bridge. */
+  private historyDelivered = false;
 
   constructor(
     sessionId: SessionId,
@@ -326,6 +415,16 @@ export class SessionBridge {
     this.onBridgeClosed = options?.onBridgeClosed;
     this.readOnly = options?.readOnly ?? false;
     this.ringReplayPolicy = options?.ringReplay ?? 'auto';
+    this.forceFullRingAttach = options?.forceFullRingAttach
+      ?? (
+        envFlagEnabled('KOOKR_TERMINAL_ATTACH_FULL_RING')
+        || envFlagEnabled('KOOKR_TERMINAL_ATTACH_ALWAYS_HISTORY')
+      );
+    this.streamingAttachViewportBytes = options?.streamingAttachViewportBytes
+      ?? readPositiveIntegerEnv(
+        'KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES',
+        DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
+      );
     this.initialResizeWaitMs = options?.initialResizeWaitMs
       ?? readNonNegativeIntegerEnv(
         'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
@@ -379,13 +478,15 @@ export class SessionBridge {
     let captureMs = 0;
     let reconstructMs = 0;
     let seedCacheHit = false;
-    let strategy: 'seed-cache' | 'absolute-reconstruct' | 'absolute-frame'
-      | 'absolute-snapshot' | 'full-ring' | 'empty' = 'empty';
+    let strategy: AttachStrategy = 'empty';
     let replayBytes = 0;
     let earlySeedBytes = 0;
     // Client may set attachId via the first resize control frame during
     // waitForInitialResize; recordBridgeTiming falls back to a server UUID.
     this.recoveryUsed = false;
+    this.lastAttachSeed = 'empty';
+    this.historyAvailable = false;
+    this.historyDelivered = false;
 
     this.onBridgeOpened?.(this.sessionId);
     this.bridgeHealthStarted = true;
@@ -454,6 +555,7 @@ export class SessionBridge {
         seedCacheHit = true;
         earlySeedBytes = cached.bytes.length;
         strategy = 'seed-cache';
+        this.lastAttachSeed = 'absolute';
         // Control frame first so client first-paint telemetry can join strategy
         // before the seed binary paints (final attach_timing still sent at end).
         this.sendAttachTimingControl({
@@ -466,6 +568,8 @@ export class SessionBridge {
           reconstructMs: 0,
           replayBytes: earlySeedBytes,
           earlySeedBytes,
+          historyAvailable: false,
+          attachSeed: 'absolute',
         });
         if (this.safeSend(Buffer.from(cached.bytes), true)) {
           this.onBridgeReplay?.(this.sessionId);
@@ -606,9 +710,12 @@ export class SessionBridge {
         this.recordBridgeTiming({
           startedAt, resizeWaitMs, captureMs, reconstructMs, seedCacheHit,
           strategy, replayBytes: earlySeedBytes, earlySeedBytes,
+          historyAvailable: false, attachSeed: 'absolute',
         });
         return;
       }
+      this.lastAttachSeed = 'absolute';
+      this.historyAvailable = false;
       if (replay.length > 0) {
         // Refresh only when we did not already paint an identical seed.
         const shouldSend = !earlySeed || !seedFramesEqual(earlySeed, replay);
@@ -627,8 +734,24 @@ export class SessionBridge {
         replayBytes = earlySeedBytes;
       }
     } else {
-      replay = captured;
-      if (!seedCacheHit) strategy = replay.length > 0 ? 'full-ring' : 'empty';
+      // Streaming (line-oriented) scrollback: viewport-first by default.
+      // Absolute path above never lands here. `ringReplay: 'full'` or the
+      // force-full-ring flag restores legacy full-ring send for rollback /
+      // "always load history".
+      const useFullRing = this.ringReplayPolicy === 'full' || this.forceFullRingAttach;
+      if (useFullRing) {
+        replay = captured;
+        if (!seedCacheHit) strategy = replay.length > 0 ? 'full-ring' : 'empty';
+        this.lastAttachSeed = replay.length > 0 ? 'full' : 'empty';
+        this.historyAvailable = false;
+      } else {
+        replay = cutStreamingAttachSeed(captured, this.streamingAttachViewportBytes);
+        if (!seedCacheHit) {
+          strategy = replay.length > 0 ? 'viewport-ring' : 'empty';
+        }
+        this.lastAttachSeed = replay.length > 0 ? 'viewport' : 'empty';
+        this.historyAvailable = captured.length > replay.length;
+      }
       if (replay.length > 0) {
         // Drop a stale absolute seed if this session is now a scrollback stream.
         if (seedCacheHit) this.seedFrameCache.delete(this.sessionId);
@@ -660,6 +783,8 @@ export class SessionBridge {
       strategy,
       replayBytes,
       earlySeedBytes,
+      historyAvailable: this.historyAvailable,
+      attachSeed: this.lastAttachSeed,
     });
   }
 
@@ -685,9 +810,13 @@ export class SessionBridge {
     strategy: string;
     replayBytes: number;
     earlySeedBytes: number;
+    historyAvailable?: boolean;
+    attachSeed?: AttachSeedKind;
   }): void {
     const totalMs = performance.now() - parts.startedAt;
     const attachId = this.attachId ?? randomUUID();
+    const historyAvailable = parts.historyAvailable ?? this.historyAvailable;
+    const attachSeed = parts.attachSeed ?? this.lastAttachSeed;
     const sampler = getHotPathSampler();
     sampler.record('terminal_bridge_start', totalMs);
     sampler.record('terminal_bridge_resize_wait', parts.resizeWaitMs);
@@ -715,6 +844,9 @@ export class SessionBridge {
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
       readOnly: this.readOnly,
+      protocolVersion: TERMINAL_ATTACH_PROTOCOL_VERSION,
+      historyAvailable,
+      attachSeed,
     };
     console.log(JSON.stringify(timingPayload));
 
@@ -730,6 +862,8 @@ export class SessionBridge {
       reconstructMs: timingPayload.reconstructMs,
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
+      historyAvailable,
+      attachSeed,
     });
   }
 
@@ -743,6 +877,8 @@ export class SessionBridge {
     reconstructMs: number;
     replayBytes: number;
     earlySeedBytes: number;
+    historyAvailable: boolean;
+    attachSeed: AttachSeedKind;
   }): void {
     if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
     const attachId = this.attachId ?? randomUUID();
@@ -759,6 +895,9 @@ export class SessionBridge {
       reconstructMs: parts.reconstructMs,
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
+      protocolVersion: TERMINAL_ATTACH_PROTOCOL_VERSION,
+      historyAvailable: parts.historyAvailable,
+      attachSeed: parts.attachSeed,
     };
     // Text frame (string), not binary — browser clients parse JSON strings;
     // binaryType=arraybuffer would otherwise surface a Buffer as ArrayBuffer.
@@ -824,6 +963,18 @@ export class SessionBridge {
             }
             return;
           }
+          if (parsed.type === REQUEST_HISTORY_CONTROL_TYPE || parsed.type === 'request-history') {
+            // Full scrollback on demand (viewport-first attach). Never inject
+            // into the PTY — always treated as a control frame.
+            void this.handleRequestHistory();
+            return;
+          }
+          // Known JSON control envelope with an unrecognized type: drop it
+          // rather than leaking the raw JSON as keystrokes (partial-deploy
+          // safety for future control frames).
+          if (typeof parsed.type === 'string' && parsed.type.length > 0) {
+            return;
+          }
         } catch {
           // Not a control frame — fall through as keystroke text.
         }
@@ -838,6 +989,80 @@ export class SessionBridge {
     if (this.ringReplayPolicy === 'skip-live-redraw') return true;
     if (this.ringReplayPolicy === 'full') return false;
     return isAbsolutePositionTuiRing(captured);
+  }
+
+  /**
+   * Deliver full streaming ring history after a viewport-first attach.
+   * Absolute-TUI sessions refuse full-ring smash (AC1): reply `unavailable`.
+   * Idempotent: a second request after successful delivery is a no-op ok/empty.
+   */
+  private async handleRequestHistory(): Promise<void> {
+    if (this.closed || !this.startupComplete) return;
+
+    const sendHistoryControl = (status: HistoryControlFrame['status'], byteLength: number) => {
+      if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
+      const attachId = this.attachId ?? randomUUID();
+      if (!this.attachId) this.attachId = attachId;
+      const control: HistoryControlFrame = {
+        type: HISTORY_CONTROL_TYPE,
+        attachId,
+        status,
+        byteLength,
+        mode: 'full',
+      };
+      try {
+        this.ws.send(JSON.stringify(control));
+      } catch (err) {
+        console.error(`[session-bridge] history control send failed for ${this.sessionId}:`, err);
+        this.closeBridgeForFailure('history control send failed');
+      }
+    };
+
+    // Never smash absolute-TUI with full ring history.
+    if (this.lastAttachSeed === 'absolute') {
+      sendHistoryControl('unavailable', 0);
+      return;
+    }
+
+    if (this.historyDelivered || this.lastAttachSeed === 'full') {
+      // Already have full ring on the client (attach was full, or prior request).
+      sendHistoryControl('empty', 0);
+      return;
+    }
+
+    let captured: Uint8Array;
+    try {
+      captured = await this.backend.captureBytes(this.sessionId);
+    } catch (err) {
+      if (this.isBackendSessionFailure(err)) {
+        this.closeBridgeForFailure(`session ${this.sessionId} is gone`);
+        return;
+      }
+      console.error(`[session-bridge] request-history captureBytes failed for ${this.sessionId}:`, err);
+      sendHistoryControl('unavailable', 0);
+      return;
+    }
+    if (this.closed) return;
+
+    // If the live ring now looks absolute, refuse smash.
+    if (isAbsolutePositionTuiRing(captured)) {
+      sendHistoryControl('unavailable', 0);
+      return;
+    }
+
+    if (captured.length === 0) {
+      sendHistoryControl('empty', 0);
+      this.historyDelivered = true;
+      this.historyAvailable = false;
+      return;
+    }
+
+    sendHistoryControl('ok', captured.length);
+    if (this.safeSend(Buffer.from(captured), true)) {
+      this.onBridgeReplay?.(this.sessionId);
+      this.historyDelivered = true;
+      this.historyAvailable = false;
+    }
   }
 
   private waitForInitialResize(): Promise<TerminalSize | null> {
