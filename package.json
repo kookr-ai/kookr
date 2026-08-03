@@ -55,6 +55,7 @@
     "prod:setup": "git worktree add --detach ../kookr-prod HEAD && if [ -f .env ]; then ln -sfn \"$(pwd)/.env\" ../kookr-prod/.env; fi && cd ../kookr-prod && pnpm install && pnpm build",
     "prod:update": "bash scripts/prod-update.sh",
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",
+    "prod:stop": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-stop.sh\"",
     "prod:logs": "bash scripts/prod-logs.sh",
     "deploy:convergence": "node --import tsx scripts/deploy-convergence-check.ts",
     "telemetry:report": "node --import tsx scripts/telemetry-report.ts",

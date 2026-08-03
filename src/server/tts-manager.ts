@@ -2,11 +2,14 @@
  * TTS Manager — manages the lifecycle of the bundled TTS Docker container.
  *
  * When KOOKR_TTS=true, this module:
- * 1. Runs `docker compose up -d` on the tts/ docker-compose.yml
- * 2. Waits for the TTS service health check to pass
- * 3. Probes synthesis with the configured voice
- * 4. Exposes the TTS HTTP URL for synthesis requests
- * 5. Tears down containers on server shutdown
+ * 1. Reuses a healthy running container when possible (zero compose mutation;
+ *    no synthesis probe on reuse — R11 TTS: HTTP ok + parseable JSON only)
+ * 2. Otherwise runs `docker compose up -d` on the tts/ docker-compose.yml
+ * 3. Waits for the TTS service health check to pass
+ * 4. Probes synthesis with the configured voice (cold start only)
+ * 5. Exposes the TTS HTTP URL for synthesis requests
+ * 6. Keeps a real stop() = compose down for failed-start cleanup and
+ *    `pnpm prod:stop --with-sidecars` (routine SIGTERM detaches — see shutdown.ts)
  *
  * When KOOKR_TTS is unset or false, this module is a no-op.
  *
@@ -24,6 +27,8 @@ const execFileAsync = promisify(execFile);
 
 export const DEFAULT_TTS_VOICE = '/app/voices/matilda.mp3';
 const TTS_BUILD_STAMP_FILE = '.kookr-tts-build.hash';
+const DEFAULT_REUSE_ATTEMPTS = 3;
+const DEFAULT_REUSE_BACKOFF_MS = 150;
 
 export type TTSDevice = 'auto' | 'cpu' | 'gpu';
 export type ResolvedTTSDevice = 'cpu' | 'gpu';
@@ -44,13 +49,26 @@ export interface TTSManagerConfig {
   startupTimeoutMs?: number;
   /** Max time to wait for the configured voice synthesis probe (ms, default: 30000) */
   readinessProbeTimeoutMs?: number;
+  /** Multi-try reuse attempts before any compose mutation (default: 3) */
+  reuseAttempts?: number;
+  /** Backoff between reuse attempts (ms, default: 150) */
+  reuseBackoffMs?: number;
 }
 
 export interface TTSManager {
   /** The TTS HTTP URL for synthesis requests (e.g. http://localhost:8004) */
   url: string;
-  /** Stop the Docker container */
+  /** Stop the Docker container (compose down) — failed-start / operator reclaim */
   stop(): Promise<void>;
+}
+
+export interface TTSComposeIdentity {
+  composeFlags: string[];
+  env: NodeJS.ProcessEnv;
+  ttsDir: string;
+  resolvedDevice: ResolvedTTSDevice;
+  voice: string;
+  port: number;
 }
 
 /**
@@ -65,19 +83,35 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     device = parseTTSDeviceFromEnv(),
     startupTimeoutMs = 120_000,
     readinessProbeTimeoutMs = 30_000,
+    reuseAttempts = DEFAULT_REUSE_ATTEMPTS,
+    reuseBackoffMs = DEFAULT_REUSE_BACKOFF_MS,
   } = config;
 
-  const resolvedDevice = await resolveTTSDevice(device);
-  const composePath = join(ttsDir, 'docker-compose.yml');
-  const gpuOverlayPath = join(ttsDir, 'docker-compose.gpu.yml');
-  const composeFlags =
-    resolvedDevice === 'gpu' ? ['-f', composePath, '-f', gpuOverlayPath] : ['-f', composePath];
+  const identity = await resolveTTSComposeIdentity({
+    ttsDir,
+    port,
+    voice,
+    device,
+  });
+  const { composeFlags, env, resolvedDevice } = identity;
 
-  const env = {
-    ...process.env,
-    KOOKR_TTS_PORT: String(port),
-    TTS_VOICE: voice,
-  };
+  // --- Warm reuse path: multi-try health before any compose mutation ---
+  const reuseResult = await tryReuseTTS({
+    port,
+    attempts: reuseAttempts,
+    backoffMs: reuseBackoffMs,
+  });
+  if (reuseResult.ok) {
+    console.log(
+      `[tts] Reusing healthy TTS service at port ${port}` +
+        ` (status: ${reuseResult.status}; synthesis probe skipped on reuse)`,
+    );
+    return {
+      url: `http://localhost:${port}`,
+      stop: () => stopTTS(composeFlags, env),
+    };
+  }
+  console.log(`[tts] Cannot reuse existing TTS (reason=${reuseResult.reason}); starting container...`);
 
   console.log(
     `[tts] Starting TTS container (device: ${resolvedDevice}${
@@ -137,7 +171,7 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
         throw new Error(`[tts] TTS service health passed but synthesis probe failed: ${msg}`);
       }
 
-      console.log('[tts] TTS service is ready');
+      console.log('[tts] TTS service is ready (reason=started)');
       return {
         url,
         stop: () => stopTTS(composeFlags, env),
@@ -146,9 +180,52 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     await sleep(2000);
   }
 
-  // Timeout — tear down and throw
+  // Timeout — tear down and throw (R13 failed-start cleanup)
   await stopTTS(composeFlags, env).catch(() => {});
   throw new Error(`[tts] TTS service did not become healthy within ${startupTimeoutMs / 1000}s`);
+}
+
+/**
+ * Resolve compose project identity (flags + env) the same way start does.
+ * Used by startTTS and by the shared stop-sidecars entrypoint (R14).
+ */
+export async function resolveTTSComposeIdentity(opts: {
+  ttsDir: string;
+  port?: number;
+  voice?: string;
+  device?: TTSDevice;
+}): Promise<TTSComposeIdentity> {
+  const {
+    ttsDir,
+    port = 8004,
+    voice = DEFAULT_TTS_VOICE,
+    device = parseTTSDeviceFromEnv(),
+  } = opts;
+
+  const resolvedDevice = await resolveTTSDevice(device);
+  const composePath = join(ttsDir, 'docker-compose.yml');
+  const gpuOverlayPath = join(ttsDir, 'docker-compose.gpu.yml');
+  const composeFlags =
+    resolvedDevice === 'gpu' ? ['-f', composePath, '-f', gpuOverlayPath] : ['-f', composePath];
+
+  const env = {
+    ...process.env,
+    KOOKR_TTS_PORT: String(port),
+    TTS_VOICE: voice,
+  };
+
+  return { composeFlags, env, ttsDir, resolvedDevice, voice, port };
+}
+
+/** Operator/failed-start teardown with the same compose flags as start. */
+export async function stopBundledTTS(opts: {
+  ttsDir: string;
+  port?: number;
+  voice?: string;
+  device?: TTSDevice;
+}): Promise<void> {
+  const identity = await resolveTTSComposeIdentity(opts);
+  await stopTTS(identity.composeFlags, identity.env);
 }
 
 async function probeTTSReadiness(
@@ -192,6 +269,63 @@ async function stopTTS(composeFlags: string[], env: NodeJS.ProcessEnv): Promise<
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[tts] Warning: failed to stop TTS container: ${msg}`);
   }
+}
+
+type ReuseOk = { ok: true; status: string };
+type ReuseFail = { ok: false; reason: string };
+
+async function tryReuseTTS(opts: {
+  port: number;
+  attempts: number;
+  backoffMs: number;
+}): Promise<ReuseOk | ReuseFail> {
+  let lastReason = 'missing';
+  for (let i = 0; i < opts.attempts; i++) {
+    const result = await evaluateTTSReuseOnce(opts.port);
+    if (result.ok) return result;
+    lastReason = result.reason;
+    if (i + 1 < opts.attempts) {
+      await sleep(opts.backoffMs);
+    }
+  }
+  return { ok: false, reason: lastReason };
+}
+
+/**
+ * R11 TTS reuse: HTTP ok + parseable JSON with status ok (or minimal ok shape).
+ * Live payload is typically `{"status":"ok"}`.
+ */
+export async function evaluateTTSReuseOnce(port: number): Promise<ReuseOk | ReuseFail> {
+  const healthUrl = `http://localhost:${port}/health`;
+  let res: Response;
+  try {
+    res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
+  } catch {
+    return { ok: false, reason: 'flaky' };
+  }
+  if (!res.ok) {
+    return { ok: false, reason: 'flaky' };
+  }
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, reason: 'unparseable' };
+  }
+  if (!body || typeof body !== 'object') {
+    return { ok: false, reason: 'unparseable' };
+  }
+
+  const health = body as { status?: unknown };
+  const status = typeof health.status === 'string' ? health.status : '';
+  // Accept explicit status:ok, or any parseable JSON object when status is
+  // omitted (defensive — current sidecar always sends status).
+  if (status && status !== 'ok') {
+    return { ok: false, reason: 'identity-mismatch' };
+  }
+
+  return { ok: true, status: status || 'ok' };
 }
 
 /**

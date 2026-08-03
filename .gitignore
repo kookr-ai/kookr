@@ -177,6 +177,7 @@ vendor/
 # Graphify per-session artifact directory.
 graphify-out/
 
-# TTS build stamp (written by src/server/tts-manager.ts to tts/.kookr-tts-build.hash
-# to cache the Docker build-input hash; never committed). See #1579.
+# Speech build stamps (managers cache Docker build-input hashes; never committed).
+# TTS: #1579. STT: fast-prod-restart P1.
 tts/.kookr-tts-build.hash
+stt/.kookr-stt-build.hash

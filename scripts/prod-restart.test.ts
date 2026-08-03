@@ -417,6 +417,9 @@ describe('prod-restart wait_for_health bounded readiness gate (issue #1553 / #17
           env: {
             ...process.env,
             KOOKR_READY_URL: `http://127.0.0.1:${port}/api/ready`,
+            // Point M1 health at the same hung listener so the test does not
+            // probe a live prod port and so RESTART_T0 timing stays hermetic.
+            KOOKR_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
             KOOKR_STARTUP_TIMEOUT_SECONDS: '3',
             KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
             KOOKR_HEALTH_CURL_MAX_TIME_SECONDS: '1',
@@ -483,6 +486,8 @@ describe('prod-restart wait_for_health bounded readiness gate (issue #1553 / #17
             env: {
               ...process.env,
               KOOKR_READY_URL: `http://127.0.0.1:${port}/api/ready`,
+              // Same stub answers health+ready so M1 does not hit live prod.
+              KOOKR_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
               KOOKR_STARTUP_TIMEOUT_SECONDS: '10',
               KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
               KOOKR_HEALTH_CURL_MAX_TIME_SECONDS: '2',
@@ -504,6 +509,7 @@ describe('prod-restart wait_for_health bounded readiness gate (issue #1553 / #17
       });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Kookr prod restarted successfully');
+      // Health + ready probes share the stub; require enough hits for 503→200.
       expect(hits).toBeGreaterThanOrEqual(3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -649,5 +655,38 @@ exit 1
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('prod-restart phase timings (fast-prod-restart P1)', () => {
+  it('documents listen-early rather than listen-only-after-full-recovery', () => {
+    const script = readFileSync('scripts/prod-restart.sh', 'utf8');
+    expect(script).toMatch(/Listen-early already landed/i);
+    expect(script).not.toMatch(/binds its listener only after\s*\n\s*# full recovery/i);
+    // Early poll default ≤ 200ms (R4).
+    expect(script).toMatch(/KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-0\.2/);
+  });
+
+  it('print_restart_phase_timings reports phases and dominant line', () => {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+          // port_free=2, m1=5, m2=40, smoke=45, total=45 → dominant M2-ready (35s)
+          'print_restart_phase_timings 2 5 40 45 45',
+        ].join('; '),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/Restart phase timings:/);
+    expect(result.stdout).toMatch(/M1 first \/api\/health/);
+    expect(result.stdout).toMatch(/M2 deploy-ready/);
+    expect(result.stdout).toMatch(/dominant phase: M2-ready/);
   });
 });

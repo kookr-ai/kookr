@@ -12,6 +12,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import {
+  evaluateTTSReuseOnce,
   parseTTSDevice,
   resolveTTSDevice,
   startTTS,
@@ -23,7 +24,15 @@ beforeEach(() => {
   execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, '', '');
   });
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ),
+  );
 });
 
 afterEach(() => {
@@ -81,19 +90,67 @@ describe('resolveTTSDevice', () => {
   });
 });
 
+describe('evaluateTTSReuseOnce', () => {
+  it('accepts minimal status:ok JSON', async () => {
+    const result = await evaluateTTSReuseOnce(8004);
+    expect(result).toEqual({ ok: true, status: 'ok' });
+  });
+
+  it('rejects unparseable body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not-json', { status: 200 })));
+    const result = await evaluateTTSReuseOnce(8004);
+    expect(result).toEqual({ ok: false, reason: 'unparseable' });
+  });
+});
+
 describe('startTTS', () => {
-  it('defaults to the bundled Matilda voice and probes synthesis before returning ready', async () => {
+  it('healthy reuse path invokes zero docker commands and skips synthesis probe', async () => {
     const manager = await startTTS({
       ttsDir: '/repo/tts',
       port: 8004,
       device: 'cpu',
+      reuseAttempts: 1,
     });
 
+    expect(execFileMock).not.toHaveBeenCalled();
     const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8004/health',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+    // No synthesize call on reuse.
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes('/synthesize')),
+    ).toBe(false);
+    expect(manager.url).toBe('http://localhost:8004');
+  });
+
+  it('cold start probes synthesis before returning ready', async () => {
+    let fetchCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        fetchCount += 1;
+        const href = String(url);
+        // First call is reuse health — fail so we cold-start.
+        if (fetchCount === 1) {
+          throw new Error('connection refused');
+        }
+        if (href.includes('/synthesize')) {
+          return new Response('ok', { status: 200 });
+        }
+        return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+      }),
+    );
+
+    const manager = await startTTS({
+      ttsDir: '/repo/tts',
+      port: 8004,
+      device: 'cpu',
+      reuseAttempts: 1,
+    });
+
+    const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8004/synthesize',
       expect.objectContaining({
@@ -111,12 +168,26 @@ describe('startTTS', () => {
     await manager.stop();
   });
 
-  it('uses the GPU compose overlay for startup and shutdown when device is gpu', async () => {
+  it('uses the GPU compose overlay for cold start and shutdown when device is gpu', async () => {
+    let fetchCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        fetchCount += 1;
+        if (fetchCount === 1) throw new Error('down');
+        if (String(url).includes('/synthesize')) {
+          return new Response('ok', { status: 200 });
+        }
+        return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+      }),
+    );
+
     const manager = await startTTS({
       ttsDir: '/repo/tts',
       port: 8004,
       voice: '/app/voices/matilda.mp3',
       device: 'gpu',
+      reuseAttempts: 1,
     });
 
     expect(execFileMock).toHaveBeenCalledWith(
@@ -156,10 +227,25 @@ describe('startTTS', () => {
     const ttsDir = await createTTSFixture();
 
     try {
+      let fetchCount = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          fetchCount += 1;
+          // Fail first reuse attempt each startTTS call.
+          if (fetchCount === 1 || fetchCount === 4) throw new Error('down');
+          if (String(url).includes('/synthesize')) {
+            return new Response('ok', { status: 200 });
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+
       await startTTS({
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
 
       expect(execFileMock).toHaveBeenCalledWith(
@@ -182,6 +268,7 @@ describe('startTTS', () => {
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
 
       expect(execFileMock).toHaveBeenCalledWith(
@@ -205,10 +292,24 @@ describe('startTTS', () => {
     const ttsDir = await createTTSFixture();
 
     try {
+      let fetchCount = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          fetchCount += 1;
+          if (fetchCount === 1 || fetchCount === 4) throw new Error('down');
+          if (String(url).includes('/synthesize')) {
+            return new Response('ok', { status: 200 });
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+
       await startTTS({
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
       execFileMock.mockClear();
 
@@ -218,6 +319,7 @@ describe('startTTS', () => {
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
 
       expect(execFileMock).toHaveBeenCalledWith(
@@ -242,10 +344,24 @@ describe('startTTS', () => {
     const ttsDir = await createTTSFixture();
 
     try {
+      let fetchCount = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          fetchCount += 1;
+          if (fetchCount === 1 || fetchCount === 4) throw new Error('down');
+          if (String(url).includes('/synthesize')) {
+            return new Response('ok', { status: 200 });
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+
       await startTTS({
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
       execFileMock.mockClear();
 
@@ -258,6 +374,7 @@ describe('startTTS', () => {
         ttsDir,
         port: 8004,
         device: 'cpu',
+        reuseAttempts: 1,
       });
 
       expect(execFileMock).toHaveBeenCalledWith(
@@ -279,11 +396,17 @@ describe('startTTS', () => {
   });
 
   it('tears down and rejects when health passes but configured voice synthesis fails', async () => {
+    let fetchCount = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn()
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
-        .mockResolvedValueOnce(new Response('voice missing', { status: 500 })),
+      vi.fn(async (url: string | URL | Request) => {
+        fetchCount += 1;
+        if (fetchCount === 1) throw new Error('down'); // fail reuse
+        if (String(url).includes('/synthesize')) {
+          return new Response('voice missing', { status: 500 });
+        }
+        return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+      }),
     );
 
     await expect(startTTS({
@@ -291,6 +414,7 @@ describe('startTTS', () => {
       port: 8004,
       voice: '/app/voices/matilda.mp3',
       device: 'cpu',
+      reuseAttempts: 1,
     })).rejects.toThrow(
       '[tts] TTS service health passed but synthesis probe failed: HTTP 500: voice missing',
     );
@@ -306,5 +430,27 @@ describe('startTTS', () => {
       expect.objectContaining({ timeout: 30_000 }),
       expect.any(Function),
     );
+  });
+
+  it('failed cold-start health timeout still compose-downs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('connection refused');
+      }),
+    );
+
+    await expect(
+      startTTS({
+        ttsDir: '/repo/tts',
+        port: 8004,
+        device: 'cpu',
+        reuseAttempts: 1,
+        startupTimeoutMs: 50,
+      }),
+    ).rejects.toThrow(/did not become healthy/);
+
+    const dockerCalls = execFileMock.mock.calls.map((c) => (c[1] as string[]).join(' '));
+    expect(dockerCalls.some((c) => c.includes('down'))).toBe(true);
   });
 });
