@@ -1,4 +1,5 @@
 import type { RalphLoopState } from './ralph.js';
+import type { AgentType } from './agent-types.js';
 
 export type TaskDependencyEdge = `task:${string}` | `milestone:${string}`;
 export type TaskMetadataIntent = 'keep_as_duplicate';
@@ -54,6 +55,20 @@ export interface TaskLaunchPermissionPosture {
   capturedAt: string;
 }
 
+/**
+ * One hop in an agent substitution / rotation chain (issue #2001).
+ * Schedule WS1.3 and plan-quota admission (#1936) each append a hop so the
+ * task record and schedule ledger show the full path (e.g. grok→claude then
+ * claude→codex) instead of only the first hop.
+ */
+export type AgentSubstitutionReason = 'schedule_sub' | 'quota_rotate';
+
+export interface AgentSubstitutionHop {
+  reason: AgentSubstitutionReason;
+  from: AgentType;
+  to: AgentType;
+}
+
 export interface TaskMetadata {
   intent?: TaskMetadataIntent;
   /** Audit marker for tasks launched while permission prompts were globally bypassed. */
@@ -66,6 +81,12 @@ export interface TaskMetadata {
    * tasks created before this change and on paths that never set a source.
    */
   launchSource?: TaskLaunchSource;
+  /**
+   * Full agent substitution chain for this launch (issue #2001). Empty/absent
+   * when the requested agent launched unchanged. Each hop records why it
+   * happened (`schedule_sub` or `quota_rotate`) so receipts match reality.
+   */
+  agentSubstitutionChain?: AgentSubstitutionHop[];
 }
 
 export interface TaskCompletionFeedback {

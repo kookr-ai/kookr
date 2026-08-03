@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   CodexCliAdapter,
+  CODEX_CODE_MODE_HOST_BIN,
   DEFAULT_CODEX_MODEL,
   ULTRA_CODEX_MODEL,
+  resolveCodexCodeModeHost,
   resolveCodexModel,
 } from './codex-cli-adapter.js';
 import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
@@ -1202,5 +1204,64 @@ describe('resolveCodexModel', () => {
   test('ultra always escalates to Sol regardless of env', () => {
     expect(resolveCodexModel('ultra', {})).toBe(ULTRA_CODEX_MODEL);
     expect(resolveCodexModel('ultra', { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' })).toBe(ULTRA_CODEX_MODEL);
+  });
+});
+
+describe('resolveCodexCodeModeHost / missing-host preflight (issue #2001)', () => {
+  test('reports ok when sibling host is executable next to codex', async () => {
+    const result = await resolveCodexCodeModeHost('/opt/bin/codex', {
+      resolveExecutablePath: async () => '/opt/bin/codex',
+      access: async () => {},
+    });
+    expect(result).toEqual({ ok: true, path: `/opt/bin/${CODEX_CODE_MODE_HOST_BIN}` });
+  });
+
+  test('reports absent when sibling host is not executable', async () => {
+    const result = await resolveCodexCodeModeHost('/opt/bin/codex', {
+      resolveExecutablePath: async () => '/opt/bin/codex',
+      access: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(new RegExp(CODEX_CODE_MODE_HOST_BIN));
+      expect(result.reason).toMatch(/not executable/);
+    }
+  });
+
+  test('preflight returns absent when host is missing', async () => {
+    const backend = new FakeTerminalBackend();
+    const taskStore = new TaskStore();
+    const adapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      probeExec: forkProbeExec,
+      resolveCodeModeHost: async () => ({
+        ok: false,
+        reason: `${CODEX_CODE_MODE_HOST_BIN} is not executable next to codex at "/opt/bin/${CODEX_CODE_MODE_HOST_BIN}"`,
+      }),
+    });
+    const pf = await adapter.preflight();
+    expect(pf.kind).toBe('absent');
+    if (pf.kind === 'absent') {
+      expect(pf.reason).toMatch(new RegExp(CODEX_CODE_MODE_HOST_BIN));
+    }
+  });
+
+  test('launch fails closed with a clear error when host is missing', async () => {
+    const backend = new FakeTerminalBackend();
+    const taskStore = new TaskStore();
+    const adapter = new CodexCliAdapter(backend, taskStore, {
+      trustWorkspace: false,
+      probeExec: forkProbeExec,
+      resolveCodeModeHost: async () => ({
+        ok: false,
+        reason: `${CODEX_CODE_MODE_HOST_BIN} is not executable next to codex at "/opt/bin/${CODEX_CODE_MODE_HOST_BIN}"`,
+      }),
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    await expect(adapter.launch(task.id, 'Fix bug', '/cwd')).rejects.toThrow(
+      /codex-cli launch refused.*codex-code-mode-host/i,
+    );
   });
 });

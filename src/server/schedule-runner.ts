@@ -13,10 +13,12 @@ import {
   isAgentType,
   ROUND_ROBIN_AGENT_TYPE,
   resolvePinnedAgentFallback,
+  type AgentFallbackPolicy,
   type AgentSelection,
   type AgentType,
   type PinnedAgentResolution,
 } from '../core/agent-types.js';
+import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
@@ -191,6 +193,12 @@ export interface ScheduleRunnerDeps {
    * deprioritization (pin is only unavailable when not registered).
    */
   getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Automatic fallback policy (issue #2001). Applied when substituting an
+   * unavailable pin so a disallowed agent (default: codex-cli) is never a
+   * silent landing. Absent ⇒ no filter (back-compat).
+   */
+  getAgentFallbackPolicy?: () => AgentFallbackPolicy;
   /**
    * Live `settings.defaultAgentType` getter. Used when a schedule has no
    * agentType pin so availability substitution and launch use the same default
@@ -709,6 +717,16 @@ export class ScheduleRunner {
         agentResolution?.agentType
         ?? resolveScheduleAgentSelection(schedule, this.deps.getDefaultAgentType);
       const substituted = agentResolution?.kind === 'substituted';
+      // Issue #2001: carry the schedule hop into launch so plan-quota rotation
+      // can append a second hop and stamp the full chain on the task.
+      const priorAgentSubstitutions: AgentSubstitutionHop[] | undefined =
+        agentResolution?.kind === 'substituted'
+          ? [{
+              reason: 'schedule_sub',
+              from: agentResolution.from,
+              to: agentResolution.agentType,
+            }]
+          : undefined;
       // Effort/model pins target the original agent; drop them on substitution
       // so an invalid pin for the substitute cannot reintroduce dispatch_failed.
       const result = await this.deps.launcher({
@@ -723,6 +741,7 @@ export class ScheduleRunner {
         // task. launchTask still validates them against the resolved agent.
         ...(!substituted && schedule.effort ? { effort: schedule.effort } : {}),
         ...(!substituted && schedule.model ? { model: schedule.model } : {}),
+        ...(priorAgentSubstitutions ? { priorAgentSubstitutions } : {}),
         disableDedup: true,
         // issue #1526 Phase C / C3: mark schedule provenance. This (a)
         // exempts the fire from the per-source spawn burst budget — schedules
@@ -735,21 +754,32 @@ export class ScheduleRunner {
         scheduleId: schedule.id,
       });
 
-      const acceptDetails = substituted && agentResolution.kind === 'substituted'
-        ? {
-            reasonCode: 'agent_substituted' as const,
-            message: `Substituted unavailable agent ${agentResolution.from} → ${agentResolution.agentType}`,
-          }
-        : {};
-      if (substituted) {
+      const acceptDetails = buildSubstitutionAcceptDetails(
+        agentResolution,
+        result.agentSubstitutionChain,
+      );
+      if (substituted || (result.agentSubstitutionChain?.length ?? 0) > 0) {
         try {
-          this.deps.recordAgentSubstitution?.();
+          // Count every hop (schedule_sub + any quota_rotate) for the pool-health counter.
+          const hopCount = Math.max(
+            1,
+            result.agentSubstitutionChain?.length
+              ?? (substituted ? 1 : 0),
+          );
+          for (let i = 0; i < hopCount; i++) {
+            this.deps.recordAgentSubstitution?.();
+          }
         } catch (err) {
           console.error('[schedule] recordAgentSubstitution failed:', err);
         }
+        const chainMsg = formatSubstitutionChain(
+          result.agentSubstitutionChain
+            ?? (agentResolution?.kind === 'substituted'
+              ? [{ reason: 'schedule_sub' as const, from: agentResolution.from, to: agentResolution.agentType }]
+              : []),
+        );
         console.warn(
-          `[schedule] Substituted unavailable agent for "${schedule.name}": `
-          + `${agentResolution.kind === 'substituted' ? agentResolution.from : '?'} → ${agentType}`,
+          `[schedule] Substituted unavailable agent for "${schedule.name}": ${chainMsg}`,
         );
       }
       await this.deps.service.markExecutionAccepted(
@@ -837,12 +867,17 @@ export class ScheduleRunner {
 
     try {
       const result = await this.deps.loopedLauncher(scheduleForLaunch);
-      const acceptDetails = agentResolution?.kind === 'substituted'
-        ? {
-            reasonCode: 'agent_substituted' as const,
-            message: `Substituted unavailable agent ${agentResolution.from} → ${agentResolution.agentType}`,
-          }
-        : {};
+      // Looped launcher may not surface substitution chains; ledger at least
+      // the schedule hop (issue #2001).
+      const scheduleChain: AgentSubstitutionHop[] | undefined =
+        agentResolution?.kind === 'substituted'
+          ? [{
+              reason: 'schedule_sub',
+              from: agentResolution.from,
+              to: agentResolution.agentType,
+            }]
+          : undefined;
+      const acceptDetails = buildSubstitutionAcceptDetails(agentResolution, scheduleChain);
       if (agentResolution?.kind === 'substituted') {
         try {
           this.deps.recordAgentSubstitution?.();
@@ -851,7 +886,7 @@ export class ScheduleRunner {
         }
         console.warn(
           `[schedule] Substituted unavailable agent for loop arm "${schedule.name}": `
-          + `${agentResolution.from} → ${agentResolution.agentType}`,
+          + `${formatSubstitutionChain(scheduleChain ?? [])}`,
         );
       }
       await this.deps.service.markExecutionAccepted(
@@ -928,7 +963,8 @@ export class ScheduleRunner {
     if (!isAgentType(selection)) return null;
     const available = this.deps.getAvailableAgentTypes();
     const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
-    return resolvePinnedAgentFallback(selection, available, deprioritized);
+    const policy = this.deps.getAgentFallbackPolicy?.();
+    return resolvePinnedAgentFallback(selection, available, deprioritized, policy);
   }
 
   /**
@@ -1063,6 +1099,44 @@ export class ScheduleRunner {
       }
     }
   }
+}
+
+/**
+ * Build ledger accept details for an agent substitution chain (issue #2001).
+ * Prefers the full chain (schedule_sub + quota_rotate) when the launcher
+ * returned one; falls back to the schedule-only hop.
+ */
+function buildSubstitutionAcceptDetails(
+  agentResolution: PinnedAgentResolution | null | undefined,
+  chain: readonly AgentSubstitutionHop[] | undefined,
+): { reasonCode: 'agent_substituted'; message: string } | Record<string, never> {
+  const hops = chain && chain.length > 0
+    ? chain
+    : agentResolution?.kind === 'substituted'
+      ? [{
+          reason: 'schedule_sub' as const,
+          from: agentResolution.from,
+          to: agentResolution.agentType,
+        }]
+      : [];
+  if (hops.length === 0) return {};
+  return {
+    reasonCode: 'agent_substituted' as const,
+    message: `Substituted unavailable agent ${formatSubstitutionChain(hops)}`,
+  };
+}
+
+/** Format hops as `a → b → c` (with reason tags when multi-hop). */
+function formatSubstitutionChain(hops: readonly AgentSubstitutionHop[]): string {
+  if (hops.length === 0) return '';
+  if (hops.length === 1) {
+    return `${hops[0]!.from} → ${hops[0]!.to}`;
+  }
+  const parts: string[] = [hops[0]!.from];
+  for (const hop of hops) {
+    parts.push(`${hop.to} (${hop.reason})`);
+  }
+  return parts.join(' → ');
 }
 
 /**

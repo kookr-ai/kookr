@@ -241,6 +241,62 @@ describe('resolvePinnedAgentFallback (issue #1895 / #1699 WS1.3)', () => {
       from: 'grok-build',
     });
   });
+
+  test('disallow policy parks instead of cascading onto codex-cli (issue #2001)', () => {
+    // Grok deprioritized; claude + codex healthy; codex disallowed → claude.
+    expect(
+      resolvePinnedAgentFallback('grok-build', all, ['grok-build'], {
+        disallow: ['codex-cli'],
+      }),
+    ).toEqual({
+      kind: 'substituted',
+      agentType: 'claude-code',
+      substituted: true,
+      from: 'grok-build',
+    });
+    // Only codex remains as substitute but disallowed → unavailable (park).
+    expect(
+      resolvePinnedAgentFallback('grok-build', ['codex-cli', 'grok-build'], ['grok-build'], {
+        disallow: ['codex-cli'],
+      }),
+    ).toEqual({
+      kind: 'unavailable',
+      from: 'grok-build',
+    });
+  });
+
+  test('allowlist restricts substitutes without blocking an explicit healthy pin (issue #2001)', () => {
+    // Explicit pin to codex stays available even when allowlist is claude-only.
+    expect(
+      resolvePinnedAgentFallback('codex-cli', all, [], {
+        allowlist: ['claude-code'],
+      }),
+    ).toEqual({
+      kind: 'available',
+      agentType: 'codex-cli',
+      substituted: false,
+    });
+    // Grok deprioritized; allowlist claude-only → claude (not codex).
+    expect(
+      resolvePinnedAgentFallback('grok-build', all, ['grok-build'], {
+        allowlist: ['claude-code'],
+      }),
+    ).toEqual({
+      kind: 'substituted',
+      agentType: 'claude-code',
+      substituted: true,
+      from: 'grok-build',
+    });
+    // Allowlist empty of remaining candidates → park.
+    expect(
+      resolvePinnedAgentFallback('grok-build', all, ['grok-build', 'claude-code'], {
+        allowlist: ['claude-code'],
+      }),
+    ).toEqual({
+      kind: 'unavailable',
+      from: 'grok-build',
+    });
+  });
 });
 
 describe('buildAgentSelectionOptions', () => {

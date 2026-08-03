@@ -251,6 +251,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.launchServiceDeps.getDeprioritizedAgentTypes
       ? { getDeprioritizedAgentTypes: deps.launchServiceDeps.getDeprioritizedAgentTypes }
       : {}),
+    // Issue #2001: same fallback policy as launch-service plan-quota rotation.
+    ...(deps.launchServiceDeps.getAgentFallbackPolicy
+      ? { getAgentFallbackPolicy: deps.launchServiceDeps.getAgentFallbackPolicy }
+      : {}),
     ...(deps.recordAgentSubstitution
       ? { recordAgentSubstitution: deps.recordAgentSubstitution }
       : {}),

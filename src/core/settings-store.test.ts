@@ -441,6 +441,32 @@ describe('validateSettings', () => {
     });
   });
 
+  it('defaults disallowAgentFallback to codex-cli (issue #2001)', () => {
+    expect(DEFAULT_SETTINGS.disallowAgentFallback).toEqual(['codex-cli']);
+    expect(DEFAULT_SETTINGS.agentFallbackAllowlist).toEqual([]);
+    expect(validateSettings({}).disallowAgentFallback).toEqual(['codex-cli']);
+  });
+
+  it('accepts explicit empty disallowAgentFallback to opt into codex fallbacks', () => {
+    expect(validateSettings({ disallowAgentFallback: [] })).toEqual({
+      ...DEFAULT_SETTINGS,
+      disallowAgentFallback: [],
+    });
+  });
+
+  it('parses agentFallbackAllowlist and drops unknown agent types', () => {
+    expect(
+      validateSettings({
+        agentFallbackAllowlist: ['claude-code', 'gemini-cli', 'claude-code'],
+        disallowAgentFallback: ['codex-cli', 'not-an-agent'],
+      }),
+    ).toEqual({
+      ...DEFAULT_SETTINGS,
+      agentFallbackAllowlist: ['claude-code'],
+      disallowAgentFallback: ['codex-cli'],
+    });
+  });
+
   it('defaults roundRobinIndex to 0', () => {
     expect(validateSettings({}).roundRobinIndex).toBe(0);
   });
@@ -552,6 +578,8 @@ describe('loadSettings / saveSettings', () => {
       postMergeCleanupBudgetMinutes: 15,
       automationKillSwitch: false,
       safeModeSince: null,
+      disallowAgentFallback: ['codex-cli'],
+      agentFallbackAllowlist: ['claude-code'],
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

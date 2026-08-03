@@ -5,6 +5,7 @@ import {
   isValidEffortForAgent,
   effortLevelsForAgent,
   AVAILABLE_AGENT_TYPES,
+  isAgentType,
   type AgentSelection,
   type AgentType,
   type AgentEffortMap,
@@ -43,6 +44,20 @@ export interface KookrSettings {
    * concrete agent per launch (see {@link roundRobinIndex}).
    */
   defaultAgentType: AgentSelection;
+  /**
+   * Agents that must never be chosen as *automatic* substitutes (issue #2001).
+   * An explicit pin / launch request for a listed agent still launches when
+   * that agent is healthy. Default denies silent `codex-cli` landings under
+   * schedule fallback or plan-quota rotation — park instead when no allowed
+   * substitute remains. Empty array = no denylist filter.
+   */
+  disallowAgentFallback: AgentType[];
+  /**
+   * When non-empty, only these agents may be chosen as automatic substitutes
+   * (issue #2001). Empty = unrestricted (subject to {@link disallowAgentFallback}).
+   * Explicit pins are not filtered by this list.
+   */
+  agentFallbackAllowlist: AgentType[];
   /**
    * Rotation cursor for the `round-robin` default agent. Holds the index of
    * the *next* launch in the rotation; advanced and persisted on every
@@ -278,6 +293,9 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   maxActiveTasks: 10,
   cleanupWorktreeOnComplete: true,
   defaultAgentType: DEFAULT_AGENT_TYPE,
+  // Issue #2001: do not silently cascade onto codex-cli under load/quota.
+  disallowAgentFallback: ['codex-cli'],
+  agentFallbackAllowlist: [],
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
@@ -576,6 +594,18 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       ? normalizeAgentSelection(raw.defaultAgentType)
       : DEFAULT_SETTINGS.defaultAgentType;
 
+  // Issue #2001: fallback denylist / allowlist. Unknown strings are dropped;
+  // a missing field keeps the fleet default (deny codex-cli auto-rotation).
+  // Explicit `[]` clears the denylist so operators can opt into codex fallbacks.
+  const disallowAgentFallback = parseAgentTypeList(
+    raw.disallowAgentFallback,
+    DEFAULT_SETTINGS.disallowAgentFallback,
+  );
+  const agentFallbackAllowlist = parseAgentTypeList(
+    raw.agentFallbackAllowlist,
+    DEFAULT_SETTINGS.agentFallbackAllowlist,
+  );
+
   let roundRobinIndex = DEFAULT_SETTINGS.roundRobinIndex;
   if (
     typeof raw.roundRobinIndex === 'number' &&
@@ -632,6 +662,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       maxActiveTasks: maxTasks,
       cleanupWorktreeOnComplete,
       defaultAgentType,
+      disallowAgentFallback,
+      agentFallbackAllowlist,
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
@@ -662,6 +694,23 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
 
 /** Known concrete agent types — the only valid keys in an `agentEffort` map. */
 const KNOWN_AGENT_TYPES: readonly AgentType[] = AVAILABLE_AGENT_TYPES.map((entry) => entry.type);
+
+/**
+ * Parse a settings array of agent types. Non-arrays fall back to `fallback`;
+ * unknown entries are dropped; order is preserved and de-duplicated.
+ */
+function parseAgentTypeList(raw: unknown, fallback: readonly AgentType[]): AgentType[] {
+  if (raw === undefined || raw === null) return [...fallback];
+  if (!Array.isArray(raw)) return [...fallback];
+  const seen = new Set<AgentType>();
+  const out: AgentType[] = [];
+  for (const entry of raw) {
+    if (!isAgentType(entry) || seen.has(entry)) continue;
+    seen.add(entry);
+    out.push(entry);
+  }
+  return out;
+}
 
 /**
  * Validate the raw `agentEffort` map (#681). Drops anything that wouldn't

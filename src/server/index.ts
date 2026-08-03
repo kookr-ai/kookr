@@ -1463,6 +1463,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     roundRobinCursor,
     getDeprioritizedAgentTypes: (available) => agentBootLatency.deprioritizedTypes(available),
+    // Issue #2001: never silently cascade onto disallowed fallbacks (default: codex-cli).
+    getAgentFallbackPolicy: () => ({
+      disallow: currentSettings.disallowAgentFallback,
+      allowlist: currentSettings.agentFallbackAllowlist,
+    }),
     recordLaunchBootLatency: (agentType, timings) => agentBootLatency.record(agentType, timings),
     interactionLog,
     terminalBackend,
