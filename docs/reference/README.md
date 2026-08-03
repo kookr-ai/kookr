@@ -3,6 +3,7 @@
 Operator and developer references for Kookr:
 
 - [API](api.md)
+- [API Blackout Probe](api-blackout-probe.md)
 - [Auto-Close on Completion Signal](auto-close-on-signal.md)
 - [CLI](cli.md)
 - [Data Directory](data-directory.md)

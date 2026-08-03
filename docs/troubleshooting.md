@@ -285,6 +285,10 @@ non-fatal `WARN` on stderr. On success the script also writes
 `last-restart-metrics.json` under the data dir; `GET /api/deploy/status`
 exposes that as optional `lastRestart` (including `apiBlackoutSeconds`).
 
+To independently verify blackout with a 10ms curl loop (measurement-only, not a
+CI gate), run `scripts/measure-api-blackout.sh --once` in a second terminal
+while restarting. Full recipe: [API Blackout Probe](reference/api-blackout-probe.md).
+
 Warm restart best-effort POSTs `/api/admin/drain` before SIGTERM so launches in
 the pre-kill window get 503/draining instead of only ECONNREFUSED. Drain is
 in-memory and cleared by process exit — no post-restart resume is required.
