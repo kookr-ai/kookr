@@ -1774,12 +1774,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     void opsStatusWriter.noteFromAlert(alert);
   };
 
+  // Operator-signal bridge for operational-alert fire/recover edges (issue #1716).
+  // Defined before schedule / pipeline-starvation / lesson-spool so those emitters
+  // can share detectorBroadcast with deploy-lag and prod-smoke (issues #1986/#1987/#1990).
+  // SignalDeliveryService (the outbox tail → Discord/Telegram) still starts later;
+  // spooling here only writes files when a delivery channel is configured.
+  const operatorSignalDir = defaultOperatorSignalDir(process.env);
+  const signalDeliveryConfig = readSignalDeliveryConfigFromEnv(process.env);
+  const emitOperationalSignal = (msg: ServerMessage): void => {
+    const input = operationalAlertToSignal(msg as OperationalAlertLike);
+    if (!input) return;
+    void writeOperatorSignal(operatorSignalDir, input).catch((err) => {
+      console.warn('[signal-delivery] failed to spool operational signal:', err);
+    });
+  };
+  const detectorBroadcast: (msg: ServerMessage) => void = signalDeliveryConfig
+    ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
+    : broadcastToAll;
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
     launchServiceDeps,
     getMaxActiveTasks,
-    broadcastToAll,
+    // issue #1987: dead-man (and other schedule operational alerts) page Discord
+    // via the same operator-signal bridge as deploy-lag / prod-smoke.
+    broadcastToAll: detectorBroadcast,
     isAccepting: () => drainController.isAccepting(),
     isAutomationEnabled: () => !currentSettings.automationKillSwitch,
     getDeadManScheduleMs,
@@ -1937,9 +1957,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const pipelineStarvation = new PipelineStarvationService({
     taskStore,
     launcher: (opts) => launchTask(launchServiceDeps, opts),
-    // issue #1995: starvation fire edges also refresh the on-disk ops-status card.
+    // issue #1986: starvation fire/recover also spool operator signals (Discord)
+    // when a delivery channel is configured; #1995 still refreshes ops-status.
     broadcast: (msg) => {
-      broadcastToAll(msg);
+      detectorBroadcast(msg);
       if (msg.type === 'alert') noteOpsStatusAlert(msg);
     },
     kookrDir,
@@ -2292,7 +2313,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const lessonSpoolDisabled = process.env.KOOKR_LESSON_SPOOL === '0';
   const lessonSpoolService = new LessonSpoolService({
     spoolDir: defaultSpoolDir(process.env),
-    emitAlert: (alert) => broadcastToAll(alert),
+    // issue #1990: prolonged KB degradation pages Discord via operator-signal.
+    emitAlert: (alert) => detectorBroadcast(alert),
   });
   if (!lessonSpoolDisabled) {
     lessonSpoolService.start();
@@ -2345,29 +2367,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Operator-signal delivery bridge (issue #1716). Tails the operator-signal
   // outbox and pushes new alert/clear signals to Discord / Telegram. Off unless
-  // a channel is configured (KOOKR_DISCORD_WEBHOOK_URL and/or
-  // KOOKR_SIGNAL_TELEGRAM_CHAT_ID + KOOKR_TELEGRAM_BOT_TOKEN).
-  const operatorSignalDir = defaultOperatorSignalDir(process.env);
-  const signalDeliveryConfig = readSignalDeliveryConfigFromEnv(process.env);
+  // a channel is configured. detectorBroadcast (defined earlier) already spools
+  // operational-alert fire/recover edges into this dir for deploy-lag, prod-smoke,
+  // pipeline starvation (#1986), schedule dead-man (#1987), and lesson-spool (#1990).
   const signalDeliveryService = signalDeliveryConfig
     ? new SignalDeliveryService({ dir: operatorSignalDir, config: signalDeliveryConfig })
     : null;
   signalDeliveryService?.start();
-
-  // Fire-and-forget: spool an operator signal for any operational-alert
-  // fire/recover broadcast (deploy-lag, prod-smoke) so the delivery bridge can
-  // push it outbound. Only active when a delivery channel is configured, so we
-  // never grow a spool nothing drains. Wrap broadcastToAll for the detectors.
-  const emitOperationalSignal = (msg: ServerMessage): void => {
-    const input = operationalAlertToSignal(msg as OperationalAlertLike);
-    if (!input) return;
-    void writeOperatorSignal(operatorSignalDir, input).catch((err) => {
-      console.warn('[signal-delivery] failed to spool operational signal:', err);
-    });
-  };
-  const detectorBroadcast: (msg: ServerMessage) => void = signalDeliveryConfig
-    ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
-    : broadcastToAll;
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval

@@ -1,6 +1,15 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Schedule, ScheduleExecutionLedgerEntry, ScheduleExecutionOutcome } from '../core/schedule.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
+import {
+  listSignalFiles,
+  operationalAlertToSignal,
+  readSignal,
+  writeOperatorSignal,
+} from '../observability/signal-delivery/index.js';
 import {
   DEAD_MAN_CONSECUTIVE_FAILURES,
   DEAD_MAN_SELF_HEAL_MAX_ATTEMPTS,
@@ -510,5 +519,66 @@ describe('ScheduleDeadManSwitch bounded self-heal (issue #1903)', () => {
     }).not.toThrow();
     expect(selfHeal).toHaveBeenCalledTimes(2);
     expect(deadMan.stats().escalated).toBe(true); // still escalates despite throwing kicks
+  });
+});
+
+describe('ScheduleDeadManSwitch operator-signal bridge (#1987)', () => {
+  it('fire and clear spool operator-signal files; JSONL recordTransition still fires', async () => {
+    const signalDir = await mkdtemp(join(tmpdir(), 'kookr-deadman-signal-'));
+    const pendingWrites: Promise<unknown>[] = [];
+    const recordTransition = vi.fn();
+    // Mirrors index.ts detectorBroadcast + create-schedule-runtime recordTransition.
+    const detectorBroadcast = (msg: ServerMessage) => {
+      const input = operationalAlertToSignal(msg);
+      if (input) pendingWrites.push(writeOperatorSignal(signalDir, input));
+    };
+    const deadMan = new ScheduleDeadManSwitch({
+      broadcast: detectorBroadcast,
+      recordTransition,
+      getDeadManMs: () => DEFAULT_DEAD_MAN_SCHEDULE_MS,
+      now: () => new Date(NOW),
+    });
+
+    const failures = [
+      entry('dispatch_failed', NOW - 3 * 3_600_000),
+      entry('dispatch_failed', NOW - 2 * 3_600_000),
+      entry('dispatch_failed', NOW - 1 * 3_600_000),
+    ];
+    deadMan.check([schedule({ executionLedger: failures })]);
+    await Promise.all(pendingWrites);
+    pendingWrites.length = 0;
+
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    expect(recordTransition.mock.calls[0]![0].operationalAlert).toMatchObject({
+      key: 'schedule:dead_man',
+      state: 'fired',
+    });
+    const afterFire = await listSignalFiles(signalDir);
+    // signalFileName keeps `_` (only non [a-z0-9._-] collapse to `-`).
+    expect(afterFire).toContain('op-schedule-dead_man-alert.json');
+    const fireSignal = await readSignal(signalDir, 'op-schedule-dead_man-alert.json');
+    expect(fireSignal).toMatchObject({
+      kind: 'alert',
+      key: 'op:schedule:dead_man:alert',
+      source: 'schedule_starvation',
+    });
+
+    deadMan.check([schedule({
+      executionLedger: [...failures, entry('completed', NOW - 10 * 60_000)],
+    })]);
+    await Promise.all(pendingWrites);
+
+    expect(recordTransition).toHaveBeenCalledTimes(2);
+    expect(recordTransition.mock.calls[1]![0].operationalAlert).toMatchObject({
+      key: 'schedule:dead_man',
+      state: 'recovered',
+    });
+    const afterClear = await listSignalFiles(signalDir);
+    expect(afterClear).toContain('op-schedule-dead_man-clear.json');
+    const clearSignal = await readSignal(signalDir, 'op-schedule-dead_man-clear.json');
+    expect(clearSignal).toMatchObject({
+      kind: 'clear',
+      key: 'op:schedule:dead_man:clear',
+    });
   });
 });

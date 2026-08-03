@@ -8,6 +8,12 @@ import {
   readPendingLessons,
   readSpoolState,
 } from '../core/lesson-write-spool.js';
+import {
+  listSignalFiles,
+  operationalAlertToSignal,
+  readSignal,
+  writeOperatorSignal,
+} from '../observability/signal-delivery/index.js';
 import { LessonSpoolService, buildKbDegradedAlert } from './lesson-spool-service.js';
 
 describe('LessonSpoolService', () => {
@@ -94,6 +100,46 @@ describe('LessonSpoolService', () => {
     expect(alert.severity).toBe('warning');
     expect(alert.operationalAlert?.key).toBe('launch_dependency:kb');
     expect(alert.details).toMatch(/3 lesson write/);
+  });
+
+  test('prolonged degradation spools operator signal via detectorBroadcast bridge (#1990)', async () => {
+    const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-signal-'));
+    const signalDir = await mkdtemp(join(tmpdir(), 'kookr-lesson-signal-'));
+    const pendingWrites: Promise<unknown>[] = [];
+    let nowMs = Date.parse('2026-07-23T10:00:00.000Z');
+    const thresholdMs = 2 * 60 * 60 * 1000;
+
+    const detectorBroadcast = (msg: { type: string }) => {
+      const input = operationalAlertToSignal(msg);
+      if (input) pendingWrites.push(writeOperatorSignal(signalDir, input));
+    };
+
+    const svc = new LessonSpoolService({
+      spoolDir,
+      thresholdMs,
+      probeKb: async () => 'degraded',
+      writeFn: async () => ({ ok: false, error: 'still down' }),
+      now: () => new Date(nowMs),
+      emitAlert: detectorBroadcast,
+      log: () => {},
+    });
+
+    await svc.tick();
+    nowMs += thresholdMs + 1;
+    const second = await svc.tick();
+    expect(second.alertFired).toBe(true);
+    await Promise.all(pendingWrites);
+
+    const files = await listSignalFiles(signalDir);
+    // signalFileName keeps `_` (only non [a-z0-9._-] collapse to `-`).
+    expect(files).toContain('op-launch_dependency-kb-alert.json');
+    const signal = await readSignal(signalDir, 'op-launch_dependency-kb-alert.json');
+    expect(signal).toMatchObject({
+      kind: 'alert',
+      key: 'op:launch_dependency:kb:alert',
+      source: 'launch_dependency_kb_degraded',
+    });
+    expect(signal?.title).toMatch(/KB launch dependency degraded/);
   });
 });
 
