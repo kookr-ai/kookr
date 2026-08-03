@@ -241,7 +241,12 @@ export interface TransportSessionSlice {
     capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
   ) => void;
   setConnected: (connected: boolean) => void;
-  setDeploying: (deploying: boolean) => void;
+  /**
+   * Mark a production redeploy as in-flight. When `preDeployCommit` is provided
+   * it is persisted with the sticky intent so completion can be detected after
+   * a page remount (compare against the next non-matching buildInfo).
+   */
+  setDeploying: (deploying: boolean, preDeployCommit?: string | null) => void;
   handleDashboardSelection: (selection: {
     selectedTaskId: string | null;
     selectedSessionId: string | null;

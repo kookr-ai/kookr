@@ -3,7 +3,7 @@ import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
 import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
 import { clearSelectedTask, loadSelectedTask } from '../selected-task-storage.js';
-import { loadDeployIntent, saveDeployIntent } from '../deploy-intent-storage.js';
+import { loadDeployIntentActive, saveDeployIntent } from '../deploy-intent-storage.js';
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
 
 function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
@@ -140,7 +140,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     agentsHydrated: false,
     connected: false,
     // Hydrate sticky intent so a remount mid-prod:update still shows redeploy copy.
-    deploying: loadDeployIntent(),
+    deploying: loadDeployIntentActive(),
     terminalOutput: {},
     serverCwd: '',
     availableAgentTypes: [],
@@ -311,8 +311,8 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
       set({ connected });
     },
 
-    setDeploying: (deploying) => {
-      saveDeployIntent(deploying);
+    setDeploying: (deploying, preDeployCommit) => {
+      saveDeployIntent(deploying, { preDeployCommit });
       set({ deploying });
     },
 

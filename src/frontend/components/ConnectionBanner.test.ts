@@ -53,7 +53,7 @@ describe('ConnectionBanner', () => {
     expect(container.querySelector('[data-testid="connection-banner"]')).toBeNull();
   });
 
-  test('renders an accessible stale-data warning while disconnected', () => {
+  test('renders accessible reconnect copy when disconnected without a deploy in flight', () => {
     useKookrStore.setState({ connected: false, deploying: false });
 
     act(() => {
@@ -69,7 +69,7 @@ describe('ConnectionBanner', () => {
     expect(container.textContent).not.toContain('Redeploying production');
   });
 
-  test('shows redeploy copy when disconnected after deploying=true', () => {
+  test('shows accessible redeploy copy when disconnected after deploying=true', () => {
     useKookrStore.setState({ connected: false, deploying: true });
 
     act(() => {
@@ -85,16 +85,5 @@ describe('ConnectionBanner', () => {
       'Redeploying production — API should return within a few seconds',
     );
     expect(container.textContent).not.toContain('Dashboard data may be stale');
-  });
-
-  test('keeps generic reconnect copy when disconnected without a deploy in flight', () => {
-    useKookrStore.setState({ connected: false, deploying: false });
-
-    act(() => {
-      root.render(React.createElement(ConnectionBanner));
-    });
-
-    expect(container.textContent).toContain('Reconnecting');
-    expect(container.textContent).not.toContain('Redeploying production');
   });
 });

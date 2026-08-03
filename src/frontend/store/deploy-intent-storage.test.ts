@@ -2,7 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { loadDeployIntent, saveDeployIntent } from './deploy-intent-storage.js';
+import {
+  DEPLOY_INTENT_TTL_MS,
+  loadDeployIntent,
+  loadDeployIntentActive,
+  saveDeployIntent,
+} from './deploy-intent-storage.js';
 
 describe('deploy-intent-storage', () => {
   beforeEach(() => {
@@ -13,25 +18,45 @@ describe('deploy-intent-storage', () => {
     sessionStorage.clear();
   });
 
-  test('defaults to false when unset', () => {
-    expect(loadDeployIntent()).toBe(false);
+  test('defaults to inactive when unset', () => {
+    expect(loadDeployIntent()).toBeNull();
+    expect(loadDeployIntentActive()).toBe(false);
   });
 
-  test('round-trips a recent deploy intent', () => {
+  test('round-trips a recent deploy intent with pre-deploy commit', () => {
     const now = 1_700_000_000_000;
-    saveDeployIntent(true, now);
-    expect(loadDeployIntent(now + 1_000)).toBe(true);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now });
+    expect(loadDeployIntent(now + 1_000)).toEqual({
+      active: true,
+      preDeployCommit: 'abc123d',
+      stampedAt: now,
+    });
+    expect(loadDeployIntentActive(now + 1_000)).toBe(true);
   });
 
   test('clears on set false', () => {
-    saveDeployIntent(true);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d' });
     saveDeployIntent(false);
-    expect(loadDeployIntent()).toBe(false);
+    expect(loadDeployIntent()).toBeNull();
+    expect(loadDeployIntentActive()).toBe(false);
   });
 
-  test('expires after the TTL window', () => {
+  test('expires after the TTL window and stays active just under it', () => {
     const now = 1_700_000_000_000;
-    saveDeployIntent(true, now);
-    expect(loadDeployIntent(now + 6 * 60 * 1000)).toBe(false);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now });
+    expect(loadDeployIntentActive(now + DEPLOY_INTENT_TTL_MS - 1)).toBe(true);
+    expect(loadDeployIntentActive(now + DEPLOY_INTENT_TTL_MS + 1)).toBe(false);
+  });
+
+  test('preserves preDeployCommit when re-asserting without a new value', () => {
+    const now = 1_700_000_000_000;
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now });
+    saveDeployIntent(true, { now: now + 100 });
+    expect(loadDeployIntent(now + 100)?.preDeployCommit).toBe('abc123d');
+  });
+
+  test('drops invalid legacy payloads', () => {
+    sessionStorage.setItem('kookr.deploying', 'not-a-number');
+    expect(loadDeployIntent()).toBeNull();
   });
 });

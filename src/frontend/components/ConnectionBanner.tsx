@@ -7,23 +7,15 @@ export function ConnectionBanner() {
   const deploying = useKookrStore((state) => state.deploying);
   if (connected) return null;
 
-  if (deploying) {
-    return (
-      <div className="connection-banner" role="status" aria-live="polite" data-testid="connection-banner">
-        <span className="connection-banner__badge">Redeploying</span>
-        <span className="connection-banner__text">
-          Redeploying production — API should return within a few seconds
-        </span>
-      </div>
-    );
-  }
+  const badge = deploying ? 'Redeploying' : 'Reconnecting';
+  const text = deploying
+    ? 'Redeploying production — API should return within a few seconds'
+    : 'Dashboard data may be stale until the main connection is restored.';
 
   return (
     <div className="connection-banner" role="status" aria-live="polite" data-testid="connection-banner">
-      <span className="connection-banner__badge">Reconnecting</span>
-      <span className="connection-banner__text">
-        Dashboard data may be stale until the main connection is restored.
-      </span>
+      <span className="connection-banner__badge">{badge}</span>
+      <span className="connection-banner__text">{text}</span>
     </div>
   );
 }
