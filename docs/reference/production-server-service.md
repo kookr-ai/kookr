@@ -133,6 +133,19 @@ command and waits for `/api/ready` (see below).
 unavailable, the script falls back to the existing pid-file and port-kill
 restart flow.
 
+### Low-downtime redeploy
+
+For intentional restarts, clocks (API blackout vs deploy-ready), client
+contracts (spawn / signal / dashboard / schedules), and residual same-port
+blackout after speech-detach P1, follow the operator runbook:
+
+**[Low-downtime redeploy](../runbooks/low-downtime-redeploy.md)**
+
+Summary: API blackout goals are **ideal &lt;1s / max &lt;5s** (port free → first
+`/api/health` 200). Long M2 recovery does **not** mean the API is dark after
+M1. Sequential stop/start on one port can still produce a multi-second blackout;
+blue-green remains deferred (see the RFC linked from the runbook).
+
 For short-lived runtime tuning without a restart, use the admin runtime-control
 API documented in [API Reference](api.md#admin--runtime-control). It covers
 temporary log-level changes with TTL auto-revert, operational alert threshold

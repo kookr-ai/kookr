@@ -909,6 +909,29 @@ Exit behavior:
 - `1` when the target server cannot be reached, rejects admin auth, or returns another non-2xx response.
 - `2` for usage errors such as an unknown drain verb.
 
+Routine `pnpm prod:restart` / `pnpm prod:update` already best-effort enter drain
+before SIGTERM; drain is in-memory and cleared when the process exits, so a
+successful restart does **not** require `kookr resume`. See
+[Redeploy resilience](#redeploy-resilience) and the
+[low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md).
+
+## Redeploy resilience
+
+How CLI and related client surfaces behave across an intentional production
+restart. Full operator procedure, clocks, and residual same-port blackout:
+[Low-downtime redeploy](../runbooks/low-downtime-redeploy.md).
+
+| Surface | During redeploy | Agent policy |
+| --- | --- | --- |
+| **`kookr spawn`** | **503** + `code: "draining"` while drain is on; connection errors during the same-port blackout (ideal &lt;1s / max &lt;5s API gap) | Retry with backoff ≤**60s**; use idempotency keys; do **not** open outage issues for a single refused launch in a known deploy window. See [spawn contract](./spawn-contract.md). |
+| **`kookr signal`** | Durable outbox write-behind; offline/restart exits **0** (spooled); server drains after boot | Treat spool as success. See [signal-outbox](./signal-outbox.md). |
+| **Drain 503 / ready** | Launches and schedule fires refuse while draining; `/api/ready` 503 when draining or `startup-in-progress` | Expected cordon — not an incident by itself. |
+| **Dashboard** | WS reconnect; banner may say **Redeploying** during deploy-triggered blackout | Expected; wait for reconnect. |
+| **Schedules** | Tick records **`skipped_draining`** while drain is on | One skipped fire during redeploy is intentional. |
+
+**M2 note:** `pnpm prod:restart` may wait a long time on `/api/ready` (recovery)
+after `/api/health` is already 200. Long script wall clock ≠ long API blackout.
+
 ## `kookr maintenance prune`
 
 Prune aged completed-task artifacts (hook logs, activity ledgers, rotated `server.log.N`, and `playbook-state` run directories) from a Kookr data directory:

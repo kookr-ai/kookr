@@ -97,6 +97,7 @@ Notes:
 ## Related
 
 - `pnpm prod:restart` / `pnpm prod:update` — operator restart entrypoints
+- [Low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md) — procedure, clocks, client contracts
 - [Troubleshooting — production-style restart metrics](../troubleshooting.md#production-style-instance-looks-stale)
 - [API — `GET /api/deploy/status` `lastRestart`](api.md)
 - [Production server systemd unit](production-server-service.md)
