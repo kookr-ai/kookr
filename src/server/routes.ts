@@ -136,15 +136,15 @@ export function createRoutes(deps: RouteDeps): Hono {
   // Issue #1715: batch blocked-empty → on-demand idea-scout + starvation alert.
   // Built from the same launchServiceDeps the task/schedule paths use so spawn
   // goes through capacity admission, idempotency, and audit provenance.
-  registerPipelineStarvationRoutes(app, {
-    pipelineStarvation: new PipelineStarvationService({
-      taskStore: sharedDeps.taskStore,
-      launcher: (opts) => launchTask(sharedDeps.launchServiceDeps, opts),
-      broadcast: sharedDeps.broadcastToAll,
-      kookrDir: sharedDeps.kookrDir,
-      log: (line) => console.log(line),
-    }),
+  // Optional pre-built service lets bootstrap wire terminal reconcile (PR2).
+  const pipelineStarvation = sharedDeps.pipelineStarvation ?? new PipelineStarvationService({
+    taskStore: sharedDeps.taskStore,
+    launcher: (opts) => launchTask(sharedDeps.launchServiceDeps, opts),
+    broadcast: sharedDeps.broadcastToAll,
+    kookrDir: sharedDeps.kookrDir,
+    log: (line) => console.log(line),
   });
+  registerPipelineStarvationRoutes(app, { pipelineStarvation });
   registerProjectRoutes(app, sharedDeps);
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);

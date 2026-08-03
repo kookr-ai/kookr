@@ -9,6 +9,7 @@ import {
 } from '../core/pipeline-starvation.js';
 import {
   PipelineStarvationService,
+  RECONCILE_TERMINAL_SOURCE,
   STARVATION_TRIGGER_PROVENANCE,
 } from './pipeline-starvation-service.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
@@ -258,5 +259,178 @@ describe('PipelineStarvationService (#1715)', () => {
     const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('pipeline_starvation_scout_spawn_failed');
     expect(audit).toContain(STARVATION_TRIGGER_PROVENANCE);
+  });
+
+  test('emptyClass=concurrent does not spawn or inflate consecutive product empties', async () => {
+    const product = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'product-1', emptyClass: 'product' }),
+      localPath: checkout,
+    });
+    expect(product.decision.spawnScout).toBe(true);
+    expect(product.state.blockedEmptyAt).toHaveLength(1);
+
+    clock = NOW + 60_000;
+    const concurrent = await service.handleBatchOutcome({
+      outcome: outcome({
+        runKey: 'concurrent-sibling',
+        emptyClass: 'concurrent',
+        reason: 'NO-OP: another inProgress Parallel Issue Batch for jeanibarz/lucy already exists',
+        generatedAt: new Date(clock).toISOString(),
+      }),
+      localPath: checkout,
+    });
+    expect(concurrent.decision.applicable).toBe(false);
+    expect(concurrent.decision.emptyClass).toBe('concurrent');
+    expect(concurrent.spawnedScoutTaskId).toBeUndefined();
+    expect(concurrent.alertEmitted).toBe(false);
+    // Ledger unchanged — concurrent did not append.
+    expect(concurrent.state.blockedEmptyAt).toHaveLength(1);
+    expect(concurrent.state.handledRunKeys).not.toContain('concurrent-sibling');
+    expect(launches).toHaveLength(1);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('emptyClass=concurrent');
+  });
+
+  test('legacy concurrent reason without emptyClass is not product starvation', async () => {
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({
+        runKey: 'legacy-concurrent',
+        reason:
+          'another inProgress Parallel Issue Batch task abc for jeanibarz/lucy; NO-OP without spawning',
+      }),
+      localPath: checkout,
+    });
+    expect(result.decision.applicable).toBe(false);
+    expect(result.spawnedScoutTaskId).toBeUndefined();
+    expect(launches).toHaveLength(0);
+    expect(result.state.blockedEmptyAt).toHaveLength(0);
+  });
+
+  test('terminal reconcile invokes handle for unhandled product blocked-empty', async () => {
+    const batchDir = await mkdtemp(join(tmpdir(), 'kookr-batch-out-'));
+    const outcomePath = join(batchDir, 'outcome.json');
+    const rec = outcome({ runKey: 'missed-handle-run', emptyClass: 'product' });
+    await writeFile(outcomePath, JSON.stringify(rec), 'utf-8');
+
+    const task = store.createTask({
+      prompt: 'Parallel Issue Batch for jeanibarz/lucy',
+      cwd: checkout,
+      playbookId: 'parallel-issue-batch.md',
+      playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+      name: 'Batch: jeanibarz/lucy',
+    });
+    // Align runKey with task id path used in production (RUN_KEY=KOOKR_TASK_ID).
+    const recForTask = { ...rec, runKey: task.id };
+    await writeFile(outcomePath, JSON.stringify(recForTask), 'utf-8');
+
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const t = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+        });
+        const result: LaunchResult<Task> = { task: t, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      resolveBatchOutcomePath: () => outcomePath,
+      now: () => clock,
+    });
+
+    const result = await service.maybeReconcileBatchTaskTerminal(task.id, { kind: 'completed' });
+    expect(result).not.toBeNull();
+    expect(result!.decision.applicable).toBe(true);
+    expect(result!.spawnedScoutTaskId).toBeTruthy();
+    expect(result!.summary).toMatch(/reconcile_terminal/);
+    expect(launches).toHaveLength(1);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain(RECONCILE_TERMINAL_SOURCE);
+    expect(audit).toContain('pipeline_starvation_scout_spawn');
+
+    // Second terminal is idempotent (already in handledRunKeys).
+    clock = NOW + 1_000;
+    const again = await service.maybeReconcileBatchTaskTerminal(task.id, { kind: 'completed' });
+    expect(again).toBeNull();
+    expect(launches).toHaveLength(1);
+  });
+
+  test('terminal reconcile skips concurrent emptyClass', async () => {
+    const batchDir = await mkdtemp(join(tmpdir(), 'kookr-batch-conc-'));
+    const outcomePath = join(batchDir, 'outcome.json');
+    const task = store.createTask({
+      prompt: 'Parallel Issue Batch concurrent NO-OP',
+      cwd: checkout,
+      playbookId: 'parallel-issue-batch.md',
+      playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+    });
+    await writeFile(
+      outcomePath,
+      JSON.stringify(outcome({
+        runKey: task.id,
+        emptyClass: 'concurrent',
+        reason: 'NO-OP: another inProgress Parallel Issue Batch already exists',
+      })),
+      'utf-8',
+    );
+
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        throw new Error('should not launch');
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      resolveBatchOutcomePath: () => outcomePath,
+      now: () => clock,
+    });
+
+    const result = await service.maybeReconcileBatchTaskTerminal(task.id, { kind: 'completed' });
+    expect(result).toBeNull();
+    expect(launches).toHaveLength(0);
+  });
+
+  test('done after starvation alert emits recovered operational alert', async () => {
+    // Seed an episode via two product empties.
+    await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'ep-1' }),
+      localPath: checkout,
+    });
+    clock = NOW + 3 * 60 * 60 * 1000;
+    await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'ep-2', generatedAt: new Date(clock).toISOString() }),
+      localPath: checkout,
+    });
+    expect(alerts.some((a) => a.type === 'alert' && a.operationalAlert?.state === 'fired')).toBe(true);
+
+    clock = NOW + 4 * 60 * 60 * 1000;
+    const done = await service.handleBatchOutcome({
+      outcome: outcome({
+        outcome: 'done',
+        runKey: 'ep-done',
+        reason: 'Batch complete: 3 issues merged',
+        generatedAt: new Date(clock).toISOString(),
+      }),
+      localPath: checkout,
+    });
+    expect(done.decision.applicable).toBe(false);
+    expect(done.recoveredAlertEmitted).toBe(true);
+    expect(alerts.some((a) => a.type === 'alert' && a.operationalAlert?.state === 'recovered')).toBe(true);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_alert_recovered');
   });
 });

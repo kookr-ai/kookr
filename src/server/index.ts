@@ -35,6 +35,7 @@ import {
 } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
+import { PipelineStarvationService } from './pipeline-starvation-service.js';
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
@@ -1896,8 +1897,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
 
   const upstreamOf = createUpstreamOfResolver();
+  // Single #1715 service instance shared by HTTP handle + terminal reconcile (PR2).
+  const pipelineStarvation = new PipelineStarvationService({
+    taskStore,
+    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    broadcast: broadcastToAll,
+    kookrDir,
+    log: (line) => console.log(line),
+  });
   const app = createRoutes({
     environmentBlockerRegistry,
+    pipelineStarvation,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -2720,7 +2730,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   const telegramHandle = remoteChatTrigger.handle;
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
-  onTaskOutcomeHolder = remoteChatTrigger.onTaskOutcome;
+  // Compose remote-chat notify with pipeline-starvation terminal reconcile (PR2 R6):
+  // product blocked-empty outcomes that never POSTed handle are caught once here.
+  const remoteChatOnTaskOutcome = remoteChatTrigger.onTaskOutcome;
+  onTaskOutcomeHolder = (taskId, outcome) => {
+    try {
+      void remoteChatOnTaskOutcome?.(taskId, outcome);
+    } catch (err) {
+      console.warn('[lifecycle] remoteChat onTaskOutcome threw:', err);
+    }
+    void pipelineStarvation.maybeReconcileBatchTaskTerminal(taskId, outcome).catch((err) => {
+      console.warn(
+        '[pipeline-starvation] terminal reconcile failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+  };
   notifyBootReconciledTaskOutcomes(onTaskOutcomeHolder, reconcileResult);
 
   // --- Close ---
