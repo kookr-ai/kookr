@@ -85,12 +85,21 @@ export function TopBar({
   scheduleHintActive = false,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
+  const {
+    connected,
+    buildInfo,
+    serverStartedAt,
+    totalSpendUsd,
+    circuitBreakers,
+    diagnosticReport,
+    coordinator,
+    deploying,
+    setDeploying,
+  } = useKookrStore();
   const paletteHint = commandPaletteHint(detectShortcutPlatform());
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
-  const [deploying, setDeploying] = useState(false);
   const [toolkitRefreshing, setToolkitRefreshing] = useState(false);
   const [pluginUpdating, setPluginUpdating] = useState(false);
   const [pluginUpdateMessage, setPluginUpdateMessage] = useState<string | null>(null);

@@ -123,6 +123,14 @@ export interface TransportSessionSlice {
   agents: AgentState[];
   agentsHydrated: boolean;
   connected: boolean;
+  /**
+   * True while a production redeploy is in flight (dashboard Deploy button or
+   * `/api/deploy/status` reported `deploying`). Sticky across the intentional
+   * WS blackout so ConnectionBanner can show redeploy copy instead of an
+   * incident-style reconnect warning. Cleared when a new buildInfo commit
+   * arrives after reconnect, or when deploy fails before the blackout.
+   */
+  deploying: boolean;
   terminalOutput: Record<string, string>;
   serverCwd: string;
   availableAgentTypes: AvailableAgentType[];
@@ -233,6 +241,7 @@ export interface TransportSessionSlice {
     capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
   ) => void;
   setConnected: (connected: boolean) => void;
+  setDeploying: (deploying: boolean) => void;
   handleDashboardSelection: (selection: {
     selectedTaskId: string | null;
     selectedSessionId: string | null;
