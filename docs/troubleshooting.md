@@ -294,6 +294,10 @@ the pre-kill window get 503/draining instead of only ECONNREFUSED. Drain is
 in-memory and cleared by process exit — no post-restart resume is required.
 Opt out with `KOOKR_RESTART_SKIP_DRAIN=1`.
 
+Operator runbook (procedure, API blackout vs M2 clocks, client contracts,
+residual same-port blackout after speech-detach P1):
+[Low-downtime redeploy](runbooks/low-downtime-redeploy.md).
+
 If a long-lived production or scratch worktree disappears when its task
 completes, protect it with the root-level `.kookr-protected` marker. See
 [Protecting A Worktree From Automatic Cleanup](user-guide.md#protecting-a-worktree-from-automatic-cleanup)

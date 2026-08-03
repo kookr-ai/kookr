@@ -105,6 +105,12 @@ pnpm prod:update
 
 After setup, `pnpm prod:update` fetches, builds, restarts, and health-checks the `../kookr-prod` worktree. `pnpm prod:restart` restarts without rebuilding, useful after `.env` changes.
 
+Intentional restarts briefly drop the same-port HTTP listener (API blackout
+goals: ideal &lt;1s, max &lt;5s). Running agents and orchestrators should treat that
+window as planned maintenance — see
+[Low-downtime redeploy](runbooks/low-downtime-redeploy.md) for procedure, clocks
+(API blackout vs long M2 recovery), and client contracts.
+
 For Kookr development, keep the production-style instance open for real supervision and run `pnpm dev` separately only for checking your current changes in real time.
 
 ## Optional Features
@@ -122,4 +128,6 @@ Copy `.env.example` to `.env` and uncomment only what you need. See [Configurati
 
 - [User Guide](user-guide.md) explains the dashboard workflow.
 - [CLI Reference](reference/cli.md) covers `kookr spawn` and `kookr status`.
+- [Low-downtime redeploy](runbooks/low-downtime-redeploy.md) covers planned `prod:update` / `prod:restart` without treating them as outages.
+- [Production Server Service](reference/production-server-service.md) covers the systemd user unit and `/api/ready` probe.
 - [Troubleshooting](troubleshooting.md) covers common install and runtime problems.

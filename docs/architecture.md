@@ -649,6 +649,28 @@ kookr/
 >
 > **Design note:** Anomaly detection patterns are implemented as pure functions in `anomaly-detector.ts` rather than as SKILL.md files. The SKILL.md approach (community-contributable, discoverable patterns) remains a valid V2 direction, but V1 keeps detection logic co-located with its tests for simplicity.
 
+## Redeploy resilience
+
+Production-style deploy (`pnpm prod:update` / `pnpm prod:restart`) still uses
+**sequential stop/start on one port**. Speech sidecars may outlive the Node
+process (PR #1950), and listen-early binds HTTP before deferred recovery finishes
+(PR #1747), but clients still see a short **API blackout** while the port is free.
+
+| Clock | Meaning | Operator expectation |
+| --- | --- | --- |
+| API blackout | Port free → first `/api/health` 200 | Ideal **&lt;1s**, SLO max **&lt;5s** |
+| M2 deploy-ready | `/api/ready` no longer `startup-in-progress` | May remain multi-minute on large corpora **after** the API is live |
+
+Client surfaces are designed for that window: spawn returns **503** `draining`
+when operator drain is on; `kookr signal` spools offline; schedules record
+`skipped_draining`; the dashboard reconnects with redeploy-aware banner copy.
+Orchestrators should **retry ≤60s** and not open incident issues for planned
+restarts. Full procedure and contracts:
+[Low-downtime redeploy runbook](runbooks/low-downtime-redeploy.md).
+
+Blue-green / dual-instance for near-zero blackout is an explicit non-goal of
+[`rfc-fast-prod-restart`](rfc/rfc-fast-prod-restart.md) v1.
+
 ## OSS tracking: manual recovery
 
 The OSS refresher (`src/server/oss-refresh.ts`) caches the verified state of each PR's linked issue in `~/.kookr/oss-attempts.json` under `linkedIssue.state`. Once a linked issue is cached as `closed`, the refresher never re-polls it — a rare reopen is accepted latency in exchange for bounded `gh api` cost.
