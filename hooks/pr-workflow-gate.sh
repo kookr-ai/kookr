@@ -347,7 +347,12 @@ if [ -f "$STATE_FILE" ]; then
     fi
   fi
   if [ -z "$AUTH_LIB" ]; then
-    _hook_src=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    # Portable resolve (no GNU readlink -f — macOS BSD readlink lacks -f). portability-ok
+    if command -v python3 >/dev/null 2>&1; then
+      _hook_src=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")
+    else
+      _hook_src=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
+    fi
     _hook_repo=$(cd "$(dirname "$_hook_src")/.." 2>/dev/null && pwd -P) || _hook_repo=""
     if [ -n "$_hook_repo" ] && [ -f "$_hook_repo/scripts/lib/review-marker-auth.sh" ]; then
       AUTH_LIB="$_hook_repo/scripts/lib/review-marker-auth.sh"
