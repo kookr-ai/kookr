@@ -310,6 +310,12 @@ export function resolveRoundRobinAgent(
  * `deprioritized` reuses the #1898 boot-reliability signal: a pin whose agent
  * is registered but currently unhealthy is treated as unavailable while a
  * healthier alternative remains — same rule as round-robin.
+ *
+ * `policy` (issue #2001) gates *automatic substitutes only* — an explicit pin
+ * to a disallowed agent still launches when that agent is healthy. When the
+ * pin is unavailable and no *allowed* substitute remains, returns
+ * `unavailable` so the caller can park rather than cascade onto a forbidden
+ * provider (e.g. silent `codex-cli` landings under quota pressure).
  */
 export type PinnedAgentResolution =
   | { kind: 'available'; agentType: AgentType; substituted: false }
@@ -317,15 +323,50 @@ export type PinnedAgentResolution =
   | { kind: 'unavailable'; from: AgentType };
 
 /**
+ * Policy for automatic agent fallback / rotation (issue #2001).
+ *
+ * - `disallow` — never choose these types as substitutes (default: codex-cli).
+ * - `allowlist` — when non-empty, *only* these types may be substitutes.
+ *
+ * Neither filter blocks an explicit pin that is itself healthy and registered.
+ */
+export interface AgentFallbackPolicy {
+  disallow?: readonly AgentType[];
+  allowlist?: readonly AgentType[];
+}
+
+/**
+ * Filter candidate substitutes under {@link AgentFallbackPolicy}. Order is
+ * preserved (callers pass canonical order). Empty allowlist = unrestricted.
+ */
+export function filterFallbackCandidates(
+  candidates: readonly AgentType[],
+  policy?: AgentFallbackPolicy,
+): AgentType[] {
+  let out = [...candidates];
+  const disallow = policy?.disallow;
+  if (disallow && disallow.length > 0) {
+    out = out.filter((type) => !disallow.includes(type));
+  }
+  const allowlist = policy?.allowlist;
+  if (allowlist && allowlist.length > 0) {
+    out = out.filter((type) => allowlist.includes(type));
+  }
+  return out;
+}
+
+/**
  * Resolve a pinned agent pin against registered (and optionally deprioritized)
  * adapters. Returns the pin unchanged when it is launchable; otherwise the
- * first healthy agent in canonical order ({@link AVAILABLE_AGENT_TYPES}); or
- * `unavailable` when no substitute can launch.
+ * first healthy *allowed* agent in canonical order ({@link AVAILABLE_AGENT_TYPES});
+ * or `unavailable` when no substitute can launch (or none remain after
+ * {@link AgentFallbackPolicy} filtering — issue #2001).
  */
 export function resolvePinnedAgentFallback(
   pinned: AgentType,
   available: readonly AgentType[],
   deprioritized: readonly AgentType[] = [],
+  policy?: AgentFallbackPolicy,
 ): PinnedAgentResolution {
   const registered = AVAILABLE_AGENT_TYPES
     .map((entry) => entry.type)
@@ -341,7 +382,10 @@ export function resolvePinnedAgentFallback(
   if (effective.includes(pinned)) {
     return { kind: 'available', agentType: pinned, substituted: false };
   }
-  const substitute = effective[0];
+  // Issue #2001: only automatic substitutes are filtered. The pin itself was
+  // already checked above; remaining candidates must pass the fallback policy.
+  const allowed = filterFallbackCandidates(effective, policy);
+  const substitute = allowed[0];
   if (!substitute) {
     return { kind: 'unavailable', from: pinned };
   }

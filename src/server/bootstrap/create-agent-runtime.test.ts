@@ -63,6 +63,9 @@ describe('createAgentRuntime — grok-build registration policy', () => {
       // never spawn a real agent binary (or time out) inside a unit test.
       agentBin: '/bin/echo',
       codexBin: '/bin/echo',
+      // Hermetic codex probe (issue #2001): without this, a real PATH probe can
+      // pass on /bin/echo while the sibling host check fails closed fatally.
+      codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
       preflightLogger: logger,
       preflightOnFatal: ((): never => {
         throw new Error('fatal preflight');

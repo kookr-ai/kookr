@@ -2607,6 +2607,57 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(result.resetsAt).toBe('2026-08-04T12:00:00.000Z');
       expect(store.getTask(result.task.id)?.agentType).toBe('codex-cli');
       expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+      expect(result.agentSubstitutionChain).toEqual([
+        { reason: 'quota_rotate', from: 'claude-code', to: 'codex-cli' },
+      ]);
+      expect(store.getTask(result.task.id)?.metadata?.agentSubstitutionChain).toEqual([
+        { reason: 'quota_rotate', from: 'claude-code', to: 'codex-cli' },
+      ]);
+    });
+
+    it('does not rotate onto disallowed codex-cli when policy denies it (issue #2001)', async () => {
+      const store = new TaskStore();
+      const sample = {
+        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
+        sevenDay: null,
+      };
+      const deps = quotaDeps(store, sample, {
+        getAgentFallbackPolicy: () => ({ disallow: ['codex-cli'] }),
+      });
+      const before = store.listTasks().length;
+      await expect(
+        launchTask(deps, {
+          prompt: 'no silent codex landing',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+        }),
+      ).rejects.toMatchObject({ code: 'quota_headroom_admission', admission: 'rejected' });
+      expect(store.listTasks().length).toBe(before);
+    });
+
+    it('appends quota_rotate onto prior schedule_sub hops (issue #2001)', async () => {
+      const store = new TaskStore();
+      const sample = {
+        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
+        sevenDay: null,
+      };
+      const deps = quotaDeps(store, sample);
+      const result = await launchTask(deps, {
+        prompt: 'full chain',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        priorAgentSubstitutions: [
+          { reason: 'schedule_sub', from: 'grok-build', to: 'claude-code' },
+        ],
+      });
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(result.agentSubstitutionChain).toEqual([
+        { reason: 'schedule_sub', from: 'grok-build', to: 'claude-code' },
+        { reason: 'quota_rotate', from: 'claude-code', to: 'codex-cli' },
+      ]);
+      expect(store.getTask(result.task.id)?.metadata?.agentSubstitutionChain).toEqual(
+        result.agentSubstitutionChain,
+      );
     });
 
     it('denies a claude-code launch when plan quota is exhausted and no alternate exists, before any task record', async () => {

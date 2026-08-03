@@ -1,6 +1,6 @@
 import type { AgentSelection, AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
-import type { TaskLaunchSource, TaskMetadataIntent } from './task.js';
+import type { AgentSubstitutionHop, TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
 /**
  * Upper bound on an accepted `idempotencyKey` (issue #1526 Phase B). Single
@@ -133,6 +133,14 @@ export interface LaunchOpts {
     number: number;
     repo?: string;
   };
+  /**
+   * Prior agent substitution hops already applied before this launch
+   * (issue #2001). Schedule WS1.3 stamps a `schedule_sub` hop when it
+   * substitutes an unavailable pin; launch-service appends a `quota_rotate`
+   * hop if plan-quota admission rotates further, and persists the full chain
+   * on task metadata.
+   */
+  priorAgentSubstitutions?: readonly AgentSubstitutionHop[];
 }
 
 /**
@@ -176,4 +184,10 @@ export interface LaunchResult<TaskShape extends { id: string } = { id: string }>
   threshold?: number;
   /** Binding-window reset time when known (ISO 8601). */
   resetsAt?: string | null;
+  /**
+   * Full agent substitution chain for this launch (issue #2001), including
+   * any `priorAgentSubstitutions` plus a plan-quota hop when rotation ran.
+   * Absent when the requested agent launched unchanged.
+   */
+  agentSubstitutionChain?: AgentSubstitutionHop[];
 }

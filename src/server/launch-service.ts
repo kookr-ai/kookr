@@ -5,6 +5,7 @@ import type { DeliveryAuthorization, TaskDispositionReason } from '../shared/con
 import {
   type AgentType,
   type AgentSelection,
+  type AgentFallbackPolicy,
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
@@ -14,6 +15,7 @@ import {
   isValidModelForAgent,
   modelsForAgent,
 } from '../core/agent-types.js';
+import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
@@ -91,6 +93,13 @@ export interface LaunchServiceDeps {
    * the monitor: the rotation then applies no deprioritization.
    */
   getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Automatic fallback policy (issue #2001). Applied when plan-quota admission
+   * rotates off claude-code and when schedule WS1.3 substitutes a pin. Absent
+   * ⇒ no filter (back-compat for older wiring/tests). Production wires this
+   * from `settings.disallowAgentFallback` / `settings.agentFallbackAllowlist`.
+   */
+  getAgentFallbackPolicy?: () => AgentFallbackPolicy;
   /**
    * Feed one launch's boot latency (from the #1589 phase timings) into the
    * boot-reliability monitor, at every launch finalization (success or
@@ -1141,6 +1150,11 @@ async function launchTaskCore(
     threshold: number;
     resetsAt: string | null;
   } | undefined;
+  // Full substitution chain (issue #2001): prior schedule hops + optional
+  // quota_rotate hop. Stamped on task metadata and returned to the caller.
+  const agentSubstitutionChain: AgentSubstitutionHop[] = [
+    ...(opts.priorAgentSubstitutions ?? []),
+  ];
 
   // Validate a per-task effort override against the *resolved* agent's allowed
   // set (#681), before any side effect or task record. Done here — not at the
@@ -1304,10 +1318,16 @@ async function launchTaskCore(
       // remote-chat trust boundary so we never rotate onto a forbidden agent.
       const available = adapterRegistry.getTypes().filter((t) => t !== 'claude-code');
       const deprioritized = deps.getDeprioritizedAgentTypes?.(available) ?? [];
+      const fallbackPolicy = deps.getAgentFallbackPolicy?.();
       let toAgent: AgentType | null = null;
       let remaining = available;
       while (remaining.length > 0) {
-        const fallback = resolvePinnedAgentFallback('claude-code', remaining, deprioritized);
+        const fallback = resolvePinnedAgentFallback(
+          'claude-code',
+          remaining,
+          deprioritized,
+          fallbackPolicy,
+        );
         if (fallback.kind !== 'substituted') break;
         const candidate = fallback.agentType;
         // R19: re-apply after rotation. A telegram launch that requested
@@ -1341,6 +1361,11 @@ async function launchTaskCore(
           threshold: decision.threshold,
           resetsAt: decision.resetsAt,
         };
+        agentSubstitutionChain.push({
+          reason: 'quota_rotate',
+          from: fromAgent,
+          to: toAgent,
+        });
         console.warn(
           `[backpressure] Anthropic quota utilization ${decision.maxUtilization.toFixed(0)}% ` +
           `≥ threshold ${decision.threshold.toFixed(0)}% — rotating agent ` +
@@ -1480,10 +1505,15 @@ async function launchTaskCore(
     // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
     // the record so the promotion posture guard can recognize schedule-fired
     // pendings as self-releasing. Additive — absent when no source was given.
-    metadata: (opts.metadataIntent || opts.launchSource)
+    // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
+    // hops so receipts match the final agentType after multi-hop cascade.
+    metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
       ? {
           ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
           ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+          ...(agentSubstitutionChain.length > 0
+            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+            : {}),
         }
       : undefined,
     launchHealthSummary,
@@ -1565,6 +1595,9 @@ async function launchTaskCore(
             threshold: planQuotaRotation.threshold,
             resetsAt: planQuotaRotation.resetsAt,
           }
+        : {}),
+      ...(agentSubstitutionChain.length > 0
+        ? { agentSubstitutionChain: [...agentSubstitutionChain] }
         : {}),
     };
   }
@@ -1747,6 +1780,9 @@ async function launchTaskCore(
           threshold: planQuotaRotation.threshold,
           resetsAt: planQuotaRotation.resetsAt,
         }
+      : {}),
+    ...(agentSubstitutionChain.length > 0
+      ? { agentSubstitutionChain: [...agentSubstitutionChain] }
       : {}),
   };
 }

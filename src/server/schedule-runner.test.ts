@@ -92,6 +92,7 @@ Do the test thing.
           effort: opts.effort,
           model: opts.model,
           launchSource: opts.launchSource,
+          priorAgentSubstitutions: opts.priorAgentSubstitutions,
         });
         const queued = activeCount >= maxActive;
         if (queued) {
@@ -326,8 +327,61 @@ Do the test thing.
 
       expect(launched).toHaveLength(1);
       expect(launched[0]!.agentType).toBe('claude-code');
+      expect(launched[0]!.priorAgentSubstitutions).toEqual([
+        { reason: 'schedule_sub', from: 'grok-build', to: 'claude-code' },
+      ]);
       expect(substitutions).toHaveLength(1);
       expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('agent_substituted');
+    });
+
+    it('parks when the only substitute is disallowed (issue #2001)', async () => {
+      const schedule = store.create({
+        name: 'No allowed fallback',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'grok-build',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['codex-cli', 'grok-build'],
+        getDeprioritizedAgentTypes: () => ['grok-build'],
+        getAgentFallbackPolicy: () => ({ disallow: ['codex-cli'] }),
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(0);
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
+      });
+    });
+
+    it('does not land on codex-cli under default-style denylist when grok is deprioritized (issue #2001)', async () => {
+      const schedule = store.create({
+        name: 'Grok default',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'grok-build',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+        getDeprioritizedAgentTypes: () => ['grok-build'],
+        getAgentFallbackPolicy: () => ({ disallow: ['codex-cli'] }),
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(1);
+      expect(launched[0]!.agentType).toBe('claude-code');
+      expect(launched[0]!.agentType).not.toBe('codex-cli');
     });
   });
 

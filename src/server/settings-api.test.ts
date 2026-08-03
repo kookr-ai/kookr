@@ -63,6 +63,8 @@ describe('Settings API', () => {
       maxActiveTasks: 10,
       cleanupWorktreeOnComplete: true,
       defaultAgentType: 'claude-code',
+      disallowAgentFallback: ['codex-cli'],
+      agentFallbackAllowlist: [],
       roundRobinIndex: 0,
       shortcutBindings: {},
       speakVerbosity: 'medium',

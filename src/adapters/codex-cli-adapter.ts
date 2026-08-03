@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { access, constants as fsConstants } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { promisify } from 'node:util';
 import type { TerminalBackend } from './terminal-backend.js';
 import {
   asTerminalInputWriterPort,
@@ -19,7 +22,16 @@ import type {
   EffectiveHookSettings,
   PreflightResult,
 } from './agent-adapter.js';
-import { probeAgentBinary, probeBinaryFlagSupport, type ProbeExecRunner } from './probe-agent-binary.js';
+import {
+  probeAgentBinary,
+  probeBinaryFlagSupport,
+  type ProbeExecRunner,
+} from './probe-agent-binary.js';
+
+const accessAsync = promisify(access);
+
+/** Sibling helper binary the Codex CLI spawns for shell/tool execution (issue #2001). */
+export const CODEX_CODE_MODE_HOST_BIN = 'codex-code-mode-host';
 import { extractRawHookHeader, parseHookEvent, HookParseError, type RawHookHeader } from '../core/hook-parser.js';
 import {
   childSessionStorageKey,
@@ -65,6 +77,75 @@ export function resolveCodexModel(effort?: string, env: NodeJS.ProcessEnv = proc
   if (effort === 'ultra') return ULTRA_CODEX_MODEL;
   const fromEnv = env[CODEX_MODEL_ENV]?.trim();
   return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_CODEX_MODEL;
+}
+
+/**
+ * Locate the sibling `codex-code-mode-host` next to the resolved codex binary
+ * (issue #2001). Codex spawns this host for shell/tool execution; a CLI-only
+ * install boots but every tool call fails with "failed to spawn code-mode host".
+ *
+ * Resolution: PATH-resolve `agentBin` (or use absolute path), then check
+ * `<dirname(codex)>/codex-code-mode-host` is executable.
+ */
+export async function resolveCodexCodeModeHost(
+  agentBin: string,
+  deps: {
+    resolveExecutablePath?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string | null>;
+    access?: (path: string, mode: number) => Promise<void>;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+  const env = deps.env ?? process.env;
+  const accessFn = deps.access ?? ((p: string, mode: number) => accessAsync(p, mode));
+  const resolvePath = deps.resolveExecutablePath ?? resolveExecutablePathLight;
+
+  const launcherPath = await resolvePath(agentBin, env);
+  if (!launcherPath) {
+    return {
+      ok: false,
+      reason:
+        `${CODEX_CODE_MODE_HOST_BIN} missing: could not resolve codex binary "${agentBin}" on PATH`,
+    };
+  }
+
+  const hostPath = join(dirname(launcherPath), CODEX_CODE_MODE_HOST_BIN);
+  try {
+    await accessFn(hostPath, fsConstants.X_OK);
+    return { ok: true, path: hostPath };
+  } catch {
+    return {
+      ok: false,
+      reason:
+        `${CODEX_CODE_MODE_HOST_BIN} is not executable next to codex at "${hostPath}" ` +
+        `(install both binaries via pnpm codex:rebuild)`,
+    };
+  }
+}
+
+/** Light PATH lookup (no hash) for locating the codex binary directory. */
+async function resolveExecutablePathLight(
+  bin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  if (isAbsolute(bin) || bin.includes('/')) {
+    try {
+      await accessAsync(bin, fsConstants.X_OK);
+      return bin;
+    } catch {
+      return null;
+    }
+  }
+  const pathDirs = (env.PATH ?? '').split(delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    const candidate = join(dir, bin);
+    try {
+      await accessAsync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // keep looking
+    }
+  }
+  return null;
 }
 
 interface CodexHookSettings {
@@ -131,6 +212,12 @@ export interface CodexCliAdapterOptions {
    * Production callers should leave this unset.
    */
   probeExec?: ProbeExecRunner;
+  /**
+   * Test seam for {@link resolveCodexCodeModeHost}. When provided, overrides
+   * the sibling-host executable check (issue #2001). Production callers leave
+   * this unset.
+   */
+  resolveCodeModeHost?: typeof resolveCodexCodeModeHost;
   /**
    * Live getter for the configured per-agent-type effort default for
    * codex-cli (#681). Called on every launch; returning a value pushes
@@ -205,6 +292,7 @@ export class CodexCliAdapter implements AgentAdapter {
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
+  private resolveCodeModeHost: typeof resolveCodexCodeModeHost;
   private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
@@ -230,18 +318,41 @@ export class CodexCliAdapter implements AgentAdapter {
     // codex-fork supporting --plugin-dir lands. See `probeKookrForkSupport`.
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
+    // Host check is real by default. When tests inject `probeExec` without an
+    // explicit host resolver, skip the filesystem host probe so hermetic unit
+    // tests (no real ~/bin install) keep exercising launch arg construction.
+    // Production never sets probeExec; missing-host still fails closed there.
+    this.resolveCodeModeHost =
+      options?.resolveCodeModeHost
+      ?? (options?.probeExec
+        ? async () => ({ ok: true as const, path: join('/tmp', CODEX_CODE_MODE_HOST_BIN) })
+        : resolveCodexCodeModeHost);
     this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
   async preflight(): Promise<PreflightResult> {
     const probe = await probeAgentBinary(this.agentBin, { exec: this.probeExec });
-    if (probe.kind === 'ok') return probe;
-    return {
-      kind: 'absent',
-      reason: probe.reason,
-      configuredVia: this.agentBinConfiguredVia,
-      envVarName: CODEX_AGENT_BIN_ENV,
-    };
+    if (probe.kind !== 'ok') {
+      return {
+        kind: 'absent',
+        reason: probe.reason,
+        configuredVia: this.agentBinConfiguredVia,
+        envVarName: CODEX_AGENT_BIN_ENV,
+      };
+    }
+    // Issue #2001: CLI-only installs boot but every tool call fails with
+    // "failed to spawn code-mode host …/codex-code-mode-host". Treat a missing
+    // sibling host as absent so codex-cli is not registered / not a fallback.
+    const host = await this.resolveCodeModeHost(this.agentBin);
+    if (!host.ok) {
+      return {
+        kind: 'absent',
+        reason: host.reason,
+        configuredVia: this.agentBinConfiguredVia,
+        envVarName: CODEX_AGENT_BIN_ENV,
+      };
+    }
+    return probe;
   }
 
   /**
@@ -280,6 +391,16 @@ export class CodexCliAdapter implements AgentAdapter {
   }
 
   async launch(taskId: string, prompt: string, cwd: string, resume?: import('./agent-adapter.js').ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
+    // Issue #2001 defense-in-depth: refuse launch when the sibling host binary
+    // is missing (preflight may have been skipped in tests or the binary
+    // removed after registration). Clear error beats a tool-dead session.
+    const host = await this.resolveCodeModeHost(this.agentBin);
+    if (!host.ok) {
+      throw new Error(
+        `codex-cli launch refused: ${host.reason}. ` +
+        `Rebuild/install with \`pnpm codex:rebuild\` (installs both codex and ${CODEX_CODE_MODE_HOST_BIN}).`,
+      );
+    }
     if (resume?.sessionId) {
       // Codex resume is deferred until the Codex fork emits hooks reliably;
       // without hooks, claudeSessionId is never populated for Codex sessions
