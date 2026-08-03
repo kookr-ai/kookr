@@ -108,7 +108,7 @@ function buildGuidance(
     `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> ${shellQuote(baseRef)}\``,
     `- Perform all tracked-file edits, commits, and pushes from that new worktree.`,
     `- If the task stays read-only, you may remain in the current checkout.`,
-    `- When an investigation or analysis wraps up and the task hasn't already fixed the path forward, proactively recommend a right-sized next step — implement now for a small change, open an issue for a medium one, draft an RFC or umbrella issue for a large one — and ask which to proceed with rather than waiting to be asked.`,
+    `- When an investigation or analysis wraps up and the task hasn't already fixed the path forward, pick a right-sized next step from the evidence and execute it autonomously (implement now for a small change, open an issue for a medium one, draft an RFC or umbrella issue for a large one) — do not stop after the diagnosis to ask which path to take when the size is already clear. Carry the chosen path through its required follow-up (RFC iterative review when drafting; planned implementation slices when the diagnosis warrants them and delivery rules allow). Ask only when the right size is genuinely ambiguous or a product/scope choice cannot be justified from the evidence.`,
     `- ${deliveryGateSentence(deliveryPolicy)}`,
   );
   return guidance.join('\n');
