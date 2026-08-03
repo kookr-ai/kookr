@@ -55,6 +55,45 @@ interface JumpLatestState {
   lines: number;
 }
 
+/** Server attach_timing control frame (SessionBridge → client join keys). */
+interface AttachTimingMeta {
+  attachId: string;
+  serverStrategy: string | null;
+  seedCacheHit: boolean | null;
+  recoveryUsed: boolean | null;
+  serverTotalMs: number | null;
+  serverResizeWaitMs: number | null;
+  serverCaptureMs: number | null;
+  serverReconstructMs: number | null;
+}
+
+function newAttachId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `attach-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function parseAttachTimingControl(data: string): Partial<AttachTimingMeta> | null {
+  if (!data.startsWith('{') || !data.includes('"attach_timing"')) return null;
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    if (parsed.type !== 'attach_timing') return null;
+    return {
+      attachId: typeof parsed.attachId === 'string' ? parsed.attachId : undefined,
+      serverStrategy: typeof parsed.strategy === 'string' ? parsed.strategy : null,
+      seedCacheHit: typeof parsed.seedCacheHit === 'boolean' ? parsed.seedCacheHit : null,
+      recoveryUsed: typeof parsed.recoveryUsed === 'boolean' ? parsed.recoveryUsed : null,
+      serverTotalMs: typeof parsed.totalMs === 'number' ? parsed.totalMs : null,
+      serverResizeWaitMs: typeof parsed.resizeWaitMs === 'number' ? parsed.resizeWaitMs : null,
+      serverCaptureMs: typeof parsed.captureMs === 'number' ? parsed.captureMs : null,
+      serverReconstructMs: typeof parsed.reconstructMs === 'number' ? parsed.reconstructMs : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Matches file paths ending in a viewable extension, for click-to-view in the
 // right pane. Requires a path prefix (/, ./, ../, ~/) to keep false positives
 // out of ordinary prose. Absolute paths resolve cleanly server-side; relative
@@ -160,6 +199,13 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   const [searchFound, setSearchFound] = useState<boolean | null>(null);
   const [searchResult, setSearchResult] = useState<ISearchResultChangeEvent | null>(null);
   const [terminalFontSize, setTerminalFontSize] = usePersistedTerminalFontSize();
+  /**
+   * R3: block terminal send and show pending chrome until the new session's
+   * first PTY paint (wrong-agent mitigation during no-blank attach).
+   */
+  const [attachPending, setAttachPending] = useState(false);
+  const attachPendingRef = useRef(false);
+  const attachMetaRef = useRef<AttachTimingMeta | null>(null);
 
   function clearJumpLatestTimer() {
     if (jumpLatestTimerRef.current === null) return;
@@ -230,13 +276,19 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
 
   function registerVisibleTerminalSend() {
     const controller = controllerRef.current;
-    if (!visibleRef.current || !controller?.isEstablished()) {
+    if (!visibleRef.current || !controller?.isEstablished() || attachPendingRef.current) {
       registerTerminalSend(null);
       return;
     }
     registerTerminalSend((data) => {
-      if (visibleRef.current) controllerRef.current?.send(data);
+      if (!visibleRef.current || attachPendingRef.current) return;
+      controllerRef.current?.send(data);
     });
+  }
+
+  function markAttachPending(pending: boolean) {
+    attachPendingRef.current = pending;
+    setAttachPending(pending);
   }
 
   /**
@@ -700,6 +752,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
 
     if (!visible) {
       registerTerminalSend(null);
+      markAttachPending(false);
       return;
     }
 
@@ -707,6 +760,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       terminal.clear();
       terminal.write('\r\n  Select an agent to view its terminal.\r\n');
       currentTmuxRef.current = null;
+      markAttachPending(false);
       return;
     }
 
@@ -717,6 +771,21 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     if (tmuxName !== currentTmuxRef.current) {
       currentTmuxRef.current = tmuxName;
     }
+
+    // R3: gate input + show chrome until first PTY paint of this attach.
+    const attachId = newAttachId();
+    attachMetaRef.current = {
+      attachId,
+      serverStrategy: null,
+      seedCacheHit: null,
+      recoveryUsed: null,
+      serverTotalMs: null,
+      serverResizeWaitMs: null,
+      serverCaptureMs: null,
+      serverReconstructMs: null,
+    };
+    markAttachPending(true);
+    registerTerminalSend(null);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/terminal/${encodeURIComponent(tmuxName)}`;
@@ -735,9 +804,64 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     const attachStartedAt = performance.now();
     let wsOpenAt: number | null = null;
     let firstByteAt: number | null = null;
-    let firstPaintRecorded = false;
+    let firstPaintAt: number | null = null;
+    let firstPaintByteLength: number | null = null;
+    let firstPaintTelemetryFlushed = false;
+    let firstPaintTelemetryTimer: number | null = null;
     /** Reset xterm once, immediately before the first write of this attach. */
     let pendingInitialReset = true;
+    /** clientWarm: same session re-attach (retained cells are this session). */
+    const clientWarm = previousSessionId === tmuxName;
+
+    function flushFirstPaintTelemetry() {
+      if (firstPaintTelemetryFlushed || firstPaintAt === null) return;
+      firstPaintTelemetryFlushed = true;
+      if (firstPaintTelemetryTimer !== null) {
+        window.clearTimeout(firstPaintTelemetryTimer);
+        firstPaintTelemetryTimer = null;
+      }
+      const meta = attachMetaRef.current;
+      const seedHit = meta?.seedCacheHit === true;
+      const warmLabel: 'warm' | 'cold' = (clientWarm || seedHit) ? 'warm' : 'cold';
+      track({
+        type: 'terminal_switch_latency',
+        attachId: meta?.attachId ?? attachId,
+        fromSessionId: previousSessionId,
+        toSessionId: tmuxName,
+        agentType: absoluteTuiRef.current ? 'grok-build' : (agentType ?? null),
+        clientWarm,
+        warmLabel,
+        serverStrategy: meta?.serverStrategy ?? null,
+        seedCacheHit: meta?.seedCacheHit ?? null,
+        recoveryUsed: meta?.recoveryUsed ?? null,
+        serverTotalMs: meta?.serverTotalMs ?? null,
+        serverResizeWaitMs: meta?.serverResizeWaitMs ?? null,
+        serverCaptureMs: meta?.serverCaptureMs ?? null,
+        serverReconstructMs: meta?.serverReconstructMs ?? null,
+        selectionToOpenMs: wsOpenAt === null
+          ? null
+          : Math.round((wsOpenAt - attachStartedAt) * 100) / 100,
+        selectionToFirstByteMs: firstByteAt === null
+          ? null
+          : Math.round((firstByteAt - attachStartedAt) * 100) / 100,
+        selectionToFirstPaintMs: Math.round((firstPaintAt - attachStartedAt) * 100) / 100,
+        openToFirstByteMs: wsOpenAt === null || firstByteAt === null
+          ? null
+          : Math.round((firstByteAt - wsOpenAt) * 100) / 100,
+        firstByteBytes: firstPaintByteLength,
+        reconnect: previousSessionId === tmuxName,
+      });
+    }
+
+    function scheduleFirstPaintTelemetry() {
+      if (firstPaintTelemetryFlushed) return;
+      // Brief wait so attach_timing that follows the seed/replay can join.
+      if (firstPaintTelemetryTimer !== null) return;
+      firstPaintTelemetryTimer = window.setTimeout(() => {
+        firstPaintTelemetryTimer = null;
+        flushFirstPaintTelemetry();
+      }, 80);
+    }
 
     const controller = createReconnectingSocket<WebSocket>({
       createSocket: () => {
@@ -758,12 +882,15 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         pendingInitialReset = true;
         notifiedOutage = false;
         wsOpenAt = performance.now();
+        // Reconnect path: re-gate until first paint of the new socket.
+        markAttachPending(true);
+        registerTerminalSend(null);
         if (!visibleRef.current) {
-          registerTerminalSend(null);
           return;
         }
         // Send initial size immediately so SessionBridge can size-gate ring
         // replay / live-redraw before dumping historical absolute-position frames.
+        // Include attachId so server terminal_bridge_timing shares the join key.
         const fitAddon = fitAddonRef.current;
         const terminalForSize = terminalRef.current;
         if (fitAddon) {
@@ -776,17 +903,47 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
             if (absoluteTuiRef.current && terminalForSize) {
               terminalForSize.resize(resize.cols, resize.rows);
             }
-            ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+            ws.send(JSON.stringify({
+              type: 'resize',
+              cols: resize.cols,
+              rows: resize.rows,
+              attachId,
+            }));
+          } else {
+            // Still announce attachId when FitAddon has no dims yet.
+            ws.send(JSON.stringify({ type: 'resize', cols: 80, rows: 24, attachId }));
           }
+        } else {
+          ws.send(JSON.stringify({ type: 'resize', cols: 80, rows: 24, attachId }));
         }
       },
-      // Register send function so global shortcuts can write only when this
-      // terminal is actually visible. Done here rather than in onOpen because
-      // the connection counts as established only after onOpen returns.
+      // Do not unlock send on bare WS open — wait for first PTY paint (R3).
       onEstablished: () => {
         registerVisibleTerminalSend();
       },
       onMessage: (event) => {
+        // Server attach_timing control frame (text JSON) — not PTY output.
+        if (typeof event.data === 'string') {
+          const timing = parseAttachTimingControl(event.data);
+          if (timing) {
+            const prev = attachMetaRef.current;
+            attachMetaRef.current = {
+              // Prefer client attachId for join; adopt server only if we never set one.
+              attachId: prev?.attachId ?? timing.attachId ?? attachId,
+              serverStrategy: timing.serverStrategy ?? prev?.serverStrategy ?? null,
+              seedCacheHit: timing.seedCacheHit ?? prev?.seedCacheHit ?? null,
+              recoveryUsed: timing.recoveryUsed ?? prev?.recoveryUsed ?? null,
+              serverTotalMs: timing.serverTotalMs ?? prev?.serverTotalMs ?? null,
+              serverResizeWaitMs: timing.serverResizeWaitMs ?? prev?.serverResizeWaitMs ?? null,
+              serverCaptureMs: timing.serverCaptureMs ?? prev?.serverCaptureMs ?? null,
+              serverReconstructMs: timing.serverReconstructMs ?? prev?.serverReconstructMs ?? null,
+            };
+            // If paint already happened, flush once strategy arrives.
+            if (firstPaintAt !== null) flushFirstPaintTelemetry();
+            return;
+          }
+        }
+
         if (pendingInitialReset) {
           // Drop the previous session's cells immediately before the new seed
           // lands so we never composite two agents' frames.
@@ -816,27 +973,14 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
             terminal.write(event.data);
           }
         }, { byteLength });
-        if (!firstPaintRecorded) {
-          firstPaintRecorded = true;
-          const paintedAt = performance.now();
-          track({
-            type: 'terminal_switch_latency',
-            fromSessionId: previousSessionId,
-            toSessionId: tmuxName,
-            agentType: absoluteTuiRef.current ? 'grok-build' : (agentType ?? null),
-            selectionToOpenMs: wsOpenAt === null
-              ? null
-              : Math.round((wsOpenAt - attachStartedAt) * 100) / 100,
-            selectionToFirstByteMs: firstByteAt === null
-              ? null
-              : Math.round((firstByteAt - attachStartedAt) * 100) / 100,
-            selectionToFirstPaintMs: Math.round((paintedAt - attachStartedAt) * 100) / 100,
-            openToFirstByteMs: wsOpenAt === null || firstByteAt === null
-              ? null
-              : Math.round((firstByteAt - wsOpenAt) * 100) / 100,
-            firstByteBytes: byteLength ?? null,
-            reconnect: previousSessionId === tmuxName,
-          });
+        if (firstPaintAt === null) {
+          firstPaintAt = performance.now();
+          firstPaintByteLength = byteLength ?? null;
+          // Unlock input only after the new session's first paint (R3).
+          markAttachPending(false);
+          registerVisibleTerminalSend();
+          // Prefer attach_timing join when it arrives next; fall back after 80ms.
+          scheduleFirstPaintTelemetry();
         }
         scheduleJumpLatest(newLineCount);
       },
@@ -844,10 +988,12 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         registerTerminalSend(null);
         if (SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1)) {
           // The PTY exited or the backend session is gone — show feedback.
+          markAttachPending(false);
           terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
         } else if (!notifiedOutage) {
           // Say it once per outage; retries continue silently in the background.
           notifiedOutage = true;
+          markAttachPending(true);
           terminal.write(wasEstablished
             ? '\r\n\x1b[90m  Terminal connection lost — reconnecting…\x1b[0m\r\n'
             : '\r\n\x1b[90m  Could not connect to terminal — retrying…\x1b[0m\r\n');
@@ -857,7 +1003,8 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     controllerRef.current = controller;
     controller.start();
 
-    // Terminal input → WebSocket
+    // Terminal input → WebSocket. Empty-Enter task navigation stays available
+    // during pending attach; PTY keystrokes are blocked until first paint (R3).
     const inputDisposable = terminal.onData((data) => {
       if (!visibleRef.current) return;
       if (
@@ -871,6 +1018,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         onEmptySubmitRef.current();
         return;
       }
+      if (attachPendingRef.current) return;
       terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
       controller.send(data);
     });
@@ -900,6 +1048,12 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
 
     return () => {
       registerTerminalSend(null);
+      if (firstPaintTelemetryTimer !== null) {
+        window.clearTimeout(firstPaintTelemetryTimer);
+        firstPaintTelemetryTimer = null;
+      }
+      // Flush pending sample on unmount so switches mid-wait are not lost.
+      flushFirstPaintTelemetry();
       if (resizeDebounceTimer !== null) {
         window.clearTimeout(resizeDebounceTimer);
         resizeDebounceTimer = null;
@@ -908,6 +1062,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       resizeDisposable.dispose();
       controller.stop();
       controllerRef.current = null;
+      markAttachPending(false);
     };
   }, [tmuxName, visible]);
 
@@ -1007,6 +1162,16 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         className={`terminal-xterm${usesAbsoluteTuiGeometry(agentType) ? ' terminal-xterm--absolute-tui' : ''}`}
         ref={containerRef}
       />
+      {attachPending && (
+        <div
+          className="terminal-attach-pending"
+          role="status"
+          aria-live="polite"
+          data-testid="terminal-attach-pending"
+        >
+          Connecting to session…
+        </div>
+      )}
       {jumpLatest.visible && (
         <button
           type="button"

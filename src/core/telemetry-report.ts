@@ -1,5 +1,23 @@
 import { TELEMETRY_EVENT_TYPES, type TelemetryEvent } from './telemetry.js';
 
+export interface TerminalLatencyPercentiles {
+  sampleCount: number;
+  p50FirstPaintMs: number | null;
+  p95FirstPaintMs: number | null;
+  maxFirstPaintMs: number | null;
+  meanFirstPaintMs: number | null;
+  subSecondRate: number | null;
+}
+
+/** One stratified attach-latency slice (warm|cold × agentType × strategy). */
+export interface TerminalAttachLatencyStratum extends TerminalLatencyPercentiles {
+  /** Join key for operators: warm|cold × agentType × strategy. */
+  key: string;
+  warm: 'warm' | 'cold';
+  agentType: string;
+  strategy: string;
+}
+
 export interface TelemetryReport {
   totalEvents: number;
   timeRange: { first: string; last: string } | null;
@@ -40,16 +58,14 @@ export interface TelemetryReport {
   };
   /**
    * Terminal attach latency after task switch (client `terminal_switch_latency`).
-   * Percentiles over `selectionToFirstPaintMs` so operators can track the
-   * sub-second attach goal without scraping raw JSONL.
+   * Blended percentiles plus stratified p50/p95 by warm|cold × agentType ×
+   * strategy so class SLOs are operable without log forensics (RFC Phase 0.0).
    */
-  terminalSwitchLatencyMetrics: {
-    sampleCount: number;
-    p50FirstPaintMs: number | null;
-    p95FirstPaintMs: number | null;
-    maxFirstPaintMs: number | null;
-    meanFirstPaintMs: number | null;
-    subSecondRate: number | null;
+  terminalSwitchLatencyMetrics: TerminalLatencyPercentiles & {
+    /** Fraction of samples with recoveryUsed=true; null when no samples. */
+    recoveryRate: number | null;
+    /** Stratified slices for go/no-go (warm|cold × agentType × strategy). */
+    byClass: TerminalAttachLatencyStratum[];
   };
 }
 
@@ -63,6 +79,16 @@ function computeNonMruRate(counts: Record<string, number>): number | null {
     if (method === 'typed' || method === 'paste') nonMru += count;
   }
   return total > 0 ? nonMru / total : null;
+}
+
+/** Resolve warm|cold from client event fields (seed hit or client warm). */
+export function resolveAttachWarmLabel(event: TelemetryEvent | Record<string, unknown>): 'warm' | 'cold' {
+  const warmLabel = event['warmLabel'];
+  if (warmLabel === 'warm' || warmLabel === 'cold') {
+    return warmLabel;
+  }
+  if (event['clientWarm'] === true || event['seedCacheHit'] === true) return 'warm';
+  return 'cold';
 }
 
 export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryReport {
@@ -86,6 +112,9 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   const launchDwells: number[] = [];
   const cwdFieldMethodCounts: Record<string, number> = {};
   const terminalFirstPaintMs: number[] = [];
+  let terminalRecoveryUsed = 0;
+  /** Samples bucketed for stratified p50/p95. */
+  const terminalByClass = new Map<string, number[]>();
 
   for (const event of events) {
     // Count all event types
@@ -165,7 +194,23 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
           && Number.isFinite(event.selectionToFirstPaintMs)
           && event.selectionToFirstPaintMs >= 0
         ) {
-          terminalFirstPaintMs.push(event.selectionToFirstPaintMs);
+          const ms = event.selectionToFirstPaintMs;
+          terminalFirstPaintMs.push(ms);
+          if (event.recoveryUsed === true) terminalRecoveryUsed++;
+
+          const warm = resolveAttachWarmLabel(event);
+          const agentType = typeof event.agentType === 'string' && event.agentType.length > 0
+            ? event.agentType
+            : 'unknown';
+          const strategy = typeof event.serverStrategy === 'string' && event.serverStrategy.length > 0
+            ? event.serverStrategy
+            : (typeof event.strategy === 'string' && event.strategy.length > 0
+              ? event.strategy
+              : 'unknown');
+          const classKey = `${warm}|${agentType}|${strategy}`;
+          const bucket = terminalByClass.get(classKey);
+          if (bucket) bucket.push(ms);
+          else terminalByClass.set(classKey, [ms]);
         }
         break;
       }
@@ -191,6 +236,24 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   const avgDwellMs = launchDwells.length > 0
     ? launchDwells.reduce((a, b) => a + b, 0) / launchDwells.length
     : null;
+
+  const blended = summarizeTerminalSwitchLatency(terminalFirstPaintMs);
+  const recoveryRate = blended.sampleCount > 0
+    ? terminalRecoveryUsed / blended.sampleCount
+    : null;
+
+  const byClass: TerminalAttachLatencyStratum[] = [...terminalByClass.entries()]
+    .map(([key, samples]) => {
+      const [warm, agentType, strategy] = key.split('|') as ['warm' | 'cold', string, string];
+      return {
+        key,
+        warm,
+        agentType,
+        strategy,
+        ...summarizeTerminalSwitchLatency(samples),
+      };
+    })
+    .sort((a, b) => b.sampleCount - a.sampleCount || a.key.localeCompare(b.key));
 
   return {
     totalEvents: events.length,
@@ -227,11 +290,15 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
       highestSwitchRate: highestSelectionSwitchRate,
       sourceBreakdown: selectionFlickerSources,
     },
-    terminalSwitchLatencyMetrics: summarizeTerminalSwitchLatency(terminalFirstPaintMs),
+    terminalSwitchLatencyMetrics: {
+      ...blended,
+      recoveryRate,
+      byClass,
+    },
   };
 }
 
-function summarizeTerminalSwitchLatency(samples: number[]): TelemetryReport['terminalSwitchLatencyMetrics'] {
+function summarizeTerminalSwitchLatency(samples: number[]): TerminalLatencyPercentiles {
   if (samples.length === 0) {
     return {
       sampleCount: 0,
