@@ -220,4 +220,34 @@ describe('CircuitBreakerGitHubFetcher', () => {
     expect(inner.inferOwnerRepo).toHaveBeenCalledExactlyOnceWith('/repo');
     breaker.dispose();
   });
+
+  it('opens the breaker when batched fetchStates throws (issue #1940)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const prRef = makeRef('pr', 42);
+    const issueRef = makeRef('issue', 7);
+    const batchError = new AggregateError(
+      [new Error('repo a failed'), new Error('repo b failed')],
+      'Failed to fetch GitHub state for all 2 repo group(s)',
+    );
+    const inner = makeInner({
+      fetchStates: vi.fn(async () => {
+        throw batchError;
+      }),
+    });
+    const breaker = makeBreaker();
+    const fetcher = new CircuitBreakerGitHubFetcher(inner, breaker);
+
+    // Wrapper degrades to empty batch; breaker still records the failure.
+    await expect(fetcher.fetchStates([prRef, issueRef])).resolves.toEqual({ prs: [], issues: [] });
+    expect(breaker.getState()).toBe('open');
+    expect(inner.fetchStates).toHaveBeenCalledTimes(1);
+
+    // Subsequent call is short-circuited by the open breaker.
+    await expect(fetcher.fetchStates([prRef, issueRef])).resolves.toEqual({ prs: [], issues: [] });
+    expect(inner.fetchStates).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[github] Circuit breaker open — skipping batched fetch for 2 references',
+    );
+    breaker.dispose();
+  });
 });

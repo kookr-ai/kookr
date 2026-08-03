@@ -20,10 +20,15 @@ vi.mock('node:child_process', () => {
   };
 });
 
-const { fetchBatchRepoHealth, fetchStates } = await import('./github-fetcher.js');
+const {
+  fetchBatchRepoHealth,
+  fetchStates,
+  resetFetchStateFailureThrottleForTests,
+} = await import('./github-fetcher.js');
 
 afterEach(() => {
   vi.useRealTimers();
+  resetFetchStateFailureThrottleForTests();
 });
 
 function ref(type: GitHubReference['type'], number: number): GitHubReference {
@@ -317,6 +322,75 @@ x-ratelimit-reset: ${Date.parse('2026-06-18T00:07:00.000Z') / 1000}
       retryAfterMs: 420_000,
       message: 'x-ratelimit-remaining: 0',
     });
+  });
+
+  it('rethrows when every repo group fails a non-rate-limit error (issue #1940)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    childProcessMocks.execFilePromisified.mockRejectedValue(
+      new Error('Could not resolve to a Repository with the name acme/app'),
+    );
+
+    const otherRepo = { ...ref('issue', 8), owner: 'octo', repo: 'widgets' };
+    await expect(fetchStates([ref('issue', 7), otherRepo])).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(AggregateError);
+      const aggregate = err as AggregateError;
+      expect(aggregate.message).toMatch(/all 2 repo group/);
+      expect(aggregate.errors).toHaveLength(2);
+      return true;
+    });
+
+    expect(errorSpy).toHaveBeenCalledTimes(2);
+    errorSpy.mockRestore();
+  });
+
+  it('returns partial results when some repo groups succeed (issue #1940)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const successBody = {
+      data: {
+        repository: {
+          issue_7: {
+            title: 'Partial success',
+            state: 'OPEN',
+            author: { login: 'alice' },
+            labels: { nodes: [] },
+            comments: { totalCount: 0 },
+          },
+        },
+      },
+    };
+    childProcessMocks.execFilePromisified
+      .mockResolvedValueOnce({ stdout: JSON.stringify(successBody), stderr: '' })
+      .mockRejectedValueOnce(new Error('Could not resolve to a Repository with the name octo/widgets'));
+
+    const otherRepo = { ...ref('issue', 8), owner: 'octo', repo: 'widgets' };
+    const result = await fetchStates([ref('issue', 7), otherRepo]);
+
+    expect(result.issues).toMatchObject([{ title: 'Partial success', status: 'open' }]);
+    expect(result.prs).toEqual([]);
+    expect(result.rateLimit).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    errorSpy.mockRestore();
+  });
+
+  it('throttles repeated per-repo failure logs with a running count (issue #1940)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    childProcessMocks.execFilePromisified.mockRejectedValue(
+      new Error('Could not resolve to a Repository with the name acme/app'),
+    );
+
+    for (let i = 0; i < 10; i++) {
+      await expect(fetchStates([ref('issue', 7)])).rejects.toBeInstanceOf(AggregateError);
+    }
+
+    // Logged on 1st and 10th consecutive failure only.
+    expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(errorSpy.mock.calls[0]![0]).toBe(
+      'Failed to fetch GitHub state batch for acme/app:',
+    );
+    expect(errorSpy.mock.calls[1]![0]).toBe(
+      'Failed to fetch GitHub state batch for acme/app (x10):',
+    );
+    errorSpy.mockRestore();
   });
 
   it('returns a repo-health rateLimit from GraphQL errors', async () => {
