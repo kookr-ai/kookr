@@ -168,6 +168,8 @@ export class PipelineStarvationService {
       alertSkipReason: decision.alertSkipReason ?? null,
       consecutiveBlockedEmpty: decision.consecutiveBlockedEmpty,
       openIssueCount: outcome.openIssueCount ?? null,
+      starvationClass: decision.starvationClass ?? null,
+      followOnAction: decision.followOnAction ?? null,
       ...decisionInputs,
       at: new Date(nowMs).toISOString(),
     });
@@ -462,7 +464,9 @@ export class PipelineStarvationService {
         repoFullName: outcome.repo,
         localPath: localPath || '',
         workProfile: 'balanced',
-        workloadSize: 'full-day',
+        // PR3: starvation refill uses quick-shortlist (valid enum) rather than
+        // full-day — overnight top-up, not a full dual-daily scout.
+        workloadSize: 'quick-shortlist',
         // Publish safe ideas so the batch engine has real issues to pick up —
         // matching the production Lucy twice-daily scout schedule defaults.
         publishBehavior: 'publish-safe',
@@ -471,7 +475,8 @@ export class PipelineStarvationService {
         extraInstruction:
           `On-demand refill triggered by parallel-issue-batch blocked-empty `
           + `(runKey=${outcome.runKey}, provenance=${STARVATION_TRIGGER_PROVENANCE}). `
-          + `Prior open issues were all disqualified: ${summarizeDisqualifiers(outcome.disqualified)}.`,
+          + `Prior open issues were all disqualified: ${summarizeDisqualifiers(outcome.disqualified)}. `
+          + `Prefer single-PR-safe leaves, not umbrella/tracking issues.`,
       },
       taskTargetCwd,
       taskTargetCwdExplicit: true,
