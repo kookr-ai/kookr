@@ -2976,6 +2976,25 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/github/status (issue #1947)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/github/status', () => {
+    test('returns the enriched scanner snapshot while keeping active', async () => {
+      const snapshot = {
+        active: true,
+        stateFetchBackoffMs: 1200,
+        repoHealthBackoffMs: 0,
+        trackedRefCount: 3,
+      };
+      const githubScanner = { getStatusSnapshot: vi.fn(() => snapshot) };
+      const res = await mkApp({ githubScanner: githubScanner as never }).request('/api/github/status');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(snapshot);
+      expect(githubScanner.getStatusSnapshot).toHaveBeenCalledOnce();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/github/:taskId and GET /api/github
   // ---------------------------------------------------------------------------
   describe('GET /api/github/:taskId', () => {

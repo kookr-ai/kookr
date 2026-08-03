@@ -43,6 +43,17 @@ export interface NonCriticalTickPauseHook {
   recordPause(timerName: string): void;
 }
 
+/** Public operator snapshot of GitHub scanner liveness (issue #1947). */
+export interface GitHubScannerStatusSnapshot {
+  active: boolean;
+  /** Remaining ms until state-fetch rate-limit backoff clears (0 when not limited). */
+  stateFetchBackoffMs: number;
+  /** Remaining ms until repo-health rate-limit backoff clears (0 when not limited). */
+  repoHealthBackoffMs: number;
+  /** Number of PR/issue references currently tracked in the state store. */
+  trackedRefCount: number;
+}
+
 export interface GitHubScannerDeps {
   taskStore: TaskStore;
   stateStore: GitHubStateStore;
@@ -232,6 +243,20 @@ export class GitHubScannerService {
   /** Whether the gh CLI is available and scanning is active. */
   isActive(): boolean {
     return this.ghAvailable && this.scanInterval !== null;
+  }
+
+  /**
+   * Operator/API snapshot of scanner liveness, remaining rate-limit backoff,
+   * and tracked PR/issue reference count (issue #1947).
+   */
+  getStatusSnapshot(): GitHubScannerStatusSnapshot {
+    const now = Date.now();
+    return {
+      active: this.isActive(),
+      stateFetchBackoffMs: Math.max(0, this.stateFetchRateLimitedUntilMs - now),
+      repoHealthBackoffMs: Math.max(0, this.repoHealthRateLimitedUntilMs - now),
+      trackedRefCount: this.stateStore.getAllReferences().length,
+    };
   }
 
   /** Get the state store (for API endpoints). */

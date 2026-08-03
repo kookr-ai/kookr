@@ -127,8 +127,9 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
-    expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
+    expect(script).toContain('spawn signal issue doctor status github logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
+    expect(script).toContain('compgen -W "spawn signal issue doctor status github logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
+    expect(script).toContain('compgen -W "status --json -h --help"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
@@ -151,7 +152,8 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
+    expect(script).toContain('root_commands=(spawn signal issue doctor status github logs command ralph schedule drain resume maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
+    expect(script).toContain('compadd -- status --json -h --help');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
