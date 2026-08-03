@@ -756,10 +756,16 @@ export class GrokBuildAdapter implements AgentAdapter {
       }
       if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
       // Re-check busy after the retry window — Grok may have started
-      // streaming without emitting the hook.
+      // streaming without emitting the hook. Permission menus are "busy"
+      // for Enter safety but must still fail closed (same as mid-busy /
+      // final assumed-submit paths).
       try {
         display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
         if (isGrokBusyOrResponding(display)) {
+          const afterRetryPermission = detectGrokPermissionPromptUI(display);
+          if (afterRetryPermission) {
+            throw new Error(this.formatUnconfirmedPromptError(afterRetryPermission, display));
+          }
           console.warn(
             `[grok-build-adapter] assuming initial prompt submitted for ${tmuxName}: ` +
               `pane became busy after handshake retry ${attempt + 1}; ` +
@@ -767,8 +773,9 @@ export class GrokBuildAdapter implements AgentAdapter {
           );
           return;
         }
-      } catch {
-        /* keep prior display */
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('[grok-build-adapter]')) throw err;
+        /* keep prior display on capture failure */
       }
       console.warn(
         `[grok-build-adapter] handshake retry ${attempt + 1}/${this.handshakeRetries} ` +
