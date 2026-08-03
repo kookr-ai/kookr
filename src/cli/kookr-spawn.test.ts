@@ -681,9 +681,9 @@ describe('resolveBaseUrl', () => {
         log: (msg) => logs.push(msg),
       });
       expect(r.kind).toBe('none');
-      // 2 health sweeps × 2 ports + 1 deploy sweep × 2 ports
+      // 2 health sweeps × 2 ports; deploy re-probed each sweep while budget is default
       expect(healthHits).toBe(4);
-      expect(deployHits).toBe(2);
+      expect(deployHits).toBe(4);
       expect(sleeps).toEqual([3000]);
       expect(logs).toEqual([]);
     } finally {
@@ -740,9 +740,48 @@ describe('resolveBaseUrl', () => {
       expect(r).toMatchObject({ port: 4800 });
       // Default budget alone would have stopped after 2 attempts / 1 sleep.
       // Extended redeploy budget keeps probing until health recovers.
-      expect(sleeps.length).toBeGreaterThan(1);
-      expect(healthSweeps).toBeGreaterThanOrEqual(4);
-      expect(logs.some((l) => /waiting for redeploy/.test(l))).toBe(true);
+      expect(sleeps.length).toBe(3);
+      expect(healthSweeps).toBe(4);
+      expect(logs).toEqual([
+        expect.stringMatching(/waiting for redeploy \(deploying; budget 45000ms\)/),
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when deploying and health stays down, exits after the extended budget (#1975)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/deploy/status') && url.includes(':4800/')) {
+        return {
+          ok: true,
+          json: async () => ({ deploying: true }),
+        } as Response;
+      }
+      throw new Error('ECONNREFUSED');
+    });
+    let clock = 0;
+    const sleeps: number[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '2' },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+        log: () => {},
+      });
+      expect(r.kind).toBe('none');
+      // Extended budget is 45000ms with 3000ms sleeps → 15 sleeps after first fail.
+      // Loop continues while elapsed < 45000; after sleep that reaches 45000, next
+      // check stops. attempts start at 1; sleeps while under budget.
+      expect(sleeps.length).toBe(15);
+      expect(clock).toBe(45_000);
+      if (r.kind === 'none') {
+        expect(r.attempts).toBe(16);
+      }
     } finally {
       fetchSpy.mockRestore();
     }
@@ -763,6 +802,33 @@ describe('resolveBaseUrl', () => {
       expect(r.kind).toBe('none');
       expect(sleeps).toEqual([3000]);
       expect(logs).toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when status is down with KOOKR_SPAWN_REDEPLOY_WAIT_MS, extends budget (#1975)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    let clock = 0;
+    const logs: string[] = [];
+    const sleeps: number[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: {
+          KOOKR_SPAWN_CONNECT_RETRIES: '1',
+          KOOKR_SPAWN_REDEPLOY_WAIT_MS: '9000',
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+        log: (msg) => logs.push(msg),
+      });
+      expect(r.kind).toBe('none');
+      // retries=1 default budget is 0 sleeps; env extends to 9000 → 3 sleeps.
+      expect(sleeps).toEqual([3000, 3000, 3000]);
+      expect(logs.some((l) => /env_fallback/.test(l))).toBe(true);
     } finally {
       fetchSpy.mockRestore();
     }
@@ -816,6 +882,27 @@ describe('probeDeployStatus', () => {
         deploying: true,
         lastRestartAt: '2026-08-03T12:00:00.000Z',
       });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns null when body omits deploying (error-shaped status)', async () => {
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/deploy/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ configured: true, error: 'git fetch failed' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      await expect(probeDeployStatus(baseUrl, 1500)).resolves.toBeNull();
     } finally {
       await closeServer(server);
     }

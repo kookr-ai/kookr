@@ -28,6 +28,10 @@ const MAX_RETRIES = 10;
 const DEFAULT_REDEPLOY_WAIT_MS = 45_000;
 const RECENT_RESTART_WINDOW_MS = 60_000;
 const MAX_REDEPLOY_WAIT_MS = 300_000;
+// /api/deploy/status runs git fetch + rev-parse work before returning; a
+// live prod probe commonly takes 2–5s, so reusing PROBE_TIMEOUT_MS (1.5s)
+// would always treat a live deploying server as unreachable (#1975 review).
+const DEPLOY_STATUS_TIMEOUT_MS = 15_000;
 const POST_TIMEOUT_MS = 10_000;
 // #1591: ambiguous-outcome reconciliation. A POST that times out (client abort
 // at POST_TIMEOUT_MS) or returns a 5xx leaves the task's existence unknown — it
@@ -678,7 +682,7 @@ async function probeHealth(baseUrl, timeoutMs) {
  *
  * @returns {Promise<{ deploying: boolean, lastRestartAt: string | null } | null>}
  */
-async function probeDeployStatus(baseUrl, timeoutMs) {
+async function probeDeployStatus(baseUrl, timeoutMs = DEPLOY_STATUS_TIMEOUT_MS) {
   try {
     const res = await fetch(`${baseUrl}/api/deploy/status`, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -686,8 +690,12 @@ async function probeDeployStatus(baseUrl, timeoutMs) {
     if (!res.ok) return null;
     const body = await res.json();
     if (body === null || typeof body !== 'object') return null;
+    // Error-shaped 200s (git fetch failed, etc.) may omit `deploying`. Treat
+    // that as unknown (null) so env-fallback can still apply — do not invent
+    // "not deploying" from a missing field.
+    if (typeof body.deploying !== 'boolean') return null;
     return {
-      deploying: body.deploying === true,
+      deploying: body.deploying,
       lastRestartAt:
         typeof body.lastRestart === 'string' && body.lastRestart.length > 0
           ? body.lastRestart
@@ -704,7 +712,10 @@ async function probeDeployStatus(baseUrl, timeoutMs) {
  * Probe deploy status on every auto-detect port. Prefer a response that
  * reports deploying=true; otherwise the first reachable status; else null.
  */
-async function probeDeployStatusAny(ports = PORTS_TO_TRY, timeoutMs = PROBE_TIMEOUT_MS) {
+async function probeDeployStatusAny(
+  ports = PORTS_TO_TRY,
+  timeoutMs = DEPLOY_STATUS_TIMEOUT_MS,
+) {
   const results = await Promise.all(
     ports.map((port) => probeDeployStatus(`http://127.0.0.1:${port}`, timeoutMs)),
   );
@@ -755,7 +766,6 @@ async function resolveBaseUrl({
     deploying: false,
     redeployWaitMsEnv: env.KOOKR_SPAWN_REDEPLOY_WAIT_MS,
   });
-  let statusChecked = false;
   let attempts = 0;
 
   while (true) {
@@ -772,19 +782,20 @@ async function resolveBaseUrl({
 
     attempts += 1;
 
-    // Once per resolve: ask deploy/status whether a redeploy blackout is
-    // intentional so we can extend past the default retry budget.
-    if (!statusChecked) {
-      statusChecked = true;
-      const status = await probeDeployStatusAny(PORTS_TO_TRY, PROBE_TIMEOUT_MS);
-      selected = selectProbeWaitBudget({
+    // While still on the default budget, re-probe deploy/status each sweep so
+    // a slow first probe or a late `deploying: true` can still extend wait.
+    // Once extended, keep the chosen budget (do not shrink mid-loop).
+    if (selected.reason === 'default') {
+      const status = await probeDeployStatusAny(PORTS_TO_TRY, DEPLOY_STATUS_TIMEOUT_MS);
+      const next = selectProbeWaitBudget({
         defaultBudgetMs: defaultProbeBudgetMs(retries),
         deploying: status === null ? null : status.deploying,
         lastRestartAt: status?.lastRestartAt ?? null,
         nowMs: now(),
         redeployWaitMsEnv: env.KOOKR_SPAWN_REDEPLOY_WAIT_MS,
       });
-      if (selected.reason !== 'default') {
+      if (next.reason !== 'default') {
+        selected = next;
         log(
           `kookr spawn: waiting for redeploy (${selected.reason}; budget ${selected.budgetMs}ms)...`,
         );
@@ -2408,6 +2419,7 @@ export {
   resolvePrompt,
   waitForTaskReady,
   DEFAULT_REDEPLOY_WAIT_MS,
+  DEPLOY_STATUS_TIMEOUT_MS,
   RECENT_RESTART_WINDOW_MS,
   PROBE_TIMEOUT_MS,
   RETRY_DELAY_MS,

@@ -88,6 +88,7 @@ export interface DeployStatusProbe {
 }
 
 export const DEFAULT_REDEPLOY_WAIT_MS: number;
+export const DEPLOY_STATUS_TIMEOUT_MS: number;
 export const RECENT_RESTART_WINDOW_MS: number;
 export const PROBE_TIMEOUT_MS: number;
 export const RETRY_DELAY_MS: number;
