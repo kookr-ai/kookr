@@ -1148,7 +1148,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
   });
 
-  app.get('/api/github/status', (c) => c.json({ active: githubScanner.isActive() }));
+  // Enriched snapshot keeps `active` for back-compat (issue #1947).
+  app.get('/api/github/status', (c) => c.json(githubScanner.getStatusSnapshot()));
 
   app.get('/api/github/:taskId', (c) => {
     const taskId = c.req.param('taskId');

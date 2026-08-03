@@ -14,6 +14,7 @@ Usage:
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
+  kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
@@ -100,6 +101,13 @@ async function main({
   if (command === 'status') {
     const { main: runStatusCli } = await import('./kookr-status.js');
     return runStatusCli({ argv: rest, env, out, exit });
+  }
+
+  // GitHub scanner status (issue #1947). Thin HTTP client against
+  // /api/github/status — dispatches here rather than booting a server.
+  if (command === 'github') {
+    await runGithubCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   if (command === 'ralph') {
@@ -382,6 +390,21 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
+}
+
+async function runGithubCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-github.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-github.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] github module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runGithubCli(argv, { env, out, err });
 }
 
 async function runContextPackCommand(argv, { env = process.env, out = console, err = console } = {}) {

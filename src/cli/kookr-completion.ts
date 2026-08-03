@@ -95,6 +95,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    name: 'github',
+    subcommands: ['status'],
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'logs',
     flags: ['-n', '--lines', '--json', '--dir', '-h', '--help'],
   },
@@ -361,6 +366,8 @@ function renderBashCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const githubSubcommands = subcommandsFor('github');
+  const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
   const issueFlags = flagsFor('issue');
   const logsFlags = flagsFor('logs');
@@ -479,6 +486,13 @@ _kookr()
       ;;
     status)
       COMPREPLY=( $(compgen -W "${statusFlags}" -- "\${cur}") )
+      ;;
+    github)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${githubSubcommands} ${githubFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${githubFlags}" -- "\${cur}") )
+      fi
       ;;
     doctor)
       COMPREPLY=( $(compgen -W "${doctorFlags}" -- "\${cur}") )
@@ -638,6 +652,8 @@ function renderZshCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const githubSubcommands = subcommandsFor('github');
+  const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
   const issueFlags = flagsFor('issue');
   const logsFlags = flagsFor('logs');
@@ -724,6 +740,13 @@ _kookr()
         --fail-on) compadd ${statusFailOnValues}; return ;;
       esac
       compadd -- ${statusFlags}
+      ;;
+    github)
+      if (( CURRENT == 3 )); then
+        compadd -- ${githubSubcommands} ${githubFlags}
+      else
+        compadd -- ${githubFlags}
+      fi
       ;;
     doctor)
       compadd -- ${doctorFlags}

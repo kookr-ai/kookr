@@ -99,6 +99,65 @@ describe('GitHubScannerService', () => {
     });
   });
 
+  describe('getStatusSnapshot() (issue #1947)', () => {
+    it('reports inactive with zero backoffs and zero tracked refs when idle', () => {
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+      });
+      expect(scanner.getStatusSnapshot()).toEqual({
+        active: false,
+        stateFetchBackoffMs: 0,
+        repoHealthBackoffMs: 0,
+        trackedRefCount: 0,
+      });
+    });
+
+    it('reports active, tracked refs, and remaining state-fetch backoff after rate-limit', async () => {
+      const fetcher = createMockFetcher(true);
+      stateStore.addReference({
+        type: 'pr', owner: 'test', repo: 'repo', number: 1,
+        url: 'https://github.com/test/repo/pull/1',
+        taskId: 'task-1', detectedAt: new Date(), detectedFrom: 'agent-1',
+      });
+      stateStore.addReference({
+        type: 'issue', owner: 'test', repo: 'repo', number: 2,
+        url: 'https://github.com/test/repo/issues/2',
+        taskId: 'task-1', detectedAt: new Date(), detectedFrom: 'agent-1',
+      });
+      fetcher.fetchStates = vi.fn().mockResolvedValue({
+        prs: [],
+        issues: [],
+        rateLimit: {
+          kind: 'rate-limited',
+          retryAfterMs: 5_000,
+          message: 'RATE_LIMITED: API rate limit exceeded',
+        },
+      });
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const snap = scanner.getStatusSnapshot();
+      expect(snap.active).toBe(true);
+      expect(snap.trackedRefCount).toBe(2);
+      expect(snap.stateFetchBackoffMs).toBe(5_000);
+      expect(snap.repoHealthBackoffMs).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(scanner.getStatusSnapshot().stateFetchBackoffMs).toBe(3_000);
+    });
+  });
+
   describe('reconfigure()', () => {
     it('updates config and restarts intervals when running', async () => {
       const fetcher = createMockFetcher(true);
