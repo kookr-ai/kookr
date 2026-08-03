@@ -2552,24 +2552,68 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
     });
   });
 
-  describe('live quota-headroom admission (issue #1894)', () => {
+  describe('live quota-headroom admission (issue #1894 / #1936)', () => {
     function quotaDeps(
       store: TaskStore,
       sample: { fiveHour: { utilization: number; resetsAt?: string } | null; sevenDay: { utilization: number; resetsAt?: string } | null } | null,
+      extras: Partial<LaunchServiceDeps> = {},
     ): LaunchServiceDeps {
       return {
         ...makeDeps(store),
         getLiveQuotaHeadroom: vi.fn().mockResolvedValue(sample),
+        ...extras,
       };
     }
 
-    it('denies a claude-code launch when live headroom is exhausted, before any task record', async () => {
+    /** Claude-only registry so rotation has no healthy alternate. */
+    function claudeOnlyDeps(
+      store: TaskStore,
+      sample: { fiveHour: { utilization: number; resetsAt?: string } | null; sevenDay: { utilization: number; resetsAt?: string } | null } | null,
+      extras: Partial<LaunchServiceDeps> = {},
+    ): LaunchServiceDeps {
+      const base = makeDeps(store);
+      const solo = new AdapterRegistry();
+      solo.register(base.adapterRegistry.get('claude-code') as any);
+      return {
+        ...base,
+        adapterRegistry: solo,
+        getLiveQuotaHeadroom: vi.fn().mockResolvedValue(sample),
+        ...extras,
+      };
+    }
+
+    it('rotates to a healthy alternate when plan quota is exhausted (issue #1936)', async () => {
+      const store = new TaskStore();
+      const sample = {
+        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
+        sevenDay: { utilization: 40, resetsAt: '2026-08-09T00:00:00Z' },
+      };
+      const deps = quotaDeps(store, sample);
+      const result = await launchTask(deps, {
+        prompt: 'rotate off exhausted plan',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      expect(result.queued).toBe(false);
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(result.admission).toBe('rotated');
+      expect(result.reason).toBe('plan_quota');
+      expect(result.fromAgent).toBe('claude-code');
+      expect(result.toAgent).toBe('codex-cli');
+      expect(result.maxUtilization).toBe(100);
+      expect(result.threshold).toBe(90);
+      expect(result.resetsAt).toBe('2026-08-04T12:00:00.000Z');
+      expect(store.getTask(result.task.id)?.agentType).toBe('codex-cli');
+      expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies a claude-code launch when plan quota is exhausted and no alternate exists, before any task record', async () => {
       const store = new TaskStore();
       const sample = {
         fiveHour: { utilization: 97, resetsAt: '2026-08-02T18:00:00Z' },
         sevenDay: { utilization: 40, resetsAt: '2026-08-09T00:00:00Z' },
       };
-      const deps = quotaDeps(store, sample);
+      const deps = claudeOnlyDeps(store, sample);
       const before = store.listTasks().length;
       let thrown: unknown;
       try {
@@ -2580,6 +2624,8 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(isQuotaHeadroomAdmissionError(thrown)).toBe(true);
       const err = thrown as QuotaHeadroomAdmissionError;
       expect(err.code).toBe('quota_headroom_admission');
+      expect(err.admission).toBe('rejected');
+      expect(err.reason).toBe('plan_quota');
       expect(err.maxUtilization).toBe(97);
       expect(err.threshold).toBe(90);
       expect(err.resetsAt).toBe('2026-08-02T18:00:00Z');
@@ -2588,6 +2634,81 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
       // A rejected launch must leave no task record behind.
       expect(store.listTasks().length).toBe(before);
+    });
+
+    it('binding-window cache short-circuits further live polls (issue #1936)', async () => {
+      const { PlanQuotaBindingCache } = await import('../core/plan-quota-binding-cache.js');
+      const store = new TaskStore();
+      const cache = new PlanQuotaBindingCache();
+      const sample = {
+        fiveHour: { utilization: 100, resetsAt: '2099-01-01T00:00:00.000Z' },
+        sevenDay: null,
+      };
+      const getter = vi.fn().mockResolvedValue(sample);
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getLiveQuotaHeadroom: getter,
+        planQuotaBindingCache: cache,
+      };
+      // First launch: live poll + rotate.
+      const first = await launchTask(deps, {
+        prompt: 'cache-warm-1',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        disableDedup: true,
+      });
+      expect(first.admission).toBe('rotated');
+      expect(getter).toHaveBeenCalledTimes(1);
+      // Second launch: cache hit, no re-poll.
+      const second = await launchTask(deps, {
+        prompt: 'cache-warm-2',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        disableDedup: true,
+      });
+      expect(second.admission).toBe('rotated');
+      expect(second.task.agentType).toBe('codex-cli');
+      expect(getter).toHaveBeenCalledTimes(1);
+    });
+
+    it('idempotency-key replay after plan-quota rotation does not double-create (issue #1936)', async () => {
+      const { PlanQuotaBindingCache } = await import('../core/plan-quota-binding-cache.js');
+      const store = new TaskStore();
+      const ledgerDir = await mkdtemp(join(tmpdir(), 'kookr-quota-idemp-'));
+      const ledger = new IdempotencyLedger(ledgerDir);
+      await ledger.load();
+      try {
+        const deps = quotaDeps(
+          store,
+          {
+            fiveHour: { utilization: 100, resetsAt: '2099-01-01T00:00:00.000Z' },
+            sevenDay: null,
+          },
+          { idempotencyLedger: ledger, planQuotaBindingCache: new PlanQuotaBindingCache() },
+        );
+        const key = 'plan-quota-rotate-key-1';
+        const first = await launchTask(deps, {
+          prompt: 'idempotent after rotate',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+          idempotencyKey: key,
+        });
+        expect(first.admission).toBe('rotated');
+        expect(first.task.agentType).toBe('codex-cli');
+        expect(first.idempotentReplay).toBeFalsy();
+        const before = store.listTasks().length;
+        const second = await launchTask(deps, {
+          prompt: 'idempotent after rotate',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+          idempotencyKey: key,
+        });
+        expect(second.idempotentReplay).toBe(true);
+        expect(second.task.id).toBe(first.task.id);
+        expect(store.listTasks().length).toBe(before);
+      } finally {
+        await rm(ledgerDir, { recursive: true, force: true });
+      }
     });
 
     it('admits a claude-code launch when live headroom is available', async () => {
@@ -2602,6 +2723,7 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         agentType: 'claude-code',
       });
       expect(result.queued).toBe(false);
+      expect(result.admission).toBeUndefined();
       expect(store.getTask(result.task.id)).toBeDefined();
       expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
     });
@@ -2637,9 +2759,11 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(getter).not.toHaveBeenCalled();
     });
 
-    it('still gates schedule-fired claude-code launches (no schedule exemption)', async () => {
+    it('still applies plan-quota gate to schedule-fired claude-code launches (no schedule exemption)', async () => {
       const store = new TaskStore();
-      const deps = quotaDeps(store, {
+      // Claude-only so the gate must reject rather than rotate (schedule path
+      // also benefits from #1936 rotation when an alternate is registered).
+      const deps = claudeOnlyDeps(store, {
         fiveHour: { utilization: 95, resetsAt: 'later' },
         sevenDay: null,
       });
@@ -2650,7 +2774,7 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
           agentType: 'claude-code',
           launchSource: 'schedule',
         }),
-      ).rejects.toMatchObject({ code: 'quota_headroom_admission' });
+      ).rejects.toMatchObject({ code: 'quota_headroom_admission', admission: 'rejected', reason: 'plan_quota' });
     });
 
     it('is inert when the live getter is not wired', async () => {

@@ -1216,7 +1216,7 @@ describe('POST /api/tasks error paths', () => {
     expect(body.error).toMatch(/Host CPU load/);
   });
 
-  test('maps QuotaHeadroomAdmissionError to 429 with code, ledger, and utilization fields (issue #1894)', async () => {
+  test('maps QuotaHeadroomAdmissionError to 429 with code, ledger, utilization, and plan_quota admission fields (issue #1894/#1936)', async () => {
     vi.mocked(launchTask).mockRejectedValueOnce(
       new QuotaHeadroomAdmissionError(backpressureLedger, 97, 90, '2026-08-02T18:00:00Z'),
     );
@@ -1233,6 +1233,8 @@ describe('POST /api/tasks error paths', () => {
       threshold: 90,
       resetsAt: '2026-08-02T18:00:00Z',
       capacity: backpressureLedger,
+      admission: 'rejected',
+      reason: 'plan_quota',
     });
     expect(body.error).toMatch(/Anthropic plan quota is exhausted/);
   });

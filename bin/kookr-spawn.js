@@ -1307,6 +1307,15 @@ function formatSuccess({ task, baseUrl, queued }) {
     `   server: ${baseUrl}`,
     `   open:   ${baseUrl}/#/tasks/${id}`,
   );
+  // Issue #1936: plan-quota admission rotated off claude-code onto an alternate.
+  if (task?.admission === 'rotated' && task?.reason === 'plan_quota') {
+    const from = task.fromAgent ?? 'claude-code';
+    const to = task.toAgent ?? agent;
+    lines.push(`   admission: rotated (plan_quota) ${from} → ${to}`);
+    if (typeof task.resetsAt === 'string' && task.resetsAt.length > 0) {
+      lines.push(`   plan quota resets: ${task.resetsAt}`);
+    }
+  }
   if (parent) {
     lines.push(`   parent: ${baseUrl}/#/tasks/${parent}`);
   }
@@ -1359,22 +1368,49 @@ function formatTaskAge(createdAt) {
 }
 
 /**
- * Backpressure rejection codes a 429 body may carry (#1526 Phase C / C3).
- * Keep in sync with PendingQueueFullError / SpawnBurstLimitError in
- * src/server/launch-service.ts.
+ * Backpressure rejection codes a 429 body may carry (#1526 Phase C / C3,
+ * #1630 host-load, #1894/#1936 plan-quota). Keep in sync with launch-service
+ * error codes.
  */
-const BACKPRESSURE_CODES = new Set(['pending_queue_full', 'spawn_burst_limit']);
+const BACKPRESSURE_CODES = new Set([
+  'pending_queue_full',
+  'spawn_burst_limit',
+  'host_load_admission',
+  'quota_headroom_admission',
+]);
 
 /**
- * Render a 429 backpressure body (#1526 Phase C / C3) as a multi-line "why"
- * breakdown from the capacity ledger the server attached, so the operator
- * sees WHAT is occupying the slots (working / awaiting-ack / hung-suspect /
- * launching) and the queue/budget state instead of a bare error string.
+ * Render a 429 backpressure body (#1526 Phase C / C3, #1630, #1894/#1936) as a
+ * multi-line "why" breakdown from the capacity ledger / quota fields the
+ * server attached, so the operator sees WHAT is occupying the slots and —
+ * for plan-quota — WHEN to retry, instead of a bare error string.
  * Returns null when the body is not a recognizable backpressure shape.
  */
 function formatBackpressure429(body) {
   if (!body || !BACKPRESSURE_CODES.has(body.code)) return null;
   const lines = [`kookr-spawn: launch refused (${body.code}): ${body.error ?? 'server backpressure'}`];
+  if (body.code === 'quota_headroom_admission') {
+    // Structured plan-quota reject (issue #1936): surface admission/reason so
+    // supervisors/feeder can log without re-parsing free text.
+    if (body.admission || body.reason) {
+      lines.push(
+        `   admission: ${body.admission ?? 'rejected'}` +
+        (body.reason ? ` (reason: ${body.reason})` : ''),
+      );
+    }
+    if (typeof body.maxUtilization === 'number' || typeof body.threshold === 'number') {
+      lines.push(
+        `   plan utilization: ${body.maxUtilization ?? '?'}% ` +
+        `(threshold ${body.threshold ?? '?'}%)`,
+      );
+    }
+    if (typeof body.resetsAt === 'string' && body.resetsAt.length > 0) {
+      lines.push(`   retry after binding window resets: ${body.resetsAt}`);
+    } else {
+      lines.push('   retry once plan quota resets (no reset timestamp in response)');
+    }
+    return lines.join('\n');
+  }
   const cap = body.capacity;
   if (cap && typeof cap === 'object') {
     const byClass = cap.byClass ?? {};
@@ -1391,6 +1427,11 @@ function formatBackpressure429(body) {
     const retrySec = typeof body.retryAfterMs === 'number' ? Math.max(1, Math.ceil(body.retryAfterMs / 1000)) : '?';
     lines.push(
       `   burst budget: ${body.limit} launches per ${windowMin}m for source "${body.source}"; retry in ~${retrySec}s`,
+    );
+  } else if (body.code === 'host_load_admission') {
+    lines.push(
+      `   host load: ${body.loadPerCpu ?? '?'}/core (threshold ${body.maxLoadPerCpu ?? '?'}); ` +
+      'retry once load drops',
     );
   } else {
     lines.push('   free a slot (complete/abort a task) or raise maxPendingTasks, then retry');

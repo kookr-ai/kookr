@@ -507,7 +507,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // opening brace. Ordinary prose prompts return undefined and are
       // unaffected; a set name skips AI naming (see LaunchOpts.name).
       const embeddedName = extractEmbeddedTaskName(body.prompt);
-      const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
+      const launchResult = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
         name: embeddedName,
@@ -526,9 +526,25 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
         ...(claimIssue ? { claimIssue } : {}),
       });
+      const { task, queued, duplicate, idempotentReplay } = launchResult;
+      // Plan-quota rotation metadata (issue #1936) — flat fields on the spawn
+      // JSON so supervisors/feeder log without parsing free-text errors.
+      const planQuotaMeta = launchResult.admission
+        ? {
+            admission: launchResult.admission,
+            reason: launchResult.reason,
+            ...(launchResult.fromAgent !== undefined ? { fromAgent: launchResult.fromAgent } : {}),
+            ...(launchResult.toAgent !== undefined ? { toAgent: launchResult.toAgent } : {}),
+            ...(launchResult.maxUtilization !== undefined
+              ? { maxUtilization: launchResult.maxUtilization }
+              : {}),
+            ...(launchResult.threshold !== undefined ? { threshold: launchResult.threshold } : {}),
+            ...(launchResult.resetsAt !== undefined ? { resetsAt: launchResult.resetsAt } : {}),
+          }
+        : undefined;
 
       if (duplicate) {
-        return c.json({ task, duplicate: true }, 200);
+        return c.json({ task, duplicate: true, ...planQuotaMeta }, 200);
       }
 
       // Idempotent replay (#1526 Phase B): the SAME task an earlier request
@@ -537,11 +553,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // callers that already parse a plain task object need no extra
       // branching to notice the replay via `idempotentReplay`.
       if (idempotentReplay) {
-        return c.json({ ...task, idempotentReplay: true }, 200);
+        return c.json({ ...task, idempotentReplay: true, ...planQuotaMeta }, 200);
       }
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
-      return c.json({ ...task, ...(queued ? { queued: true } : {}) }, 201);
+      return c.json({
+        ...task,
+        ...(queued ? { queued: true } : {}),
+        ...planQuotaMeta,
+      }, 201);
     } catch (err) {
       if (isLaunchDependencyValidationError(err)) {
         return c.json({ error: err.message }, 400);
@@ -610,10 +630,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           maxLoadPerCpu: err.maxLoadPerCpu,
         }, 429);
       }
-      // Live quota-headroom admission (issue #1894): Anthropic plan window
-      // exhausted — refuse the launch rather than start a session that will
-      // fail mid-run. Same 429 + ledger shape; utilization/threshold/resetsAt
-      // let the caller render WHEN to retry.
+      // Live quota-headroom admission (issue #1894 / #1936): Anthropic plan
+      // window exhausted and no healthy alternate to rotate onto — refuse the
+      // launch rather than start a session that will fail mid-run. Same 429 +
+      // ledger shape; admission/reason let supervisors short-circuit retries
+      // without re-parsing free text; utilization/threshold/resetsAt render WHEN.
       if (isQuotaHeadroomAdmissionError(err)) {
         return c.json({
           error: err.message,
@@ -622,6 +643,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           maxUtilization: err.maxUtilization,
           threshold: err.threshold,
           resetsAt: err.resetsAt,
+          admission: err.admission,
+          reason: err.reason,
         }, 429);
       }
       const message = err instanceof Error ? err.message : String(err);

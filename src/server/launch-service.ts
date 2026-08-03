@@ -8,6 +8,7 @@ import {
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
+  resolvePinnedAgentFallback,
   isValidEffortForAgent,
   effortLevelsForAgent,
   isValidModelForAgent,
@@ -40,6 +41,7 @@ import {
   evaluateQuotaHeadroomAdmission,
   type QuotaHeadroomSample,
 } from '../core/quota-headroom-admission.js';
+import type { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import {
   classifyLaunchFailureReason,
@@ -200,16 +202,26 @@ export interface LaunchServiceDeps {
   getHostLoadSample?: () => HostLoadSample;
   /**
    * Live Anthropic quota headroom for claude-code admission (issue #1894 /
-   * #1699 WS1.2). When provided, a `claude-code` launch is rejected with
-   * {@link QuotaHeadroomAdmissionError} while any plan window is at/above the
-   * exhausted threshold — so we refuse to launch into a known-empty quota
-   * rather than start a session that will fail mid-run. Must return a *live*
-   * sample (adapter `getLiveHeadroom()`), never a stale periodic-poll
-   * snapshot; return `null` when the live poll fails so the gate fails open.
-   * Other agent types are not gated (QuotaAdapter is Anthropic-only). Absent
+   * #1699 WS1.2, extended by #1936). When provided, a `claude-code` launch
+   * that would enter an exhausted plan window is first offered a healthy
+   * alternate via the same rotation order as schedule WS1.3
+   * ({@link resolvePinnedAgentFallback}, excluding claude-code). Only when no
+   * preflight-registered alternate exists does the gate reject with
+   * {@link QuotaHeadroomAdmissionError}. Must return a *live* sample (adapter
+   * `getLiveHeadroom()`), never a stale periodic-poll snapshot; return `null`
+   * when the live poll fails so the gate fails open (unless
+   * {@link planQuotaBindingCache} is still bound from a prior deny). Other
+   * agent types are not gated (QuotaAdapter is Anthropic-only). Absent
    * (older wiring/tests) ⇒ no quota gate.
    */
   getLiveQuotaHeadroom?: () => Promise<QuotaHeadroomSample | null>;
+  /**
+   * Binding-window cache for plan-quota exhaustion (issue #1936). When a live
+   * sample denies claude-code, the cache records the reset (or a short
+   * fallback TTL) so subsequent launches short-circuit without re-polling.
+   * Absent ⇒ no cache (every launch re-polls when the getter is wired).
+   */
+  planQuotaBindingCache?: PlanQuotaBindingCache;
   /**
    * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
    * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
@@ -605,14 +617,20 @@ export function isHostLoadAdmissionError(err: unknown): err is HostLoadAdmission
 }
 
 /**
- * Thrown by {@link launchTask} when live quota-headroom admission (issue #1894)
- * rejects a claude-code launch because a plan window is exhausted. Same
- * 429-with-ledger shape as the other backpressure rejections, distinct code so
- * a caller can tell "Anthropic quota is empty" apart from "host is
- * CPU-saturated". Thrown before any task record exists.
+ * Thrown by {@link launchTask} when live quota-headroom admission (issue #1894 /
+ * #1936) rejects a claude-code launch because a plan window is exhausted AND
+ * no healthy alternate agent is registered to rotate onto. Same 429-with-ledger
+ * shape as the other backpressure rejections, distinct code so a caller can
+ * tell "Anthropic quota is empty" apart from "host is CPU-saturated". Thrown
+ * before any task record exists. Carries `admission: 'rejected'` +
+ * `reason: 'plan_quota'` so supervisors/feeder can short-circuit blind retries.
  */
 export class QuotaHeadroomAdmissionError extends Error {
   readonly code = 'quota_headroom_admission';
+  /** Structured admission decision (issue #1936). Always `rejected` on throw. */
+  readonly admission = 'rejected' as const;
+  /** Machine-readable reject reason (issue #1936). */
+  readonly reason = 'plan_quota' as const;
   constructor(
     /** Capacity-ledger snapshot at rejection time. */
     readonly capacity: CapacityLedger,
@@ -629,7 +647,7 @@ export class QuotaHeadroomAdmissionError extends Error {
     super(
       `Anthropic plan quota is exhausted (utilization ${maxUtilization.toFixed(0)}% ` +
       `≥ threshold ${threshold.toFixed(0)}%) — launch rejected so the session is ` +
-      `not started into a known-empty window.${resetHint}`,
+      `not started into a known-empty window (no healthy alternate agent).${resetHint}`,
     );
     this.name = 'QuotaHeadroomAdmissionError';
   }
@@ -1102,7 +1120,7 @@ async function launchTaskCore(
   // `peek` (not advance): the rotation cursor must only move once a task is
   // actually committed, so a deduplicated or rejected launch does not consume
   // a rotation slot. The matching `advance()` calls fire after `createTask`.
-  const agentType: AgentType = isRoundRobin
+  let agentType: AgentType = isRoundRobin
     ? resolveRoundRobinAgent(
         deps.roundRobinCursor?.peek() ?? 0,
         adapterRegistry.getTypes(),
@@ -1111,6 +1129,18 @@ async function launchTaskCore(
         deps.getDeprioritizedAgentTypes?.(adapterRegistry.getTypes()) ?? [],
       )
     : requestedAgent;
+  // Per-task effort/model pins may be dropped if plan-quota rotation (#1936)
+  // substitutes a different agent — same as schedule WS1.3 substitution.
+  let effectiveEffort: string | undefined = opts.effort;
+  let effectiveModel: string | undefined = opts.model;
+  // Populated when plan-quota admission rotates claude-code onto an alternate.
+  let planQuotaRotation: {
+    fromAgent: AgentType;
+    toAgent: AgentType;
+    maxUtilization: number;
+    threshold: number;
+    resetsAt: string | null;
+  } | undefined;
 
   // Validate a per-task effort override against the *resolved* agent's allowed
   // set (#681), before any side effect or task record. Done here — not at the
@@ -1118,9 +1148,9 @@ async function launchTaskCore(
   // allowed set is agent-specific (`minimal`/`none`/`ultra` are codex-only). The
   // per-agent-type *default* is applied inside the adapter and
   // validated when settings are saved, so it is not re-checked here.
-  if (opts.effort !== undefined && !isValidEffortForAgent(agentType, opts.effort)) {
+  if (effectiveEffort !== undefined && !isValidEffortForAgent(agentType, effectiveEffort)) {
     throw new EffortValidationError(
-      `Invalid effort "${opts.effort}" for agent ${agentType}; ` +
+      `Invalid effort "${effectiveEffort}" for agent ${agentType}; ` +
       `valid levels: ${effortLevelsForAgent(agentType).join(', ')}`,
     );
   }
@@ -1129,12 +1159,12 @@ async function launchTaskCore(
   // (#1518). Same placement as effort — after round-robin, before side effects.
   // No silent fallback: unknown models throw rather than launch with the CLI
   // default. codex-cli / grok-build currently have empty allowlists.
-  if (opts.model !== undefined && !isValidModelForAgent(agentType, opts.model)) {
+  if (effectiveModel !== undefined && !isValidModelForAgent(agentType, effectiveModel)) {
     const valid = modelsForAgent(agentType);
     throw new ModelValidationError(
       valid.length === 0
-        ? `Invalid model "${opts.model}" for agent ${agentType}; this agent does not accept a per-task model pin`
-        : `Invalid model "${opts.model}" for agent ${agentType}; ` +
+        ? `Invalid model "${effectiveModel}" for agent ${agentType}; this agent does not accept a per-task model pin`
+        : `Invalid model "${effectiveModel}" for agent ${agentType}; ` +
           `valid models: ${valid.join(', ')} (dated suffixes of those bases also accepted)`,
     );
   }
@@ -1221,7 +1251,7 @@ async function launchTaskCore(
     resolvedClaimKey = { repo: resolution.repo, number };
   }
 
-  // --- Server-side backpressure (issue #1526 Phase C / C3, #1630, #1894) ---
+  // --- Server-side backpressure (issue #1526 Phase C / C3, #1630, #1894, #1936) ---
   // These guards run AFTER dedup (an idempotent replay of an existing task
   // must never be rejected — it creates nothing) and BEFORE createTask (a
   // rejected launch must leave no task record). The live quota poll below is
@@ -1229,27 +1259,87 @@ async function launchTaskCore(
   // stay synchronous with createTask so the counts they read cannot go stale
   // relative to each other.
   //
-  // 0) Live quota-headroom admission (issue #1894 / #1699 WS1.2). Claude Code
-  //    only — QuotaAdapter polls the Anthropic plan window. Checked before
-  //    host-load / burst tokens so an exhausted-quota reject never consumes
-  //    spawn budget. Unlike host-load, schedule fires are NOT exempt: the
-  //    whole point of this gate is to stop autonomous dispatch into a known
-  //    empty window. Fail-open when the live poll returns null.
-  if (deps.getLiveQuotaHeadroom && agentType === 'claude-code') {
-    const sample = await deps.getLiveQuotaHeadroom();
-    const decision = evaluateQuotaHeadroomAdmission(sample);
-    if (!decision.admit) {
-      console.warn(
-        `[backpressure] Anthropic quota utilization ${decision.maxUtilization.toFixed(0)}% ` +
-        `≥ threshold ${decision.threshold.toFixed(0)}% — rejecting claude-code launch` +
-        (decision.resetsAt ? ` (resets ${decision.resetsAt})` : ''),
-      );
-      throw new QuotaHeadroomAdmissionError(
-        snapshotCapacityLedger(deps, maxActive),
-        decision.maxUtilization,
-        decision.threshold,
-        decision.resetsAt,
-      );
+  // 0) Live quota-headroom admission (issue #1894 / #1699 WS1.2 + #1936).
+  //    Claude Code only — QuotaAdapter polls the Anthropic plan window.
+  //    Checked before host-load / burst tokens so an exhausted-quota path
+  //    never consumes spawn budget. Unlike host-load, schedule fires are NOT
+  //    exempt: the whole point of this gate is to stop autonomous dispatch
+  //    into a known empty window. Fail-open when the live poll returns null
+  //    and no binding-window cache is active.
+  //
+  //    On deny (#1936): rotate to a healthy alternate using the same order as
+  //    schedule WS1.3 (`resolvePinnedAgentFallback`, treating claude-code as
+  //    unavailable for this launch) before hard-rejecting. Rotation still
+  //    requires a preflight-registered alternate — we never silently burn a
+  //    second paid provider without an adapter present.
+  if ((deps.getLiveQuotaHeadroom || deps.planQuotaBindingCache) && agentType === 'claude-code') {
+    const cache = deps.planQuotaBindingCache;
+    const cached = cache?.get() ?? null;
+    let decision = cached
+      ? {
+          admit: false as const,
+          maxUtilization: cached.maxUtilization,
+          threshold: cached.threshold,
+          resetsAt: cached.resetsAt,
+        }
+      : null;
+    if (!decision && deps.getLiveQuotaHeadroom) {
+      const sample = await deps.getLiveQuotaHeadroom();
+      const live = evaluateQuotaHeadroomAdmission(sample);
+      if (!live.admit) {
+        cache?.markExhausted(live);
+        decision = {
+          admit: false,
+          maxUtilization: live.maxUtilization,
+          threshold: live.threshold,
+          resetsAt: live.resetsAt,
+        };
+      }
+    }
+    if (decision && !decision.admit) {
+      // Exclude claude-code so the pin is treated as unavailable; fall back to
+      // the first healthy registered agent in canonical order (WS1.3).
+      const available = adapterRegistry.getTypes().filter((t) => t !== 'claude-code');
+      const deprioritized = deps.getDeprioritizedAgentTypes?.(available) ?? [];
+      const fallback = resolvePinnedAgentFallback('claude-code', available, deprioritized);
+      if (fallback.kind === 'substituted' || fallback.kind === 'available') {
+        const fromAgent = agentType;
+        const toAgent = fallback.agentType;
+        // Drop effort/model pins that are invalid for the substitute (WS1.3).
+        if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
+          effectiveEffort = undefined;
+        }
+        if (effectiveModel !== undefined && !isValidModelForAgent(toAgent, effectiveModel)) {
+          effectiveModel = undefined;
+        }
+        agentType = toAgent;
+        planQuotaRotation = {
+          fromAgent,
+          toAgent,
+          maxUtilization: decision.maxUtilization,
+          threshold: decision.threshold,
+          resetsAt: decision.resetsAt,
+        };
+        console.warn(
+          `[backpressure] Anthropic quota utilization ${decision.maxUtilization.toFixed(0)}% ` +
+          `≥ threshold ${decision.threshold.toFixed(0)}% — rotating agent ` +
+          `${fromAgent} → ${toAgent}` +
+          (decision.resetsAt ? ` (resets ${decision.resetsAt})` : ''),
+        );
+      } else {
+        console.warn(
+          `[backpressure] Anthropic quota utilization ${decision.maxUtilization.toFixed(0)}% ` +
+          `≥ threshold ${decision.threshold.toFixed(0)}% — rejecting claude-code launch ` +
+          `(no healthy alternate)` +
+          (decision.resetsAt ? ` (resets ${decision.resetsAt})` : ''),
+        );
+        throw new QuotaHeadroomAdmissionError(
+          snapshotCapacityLedger(deps, maxActive),
+          decision.maxUtilization,
+          decision.threshold,
+          decision.resetsAt,
+        );
+      }
     }
   }
 
@@ -1441,7 +1531,21 @@ async function launchTaskCore(
         );
       }
     }
-    return { task: queuedTask, queued: true };
+    return {
+      task: queuedTask,
+      queued: true,
+      ...(planQuotaRotation
+        ? {
+            admission: 'rotated' as const,
+            reason: 'plan_quota' as const,
+            fromAgent: planQuotaRotation.fromAgent,
+            toAgent: planQuotaRotation.toAgent,
+            maxUtilization: planQuotaRotation.maxUtilization,
+            threshold: planQuotaRotation.threshold,
+            resetsAt: planQuotaRotation.resetsAt,
+          }
+        : {}),
+    };
   }
 
   // PR4: ralph-loop launches need verdict env injected so iteration 0 can
@@ -1465,8 +1569,8 @@ async function launchTaskCore(
           },
         }
       : {}),
-    ...(opts.effort ? { effort: opts.effort } : {}),
-    ...(opts.model ? { model: opts.model } : {}),
+    ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+    ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
   };
 
@@ -1609,7 +1713,21 @@ async function launchTaskCore(
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
   const launchedTask = taskStore.getTask(task.id) ?? task;
   await registerNewAgent(launchedTask, lifecycleDeps);
-  return { task: launchedTask, queued: false };
+  return {
+    task: launchedTask,
+    queued: false,
+    ...(planQuotaRotation
+      ? {
+          admission: 'rotated' as const,
+          reason: 'plan_quota' as const,
+          fromAgent: planQuotaRotation.fromAgent,
+          toAgent: planQuotaRotation.toAgent,
+          maxUtilization: planQuotaRotation.maxUtilization,
+          threshold: planQuotaRotation.threshold,
+          resetsAt: planQuotaRotation.resetsAt,
+        }
+      : {}),
+  };
 }
 
 export function promptWithLaunchNote(task: Pick<Task, 'prompt' | 'launchNote'>): string {
