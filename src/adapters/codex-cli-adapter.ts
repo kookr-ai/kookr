@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { access, constants as fsConstants } from 'node:fs';
+import { constants as fsConstants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
-import { promisify } from 'node:util';
 import type { TerminalBackend } from './terminal-backend.js';
 import {
   asTerminalInputWriterPort,
@@ -27,11 +27,6 @@ import {
   probeBinaryFlagSupport,
   type ProbeExecRunner,
 } from './probe-agent-binary.js';
-
-const accessAsync = promisify(access);
-
-/** Sibling helper binary the Codex CLI spawns for shell/tool execution (issue #2001). */
-export const CODEX_CODE_MODE_HOST_BIN = 'codex-code-mode-host';
 import { extractRawHookHeader, parseHookEvent, HookParseError, type RawHookHeader } from '../core/hook-parser.js';
 import {
   childSessionStorageKey,
@@ -51,6 +46,9 @@ import { effectiveHookSettingsPath, readPersistedHookSettings } from './effectiv
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
+
+/** Sibling helper binary the Codex CLI spawns for shell/tool execution (issue #2001). */
+export const CODEX_CODE_MODE_HOST_BIN = 'codex-code-mode-host';
 
 /** Env var that overrides the default Codex model for Kookr-fork launches. */
 export const CODEX_MODEL_ENV = 'KOOKR_CODEX_MODEL';
@@ -96,7 +94,7 @@ export async function resolveCodexCodeModeHost(
   } = {},
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   const env = deps.env ?? process.env;
-  const accessFn = deps.access ?? ((p: string, mode: number) => accessAsync(p, mode));
+  const accessFn = deps.access ?? ((p: string, mode: number) => access(p, mode));
   const resolvePath = deps.resolveExecutablePath ?? resolveExecutablePathLight;
 
   const launcherPath = await resolvePath(agentBin, env);
@@ -129,7 +127,7 @@ async function resolveExecutablePathLight(
 ): Promise<string | null> {
   if (isAbsolute(bin) || bin.includes('/')) {
     try {
-      await accessAsync(bin, fsConstants.X_OK);
+      await access(bin, fsConstants.X_OK);
       return bin;
     } catch {
       return null;
@@ -139,7 +137,7 @@ async function resolveExecutablePathLight(
   for (const dir of pathDirs) {
     const candidate = join(dir, bin);
     try {
-      await accessAsync(candidate, fsConstants.X_OK);
+      await access(candidate, fsConstants.X_OK);
       return candidate;
     } catch {
       // keep looking
