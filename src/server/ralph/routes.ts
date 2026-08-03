@@ -455,7 +455,14 @@ function ralphLaunchErrorResponse(c: Context, err: unknown) {
     return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
   }
   if (err instanceof DrainModeError) {
-    return c.json({ error: err.message, code: err.code }, 503);
+    // Issue #1976: same drain 503 contract as POST /api/tasks.
+    c.header('Retry-After', String(err.retryAfterSeconds));
+    return c.json({
+      error: err.message,
+      code: err.code,
+      reason: err.reason,
+      retryAfterSeconds: err.retryAfterSeconds,
+    }, 503);
   }
   const message = err instanceof Error ? err.message : String(err);
   return c.json({ error: message }, 500);

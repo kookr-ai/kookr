@@ -364,7 +364,7 @@ describe('launchTask', () => {
     });
   });
 
-  describe('operator drain gate (issue #659)', () => {
+  describe('operator drain gate (issue #659 / #1976)', () => {
     it('refuses a launch with DrainModeError while draining, creating no task', async () => {
       const drainingDeps = { ...deps, isAccepting: () => false };
       await expect(launchTask(drainingDeps, { prompt: 'blocked', cwd: '/tmp' }))
@@ -372,6 +372,21 @@ describe('launchTask', () => {
       // No side effects: no task record, no adapter launch.
       expect(store.listTasks()).toHaveLength(0);
       expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('surfaces reason=draining and retryAfterSeconds≥1 on DrainModeError (issue #1976)', async () => {
+      const drainingDeps = { ...deps, isAccepting: () => false };
+      try {
+        await launchTask(drainingDeps, { prompt: 'blocked', cwd: '/tmp' });
+        expect.unreachable('expected DrainModeError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(DrainModeError);
+        const drain = err as DrainModeError;
+        expect(drain.code).toBe('draining');
+        expect(drain.reason).toBe('draining');
+        expect(drain.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+        expect(Number.isInteger(drain.retryAfterSeconds)).toBe(true);
+      }
     });
 
     it('does not affect an already-running task when drain begins', async () => {

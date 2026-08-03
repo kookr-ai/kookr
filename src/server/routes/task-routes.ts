@@ -30,8 +30,10 @@ import {
 } from '../launch-service.js';
 import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import {
+  evaluateDiskAdmission,
   evaluateTaskAdmission,
   readAdmissionControlConfigFromEnv,
+  readDiskAdmissionConfigFromEnv,
 } from '../task-admission.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
@@ -89,10 +91,12 @@ function supervisorUnauthorizedResponse(c: Context) {
 
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
-  // Load-based admission gate for POST /api/tasks (issue #1590). Read env once
-  // at registration (env config, like the operational-alert thresholds), unless
-  // a config was threaded explicitly (tests).
+  // Load-based admission gates for POST /api/tasks (issue #1590 event-loop,
+  // issue #1992 data-directory free space). Read env once at registration
+  // (env config, like the operational-alert thresholds), unless a config was
+  // threaded explicitly (tests).
   const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
+  const diskAdmissionConfig = deps.diskAdmissionConfig ?? readDiskAdmissionConfigFromEnv();
   const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
   const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
   /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
@@ -391,18 +395,49 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   });
 
   app.post('/api/tasks', async (c) => {
-    // Load-based admission (issue #1590): shed the request BEFORE parsing the
-    // body or touching the launch path, so a saturated event loop fast-fails
-    // with 503 + Retry-After in ≤2s instead of hanging into a client timeout.
-    // Reuses the already-sampled health-snapshot p95 (no second monitor); fails
-    // open when the signal is missing or the gate is disabled.
+    // Load-based admission (issue #1590 / #1992): shed the request BEFORE
+    // parsing the body or touching the launch path, so a saturated event loop
+    // or critically-low data-directory free space fast-fails with 503 +
+    // Retry-After in ≤2s instead of hanging into a client timeout / ENOSPC.
+    // Reuses the already-sampled health snapshot (no second monitors); event-
+    // loop fails open when the signal is missing; disk fails closed once the
+    // sustain tracker (or a single-sample breach without a tracker) trips.
+    const latestResourceStatus = deps.getLatestResourceStatus?.() ?? null;
     const admission = evaluateTaskAdmission({
       config: admissionControlConfig,
-      eventLoopDelayP95Ms: deps.getLatestResourceStatus?.()?.server.eventLoopDelayP95Ms ?? null,
+      eventLoopDelayP95Ms: latestResourceStatus?.server.eventLoopDelayP95Ms ?? null,
     });
     if (!admission.admit) {
       c.header('Retry-After', String(admission.rejection.retryAfterSeconds));
       return c.json(admission.rejection, 503);
+    }
+    // Disk-critical admission (issue #1992). Observe the latest sample when a
+    // tracker is wired so concurrent POSTs still advance the sustain window
+    // even if the resource-status callback was not yet attached (tests); in
+    // production the tracker is also fed on every resource tick. Host /
+    // dataDirectory may be absent on partial test stubs — treat as no sample.
+    const dataDirectory = latestResourceStatus?.host?.dataDirectory;
+    const diskSample = dataDirectory
+      ? {
+          diskFreePercent: dataDirectory.diskFreePercent,
+          diskFreeBytes: dataDirectory.diskFreeBytes,
+          path: dataDirectory.path,
+          sampledAt: latestResourceStatus?.sampledAt,
+        }
+      : null;
+    if (diskSample && deps.diskAdmissionTracker) {
+      deps.diskAdmissionTracker.observe(diskSample, diskAdmissionConfig);
+    }
+    const diskAdmission = evaluateDiskAdmission({
+      config: diskAdmissionConfig,
+      sample: diskSample,
+      ...(deps.diskAdmissionTracker
+        ? { critical: deps.diskAdmissionTracker.isCritical() }
+        : {}),
+    });
+    if (!diskAdmission.admit) {
+      c.header('Retry-After', String(diskAdmission.rejection.retryAfterSeconds));
+      return c.json(diskAdmission.rejection, 503);
     }
     try {
       const body = await c.req.json() as {
@@ -592,7 +627,16 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
       }
       if (err instanceof DrainModeError) {
-        return c.json({ error: err.message, code: err.code }, 503);
+        // Issue #1976: structured "wait and retry" signal for intentional
+        // drain/redeploy blackouts — Retry-After header + reason body so
+        // orchestrators do not escalate a planned restart as an outage.
+        c.header('Retry-After', String(err.retryAfterSeconds));
+        return c.json({
+          error: err.message,
+          code: err.code,
+          reason: err.reason,
+          retryAfterSeconds: err.retryAfterSeconds,
+        }, 503);
       }
       // Honest server-side backpressure (issue #1526 Phase C / C3): both
       // rejections return 429 with the capacity-ledger snapshot so the caller

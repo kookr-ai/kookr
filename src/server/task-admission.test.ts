@@ -1,15 +1,33 @@
 import { describe, expect, test } from 'vitest';
 import {
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+  DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
+} from './config.js';
+import {
+  DATA_DIRECTORY_DISK_CRITICAL_CODE,
   DEFAULT_ADMISSION_EVENT_LOOP_DELAY_MS,
   DEFAULT_ADMISSION_RETRY_AFTER_SECONDS,
+  DataDirectoryDiskAdmissionTracker,
   EVENT_LOOP_SATURATED_CODE,
+  evaluateDiskAdmission,
   evaluateTaskAdmission,
   readAdmissionControlConfigFromEnv,
+  readDiskAdmissionConfigFromEnv,
   type AdmissionControlConfig,
+  type DiskAdmissionConfig,
 } from './task-admission.js';
 
 const cfg = (over: Partial<AdmissionControlConfig> = {}): AdmissionControlConfig => ({
   eventLoopDelayThresholdMs: 1_000,
+  retryAfterSeconds: 2,
+  ...over,
+});
+
+const diskCfg = (over: Partial<DiskAdmissionConfig> = {}): DiskAdmissionConfig => ({
+  freePercentThreshold: 5,
+  freeBytesThreshold: 2 * 1024 * 1024 * 1024,
+  sustainSamples: 3,
   retryAfterSeconds: 2,
   ...over,
 });
@@ -129,5 +147,169 @@ describe('evaluateTaskAdmission — invariants (issue #1590 invariant gate)', ()
         ).not.toThrow();
       }
     }
+  });
+});
+
+describe('readDiskAdmissionConfigFromEnv (issue #1992)', () => {
+  test('defaults reuse operational-alert floors and sustain samples', () => {
+    const config = readDiskAdmissionConfigFromEnv({});
+    expect(config.freePercentThreshold).toBe(DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT);
+    expect(config.freeBytesThreshold).toBe(DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES);
+    expect(config.sustainSamples).toBe(DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES);
+    expect(config.retryAfterSeconds).toBe(DEFAULT_ADMISSION_RETRY_AFTER_SECONDS);
+  });
+
+  test('reuses KOOKR_ALERT_DATA_DIR_* when admission overrides are absent', () => {
+    const config = readDiskAdmissionConfigFromEnv({
+      KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '4',
+      KOOKR_ALERT_DATA_DIR_FREE_BYTES: '1000',
+      KOOKR_ALERT_SUSTAIN_SAMPLES: '5',
+    });
+    expect(config).toMatchObject({
+      freePercentThreshold: 4,
+      freeBytesThreshold: 1000,
+      sustainSamples: 5,
+    });
+  });
+
+  test('admission-specific overrides win over alert knobs', () => {
+    const config = readDiskAdmissionConfigFromEnv({
+      KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '4',
+      KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT: '2',
+      KOOKR_ALERT_DATA_DIR_FREE_BYTES: '1000',
+      KOOKR_ADMISSION_DATA_DIR_FREE_BYTES: '500',
+      KOOKR_ALERT_SUSTAIN_SAMPLES: '5',
+      KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES: '7',
+      KOOKR_ADMISSION_RETRY_AFTER_SECONDS: '9',
+    });
+    expect(config).toEqual({
+      freePercentThreshold: 2,
+      freeBytesThreshold: 500,
+      sustainSamples: 7,
+      retryAfterSeconds: 9,
+    });
+  });
+
+  test('both floors at 0 disable the gate', () => {
+    const config = readDiskAdmissionConfigFromEnv({
+      KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '0',
+      KOOKR_ALERT_DATA_DIR_FREE_BYTES: '0',
+    });
+    expect(config.freePercentThreshold).toBe(0);
+    expect(config.freeBytesThreshold).toBe(0);
+  });
+});
+
+describe('evaluateDiskAdmission (issue #1992)', () => {
+  test('rejects when free percent is at or below the floor (single-sample fail-closed)', () => {
+    const decision = evaluateDiskAdmission({
+      config: diskCfg({ freeBytesThreshold: 0 }),
+      sample: { diskFreePercent: 5, diskFreeBytes: 99_000_000_000, path: '/data' },
+    });
+    expect(decision.admit).toBe(false);
+    if (!decision.admit) {
+      expect(decision.rejection.code).toBe(DATA_DIRECTORY_DISK_CRITICAL_CODE);
+      expect(decision.rejection.reason).toBe(DATA_DIRECTORY_DISK_CRITICAL_CODE);
+      expect(decision.rejection.retryAfterSeconds).toBe(2);
+      expect(decision.rejection.path).toBe('/data');
+      expect(decision.rejection.error).toMatch(/critical/i);
+    }
+  });
+
+  test('admits when free space is above both floors', () => {
+    expect(
+      evaluateDiskAdmission({
+        config: diskCfg(),
+        sample: { diskFreePercent: 50, diskFreeBytes: 50_000_000_000 },
+      }).admit,
+    ).toBe(true);
+  });
+
+  test('disabled floors always admit', () => {
+    expect(
+      evaluateDiskAdmission({
+        config: diskCfg({ freePercentThreshold: 0, freeBytesThreshold: 0 }),
+        sample: { diskFreePercent: 0, diskFreeBytes: 0 },
+      }).admit,
+    ).toBe(true);
+  });
+
+  test('missing sample fails open unless critical flag is forced', () => {
+    expect(evaluateDiskAdmission({ config: diskCfg(), sample: null }).admit).toBe(true);
+    expect(
+      evaluateDiskAdmission({ config: diskCfg(), sample: null, critical: true }).admit,
+    ).toBe(false);
+  });
+
+  test('honors precomputed critical flag from the sustain tracker', () => {
+    const admitDespiteLow = evaluateDiskAdmission({
+      config: diskCfg(),
+      sample: { diskFreePercent: 1, diskFreeBytes: 100 },
+      critical: false,
+    });
+    expect(admitDespiteLow.admit).toBe(true);
+    const rejectDespiteHigh = evaluateDiskAdmission({
+      config: diskCfg(),
+      sample: { diskFreePercent: 50, diskFreeBytes: 50_000_000_000 },
+      critical: true,
+    });
+    expect(rejectDespiteHigh.admit).toBe(false);
+  });
+});
+
+describe('DataDirectoryDiskAdmissionTracker (issue #1992)', () => {
+  test('requires sustainSamples consecutive breaches before isCritical', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 3, freeBytesThreshold: 0 });
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'a' }, config);
+    expect(tracker.isCritical()).toBe(false);
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'b' }, config);
+    expect(tracker.isCritical()).toBe(false);
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'c' }, config);
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getState().consecutive).toBe(3);
+  });
+
+  test('dedupes the same sampledAt so concurrent POSTs do not double-count', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 2, freeBytesThreshold: 0 });
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'same' }, config);
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'same' }, config);
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'same' }, config);
+    expect(tracker.getState().consecutive).toBe(1);
+    expect(tracker.isCritical()).toBe(false);
+  });
+
+  test('recovery clears critical once free space is above floors', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1, freeBytesThreshold: 0 });
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'low' }, config);
+    expect(tracker.isCritical()).toBe(true);
+    tracker.observe({ diskFreePercent: 50, diskFreeBytes: 0, sampledAt: 'ok' }, config);
+    expect(tracker.isCritical()).toBe(false);
+    expect(tracker.getState().consecutive).toBe(0);
+  });
+
+  test('missing readings preserve an already-critical state (no false recovery)', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1, freeBytesThreshold: 0 });
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'low' }, config);
+    expect(tracker.isCritical()).toBe(true);
+    tracker.observe({ diskFreePercent: null, diskFreeBytes: null, sampledAt: 'gap' }, config);
+    expect(tracker.isCritical()).toBe(true);
+  });
+
+  test('disabled floors clear critical and stop counting', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    tracker.observe(
+      { diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'low' },
+      diskCfg({ sustainSamples: 1, freeBytesThreshold: 0 }),
+    );
+    expect(tracker.isCritical()).toBe(true);
+    tracker.observe(
+      { diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'off' },
+      diskCfg({ freePercentThreshold: 0, freeBytesThreshold: 0, sustainSamples: 1 }),
+    );
+    expect(tracker.isCritical()).toBe(false);
   });
 });

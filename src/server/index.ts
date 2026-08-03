@@ -154,7 +154,11 @@ import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
 } from './operational-alert-config.js';
-import { readAdmissionControlConfigFromEnv } from './task-admission.js';
+import {
+  DataDirectoryDiskAdmissionTracker,
+  readAdmissionControlConfigFromEnv,
+  readDiskAdmissionConfigFromEnv,
+} from './task-admission.js';
 import { readLoadShedConfigFromEnv } from './websocket-load-shed.js';
 import {
   createNonCriticalTimerPauseGate,
@@ -1945,6 +1949,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     kookrDir,
     log: (line) => console.log(line),
   });
+  // Disk-critical launch admission (issue #1992). Constructed before createRoutes
+  // so the route deps can hold the live tracker instance; the resource-status
+  // service (created later) feeds it on every sample tick.
+  const diskAdmissionConfig = readDiskAdmissionConfigFromEnv();
+  const diskAdmissionTracker = new DataDirectoryDiskAdmissionTracker();
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
@@ -1983,9 +1992,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
-    // issue #1590: feed the load-based POST /api/tasks admission gate the same
-    // already-sampled event-loop p95 the health snapshot exposes.
+    // issue #1590 / #1992: feed the load-based POST /api/tasks admission gates
+    // the same already-sampled resource snapshot (event-loop p95 + data-dir
+    // free space) and the sustain tracker fed on every resource tick.
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
+    diskAdmissionConfig,
+    diskAdmissionTracker,
     llmClient,
     sessionHealthService,
     timerHealth,
@@ -2237,8 +2249,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
-  // Load-based admission for POST /api/tasks (issue #1590): shed spawn POSTs
-  // with 503 + Retry-After when the sampled event-loop delay p95 is saturated.
+  // Load-based admission for POST /api/tasks (issue #1590 / #1992): shed spawn
+  // POSTs with 503 + Retry-After when the sampled event-loop delay p95 is
+  // saturated, or when data-directory free space stays critically low.
+  // (diskAdmissionConfig / diskAdmissionTracker were constructed earlier so
+  // createRoutes could hold the live tracker; log the resolved posture here.)
   const admissionControlConfig = readAdmissionControlConfigFromEnv();
   console.log(
     admissionControlConfig.eventLoopDelayThresholdMs > 0
@@ -2246,6 +2261,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           `${admissionControlConfig.eventLoopDelayThresholdMs}ms ` +
           `(503, Retry-After ${admissionControlConfig.retryAfterSeconds}s)`
       : '[admission] Load-based POST /api/tasks admission disabled (set KOOKR_ADMISSION_EVENT_LOOP_DELAY_MS to enable)',
+  );
+  console.log(
+    diskAdmissionConfig.freePercentThreshold > 0 || diskAdmissionConfig.freeBytesThreshold > 0
+      ? `[admission] POST /api/tasks sheds when data-dir free ≤ ` +
+          `${diskAdmissionConfig.freePercentThreshold || 'off'}% / ` +
+          `${diskAdmissionConfig.freeBytesThreshold || 'off'}B ` +
+          `for ${diskAdmissionConfig.sustainSamples} sample(s) ` +
+          `(503, Retry-After ${diskAdmissionConfig.retryAfterSeconds}s)`
+      : '[admission] Data-directory disk admission disabled (set KOOKR_ALERT_DATA_DIR_FREE_* or KOOKR_ADMISSION_DATA_DIR_FREE_* to enable)',
   );
   const resourceStatusService = createResourceStatusService({
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
@@ -2260,6 +2284,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     onEventLoopDelaySample: (delayMs) => {
       realtime.noteEventLoopDelaySample(delayMs);
       nonCriticalTimerPauseGate.noteSample(delayMs);
+    },
+    // #1992: advance disk-critical admission sustain samples on every tick.
+    onResourceStatusSample: (status) => {
+      diskAdmissionTracker.observe(
+        {
+          diskFreePercent: status.host.dataDirectory.diskFreePercent,
+          diskFreeBytes: status.host.dataDirectory.diskFreeBytes,
+          path: status.host.dataDirectory.path,
+          sampledAt: status.sampledAt,
+        },
+        diskAdmissionConfig,
+      );
     },
   });
   // Issue #1995: bind the live resource sample for ops-status free-disk fields.
