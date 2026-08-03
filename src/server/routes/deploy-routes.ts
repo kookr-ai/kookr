@@ -25,6 +25,85 @@ const PROD_PORT = 4800;
 /** Fallback marketplace plugin id when the manifests can't be read. */
 const DEFAULT_PLUGIN_ID = 'kookr-toolkit@kookr';
 
+/** Filename written by scripts/prod-restart.sh after a successful restart (issue #1973). */
+export const LAST_RESTART_METRICS_FILE = 'last-restart-metrics.json';
+
+/**
+ * Last successful `prod:restart` phase timings, exposed on GET /api/deploy/status.
+ * Written by scripts/prod-restart.sh; omitted when the metrics file is missing
+ * or unparseable (never a 500).
+ */
+export interface LastRestartMetrics {
+  at: string;
+  m1Seconds: number;
+  m2Seconds: number;
+  apiBlackoutSeconds: number;
+  dominantPhase: string;
+  /** Optional extras from the on-disk metrics file. */
+  portFreeSeconds?: number;
+  smokeSeconds?: number;
+  totalSeconds?: number;
+  path?: string;
+}
+
+/**
+ * Resolve the state dir that holds last-restart-metrics.json.
+ * Mirrors scripts/prod-restart.sh / src/server/start.ts:
+ *   port 4800 → ~/.kookr, other ports → ~/.kookr-<port>.
+ */
+export function resolveDeployMetricsDir(
+  deps: Pick<DeployRouteDeps, 'kookrDir' | 'serverPort' | 'hookHomeDir'>,
+): string {
+  if (deps.kookrDir) return deps.kookrDir;
+  const home = deps.hookHomeDir ?? homedir();
+  return deps.serverPort === PROD_PORT ? join(home, '.kookr') : join(home, `.kookr-${deps.serverPort}`);
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
+ * Best-effort read of last-restart-metrics.json. Returns null on missing file,
+ * parse errors, or incomplete shape — never throws.
+ */
+export async function readLastRestartMetrics(kookrDir: string): Promise<LastRestartMetrics | null> {
+  try {
+    const raw = await readFile(join(kookrDir, LAST_RESTART_METRICS_FILE), 'utf8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const m1 = asFiniteNumber(parsed.m1Seconds);
+    const m2 = asFiniteNumber(parsed.m2Seconds);
+    const blackout = asFiniteNumber(parsed.apiBlackoutSeconds);
+    const at = typeof parsed.at === 'string' ? parsed.at : null;
+    const dominant = typeof parsed.dominantPhase === 'string' ? parsed.dominantPhase : null;
+    if (m1 === null || m2 === null || blackout === null || !at || !dominant) {
+      return null;
+    }
+    const out: LastRestartMetrics = {
+      at,
+      m1Seconds: m1,
+      m2Seconds: m2,
+      apiBlackoutSeconds: blackout,
+      dominantPhase: dominant,
+    };
+    const portFree = asFiniteNumber(parsed.portFreeSeconds);
+    if (portFree !== null) out.portFreeSeconds = portFree;
+    const smoke = asFiniteNumber(parsed.smokeSeconds);
+    if (smoke !== null) out.smokeSeconds = smoke;
+    const total = asFiniteNumber(parsed.totalSeconds);
+    if (total !== null) out.totalSeconds = total;
+    if (typeof parsed.path === 'string') out.path = parsed.path;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 /** Strip GIT_DIR/GIT_WORK_TREE so commands run against the target cwd, not the parent repo. */
 const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
 
@@ -213,6 +292,11 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
   const pluginUpdateBin = deps.pluginUpdateBin ?? process.env.KOOKR_AGENT_BIN ?? 'claude';
 
   app.get('/api/deploy/status', async (c) => {
+    // lastRestart is best-effort (issue #1973): never 500 if the metrics file
+    // is missing or corrupt — omit the field instead.
+    const lastRestart = await readLastRestartMetrics(resolveDeployMetricsDir(deps));
+    const lastRestartField = lastRestart ? { lastRestart } : {};
+
     let prodDir: string;
     try {
       prodDir = resolveProdDir(deps);
@@ -223,6 +307,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
           error: err instanceof Error ? err.message : String(err),
           runningPort,
           prodPort: PROD_PORT,
+          ...lastRestartField,
         },
         500,
       );
@@ -237,7 +322,13 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
     try {
       await access(prodDir);
     } catch {
-      return c.json({ configured: false, ...pluginField, runningPort, prodPort: PROD_PORT });
+      return c.json({
+        configured: false,
+        ...pluginField,
+        runningPort,
+        prodPort: PROD_PORT,
+        ...lastRestartField,
+      });
     }
 
     const toolkitStatus = await readToolkitStatus(prodDir, hookHomeDir);
@@ -282,6 +373,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         commits,
         runningPort,
         prodPort: PROD_PORT,
+        ...lastRestartField,
       });
     } catch (err) {
       return c.json(
@@ -292,6 +384,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
           ...pluginField,
           runningPort,
           prodPort: PROD_PORT,
+          ...lastRestartField,
         },
       );
     }

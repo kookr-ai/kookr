@@ -240,6 +240,47 @@ wait_for_start_pids_to_exit() {
   fi
 }
 
+# Best-effort enter drain mode before SIGTERM (issue #1971).
+# Opt out: KOOKR_RESTART_SKIP_DRAIN=1.
+# Bound with a short timeout so a hung admin endpoint never blocks restart.
+#
+# Drain is in-memory only on the running process. Process kill/restart clears
+# it automatically — the fresh process accepts launches by default. No post-
+# restart `kookr resume` is required (resume would be a no-op on a new PID).
+enter_drain_before_stop() {
+  if [[ "${KOOKR_RESTART_SKIP_DRAIN:-}" == "1" ]]; then
+    echo "Skipping pre-stop drain (KOOKR_RESTART_SKIP_DRAIN=1)"
+    return 0
+  fi
+
+  local drain_url="http://127.0.0.1:${PORT}/api/admin/drain"
+  local max_time="${KOOKR_RESTART_DRAIN_TIMEOUT_SECONDS:-2}"
+  local -a curl_args=(
+    -sS
+    -o /dev/null
+    -w '%{http_code}'
+    --max-time "$max_time"
+    -X POST
+  )
+  if [[ -n "${KOOKR_ADMIN_TOKEN:-}" ]]; then
+    curl_args+=(-H "x-kookr-admin-token: ${KOOKR_ADMIN_TOKEN}")
+  fi
+  curl_args+=("$drain_url")
+
+  echo "Entering drain mode before stop (${drain_url}, timeout ${max_time}s)..."
+  local http_code=""
+  # Best-effort: never fail the restart if drain is unreachable / hung.
+  set +e
+  http_code="$(curl "${curl_args[@]}" 2>/dev/null)"
+  local curl_status=$?
+  set -e
+  if (( curl_status == 0 )) && [[ "$http_code" == "200" ]]; then
+    echo "Drain mode ON (HTTP 200) — new launches will get 503 until process exit"
+  else
+    echo "Pre-stop drain skipped/failed (HTTP ${http_code:-000}, curl=${curl_status}) — continuing restart"
+  fi
+}
+
 stop_existing_server() {
   local -a port_pids=()
   local -a start_pids=()
@@ -408,6 +449,9 @@ probe_health_for_m1() {
 
 # Print phase timings + dominant phase (RFC fast-prod-restart R5).
 # Args are wall-clock seconds (integers preferred; fractional ok as strings).
+# Also prints apiBlackoutSeconds (port free → first /api/health 200) and a
+# non-fatal WARN when blackout exceeds the 5s SLO (issue #1972).
+# Caveat: systemd path approximates port free at systemctl-restart return.
 print_restart_phase_timings() {
   local port_free_s="$1"
   local m1_s="$2"
@@ -422,15 +466,18 @@ print_restart_phase_timings() {
   d_m2="$(awk -v a="$m2_s" -v b="$m1_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
   d_smoke="$(awk -v a="$smoke_s" -v b="$m2_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
 
+  # API blackout = gap from last listen lost (port free) → first health 200.
+  local api_blackout="$d_m1"
+
   echo "Restart phase timings:"
   echo "  port free (stop→listen free):  ${d_port}s"
   echo "  M1 first /api/health 200:      ${m1_s}s wall (Δ ${d_m1}s after port free)"
   echo "  M2 deploy-ready /api/ready:    ${m2_s}s wall (Δ ${d_m2}s after M1)"
   echo "  smoke end:                     ${smoke_s}s wall (Δ ${d_smoke}s after M2)"
   echo "  total script:                  ${total_s}s"
+  echo "  apiBlackoutSeconds:            ${api_blackout}s  (port free → first /api/health; ideal <1s, SLO max 5s)"
 
   # Dominant phase among stop, M1-gap, M2-gap, smoke-gap.
-  local dominant="port-free" dominant_val="$d_port"
   awk -v p="$d_port" -v m1="$d_m1" -v m2="$d_m2" -v sm="$d_smoke" 'BEGIN {
     max=p+0; name="port-free"
     if (m1+0 > max) { max=m1+0; name="M1-health" }
@@ -438,6 +485,69 @@ print_restart_phase_timings() {
     if (sm+0 > max) { max=sm+0; name="smoke" }
     printf "  dominant phase: %s (%.1fs)\n", name, max
   }'
+
+  # Non-fatal SLO warning (issue #1972). Ideal <1s; hard warn above 5s.
+  if awk -v b="$api_blackout" 'BEGIN { exit !(b + 0 > 5) }'; then
+    echo "WARN: API blackout ${api_blackout}s exceeds 5s SLO (ideal <1s)" >&2
+  fi
+}
+
+# Persist last restart phase timings for GET /api/deploy/status (issue #1973).
+# Writes ${KOOKR_DIR}/last-restart-metrics.json (port-aware via configure_port_derived_values).
+# Best-effort: never fails the restart if the write fails.
+write_last_restart_metrics() {
+  local port_free_s="$1"
+  local m1_s="$2"
+  local m2_s="$3"
+  local smoke_s="$4"
+  local total_s="$5"
+  local path_mode="${6:-script}"
+
+  local metrics_file api_blackout d_m2 d_smoke dominant at_iso tmp
+  metrics_file="${KOOKR_DIR}/last-restart-metrics.json"
+  api_blackout="$(awk -v a="$m1_s" -v b="$port_free_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+  d_m2="$(awk -v a="$m2_s" -v b="$m1_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+  d_smoke="$(awk -v a="$smoke_s" -v b="$m2_s" 'BEGIN { d=a-b; if (d<0) d=0; printf "%.1f", d }')"
+  dominant="$(awk -v p="$port_free_s" -v m1="$api_blackout" -v m2="$d_m2" -v sm="$d_smoke" 'BEGIN {
+    max=p+0; name="port-free"
+    if (m1+0 > max) { max=m1+0; name="M1-health" }
+    if (m2+0 > max) { max=m2+0; name="M2-ready" }
+    if (sm+0 > max) { max=sm+0; name="smoke" }
+    printf "%s", name
+  }')"
+  at_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  if [[ -z "$at_iso" ]]; then
+    at_iso="unknown"
+  fi
+
+  mkdir -p "$KOOKR_DIR" 2>/dev/null || true
+  tmp="$(mktemp "${KOOKR_DIR}/last-restart-metrics.XXXXXX" 2>/dev/null || true)"
+  if [[ -z "$tmp" ]]; then
+    echo "WARN: could not write ${metrics_file} (mktemp failed)" >&2
+    return 0
+  fi
+  # Numbers only from our phase vars / awk; path_mode is a fixed enum from callers.
+  cat > "$tmp" <<EOF
+{
+  "schemaVersion": "last-restart-metrics.v1",
+  "at": "${at_iso}",
+  "port": ${PORT},
+  "path": "${path_mode}",
+  "m1Seconds": ${m1_s},
+  "m2Seconds": ${m2_s},
+  "portFreeSeconds": ${port_free_s},
+  "smokeSeconds": ${smoke_s},
+  "totalSeconds": ${total_s},
+  "apiBlackoutSeconds": ${api_blackout},
+  "dominantPhase": "${dominant}"
+}
+EOF
+  if mv -f "$tmp" "$metrics_file" 2>/dev/null; then
+    echo "Wrote restart metrics → ${metrics_file}"
+  else
+    rm -f -- "$tmp" 2>/dev/null || true
+    echo "WARN: could not write ${metrics_file}" >&2
+  fi
 }
 
 wait_for_health() {
@@ -807,8 +917,12 @@ if systemd_unit_active; then
   load_systemd_env_file
   configure_port_derived_values
   capture_predeploy_log_activity systemd
+  # Drain before systemctl restart so launches in the pre-kill window get 503
+  # rather than ECONNREFUSED while the old unit is still listening (#1971).
+  enter_drain_before_stop
   restart_systemd_unit
-  # systemctl restart is stop+start; port free is approximate at this point.
+  # systemctl restart is stop+start; port free is approximate at this point
+  # (measurement caveat for apiBlackoutSeconds on the systemd path, #1972).
   PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
   wait_for_systemd_health
   run_post_restart_checks
@@ -820,10 +934,21 @@ if systemd_unit_active; then
     "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
     "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
     "$((SECONDS - RESTART_T0))"
+  write_last_restart_metrics \
+    "${PHASE_PORT_FREE_S:-0}" \
+    "${PHASE_M1_S:-${PHASE_PORT_FREE_S:-0}}" \
+    "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
+    "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
+    "$((SECONDS - RESTART_T0))" \
+    "systemd"
   exit 0
 fi
 
 capture_predeploy_log_activity script
+# Drain before SIGTERM so warm-restart launches hit 503/draining while the old
+# process is still up, not only ECONNREFUSED after kill (#1971). Drain state is
+# in-memory and cleared by process exit — no post-restart resume needed.
+enter_drain_before_stop
 stop_existing_server
 PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
 echo "Port ${PORT} free at +${PHASE_PORT_FREE_S}s"
@@ -838,3 +963,11 @@ print_restart_phase_timings \
   "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
   "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
   "$((SECONDS - RESTART_T0))"
+write_last_restart_metrics \
+  "${PHASE_PORT_FREE_S:-0}" \
+  "${PHASE_M1_S:-${PHASE_PORT_FREE_S:-0}}" \
+  "${PHASE_M2_S:-${PHASE_M1_S:-0}}" \
+  "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
+  "$((SECONDS - RESTART_T0))" \
+  "script"
+
