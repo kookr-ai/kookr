@@ -449,6 +449,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // classify as purely healthy_throughput.
     const hungSuspectCapacityFinding = evaluateHungSuspectCapacityFinding(capacity);
 
+    // Issue #1989: project hungSuspect TTL reclaim counters onto /api/health
+    // (already on Prometheus via /metrics). Cheap in-memory read only — never
+    // a fresh reclaim scan on this path. Optional lastReclaimedAt is reserved
+    // when the metrics class starts tracking it; today only reclaimedTotal.
+    const hungSuspectTtlReclaimSnapshot = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
+    const hungSuspectTtlReclaimBlock = hungSuspectTtlReclaimSnapshot
+      ? { reclaimedTotal: hungSuspectTtlReclaimSnapshot.reclaimedTotal }
+      : undefined;
+
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
     // this process is *actually* serving without digging into `build`.
@@ -494,6 +503,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(staleProcesses ? { staleProcesses } : {}),
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
+      ...(hungSuspectTtlReclaimBlock ? { hungSuspectTtlReclaim: hungSuspectTtlReclaimBlock } : {}),
     });
   });
 

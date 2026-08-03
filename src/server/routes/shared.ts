@@ -404,8 +404,9 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
-   * hungSuspect TTL reclaim counter (issue #1935). `/metrics` reads only
-   * `getSnapshot()` — same in-memory cumulative convention as the FAA reclaim.
+   * hungSuspect TTL reclaim counter (issues #1935, #1989). `/metrics` and
+   * `/api/health` read only `getSnapshot()` — same in-memory cumulative
+   * convention as the FAA reclaim; never a fresh reclaim scan on the request path.
    */
   hungSuspectTtlReclaimMetrics?: Pick<
     import('../hung-suspect-ttl-sweep.js').HungSuspectTtlReclaimMetrics,

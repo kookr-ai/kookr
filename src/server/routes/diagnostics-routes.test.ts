@@ -29,6 +29,7 @@ import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import { DrainController } from '../drain-state.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
+import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
@@ -1231,6 +1232,48 @@ describe('diagnostics routes', () => {
       }).request('/api/health');
       const body = await res.json() as { capacity: { reservedActiveSlots?: number } };
       expect(body.capacity.reservedActiveSlots).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — hungSuspectTtlReclaim block (issue #1989)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health hungSuspectTtlReclaim block (issue #1989)', () => {
+    test('omits the block when reclaim metrics are not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('hungSuspectTtlReclaim');
+    });
+
+    test('includes reclaimedTotal and increments after a reclaim', async () => {
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const baseDeps = {
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungSuspectTtlReclaimMetrics: metrics,
+      };
+
+      const before = await mkApp(baseDeps).request('/api/health');
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as {
+        hungSuspectTtlReclaim?: { reclaimedTotal: number };
+      };
+      expect(beforeBody.hungSuspectTtlReclaim).toEqual({ reclaimedTotal: 0 });
+
+      metrics.recordReclaimed(2);
+
+      const after = await mkApp(baseDeps).request('/api/health');
+      expect(after.status).toBe(200);
+      const afterBody = (await after.json()) as {
+        hungSuspectTtlReclaim?: { reclaimedTotal: number };
+      };
+      expect(afterBody.hungSuspectTtlReclaim).toEqual({ reclaimedTotal: 2 });
     });
   });
 
