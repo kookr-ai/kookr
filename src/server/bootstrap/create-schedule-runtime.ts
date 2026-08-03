@@ -246,6 +246,8 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.resetScheduler ? { resetScheduler: deps.resetScheduler } : {}),
     // issue #1895 / #1699 WS1.3: schedule-level pinned-agent fallback.
     getAvailableAgentTypes: () => deps.launchServiceDeps.adapterRegistry.getTypes(),
+    // Unpinned schedules inherit the live server default at fire time.
+    ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
     ...(deps.launchServiceDeps.getDeprioritizedAgentTypes
       ? { getDeprioritizedAgentTypes: deps.launchServiceDeps.getDeprioritizedAgentTypes }
       : {}),

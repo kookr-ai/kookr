@@ -10,6 +10,7 @@ import {
   isPendingLedgerEntry,
   hasScheduleLoopConfig,
   normalizeScheduleLoopConfig,
+  resolveScheduleAgentSelection,
   MAX_LEDGER_ENTRIES,
   type ScheduleExecutionLedgerEntry,
 } from './schedule.js';
@@ -39,7 +40,46 @@ describe('ScheduleStore', () => {
     expect(schedule.name).toBe('Nightly Triage');
     expect(schedule.cron).toBe('0 0 * * *');
     expect(schedule.enabled).toBe(true);
-    expect(schedule.agentType).toBe('claude-code');
+    // Unpinned: inherits settings.defaultAgentType at fire time.
+    expect(schedule.agentType).toBeUndefined();
+  });
+
+  it('omits agentType on create when not provided and preserves pin when set', async () => {
+    const unpinned = store.create({
+      name: 'Default inherit',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    expect(unpinned.agentType).toBeUndefined();
+
+    const pinned = store.create({
+      name: 'Pinned grok',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      agentType: 'grok-build',
+    });
+    expect(pinned.agentType).toBe('grok-build');
+
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.get(unpinned.id)?.agentType).toBeUndefined();
+    expect(reloaded.get(pinned.id)?.agentType).toBe('grok-build');
+
+    const cleared = reloaded.updateDefinition(pinned.id, { agentType: null });
+    expect(cleared.agentType).toBeUndefined();
+    await reloaded.persist();
+    const reloaded2 = new ScheduleStore(dir);
+    await reloaded2.load();
+    expect(reloaded2.get(pinned.id)?.agentType).toBeUndefined();
+  });
+
+  it('resolveScheduleAgentSelection prefers pin then default getter', () => {
+    expect(resolveScheduleAgentSelection({}, () => 'grok-build')).toBe('grok-build');
+    expect(resolveScheduleAgentSelection({ agentType: 'codex-cli' }, () => 'grok-build')).toBe('codex-cli');
+    expect(resolveScheduleAgentSelection({})).toBe('claude-code');
   });
 
   it('persists optional effort and model pins (#1518)', async () => {

@@ -1,16 +1,19 @@
 import { existsSync } from 'node:fs';
-import type { ScheduleStore, Schedule } from '../core/schedule.js';
 import { nextRun } from '../core/cron.js';
 import {
+  type ScheduleStore,
+  type Schedule,
   ScheduleValidationError,
   hasScheduleLoopConfig,
   isTriggerLimitExhausted,
   scheduleResolutionSignature,
+  resolveScheduleAgentSelection,
 } from '../core/schedule.js';
 import {
   isAgentType,
   ROUND_ROBIN_AGENT_TYPE,
   resolvePinnedAgentFallback,
+  type AgentSelection,
   type AgentType,
   type PinnedAgentResolution,
 } from '../core/agent-types.js';
@@ -188,6 +191,12 @@ export interface ScheduleRunnerDeps {
    * deprioritization (pin is only unavailable when not registered).
    */
   getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Live `settings.defaultAgentType` getter. Used when a schedule has no
+   * agentType pin so availability substitution and launch use the same default
+   * the rest of the server would pick.
+   */
+  getDefaultAgentType?: () => AgentSelection;
   /**
    * Record one provider fallback substitution (issue #1895 → WS1.5 counter).
    * Wired to {@link ProviderHealthTracker.recordSubstitution} in production.
@@ -696,7 +705,9 @@ export class ScheduleRunner {
     // markExecutionAccepted for the resulting `queued_capacity` outcome.
     try {
       const launch = await this.deps.validator.resolveLaunch(schedule);
-      const agentType = agentResolution?.agentType ?? schedule.agentType;
+      const agentType =
+        agentResolution?.agentType
+        ?? resolveScheduleAgentSelection(schedule, this.deps.getDefaultAgentType);
       const substituted = agentResolution?.kind === 'substituted';
       // Effort/model pins target the original agent; drop them on substitution
       // so an invalid pin for the substitute cannot reintroduce dispatch_failed.
@@ -910,11 +921,14 @@ export class ScheduleRunner {
    */
   private resolveScheduleAgent(schedule: Schedule): PinnedAgentResolution | null {
     if (!this.deps.getAvailableAgentTypes) return null;
-    if (schedule.agentType === ROUND_ROBIN_AGENT_TYPE) return null;
-    if (!isAgentType(schedule.agentType)) return null;
+    // Unpinned schedules inherit the live server default before availability
+    // substitution — same agent launchTask would pick if agentType were omitted.
+    const selection = resolveScheduleAgentSelection(schedule, this.deps.getDefaultAgentType);
+    if (selection === ROUND_ROBIN_AGENT_TYPE) return null;
+    if (!isAgentType(selection)) return null;
     const available = this.deps.getAvailableAgentTypes();
     const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
-    return resolvePinnedAgentFallback(schedule.agentType, available, deprioritized);
+    return resolvePinnedAgentFallback(selection, available, deprioritized);
   }
 
   /**

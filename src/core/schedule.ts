@@ -328,8 +328,13 @@ export interface Schedule {
   exhaustedAt?: string;
   playbook: SchedulePlaybook;
   cwd: string;
-  /** Agent for each scheduled run; `round-robin` alternates per run. */
-  agentType: AgentSelection;
+  /**
+   * Optional per-schedule agent pin. When omitted, each fire resolves the live
+   * `settings.defaultAgentType` (server default) so schedules track the operator
+   * default without re-editing. Set only to force a concrete agent or
+   * `round-robin`.
+   */
+  agentType?: AgentSelection;
   /**
    * Optional per-schedule reasoning-effort pin (#1518). Forwarded into each
    * spawned task as the launch `effort` (wins over the global per-agent-type
@@ -456,7 +461,11 @@ export interface UpdateScheduleDefinitionInput {
   maxTriggers?: number | null;
   playbook?: SchedulePlaybook;
   cwd?: string;
-  agentType?: AgentSelection;
+  /**
+   * Pin a concrete agent / round-robin, or pass `null` to clear a previous pin
+   * so the schedule follows the server default again.
+   */
+  agentType?: AgentSelection | null;
   /** Set to a string to pin; omit to leave unchanged. */
   effort?: string;
   /** Set to a string to pin; omit to leave unchanged. */
@@ -467,6 +476,18 @@ export interface UpdateScheduleDefinitionInput {
    * also accepted and merges onto the top-level field.
    */
   loop?: ScheduleLoopConfig | null;
+}
+
+
+/**
+ * Resolve the agent selection a schedule should launch with.
+ * Explicit pin wins; otherwise the live server default (or code default).
+ */
+export function resolveScheduleAgentSelection(
+  schedule: Pick<Schedule, 'agentType'>,
+  getDefaultAgentType?: () => AgentSelection,
+): AgentSelection {
+  return schedule.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE;
 }
 
 export class ScheduleValidationError extends Error {
@@ -648,7 +669,8 @@ export class ScheduleStore {
         ...(input.playbook.scope ? { scope: input.playbook.scope } : {}),
       },
       cwd: input.cwd,
-      agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
+      // Omit agentType when unset so fire-time resolves settings.defaultAgentType.
+      ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(loop ? { loop } : {}),
@@ -674,7 +696,7 @@ export class ScheduleStore {
       throw new ScheduleValidationError('Invalid trigger limit', { maxTriggers: 'Must be a positive integer' });
     }
 
-    const { maxTriggers, loop: patchLoop, playbook: patchPlaybook, ...rest } = patch;
+    const { maxTriggers, loop: patchLoop, playbook: patchPlaybook, agentType: patchAgentType, ...rest } = patch;
     const nextTriggerState = computeUpdatedTriggerState(existing, maxTriggers, new Date().toISOString());
     // Loop config update (issue #1899): top-level `null` clears; nested
     // `playbook.loop` is accepted; omit leaves the existing value.
@@ -682,6 +704,13 @@ export class ScheduleStore {
     const updated: Schedule = {
       ...existing,
       ...rest,
+      // agentType: null clears the pin (follow server default); string sets it;
+      // omit leaves the existing pin. Spreading undefined would not delete the key.
+      ...(patchAgentType === null
+        ? {}
+        : patchAgentType !== undefined
+          ? { agentType: patchAgentType }
+          : {}),
       ...nextTriggerState,
       ...(patchPlaybook ? {
         playbook: {
@@ -704,6 +733,9 @@ export class ScheduleStore {
     // some runtimes; delete so hasScheduleLoopConfig sees absence.
     if (nextLoop === null) {
       delete updated.loop;
+    }
+    if (patchAgentType === null) {
+      delete updated.agentType;
     }
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
@@ -803,7 +835,11 @@ function normalizeSchedule(raw: unknown): Schedule | null {
         : {}),
     },
     cwd: String(candidate.cwd),
-    agentType: normalizeAgentSelection(candidate.agentType),
+    // Preserve absence: do not rehydrate missing agentType to DEFAULT_AGENT_TYPE
+    // so schedules can inherit the live server default at fire time.
+    ...(typeof candidate.agentType === 'string' && candidate.agentType.trim() !== ''
+      ? { agentType: normalizeAgentSelection(candidate.agentType) }
+      : {}),
     ...(typeof candidate.effort === 'string' ? { effort: candidate.effort } : {}),
     ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
     // Carry a persisted loop config so schedule-armed Ralph loops survive

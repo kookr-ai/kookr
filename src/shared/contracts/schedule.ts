@@ -160,8 +160,12 @@ export interface Schedule {
   exhaustedAt?: string;
   playbook: SchedulePlaybook;
   cwd: string;
-  /** Agent for each scheduled run; `round-robin` alternates per run. */
-  agentType: AgentSelection;
+  /**
+   * Optional per-schedule agent pin. When omitted, each fire uses the live
+   * `settings.defaultAgentType`. Set only to force a concrete agent or
+   * `round-robin`.
+   */
+  agentType?: AgentSelection;
   /** Optional per-schedule reasoning-effort pin (#1518). */
   effort?: string;
   /** Optional per-schedule model pin (#1518). */

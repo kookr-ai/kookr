@@ -91,7 +91,7 @@ describe('ScheduleService validation', () => {
 });
 
 describe('ScheduleService default agentType', () => {
-  it('uses getDefaultAgentType when create payload omits agentType', async () => {
+  it('leaves agentType unset when create payload omits it (inherits at fire time)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'schedule-service-default-agent-'));
     try {
       writePlaybook(dir);
@@ -109,14 +109,15 @@ describe('ScheduleService default agentType', () => {
         cwd: dir,
       });
 
-      expect(schedule.agentType).toBe('grok-build');
-      expect(store.get(schedule.id)!.agentType).toBe('grok-build');
+      // No pin stored — schedule-runner resolves settings.defaultAgentType per fire.
+      expect(schedule.agentType).toBeUndefined();
+      expect(store.get(schedule.id)!.agentType).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('keeps an explicit agentType over getDefaultAgentType', async () => {
+  it('keeps an explicit agentType pin', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'schedule-service-explicit-agent-'));
     try {
       writePlaybook(dir);
@@ -141,20 +142,22 @@ describe('ScheduleService default agentType', () => {
     }
   });
 
-  it('falls back to DEFAULT_AGENT_TYPE when getDefaultAgentType is absent', async () => {
+  it('clears a pin via agentType null so the schedule inherits again', async () => {
     await withService(async (service, store, dir) => {
       writePlaybook(dir);
 
       const schedule = await service.createDefinition({
-        name: 'Legacy default',
+        name: 'Clearable pin',
         cron: '0 * * * *',
         playbook: { path: 'daily.md', parameters: {} },
         cwd: dir,
+        agentType: 'codex-cli',
       });
+      expect(schedule.agentType).toBe('codex-cli');
 
-      // Code constant is still claude-code when no live settings getter is wired.
-      expect(schedule.agentType).toBe('claude-code');
-      expect(store.get(schedule.id)!.agentType).toBe('claude-code');
+      const cleared = await service.updateDefinition(schedule.id, { agentType: null });
+      expect(cleared.agentType).toBeUndefined();
+      expect(store.get(schedule.id)!.agentType).toBeUndefined();
     });
   });
 });
