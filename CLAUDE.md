@@ -107,8 +107,9 @@ The `KOOKR_PLUGIN_DIR` env var overrides the auto-resolved plugin path. Set to e
 
 Kookr's Codex adapter (`src/adapters/codex-cli-adapter.ts`) calls a Codex CLI binary configured via `KOOKR_CODEX_BIN` (defaults to `codex` on PATH). This binary comes from the forked repo at `~/git/codex`.
 
-- **Rebuild after fork changes:** `pnpm codex:rebuild` (defaults to the faster `kookr-dev` build path in `scripts/rebuild-codex.sh`)
-- **Override paths:** `CODEX_SRC` (fork location), `CODEX_INSTALL_DIR` (install target), `CODEX_BUILD_PROFILE` (`kookr-dev` by default, set to `release` for the full slow build)
+- **Rebuild after fork changes:** `pnpm codex:rebuild` (defaults to the faster `kookr-dev` build path in `scripts/rebuild-codex.sh`). Installs **both** `codex` and `codex-code-mode-host` into `CODEX_INSTALL_DIR` (default `~/bin`) — the host is a sibling binary the CLI spawns for shell/tool execution; a CLI-only install boots but fails every tool call with `failed to spawn code-mode host …/codex-code-mode-host`.
+- **Override paths:** `CODEX_SRC` (fork location), `CODEX_INSTALL_DIR` (install target), `CODEX_BUILD_PROFILE` (`kookr-dev` by default, set to `release` for the full slow build), `CODEX_HOST_FROM_RELEASE=1` (skip host source build; fetch official musl host), `CODEX_HOST_RELEASE_TAG=rust-v0.145.0` (pin the release when auto-derived tag is wrong).
+- **Host source-build fallback:** building `codex-code-mode-host` pulls `v8` with `v8_enable_sandbox`, which often 404s the rusty_v8 prebuilt (`librusty_v8_ptrcomp_sandbox_release_…`). The rebuild script falls back to the matching `openai/codex` GitHub release asset automatically; force that path with `CODEX_HOST_FROM_RELEASE=1`.
 - **After rebuilding:** restart Kookr (`pnpm prod:update`) so the new binary is picked up
 - **Known gaps in the fork:** plugin marketplace paths and permission logic still reference `.agents` — see [#210](https://github.com/kookr-ai/kookr/issues/210)
 
