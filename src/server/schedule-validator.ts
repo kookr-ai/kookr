@@ -93,6 +93,15 @@ export class ScheduleValidator {
       throw new ScheduleValidationError('Invalid schedule definition', effortModelErrors);
     }
 
+    // Agent / effort / model-only patches must not re-walk the playbook on disk.
+    // Re-validating parameters blocks legitimate pin clears when a schedule
+    // already carries legacy/unknown params (e.g. channelId) that fire-time
+    // resolution tolerates. FS + parameter validation only when the launch
+    // surface (cwd / playbook) is being changed.
+    if (patch.cwd === undefined && patch.playbook === undefined) {
+      return;
+    }
+
     const effective = {
       cwd: patch.cwd ?? existing.cwd,
       playbookPath: patch.playbook?.path ?? existing.playbook.path,
