@@ -60,7 +60,37 @@ export type BaseUrlResolution =
 export interface ResolveBaseUrlDeps {
   env: Record<string, string | undefined>;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  log?: (msg: string) => void;
 }
+
+export type ProbeWaitBudgetReason = 'default' | 'deploying' | 'recent_restart' | 'env_fallback';
+
+export interface SelectProbeWaitBudgetInput {
+  defaultBudgetMs: number;
+  /** true/false when status is reachable; null when deploy/status is down. */
+  deploying: boolean | null;
+  lastRestartAt?: string | null;
+  nowMs?: number;
+  redeployWaitMsEnv?: string | undefined;
+  redeployBudgetMs?: number;
+  recentRestartWindowMs?: number;
+}
+
+export interface ProbeWaitBudget {
+  budgetMs: number;
+  reason: ProbeWaitBudgetReason;
+}
+
+export interface DeployStatusProbe {
+  deploying: boolean;
+  lastRestartAt: string | null;
+}
+
+export const DEFAULT_REDEPLOY_WAIT_MS: number;
+export const RECENT_RESTART_WINDOW_MS: number;
+export const PROBE_TIMEOUT_MS: number;
+export const RETRY_DELAY_MS: number;
 
 export interface PostTaskArgs {
   baseUrl: string;
@@ -165,9 +195,20 @@ export function parseMaxBytes(raw: string | undefined): number;
 export function parsePortEnv(raw: string | undefined): PortEnvParse;
 export function parseRetries(raw: string | undefined): number;
 export function parseWaitTimeoutSeconds(raw: string): number;
+export function defaultProbeBudgetMs(retries: number, retryDelayMs?: number): number;
+export function parseRedeployWaitMs(raw: string | undefined | null): number | null;
+export function selectProbeWaitBudget(input: SelectProbeWaitBudgetInput): ProbeWaitBudget;
 export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string>;
 export function resolveCwd(explicit: string | null, pwd: string): string;
 export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean>;
+export function probeDeployStatus(
+  baseUrl: string,
+  timeoutMs: number,
+): Promise<DeployStatusProbe | null>;
+export function probeDeployStatusAny(
+  ports?: number[],
+  timeoutMs?: number,
+): Promise<DeployStatusProbe | null>;
 export function resolveBaseUrl(deps: ResolveBaseUrlDeps): Promise<BaseUrlResolution>;
 export function resolveParentTaskId(inputs: ResolveParentTaskIdInputs): string | null;
 export function postTask(args: PostTaskArgs): Promise<PostTaskResult>;
