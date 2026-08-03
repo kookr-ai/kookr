@@ -46,8 +46,10 @@ function command(overrides: Partial<RemoteLaunchCommand> = {}): RemoteLaunchComm
 function broker(opts: {
   maxConcurrent?: number;
   ownerId?: string;
+  agents?: Array<'claude-code' | 'codex-cli' | 'grok-build'>;
   launchTask?: (opts: RemoteLaunchTaskOpts) => Promise<{ task: { id: string }; queued: boolean; duplicate?: boolean }>;
   getActiveLaunchCount?: () => number;
+  getDefaultAgentType?: () => 'claude-code' | 'codex-cli' | 'grok-build' | 'round-robin';
   idempotencyTtlMs?: number;
   idempotencyMaxEntries?: number;
   allowCollaboratorGrants?: boolean;
@@ -59,12 +61,13 @@ function broker(opts: {
       projects: [{
         projectId: 'github.com/kookr-ai/kookr',
         cwd: '/tmp/kookr',
-        agents: ['claude-code'],
+        agents: opts.agents ?? ['claude-code'],
         maxConcurrent: opts.maxConcurrent ?? 1,
       }],
     },
     launchTask: opts.launchTask ?? vi.fn().mockResolvedValue({ task: { id: 'task-1' }, queued: false }),
     getActiveLaunchCount: opts.getActiveLaunchCount,
+    getDefaultAgentType: opts.getDefaultAgentType,
     idempotencyTtlMs: opts.idempotencyTtlMs,
     idempotencyMaxEntries: opts.idempotencyMaxEntries,
     allowCollaboratorGrants: opts.allowCollaboratorGrants,
@@ -168,6 +171,42 @@ describe('RemoteLaunchBroker', () => {
       disableDedup: false,
       launchSource: 'remote-relay',
     });
+  });
+
+  it('uses the configured default agent when payload omits agentType', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 'task-1' }, queued: false });
+    const result = await broker({
+      launchTask,
+      agents: ['claude-code', 'grok-build'],
+      getDefaultAgentType: () => 'grok-build',
+    }).handle(command({
+      payload: {
+        type: 'launch',
+        projectId: 'github.com/kookr-ai/kookr',
+        prompt: 'Fix the bug',
+      },
+    }));
+
+    expect(result).toMatchObject({ ok: true, value: { taskId: 'task-1' } });
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'grok-build',
+    }));
+  });
+
+  it('falls back to DEFAULT_AGENT_TYPE when payload omits agentType and no default getter is set', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 'task-1' }, queued: false });
+    const result = await broker({ launchTask }).handle(command({
+      payload: {
+        type: 'launch',
+        projectId: 'github.com/kookr-ai/kookr',
+        prompt: 'Fix the bug',
+      },
+    }));
+
+    expect(result).toMatchObject({ ok: true, value: { taskId: 'task-1' } });
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'claude-code',
+    }));
   });
 
   it('rejects N+1 simultaneous launches at the allowlist cap', async () => {

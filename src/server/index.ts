@@ -1595,6 +1595,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           && task.projectId === projectId
           && task.agentType === agentType
         )).length,
+        getDefaultAgentType,
         allowCollaboratorGrants: true,
       });
       console.log('[remote] launch broker enabled');

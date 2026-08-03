@@ -14,7 +14,7 @@ You run as a **normal Kookr task** in a fresh ephemeral worktree cut from `main`
 - Do all edits in your own cwd worktree — never dirty the original task's worktree or any other checkout.
 - Memory writes are gated by frontmatter `type:` — `type: feedback` is blocked. Behavioral rules never go in memory.
 - You make **one** change per reflection, and you land it only through the two human gates below — Gate 1 (direction) before you touch a file, Gate 2 (PR) before you commit/push. Never push or open a PR without passing Gate 2.
-- You always run on the `claude-code` runtime (reflect tasks are spawned as claude-code regardless of the source task's agent), so `AskUserQuestion` is available for the gates.
+- You run on the **operator's default coding agent** (settings.defaultAgentType — same as any other task). Prefer tools available on that runtime; do not assume Claude-only tools such as `AskUserQuestion` unless the runtime is Claude Code.
 - Keep your own work to a handful of turns. The gates may pause the task while you wait for the user to answer — that is expected and fine; reflect is a normal task that can wait.
 
 ## Step 1 — Read the bundle
@@ -27,7 +27,7 @@ The spawn prompt gave you a path to `bundle.json`. Read it (Read tool, single ca
   "rating": "up" | "down",
   "note": "..."?,
   "downReason": "agent_behavior" | "my_prompt"?,
-  "agentType": "claude-code" | "codex-cli",
+  "agentType": "claude-code" | "codex-cli" | "grok-build",
   "taskPrompt": "...",
   "completionDigest": { "bullets": [...] }?,
   "hookFiles": ["hook-<sessionId>.jsonl", ...]
