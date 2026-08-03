@@ -1,6 +1,6 @@
 # Operator offline recovery card
 
-Short checklist for host-class failures when you return to a machine running unattended Kookr (or only have brief SSH / Discord). Commands assume the production-style instance on port `4800` (`../kookr-prod` / `pnpm prod:*`). Adjust `KOOKR_PORT` / base URL if yours differs.
+Short checklist for host-class failures when you return to a machine running unattended Kookr (or only have brief SSH / Discord). Commands assume the production-style instance on port `4800` (`../kookr-prod`, via `pnpm prod:update` / `pnpm prod:restart`). Adjust `KOOKR_PORT` / base URL if yours differs.
 
 ## 1. Process supervisors: ready, not just health
 
