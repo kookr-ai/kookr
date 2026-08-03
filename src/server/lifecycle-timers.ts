@@ -990,7 +990,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           isHungSuspect: (task) => hungSuspectSignals(task).hungSuspect,
           getLiveness: (task) => hungSuspectSignals(task).liveness,
           getQueuedAnomalyType: (task) => hungSuspectSignals(task).queuedAnomalyType,
-          isProviderPaused: (task) => hungSuspectSignals(task).providerPaused,
+          // Use the same event+anomaly provider-pause predicate as auto-close /
+          // delivered sweeps (and the hard reaper's event scan), not the
+          // attention-signals-only flag — a purged billing anomaly with
+          // stop_failure:billing_error in the event stream must still hold
+          // (issue #1667 / independent review PR #1955).
+          isProviderPaused: isTaskProviderPaused,
           isHoldingOpenPr: deps.isTaskHoldingOpenPr,
           resolveMergedPr: deps.resolveMergedPr,
           metrics: deps.hungSuspectTtlReclaimMetrics,
