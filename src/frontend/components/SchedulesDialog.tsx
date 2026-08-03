@@ -212,9 +212,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   // True after the pending playbook couldn't be matched in the project list
   // (non-project playbook, or a different source cwd) — drives an inline note.
   const [prefillUnmatched, setPrefillUnmatched] = useState(false);
-  const [agentType, setAgentType] = useState<AgentSelection>(() =>
-    defaultAgentType ?? 'claude-code'
-  );
+  // Empty string = no pin; fire uses settings.defaultAgentType.
+  const [agentType, setAgentType] = useState<AgentSelection | ''>('');
   const [enabled, setEnabled] = useState(true);
   const [preview, setPreview] = useState<SchedulePreviewResponse | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -322,7 +321,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
         ...(maxTriggers.trim() ? { maxTriggers: Number(maxTriggers) } : {}),
         cwd: cwd.trim(),
         enabled,
-        agentType,
+        ...(agentType ? { agentType } : {}),
         playbook: {
           path: selectedPlaybook.id,
           parameters: parameterValues,
@@ -476,6 +475,11 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
               value={agentType}
               onChange={setAgentType}
               options={agentOptions}
+              defaultOptionLabel={
+                defaultAgentType
+                  ? `Server default (${defaultAgentType})`
+                  : 'Server default'
+              }
             />
 
             <label className="schedule-enable-checkbox">

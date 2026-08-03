@@ -177,6 +177,29 @@ Do the test thing.
     });
   });
 
+  it('inherits getDefaultAgentType when schedule has no agentType pin', async () => {
+    const schedule = store.create({
+      name: 'Unpinned inherit',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      // no agentType
+    });
+    expect(schedule.agentType).toBeUndefined();
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getDefaultAgentType: () => 'grok-build',
+      getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.agentType).toBe('grok-build');
+  });
+
   describe('pinned-agent fallback on unavailability (issue #1895 / #1699 WS1.3)', () => {
     it('pass-through when the pinned agent is available', async () => {
       const schedule = store.create({

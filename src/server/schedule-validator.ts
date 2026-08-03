@@ -33,7 +33,10 @@ export interface ResolvedScheduleLaunch {
 const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
 
 export class ScheduleValidator {
-  async validateCreate(input: CreateScheduleInput): Promise<void> {
+  async validateCreate(
+    input: CreateScheduleInput,
+    getDefaultAgentType?: () => AgentSelection,
+  ): Promise<void> {
     const fieldErrors: Record<string, string> = {};
 
     if (!input.name?.trim()) fieldErrors.name = 'Required';
@@ -45,7 +48,9 @@ export class ScheduleValidator {
       fieldErrors.maxTriggers = 'Must be a positive integer';
     }
 
-    const agentType = input.agentType ?? DEFAULT_AGENT_TYPE;
+    // Effort/model pins are validated against the pin when present, else the
+    // live server default (same agent the fire path will use).
+    const agentType = input.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE;
     Object.assign(fieldErrors, validateScheduleEffortModel(agentType, input.effort, input.model));
 
     if (Object.keys(fieldErrors).length > 0) {
@@ -60,7 +65,11 @@ export class ScheduleValidator {
     });
   }
 
-  async validateDefinitionUpdate(existing: Schedule, patch: UpdateScheduleDefinitionInput): Promise<void> {
+  async validateDefinitionUpdate(
+    existing: Schedule,
+    patch: UpdateScheduleDefinitionInput,
+    getDefaultAgentType?: () => AgentSelection,
+  ): Promise<void> {
     if (patch.cron !== undefined) {
       const cronError = validateCron(patch.cron);
       if (cronError) {
@@ -71,10 +80,15 @@ export class ScheduleValidator {
       throw new ScheduleValidationError('Invalid schedule definition', { maxTriggers: 'Must be a positive integer' });
     }
 
-    const agentType = patch.agentType ?? existing.agentType;
+    // null clears the pin → validate against the live default; omit keeps
+    // the existing pin (or default when the schedule never pinned).
+    const resolvedAgent =
+      patch.agentType === null
+        ? (getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE)
+        : (patch.agentType ?? existing.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE);
     const effort = patch.effort !== undefined ? patch.effort : existing.effort;
     const model = patch.model !== undefined ? patch.model : existing.model;
-    const effortModelErrors = validateScheduleEffortModel(agentType, effort, model);
+    const effortModelErrors = validateScheduleEffortModel(resolvedAgent, effort, model);
     if (Object.keys(effortModelErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', effortModelErrors);
     }

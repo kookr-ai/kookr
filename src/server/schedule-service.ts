@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { TaskStore } from '../core/tasks.js';
 import {
-  DEFAULT_AGENT_TYPE,
   type AgentSelection,
 } from '../core/agent-types.js';
 import {
@@ -179,10 +178,9 @@ export interface ScheduleServiceDeps {
   getFailureAlertThreshold?: () => number;
   /**
    * Live getter for the operator-configured default coding agent
-   * (`settings.defaultAgentType`). When a create payload omits `agentType`,
-   * schedules follow this — not the code constant `DEFAULT_AGENT_TYPE`
-   * (`claude-code`) — so quota/policy changes take effect without re-editing
-   * every register script.
+   * (`settings.defaultAgentType`). Used when a schedule has no agentType pin
+   * (create omit, or pin cleared) so fires track the server default without
+   * re-editing every schedule.
    */
   getDefaultAgentType?: () => AgentSelection;
 }
@@ -314,18 +312,11 @@ export class ScheduleService {
   }
 
   async createDefinition(input: CreateScheduleInput) {
-    // Resolve omitted agentType against the live server default before validate
-    // + store. ScheduleStore.create still falls back to DEFAULT_AGENT_TYPE for
-    // direct/test callers that bypass the service.
-    const resolved: CreateScheduleInput = {
-      ...input,
-      agentType:
-        input.agentType ??
-        this.getDefaultAgentType?.() ??
-        DEFAULT_AGENT_TYPE,
-    };
-    await this.validator.validateCreate(resolved);
-    const schedule = this.store.create(resolved);
+    // Leave agentType unset when the client omits it so the schedule inherits
+    // the live settings.defaultAgentType at each fire (not a baked pin).
+    // Explicit pins (including round-robin) still pass through unchanged.
+    await this.validator.validateCreate(input, this.getDefaultAgentType);
+    const schedule = this.store.create(input);
     await this.store.persist();
     this.broadcastSchedules();
     return this.store.getWithComputed(schedule.id)!;
@@ -334,7 +325,7 @@ export class ScheduleService {
   async updateDefinition(id: string, patch: UpdateScheduleDefinitionInput) {
     const existing = this.store.get(id);
     if (!existing) throw new ScheduleValidationError(`Schedule not found: ${id}`);
-    await this.validator.validateDefinitionUpdate(existing, patch);
+    await this.validator.validateDefinitionUpdate(existing, patch, this.getDefaultAgentType);
     this.store.updateDefinition(id, patch);
     await this.store.persist();
     this.broadcastSchedules();
