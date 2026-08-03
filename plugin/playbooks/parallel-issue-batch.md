@@ -252,6 +252,7 @@ Every terminal run writes a single machine-readable outcome record to `$OUTCOME_
   "provenance": "schedule",
   "onAmbiguity": "ask",
   "reason": "No safe, unblocked, single-PR issue remains in owner/repo",
+  "emptyClass": "product",
   "openIssueCount": 24,
   "disqualified": [
     { "issue": 123, "title": "…", "reason": "already has open PR #456" },
@@ -266,6 +267,11 @@ Every terminal run writes a single machine-readable outcome record to `$OUTCOME_
 - `done`: batch completed with delivered/open PRs (Phase 7 DONE).
 - `blocked-empty`: no eligible work remained — the drained-backlog no-op the starvation-refill trigger consumes. `disqualified` itemizes **every** open issue with its disqualifier so a human (or the refill trigger) sees exactly why the pool was empty.
 - `blocked`: a real blocker stopped the run (Phase 7 BLOCKED); `reason` explains what a human must clear.
+
+`emptyClass` (required on every `blocked-empty` write — RFC overnight-throughput PR2):
+
+- `product` (default): true drained backlog / all open issues disqualified. The starvation-refill engine may spawn an idea-scout and count consecutive empties.
+- `concurrent`: this run NO-OP'd because another **inProgress** Parallel Issue Batch for the same repo already owns the work (sibling supervisor / concurrent-batch guard). Server **must not** treat this as product starvation — no scout spawn, no consecutive inflate. Always stamp `emptyClass: "concurrent"` on these paths (do not rely on free-form reason prose alone).
 
 Write `$OUTCOME_FILE` atomically (write a temp file, then `mv`) so a reader never sees a half-written record.
 
@@ -1004,9 +1010,12 @@ Reach this when there is nothing eligible to do: the `issueSelector` matched not
 
 2. **Write the structured empty-backlog report** to `$STATE_FILE` — a `## Empty Backlog` section that itemizes every open issue (`#N — <title> — <disqualifier>`) and the open-issue count. This mirrors the correct prior behavior (batch `74022030` itemized all 24 open issues, then exited) instead of the stranding behavior (`305a603d`/`5c6ddf5c`).
 
-3. **Emit the machine-readable outcome record** to `$OUTCOME_FILE` with `outcome: "blocked-empty"` per **Durable State → Machine-readable outcome record**. Build it from `$CANDIDATES_FILE` and write it atomically (temp file, then `mv`). Stamp `generatedAt` at runtime. This is the record the starvation-refill trigger (issue #1715) consumes.
+3. **Emit the machine-readable outcome record** to `$OUTCOME_FILE` with `outcome: "blocked-empty"` per **Durable State → Machine-readable outcome record**. Build it from `$CANDIDATES_FILE` and write it atomically (temp file, then `mv`). Stamp `generatedAt` at runtime. Stamp `emptyClass`:
+   - `product` when the backlog is truly drained (this protocol).
+   - `concurrent` when this run is a pure concurrent-batch NO-OP (another inProgress Parallel Issue Batch for the same repo already owns the work — see **Concurrent-batch NO-OP** below). Never omit `emptyClass` on new writes.
+   This is the record the starvation-refill trigger (issue #1715) consumes.
 
-4. **Invoke the pipeline-starvation refill** (issue #1715). After `$OUTCOME_FILE` exists, hand it to the engine so it can spawn an on-demand `repository-idea-scout` (when dedup allows) and/or raise a pipeline-starvation alert on the second consecutive empty within 12h. Do this for **every** blocked-empty terminal path (headless and interactive) — the engine owns the dedup; the playbook must not skip the call:
+4. **Invoke the pipeline-starvation refill** (issue #1715). After `$OUTCOME_FILE` exists, hand it to the engine so it can spawn an on-demand `repository-idea-scout` (when dedup allows) and/or raise a pipeline-starvation alert on the second consecutive empty within 12h. Do this for **every** product `blocked-empty` terminal path (headless and interactive) — the engine owns the dedup; the playbook must not skip the call. For `emptyClass=concurrent`, the call is still allowed (server no-ops product side effects) but optional.
 
    ```bash
    # Build a small request body next to the outcome file (not in the git worktree).
@@ -1023,20 +1032,31 @@ Reach this when there is nothing eligible to do: the `issueSelector` matched not
    ' "$OUTCOME_FILE" "${LOCAL:-}" "$HANDLE_BODY"
 
    HANDLE_RESP="$STATE_DIR/starvation-handle-response.json"
-   curl -sS -X POST \
-     "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/pipeline-starvation/handle" \
-     -H 'Content-Type: application/json' \
-     --data-binary @"$HANDLE_BODY" \
-     -o "$HANDLE_RESP" || true
+   HANDLE_URL="${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/pipeline-starvation/handle"
+   # Retry once on non-2xx / transport failure; hard-fail after retry (PR2 R6 —
+   # do not soft-swallow with `|| true` as the only policy).
+   HANDLE_HTTP=000
+   HANDLE_OK=0
+   for HANDLE_ATTEMPT in 1 2; do
+     HANDLE_HTTP=$(curl -sS -o "$HANDLE_RESP" -w "%{http_code}" -X POST \
+       "$HANDLE_URL" \
+       -H 'Content-Type: application/json' \
+       --data-binary @"$HANDLE_BODY" 2>/dev/null) || HANDLE_HTTP=000
+     case "$HANDLE_HTTP" in
+       2??) HANDLE_OK=1; break ;;
+     esac
+     if [ "$HANDLE_ATTEMPT" = 1 ]; then sleep 2; fi
+   done
 
    # Auditability: record the engine decision + any spawned scout taskId in state.md.
-   if [ -f "$HANDLE_RESP" ]; then
+   if [ "$HANDLE_OK" = 1 ] && [ -f "$HANDLE_RESP" ]; then
      SCOUT_TASK_ID=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.spawnedScoutTaskId||"")' "$HANDLE_RESP" 2>/dev/null || true)
      SUMMARY=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.summary||"")' "$HANDLE_RESP" 2>/dev/null || true)
      {
        printf '## Pipeline starvation refill (issue #1715)\n'
        printf 'provenance: starvation-trigger\n'
        printf 'handledAt: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+       printf 'handleHttp: %s\n' "$HANDLE_HTTP"
        if [ -n "$SUMMARY" ]; then printf 'summary: %s\n' "$SUMMARY"; fi
        if [ -n "$SCOUT_TASK_ID" ]; then
          printf 'starvationScoutTaskId: %s\n' "$SCOUT_TASK_ID"
@@ -1046,11 +1066,20 @@ Reach this when there is nothing eligible to do: the `issueSelector` matched not
        printf '\n'
      } >> "$STATE_FILE"
    else
-     printf '## Pipeline starvation refill (issue #1715)\nprovenance: starvation-trigger\nerror: handle endpoint unreachable — engine did not run\n\n' >> "$STATE_FILE"
+     {
+       printf '## Pipeline starvation refill (issue #1715)\n'
+       printf 'provenance: starvation-trigger\n'
+       printf 'error: handle endpoint failed after retry (http=%s) — engine did not run\n' "$HANDLE_HTTP"
+       printf '\n'
+     } >> "$STATE_FILE"
+     # Prefer non-zero exit after retry fail so the run is not a silent soft-success.
+     echo "STOP: BLOCKED - pipeline-starvation handle failed after retry (HTTP ${HANDLE_HTTP})" > .batch-stop
+     printf 'BLOCKED: pipeline-starvation handle failed after retry (HTTP %s)\n' "$HANDLE_HTTP" >> "$STATE_FILE"
+     exit 1
    fi
    ```
 
-   The engine (not this playbook) enforces: max 1 starvation-triggered scout per repo per 4h; skip when a scout is already running/queued or a successful ideation finished in the last 4h; second consecutive `blocked-empty` within 12h emits one pipeline-starvation operational alert (first does not). Scout spawns are stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+   The engine (not this playbook) enforces: max 1 starvation-triggered scout per repo per 4h; skip when a scout is already running/queued or a successful ideation finished in the last 4h; second consecutive **product** `blocked-empty` within 12h emits one pipeline-starvation operational alert (first does not); `emptyClass=concurrent` never counts as product starvation. Scout spawns are stamped in `audit.jsonl` with `provenance: "starvation-trigger"`. Missed handles are reconciled on batch task terminal (`source=reconcile_terminal`).
 
 5. **Post a summary as task output** — a short human-facing line naming the repo, the open-issue count, and that no eligible work remains (e.g. `No safe, unblocked, single-PR issue remains in owner/repo (24 open, all disqualified) — report-and-exit, no work spawned.`). If a scout was spawned, mention its task id.
 
@@ -1062,6 +1091,16 @@ Reach this when there is nothing eligible to do: the `issueSelector` matched not
    ```
 
    In a headless run this is a clean **completed** no-op: emit the post-task lesson decision and `kookr signal completion-ready` exactly as the DONE path below (the run auto-closes after the grace period). Never enter `needs_input`. In an interactive (`HEADLESS=0`) `ask` run, you may instead surface the empty pool to the operator with a single `AskUserQuestion` after writing the report and outcome record — the report is written either way so nothing is lost if the operator is absent.
+
+### Concurrent-batch NO-OP (sibling supervisor)
+
+When another Parallel Issue Batch task for the **same** `repoFullName` is already `inProgress` (live sibling supervisor), this run must **not** spawn a second set of child implementers. That is a concurrent-capacity NO-OP, **not** product backlog drain:
+
+1. Write `$OUTCOME_FILE` with `outcome: "blocked-empty"`, `emptyClass: "concurrent"`, and a reason that names the sibling task id (e.g. `NO-OP: another inProgress Parallel Issue Batch …`).
+2. Optionally POST handle (server ignores concurrent for product starvation); do **not** invent product disqualifiers solely to look like a drained backlog.
+3. Terminal marker: `NO-ELIGIBLE-WORK` / complete as a clean no-op — same as report-and-exit for headless, but with `emptyClass=concurrent`.
+
+Never write product `emptyClass` (or omit it) for pure concurrent NO-OPs — that falsely inflates starvation consecutive counts and can spawn unneeded scouts.
 
 **Release the supervisor's own slot (single launch only).** This playbook sets
 `autoCloseOnSignal: true`, so once the batch is terminal (`DONE`, `BLOCKED`, or

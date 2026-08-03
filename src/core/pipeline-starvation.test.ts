@@ -2,9 +2,11 @@ import { describe, expect, test } from 'vitest';
 import {
   BATCH_OUTCOME_SCHEMA_VERSION,
   evaluatePipelineStarvationRefill,
+  looksLikeConcurrentBatchEmpty,
   nextPipelineStarvationState,
   parseBatchOutcomeRecord,
   repoToPlaybookSlug,
+  resolveBatchEmptyClass,
   STARVATION_ALERT_WINDOW_MS,
   STARVATION_SCOUT_DEDUP_MS,
   starvationScoutIdempotencyKey,
@@ -262,10 +264,96 @@ describe('parseBatchOutcomeRecord', () => {
     expect(parsed?.disqualified).toHaveLength(3);
   });
 
+  test('accepts optional emptyClass concurrent|product', () => {
+    expect(parseBatchOutcomeRecord(blockedEmpty({ emptyClass: 'concurrent' }) )?.emptyClass).toBe('concurrent');
+    expect(parseBatchOutcomeRecord(blockedEmpty({ emptyClass: 'product' }) )?.emptyClass).toBe('product');
+    expect(parseBatchOutcomeRecord(blockedEmpty())?.emptyClass).toBeUndefined();
+  });
+
   test('rejects wrong schema or missing fields', () => {
     expect(parseBatchOutcomeRecord({ schemaVersion: 2, outcome: 'blocked-empty' })).toBeNull();
     expect(parseBatchOutcomeRecord({ schemaVersion: 1, outcome: 'blocked-empty', repo: 'x' })).toBeNull();
     expect(parseBatchOutcomeRecord(null)).toBeNull();
+  });
+});
+
+describe('emptyClass concurrent vs product (PR2)', () => {
+  test('explicit emptyClass=concurrent does not spawn or inflate consecutive', () => {
+    const firstAt = new Date(NOW - 3 * 60 * 60 * 1000).toISOString();
+    const decision = evaluatePipelineStarvationRefill(
+      blockedEmpty({
+        runKey: 'concurrent-1',
+        emptyClass: 'concurrent',
+        reason: 'NO-OP: another inProgress Parallel Issue Batch already exists',
+      }),
+      {
+        nowMs: NOW,
+        recentSuccessfulIdeationAtMs: null,
+        scoutInFlight: false,
+        prior: prior({
+          blockedEmptyAt: [firstAt],
+          handledRunKeys: ['product-prior'],
+        }),
+      },
+    );
+    expect(decision.applicable).toBe(false);
+    expect(decision.emptyClass).toBe('concurrent');
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.emitStarvationAlert).toBe(false);
+    // Prior product empties preserved; concurrent does not append.
+    expect(decision.consecutiveBlockedEmpty).toBe(1);
+    expect(decision.blockedEmptyAtAfter).toEqual([firstAt]);
+    expect(decision.handledRunKeysAfter).toEqual(['product-prior']);
+  });
+
+  test('legacy concurrent reason without emptyClass is classified concurrent', () => {
+    const reason =
+      'NO-OP: another inProgress Parallel Issue Batch for jeanibarz/lucy already exists '
+      + '(sibling 07f6550f-889c-4390-ad7e-edfc9a351552); user-note guard';
+    expect(looksLikeConcurrentBatchEmpty(blockedEmpty({ reason }))).toBe(true);
+    expect(resolveBatchEmptyClass(blockedEmpty({ reason }))).toBe('concurrent');
+
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ reason, runKey: 'legacy-c' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.applicable).toBe(false);
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.consecutiveBlockedEmpty).toBe(0);
+  });
+
+  test('product blocked-empty without emptyClass still spawns (legacy #1715)', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'product-legacy' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(decision.applicable).toBe(true);
+    expect(decision.emptyClass).toBe('product');
+    expect(decision.spawnScout).toBe(true);
+    expect(decision.consecutiveBlockedEmpty).toBe(1);
+  });
+
+  test('explicit emptyClass=product still works when reason mentions batch', () => {
+    // Explicit product wins over concurrent-looking prose.
+    const decision = evaluatePipelineStarvationRefill(
+      blockedEmpty({
+        emptyClass: 'product',
+        reason: 'No safe issue remains after concurrent selection rules',
+      }),
+      {
+        nowMs: NOW,
+        recentSuccessfulIdeationAtMs: null,
+        scoutInFlight: false,
+        prior: null,
+      },
+    );
+    expect(decision.applicable).toBe(true);
+    expect(decision.emptyClass).toBe('product');
+    expect(decision.spawnScout).toBe(true);
   });
 });
 

@@ -128,6 +128,20 @@ describe('parallel-issue-batch playbook: pipeline-starvation refill (#1715)', ()
     expect(checklistText).toMatch(/pipeline-starvation refill/i);
     expect(checklistText).toContain('starvation-trigger');
   });
+
+  test('PR2: handle retries once and hard-fails after retry (not soft || true only)', () => {
+    expect(pb.body).toMatch(/HANDLE_ATTEMPT|for HANDLE_ATTEMPT in 1 2/);
+    expect(pb.body).toMatch(/failed after retry/);
+    expect(pb.body).toMatch(/exit 1/);
+    // Soft-only || true on the handle curl is no longer the sole policy.
+    expect(pb.body).toContain('emptyClass');
+    expect(pb.body).toContain('concurrent');
+  });
+
+  test('PR2: concurrent-batch NO-OP stamps emptyClass=concurrent', () => {
+    expect(pb.body).toContain('Concurrent-batch NO-OP');
+    expect(pb.body).toMatch(/emptyClass:\s*"concurrent"|emptyClass=concurrent/);
+  });
 });
 
 /**

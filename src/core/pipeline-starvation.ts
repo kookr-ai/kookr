@@ -34,6 +34,13 @@ export const BATCH_OUTCOME_SCHEMA_VERSION = 1 as const;
 
 export type BatchOutcomeKind = 'blocked-empty' | 'done' | 'blocked';
 
+/**
+ * Distinguishes concurrent-batch NO-OPs from product empty backlog (RFC
+ * overnight-throughput PR2). Omitted on legacy writers → treated as product.
+ * Concurrent empties must not inflate product starvation consecutive/spawn/alert.
+ */
+export type BatchEmptyClass = 'concurrent' | 'product';
+
 export interface BatchOutcomeDisqualified {
   issue: number;
   title?: string;
@@ -59,6 +66,11 @@ export interface BatchOutcomeRecord {
   generatedAt: string;
   /** Optional absolute checkout path the batch used (helps spawn the scout). */
   localPath?: string;
+  /**
+   * Product vs concurrent empty (PR2). Legacy outcomes without this field are
+   * classified via {@link resolveBatchEmptyClass} (reason/heuristic fallback).
+   */
+  emptyClass?: BatchEmptyClass;
 }
 
 export interface PipelineStarvationRepoState {
@@ -105,7 +117,10 @@ export interface PipelineStarvationContext {
 }
 
 export interface PipelineStarvationDecision {
-  /** Only true for outcome === 'blocked-empty'. */
+  /**
+   * Only true for **product** `blocked-empty`. Concurrent empties and non-empty
+   * outcomes are not applicable (no ledger inflate / spawn / product alert).
+   */
   applicable: boolean;
   /**
    * True when this exact outcome.runKey was already applied to the ledger.
@@ -123,6 +138,62 @@ export interface PipelineStarvationDecision {
   blockedEmptyAtAfter: string[];
   /** runKeys in the alert window after including current (newest last). */
   handledRunKeysAfter: string[];
+  /** Resolved empty class for blocked-empty (audit / callers). */
+  emptyClass?: BatchEmptyClass;
+}
+
+/**
+ * Patterns from overnight concurrent-batch NO-OP outcomes (user-note guards /
+ * sibling PIB supervisors). Used when `emptyClass` is omitted (legacy writers).
+ */
+const CONCURRENT_EMPTY_REASON_RE =
+  /inProgress\s+Parallel\s+Issue\s+Batch|concurrent[- ]batch(?:\s+guard)?|sibling(?:\s+Parallel\s+Issue\s+Batch|\s+batch)|NO-OP:\s*another\s+inProgress|another\s+inProgress\s+Parallel\s+Issue\s+Batch/i;
+
+/**
+ * Resolve whether a blocked-empty is product starvation or a concurrent-batch
+ * NO-OP. Explicit `emptyClass` wins; otherwise reason/disqualifier heuristics
+ * detect concurrent so server-first hygiene works before playbook emit.
+ */
+export function resolveBatchEmptyClass(outcome: BatchOutcomeRecord): BatchEmptyClass | undefined {
+  if (outcome.outcome !== 'blocked-empty') return undefined;
+  if (outcome.emptyClass === 'concurrent' || outcome.emptyClass === 'product') {
+    return outcome.emptyClass;
+  }
+  if (looksLikeConcurrentBatchEmpty(outcome)) return 'concurrent';
+  return 'product';
+}
+
+/** True when reason/disqualifiers match overnight concurrent-batch NO-OP prose. */
+export function looksLikeConcurrentBatchEmpty(outcome: BatchOutcomeRecord): boolean {
+  if (outcome.reason && CONCURRENT_EMPTY_REASON_RE.test(outcome.reason)) return true;
+  for (const row of outcome.disqualified ?? []) {
+    if (row.reason && CONCURRENT_EMPTY_REASON_RE.test(row.reason)) return true;
+    if (row.title && CONCURRENT_EMPTY_REASON_RE.test(row.title)) return true;
+  }
+  return false;
+}
+
+/** Default path for a batch run's outcome.json (runKey usually = task id). */
+export function defaultParallelIssueBatchOutcomePath(
+  repo: string,
+  runKey: string,
+  home = homedir(),
+): string {
+  return join(
+    home,
+    '.kookr',
+    'playbook-state',
+    'parallel-issue-batch',
+    repoToPlaybookSlug(repo),
+    runKey,
+    'outcome.json',
+  );
+}
+
+export function isParallelIssueBatchPlaybookId(playbookId: string | undefined): boolean {
+  if (!playbookId) return false;
+  const base = playbookId.replace(/\\/g, '/').split('/').pop() ?? playbookId;
+  return base === 'parallel-issue-batch.md' || base === 'parallel-issue-batch';
 }
 
 const REPO_FULL_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -208,6 +279,26 @@ export function evaluatePipelineStarvationRefill(
   // longer of the two after window pruning — timestamps still drive consecutive.
   const alignedKeys = priorKeys.slice(-priorTimes.length);
 
+  const emptyClass = resolveBatchEmptyClass(outcome) ?? 'product';
+
+  // Concurrent-batch NO-OPs are not product starvation (PR2). Do not inflate
+  // consecutive count, spawn scout, or fire product alert — even when the
+  // outcome kind is still `blocked-empty` (legacy playbook shape).
+  if (emptyClass === 'concurrent') {
+    return {
+      applicable: false,
+      alreadyHandled: false,
+      spawnScout: false,
+      spawnSkipReason: 'emptyClass=concurrent — not product starvation',
+      emitStarvationAlert: false,
+      alertSkipReason: 'concurrent batch NO-OP — not product starvation',
+      consecutiveBlockedEmpty: priorTimes.length,
+      blockedEmptyAtAfter: priorTimes,
+      handledRunKeysAfter: priorKeys,
+      emptyClass,
+    };
+  }
+
   if (alignedKeys.includes(outcome.runKey) || priorKeys.includes(outcome.runKey)) {
     return {
       applicable: true,
@@ -219,6 +310,7 @@ export function evaluatePipelineStarvationRefill(
       consecutiveBlockedEmpty: priorTimes.length,
       blockedEmptyAtAfter: priorTimes,
       handledRunKeysAfter: priorKeys,
+      emptyClass,
     };
   }
 
@@ -277,6 +369,7 @@ export function evaluatePipelineStarvationRefill(
     consecutiveBlockedEmpty,
     blockedEmptyAtAfter,
     handledRunKeysAfter,
+    emptyClass,
   };
 }
 
@@ -363,6 +456,11 @@ export function parseBatchOutcomeRecord(raw: unknown): BatchOutcomeRecord | null
       .filter((row) => Number.isFinite(row.issue))
     : undefined;
 
+  const emptyClass =
+    o.emptyClass === 'concurrent' || o.emptyClass === 'product'
+      ? o.emptyClass
+      : undefined;
+
   return {
     schemaVersion: BATCH_OUTCOME_SCHEMA_VERSION,
     outcome: o.outcome,
@@ -376,6 +474,7 @@ export function parseBatchOutcomeRecord(raw: unknown): BatchOutcomeRecord | null
     disqualified,
     generatedAt: o.generatedAt,
     localPath: typeof o.localPath === 'string' ? o.localPath : undefined,
+    emptyClass,
   };
 }
 

@@ -272,6 +272,12 @@ export interface RouteDeps {
   issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
   /** Threaded to TaskRouteDeps so REST task signals can notify remote-chat origins. */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /**
+   * Optional pre-built pipeline-starvation service (issue #1715 / PR2). When
+   * set, routes reuse it so bootstrap can also wire terminal reconcile on the
+   * same instance. When absent, createRoutes constructs one from launch deps.
+   */
+  pipelineStarvation?: import('../pipeline-starvation-service.js').PipelineStarvationService;
   taskStore: TaskStore;
   monitor: Monitor;
   queue: AttentionQueue;
