@@ -12,6 +12,50 @@ export interface ToolkitStatus {
   staleCount: number;
 }
 
+/**
+ * Optional last-restart timings from GET /api/deploy/status (issue #1973).
+ * Present only after a successful `prod:restart` that wrote metrics; omitted
+ * when the file is missing/corrupt. Mirrors server `LastRestartMetrics`.
+ */
+export interface LastRestartMetrics {
+  at: string;
+  m1Seconds: number;
+  m2Seconds: number;
+  apiBlackoutSeconds: number;
+  dominantPhase: string;
+  portFreeSeconds?: number;
+  smokeSeconds?: number;
+  totalSeconds?: number;
+  path?: string;
+}
+
+/** SLO tiers for API blackout: ideal <1s, max <5s (issue #1979). */
+export type ApiBlackoutTier = 'ok' | 'warn' | 'bad';
+
+/** Ideal blackout target (seconds). Green when strictly below this. */
+export const API_BLACKOUT_IDEAL_SECONDS = 1;
+/** Soft SLO max (seconds). Amber below this; red at/above. */
+export const API_BLACKOUT_SLO_SECONDS = 5;
+
+/**
+ * Map measured API blackout seconds to a traffic-light tier for the deploy
+ * popover. Thresholds match the ops SLO: ideal <1s, max <5s.
+ */
+export function apiBlackoutTier(seconds: number): ApiBlackoutTier {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'bad';
+  if (seconds < API_BLACKOUT_IDEAL_SECONDS) return 'ok';
+  if (seconds < API_BLACKOUT_SLO_SECONDS) return 'warn';
+  return 'bad';
+}
+
+/** Format a duration in seconds for compact popover display (e.g. `0.8s`, `3s`). */
+export function formatBlackoutSeconds(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '—';
+  const rounded = Math.round(seconds * 10) / 10;
+  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${text}s`;
+}
+
 export interface DeployStatus {
   configured: boolean;
   available?: boolean;
@@ -28,6 +72,11 @@ export interface DeployStatus {
   runningPort?: number;
   /** Port the deploy button targets (the production instance). */
   prodPort?: number;
+  /**
+   * Last successful prod:restart phase timings (issue #1973/#1979).
+   * Optional — when absent the deploy popover omits blackout UI entirely.
+   */
+  lastRestart?: LastRestartMetrics;
 }
 
 /**

@@ -170,3 +170,131 @@ describe('TopBar plugin update UX', () => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: originalPlatform });
   });
 });
+
+describe('TopBar lastRestart blackout display (issue #1979)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useKookrStore.setState({
+      connected: true,
+      buildInfo: {
+        commitHash: 'abc123def456',
+        commitShort: 'abc123d',
+        branch: 'main',
+        buildTimestamp: '2026-05-29T12:00:00.000Z',
+        version: '0.0.0',
+      },
+      serverStartedAt: '2026-05-29T12:00:00.000Z',
+      totalSpendUsd: 0,
+      agents: [],
+      circuitBreakers: [],
+      diagnosticReport: null,
+      coordinator: null,
+      deploying: false,
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  async function openPopoverWithStatus(body: unknown): Promise<void> {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(fetchResponse(body))));
+    renderTopBar();
+    await flush();
+    await act(async () => {
+      container.querySelector<HTMLElement>('.version-badge')?.click();
+    });
+    await flush();
+  }
+
+  test('with fixture lastRestart, popover shows blackout seconds and phase timings', async () => {
+    await openPopoverWithStatus({
+      configured: true,
+      available: false,
+      runningPort: 4800,
+      prodPort: 4800,
+      lastRestart: {
+        at: '2026-08-03T12:00:00Z',
+        m1Seconds: 5,
+        m2Seconds: 40,
+        apiBlackoutSeconds: 3,
+        dominantPhase: 'M2-ready',
+      },
+    });
+
+    const block = container.querySelector('[data-testid="deploy-last-restart"]');
+    expect(block).not.toBeNull();
+    expect(block?.className).toContain('deploy-blackout--warn');
+    expect(container.querySelector('[data-testid="deploy-api-blackout"]')?.textContent).toBe('3s');
+    expect(container.textContent).toContain('API blackout');
+    expect(container.querySelector('[data-testid="deploy-phase-timings"]')?.textContent).toContain(
+      'M1 5s',
+    );
+    expect(container.querySelector('[data-testid="deploy-phase-timings"]')?.textContent).toContain(
+      'M2 40s',
+    );
+    expect(container.querySelector('[data-testid="deploy-phase-timings"]')?.textContent).toContain(
+      'dominant M2-ready',
+    );
+  });
+
+  test('uses green tier when blackout is under 1s', async () => {
+    await openPopoverWithStatus({
+      configured: true,
+      available: false,
+      runningPort: 4800,
+      prodPort: 4800,
+      lastRestart: {
+        at: '2026-08-03T12:00:00Z',
+        m1Seconds: 1,
+        m2Seconds: 10,
+        apiBlackoutSeconds: 0.4,
+        dominantPhase: 'M1-listen',
+      },
+    });
+
+    const block = container.querySelector('[data-testid="deploy-last-restart"]');
+    expect(block?.className).toContain('deploy-blackout--ok');
+    expect(container.querySelector('[data-testid="deploy-api-blackout"]')?.textContent).toBe('0.4s');
+  });
+
+  test('uses red tier when blackout is at or above 5s', async () => {
+    await openPopoverWithStatus({
+      configured: true,
+      available: false,
+      runningPort: 4800,
+      prodPort: 4800,
+      lastRestart: {
+        at: '2026-08-03T12:00:00Z',
+        m1Seconds: 2,
+        m2Seconds: 30,
+        apiBlackoutSeconds: 9,
+        dominantPhase: 'M2-ready',
+      },
+    });
+
+    const block = container.querySelector('[data-testid="deploy-last-restart"]');
+    expect(block?.className).toContain('deploy-blackout--bad');
+    expect(container.querySelector('[data-testid="deploy-api-blackout"]')?.textContent).toBe('9s');
+  });
+
+  test('without lastRestart field, blackout UI is omitted (UI otherwise unchanged)', async () => {
+    await openPopoverWithStatus({
+      configured: true,
+      available: false,
+      runningPort: 4800,
+      prodPort: 4800,
+    });
+
+    expect(container.querySelector('[data-testid="deploy-last-restart"]')).toBeNull();
+    expect(container.querySelector('[data-testid="deploy-phase-timings"]')).toBeNull();
+    expect(container.textContent).not.toContain('API blackout');
+    expect(container.textContent).toContain('Production is up to date');
+  });
+});

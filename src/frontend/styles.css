@@ -248,6 +248,29 @@ kbd {
   align-items: center;
   gap: 6px;
 }
+/* Last-restart API blackout (issue #1979): green <1s, amber <5s, red ≥5s */
+.deploy-blackout {
+  font-size: 11px;
+  padding: 2px 0 2px;
+  font-weight: 500;
+}
+.deploy-blackout-label {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+.deploy-blackout strong {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.deploy-blackout--ok { color: var(--green); }
+.deploy-blackout--warn { color: var(--amber); }
+.deploy-blackout--bad { color: var(--red); }
+.deploy-phase-timings {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  padding: 0 0 2px;
+  line-height: 1.35;
+}
 .btn-deploy {
   display: block;
   width: 100%;

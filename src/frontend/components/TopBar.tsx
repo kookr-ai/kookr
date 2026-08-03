@@ -19,6 +19,8 @@ import {
   triggerDeploy as requestDeploy,
   refreshToolkitLinks as requestToolkitRefresh,
   updateToolkitPlugin as requestPluginUpdate,
+  apiBlackoutTier,
+  formatBlackoutSeconds,
   type DeployStatus,
 } from '../api/index.js';
 import { loadDeployIntent } from '../store/deploy-intent-storage.js';
@@ -294,6 +296,8 @@ export function TopBar({
   const queueDotCount = Math.max(totalFindings, 1);
   const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
   const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
+  const lastRestart = deployStatus?.lastRestart;
+  const blackoutTier = lastRestart ? apiBlackoutTier(lastRestart.apiBlackoutSeconds) : null;
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -396,6 +400,36 @@ export function TopBar({
                     </button>
                   </>
                 )}
+              </>
+            )}
+
+            {/* Last restart blackout + phase timings (issue #1979). Optional field
+                from #1973; omit entire block when API has no lastRestart. */}
+            {lastRestart && blackoutTier && (
+              <>
+                <div className="deploy-divider" />
+                <div
+                  className={`deploy-blackout deploy-blackout--${blackoutTier}`}
+                  data-testid="deploy-last-restart"
+                  role="status"
+                  aria-label={`API blackout ${formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}; ideal under 1 second, SLO under 5 seconds; last restart ${formatDateTime(lastRestart.at)}`}
+                  title={`Ideal <1s · SLO max <5s · last restart ${formatDateTime(lastRestart.at)}`}
+                >
+                  <span className="deploy-blackout-label">API blackout</span>{' '}
+                  <strong data-testid="deploy-api-blackout">
+                    {formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}
+                  </strong>
+                  <span className="deploy-range">
+                    ideal &lt;1s · SLO &lt;5s · {timeAgo(lastRestart.at)}
+                  </span>
+                </div>
+                <div className="deploy-phase-timings" data-testid="deploy-phase-timings">
+                  M1 {formatBlackoutSeconds(lastRestart.m1Seconds)}
+                  {' · '}
+                  M2 {formatBlackoutSeconds(lastRestart.m2Seconds)}
+                  {' · '}
+                  dominant {lastRestart.dominantPhase}
+                </div>
               </>
             )}
 

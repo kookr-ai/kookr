@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { getCostComparison } from './panels.js';
-import { getDeployStatus } from './deploy.js';
+import {
+  apiBlackoutTier,
+  formatBlackoutSeconds,
+  getDeployStatus,
+} from './deploy.js';
 import { patchTaskEdges } from './tasks.js';
 import { createTaskShare, getTaskShares, SHARE_CSRF_HEADER } from './sharing.js';
 
@@ -37,6 +41,32 @@ describe('getDeployStatus', () => {
       Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ configured: true }) } as Response),
     ));
     await expect(getDeployStatus()).resolves.toEqual({ ok: true, status: 200, body: { configured: true } });
+  });
+});
+
+describe('apiBlackoutTier (issue #1979)', () => {
+  test('green below 1s, amber under 5s, red at/above 5s', () => {
+    expect(apiBlackoutTier(0)).toBe('ok');
+    expect(apiBlackoutTier(0.9)).toBe('ok');
+    expect(apiBlackoutTier(1)).toBe('warn');
+    expect(apiBlackoutTier(3)).toBe('warn');
+    expect(apiBlackoutTier(4.9)).toBe('warn');
+    expect(apiBlackoutTier(5)).toBe('bad');
+    expect(apiBlackoutTier(9)).toBe('bad');
+  });
+
+  test('treats non-finite values as bad', () => {
+    expect(apiBlackoutTier(Number.NaN)).toBe('bad');
+    expect(apiBlackoutTier(-1)).toBe('bad');
+  });
+});
+
+describe('formatBlackoutSeconds', () => {
+  test('renders compact second strings', () => {
+    expect(formatBlackoutSeconds(0.8)).toBe('0.8s');
+    expect(formatBlackoutSeconds(3)).toBe('3s');
+    expect(formatBlackoutSeconds(3.0)).toBe('3s');
+    expect(formatBlackoutSeconds(1.25)).toBe('1.3s');
   });
 });
 
