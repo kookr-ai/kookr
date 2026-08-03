@@ -196,6 +196,48 @@ describe('renderPrometheusExposition', () => {
     expect(output).not.toContain('lastFailure');
   });
 
+  test('renders per-repo GitHub state-fetch failure counters (issue #1946)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      githubStateFetchFailures: [
+        {
+          repo: 'acme/app',
+          failures: 3,
+          lastError: 'Could not resolve to a Repository',
+          lastAtMs: 1_700_000_000_000,
+        },
+        {
+          repo: 'octo/widgets',
+          failures: 1,
+          lastError: 'gh exited 1',
+          lastAtMs: 1_700_000_000_100,
+        },
+      ],
+    });
+
+    expect(output).toContain(
+      '# HELP kookr_github_state_fetch_failures_total Total non-rate-limit GitHub state-batch fetch failures by repository.',
+    );
+    expect(output).toContain('# TYPE kookr_github_state_fetch_failures_total counter');
+    expect(output).toContain('kookr_github_state_fetch_failures_total{repo="acme/app"} 3');
+    expect(output).toContain('kookr_github_state_fetch_failures_total{repo="octo/widgets"} 1');
+    // Diagnostic fields stay off the scrape surface (labels + counter only).
+    expect(output).not.toContain('lastError');
+    expect(output).not.toContain('Could not resolve');
+  });
+
+  test('emits GitHub state-fetch failure HELP/TYPE with no series when empty (issue #1946)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      githubStateFetchFailures: [],
+    });
+
+    expect(output).toContain('# TYPE kookr_github_state_fetch_failures_total counter');
+    expect(output).not.toMatch(/kookr_github_state_fetch_failures_total\{/);
+  });
+
   test('renders terminalWrite saturation gauges (issue #1776)', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,

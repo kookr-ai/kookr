@@ -197,27 +197,103 @@ interface GraphQLIssueNode {
 
 /** Log every Nth consecutive per-repo batch failure (1st, then every Nth with running count). */
 const FETCH_STATE_FAIL_LOG_EVERY = 10;
-/** Consecutive non-rate-limit batch failures per `owner/repo` (cleared on success). */
-const fetchStateFailCounts = new Map<string, number>();
+/**
+ * Cap tracked repos so the failure map stays bounded (issue #1946).
+ * Keys are the small set of repos Kookr actually polls; the cap is a safety rail.
+ */
+const FETCH_STATE_FAIL_MAX_REPOS = 64;
 
-/** Test-only: reset per-repo failure log throttle state. */
-export function resetFetchStateFailureThrottleForTests(): void {
-  fetchStateFailCounts.clear();
+/** Per-repo non-rate-limit batch-failure state (issue #1946). */
+interface FetchStateFailEntry {
+  /** Cumulative process-lifetime failure count (Prometheus counter). */
+  failures: number;
+  /**
+   * Consecutive failures since last success — drives log throttle only.
+   * Cleared on a successful batch for that repo.
+   */
+  consecutive: number;
+  lastError: string;
+  lastAtMs: number;
 }
 
-function logFetchStateBatchFailure(owner: string, repo: string, err: unknown): void {
+const fetchStateFailByRepo = new Map<string, FetchStateFailEntry>();
+
+/** Snapshot entry for `/metrics` and diagnostics (issue #1946). */
+export interface GitHubStateFetchFailureSnapshotEntry {
+  /** `owner/repo` label. */
+  repo: string;
+  /** Cumulative non-rate-limit batch failures for this process. */
+  failures: number;
+  lastError: string;
+  lastAtMs: number;
+}
+
+/**
+ * Process-lifetime per-repo state-fetch failure counters for Prometheus (issue #1946).
+ * Ordered by repo label for stable exposition.
+ */
+export function getGitHubStateFetchFailureSnapshot(): GitHubStateFetchFailureSnapshotEntry[] {
+  return Array.from(fetchStateFailByRepo.entries())
+    .map(([repo, entry]) => ({
+      repo,
+      failures: entry.failures,
+      lastError: entry.lastError,
+      lastAtMs: entry.lastAtMs,
+    }))
+    .sort((a, b) => a.repo.localeCompare(b.repo));
+}
+
+/** Test-only: reset per-repo failure counters and log throttle state. */
+export function resetFetchStateFailureThrottleForTests(): void {
+  fetchStateFailByRepo.clear();
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function ensureFetchStateFailCapacity(key: string): void {
+  if (fetchStateFailByRepo.has(key)) return;
+  if (fetchStateFailByRepo.size < FETCH_STATE_FAIL_MAX_REPOS) return;
+  // Evict least-recently-updated entry so the map stays bounded.
+  let oldestKey: string | null = null;
+  let oldestAt = Infinity;
+  for (const [repo, entry] of fetchStateFailByRepo) {
+    if (entry.lastAtMs < oldestAt) {
+      oldestAt = entry.lastAtMs;
+      oldestKey = repo;
+    }
+  }
+  if (oldestKey) fetchStateFailByRepo.delete(oldestKey);
+}
+
+function recordFetchStateBatchFailure(owner: string, repo: string, err: unknown): void {
   const key = `${owner}/${repo}`;
-  const count = (fetchStateFailCounts.get(key) ?? 0) + 1;
-  fetchStateFailCounts.set(key, count);
-  // Throttle spam: first occurrence + every Nth thereafter, with running count.
-  if (count === 1 || count % FETCH_STATE_FAIL_LOG_EVERY === 0) {
-    const suffix = count === 1 ? '' : ` (x${count})`;
+  ensureFetchStateFailCapacity(key);
+  const prev = fetchStateFailByRepo.get(key);
+  const consecutive = (prev?.consecutive ?? 0) + 1;
+  const failures = (prev?.failures ?? 0) + 1;
+  fetchStateFailByRepo.set(key, {
+    failures,
+    consecutive,
+    lastError: errorMessage(err),
+    lastAtMs: Date.now(),
+  });
+  // Throttle spam: first consecutive occurrence + every Nth thereafter, with running count.
+  if (consecutive === 1 || consecutive % FETCH_STATE_FAIL_LOG_EVERY === 0) {
+    const suffix = consecutive === 1 ? '' : ` (x${consecutive})`;
     console.error(`Failed to fetch GitHub state batch for ${owner}/${repo}${suffix}:`, err);
   }
 }
 
 function clearFetchStateBatchFailure(owner: string, repo: string): void {
-  fetchStateFailCounts.delete(`${owner}/${repo}`);
+  const key = `${owner}/${repo}`;
+  const entry = fetchStateFailByRepo.get(key);
+  if (!entry) return;
+  // Keep cumulative failures for Prometheus; only reset the log throttle streak.
+  if (entry.consecutive === 0) return;
+  fetchStateFailByRepo.set(key, { ...entry, consecutive: 0 });
 }
 
 function toError(err: unknown): Error {
@@ -269,7 +345,7 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
         console.warn(`[github] rate limited while fetching state for ${group.owner}/${group.repo}: ${rateLimit.message}`);
         return result;
       }
-      logFetchStateBatchFailure(group.owner, group.repo, err);
+      recordFetchStateBatchFailure(group.owner, group.repo, err);
       failures.push(toError(err));
     }
   }
