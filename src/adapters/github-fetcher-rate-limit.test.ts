@@ -23,6 +23,7 @@ vi.mock('node:child_process', () => {
 const {
   fetchBatchRepoHealth,
   fetchStates,
+  getGitHubStateFetchFailureSnapshot,
   resetFetchStateFailureThrottleForTests,
 } = await import('./github-fetcher.js');
 
@@ -390,6 +391,85 @@ x-ratelimit-reset: ${Date.parse('2026-06-18T00:07:00.000Z') / 1000}
     expect(errorSpy.mock.calls[1]![0]).toBe(
       'Failed to fetch GitHub state batch for acme/app (x10):',
     );
+    errorSpy.mockRestore();
+  });
+
+  it('increments per-repo state-fetch failure counter on non-rate-limit batch failure (issue #1946)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    childProcessMocks.execFilePromisified.mockRejectedValue(
+      new Error('Could not resolve to a Repository with the name acme/app'),
+    );
+
+    await expect(fetchStates([ref('issue', 7)])).rejects.toBeInstanceOf(AggregateError);
+    await expect(fetchStates([ref('issue', 7)])).rejects.toBeInstanceOf(AggregateError);
+
+    const snapshot = getGitHubStateFetchFailureSnapshot();
+    expect(snapshot).toEqual([
+      expect.objectContaining({
+        repo: 'acme/app',
+        failures: 2,
+        lastError: 'Could not resolve to a Repository with the name acme/app',
+      }),
+    ]);
+    expect(typeof snapshot[0]!.lastAtMs).toBe('number');
+    errorSpy.mockRestore();
+  });
+
+  it('does not increment state-fetch failure counter on rate-limit (issue #1946)', async () => {
+    childProcessMocks.execFilePromisified.mockResolvedValue({
+      stdout: JSON.stringify({
+        errors: [
+          { type: 'RATE_LIMITED', message: 'API rate limit exceeded. Retry-After: 90' },
+        ],
+      }),
+      stderr: '',
+    });
+
+    await fetchStates([ref('issue', 7)]);
+
+    expect(getGitHubStateFetchFailureSnapshot()).toEqual([]);
+  });
+
+  it('tracks failures per repo and keeps cumulative count after success (issue #1946)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const otherRepo = { ...ref('issue', 8), owner: 'octo', repo: 'widgets' };
+    const successBody = {
+      data: {
+        repository: {
+          issue_7: {
+            title: 'Recovered',
+            state: 'OPEN',
+            author: { login: 'alice' },
+            labels: { nodes: [] },
+            comments: { totalCount: 0 },
+          },
+        },
+      },
+    };
+
+    childProcessMocks.execFilePromisified.mockRejectedValueOnce(
+      new Error('Could not resolve to a Repository with the name acme/app'),
+    );
+    await expect(fetchStates([ref('issue', 7)])).rejects.toBeInstanceOf(AggregateError);
+
+    childProcessMocks.execFilePromisified.mockRejectedValueOnce(
+      new Error('Could not resolve to a Repository with the name octo/widgets'),
+    );
+    await expect(fetchStates([otherRepo])).rejects.toBeInstanceOf(AggregateError);
+
+    // Success for acme resets consecutive throttle but keeps cumulative failures.
+    childProcessMocks.execFilePromisified.mockResolvedValueOnce({
+      stdout: JSON.stringify(successBody),
+      stderr: '',
+    });
+    const recovered = await fetchStates([ref('issue', 7)]);
+    expect(recovered.issues).toHaveLength(1);
+
+    const byRepo = Object.fromEntries(
+      getGitHubStateFetchFailureSnapshot().map((e) => [e.repo, e.failures]),
+    );
+    expect(byRepo['acme/app']).toBe(1);
+    expect(byRepo['octo/widgets']).toBe(1);
     errorSpy.mockRestore();
   });
 

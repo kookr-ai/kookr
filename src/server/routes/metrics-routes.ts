@@ -18,6 +18,7 @@ import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import type { RouteDeps } from './shared.js';
 import type { LessonYieldSnapshot } from '../../core/lesson-decision.js';
+import { getGitHubStateFetchFailureSnapshot } from '../../adapters/github-fetcher.js';
 
 export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/metrics', (c) => {
@@ -83,6 +84,8 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
             },
           }
         : {}),
+      // Module-level process counters (issue #1946) — always-on, no deps wiring.
+      githubStateFetchFailures: getGitHubStateFetchFailureSnapshot(),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });

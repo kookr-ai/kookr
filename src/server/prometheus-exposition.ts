@@ -22,6 +22,7 @@ import {
   type CapacityLedger,
 } from '../core/capacity-ledger.js';
 import type { LessonYieldSnapshot } from '../core/lesson-decision.js';
+import type { GitHubStateFetchFailureSnapshotEntry } from '../adapters/github-fetcher.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
@@ -99,6 +100,12 @@ export interface PrometheusExpositionSnapshot {
    * start. Omitted only in harnesses that never wire the sweep.
    */
   hungSuspectReclaim?: { reclaimedTotal: number };
+  /**
+   * Per-repo GitHub state-fetch non-rate-limit failure counters (issue #1946).
+   * Empty array / omitted → HELP/TYPE only (no series) so scrapers see the
+   * family without fabricated zero-label series.
+   */
+  githubStateFetchFailures?: GitHubStateFetchFailureSnapshotEntry[];
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -127,6 +134,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
+  appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 
   return `${lines.join('\n')}\n`;
 }
@@ -484,6 +492,24 @@ function appendHungSuspectReclaimMetrics(
     '# TYPE kookr_hung_suspect_ttl_reclaimed_total counter',
     metricLine('kookr_hung_suspect_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
   );
+}
+
+/**
+ * Per-repo GitHub state-fetch failure counter (issue #1946). Always emits
+ * HELP/TYPE so scrapers discover the family; series appear only for repos
+ * that have recorded at least one non-rate-limit batch failure.
+ */
+function appendGitHubStateFetchMetrics(
+  lines: string[],
+  entries: GitHubStateFetchFailureSnapshotEntry[] = [],
+): void {
+  lines.push(
+    '# HELP kookr_github_state_fetch_failures_total Total non-rate-limit GitHub state-batch fetch failures by repository.',
+    '# TYPE kookr_github_state_fetch_failures_total counter',
+  );
+  for (const entry of entries) {
+    lines.push(metricLine('kookr_github_state_fetch_failures_total', { repo: entry.repo }, entry.failures));
+  }
 }
 
 /**
