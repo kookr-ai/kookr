@@ -30,7 +30,7 @@ the restart script's phase timers, or a measurement while something other than
 ## Quick start
 
 Two terminals from the **dev checkout** (the tree that owns `scripts/` and
-`pnpm prod:*`):
+`pnpm prod:restart` / `pnpm prod:update`):
 
 ```bash
 # Terminal A — start the probe first (exits after one blackout)
