@@ -59,7 +59,7 @@ jobs:
               - '.hooks/**'
               - 'plugin/**'
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v7
         with:
@@ -209,7 +209,7 @@ jobs:
               - 'tsconfig*.json'
               - '.github/workflows/ci.yml'
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
         if: steps.filter.outputs.e2e != 'false'
 
       - uses: actions/setup-node@v7
@@ -312,7 +312,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@v6.0.9
 
       - uses: actions/setup-node@v7
         with:
