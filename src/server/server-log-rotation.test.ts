@@ -85,6 +85,7 @@ describe('rotateServerLogGenerations / maybeRotateServerLog', () => {
       logPath,
       maxBytes: 10,
       generations: 3,
+      stdioOwnsLog: () => true,
       reopenStdioFn: reopen,
     });
 
@@ -93,6 +94,45 @@ describe('rotateServerLogGenerations / maybeRotateServerLog', () => {
     expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('old-content-that-is-long-enough\n');
     expect(readFileSync(logPath, 'utf8')).toBe('');
     expect(reopen).toHaveBeenCalledWith(logPath);
+  });
+
+  test('skips rotation when stdout is not attached to server.log (no journald/TTY steal)', () => {
+    writeFileSync(logPath, 'old-content-that-is-long-enough\n');
+    const reopen = vi.fn();
+    const result = maybeRotateServerLog({
+      logPath,
+      maxBytes: 10,
+      generations: 3,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+    });
+    expect(result).toMatchObject({ rotated: false, skippedReason: 'stdio-not-attached' });
+    expect(reopen).not.toHaveBeenCalled();
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+    expect(readFileSync(logPath, 'utf8')).toBe('old-content-that-is-long-enough\n');
+  });
+
+  test('freopen failure after rename still reports rotated and leaves a live file', () => {
+    writeFileSync(logPath, 'before-rotation-long\n');
+    let attempts = 0;
+    const result = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: () => {
+        attempts += 1;
+        throw new Error('freopen boom');
+      },
+    });
+    expect(result.rotated).toBe(true);
+    expect(result.error).toMatch(/freopen/i);
+    expect(attempts).toBe(2); // initial + one retry
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('before-rotation-long\n');
+    expect(existsSync(logPath)).toBe(true);
+    // Live path is writable after recovery ensureLiveLogExists
+    appendFileSync(logPath, 'after\n');
+    expect(readFileSync(logPath, 'utf8')).toContain('after\n');
   });
 
   test('does not rotate when under threshold', () => {
@@ -138,6 +178,7 @@ describe('rotateServerLogGenerations / maybeRotateServerLog', () => {
       logPath,
       maxBytes: 5,
       generations: 2,
+      stdioOwnsLog: () => true,
       reopenStdioFn: (path) => {
         writeFileSync(path, '');
       },

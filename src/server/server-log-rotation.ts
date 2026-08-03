@@ -4,18 +4,23 @@
  * `scripts/prod-restart.sh` already rotates generations on start, but multi-day
  * unattended runs can grow a single live `~/.kookr/server.log` without bound
  * between restarts. This module periodically stats the live log and, when it
- * exceeds a byte threshold, renames it through the same `.1`/`.2`/… scheme the
- * restart script uses, then reopens process stdout/stderr onto a fresh file so
- * subsequent writes are not lost to the renamed inode.
+ * exceeds a byte threshold **and** process stdout is that file, renames it
+ * through the same `.1`/`.2`/… scheme the restart script uses, then reopens
+ * process stdout/stderr onto a fresh file so subsequent writes are not lost to
+ * the renamed inode.
  *
- * Production launches redirect with `node … > server.log 2>&1`, so the process
- * holds FDs 1 and 2 on the live log. A bare rename leaves those FDs pointed at
- * the generation file; freopen (close + open-on-lowest-fd) is required.
+ * Production script launches redirect with `node … > server.log 2>&1`, so the
+ * process holds FDs 1 and 2 on the live log. A bare rename leaves those FDs
+ * pointed at the generation file; freopen (close + open-on-lowest-fd) is
+ * required. systemd/journald and interactive TTY launches do **not** attach
+ * stdio to `server.log` — freopen is skipped (and rotation is skipped) so we
+ * never steal journald/TTY streams.
  */
 
 import {
   closeSync,
   existsSync,
+  fstatSync,
   openSync,
   renameSync,
   statSync,
@@ -46,23 +51,40 @@ export interface ServerLogRotationConfig {
   /**
    * When true (default), reopen process stdout/stderr onto a fresh `logPath`
    * after renaming the live file. Tests inject `false` (or a custom
-   * `reopenStdio`) so they never touch the test runner's FDs.
+   * `reopenStdioFn`) so they never touch the test runner's FDs.
    */
   reopenStdio?: boolean;
   /** Test seam replacing the OS freopen. */
   reopenStdioFn?: (logPath: string) => void;
-  /** Test seam for `statSync`. */
+  /** Test seam for `statSync` size. */
   statSize?: (path: string) => number | null;
+  /**
+   * Test seam for the stdout-owns-log gate. Production uses
+   * {@link processStdoutPointsAtLog}. When `reopenStdio === false` the gate is
+   * skipped (unit tests rotate without claiming runner FDs).
+   */
+  stdioOwnsLog?: (logPath: string) => boolean;
 }
 
+export type ServerLogRotationSkipReason =
+  | 'missing'
+  | 'under-threshold'
+  | 'disabled'
+  | 'stdio-not-attached'
+  | 'error';
+
 export interface ServerLogRotationResult {
-  /** True when a rotation was performed. */
+  /** True when generations were shifted (rename of the live file succeeded). */
   rotated: boolean;
   /** Size observed before the decision, in bytes. `null` when the file was missing. */
   previousSize: number | null;
   /** Why rotation did not run, when `rotated` is false. */
-  skippedReason?: 'missing' | 'under-threshold' | 'disabled' | 'error';
-  /** Error message when rotation threw; never rethrown to callers. */
+  skippedReason?: ServerLogRotationSkipReason;
+  /**
+   * Non-fatal follow-up problem after a successful rename (e.g. freopen failed
+   * once then recovered via fallback, or freopen still degraded). Present only
+   * when useful for logs; never thrown.
+   */
   error?: string;
 }
 
@@ -116,15 +138,30 @@ function clampGenerations(value: number): number {
 }
 
 /**
+ * True when process stdout (fd 1) is open on the same inode as `logPath`.
+ * Used so we never freopen journald/TTY/pipe stdio onto `server.log` just
+ * because a leftover log file on disk exceeded the size cap.
+ */
+export function processStdoutPointsAtLog(logPath: string): boolean {
+  try {
+    const logStat = statSync(logPath);
+    const outStat = fstatSync(1);
+    return outStat.dev === logStat.dev && outStat.ino === logStat.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Reopen process stdout (fd 1) and stderr (fd 2) onto `logPath` in append mode.
  *
  * Relies on POSIX lowest-free-fd allocation: after closing 1, the next open is
  * expected to return 1; same for 2. Throws if the OS returns a different fd so
  * we never silently write the live log to an unexpected descriptor.
  *
- * Not safe under concurrent opens from other threads between close and open;
- * the server's JS thread is single-threaded and this path runs synchronously
- * with no awaits between close and open.
+ * Call only after {@link processStdoutPointsAtLog} confirmed ownership. Between
+ * close and open the lowest free fd can theoretically be stolen by another
+ * thread's open(2); the fd≠1/2 checks fail closed on that race.
  */
 export function reopenProcessStdio(logPath: string): void {
   closeSync(1);
@@ -138,6 +175,43 @@ export function reopenProcessStdio(logPath: string): void {
   if (stderrFd !== 2) {
     throw new Error(`expected freopen stderr fd 2, got ${stderrFd}`);
   }
+}
+
+/**
+ * Last-resort: if freopen left stdio broken, route process.stdout/stderr writes
+ * through an append FD so the process keeps logging to `logPath`.
+ */
+function installStdioWriteFallback(logPath: string): void {
+  const fd = openSync(logPath, 'a');
+  const write = (
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((err?: Error | null) => void),
+    cb?: (err?: Error | null) => void,
+  ): boolean => {
+    try {
+      if (typeof chunk === 'string') {
+        const enc = typeof encoding === 'string' ? encoding : 'utf8';
+        writeSync(fd, chunk, undefined, enc);
+      } else {
+        writeSync(fd, chunk);
+      }
+      if (typeof encoding === 'function') encoding(null);
+      else if (typeof cb === 'function') cb(null);
+      return true;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (typeof encoding === 'function') encoding(error);
+      else if (typeof cb === 'function') cb(error);
+      return false;
+    }
+  };
+  process.stdout.write = write as typeof process.stdout.write;
+  process.stderr.write = write as typeof process.stderr.write;
+}
+
+function ensureLiveLogExists(logPath: string): void {
+  const fd = openSync(logPath, 'a');
+  closeSync(fd);
 }
 
 /**
@@ -185,11 +259,13 @@ function defaultStatSize(path: string): number | null {
 }
 
 /**
- * Rotate `logPath` when it exceeds `maxBytes`. Optionally reopens process
- * stdio onto a fresh file so appends after rotation are not lost.
+ * Rotate `logPath` when it exceeds `maxBytes` and this process owns the live
+ * FD (stdout points at the log). Reopens stdio onto a fresh file so appends
+ * after rotation are not lost.
  *
  * Errors are captured on the result (never thrown) so a timer tick cannot
- * crash the server.
+ * crash the server. If rename succeeds but freopen fails, `rotated` is still
+ * true and a fallback write path is installed so logging keeps working.
  */
 export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLogRotationResult {
   const maxBytes = Math.max(0, Math.floor(config.maxBytes));
@@ -199,9 +275,12 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
     return { rotated: false, previousSize: null, skippedReason: 'disabled' };
   }
 
+  let previousSize: number | null = null;
+  let renamed = false;
+
   try {
     const statSize = config.statSize ?? defaultStatSize;
-    const previousSize = statSize(config.logPath);
+    previousSize = statSize(config.logPath);
     if (previousSize === null) {
       return { rotated: false, previousSize: null, skippedReason: 'missing' };
     }
@@ -209,24 +288,78 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
       return { rotated: false, previousSize, skippedReason: 'under-threshold' };
     }
 
-    rotateServerLogGenerations(config.logPath, generations);
-
     const shouldReopen = config.reopenStdio !== false;
+    // When reopening is requested, only rotate if stdout is the live log —
+    // otherwise we would steal journald/TTY stdio (or rename a file we are not
+    // writing to). Unit tests set reopenStdio:false and skip this gate.
+    if (shouldReopen) {
+      const owns = config.stdioOwnsLog ?? processStdoutPointsAtLog;
+      if (!owns(config.logPath)) {
+        return { rotated: false, previousSize, skippedReason: 'stdio-not-attached' };
+      }
+    }
+
+    rotateServerLogGenerations(config.logPath, generations);
+    renamed = true;
+
     if (shouldReopen) {
       const reopen = config.reopenStdioFn ?? reopenProcessStdio;
-      reopen(config.logPath);
+      try {
+        reopen(config.logPath);
+      } catch (firstErr) {
+        // Rename already happened — keep rotated:true and recover.
+        ensureLiveLogExists(config.logPath);
+        try {
+          reopen(config.logPath);
+          return {
+            rotated: true,
+            previousSize,
+            error:
+              `freopen retried after: ${
+                firstErr instanceof Error ? firstErr.message : String(firstErr)
+              }`,
+          };
+        } catch (secondErr) {
+          try {
+            installStdioWriteFallback(config.logPath);
+          } catch {
+            // Fallback install failed; still report the freopen error.
+          }
+          return {
+            rotated: true,
+            previousSize,
+            error:
+              `freopen failed after rename: ${
+                secondErr instanceof Error ? secondErr.message : String(secondErr)
+              }`,
+          };
+        }
+      }
     } else if (!existsSync(config.logPath)) {
       // Test / no-reopen path: create an empty live file so subsequent appends
       // have a target without touching process FDs.
-      const fd = openSync(config.logPath, 'a');
-      closeSync(fd);
+      ensureLiveLogExists(config.logPath);
     }
 
     return { rotated: true, previousSize };
   } catch (err) {
+    // If we already renamed, do not report rotated:false — that would strand
+    // the size-cap (next ticks see missing live file and permanently no-op).
+    if (renamed) {
+      try {
+        ensureLiveLogExists(config.logPath);
+      } catch {
+        // ignore
+      }
+      return {
+        rotated: true,
+        previousSize,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
     return {
       rotated: false,
-      previousSize: null,
+      previousSize,
       skippedReason: 'error',
       error: err instanceof Error ? err.message : String(err),
     };
@@ -253,6 +386,9 @@ export function runScheduledServerLogRotation(config: ServerLogRotationConfig): 
       } catch {
         // Last-resort swallow — rotation already succeeded.
       }
+    }
+    if (result.error) {
+      console.error('[server-log-rotation] post-rotate warning:', result.error);
     }
   } else if (result.skippedReason === 'error') {
     console.error('[server-log-rotation] rotation failed:', result.error);
