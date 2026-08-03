@@ -706,7 +706,7 @@ Exit behavior:
 
 ## `kookr doctor`
 
-Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, and agent binary resolution. Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI.
+Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, agent binary resolution, and the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI.
 
 This is complementary to `pnpm doctor` (`scripts/doctor.sh`), which covers env/build preflight (ports, docker, node-pty). The two check sets are not identical — `kookr doctor` is the launch-dependency path (see [Related Commands](#related-commands)).
 
@@ -761,6 +761,7 @@ Stable `checks[].id` values on a healthy machine:
 | `agent.claude` | agent | yes if `KOOKR_AGENT_BIN` set; else advisory | Claude Code binary (`KOOKR_AGENT_BIN` or `claude`) |
 | `agent.codex` | agent | yes if `KOOKR_CODEX_BIN` set; else advisory | Codex CLI binary (`KOOKR_CODEX_BIN` or `codex`) |
 | `agent.codex-plugin-dir` | agent | no | Codex advertises `--plugin-dir` (only emitted when `agent.codex` is `ok`) |
+| `ops.resource-watchdog` | ops | no | Host-pressure auto-investigation enabled (`KOOKR_RESOURCE_WATCHDOG`, or live `GET /api/health` `resourceWatchdog.enabled` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server). Advisory warn when disabled (default). |
 
 When the KB path fails, the single KB row is replaced by a more specific id:
 
@@ -1206,6 +1207,6 @@ pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
 pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/build preflight
-kookr doctor         # human-readable launch preflight (gh/kb/agent binaries)
+kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + ops.resource-watchdog)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 ```
