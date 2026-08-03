@@ -1,4 +1,10 @@
-import { DEFAULT_AGENT_TYPE, type AgentType } from '../shared/contracts/agent-types.js';
+import {
+  DEFAULT_AGENT_TYPE,
+  isAgentType,
+  ROUND_ROBIN_AGENT_TYPE,
+  type AgentSelection,
+  type AgentType,
+} from '../shared/contracts/agent-types.js';
 import {
   findLaunchAllowlistEntry,
   isLaunchAllowlistAgent,
@@ -9,6 +15,23 @@ import {
 import type { CommandEnvelope } from './command-journal.js';
 import type { RemoteCommandHandler, ValidationResult } from './command-pipeline.js';
 import type { KnownGrant } from './policy-sync.js';
+
+/**
+ * Resolve the concrete agent used when a remote launch payload omits agentType.
+ * Prefer the operator-configured default; round-robin is not allowlistable as a
+ * concrete agent, so fall back to {@link DEFAULT_AGENT_TYPE}.
+ */
+export function resolveRemoteLaunchAgentType(
+  requested: AgentType | undefined,
+  getDefaultAgentType?: () => AgentSelection,
+): AgentType {
+  if (requested) return requested;
+  const configured = getDefaultAgentType?.();
+  if (configured && configured !== ROUND_ROBIN_AGENT_TYPE && isAgentType(configured)) {
+    return configured;
+  }
+  return DEFAULT_AGENT_TYPE;
+}
 
 export type RemoteLaunchErrorCode =
   | 'error.invalidRequest'
@@ -62,6 +85,12 @@ export interface RemoteLaunchBrokerDeps {
   allowlist: LaunchAllowlistConfig;
   launchTask(opts: RemoteLaunchTaskOpts): Promise<RemoteLaunchTaskResult>;
   getActiveLaunchCount?: (scope: { projectId: string; agentType: AgentType }) => number;
+  /**
+   * Live getter for `settings.defaultAgentType`. Used when a remote launch
+   * payload omits `agentType` so remote spawns follow the operator default
+   * instead of the code constant {@link DEFAULT_AGENT_TYPE}.
+   */
+  getDefaultAgentType?: () => AgentSelection;
   idempotencyTtlMs?: number;
   idempotencyMaxEntries?: number;
   allowCollaboratorGrants?: boolean;
@@ -85,7 +114,11 @@ interface IdempotencyEntry {
 const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IDEMPOTENCY_MAX_ENTRIES = 1000;
 
-function requestFingerprint(command: RemoteLaunchCommand, payload: RemoteLaunchRequest): string {
+function requestFingerprint(
+  command: RemoteLaunchCommand,
+  payload: RemoteLaunchRequest,
+  getDefaultAgentType?: () => AgentSelection,
+): string {
   return JSON.stringify({
     actorId: command.actorId,
     grantId: command.grantId,
@@ -95,18 +128,22 @@ function requestFingerprint(command: RemoteLaunchCommand, payload: RemoteLaunchR
       projectId: payload.projectId.trim(),
       prompt: payload.prompt,
       criteria: payload.criteria,
-      agentType: payload.agentType ?? DEFAULT_AGENT_TYPE,
+      agentType: resolveRemoteLaunchAgentType(payload.agentType, getDefaultAgentType),
     },
   });
 }
 
-function idempotencyKey(command: RemoteLaunchCommand, payload: RemoteLaunchRequest): string {
+function idempotencyKey(
+  command: RemoteLaunchCommand,
+  payload: RemoteLaunchRequest,
+  getDefaultAgentType?: () => AgentSelection,
+): string {
   return [
     command.nodeId,
     command.nodeEpoch,
     command.grantId,
     command.idempotencyKey,
-    requestFingerprint(command, payload),
+    requestFingerprint(command, payload, getDefaultAgentType),
   ].join('\0');
 }
 
@@ -147,7 +184,10 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
     if (!isLaunchRequest(command.payload)) {
       return { ok: false, reason: 'launch payload is malformed' };
     }
-    const agentType = command.payload.agentType ?? DEFAULT_AGENT_TYPE;
+    const agentType = resolveRemoteLaunchAgentType(
+      command.payload.agentType,
+      this.deps.getDefaultAgentType,
+    );
     const projectId = command.payload.projectId.trim();
     if (!findLaunchAllowlistEntry(this.deps.allowlist, projectId, agentType)) {
       return { ok: false, reason: 'project and agent are not allowlisted for remote launch' };
@@ -177,7 +217,7 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
     }
 
     this.pruneIdempotency();
-    const key = idempotencyKey(command, command.payload);
+    const key = idempotencyKey(command, command.payload, this.deps.getDefaultAgentType);
     const existing = this.idempotency.get(key);
     if (existing) return existing.result;
 
@@ -189,7 +229,7 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
   private async executeLaunch(
     payload: RemoteLaunchRequest,
   ): Promise<RemoteLaunchBrokerResult<RemoteLaunchResponse>> {
-    const agentType = payload.agentType ?? DEFAULT_AGENT_TYPE;
+    const agentType = resolveRemoteLaunchAgentType(payload.agentType, this.deps.getDefaultAgentType);
     const projectId = payload.projectId.trim();
     const entry = findLaunchAllowlistEntry(this.deps.allowlist, projectId, agentType);
     if (!entry) {

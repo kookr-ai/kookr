@@ -11,7 +11,9 @@ set -euo pipefail
 
 API="${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}"
 KOOKR_DEV="${KOOKR_DEV_DIR:-$HOME/git/kookr}"
-AGENT="${CONVERGENCE_AGENT_TYPE:-claude-code}"
+# Omit agentType when CONVERGENCE_AGENT_TYPE is unset so the schedule service
+# pins the operator's settings.defaultAgentType (not a hard-coded claude-code).
+AGENT="${CONVERGENCE_AGENT_TYPE:-}"
 CRON="${CONVERGENCE_CRON:-*/15 * * * *}"
 ENABLED="${CONVERGENCE_ENABLED:-true}"
 BRANCH="${DEPLOY_BRANCH:-main}"
@@ -62,11 +64,10 @@ BODY=$(
   ENABLED="$ENABLED" BRANCH="$BRANCH" GRACE_MINUTES="$GRACE_MINUTES" \
   ACT="$ACT" DRY_RUN="$DRY_RUN" PLAYBOOK_PATH="$PLAYBOOK_PATH" python3 - <<'PY'
 import json, os
-print(json.dumps({
+body = {
   "name": os.environ["NAME"],
   "cron": os.environ["CRON"],
   "cwd": os.environ["KOOKR_DEV"],
-  "agentType": os.environ["AGENT"],
   "enabled": os.environ["ENABLED"] == "true",
   "playbook": {
     "path": os.environ["PLAYBOOK_PATH"],
@@ -77,7 +78,11 @@ print(json.dumps({
       "dryRun": os.environ["DRY_RUN"],
     },
   },
-}))
+}
+agent = os.environ.get("AGENT", "").strip()
+if agent:
+  body["agentType"] = agent
+print(json.dumps(body))
 PY
 )
 
