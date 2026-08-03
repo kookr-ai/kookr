@@ -15,6 +15,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'save',
   'quotaPoll',
   'maintenancePrune',
+  'serverLogRotation',
   'prodSmokeTick',
   'deployLagDetector',
   'relayOrphanSweep',

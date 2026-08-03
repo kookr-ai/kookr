@@ -98,6 +98,7 @@ import {
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './maintenance-prune-schedule.js';
+import { resolveServerLogRotationEnv } from './server-log-rotation.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
@@ -2604,6 +2605,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         getPayloadDietStats,
       },
+      // Mid-process server.log size-cap rotation (issue #1991). ON by default
+      // (50 MiB / 3 generations / 60s). Disables when maxBytes, generations, or
+      // interval is 0. Reopens stdout/stderr after rename so live redirects do
+      // not keep writing into the rotated generation inode.
+      serverLogRotation: (() => {
+        const resolved = resolveServerLogRotationEnv(process.env, kookrDir);
+        return {
+          logPath: resolved.logPath,
+          maxBytes: resolved.maxBytes,
+          generations: resolved.generations,
+          intervalMs: resolved.intervalMs,
+        };
+      })(),
       // Relay-orphan sweep (issue #1723 / #1885). ON by default (1h); set
       // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS=0 to disable. Reaps leaked
       // relay/server.ts processes whose task worktree is gone OR which carry a

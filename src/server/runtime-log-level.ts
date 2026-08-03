@@ -6,7 +6,8 @@
  * module holds a process-global, runtime-mutable log level so verbosity can be
  * raised/lowered on the *running* process via the admin endpoint in
  * {@link ./routes/admin-routes.ts}, with an optional TTL that auto-reverts so a
- * forgotten `debug` doesn't flood the unrotated `~/.kookr/server.log` forever.
+ * forgotten `debug` doesn't flood `~/.kookr/server.log` forever (mid-process
+ * size-cap rotation for that file is issue #1991 / {@link ./server-log-rotation.ts}).
  *
  * This is deliberately a thin shim, not a structured-logging migration: call
  * sites that previously consulted the startup-only `KOOKR_DEBUG` flag can switch
