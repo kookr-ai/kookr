@@ -34,7 +34,12 @@ import {
   cwdEquivalent,
   formatReconcileRecovered,
   isReconcilableStatus,
+  DEFAULT_REDEPLOY_WAIT_MS,
+  defaultProbeBudgetMs,
+  parseRedeployWaitMs,
+  probeDeployStatus,
   probeHealth,
+  selectProbeWaitBudget,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,
@@ -527,6 +532,93 @@ describe('resolveCwd', () => {
   });
 });
 
+// ---------- selectProbeWaitBudget (#1975) ----------
+
+describe('defaultProbeBudgetMs', () => {
+  it('is (retries-1)*delay for the standard connect-retry loop', () => {
+    expect(defaultProbeBudgetMs(3, 3000)).toBe(6000);
+    expect(defaultProbeBudgetMs(1, 3000)).toBe(0);
+    expect(defaultProbeBudgetMs(0, 3000)).toBe(0);
+  });
+});
+
+describe('parseRedeployWaitMs', () => {
+  it('returns null for unset/invalid and accepts the env range', () => {
+    expect(parseRedeployWaitMs(undefined)).toBeNull();
+    expect(parseRedeployWaitMs('')).toBeNull();
+    expect(parseRedeployWaitMs('nope')).toBeNull();
+    expect(parseRedeployWaitMs('-1')).toBeNull();
+    expect(parseRedeployWaitMs('300001')).toBeNull();
+    expect(parseRedeployWaitMs('0')).toBe(0);
+    expect(parseRedeployWaitMs('45000')).toBe(45000);
+  });
+});
+
+describe('selectProbeWaitBudget', () => {
+  const base = { defaultBudgetMs: 6000 };
+
+  it('keeps the default budget when not deploying', () => {
+    expect(selectProbeWaitBudget({ ...base, deploying: false })).toEqual({
+      budgetMs: 6000,
+      reason: 'default',
+    });
+  });
+
+  it('extends past default when status says deploying', () => {
+    const r = selectProbeWaitBudget({ ...base, deploying: true });
+    expect(r.reason).toBe('deploying');
+    expect(r.budgetMs).toBe(DEFAULT_REDEPLOY_WAIT_MS);
+    expect(r.budgetMs).toBeGreaterThan(base.defaultBudgetMs);
+  });
+
+  it('extends when lastRestart is within the recent window', () => {
+    const nowMs = Date.parse('2026-08-03T12:00:30.000Z');
+    const r = selectProbeWaitBudget({
+      ...base,
+      deploying: false,
+      lastRestartAt: '2026-08-03T12:00:00.000Z',
+      nowMs,
+    });
+    expect(r).toEqual({ budgetMs: DEFAULT_REDEPLOY_WAIT_MS, reason: 'recent_restart' });
+  });
+
+  it('does not extend for a stale lastRestart', () => {
+    const nowMs = Date.parse('2026-08-03T12:05:00.000Z');
+    const r = selectProbeWaitBudget({
+      ...base,
+      deploying: false,
+      lastRestartAt: '2026-08-03T12:00:00.000Z',
+      nowMs,
+      recentRestartWindowMs: 60_000,
+    });
+    expect(r).toEqual({ budgetMs: 6000, reason: 'default' });
+  });
+
+  it('when status is down, only extends if KOOKR_SPAWN_REDEPLOY_WAIT_MS is set', () => {
+    expect(selectProbeWaitBudget({ ...base, deploying: null })).toEqual({
+      budgetMs: 6000,
+      reason: 'default',
+    });
+    expect(
+      selectProbeWaitBudget({
+        ...base,
+        deploying: null,
+        redeployWaitMsEnv: '20000',
+      }),
+    ).toEqual({ budgetMs: 20000, reason: 'env_fallback' });
+  });
+
+  it('never shrinks below the default budget', () => {
+    expect(
+      selectProbeWaitBudget({
+        defaultBudgetMs: 90_000,
+        deploying: true,
+        redeployBudgetMs: 45_000,
+      }),
+    ).toEqual({ budgetMs: 90_000, reason: 'deploying' });
+  });
+});
+
 // ---------- resolveBaseUrl ----------
 
 describe('resolveBaseUrl', () => {
@@ -559,6 +651,188 @@ describe('resolveBaseUrl', () => {
       await closeServer(server);
     }
   });
+
+  it('when not deploying, keeps the default retry budget (#1975)', async () => {
+    let healthHits = 0;
+    let deployHits = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/deploy/status')) {
+        deployHits += 1;
+        return {
+          ok: true,
+          json: async () => ({ deploying: false }),
+        } as Response;
+      }
+      if (url.includes('/api/health')) {
+        healthHits += 1;
+        throw new Error('ECONNREFUSED');
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const sleeps: number[] = [];
+    const logs: string[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '2' },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        log: (msg) => logs.push(msg),
+      });
+      expect(r.kind).toBe('none');
+      // 2 health sweeps × 2 ports; deploy re-probed each sweep while budget is default
+      expect(healthHits).toBe(4);
+      expect(deployHits).toBe(4);
+      expect(sleeps).toEqual([3000]);
+      expect(logs).toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when deploying, waits past the default budget with a redeploy message (#1975)', async () => {
+    let healthSweeps = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/deploy/status')) {
+        // Only 4800 answers during the pre-restart window.
+        if (url.includes(':4800/')) {
+          return {
+            ok: true,
+            json: async () => ({ deploying: true }),
+          } as Response;
+        }
+        throw new Error('ECONNREFUSED');
+      }
+      if (url.includes('/api/health')) {
+        // Count complete sweeps: each attempt hits both ports; recover on 4800 only.
+        if (url.includes(':4800/')) {
+          healthSweeps += 1;
+          // Default budget with retries=2 allows only 2 sweeps (1 sleep). Recover on 4th.
+          if (healthSweeps >= 4) {
+            return {
+              ok: true,
+              json: async () => ({ serverStartedAt: '2026-08-03T12:00:00.000Z' }),
+            } as Response;
+          }
+        }
+        throw new Error('ECONNREFUSED');
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    let clock = 0;
+    const logs: string[] = [];
+    const sleeps: number[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        // default budget = (2-1)*3000 = 3000ms; redeploy budget = 45000ms
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '2' },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+        log: (msg) => logs.push(msg),
+      });
+      expect(r.kind).toBe('auto');
+      expect(r).toMatchObject({ port: 4800 });
+      // Default budget alone would have stopped after 2 attempts / 1 sleep.
+      // Extended redeploy budget keeps probing until health recovers.
+      expect(sleeps.length).toBe(3);
+      expect(healthSweeps).toBe(4);
+      expect(logs).toEqual([
+        expect.stringMatching(/waiting for redeploy \(deploying; budget 45000ms\)/),
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when deploying and health stays down, exits after the extended budget (#1975)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/deploy/status') && url.includes(':4800/')) {
+        return {
+          ok: true,
+          json: async () => ({ deploying: true }),
+        } as Response;
+      }
+      throw new Error('ECONNREFUSED');
+    });
+    let clock = 0;
+    const sleeps: number[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '2' },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+        log: () => {},
+      });
+      expect(r.kind).toBe('none');
+      // Extended budget is 45000ms with 3000ms sleeps → 15 sleeps after first fail.
+      // Loop continues while elapsed < 45000; after sleep that reaches 45000, next
+      // check stops. attempts start at 1; sleeps while under budget.
+      expect(sleeps.length).toBe(15);
+      expect(clock).toBe(45_000);
+      if (r.kind === 'none') {
+        expect(r.attempts).toBe(16);
+      }
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when status is down without env, does not extend past default retries (#1975)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    const sleeps: number[] = [];
+    const logs: string[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: { KOOKR_SPAWN_CONNECT_RETRIES: '2' },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        log: (msg) => logs.push(msg),
+      });
+      expect(r.kind).toBe('none');
+      expect(sleeps).toEqual([3000]);
+      expect(logs).toEqual([]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('when status is down with KOOKR_SPAWN_REDEPLOY_WAIT_MS, extends budget (#1975)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    let clock = 0;
+    const logs: string[] = [];
+    const sleeps: number[] = [];
+    try {
+      const r = await resolveBaseUrl({
+        env: {
+          KOOKR_SPAWN_CONNECT_RETRIES: '1',
+          KOOKR_SPAWN_REDEPLOY_WAIT_MS: '9000',
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        now: () => clock,
+        log: (msg) => logs.push(msg),
+      });
+      expect(r.kind).toBe('none');
+      // retries=1 default budget is 0 sleeps; env extends to 9000 → 3 sleeps.
+      expect(sleeps).toEqual([3000, 3000, 3000]);
+      expect(logs.some((l) => /env_fallback/.test(l))).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });
 
 // ---------- probeHealth ----------
@@ -585,6 +859,57 @@ describe('probeHealth', () => {
   it('returns false on connection refused', async () => {
     // Port 1 is reserved tcp-mux; connection will fail fast.
     expect(await probeHealth('http://127.0.0.1:1', 500)).toBe(false);
+  });
+});
+
+describe('probeDeployStatus', () => {
+  it('parses deploying from /api/deploy/status', async () => {
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/deploy/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ deploying: true, lastRestart: '2026-08-03T12:00:00.000Z' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      await expect(probeDeployStatus(baseUrl, 1500)).resolves.toEqual({
+        deploying: true,
+        lastRestartAt: '2026-08-03T12:00:00.000Z',
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns null when body omits deploying (error-shaped status)', async () => {
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/deploy/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ configured: true, error: 'git fetch failed' }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      await expect(probeDeployStatus(baseUrl, 1500)).resolves.toBeNull();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns null when unreachable', async () => {
+    await expect(probeDeployStatus('http://127.0.0.1:1', 200)).resolves.toBeNull();
   });
 });
 
@@ -2846,7 +3171,8 @@ describe('main', () => {
       });
 
       expect(codes).toEqual([EXIT_NO_SERVER]);
-      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      // 2 health probes + 1 deploy/status sweep (2 ports) once health fails (#1975)
+      expect(fetchSpy).toHaveBeenCalledTimes(4);
       expect(errBucket.errors.join('\n')).toContain('no Kookr server reachable');
     } finally {
       fetchSpy.mockRestore();
@@ -2874,6 +3200,7 @@ describe('main', () => {
       });
 
       expect(codes).toEqual([EXIT_NO_SERVER]);
+      // Health succeeds on both ports → ambiguous path never probes deploy/status.
       expect(fetchSpy).toHaveBeenCalledTimes(2);
       expect(errBucket.errors.join('\n')).toContain('both Kookr instances are running');
     } finally {

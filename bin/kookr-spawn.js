@@ -21,6 +21,17 @@ const PROBE_TIMEOUT_MS = 1500;
 const RETRY_DELAY_MS = 3000;
 const DEFAULT_RETRIES = 3;
 const MAX_RETRIES = 10;
+// Issue #1975: when /api/deploy/status says a redeploy is in progress (or a
+// recent restart blackout is still settling), keep probing past the default
+// connect-retry budget so orchestrators do not treat intentional restarts as
+// outages. 45s sits in the issue's 30–60s range.
+const DEFAULT_REDEPLOY_WAIT_MS = 45_000;
+const RECENT_RESTART_WINDOW_MS = 60_000;
+const MAX_REDEPLOY_WAIT_MS = 300_000;
+// /api/deploy/status runs git fetch + rev-parse work before returning; a
+// live prod probe commonly takes 2–5s, so reusing PROBE_TIMEOUT_MS (1.5s)
+// would always treat a live deploying server as unreachable (#1975 review).
+const DEPLOY_STATUS_TIMEOUT_MS = 15_000;
 const POST_TIMEOUT_MS = 10_000;
 // #1591: ambiguous-outcome reconciliation. A POST that times out (client abort
 // at POST_TIMEOUT_MS) or returns a 5xx leaves the task's existence unknown — it
@@ -219,6 +230,11 @@ Environment:
                                    or --parent-task-id overrides it.
   KOOKR_SPAWN_MAX_PROMPT_BYTES    Max bytes for piped stdin (default: 1048576).
   KOOKR_SPAWN_CONNECT_RETRIES     Connectivity sweep retries (default: 3, max: 10).
+  KOOKR_SPAWN_REDEPLOY_WAIT_MS    When health probes fail and deploy/status is
+                                   unreachable (mid-blackout), optionally extend
+                                   the connect wait by this many ms (0..300000).
+                                   When status reports deploying, spawn already
+                                   waits up to ${DEFAULT_REDEPLOY_WAIT_MS}ms.
 
 Hook-safety inside a Claude Code session:
   When invoked through a Claude Code Bash tool, positional argv and
@@ -564,6 +580,88 @@ function parseRetries(raw) {
   return n;
 }
 
+/**
+ * Default wall-clock sleep budget for the auto-detect sweep: (retries-1)
+ * delays between attempts. Pure — used by selectProbeWaitBudget and tests.
+ */
+function defaultProbeBudgetMs(retries, retryDelayMs = RETRY_DELAY_MS) {
+  const n = Number(retries);
+  if (!Number.isInteger(n) || n < 1) return 0;
+  return Math.max(0, (n - 1) * retryDelayMs);
+}
+
+/**
+ * Parse KOOKR_SPAWN_REDEPLOY_WAIT_MS. Returns null when unset/invalid so the
+ * caller can leave the default budget unchanged.
+ */
+function parseRedeployWaitMs(raw) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_REDEPLOY_WAIT_MS) return null;
+  return n;
+}
+
+/**
+ * Pure wait-budget selection for the auto-detect health-probe loop (#1975).
+ *
+ * When deploy status says a redeploy is in progress (or a recent restart is
+ * still within the blackout window), extend past the default connect-retry
+ * budget. When status is unreachable mid-blackout, only extend if the
+ * operator set KOOKR_SPAWN_REDEPLOY_WAIT_MS — otherwise leave the budget
+ * unchanged so true outages still fail fast.
+ *
+ * @param {{
+ *   defaultBudgetMs: number,
+ *   deploying: boolean | null,
+ *   lastRestartAt?: string | null,
+ *   nowMs?: number,
+ *   redeployWaitMsEnv?: string | undefined,
+ *   redeployBudgetMs?: number,
+ *   recentRestartWindowMs?: number,
+ * }} p
+ * @returns {{ budgetMs: number, reason: 'default' | 'deploying' | 'recent_restart' | 'env_fallback' }}
+ */
+function selectProbeWaitBudget(p) {
+  const defaultBudgetMs = Math.max(0, Number(p.defaultBudgetMs) || 0);
+  const redeployBudgetMs =
+    typeof p.redeployBudgetMs === 'number' && Number.isFinite(p.redeployBudgetMs)
+      ? Math.max(0, p.redeployBudgetMs)
+      : DEFAULT_REDEPLOY_WAIT_MS;
+  const windowMs =
+    typeof p.recentRestartWindowMs === 'number' && Number.isFinite(p.recentRestartWindowMs)
+      ? Math.max(0, p.recentRestartWindowMs)
+      : RECENT_RESTART_WINDOW_MS;
+  const nowMs = typeof p.nowMs === 'number' && Number.isFinite(p.nowMs) ? p.nowMs : Date.now();
+
+  if (p.deploying === true) {
+    return { budgetMs: Math.max(defaultBudgetMs, redeployBudgetMs), reason: 'deploying' };
+  }
+
+  if (typeof p.lastRestartAt === 'string' && p.lastRestartAt.length > 0) {
+    const t = Date.parse(p.lastRestartAt);
+    if (Number.isFinite(t)) {
+      const age = nowMs - t;
+      if (age >= 0 && age <= windowMs) {
+        return {
+          budgetMs: Math.max(defaultBudgetMs, redeployBudgetMs),
+          reason: 'recent_restart',
+        };
+      }
+    }
+  }
+
+  // Status unreachable (null) or explicitly not deploying: env-only extension
+  // when mid-blackout deploy/status itself is down.
+  if (p.deploying === null) {
+    const envBudget = parseRedeployWaitMs(p.redeployWaitMsEnv);
+    if (envBudget !== null) {
+      return { budgetMs: Math.max(defaultBudgetMs, envBudget), reason: 'env_fallback' };
+    }
+  }
+
+  return { budgetMs: defaultBudgetMs, reason: 'default' };
+}
+
 async function probeHealth(baseUrl, timeoutMs) {
   try {
     const res = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
@@ -579,6 +677,58 @@ async function probeHealth(baseUrl, timeoutMs) {
 }
 
 /**
+ * Best-effort GET /api/deploy/status. Returns null when unreachable or
+ * malformed so callers can fall back to the default probe budget.
+ *
+ * @returns {Promise<{ deploying: boolean, lastRestartAt: string | null } | null>}
+ */
+async function probeDeployStatus(baseUrl, timeoutMs = DEPLOY_STATUS_TIMEOUT_MS) {
+  try {
+    const res = await fetch(`${baseUrl}/api/deploy/status`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    if (body === null || typeof body !== 'object') return null;
+    // Error-shaped 200s (git fetch failed, etc.) may omit `deploying`. Treat
+    // that as unknown (null) so env-fallback can still apply — do not invent
+    // "not deploying" from a missing field.
+    if (typeof body.deploying !== 'boolean') return null;
+    return {
+      deploying: body.deploying,
+      lastRestartAt:
+        typeof body.lastRestart === 'string' && body.lastRestart.length > 0
+          ? body.lastRestart
+          : typeof body.lastRestartAt === 'string' && body.lastRestartAt.length > 0
+            ? body.lastRestartAt
+            : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe deploy status on every auto-detect port. Prefer a response that
+ * reports deploying=true; otherwise the first reachable status; else null.
+ */
+async function probeDeployStatusAny(
+  ports = PORTS_TO_TRY,
+  timeoutMs = DEPLOY_STATUS_TIMEOUT_MS,
+) {
+  const results = await Promise.all(
+    ports.map((port) => probeDeployStatus(`http://127.0.0.1:${port}`, timeoutMs)),
+  );
+  for (const r of results) {
+    if (r && r.deploying) return r;
+  }
+  for (const r of results) {
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
  * Resolve the base URL of a running Kookr server, or return an
  * error-shaped result describing why not.
  *
@@ -589,8 +739,15 @@ async function probeHealth(baseUrl, timeoutMs) {
  *        - both responded → ambiguous, exit 3 with a message
  *        - exactly one responded → use it
  *        - neither → retry the sweep up to N times with delay, then exit 3
+ *          (#1975: when deploy/status reports a redeploy in progress, keep
+ *          probing past the default budget with a stderr wait message)
  */
-async function resolveBaseUrl({ env, sleep = defaultSleep } = {}) {
+async function resolveBaseUrl({
+  env,
+  sleep = defaultSleep,
+  now = Date.now,
+  log = defaultLog,
+} = {}) {
   if (env.KOOKR_API_BASE_URL && env.KOOKR_API_BASE_URL.trim() !== '') {
     const base = env.KOOKR_API_BASE_URL.trim().replace(/\/+$/, '');
     return { kind: 'explicit', baseUrl: base };
@@ -603,7 +760,15 @@ async function resolveBaseUrl({ env, sleep = defaultSleep } = {}) {
     return { kind: 'explicit', baseUrl: `http://127.0.0.1:${portEnv.port}` };
   }
   const retries = parseRetries(env.KOOKR_SPAWN_CONNECT_RETRIES);
-  for (let attempt = 0; attempt < retries; attempt++) {
+  const startMs = now();
+  let selected = selectProbeWaitBudget({
+    defaultBudgetMs: defaultProbeBudgetMs(retries),
+    deploying: false,
+    redeployWaitMsEnv: env.KOOKR_SPAWN_REDEPLOY_WAIT_MS,
+  });
+  let attempts = 0;
+
+  while (true) {
     const probes = await Promise.all(
       PORTS_TO_TRY.map((port) => probeHealth(`http://127.0.0.1:${port}`, PROBE_TIMEOUT_MS)),
     );
@@ -614,15 +779,46 @@ async function resolveBaseUrl({ env, sleep = defaultSleep } = {}) {
     if (up.length === 1) {
       return { kind: 'auto', baseUrl: `http://127.0.0.1:${up[0]}`, port: up[0] };
     }
-    if (attempt < retries - 1) {
-      await sleep(RETRY_DELAY_MS);
+
+    attempts += 1;
+
+    // While still on the default budget, re-probe deploy/status each sweep so
+    // a slow first probe or a late `deploying: true` can still extend wait.
+    // Once extended, keep the chosen budget (do not shrink mid-loop).
+    if (selected.reason === 'default') {
+      const status = await probeDeployStatusAny(PORTS_TO_TRY, DEPLOY_STATUS_TIMEOUT_MS);
+      const next = selectProbeWaitBudget({
+        defaultBudgetMs: defaultProbeBudgetMs(retries),
+        deploying: status === null ? null : status.deploying,
+        lastRestartAt: status?.lastRestartAt ?? null,
+        nowMs: now(),
+        redeployWaitMsEnv: env.KOOKR_SPAWN_REDEPLOY_WAIT_MS,
+      });
+      if (next.reason !== 'default') {
+        selected = next;
+        log(
+          `kookr spawn: waiting for redeploy (${selected.reason}; budget ${selected.budgetMs}ms)...`,
+        );
+      }
     }
+
+    const elapsed = Math.max(0, now() - startMs);
+    const underDefaultAttempts = attempts < retries;
+    const underExtendedBudget = selected.reason !== 'default' && elapsed < selected.budgetMs;
+    if (!underDefaultAttempts && !underExtendedBudget) {
+      break;
+    }
+    await sleep(RETRY_DELAY_MS);
   }
-  return { kind: 'none', ports: PORTS_TO_TRY, attempts: retries };
+  return { kind: 'none', ports: PORTS_TO_TRY, attempts };
 }
 
 function defaultSleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function defaultLog(msg) {
+  console.error(msg);
 }
 
 // ---------- auth ----------
@@ -1770,7 +1966,12 @@ async function main({
 
   let resolved;
   try {
-    resolved = await resolveBaseUrl({ env, sleep });
+    resolved = await resolveBaseUrl({
+      env,
+      sleep,
+      now,
+      log: (msg) => err.error(msg),
+    });
   } catch (e) {
     if (e instanceof UsageError) {
       if (args.json) {
@@ -2206,10 +2407,20 @@ export {
   cwdEquivalent,
   formatReconcileRecovered,
   isReconcilableStatus,
+  defaultProbeBudgetMs,
+  parseRedeployWaitMs,
+  probeDeployStatus,
+  probeDeployStatusAny,
   probeHealth,
+  selectProbeWaitBudget,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,
   resolvePrompt,
   waitForTaskReady,
+  DEFAULT_REDEPLOY_WAIT_MS,
+  DEPLOY_STATUS_TIMEOUT_MS,
+  RECENT_RESTART_WINDOW_MS,
+  PROBE_TIMEOUT_MS,
+  RETRY_DELAY_MS,
 };
