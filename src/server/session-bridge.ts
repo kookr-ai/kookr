@@ -23,6 +23,47 @@ import {
 } from './terminal-seed-frame-cache.js';
 
 /**
+ * Per-session single-flight for inputful absolute-TUI recovery (Ctrl+L /
+ * secondary attach / reconnect). Concurrent owner attaches join the in-flight
+ * promise; viewers never enter this path (issue #1933 / RFC Phase 0.5).
+ */
+const absoluteTuiRecoveryInFlight = new Map<SessionId, Promise<Uint8Array | null>>();
+
+/** Observability counters for absolute-TUI recovery (#1933). */
+export interface AbsoluteTuiRecoveryStats {
+  started: number;
+  joined: number;
+  snapshotUsedNoCtrlL: number;
+  ctrlLInjected: number;
+  inFlightSessions: number;
+}
+
+const absoluteTuiRecoveryStats: AbsoluteTuiRecoveryStats = {
+  started: 0,
+  joined: 0,
+  snapshotUsedNoCtrlL: 0,
+  ctrlLInjected: 0,
+  inFlightSessions: 0,
+};
+
+export function getAbsoluteTuiRecoveryStats(): AbsoluteTuiRecoveryStats {
+  return {
+    ...absoluteTuiRecoveryStats,
+    inFlightSessions: absoluteTuiRecoveryInFlight.size,
+  };
+}
+
+/** Test helper: clear recovery single-flight map and counters. */
+export function resetAbsoluteTuiRecoveryForTests(): void {
+  absoluteTuiRecoveryInFlight.clear();
+  absoluteTuiRecoveryStats.started = 0;
+  absoluteTuiRecoveryStats.joined = 0;
+  absoluteTuiRecoveryStats.snapshotUsedNoCtrlL = 0;
+  absoluteTuiRecoveryStats.ctrlLInjected = 0;
+  absoluteTuiRecoveryStats.inFlightSessions = 0;
+}
+
+/**
  * SessionBridge — per-WS-client view over the backend's byte stream.
  *
  * V8 (rfc-v8-tmux-removal.md) makes the bridge a fan-out view, not an
@@ -472,6 +513,9 @@ export class SessionBridge {
         reconstructed = await reconstructAbsoluteTuiScreen(captured, {
           cols: seedCols,
           rows: seedRows,
+          // Per-session queue depth so concurrent attaches wait rather than
+          // silent busy-skip→Ctrl+L (issue #1933).
+          sessionKey: this.sessionId,
         });
       } finally {
         reconstructMs = performance.now() - reconstructStarted;
@@ -766,17 +810,37 @@ export class SessionBridge {
    * Recover a readable frame after skipping absolute-TUI ring history.
    * 1. Apply the browser size (WINCH the agent so subsequent live paints match).
    * 2. Prefer `captureCurrentFrame` — temporary secondary dtach attach.
-   * 3. Force a full TUI repaint via Ctrl+L and wait briefly so live paint
-   *    lands in preReplayChunks — attach-replay alone is often only sparse
-   *    differential cells after dtach's leading ESC[H ESC[J clear under
-   *    Grok's --no-alt-screen differential painting.
-   * 4. Fall back to `reconnectTransport` (primary attach recycle; rate-limited).
-   * 5. Last resort: cols±1 WINCH nudge when both are missing/empty/capped.
+   * 3. If the snapshot is non-empty after stripping dtach's leading clear,
+   *    return it **without** injecting Ctrl+L (issue #1933 / RFC R7).
+   * 4. Only when the snapshot is empty: force a full TUI repaint via Ctrl+L
+   *    and wait briefly so live paint lands in preReplayChunks.
+   * 5. Fall back to `reconnectTransport` (primary attach recycle; rate-limited).
+   * 6. Last resort: cols±1 WINCH nudge when both are missing/empty/capped.
+   *
+   * Inputful recovery is single-flight per session: concurrent owners join the
+   * in-flight promise. Viewers never call this path (`readOnly` gate above).
    *
    * @returns Snapshot bytes to send as the client's initial frame, or null
    *   when recovery relied on reconnect attach-replay / live bytes instead.
    */
   private async refreshAbsoluteTuiFrame(size: TerminalSize): Promise<Uint8Array | null> {
+    if (this.closed || this.readOnly) return null;
+
+    const existing = absoluteTuiRecoveryInFlight.get(this.sessionId);
+    if (existing) {
+      absoluteTuiRecoveryStats.joined += 1;
+      return existing;
+    }
+
+    const work = this.runAbsoluteTuiRecovery(size).finally(() => {
+      absoluteTuiRecoveryInFlight.delete(this.sessionId);
+    });
+    absoluteTuiRecoveryInFlight.set(this.sessionId, work);
+    absoluteTuiRecoveryStats.started += 1;
+    return work;
+  }
+
+  private async runAbsoluteTuiRecovery(size: TerminalSize): Promise<Uint8Array | null> {
     if (this.closed) return null;
     this.applyResizeNow(size.cols, size.rows);
 
@@ -807,20 +871,22 @@ export class SessionBridge {
       }
     }
 
+    // Non-empty secondary-attach snapshot: paint it and do not poke the agent
+    // with Ctrl+L (RFC Phase 0.5 / R7). Bare clear/home alone is not useful.
+    if (snapshot && snapshot.length > 0) {
+      absoluteTuiRecoveryStats.snapshotUsedNoCtrlL += 1;
+      return snapshot;
+    }
+
     // Ctrl+L: full repaint for TUIs that honor it (and for dtach -r winch
     // redraw paths). Live bytes fan into preReplayChunks while we wait.
     // liveRedrawNudgeMs === 0 skips the wait in unit tests.
+    absoluteTuiRecoveryStats.ctrlLInjected += 1;
     this.safeForwardWrite(new Uint8Array([0x0c]));
     if (this.liveRedrawNudgeMs > 0) {
       await this.sleep(Math.max(450, this.liveRedrawNudgeMs * 12));
     }
     if (this.closed) return snapshot;
-
-    // Anything beyond a bare clear/home is worth painting; live Ctrl+L bytes
-    // still flush via preReplayChunks regardless.
-    if (snapshot && snapshot.length > 16) {
-      return snapshot;
-    }
 
     const reconnect = this.backend.reconnectTransport?.bind(this.backend);
     if (reconnect) {

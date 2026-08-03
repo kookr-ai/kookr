@@ -18,6 +18,8 @@ import {
   SessionBridge,
   BRACKETED_PASTE_START,
   BRACKETED_PASTE_END,
+  getAbsoluteTuiRecoveryStats,
+  resetAbsoluteTuiRecoveryForTests,
 } from './session-bridge.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import {
@@ -27,6 +29,7 @@ import {
 } from '../adapters/terminal-backend.js';
 import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
 import { getHotPathSampler, resetHotPathSamplerForTests } from '../core/hot-path-sampler.js';
+import { resetReconstructAbsoluteTuiScreenForTests } from './absolute-position-tui-screen.js';
 
 class FakeWs {
   public readyState = 1;
@@ -524,6 +527,7 @@ describe('SessionBridge', () => {
   });
 
   it('falls back to reconnectTransport when reconstruction and frame snapshot are empty', async () => {
+    resetAbsoluteTuiRecoveryForTests();
     const backend = await makeReadySession('s1');
     // Wide absolute-TUI shape (maxCol ≥ 120, ≥200 CUPs) but only a handful of
     // unique cells — reconstruction stays under the printable-cell threshold,
@@ -558,6 +562,163 @@ describe('SessionBridge', () => {
 
     expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(100);
     expect(backend.lastReconnectOptions?.reason).toBe('absolute-tui-frame-refresh');
+    // Empty snapshot is the only path that still injects Ctrl+L (#1933).
+    const written = backend.getWrittenBytes('s1');
+    expect(written.some((chunk) => chunk.length === 1 && chunk[0] === 0x0c)).toBe(true);
+    expect(getAbsoluteTuiRecoveryStats().ctrlLInjected).toBe(1);
+    expect(getAbsoluteTuiRecoveryStats().snapshotUsedNoCtrlL).toBe(0);
+  });
+
+  it('uses non-empty captureCurrentFrame without injecting Ctrl+L (#1933)', async () => {
+    resetAbsoluteTuiRecoveryForTests();
+    const backend = await makeReadySession('s1');
+    // Sparse absolute ring so VT reconstruct fails the printable threshold.
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 3) + 1;
+      const col = 120 + (i % 3);
+      return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+    // Secondary attach returns a usable frame (with dtach leading clear).
+    backend.setCurrentFrameContent(
+      's1',
+      `\x1b[H\x1b[2J[snapshot-body]${'X'.repeat(40)}`,
+    );
+
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 30,
+        liveRedrawNudgeMs: 0,
+        resizeDebounceMs: 0,
+      },
+    );
+
+    const startPromise = bridge.start();
+    ws.emit('message', Buffer.from('{"type":"resize","cols":100,"rows":40}'), false);
+    await startPromise;
+
+    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(100);
+    // No Ctrl+L and no reconnect when snapshot is non-empty.
+    const written = backend.getWrittenBytes('s1');
+    expect(written.some((chunk) => chunk.length === 1 && chunk[0] === 0x0c)).toBe(false);
+    expect(backend.lastReconnectOptions).toBeNull();
+    expect(getAbsoluteTuiRecoveryStats().snapshotUsedNoCtrlL).toBe(1);
+    expect(getAbsoluteTuiRecoveryStats().ctrlLInjected).toBe(0);
+
+    const binaryText = ws.sent
+      .filter((s): s is Buffer => Buffer.isBuffer(s))
+      .map((b) => b.toString('latin1'))
+      .join('');
+    expect(binaryText).toContain('[snapshot-body]');
+    expect(binaryText).toContain('X'.repeat(40));
+  });
+
+  it('single-flights inputful recovery per session; viewers never trigger it (#1933)', async () => {
+    resetAbsoluteTuiRecoveryForTests();
+    resetReconstructAbsoluteTuiScreenForTests();
+    const sessionId = 's1-recovery-singleflight';
+    const backend = await makeReadySession(sessionId);
+    // Isolated seed cache so a prior test's warm seed cannot skip recovery.
+    const { TerminalSeedFrameCache } = await import('./terminal-seed-frame-cache.js');
+    const seedFrameCache = new TerminalSeedFrameCache();
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 3) + 1;
+      const col = 120 + (i % 3);
+      return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent(sessionId, cups);
+    backend.setCurrentFrameContent(sessionId, ''); // force full recovery path
+
+    // Slow capture so two owners overlap on recovery.
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => {
+      releaseCapture = resolve;
+    });
+    let captureCalls = 0;
+    const originalCapture = backend.captureCurrentFrame.bind(backend);
+    backend.captureCurrentFrame = async (id, options) => {
+      captureCalls += 1;
+      if (captureCalls === 1) await captureGate;
+      return originalCapture(id, options);
+    };
+
+    const bridgeOpts = {
+      ringReplay: 'auto' as const,
+      initialResizeWaitMs: 40,
+      liveRedrawNudgeMs: 0,
+      resizeDebounceMs: 0,
+      seedFrameCache,
+    };
+
+    const mkOwner = () => {
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        sessionId,
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        bridgeOpts,
+      );
+      return { ws, bridge };
+    };
+
+    const owner1 = mkOwner();
+    const owner2 = mkOwner();
+    // Viewers must not trigger recovery even when reconstruct is empty.
+    const viewerWs = new FakeWs();
+    const viewer = new SessionBridge(
+      sessionId,
+      viewerWs as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { ...bridgeOpts, readOnly: true },
+    );
+
+    const resizeMsg = Buffer.from('{"type":"resize","cols":100,"rows":40}');
+    const p1 = owner1.bridge.start();
+    owner1.ws.emit('message', resizeMsg, false);
+    // Let owner1 enter recovery and block on capture.
+    for (let i = 0; i < 80 && captureCalls < 1; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(captureCalls).toBe(1);
+
+    const p2 = owner2.bridge.start();
+    owner2.ws.emit('message', resizeMsg, false);
+    // Viewer has no inbound handler when readOnly — recovery gated by readOnly.
+    const pViewer = viewer.start();
+    // Owner2 should join the in-flight recovery rather than starting another.
+    for (let i = 0; i < 40; i++) {
+      if (getAbsoluteTuiRecoveryStats().joined >= 1) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    releaseCapture();
+    await Promise.all([p1, p2, pViewer]);
+
+    // Only one inputful recovery ran; second owner joined.
+    expect(getAbsoluteTuiRecoveryStats().started).toBe(1);
+    expect(getAbsoluteTuiRecoveryStats().joined).toBeGreaterThanOrEqual(1);
+    // captureCurrentFrame only once for the single recovery flight.
+    expect(captureCalls).toBe(1);
+    // Viewer never wrote Ctrl+L (and only one recovery injects it once).
+    const ctrlLCount = backend
+      .getWrittenBytes(sessionId)
+      .filter((chunk) => chunk.length === 1 && chunk[0] === 0x0c).length;
+    expect(ctrlLCount).toBe(1);
+    expect(getAbsoluteTuiRecoveryStats().ctrlLInjected).toBe(1);
   });
 
   it('still replays ordinary ring content when the stream is not absolute-TUI', async () => {

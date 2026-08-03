@@ -175,7 +175,7 @@ describe('reconstructAbsoluteTuiScreen', () => {
     expect(getReconstructAbsoluteTuiScreenStats().budgetExceeded).toBe(1);
   });
 
-  it('caps concurrent reconstructs process-wide (busy → null)', async () => {
+  it('queues concurrent reconstructs until a global slot frees (no silent busy-skip)', async () => {
     const ring = encode('\x1b[1;1Hconcurrent-test-content-here');
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -200,18 +200,134 @@ describe('reconstructAbsoluteTuiScreen', () => {
       await new Promise((r) => setTimeout(r, 1));
     }
     expect(firstStarted).toBe(true);
+    expect(getReconstructAbsoluteTuiScreenStats().inFlightCount).toBe(1);
 
-    const second = await reconstructAbsoluteTuiScreen(ring, {
+    // Second caller queues rather than busy-skipping to null (#1933).
+    let secondSettled = false;
+    const secondPromise = reconstructAbsoluteTuiScreen(ring, {
       cols: 40,
       rows: 10,
       minPrintableCells: 5,
+      maxQueueWaitMs: 5_000,
+      sessionKey: 'sess-a',
+    }).then((frame) => {
+      secondSettled = true;
+      return frame;
     });
-    expect(second).toBeNull();
-    expect(getReconstructAbsoluteTuiScreenStats().busySkipped).toBe(1);
+
+    for (let i = 0; i < 50 && getReconstructAbsoluteTuiScreenStats().queueDepth < 1; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(getReconstructAbsoluteTuiScreenStats().queueDepth).toBe(1);
+    expect(getReconstructAbsoluteTuiScreenStats().queued).toBe(1);
+    expect(secondSettled).toBe(false);
 
     release();
-    const firstFrame = await first;
+    const [firstFrame, secondFrame] = await Promise.all([first, secondPromise]);
     expect(firstFrame).not.toBeNull();
+    expect(secondFrame).not.toBeNull();
     expect(decode(firstFrame)).toContain('concurrent-test-content-here');
+    expect(decode(secondFrame)).toContain('concurrent-test-content-here');
+    expect(getReconstructAbsoluteTuiScreenStats().busySkipped).toBe(0);
+    expect(getReconstructAbsoluteTuiScreenStats().completed).toBe(2);
+  });
+
+  it('soft-fails with busySkipped when the queue wait times out', async () => {
+    const ring = encode('\x1b[1;1Hqueue-timeout-content-xxxxx');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstStarted = false;
+
+    const first = reconstructAbsoluteTuiScreen(ring, {
+      cols: 40,
+      rows: 10,
+      minPrintableCells: 5,
+      maxMs: 60_000,
+      yieldEveryBytes: 1,
+      yieldFn: async () => {
+        firstStarted = true;
+        await gate;
+      },
+    });
+
+    for (let i = 0; i < 50 && !firstStarted; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(firstStarted).toBe(true);
+
+    const timedOut = await reconstructAbsoluteTuiScreen(ring, {
+      cols: 40,
+      rows: 10,
+      minPrintableCells: 5,
+      maxQueueWaitMs: 20,
+    });
+    expect(timedOut).toBeNull();
+    const s = getReconstructAbsoluteTuiScreenStats();
+    expect(s.busySkipped).toBe(1);
+    expect(s.queueTimedOut).toBe(1);
+    expect(s.queued).toBe(1);
+
+    release();
+    expect(await first).not.toBeNull();
+  });
+
+  it('caps per-session queue depth (excess busy-skips without waiting)', async () => {
+    const ring = encode('\x1b[1;1Hsession-depth-content-here');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let firstStarted = false;
+
+    const first = reconstructAbsoluteTuiScreen(ring, {
+      cols: 40,
+      rows: 10,
+      minPrintableCells: 5,
+      maxMs: 60_000,
+      yieldEveryBytes: 1,
+      sessionKey: 'same-sess',
+      yieldFn: async () => {
+        firstStarted = true;
+        await gate;
+      },
+    });
+
+    for (let i = 0; i < 50 && !firstStarted; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(firstStarted).toBe(true);
+
+    // Fill the per-session queue (depth 1 for this test).
+    const waiter = reconstructAbsoluteTuiScreen(ring, {
+      cols: 40,
+      rows: 10,
+      minPrintableCells: 5,
+      maxQueueWaitMs: 5_000,
+      maxSessionQueueDepth: 1,
+      sessionKey: 'same-sess',
+    });
+    for (let i = 0; i < 50 && getReconstructAbsoluteTuiScreenStats().queueDepth < 1; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    // Third request for the same session exceeds depth → immediate busy-skip.
+    const overflow = await reconstructAbsoluteTuiScreen(ring, {
+      cols: 40,
+      rows: 10,
+      minPrintableCells: 5,
+      maxQueueWaitMs: 5_000,
+      maxSessionQueueDepth: 1,
+      sessionKey: 'same-sess',
+    });
+    expect(overflow).toBeNull();
+    expect(getReconstructAbsoluteTuiScreenStats().busySkipped).toBe(1);
+    expect(getReconstructAbsoluteTuiScreenStats().queueTimedOut).toBe(0);
+
+    release();
+    const [firstFrame, waiterFrame] = await Promise.all([first, waiter]);
+    expect(firstFrame).not.toBeNull();
+    expect(waiterFrame).not.toBeNull();
   });
 });

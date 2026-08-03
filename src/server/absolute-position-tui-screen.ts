@@ -13,9 +13,12 @@
  * No env opt-in — this is the default absolute-TUI seed path.
  *
  * Issue #1774: walks are time-budgeted and yield to the event loop every N
- * bytes so a full 1MB ring cannot starve keystroke delivery. Concurrent
- * reconstructs are process-wide capped at 1 (busy callers get null and fall
- * back to cheaper seed paths).
+ * bytes so a full 1MB ring cannot starve keystroke delivery.
+ *
+ * Issue #1933 (RFC Phase 0.5): process-wide CPU budget still bounds simultaneous
+ * walks, but concurrent callers **queue** for a slot instead of silent
+ * busy-skip→null (which previously forced multi-second Ctrl+L recovery).
+ * Optional per-session queue depth caps waiters for one session.
  */
 
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
@@ -39,25 +42,55 @@ export interface ReconstructAbsoluteTuiScreenOptions {
    */
   yieldEveryBytes?: number;
   /**
-   * When true (default), only one reconstruct runs process-wide; concurrent
-   * callers receive null immediately so attach can fall back to a cheaper seed.
+   * When true (default), process-wide CPU budget applies: only
+   * {@link GLOBAL_RECONSTRUCT_MAX_IN_FLIGHT} walks run at once; extra callers
+   * wait in a queue (up to {@link maxQueueWaitMs}) rather than busy-skipping.
+   * Set false to run unbounded (tests / offline tools).
    */
   concurrencyCap?: boolean;
+  /**
+   * Max time (ms) to wait for a global reconstruct slot. On timeout the caller
+   * gets null (soft fail — attach must not escalate to automatic Ctrl+L solely
+   * because the queue was busy). Default 500ms.
+   */
+  maxQueueWaitMs?: number;
+  /**
+   * Session key for per-session queue depth accounting (issue #1933).
+   * When set, at most {@link maxSessionQueueDepth} waiters for the same key
+   * may queue; further callers busy-skip immediately.
+   */
+  sessionKey?: string;
+  /**
+   * Max queued waiters per {@link sessionKey} (not counting the in-flight walk).
+   * Default 2. Ignored when sessionKey is omitted.
+   */
+  maxSessionQueueDepth?: number;
   /** Injected monotonic clock (tests). Defaults to `performance.now`. */
   nowMs?: () => number;
   /** Injected cooperative yield (tests). Defaults to `setImmediate`. */
   yieldFn?: () => Promise<void>;
 }
 
-/** Process-wide counters for attach/reconstruct observability (issue #1774). */
+/** Process-wide counters for attach/reconstruct observability (#1774 / #1933). */
 export interface ReconstructAbsoluteTuiScreenStats {
   completed: number;
   budgetExceeded: number;
+  /** Queue wait timed out, or per-session queue depth exceeded. */
   busySkipped: number;
+  /** Callers that entered the wait queue (not counting immediate acquires). */
+  queued: number;
+  /** Subset of busySkipped that timed out waiting for a global slot. */
+  queueTimedOut: number;
   lastElapsedMs: number;
   lastBytesProcessed: number;
   lastTotalBytes: number;
+  lastQueueWaitMs: number;
+  /** True when at least one reconstruct walk is running. */
   inFlight: boolean;
+  /** Number of walks currently running (0..GLOBAL_RECONSTRUCT_MAX_IN_FLIGHT). */
+  inFlightCount: number;
+  /** Waiters currently blocked on the global slot. */
+  queueDepth: number;
 }
 
 const DEFAULT_COLS = 200;
@@ -67,47 +100,181 @@ const DEFAULT_MIN_PRINTABLE = 40;
 const DEFAULT_MAX_MS = 50;
 /** Yield cadence on a 1MB ring (~16 yields max before end). */
 const DEFAULT_YIELD_EVERY_BYTES = 64 * 1024;
+/** Simultaneous VT walks process-wide (CPU budget). */
+export const GLOBAL_RECONSTRUCT_MAX_IN_FLIGHT = 1;
+/** Default max wait for a global slot before soft-fail null. */
+const DEFAULT_MAX_QUEUE_WAIT_MS = 500;
+/** Default per-session waiter cap (issue #1933). */
+const DEFAULT_MAX_SESSION_QUEUE_DEPTH = 2;
 
-let reconstructInFlight = false;
+let reconstructInFlightCount = 0;
+
+interface ReconstructWaiter {
+  resolve: (acquired: boolean) => void;
+  sessionKey?: string;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const reconstructWaitQueue: ReconstructWaiter[] = [];
+/** Queued (not yet running) count per sessionKey. */
+const sessionQueueDepth = new Map<string, number>();
 
 const stats: ReconstructAbsoluteTuiScreenStats = {
   completed: 0,
   budgetExceeded: 0,
   busySkipped: 0,
+  queued: 0,
+  queueTimedOut: 0,
   lastElapsedMs: 0,
   lastBytesProcessed: 0,
   lastTotalBytes: 0,
+  lastQueueWaitMs: 0,
   inFlight: false,
+  inFlightCount: 0,
+  queueDepth: 0,
 };
+
+function snapshotConcurrencyFields(): Pick<
+  ReconstructAbsoluteTuiScreenStats,
+  'inFlight' | 'inFlightCount' | 'queueDepth'
+> {
+  return {
+    inFlight: reconstructInFlightCount > 0,
+    inFlightCount: reconstructInFlightCount,
+    queueDepth: reconstructWaitQueue.length,
+  };
+}
 
 export function getReconstructAbsoluteTuiScreenStats(): ReconstructAbsoluteTuiScreenStats {
   return {
     ...stats,
-    inFlight: reconstructInFlight,
+    ...snapshotConcurrencyFields(),
   };
 }
 
-/** Test helper: clear process-wide counters and concurrency lock. */
+/** Test helper: clear process-wide counters, wait queue, and concurrency lock. */
 export function resetReconstructAbsoluteTuiScreenForTests(): void {
-  reconstructInFlight = false;
+  for (const waiter of reconstructWaitQueue) {
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.resolve(false);
+  }
+  reconstructWaitQueue.length = 0;
+  sessionQueueDepth.clear();
+  reconstructInFlightCount = 0;
   stats.completed = 0;
   stats.budgetExceeded = 0;
   stats.busySkipped = 0;
+  stats.queued = 0;
+  stats.queueTimedOut = 0;
   stats.lastElapsedMs = 0;
   stats.lastBytesProcessed = 0;
   stats.lastTotalBytes = 0;
+  stats.lastQueueWaitMs = 0;
   stats.inFlight = false;
+  stats.inFlightCount = 0;
+  stats.queueDepth = 0;
+}
+
+function bumpSessionQueue(sessionKey: string | undefined, delta: number): void {
+  if (!sessionKey) return;
+  const next = (sessionQueueDepth.get(sessionKey) ?? 0) + delta;
+  if (next <= 0) sessionQueueDepth.delete(sessionKey);
+  else sessionQueueDepth.set(sessionKey, next);
+}
+
+/**
+ * Acquire a global reconstruct slot. Returns false when the caller should
+ * soft-fail (queue timeout or per-session depth exceeded).
+ */
+async function acquireReconstructSlot(options: {
+  concurrencyCap: boolean;
+  maxQueueWaitMs: number;
+  sessionKey?: string;
+  maxSessionQueueDepth: number;
+  nowMs: () => number;
+}): Promise<boolean> {
+  if (!options.concurrencyCap) {
+    reconstructInFlightCount += 1;
+    return true;
+  }
+
+  if (reconstructInFlightCount < GLOBAL_RECONSTRUCT_MAX_IN_FLIGHT) {
+    reconstructInFlightCount += 1;
+    stats.lastQueueWaitMs = 0;
+    return true;
+  }
+
+  if (options.sessionKey) {
+    const depth = sessionQueueDepth.get(options.sessionKey) ?? 0;
+    if (depth >= options.maxSessionQueueDepth) {
+      stats.busySkipped += 1;
+      return false;
+    }
+  }
+
+  if (options.maxQueueWaitMs <= 0) {
+    stats.busySkipped += 1;
+    return false;
+  }
+
+  stats.queued += 1;
+  bumpSessionQueue(options.sessionKey, 1);
+  const enqueuedAt = options.nowMs();
+
+  const acquired = await new Promise<boolean>((resolve) => {
+    const waiter: ReconstructWaiter = {
+      resolve: (ok) => {
+        if (waiter.timer) {
+          clearTimeout(waiter.timer);
+          waiter.timer = null;
+        }
+        resolve(ok);
+      },
+      sessionKey: options.sessionKey,
+      timer: null,
+    };
+    waiter.timer = setTimeout(() => {
+      const idx = reconstructWaitQueue.indexOf(waiter);
+      if (idx >= 0) reconstructWaitQueue.splice(idx, 1);
+      waiter.timer = null;
+      resolve(false);
+    }, options.maxQueueWaitMs);
+    reconstructWaitQueue.push(waiter);
+  });
+
+  bumpSessionQueue(options.sessionKey, -1);
+  stats.lastQueueWaitMs = options.nowMs() - enqueuedAt;
+
+  if (!acquired) {
+    stats.busySkipped += 1;
+    stats.queueTimedOut += 1;
+    return false;
+  }
+
+  // Slot was transferred by the releaser (inFlight already incremented).
+  return true;
+}
+
+function releaseReconstructSlot(): void {
+  const next = reconstructWaitQueue.shift();
+  if (next) {
+    // Transfer the slot: keep inFlightCount the same, hand to waiter.
+    next.resolve(true);
+    return;
+  }
+  reconstructInFlightCount = Math.max(0, reconstructInFlightCount - 1);
 }
 
 /**
  * Replay `bytes` into a cols×rows cell grid and return a single seed frame
  * (ESC[H ESC[2J + row paints), or null when the grid is essentially empty /
- * another reconstruct is already in flight / budget expired with too little
- * content.
+ * a reconstruct slot could not be acquired in time / budget expired with too
+ * little content.
  *
  * Cooperative: yields every `yieldEveryBytes` and aborts the walk after
  * `maxMs` so a full RING_BUFFER_BYTES (1MB) replay cannot block the event
- * loop for seconds (issue #1774).
+ * loop for seconds (issue #1774). Concurrent callers queue for the global
+ * CPU budget instead of busy-skipping to null (issue #1933).
  */
 export async function reconstructAbsoluteTuiScreen(
   bytes: Uint8Array,
@@ -116,15 +283,26 @@ export async function reconstructAbsoluteTuiScreen(
   if (bytes.length === 0) return null;
 
   const concurrencyCap = options.concurrencyCap !== false;
-  if (concurrencyCap && reconstructInFlight) {
-    stats.busySkipped += 1;
-    return null;
-  }
-
-  reconstructInFlight = true;
-  stats.inFlight = true;
-  const startedAt = (options.nowMs ?? (() => performance.now()))();
   const nowMs = options.nowMs ?? (() => performance.now());
+  const maxQueueWaitMs =
+    options.maxQueueWaitMs === undefined
+      ? DEFAULT_MAX_QUEUE_WAIT_MS
+      : Math.max(0, Math.trunc(options.maxQueueWaitMs));
+  const maxSessionQueueDepth =
+    options.maxSessionQueueDepth === undefined
+      ? DEFAULT_MAX_SESSION_QUEUE_DEPTH
+      : Math.max(0, Math.trunc(options.maxSessionQueueDepth));
+
+  const acquired = await acquireReconstructSlot({
+    concurrencyCap,
+    maxQueueWaitMs,
+    sessionKey: options.sessionKey,
+    maxSessionQueueDepth,
+    nowMs,
+  });
+  if (!acquired) return null;
+
+  const startedAt = nowMs();
   const yieldFn = options.yieldFn ?? defaultYield;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const yieldEvery =
@@ -335,8 +513,7 @@ export async function reconstructAbsoluteTuiScreen(
 
     return serializeGrid(grid, rows, cols, minPrintable);
   } finally {
-    reconstructInFlight = false;
-    stats.inFlight = false;
+    releaseReconstructSlot();
   }
 }
 
