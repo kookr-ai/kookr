@@ -13,6 +13,8 @@ import { isTerminalStatus } from './task-status.js';
 import type { Task } from './tasks.js';
 import {
   defaultIdeaScoutRepoStateDir,
+  isIdeaScoutPlaybookId,
+  isParallelIssueBatchPlaybookId,
   repoToPlaybookSlug,
   SUCCESSFUL_IDEATION_LOOKBACK_MS,
 } from './pipeline-starvation.js';
@@ -156,7 +158,9 @@ export async function findRecentSuccessfulIdeationAtMs(
 
 /**
  * True when any non-terminal task looks like a repository-idea-scout for the
- * given repo (by playbookId + projectId, with prompt fallback).
+ * given repo (by playbookId + projectId, with prompt fallback only when
+ * playbookId is missing — batch playbook bodies mention idea-scout and must
+ * not false-positive as an in-flight scout).
  */
 export function isIdeaScoutInFlightForRepo(repo: string, tasks: readonly Task[]): boolean {
   const projectId = projectIdFromRepoSpecifier(repo)?.toLowerCase() ?? null;
@@ -165,13 +169,14 @@ export function isIdeaScoutInFlightForRepo(repo: string, tasks: readonly Task[])
 
   for (const task of tasks) {
     if (isTerminalStatus(task.status)) continue;
-    const playbookId = (task.playbookId ?? '').toLowerCase();
-    const isScoutPlaybook =
-      playbookId.includes('repository-idea-scout')
-      || playbookId.endsWith('idea-scout.md')
-      || playbookId.includes('idea-scout');
+    // Explicit non-scout playbooks (e.g. parallel-issue-batch) never count —
+    // their rendered prompts reference idea-scout / pipeline-starvation.
+    if (isParallelIssueBatchPlaybookId(task.playbookId)) continue;
+
+    const isScoutPlaybook = isIdeaScoutPlaybookId(task.playbookId);
     if (!isScoutPlaybook) {
-      // Prompt fallback for CLI-spawned scouts without playbookId stamp.
+      // Prompt fallback only when playbookId is unset (CLI-spawned scouts).
+      if (task.playbookId) continue;
       const prompt = (task.prompt ?? '').toLowerCase();
       if (!prompt.includes('repository idea scout') && !prompt.includes('idea-scout')) continue;
     }
