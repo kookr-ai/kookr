@@ -121,6 +121,11 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     description: 'non-negative number',
   },
   {
+    variable: 'KOOKR_ALERT_PROCESS_RSS_BYTES',
+    validate: isNonNegativeNumber,
+    description: 'non-negative number of bytes (0 disables)',
+  },
+  {
     variable: 'KOOKR_ALERT_DATA_DIR_FREE_PERCENT',
     validate: isNonNegativeNumber,
     description: 'non-negative number',
@@ -129,6 +134,11 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     variable: 'KOOKR_ALERT_DATA_DIR_FREE_BYTES',
     validate: isNonNegativeNumber,
     description: 'non-negative number of bytes',
+  },
+  {
+    variable: 'KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS',
+    validate: isNonNegativeInteger,
+    description: 'non-negative integer milliseconds (0 disables)',
   },
   {
     variable: 'KOOKR_ALERT_SUSTAIN_SAMPLES',

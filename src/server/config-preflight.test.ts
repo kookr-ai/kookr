@@ -197,6 +197,8 @@ describe('runConfigPreflight', () => {
         KOOKR_NUDGE_MIN_TASK_AGE_MS: '-1',
         KOOKR_ALERT_CPU_PERCENT: '-0.1',
         KOOKR_ALERT_DATA_DIR_FREE_BYTES: '-1',
+        KOOKR_ALERT_PROCESS_RSS_BYTES: 'not-a-number',
+        KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS: '1.5',
       } as NodeJS.ProcessEnv,
       {
         cwd: '/repo',
@@ -212,7 +214,9 @@ describe('runConfigPreflight', () => {
       'KOOKR_REQUEST_BODY_LIMIT_BYTES',
       'KOOKR_NUDGE_MIN_TASK_AGE_MS',
       'KOOKR_ALERT_CPU_PERCENT',
+      'KOOKR_ALERT_PROCESS_RSS_BYTES',
       'KOOKR_ALERT_DATA_DIR_FREE_BYTES',
+      'KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS',
     ]);
     expect(result.issues.every((issue) => issue.severity === 'fatal')).toBe(true);
   });
@@ -236,8 +240,10 @@ describe('runConfigPreflight', () => {
       KOOKR_ALERT_CPU_PERCENT: '-0.1',
       KOOKR_ALERT_MEMORY_PERCENT: '-1',
       KOOKR_ALERT_EVENT_LOOP_DELAY_MS: '-1',
+      KOOKR_ALERT_PROCESS_RSS_BYTES: 'not-a-number',
       KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '-1',
       KOOKR_ALERT_DATA_DIR_FREE_BYTES: '-1',
+      KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS: '1.5',
       KOOKR_ALERT_SUSTAIN_SAMPLES: '0',
       KOOKR_FINDING_REVIEW_DAILY_COST_CENTS: '-1',
       KOOKR_FINDING_REVIEW_MAX_CANDIDATES: '0',
