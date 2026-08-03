@@ -576,6 +576,19 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // Fail-open: a check only flips readiness when it is both critical and
     // not-ready. Non-critical checks are reported for visibility only.
     const ready = Object.values(checks).every((check) => check.ready || !check.critical);
+    // Issue #1995: durable ops-status card on the ready→degraded edge so a
+    // Discord outage still leaves an on-disk last-known-good digest. Fire-and-
+    // forget; writer owns best-effort try/catch and edge de-dupe.
+    if (deps.opsStatusWriter) {
+      const failedCritical = Object.entries(checks)
+        .filter(([, check]) => check.critical && !check.ready)
+        .map(([name, check]) => `${name}:${check.status}`)
+        .join(',');
+      void deps.opsStatusWriter.noteReadyVerdict(
+        ready,
+        failedCritical.length > 0 ? failedCritical : undefined,
+      );
+    }
     return c.json({ ready, checks }, ready ? 200 : 503);
   });
 

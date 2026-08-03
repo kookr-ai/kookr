@@ -56,6 +56,12 @@ export interface ScheduleRuntimeDeps {
    */
   operationalAlertSink?: OperationalAlertSink;
   /**
+   * Optional side-effect for every operational-alert transition the schedule
+   * runtime records (issue #1995 ops-status card). Invoked after the durable
+   * JSONL sink is queued; must not throw.
+   */
+  onOperationalAlert?: (alert: Extract<ServerMessage, { type: 'alert' }>) => void;
+  /**
    * Re-queue-after-reset scheduler (issue #1896 / #1699 WS1.4). When provided,
    * its `sweep()` runs once per schedule-runner tick so provider-paused issues
    * auto-resume at their reset time (jittered, token-bucket-bounded, lease-keyed
@@ -130,7 +136,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
   await scheduleStore.load();
   const operationalAlertSink =
     deps.operationalAlertSink ?? new OperationalAlertSink({ kookrDir: deps.kookrDir });
-  const recordOperationalAlert = bindOperationalAlertSink(operationalAlertSink);
+  const recordOperationalAlert = bindOperationalAlertSink(
+    operationalAlertSink,
+    deps.onOperationalAlert,
+  );
   const scheduleValidator = new ScheduleValidator();
   const scheduleService = new ScheduleService({
     store: scheduleStore,

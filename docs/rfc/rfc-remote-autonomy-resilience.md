@@ -92,7 +92,7 @@ SUS is complete when, **without** new Lucy mutate commands:
 | Auth/session expiry | **detect** on health ≤15m; pause producers | page | re-login |
 | dtach fleet broken | detect terminalBackend; one backend restart/h | page | physical/SSH |
 | Lucy bot down | optional heartbeat miss | **webhook** “no Lucy 2h” | restart Lucy |
-| Discord outage | write `ops-status.json` only | — | wait |
+| Discord outage | write `ops-status.json` only (shipped #1995, `src/core/ops-status.ts` → `{kookrDir}/ops-status.json`) | — | wait |
 | Launch dead, ready green | dispatch_failed streak page | page | auth/quota |
 | Disk critical (logs) | alert; prune only via existing maintenance budget | page | worktree disk |
 | safeMode / kill-switch stuck on | surface on status | page | clear |
