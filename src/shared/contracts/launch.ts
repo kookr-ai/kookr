@@ -1,4 +1,4 @@
-import type { AgentSelection } from './agent-types.js';
+import type { AgentSelection, AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
 import type { TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
@@ -159,16 +159,17 @@ export interface LaunchResult<TaskShape extends { id: string } = { id: string }>
   idempotentReplay?: boolean;
   /**
    * Plan-quota admission decision when a claude-code launch was rotated to a
-   * healthy alternate instead of rejected (issue #1936). Absent on ordinary
-   * admits. Rejects carry the same fields on the error / 429 body, not here.
+   * healthy alternate instead of rejected (issue #1936). Success path only
+   * ever sets `'rotated'`; rejects carry `admission: 'rejected'` on the error
+   * / 429 body, not on {@link LaunchResult}.
    */
-  admission?: LaunchAdmissionDecision;
+  admission?: 'rotated';
   /** Machine-readable reason paired with {@link admission}. */
   reason?: LaunchAdmissionReason;
   /** Agent that was requested (or resolved) before plan-quota rotation. */
-  fromAgent?: string;
+  fromAgent?: AgentType;
   /** Agent that actually received the launch after rotation. */
-  toAgent?: string;
+  toAgent?: AgentType;
   /** Highest plan-window utilization that triggered the rotation. */
   maxUtilization?: number;
   /** Exhaustion threshold that was met or exceeded. */

@@ -1298,14 +1298,35 @@ async function launchTaskCore(
     }
     if (decision && !decision.admit) {
       // Exclude claude-code so the pin is treated as unavailable; fall back to
-      // the first healthy registered agent in canonical order (WS1.3).
+      // the first healthy registered agent in canonical order (WS1.3). Only
+      // `substituted` is reachable with the exclude filter (pin never stays
+      // "available"). Walk remaining candidates if a substitute fails the R19
+      // remote-chat trust boundary so we never rotate onto a forbidden agent.
       const available = adapterRegistry.getTypes().filter((t) => t !== 'claude-code');
       const deprioritized = deps.getDeprioritizedAgentTypes?.(available) ?? [];
-      const fallback = resolvePinnedAgentFallback('claude-code', available, deprioritized);
-      if (fallback.kind === 'substituted' || fallback.kind === 'available') {
+      let toAgent: AgentType | null = null;
+      let remaining = available;
+      while (remaining.length > 0) {
+        const fallback = resolvePinnedAgentFallback('claude-code', remaining, deprioritized);
+        if (fallback.kind !== 'substituted') break;
+        const candidate = fallback.agentType;
+        // R19: re-apply after rotation. A telegram launch that requested
+        // claude-code must not land on codex/grok when the env flag is off.
+        if (
+          opts.launchSource === 'remote-chat-telegram' &&
+          candidate !== 'claude-code' &&
+          !(candidate === 'codex-cli' && allowRemoteChatCodex())
+        ) {
+          remaining = remaining.filter((t) => t !== candidate);
+          continue;
+        }
+        toAgent = candidate;
+        break;
+      }
+      if (toAgent) {
         const fromAgent = agentType;
-        const toAgent = fallback.agentType;
-        // Drop effort/model pins that are invalid for the substitute (WS1.3).
+        // Drop pins that are invalid for the substitute (schedule WS1.3 drops
+        // all pins on substitution; we only drop ones the substitute rejects).
         if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
           effectiveEffort = undefined;
         }

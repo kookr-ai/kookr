@@ -2759,6 +2759,35 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(getter).not.toHaveBeenCalled();
     });
 
+    it('does not rotate remote-chat-telegram onto codex when R19 flag is off (issue #1936)', async () => {
+      const store = new TaskStore();
+      const prev = process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
+      delete process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
+      try {
+        const deps = quotaDeps(store, {
+          fiveHour: { utilization: 100, resetsAt: '2099-01-01T00:00:00.000Z' },
+          sevenDay: null,
+        });
+        const before = store.listTasks().length;
+        await expect(
+          launchTask(deps, {
+            prompt: 'telegram under plan exhaustion',
+            cwd: '/tmp',
+            agentType: 'claude-code',
+            launchSource: 'remote-chat-telegram',
+          }),
+        ).rejects.toMatchObject({
+          code: 'quota_headroom_admission',
+          admission: 'rejected',
+          reason: 'plan_quota',
+        });
+        expect(store.listTasks().length).toBe(before);
+      } finally {
+        if (prev === undefined) delete process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX;
+        else process.env.KOOKR_REMOTE_CHAT_ALLOW_CODEX = prev;
+      }
+    });
+
     it('still applies plan-quota gate to schedule-fired claude-code launches (no schedule exemption)', async () => {
       const store = new TaskStore();
       // Claude-only so the gate must reject rather than rotate (schedule path
