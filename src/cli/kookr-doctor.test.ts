@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { buildDoctorJsonReport, runDoctorCli } from './kookr-doctor.js';
+import { buildDoctorJsonReport, formatDoctorReport, runDoctorCli } from './kookr-doctor.js';
 
 /** Stable happy-path check ids plus KB failure-mode ids that can replace `launch.kb`. */
 const DOCUMENTED_DOCTOR_CHECK_IDS = [
@@ -193,5 +193,122 @@ describe('kookr doctor --json', () => {
     for (const id of DOCUMENTED_DOCTOR_CHECK_IDS) {
       expect(cliMd, `missing documented doctor check id ${id} in docs/reference/cli.md`).toContain(id);
     }
+  });
+});
+
+describe('kookr doctor (human)', () => {
+  it('formatDoctorReport renders aligned status rows and recommended actions', () => {
+    const text = formatDoctorReport({
+      ok: false,
+      status: 'fail',
+      generatedAt: '2026-06-21T07:30:00.000Z',
+      checks: [
+        {
+          id: 'runtime.node',
+          label: 'Node.js',
+          category: 'runtime',
+          status: 'fail',
+          required: true,
+          summary: 'Node.js v20.0.0 is below the required >= 22',
+          recommendedAction: 'Install Node.js >= 22.',
+        },
+        {
+          id: 'github.gh-auth',
+          label: 'GitHub auth',
+          category: 'github',
+          status: 'warn',
+          required: false,
+          summary: 'gh authentication is unavailable or not configured',
+          detail: 'not logged in',
+          recommendedAction: 'Run `gh auth login` if you want GitHub PR/issue monitoring and automation.',
+        },
+        {
+          id: 'runtime.git',
+          label: 'git',
+          category: 'runtime',
+          status: 'ok',
+          required: true,
+          summary: 'git version 2.50.1',
+        },
+      ],
+    });
+
+    expect(text).toContain('Kookr doctor — launch preflight');
+    expect(text).toMatch(/Node\.js\s+FAIL\s+Node\.js v20\.0\.0 is below the required >= 22/);
+    expect(text).toMatch(/GitHub auth\s+WARN\s+gh authentication is unavailable or not configured/);
+    expect(text).toContain('not logged in');
+    expect(text).toMatch(/git\s+OK\s+git version 2\.50\.1/);
+    expect(text).toContain('Recommended actions:');
+    expect(text).toContain('Install Node.js >= 22.');
+    expect(text).toContain('Run `gh auth login`');
+    expect(text).toContain('Overall: FAIL (required checks failed)');
+  });
+
+  it('prints a human table without --json and returns the aggregated exit code', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+    const errors: string[] = [];
+
+    const code = await runDoctorCli([], {
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: (msg: string) => errors.push(msg),
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(errors).toEqual([]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('Kookr doctor — launch preflight');
+    expect(logs[0]).toMatch(/Node\.js\s+OK\s+/);
+    expect(logs[0]).toContain('Overall: OK');
+    // Human path must not emit JSON
+    expect(() => JSON.parse(logs[0]!)).toThrow();
+  });
+
+  it('human path returns exit code 1 when a required check fails', async () => {
+    const run = commandRunner({
+      ...happyFixtures(),
+      [JSON.stringify(['node', ['--version']])]: { stdout: 'v20.0.0\n' },
+    });
+    const logs: string[] = [];
+
+    const code = await runDoctorCli([], {
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: () => {},
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(logs[0]).toContain('Overall: FAIL');
+    expect(logs[0]).toMatch(/Node\.js\s+FAIL\s+/);
+  });
+
+  it('does not redirect humans to pnpm doctor anymore', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+    const errors: string[] = [];
+
+    await runDoctorCli([], {
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: (msg: string) => errors.push(msg),
+      },
+    });
+
+    expect(errors.join('\n')).not.toContain('requires --json');
+    expect(errors.join('\n')).not.toContain('pnpm doctor');
+    expect(logs.join('\n')).not.toContain('requires --json');
   });
 });
