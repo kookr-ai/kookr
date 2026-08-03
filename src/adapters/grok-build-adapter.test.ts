@@ -222,6 +222,73 @@ describe('GrokBuildAdapter', () => {
     warn.mockRestore();
   });
 
+  test('permission menu after idle handshake Enter still fails closed (not assumed-submitted)', async () => {
+    // First confirm sees idle; after handshake Enter the pane is a Grok
+    // permission menu. isGrokBusyOrResponding is true for that menu — must
+    // not treat it as successful prompt accept.
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 40,
+      promptSubmitRetries: 0,
+      handshakeRetries: 1,
+    });
+    const idlePane = '\x1b[?2004h\n› type a message… (esc to interrupt)';
+    const permissionPane =
+      '\x1b[?2004h\nAllow once\nAlways allow this command\nReject\nNo, and tell Grok what to do differently';
+    let captures = 0;
+    vi.spyOn(backend, 'captureBytes').mockImplementation(async () => {
+      captures += 1;
+      // Early captures: idle (deliver unconfirmed + handshake entry).
+      // Later: permission after retry Enter.
+      const pane = captures < 5 ? idlePane : permissionPane;
+      return new TextEncoder().encode(pane);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const task = taskStore.createTask('x', '/workspace');
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(
+      /permission prompt|Allow once|Reject/i,
+    );
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('assuming initial prompt submitted')),
+    ).toBe(false);
+    warn.mockRestore();
+  });
+
+  test('assumes submitted when pane is busy/Thinking without UserPromptSubmit hook (overnight launch-storm fix)', async () => {
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 40,
+      promptSubmitRetries: 0,
+      handshakeRetries: 1,
+    });
+    // Grok already streaming; UserPromptSubmit never fires. Prior behaviour
+    // waited for the hook again then killed a live session.
+    const busyPane = '\x1b[?2004h\n◆ Thinking…\nworking on it';
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode(busyPane));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const task = taskStore.createTask('x', '/workspace');
+    const sessionId = await adapter.launch(task.id, 'x', '/workspace');
+
+    expect(backend.sessions.has(sessionId)).toBe(true);
+    expect(backend.sessions.get(sessionId)?.alive).toBe(true);
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('assuming initial prompt submitted')),
+    ).toBe(true);
+    warn.mockRestore();
+  });
+
   test('one in-session handshake retry resends Enter on an idle pane and succeeds when the hook arrives (issue #1808)', async () => {
     // After the first confirm wait times out the adapter logs "ack pending" and
     // starts the in-session retry wait. Poll for that log (not a fixed sleep)
@@ -324,14 +391,14 @@ describe('GrokBuildAdapter', () => {
       // internal ready wait (readyTimeoutMs threaded through twice) + the
       // submit-confirmation retries + default handshakeRetries (1), plus the
       // fixed cushion for the un-timed captureBytes calls/cleanup around them.
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0)).toBe(
-        15_000 * 2 + 10_000 * (0 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 0)).toBe(
+        15_000 * 2 + 30_000 * (0 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 2)).toBe(
-        15_000 * 2 + 10_000 * (2 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 2)).toBe(
+        15_000 * 2 + 30_000 * (2 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0, 0)).toBe(
-        15_000 * 2 + 10_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 0, 0)).toBe(
+        15_000 * 2 + 30_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
     });
 

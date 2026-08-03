@@ -65,17 +65,28 @@ export const DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 2_000;
 export const DEFAULT_PROMPT_SUBMIT_RETRIES = 2;
 
 /**
- * Substrings that, when visible in the post-Enter display, prove Claude
- * Code has already accepted the prompt and is in a state where another
- * Enter could have side effects (cancel/confirm). The retry path uses
- * {@link isClaudeBusyOrResponding} to skip a retry when any of these
- * appear, defending against the case where the initial Enter actually
- * succeeded but the `UserPromptSubmit` hook is slow to round-trip.
+ * Substrings that, when visible in the post-Enter display, prove the agent
+ * (Claude Code or Grok Build) has already accepted the prompt and is in a
+ * state where another Enter could have side effects (cancel/confirm). The
+ * retry path uses {@link isClaudeBusyOrResponding} to skip a retry when any
+ * of these appear, defending against the case where the initial Enter
+ * actually succeeded but the `UserPromptSubmit` hook is slow to round-trip.
+ *
+ * Grok markers matter: overnight launch storms (UserPromptSubmit confirm
+ * timeouts with Auth preflight OK) often showed Grok already streaming
+ * (`Thinking…`) while the hook ack never arrived. Without Grok markers the
+ * confirm path returned `unconfirmed` and killed a live session.
  */
-const CLAUDE_BUSY_MARKERS: readonly string[] = [
+const AGENT_BUSY_MARKERS: readonly string[] = [
   'esc to interrupt',
   'Esc to interrupt',
   'ESC to interrupt',
+  // Grok Build TUI — high-confidence "model is working" chrome (not idle
+  // composer). Keep narrow: bare spinner glyphs alone can appear during
+  // MCP load before any prompt is accepted.
+  'Thinking…',
+  'Thinking...',
+  '◆ Thinking',
 ];
 /**
  * Permission-prompt detector. Claude Code's permission UI renders numbered
@@ -84,6 +95,9 @@ const CLAUDE_BUSY_MARKERS: readonly string[] = [
  * heuristic narrow.
  */
 const CLAUDE_PERMISSION_PROMPT_RE = /(?:^|\n)\s*(?:❯\s*)?1\.\s+(?:Yes|Allow|Approve|Continue)\b/;
+/** Grok Build permission row menu (Allow once / Reject) — mid-run and launch. */
+const GROK_PERMISSION_BUSY_RE =
+  /(?:^|\n)\s*[❯›>]?\s*(?:\d+\.\s*)?(?:Allow once\b|Always allow\b|Reject\b|No, and tell Grok\b)/i;
 
 /** Env var that opts into/out of bracketed-paste prompt submission. */
 export const PROMPT_BRACKETED_PASTE_ENV = 'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE';
@@ -407,15 +421,18 @@ export function isBracketedPasteModeEnabled(rawBytes: Uint8Array): boolean {
 }
 
 /**
- * Detect whether Claude Code has already accepted the most recent prompt
+ * Detect whether the agent TUI has already accepted the most recent prompt
  * and is either streaming a response or showing a permission prompt. Used
  * by the launch path to skip a retry Enter that would otherwise risk
  * confirming a tool-permission dialog or interrupting a streaming reply.
  *
+ * Covers Claude Code and Grok Build chrome. The export name is historical
+ * (Claude-first); behaviour is agent-agnostic.
+ *
  * False negatives are acceptable (a missed signal merely allows a spurious
- * Enter into an empty composer, which Claude Code ignores); false positives
- * are not (they would leave the prompt stuck unsubmitted, which is the
- * very bug the retry loop exists to fix), so the markers below are kept
+ * Enter into an empty composer, which Claude/Grok typically ignore); false
+ * positives are not (they would leave the prompt stuck unsubmitted, which is
+ * the very bug the retry loop exists to fix), so the markers below are kept
  * narrow and high-confidence rather than broad.
  */
 export function isClaudeBusyOrResponding(rawBytes: Uint8Array): boolean {
@@ -429,10 +446,10 @@ export function isClaudeBusyOrResponding(rawBytes: Uint8Array): boolean {
  */
 export function isPaneBusyOrAwaitingDialog(pane: string): boolean {
   const text = stripTerminalControls(pane);
-  for (const marker of CLAUDE_BUSY_MARKERS) {
+  for (const marker of AGENT_BUSY_MARKERS) {
     if (text.includes(marker)) return true;
   }
-  return CLAUDE_PERMISSION_PROMPT_RE.test(text);
+  return CLAUDE_PERMISSION_PROMPT_RE.test(text) || GROK_PERMISSION_BUSY_RE.test(text);
 }
 
 /** Strip OSC and CSI escape sequences from captured pane text. */
@@ -495,6 +512,9 @@ async function awaitPromptSubmissionConfirmation(
       return { status: 'confirmed', confirmationAttempts: attempt + 1, enterWrites };
     }
     if (attempt === submitRetries) {
+      // Grok's idle composer footer contains "esc to interrupt", so the shared
+      // Claude busy markers false-positive there. Grok recovery lives in
+      // GrokBuildAdapter's handshake path via isGrokBusyOrResponding instead.
       return { status: 'unconfirmed', confirmationAttempts: attempt + 1, enterWrites };
     }
     const capture = await backend.captureBytes(sessionId);

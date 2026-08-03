@@ -568,6 +568,12 @@ describe('isClaudeBusyOrResponding', () => {
     expect(isClaudeBusyOrResponding(encoder.encode('see step 1. then step 2.'))).toBe(false);
     expect(isClaudeBusyOrResponding(encoder.encode('❯ '))).toBe(false);
   });
+
+  test('detects Grok Thinking chrome (hook-silent busy sessions)', () => {
+    expect(isClaudeBusyOrResponding(encoder.encode('┃◆ Thinking…┃'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('Thinking...'))).toBe(true);
+    expect(isClaudeBusyOrResponding(encoder.encode('Allow once\nNo, and tell Grok what to do differently'))).toBe(true);
+  });
 });
 
 describe('deliverInitialPromptToSession with awaitSubmit', () => {
@@ -646,6 +652,7 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     expect(awaitSubmit).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: 'unconfirmed', confirmationAttempts: 1, enterWrites: 1 });
   });
+
 
   test('skips the retry Enter when the post-await display shows Claude is busy', async () => {
     // The hazard: the initial Enter actually submitted the prompt, but the

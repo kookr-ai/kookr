@@ -72,13 +72,21 @@ const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_READY_POLL_MS = 100;
+/**
+ * Enter resends inside {@link deliverInitialPromptToSession}. Kept at 0 so the
+ * first confirmation loop does not hammer Enter; in-session recovery uses
+ * {@link DEFAULT_GROK_HANDSHAKE_RETRIES} instead (issue #1808). Busy chrome is
+ * still sampled on the final attempt (assumed-submitted).
+ */
 const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
 /**
  * In-session initial-prompt handshake retries after the first confirmation
  * loop returns `unconfirmed` (issue #1808). One extra wait (and optionally one
  * Enter resend when the pane still looks idle) is cheaper than cancelling the
  * whole task for the operator to respawn. Kept at 1 so we do not hammer a
- * stuck TUI with repeated resubmits.
+ * stuck TUI with repeated resubmits. When the pane is already busy/responding
+ * and the hook still never arrives, the launch assumes submission succeeded
+ * rather than killing a live turn.
  */
 export const DEFAULT_GROK_HANDSHAKE_RETRIES = 1;
 /**
@@ -87,12 +95,13 @@ export const DEFAULT_GROK_HANDSHAKE_RETRIES = 1;
  */
 export const GROK_INITIAL_PROMPT_ACK_MARKER = 'UserPromptSubmit hook (parent user_prompt)';
 /**
- * Grok emits UserPromptSubmit promptly, but its command-hook acknowledgement
- * can take several seconds to complete the local writer + HTTP round trip.
- * The shared 2-second confirmation deadline is tuned for Claude Code and can
- * resend an already accepted Grok prompt before that acknowledgement arrives.
+ * Grok's command-hook acknowledgement can take many seconds (writer + HTTP +
+ * cold session). The shared 2s Claude deadline is far too short; 10s still
+ * under-covered cold boots where the model streams before the hook lands.
+ * 30s per confirm attempt bounds worst-case wait while busy chrome can
+ * short-circuit to assumed-submitted.
  */
-export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
+export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 30_000;
 
 /**
  * Fixed cushion (ms) added on top of the nominal wait budget when computing
@@ -713,25 +722,60 @@ export class GrokBuildAdapter implements AgentAdapter {
         /* treat capture failure as idle — a no-op Enter is safer than a stuck launch */
       }
       if (busy) {
-        // Pane suggests Grok already left the composer (or is permission-
-        // blocked mid-tool). Wait once more for the hook without resending
-        // Enter — resubmit would risk confirming a dialog or interrupting
-        // a live turn.
-        if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
-      } else {
-        // Still looks idle: the first Enter may have been dropped. Resend
-        // Enter once, then re-await the same UserPromptSubmit signal.
-        try {
-          await this.inputWriter.writeInput(tmuxName, ENTER_BYTES, {
-            reason: 'launch-prompt-handshake-retry-enter',
-          });
-        } catch (err) {
-          console.warn(
-            `[grok-build-adapter] handshake retry Enter failed for ${tmuxName}:`,
-            err instanceof Error ? err.message : err,
-          );
+        // Permission menus are "busy" for retry-Enter safety but are NOT a
+        // successful prompt accept — fail closed so the operator can resolve.
+        const midPermission = detectGrokPermissionPromptUI(display);
+        if (midPermission) {
+          throw new Error(this.formatUnconfirmedPromptError(midPermission, display));
         }
-        if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
+        // Streaming/Thinking: give the hook a short window, then assume
+        // success. Do NOT burn a full confirm timeout or kill a live turn
+        // when the hook never arrives — overnight PR droughts were mass
+        // launch_error on sessions already working while UserPromptSubmit
+        // stayed silent (auth preflight OK).
+        const busyAckMs = Math.min(3_000, this.promptSubmitConfirmTimeoutMs);
+        if (await awaitSubmit(busyAckMs)) return;
+        console.warn(
+          `[grok-build-adapter] assuming initial prompt submitted for ${tmuxName}: ` +
+            `pane is busy/responding but ${GROK_INITIAL_PROMPT_ACK_MARKER} never arrived; ` +
+            `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
+        );
+        return;
+      }
+      // Still looks idle: the first Enter may have been dropped. Resend
+      // Enter once, then re-await the same UserPromptSubmit signal.
+      try {
+        await this.inputWriter.writeInput(tmuxName, ENTER_BYTES, {
+          reason: 'launch-prompt-handshake-retry-enter',
+        });
+      } catch (err) {
+        console.warn(
+          `[grok-build-adapter] handshake retry Enter failed for ${tmuxName}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
+      // Re-check busy after the retry window — Grok may have started
+      // streaming without emitting the hook. Permission menus are "busy"
+      // for Enter safety but must still fail closed (same as mid-busy /
+      // final assumed-submit paths).
+      try {
+        display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+        if (isGrokBusyOrResponding(display)) {
+          const afterRetryPermission = detectGrokPermissionPromptUI(display);
+          if (afterRetryPermission) {
+            throw new Error(this.formatUnconfirmedPromptError(afterRetryPermission, display));
+          }
+          console.warn(
+            `[grok-build-adapter] assuming initial prompt submitted for ${tmuxName}: ` +
+              `pane became busy after handshake retry ${attempt + 1}; ` +
+              `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
+          );
+          return;
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('[grok-build-adapter]')) throw err;
+        /* keep prior display on capture failure */
       }
       console.warn(
         `[grok-build-adapter] handshake retry ${attempt + 1}/${this.handshakeRetries} ` +
@@ -745,6 +789,20 @@ export class GrokBuildAdapter implements AgentAdapter {
       display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
     } catch {
       /* keep prior display */
+    }
+    // Last-chance assumed-submit: streaming/Thinking with zero hook ack is
+    // still a successful delivery. Permission menus stay fail-closed.
+    if (display && isGrokBusyOrResponding(display)) {
+      const finalPermission = detectGrokPermissionPromptUI(display);
+      if (finalPermission) {
+        throw new Error(this.formatUnconfirmedPromptError(finalPermission, display));
+      }
+      console.warn(
+        `[grok-build-adapter] assuming initial prompt submitted for ${tmuxName}: ` +
+          `final pane is busy/responding without ${GROK_INITIAL_PROMPT_ACK_MARKER}; ` +
+          `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
+      );
+      return;
     }
     throw new Error(this.formatUnconfirmedPromptError(null, display));
   }
