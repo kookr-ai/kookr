@@ -1,4 +1,4 @@
-import type { AgentSelection } from './agent-types.js';
+import type { AgentSelection, AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
 import type { TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
@@ -135,6 +135,15 @@ export interface LaunchOpts {
   };
 }
 
+/**
+ * Structured spawn-admission outcome for Anthropic plan-quota exhaustion
+ * (issue #1936). Surfaced on successful rotation responses and on the 429
+ * reject body so supervisors/feeder can log and avoid blind retries without
+ * re-parsing free-text error strings.
+ */
+export type LaunchAdmissionDecision = 'rotated' | 'rejected';
+export type LaunchAdmissionReason = 'plan_quota';
+
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {
   task: TaskShape;
   queued: boolean;
@@ -148,4 +157,23 @@ export interface LaunchResult<TaskShape extends { id: string } = { id: string }>
    * one, so it never triggers the interactive/CLI duplicate-confirmation UX.
    */
   idempotentReplay?: boolean;
+  /**
+   * Plan-quota admission decision when a claude-code launch was rotated to a
+   * healthy alternate instead of rejected (issue #1936). Success path only
+   * ever sets `'rotated'`; rejects carry `admission: 'rejected'` on the error
+   * / 429 body, not on {@link LaunchResult}.
+   */
+  admission?: 'rotated';
+  /** Machine-readable reason paired with {@link admission}. */
+  reason?: LaunchAdmissionReason;
+  /** Agent that was requested (or resolved) before plan-quota rotation. */
+  fromAgent?: AgentType;
+  /** Agent that actually received the launch after rotation. */
+  toAgent?: AgentType;
+  /** Highest plan-window utilization that triggered the rotation. */
+  maxUtilization?: number;
+  /** Exhaustion threshold that was met or exceeded. */
+  threshold?: number;
+  /** Binding-window reset time when known (ISO 8601). */
+  resetsAt?: string | null;
 }

@@ -1181,6 +1181,25 @@ describe('output formatting', () => {
     expect(out).not.toContain('parent_task_id=');
   });
 
+  it('formatSuccess surfaces plan-quota rotation (issue #1936)', () => {
+    const out = formatSuccess({
+      task: {
+        id: 'abc',
+        agentType: 'codex-cli',
+        cwd: '/tmp',
+        admission: 'rotated',
+        reason: 'plan_quota',
+        fromAgent: 'claude-code',
+        toAgent: 'codex-cli',
+        resetsAt: '2026-08-04T12:00:00.000Z',
+      },
+      baseUrl: 'http://127.0.0.1:4800',
+      queued: false,
+    });
+    expect(out).toContain('admission: rotated (plan_quota) claude-code → codex-cli');
+    expect(out).toContain('plan quota resets: 2026-08-04T12:00:00.000Z');
+  });
+
   it('classifies wait-ready and terminal snapshot states', () => {
     expect(classifyWaitState({
       taskId: 't1',
@@ -1246,6 +1265,22 @@ describe('formatBackpressure429 (issue #1526 C3)', () => {
     const rendered = formatBackpressure429({ error: 'full', code: 'pending_queue_full' });
     expect(rendered).toContain('launch refused (pending_queue_full)');
     expect(rendered).toContain('free a slot');
+  });
+
+  it('renders plan-quota rejection with structured admission fields (issue #1936)', () => {
+    const rendered = formatBackpressure429({
+      error: 'Anthropic plan quota is exhausted (utilization 100% ≥ threshold 90%) — launch rejected',
+      code: 'quota_headroom_admission',
+      admission: 'rejected',
+      reason: 'plan_quota',
+      maxUtilization: 100,
+      threshold: 90,
+      resetsAt: '2026-08-04T12:00:00.000Z',
+    });
+    expect(rendered).toContain('launch refused (quota_headroom_admission)');
+    expect(rendered).toContain('admission: rejected (reason: plan_quota)');
+    expect(rendered).toContain('plan utilization: 100% (threshold 90%)');
+    expect(rendered).toContain('retry after binding window resets: 2026-08-04T12:00:00.000Z');
   });
 });
 

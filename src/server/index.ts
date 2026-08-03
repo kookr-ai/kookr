@@ -47,6 +47,7 @@ import {
 } from '../core/loop-delivery-watchdog.js';
 import { gitIn } from '../core/git-helpers.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
@@ -2303,16 +2304,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
-  // Live headroom for claude-code launch admission (issue #1894 / #1699 WS1.2).
-  // Wired after the adapter is constructed; the launch-service deps object is
-  // already shared with every launcher, so mutating the optional getter here
-  // is enough. getLiveHeadroom() forces a poll — never a stale getLatest().
+  // Live headroom for claude-code launch admission (issue #1894 / #1699 WS1.2)
+  // + plan-quota rotation / binding-window cache (issue #1936). Wired after
+  // the adapter is constructed; the launch-service deps object is already
+  // shared with every launcher, so mutating the optional getter here is
+  // enough. getLiveHeadroom() forces a poll — never a stale getLatest().
   //
   // Skip under Vitest: QuotaAdapter reads the real ~/.claude credentials and
   // would hit Anthropic's usage API on every integration launch, making the
   // suite non-hermetic (and fail-closed when the operator's plan is near the
-  // exhaustion threshold). Unit tests inject getLiveQuotaHeadroom directly.
+  // exhaustion threshold). Unit tests inject getLiveQuotaHeadroom / the cache
+  // directly.
   if (!process.env.VITEST) {
+    launchServiceDeps.planQuotaBindingCache = new PlanQuotaBindingCache();
     launchServiceDeps.getLiveQuotaHeadroom = () => quotaAdapter.getLiveHeadroom();
   }
 

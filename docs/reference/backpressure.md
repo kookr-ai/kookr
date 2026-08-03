@@ -261,6 +261,53 @@ a non-finite load sample or a non-positive CPU count admits the launch — so a
 bad reading never wedges the spawn path shut. The threshold is read once at
 startup (an operational knob, not a live-tunable setting).
 
+## 7. Anthropic plan-quota admission + agent rotation (issues #1894/#1919, #1936)
+
+`QuotaAdapter` historically fed the dashboard only. Issue **#1894** (PR **#1919**,
+WS1.2) wired a *live* headroom poll into `launchTask` so a `claude-code` launch
+into an exhausted Anthropic plan window is refused **before any task record**
+(code `quota_headroom_admission`, HTTP **429**), instead of starting a session
+that fails mid-run. Threshold is 90% utilization on either the five-hour or
+seven-day window (same binding threshold as the provider-reset scheduler).
+Schedule fires are **not** exempt — autonomous dispatch into a known-empty
+window is exactly what the gate exists to stop. A failed live poll fails **open**
+(no stale `getLatest()` snapshot is used).
+
+Issue **#1936** extends that gate for the ad-hoc spawn / claim-issue path (and
+any other `launchTask` caller, including schedule):
+
+1. On plan-quota deny for `claude-code`, **do not** hard-reject immediately when
+   another preflight-registered agent is healthy.
+2. **Rotate** using the same order as schedule agent substitution
+   (issue **#1895** / PR **#1921**, WS1.3 — `resolvePinnedAgentFallback` over
+   `AVAILABLE_AGENT_TYPES`, skipping deprioritized agents while a healthier
+   alternate remains). Claude-code is treated as unavailable for that launch;
+   effort/model pins that are invalid for the substitute are dropped (same as
+   WS1.3 schedule substitution).
+3. Only when **no** healthy alternate is registered does the launch reject with
+   `quota_headroom_admission` and **no task record**.
+4. A process-local **binding-window cache** records the deny until `resetsAt`
+   (or a short fallback TTL when the sample has no reset) so N rapid spawn
+   attempts do not re-poll Anthropic / thrash rejects.
+5. Spawn JSON surfaces structured fields so supervisors/feeder log without
+   re-parsing free text:
+   - **Rotated (201):** `admission: "rotated"`, `reason: "plan_quota"`,
+     `fromAgent`, `toAgent`, plus utilization / threshold / `resetsAt`.
+   - **Rejected (429):** `admission: "rejected"`, `reason: "plan_quota"`, same
+     utilization fields as #1919.
+
+Idempotency-key replay (#1526 Phase B) still returns the **same** task after a
+rotated first launch — the ledger keys on the client key, not the resolved
+agent type — so a client timeout under saturation does not double-create.
+
+Interaction summary:
+
+| Mechanism | Issue / PR | Role |
+| --- | --- | --- |
+| Live quota-headroom gate | #1894 / #1919 (WS1.2) | Detect exhausted Anthropic plan window for claude-code |
+| Schedule agent rotation on unavailability | #1895 / #1921 (WS1.3) | Substitute when a pinned agent is unregistered / deprioritized |
+| Spawn plan-quota rotation + binding cache | #1936 | On WS1.2 deny, apply WS1.3 order before reject; cache binding window; surface `admission`/`reason` |
+
 ## Error shape summary
 
 ```jsonc
@@ -303,5 +350,32 @@ startup (an operational knob, not a live-tunable setting).
   "capacity": { /* same ledger shape */ },
   "loadPerCpu": 2.0,
   "maxLoadPerCpu": 0.9
+}
+
+// 429, code "quota_headroom_admission" — plan quota (§7, issues #1894/#1936)
+// Only when no healthy alternate agent can accept the rotation.
+{
+  "error": "Anthropic plan quota is exhausted (utilization 100% ≥ threshold 90%) — …",
+  "code": "quota_headroom_admission",
+  "capacity": { /* same ledger shape */ },
+  "maxUtilization": 100,
+  "threshold": 90,
+  "resetsAt": "2026-08-04T12:00:00.000Z",
+  "admission": "rejected",
+  "reason": "plan_quota"
+}
+
+// 201 success with plan-quota rotation (§7, issue #1936)
+// Task body fields plus:
+{
+  "id": "…",
+  "agentType": "codex-cli",
+  "admission": "rotated",
+  "reason": "plan_quota",
+  "fromAgent": "claude-code",
+  "toAgent": "codex-cli",
+  "maxUtilization": 100,
+  "threshold": 90,
+  "resetsAt": "2026-08-04T12:00:00.000Z"
 }
 ```
