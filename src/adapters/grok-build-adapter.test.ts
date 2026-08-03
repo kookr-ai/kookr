@@ -222,6 +222,35 @@ describe('GrokBuildAdapter', () => {
     warn.mockRestore();
   });
 
+  test('assumes submitted when pane is busy/Thinking without UserPromptSubmit hook (overnight launch-storm fix)', async () => {
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 40,
+      promptSubmitRetries: 0,
+      handshakeRetries: 1,
+    });
+    // Grok already streaming; UserPromptSubmit never fires. Prior behaviour
+    // waited for the hook again then killed a live session.
+    const busyPane = '\x1b[?2004h\n◆ Thinking…\nworking on it';
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode(busyPane));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const task = taskStore.createTask('x', '/workspace');
+    const sessionId = await adapter.launch(task.id, 'x', '/workspace');
+
+    expect(backend.sessions.has(sessionId)).toBe(true);
+    expect(backend.sessions.get(sessionId)?.alive).toBe(true);
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('assuming initial prompt submitted')),
+    ).toBe(true);
+    warn.mockRestore();
+  });
+
   test('one in-session handshake retry resends Enter on an idle pane and succeeds when the hook arrives (issue #1808)', async () => {
     // After the first confirm wait times out the adapter logs "ack pending" and
     // starts the in-session retry wait. Poll for that log (not a fixed sleep)
@@ -324,14 +353,14 @@ describe('GrokBuildAdapter', () => {
       // internal ready wait (readyTimeoutMs threaded through twice) + the
       // submit-confirmation retries + default handshakeRetries (1), plus the
       // fixed cushion for the un-timed captureBytes calls/cleanup around them.
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0)).toBe(
-        15_000 * 2 + 10_000 * (0 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 0)).toBe(
+        15_000 * 2 + 30_000 * (0 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 2)).toBe(
-        15_000 * 2 + 10_000 * (2 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 2)).toBe(
+        15_000 * 2 + 30_000 * (2 + 1 + 1) + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
-      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0, 0)).toBe(
-        15_000 * 2 + 10_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 30_000, 0, 0)).toBe(
+        15_000 * 2 + 30_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
       );
     });
 
