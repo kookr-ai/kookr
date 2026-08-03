@@ -33,6 +33,11 @@ describe('applyWorktreeGuardrails', () => {
 
       expect(prompt).toContain('Delivery is pre-authorized for this task');
       expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
+      // Investigation follow-through is autonomous when the right size is clear
+      // (reflect feedback: agents must not stop after diagnosis to ask for an RFC).
+      expect(prompt).toContain('execute it autonomously');
+      expect(prompt).toContain('required follow-up');
+      expect(prompt).not.toContain('ask which to proceed with rather than waiting to be asked');
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
