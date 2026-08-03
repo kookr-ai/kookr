@@ -294,14 +294,43 @@ export const DEFAULT_MAX_PENDING_TASKS = 24;
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 180_000;
 
 /**
+ * Default `Retry-After` (seconds) advertised when a launch is refused because
+ * the node is draining / redeploying (issue #1976). Short enough that a client
+ * that respects the header retries inside the target API-blackout window
+ * (ideally under 1s, max under 5s for a fast prod restart), and always ≥1 so
+ * the HTTP header is well-formed.
+ */
+export const DEFAULT_DRAIN_RETRY_AFTER_SECONDS = 2;
+
+/** Structured reason on a drain-gated launch 503 (issue #1976). */
+export type DrainReason = 'draining' | 'redeploying';
+
+/**
  * Thrown by {@link launchTask} when the server is in operator drain mode and is
- * refusing new task launches. Callers map this to HTTP 503 (issue #659).
+ * refusing new task launches. Callers map this to HTTP 503 with a `Retry-After`
+ * header and a structured `{ reason, retryAfterSeconds }` body (issues #659 /
+ * #1976) so orchestrators treat the refusal as "wait and retry" rather than an
+ * outage.
  */
 export class DrainModeError extends Error {
   readonly code = 'draining';
-  constructor() {
-    super('Server is draining; not accepting new task launches');
+  /** Machine-readable cause: operator drain or a redeploy blackout. */
+  readonly reason: DrainReason;
+  /** Seconds also sent as the `Retry-After` response header (always ≥ 1). */
+  readonly retryAfterSeconds: number;
+  constructor(options: { reason?: DrainReason; retryAfterSeconds?: number } = {}) {
+    const reason = options.reason ?? 'draining';
+    super(
+      reason === 'redeploying'
+        ? 'Server is redeploying; not accepting new task launches'
+        : 'Server is draining; not accepting new task launches',
+    );
     this.name = 'DrainModeError';
+    this.reason = reason;
+    this.retryAfterSeconds = Math.max(
+      1,
+      Math.floor(options.retryAfterSeconds ?? DEFAULT_DRAIN_RETRY_AFTER_SECONDS),
+    );
   }
 }
 

@@ -145,3 +145,41 @@ export function calculateMemoryUsage(totalBytes: number, freeBytes: number): Mem
     unavailable: [],
   };
 }
+
+/**
+ * Pure data-directory free-space breach check (issue #1992).
+ *
+ * Mirrors the operational-alert disk-pressure rule: free space at or below
+ * either enabled floor (percent or bytes) is a breach. A threshold of `0`
+ * disables that floor. Missing / non-finite readings are *not* breaches so a
+ * warm-up or sampler error cannot spuriously trip admission — callers that
+ * want fail-closed behavior must combine this with a sustain counter.
+ *
+ * Returns `false` when every enabled floor has no usable reading (fail-open on
+ * missing data). Returns `true` only when at least one enabled floor has a
+ * known reading that is at or below its threshold.
+ */
+export function isDataDirectoryFreeCritical(input: {
+  freePercent: number | null | undefined;
+  freeBytes: number | null | undefined;
+  /** Free-percent floor; free ≤ this breaches. `<= 0` disables. */
+  percentThreshold: number;
+  /** Free-bytes floor; free ≤ this breaches. `<= 0` disables. */
+  bytesThreshold: number;
+}): boolean {
+  const percentEnabled = input.percentThreshold > 0;
+  const bytesEnabled = input.bytesThreshold > 0;
+  if (!percentEnabled && !bytesEnabled) return false;
+
+  const freePercent = input.freePercent;
+  const freeBytes = input.freeBytes;
+  const percentKnown = freePercent != null && Number.isFinite(freePercent);
+  const bytesKnown = freeBytes != null && Number.isFinite(freeBytes);
+
+  const percentBreached =
+    percentEnabled && percentKnown && (freePercent as number) <= input.percentThreshold;
+  const bytesBreached =
+    bytesEnabled && bytesKnown && (freeBytes as number) <= input.bytesThreshold;
+
+  return percentBreached || bytesBreached;
+}

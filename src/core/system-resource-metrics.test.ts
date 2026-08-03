@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { calculateMemoryUsage, CpuUsageTracker, type CpuCoreSample } from './system-resource-metrics.js';
+import {
+  calculateMemoryUsage,
+  CpuUsageTracker,
+  isDataDirectoryFreeCritical,
+  type CpuCoreSample,
+} from './system-resource-metrics.js';
 
 function cpu(user: number, idle: number, sys = 0): CpuCoreSample {
   return { times: { user, nice: 0, sys, idle, irq: 0 } };
@@ -106,5 +111,76 @@ describe('calculateMemoryUsage', () => {
       memoryFreeBytes: 1_000,
       memoryTotalBytes: 1_000,
     });
+  });
+});
+
+describe('isDataDirectoryFreeCritical (issue #1992)', () => {
+  test('returns false when both floors are disabled', () => {
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 0,
+      freeBytes: 0,
+      percentThreshold: 0,
+      bytesThreshold: 0,
+    })).toBe(false);
+  });
+
+  test('breaches on free percent at or below the floor', () => {
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 5,
+      freeBytes: 10_000_000_000,
+      percentThreshold: 5,
+      bytesThreshold: 0,
+    })).toBe(true);
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 5.1,
+      freeBytes: 10_000_000_000,
+      percentThreshold: 5,
+      bytesThreshold: 0,
+    })).toBe(false);
+  });
+
+  test('breaches on free bytes at or below the floor', () => {
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 50,
+      freeBytes: 1_000,
+      percentThreshold: 0,
+      bytesThreshold: 1_000,
+    })).toBe(true);
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 50,
+      freeBytes: 1_001,
+      percentThreshold: 0,
+      bytesThreshold: 1_000,
+    })).toBe(false);
+  });
+
+  test('fails open on missing / non-finite readings for the enabled floors', () => {
+    expect(isDataDirectoryFreeCritical({
+      freePercent: null,
+      freeBytes: null,
+      percentThreshold: 5,
+      bytesThreshold: 1_000,
+    })).toBe(false);
+    expect(isDataDirectoryFreeCritical({
+      freePercent: Number.NaN,
+      freeBytes: Number.POSITIVE_INFINITY,
+      percentThreshold: 5,
+      bytesThreshold: 1_000,
+    })).toBe(false);
+  });
+
+  test('OR of floors: either enabled breach trips', () => {
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 1,
+      freeBytes: 99_000_000_000,
+      percentThreshold: 5,
+      bytesThreshold: 2_000_000_000,
+    })).toBe(true);
+    expect(isDataDirectoryFreeCritical({
+      freePercent: 50,
+      freeBytes: 100,
+      percentThreshold: 5,
+      bytesThreshold: 2_000_000_000,
+    })).toBe(true);
   });
 });

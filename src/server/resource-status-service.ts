@@ -46,6 +46,13 @@ export interface ResourceStatusServiceDeps {
    * tick.
    */
   onEventLoopDelaySample?: (delayMs: number | null) => void;
+  /**
+   * Fed the full resource-status sample on every successful tick (issue #1992).
+   * Used by the data-directory disk-critical launch admission tracker so
+   * sustain samples advance with the sampler, not only on spawn POSTs.
+   * Isolated: a throwing consumer cannot kill the tick loop.
+   */
+  onResourceStatusSample?: (status: SystemResourceStatus) => void;
   intervalMs?: number;
   operationalAlertHistoryLimit?: number;
   nowMs?: () => number;
@@ -81,6 +88,7 @@ export class ResourceStatusService {
   private readonly onOperationalAlert: ((alert: AlertMessage) => void) | null;
   private readonly getCircuitBreakerSnapshots: (() => CircuitBreakerSnapshot[]) | null;
   private readonly onEventLoopDelaySample: ((delayMs: number | null) => void) | null;
+  private readonly onResourceStatusSample: ((status: SystemResourceStatus) => void) | null;
   private readonly intervalMs: number;
   private readonly operationalAlertHistoryLimit: number;
   private readonly nowMs: () => number;
@@ -104,6 +112,7 @@ export class ResourceStatusService {
     this.onOperationalAlert = deps.onOperationalAlert ?? null;
     this.getCircuitBreakerSnapshots = deps.getCircuitBreakerSnapshots ?? null;
     this.onEventLoopDelaySample = deps.onEventLoopDelaySample ?? null;
+    this.onResourceStatusSample = deps.onResourceStatusSample ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
     this.operationalAlertHistoryLimit = normalizeHistoryLimit(deps.operationalAlertHistoryLimit);
     this.nowMs = deps.nowMs ?? (() => Date.now());
@@ -168,6 +177,16 @@ export class ResourceStatusService {
           this.onEventLoopDelaySample(status.server.eventLoopDelayP95Ms);
         } catch (err) {
           this.logger.warn('[resource-status] onEventLoopDelaySample threw; continuing', err);
+        }
+      }
+
+      // #1992: feed the full sample to disk-critical launch admission (and any
+      // other consumer that needs per-tick resource state). Same isolation.
+      if (this.onResourceStatusSample) {
+        try {
+          this.onResourceStatusSample(status);
+        } catch (err) {
+          this.logger.warn('[resource-status] onResourceStatusSample threw; continuing', err);
         }
       }
 

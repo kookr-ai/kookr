@@ -1042,6 +1042,62 @@ describe('POST /api/tasks error paths', () => {
     expect(await res.json()).toMatchObject({ code: 'draining' });
   });
 
+  test('drain 503 includes Retry-After ≥1 and reason=draining (issue #1976)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new DrainModeError());
+
+    const taskStore = new TaskStore();
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+    const res = await mkApp({
+      taskStore,
+      monitor,
+      broadcastToAll: broadcastNoop,
+      serverCwd: '/cwd',
+      launchServiceDeps: {} as never,
+    }).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'while draining', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    const retryAfter = Number(res.headers.get('Retry-After'));
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(Number.isInteger(retryAfter)).toBe(true);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'draining',
+      reason: 'draining',
+      retryAfterSeconds: retryAfter,
+    });
+    expect(body.error).toMatch(/drain/i);
+  });
+
+  test('drain 503 reason=redeploying when DrainModeError is constructed for redeploy (issue #1976)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new DrainModeError({ reason: 'redeploying', retryAfterSeconds: 3 }),
+    );
+
+    const taskStore = new TaskStore();
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+    const res = await mkApp({
+      taskStore,
+      monitor,
+      broadcastToAll: broadcastNoop,
+      serverCwd: '/cwd',
+      launchServiceDeps: {} as never,
+    }).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'during redeploy', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('3');
+    expect(await res.json()).toMatchObject({
+      code: 'draining',
+      reason: 'redeploying',
+      retryAfterSeconds: 3,
+    });
+  });
+
   test('returns 500 when launchTask throws', async () => {
     vi.mocked(launchTask).mockRejectedValueOnce(new Error('adapter blew up'));
 
@@ -1444,6 +1500,201 @@ describe('POST /api/tasks event-loop saturation admission (issue #1590)', () => 
     });
     expect(res.status).toBe(201);
     expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- Data-directory disk-critical admission (issue #1992) ---
+describe('POST /api/tasks data-directory disk-critical admission (issue #1992)', () => {
+  beforeEach(() => {
+    vi.mocked(launchTask).mockReset();
+  });
+
+  function statusWithDisk(free: {
+    diskFreePercent: number | null;
+    diskFreeBytes: number | null;
+    path?: string | null;
+  }): SystemResourceStatus {
+    return {
+      source: { kind: 'server-host' as const },
+      sampledAt: '2026-08-04T00:00:00.000Z',
+      server: { eventLoopDelayP95Ms: 10 },
+      host: {
+        dataDirectory: {
+          path: free.path ?? '/tmp/kookr-data',
+          diskFreePercent: free.diskFreePercent,
+          diskFreeBytes: free.diskFreeBytes,
+          diskTotalBytes: 100_000_000_000,
+        },
+      },
+    } as unknown as SystemResourceStatus;
+  }
+
+  function diskDeps(
+    taskStore: TaskStore,
+    free: { diskFreePercent: number | null; diskFreeBytes: number | null },
+    over: Partial<TaskRouteDeps> = {},
+  ): TaskRouteDeps {
+    return {
+      ...mkLoopDeps(taskStore),
+      getLatestResourceStatus: () => statusWithDisk(free),
+      // Keep event-loop admission out of the way for these tests.
+      admissionControlConfig: { eventLoopDelayThresholdMs: 0, retryAfterSeconds: 2 },
+      diskAdmissionConfig: {
+        freePercentThreshold: 5,
+        freeBytesThreshold: 2 * 1024 * 1024 * 1024,
+        sustainSamples: 1,
+        retryAfterSeconds: 2,
+      },
+      ...over,
+    };
+  }
+
+  test('simulated low disk free rejects launch with 503 + structured reason, without launching', async () => {
+    const taskStore = new TaskStore();
+    vi.mocked(launchTask).mockImplementation(async () => {
+      throw new Error('launchTask must not run when data-directory disk is critical');
+    });
+    const res = await mkApp(
+      diskDeps(taskStore, { diskFreePercent: 1, diskFreeBytes: 100_000_000 }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('2');
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'data_directory_disk_critical',
+      reason: 'data_directory_disk_critical',
+      retryAfterSeconds: 2,
+      freePercentThreshold: 5,
+    });
+    expect(body.error).toMatch(/disk free is critical/i);
+    expect(body.error).toMatch(/ENOSPC/i);
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  test('ample free space admits and launches normally', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      diskDeps(taskStore, {
+        diskFreePercent: 50,
+        diskFreeBytes: 50 * 1024 * 1024 * 1024,
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('missing disk readings fail open (no false-positive ENOSPC shed)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      diskDeps(taskStore, { diskFreePercent: null, diskFreeBytes: null }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('disabled floors (both 0) admit even under zero free space', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      diskDeps(taskStore, { diskFreePercent: 0, diskFreeBytes: 0 }, {
+        diskAdmissionConfig: {
+          freePercentThreshold: 0,
+          freeBytesThreshold: 0,
+          sustainSamples: 1,
+          retryAfterSeconds: 2,
+        },
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('sustain tracker requires consecutive breaches before rejecting', async () => {
+    const { DataDirectoryDiskAdmissionTracker } = await import('../task-admission.js');
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const config = {
+      freePercentThreshold: 5,
+      freeBytesThreshold: 0,
+      sustainSamples: 3,
+      retryAfterSeconds: 4,
+    };
+    // Two breaches: not yet critical.
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 't1' }, config);
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 't2' }, config);
+    expect(tracker.isCritical()).toBe(false);
+
+    let call = 0;
+    const resEarly = await mkApp({
+      ...diskDeps(taskStore, { diskFreePercent: 1, diskFreeBytes: 0 }, {
+        diskAdmissionConfig: config,
+        diskAdmissionTracker: tracker,
+        getLatestResourceStatus: () =>
+          statusWithDisk({
+            diskFreePercent: 1,
+            diskFreeBytes: 0,
+          }),
+      }),
+    }).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'early', cwd: '/cwd' }),
+    });
+    // Route observes once more (sampledAt may equal status.sampledAt and
+    // advance or dedupe). Drive a distinct third sample to trip sustain.
+    call += 1;
+    void call;
+    tracker.observe({ diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 't3' }, config);
+    expect(tracker.isCritical()).toBe(true);
+
+    // Early request may have admitted (before third sample) or rejected if
+    // the route-observe itself was the third — either way, post-critical
+    // must reject.
+    if (resEarly.status === 201) {
+      expect(launchTask).toHaveBeenCalled();
+    }
+
+    vi.mocked(launchTask).mockClear();
+    vi.mocked(launchTask).mockImplementation(async () => {
+      throw new Error('must not launch after disk critical');
+    });
+    const resLate = await mkApp({
+      ...diskDeps(taskStore, { diskFreePercent: 1, diskFreeBytes: 0 }, {
+        diskAdmissionConfig: config,
+        diskAdmissionTracker: tracker,
+      }),
+    }).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'late', cwd: '/cwd' }),
+    });
+    expect(resLate.status).toBe(503);
+    expect(resLate.headers.get('Retry-After')).toBe('4');
+    expect(await resLate.json()).toMatchObject({
+      code: 'data_directory_disk_critical',
+      reason: 'data_directory_disk_critical',
+      retryAfterSeconds: 4,
+    });
+    expect(launchTask).not.toHaveBeenCalled();
   });
 });
 

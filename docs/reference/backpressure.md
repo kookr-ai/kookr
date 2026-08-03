@@ -198,13 +198,30 @@ refreshed ~every 2s; no second monitor). When that p95 is **at or above**
 | Setting | Default | Range | Purpose |
 | --- | --- | --- | --- |
 | `KOOKR_ADMISSION_EVENT_LOOP_DELAY_MS` | 1000 | ≥0 ms, `0` disables | Event-loop p95 lag at/above which spawn POSTs are shed with 503 |
-| `KOOKR_ADMISSION_RETRY_AFTER_SECONDS` | 2 | integer ≥1 | `Retry-After` hint on the 503 |
+| `KOOKR_ADMISSION_RETRY_AFTER_SECONDS` | 2 | integer ≥1 | `Retry-After` hint on load-based 503s (event-loop + disk) |
 
 The default threshold sits far above steady-state p95 (single-digit ms) so the
 gate does not fire in normal operation; `0` disables it entirely. The gate
 **fails open** — if the p95 sample is unavailable (before the first sample, or
 when the sampler reports `event_loop_unavailable`), the POST proceeds. A missing
 metric must never become a spurious rejection.
+
+## 5b. Data-directory disk-critical admission (issue #1992)
+
+Under critically low free space on the Kookr data directory, spawning more
+agents worsens ENOSPC. Before parsing the body, `POST /api/tasks` also consults
+the already-sampled `host.dataDirectory` free-space reading. When free percent
+or free bytes stays at or below the configured floors for the same sustain
+window the ops alerts use, the request is shed with **HTTP 503**,
+`Retry-After`, and body
+`{ error, code: "data_directory_disk_critical", reason: "data_directory_disk_critical", … }`.
+
+Defaults reuse `KOOKR_ALERT_DATA_DIR_FREE_PERCENT` / `_BYTES` /
+`KOOKR_ALERT_SUSTAIN_SAMPLES`. Optional admission-only overrides:
+`KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT`, `KOOKR_ADMISSION_DATA_DIR_FREE_BYTES`,
+`KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES`. Both floors at `0` disables the gate.
+Missing disk readings fail open; reclaim/reap paths are not gated.
+Manual reclaim / TTL reaps continue to run while launches are refused.
 
 ### Invariants (issue #1590 invariant gate)
 

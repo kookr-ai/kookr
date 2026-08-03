@@ -19,6 +19,7 @@ function scheduleRunErrorResponse(error: string): { code: ScheduleRunErrorCode; 
       return { code: "capacity", status: 409 };
     case "Server draining":
     case "Server is draining; not accepting new task launches":
+    case "Server is redeploying; not accepting new task launches":
       return { code: "draining", status: 503 };
     case "Previous run still active":
       return { code: "previous_run_active", status: 409 };

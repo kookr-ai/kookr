@@ -12,7 +12,11 @@ import type { GitHubScannerService } from '../../core/github-scanner-service.js'
 import type { GitHubStateStore } from '../../core/github-state-store.js';
 import type { BuildInfo } from '../../core/build-info.js';
 import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
-import type { AdmissionControlConfig } from '../task-admission.js';
+import type {
+  AdmissionControlConfig,
+  DataDirectoryDiskAdmissionTracker,
+  DiskAdmissionConfig,
+} from '../task-admission.js';
 import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import type { HttpPushTracker } from '../../core/http-push-tracker.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
@@ -96,7 +100,8 @@ export interface TaskRouteDeps {
    * Latest already-sampled host/server resource snapshot (issue #1590). The
    * `POST /api/tasks` admission gate reads
    * `server.eventLoopDelayP95Ms` from it to fast-fail with 503 when the event
-   * loop is saturated. Flows through from the full RouteDeps; tests may omit it
+   * loop is saturated, and `host.dataDirectory` for the disk-critical gate
+   * (issue #1992). Flows through from the full RouteDeps; tests may omit it
    * (absence fails open — admission proceeds).
    */
   getLatestResourceStatus?: () => SystemResourceStatus | null;
@@ -106,6 +111,18 @@ export interface TaskRouteDeps {
    * absent, so production picks up env config without explicit threading.
    */
   admissionControlConfig?: AdmissionControlConfig;
+  /**
+   * Data-directory free-space admission floors (issue #1992). Falls back to
+   * {@link readDiskAdmissionConfigFromEnv} at route registration when absent.
+   */
+  diskAdmissionConfig?: DiskAdmissionConfig;
+  /**
+   * Sustain-sample tracker for the disk-critical gate (issue #1992). Production
+   * feeds it from every resource-status tick so consecutive breaches are
+   * measured in sampler ticks, not launch attempts. Tests may omit it — the
+   * gate then fails closed on a single-sample breach when floors are known.
+   */
+  diskAdmissionTracker?: DataDirectoryDiskAdmissionTracker;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
   /** Coalesced task-state saver for bursty mutation paths. */
@@ -539,11 +556,20 @@ export interface RouteDeps {
     noteReadyVerdict(ready: boolean, detail?: string): Promise<unknown>;
   };
   /**
-   * Latest already-sampled resource snapshot (issue #1590). Threaded to
-   * task-routes so the `POST /api/tasks` admission gate can read the sampled
-   * event-loop delay p95 without standing up a second monitor.
+   * Latest already-sampled resource snapshot (issue #1590 / #1992). Threaded to
+   * task-routes so the `POST /api/tasks` admission gates can read the sampled
+   * event-loop delay p95 and data-directory free space without standing up
+   * second monitors.
    */
   getLatestResourceStatus?: () => SystemResourceStatus | null;
+  /**
+   * Data-directory free-space admission floors (issue #1992). See TaskRouteDeps.
+   */
+  diskAdmissionConfig?: DiskAdmissionConfig;
+  /**
+   * Sustain-sample tracker for disk-critical launch admission (issue #1992).
+   */
+  diskAdmissionTracker?: DataDirectoryDiskAdmissionTracker;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;
