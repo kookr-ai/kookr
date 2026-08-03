@@ -178,6 +178,20 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         .resolves.toBeUndefined();
     });
 
+    it('validateDefinitionUpdate agentType-only patch ignores legacy unknown playbook params', async () => {
+      // Schedules may carry parameters that the playbook no longer declares
+      // (e.g. channelId). Clearing/setting agentType must still succeed so
+      // operators can unpin to the server default without rewriting params.
+      const existing = makeSchedule({
+        playbook: { path: 'proj.md', parameters: { channelId: 'stale' }, scope: 'project' },
+        agentType: 'codex-cli',
+      });
+      await expect(validator.validateDefinitionUpdate(existing, { agentType: null }))
+        .resolves.toBeUndefined();
+      await expect(validator.validateDefinitionUpdate(existing, { agentType: 'grok-build' }))
+        .resolves.toBeUndefined();
+    });
+
     it('validateCreate of a plugin file with default (project) scope fails', async () => {
       await expect(validator.validateCreate({
         name: 'Bad',
