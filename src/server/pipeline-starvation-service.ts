@@ -5,7 +5,7 @@
  * (via pure core) whether to spawn an on-demand idea-scout and/or raise a
  * pipeline-starvation alert, then performs the side effects:
  *   - spawn repository-idea-scout via the normal launch path
- *   - broadcast an operational alert (dashboard / future delivery bridge)
+ *   - broadcast an operational alert (dashboard + operator-signal bridge when configured)
  *   - append audit.jsonl with provenance `starvation-trigger`
  *   - update the durable per-repo starvation ledger
  *

@@ -16,6 +16,12 @@ import {
 } from './pipeline-starvation-service.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
+import {
+  listSignalFiles,
+  operationalAlertToSignal,
+  readSignal,
+  writeOperatorSignal,
+} from '../observability/signal-delivery/index.js';
 
 const NOW = Date.parse('2026-07-30T08:15:00.000Z');
 
@@ -637,5 +643,79 @@ describe('PipelineStarvationService (#1715)', () => {
 
     const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('pipeline_starvation_alert_recovered');
+  });
+
+  test('starvation fire/recover spools operator signals via detectorBroadcast bridge (#1986)', async () => {
+    const signalDir = await mkdtemp(join(tmpdir(), 'kookr-starv-signal-'));
+    const pendingWrites: Promise<unknown>[] = [];
+    // Mirrors index.ts detectorBroadcast: WS broadcast + operationalAlert→signal spool.
+    const detectorBroadcast = (msg: ServerMessage) => {
+      alerts.push(msg);
+      const input = operationalAlertToSignal(msg);
+      if (input) pendingWrites.push(writeOperatorSignal(signalDir, input));
+    };
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const task = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: detectorBroadcast,
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      now: () => clock,
+    });
+
+    await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'bridge-1' }),
+      localPath: checkout,
+    });
+    clock = NOW + 3 * 60 * 60 * 1000;
+    await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'bridge-2', generatedAt: new Date(clock).toISOString() }),
+      localPath: checkout,
+    });
+    await Promise.all(pendingWrites);
+    pendingWrites.length = 0;
+
+    const afterFire = await listSignalFiles(signalDir);
+    expect(afterFire).toContain('op-pipeline-starvation-jeanibarz-lucy-alert.json');
+    const fireSignal = await readSignal(signalDir, 'op-pipeline-starvation-jeanibarz-lucy-alert.json');
+    expect(fireSignal).toMatchObject({
+      kind: 'alert',
+      key: 'op:pipeline:starvation:jeanibarz/lucy:alert',
+      source: 'pipeline_starvation',
+    });
+
+    clock = NOW + 4 * 60 * 60 * 1000;
+    await service.handleBatchOutcome({
+      outcome: outcome({
+        outcome: 'done',
+        runKey: 'bridge-done',
+        reason: 'Batch complete',
+        generatedAt: new Date(clock).toISOString(),
+      }),
+      localPath: checkout,
+    });
+    await Promise.all(pendingWrites);
+
+    const afterRecover = await listSignalFiles(signalDir);
+    expect(afterRecover).toContain('op-pipeline-starvation-jeanibarz-lucy-clear.json');
+    const clearSignal = await readSignal(signalDir, 'op-pipeline-starvation-jeanibarz-lucy-clear.json');
+    expect(clearSignal).toMatchObject({
+      kind: 'clear',
+      key: 'op:pipeline:starvation:jeanibarz/lucy:clear',
+    });
   });
 });

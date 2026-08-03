@@ -12,6 +12,7 @@ import {
   PROD_SMOKE_TICK_ALERT_METRIC,
   buildSmokeTickAlertMessage,
 } from '../../server/prod-smoke-tick.js';
+import { buildKbDegradedAlert } from '../../server/lesson-spool-service.js';
 import { writeOperatorSignal } from './operator-signal.js';
 import { SignalDeliveryService } from './service.js';
 import { operationalAlertToSignal } from './operational-alert-bridge.js';
@@ -122,5 +123,76 @@ describe('operationalAlertToSignal — real detector-message fidelity', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string) as { content: string };
     expect(body.content).toContain('Deploy lag cleared');
+  });
+
+  // Issues #1986/#1987/#1990: newly bridged emitters must keep mapping through
+  // operationalAlertToSignal so detectorBroadcast can spool them.
+  test('pipeline starvation fire/recover shapes map to alert/clear signals (#1986)', () => {
+    const fire = operationalAlertToSignal({
+      type: 'alert',
+      summary: 'Pipeline starvation: jeanibarz/lucy — 2 consecutive empty batches',
+      operationalAlert: {
+        key: 'pipeline:starvation:jeanibarz/lucy',
+        metric: 'pipeline_starvation',
+        state: 'fired',
+      },
+    });
+    const clear = operationalAlertToSignal({
+      type: 'alert',
+      summary: 'Recovered: pipeline work resumed for jeanibarz/lucy',
+      operationalAlert: {
+        key: 'pipeline:starvation:jeanibarz/lucy',
+        metric: 'pipeline_starvation',
+        state: 'recovered',
+      },
+    });
+    expect(fire).toMatchObject({
+      kind: 'alert',
+      key: 'op:pipeline:starvation:jeanibarz/lucy:alert',
+      source: 'pipeline_starvation',
+    });
+    expect(clear).toMatchObject({
+      kind: 'clear',
+      key: 'op:pipeline:starvation:jeanibarz/lucy:clear',
+      source: 'pipeline_starvation',
+    });
+  });
+
+  test('schedule dead-man fire/recover shapes map to alert/clear signals (#1987)', () => {
+    const fire = operationalAlertToSignal({
+      type: 'alert',
+      summary: 'Scheduled tasks are starving',
+      operationalAlert: { key: 'schedule:dead_man', metric: 'schedule_starvation', state: 'fired' },
+    });
+    const clear = operationalAlertToSignal({
+      type: 'alert',
+      summary: 'Recovered: scheduled executions are flowing again',
+      operationalAlert: { key: 'schedule:dead_man', metric: 'schedule_starvation', state: 'recovered' },
+    });
+    expect(fire).toMatchObject({
+      kind: 'alert',
+      key: 'op:schedule:dead_man:alert',
+      source: 'schedule_starvation',
+    });
+    expect(clear).toMatchObject({
+      kind: 'clear',
+      key: 'op:schedule:dead_man:clear',
+    });
+  });
+
+  test('real lesson-spool KB degradation alert maps to an operator signal (#1990)', () => {
+    const msg = buildKbDegradedAlert({
+      degradedSince: '2026-07-22T10:08:00.000Z',
+      degradedForHours: 24,
+      pendingCount: 3,
+      thresholdHours: 2,
+    });
+    const signal = operationalAlertToSignal(msg);
+    expect(signal).toMatchObject({
+      kind: 'alert',
+      key: 'op:launch_dependency:kb:alert',
+      source: 'launch_dependency_kb_degraded',
+    });
+    expect(signal!.title).toMatch(/KB launch dependency degraded/);
   });
 });
