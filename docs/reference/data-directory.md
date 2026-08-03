@@ -64,6 +64,7 @@ as internal unless this table says they are safe to remove.
 | `relay-state-backups/` | relay recovery | Backups made by relay reset flows. | Keep until the corresponding relay state is no longer needed. |
 | `server.log` | production restart script | Current server log for prod-style launches. | Keep current log while diagnosing. |
 | `server.log.N` | production restart script | Rotated server logs. | `kookr maintenance prune` can remove aged numbered generations. |
+| `last-restart-metrics.json` | production restart script | Last successful `prod:restart` phase timings (`apiBlackoutSeconds`, M1/M2, dominant phase). Read by `GET /api/deploy/status` as optional `lastRestart`. | Overwritten each successful restart; safe to delete (field omitted until next restart). |
 
 Dtach sockets, manifests, and terminal scrollback rings do not live in the data
 directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with

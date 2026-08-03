@@ -278,8 +278,17 @@ TTS after you stopped Kookr, that is expected until you run stop with
 `pnpm prod:stop --with-sidecars` before the next start.
 
 `pnpm prod:restart` prints phase timings (port free, M1 `/api/health`, M2
-`/api/ready`, smoke) and a dominant-phase line so you can see whether wait time
-is speech cold-start vs deferred recovery vs smoke.
+`/api/ready`, smoke), **apiBlackoutSeconds** (port free → first health 200;
+ideal <1s, SLO max 5s), and a dominant-phase line so you can see whether wait
+time is speech cold-start vs deferred recovery vs smoke. Blackout >5s prints a
+non-fatal `WARN` on stderr. On success the script also writes
+`last-restart-metrics.json` under the data dir; `GET /api/deploy/status`
+exposes that as optional `lastRestart` (including `apiBlackoutSeconds`).
+
+Warm restart best-effort POSTs `/api/admin/drain` before SIGTERM so launches in
+the pre-kill window get 503/draining instead of only ECONNREFUSED. Drain is
+in-memory and cleared by process exit — no post-restart resume is required.
+Opt out with `KOOKR_RESTART_SKIP_DRAIN=1`.
 
 If a long-lived production or scratch worktree disappears when its task
 completes, protect it with the root-level `.kookr-protected` marker. See

@@ -689,4 +689,229 @@ describe('prod-restart phase timings (fast-prod-restart P1)', () => {
     expect(result.stdout).toMatch(/M2 deploy-ready/);
     expect(result.stdout).toMatch(/dominant phase: M2-ready/);
   });
+
+  it('print_restart_phase_timings reports apiBlackoutSeconds and WARN when >5s (issue #1972)', () => {
+    // port_free=1, m1=10 → blackout 9.0s > 5s SLO
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+          'print_restart_phase_timings 1 10 12 13 13',
+        ].join('; '),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/apiBlackoutSeconds:\s+9\.0s/);
+    expect(result.stderr).toMatch(/WARN: API blackout 9\.0s exceeds 5s SLO/);
+  });
+
+  it('print_restart_phase_timings does not WARN when blackout ≤5s (issue #1972)', () => {
+    // port_free=2, m1=5 → blackout 3.0s
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+          'print_restart_phase_timings 2 5 40 45 45',
+        ].join('; '),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/apiBlackoutSeconds:\s+3\.0s/);
+    expect(result.stderr).not.toMatch(/WARN: API blackout/);
+  });
+
+  it('write_last_restart_metrics writes last-restart-metrics.json (issue #1973)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-restart-metrics-'));
+    try {
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+            `KOOKR_DIR=${JSON.stringify(dir)}`,
+            'PORT=4800',
+            'write_last_restart_metrics 2 5 40 45 45 script',
+          ].join('; '),
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status).toBe(0);
+      const metricsPath = join(dir, 'last-restart-metrics.json');
+      const metrics = JSON.parse(readFileSync(metricsPath, 'utf8')) as {
+        apiBlackoutSeconds: number;
+        m1Seconds: number;
+        m2Seconds: number;
+        dominantPhase: string;
+        path: string;
+      };
+      expect(metrics.apiBlackoutSeconds).toBe(3);
+      expect(metrics.m1Seconds).toBe(5);
+      expect(metrics.m2Seconds).toBe(40);
+      expect(metrics.dominantPhase).toBe('M2-ready');
+      expect(metrics.path).toBe('script');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+describe('prod-restart pre-stop drain (issue #1971)', () => {
+  it('main flow calls enter_drain_before_stop before stop_existing_server', () => {
+    const script = readFileSync('scripts/prod-restart.sh', 'utf8');
+    expect(script).toMatch(/enter_drain_before_stop/);
+    expect(script).toMatch(/KOOKR_RESTART_SKIP_DRAIN/);
+    // Ordering: drain before stop on the script path (not only a comment).
+    const drainIdx = script.lastIndexOf('enter_drain_before_stop');
+    const stopIdx = script.lastIndexOf('stop_existing_server');
+    expect(drainIdx).toBeGreaterThan(-1);
+    expect(stopIdx).toBeGreaterThan(-1);
+    expect(drainIdx).toBeLessThan(stopIdx);
+  });
+
+  it('enter_drain_before_stop POSTs /api/admin/drain before continuing (mocked curl)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-drain-order-'));
+    try {
+      const binDir = join(dir, 'bin');
+      mkdirSync(binDir);
+      const curlLog = join(dir, 'curl.log');
+      // curl stub: record argv, print 200 so drain reports success.
+      writeFileSync(
+        join(binDir, 'curl'),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(curlLog)}
+# emit http_code for -w '%{http_code}'
+printf '200'
+`,
+      );
+      chmodSync(join(binDir, 'curl'), 0o755);
+
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+            'PORT=4800',
+            'enter_drain_before_stop',
+          ].join('; '),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ''}`,
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Drain mode ON \(HTTP 200\)/);
+      const log = readFileSync(curlLog, 'utf8');
+      expect(log).toMatch(/-X POST/);
+      expect(log).toMatch(/http:\/\/127\.0\.0\.1:4800\/api\/admin\/drain/);
+      expect(log).toMatch(/--max-time/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('enter_drain_before_stop is a no-op when KOOKR_RESTART_SKIP_DRAIN=1', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-drain-skip-'));
+    try {
+      const binDir = join(dir, 'bin');
+      mkdirSync(binDir);
+      const curlLog = join(dir, 'curl.log');
+      writeFileSync(
+        join(binDir, 'curl'),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(curlLog)}
+printf '200'
+`,
+      );
+      chmodSync(join(binDir, 'curl'), 0o755);
+
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+            'KOOKR_RESTART_SKIP_DRAIN=1 enter_drain_before_stop',
+          ].join('; '),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ''}`,
+            KOOKR_RESTART_SKIP_DRAIN: '1',
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Skipping pre-stop drain/);
+      expect(() => readFileSync(curlLog, 'utf8')).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('enter_drain_before_stop continues restart when curl fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-drain-fail-'));
+    try {
+      const binDir = join(dir, 'bin');
+      mkdirSync(binDir);
+      writeFileSync(
+        join(binDir, 'curl'),
+        `#!/usr/bin/env bash
+exit 7
+`,
+      );
+      chmodSync(join(binDir, 'curl'), 0o755);
+
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
+            'PORT=4800',
+            'enter_drain_before_stop',
+            'echo CONTINUE_OK',
+          ].join('; '),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ''}`,
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Pre-stop drain skipped\/failed/);
+      expect(result.stdout).toMatch(/CONTINUE_OK/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+

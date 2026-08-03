@@ -12,9 +12,21 @@ import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
 const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
 
-function makeApp(serverCwd: string, serverPort: number = 4800, hookHomeDir?: string, pluginUpdateBin?: string): Hono {
+function makeApp(
+  serverCwd: string,
+  serverPort: number = 4800,
+  hookHomeDir?: string,
+  pluginUpdateBin?: string,
+  kookrDir?: string,
+): Hono {
   const app = new Hono();
-  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } satisfies DeployRouteDeps);
+  registerDeployRoutes(app, {
+    serverCwd,
+    serverPort,
+    hookHomeDir,
+    pluginUpdateBin,
+    kookrDir,
+  } satisfies DeployRouteDeps);
   return app;
 }
 
@@ -268,6 +280,60 @@ describe('deploy-routes', () => {
       expect(body.plugin.installedVersion).toBeNull();
       expect(body.plugin.availableVersion).toBe('0.7.4');
       expect(body.plugin.stale).toBe(false); // not installed ⇒ not "stale", surfaced as not-installed in the UI
+    });
+
+    it('includes lastRestart.apiBlackoutSeconds when metrics file is present (issue #1973)', async () => {
+      const kookrDir = join(root, '.kookr');
+      await mkdir(kookrDir, { recursive: true });
+      await writeFile(
+        join(kookrDir, 'last-restart-metrics.json'),
+        JSON.stringify({
+          schemaVersion: 'last-restart-metrics.v1',
+          at: '2026-08-03T12:00:00Z',
+          port: 4800,
+          path: 'script',
+          m1Seconds: 5,
+          m2Seconds: 40,
+          portFreeSeconds: 2,
+          smokeSeconds: 45,
+          totalSeconds: 45,
+          apiBlackoutSeconds: 3.0,
+          dominantPhase: 'M2-ready',
+        }),
+      );
+
+      const app = makeApp(mainDir, 4800, undefined, undefined, kookrDir);
+      const res = await app.request('/api/deploy/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.lastRestart).toBeDefined();
+      expect(body.lastRestart.apiBlackoutSeconds).toBe(3);
+      expect(body.lastRestart.m1Seconds).toBe(5);
+      expect(body.lastRestart.m2Seconds).toBe(40);
+      expect(body.lastRestart.dominantPhase).toBe('M2-ready');
+      expect(body.lastRestart.at).toBe('2026-08-03T12:00:00Z');
+    });
+
+    it('omits lastRestart without 500 when metrics file is missing (issue #1973)', async () => {
+      const kookrDir = join(root, '.kookr-empty');
+      await mkdir(kookrDir, { recursive: true });
+      // no last-restart-metrics.json
+      const app = makeApp(mainDir, 4800, undefined, undefined, kookrDir);
+      const res = await app.request('/api/deploy/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.lastRestart).toBeUndefined();
+    });
+
+    it('omits lastRestart without 500 when metrics file is corrupt (issue #1973)', async () => {
+      const kookrDir = join(root, '.kookr-bad');
+      await mkdir(kookrDir, { recursive: true });
+      await writeFile(join(kookrDir, 'last-restart-metrics.json'), 'not-json{');
+      const app = makeApp(mainDir, 4800, undefined, undefined, kookrDir);
+      const res = await app.request('/api/deploy/status');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.lastRestart).toBeUndefined();
     });
   });
 

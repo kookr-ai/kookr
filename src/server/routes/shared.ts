@@ -258,6 +258,13 @@ export interface DeployRouteDeps {
    * Production defaults to os.homedir().
    */
   hookHomeDir?: string;
+  /**
+   * Stable Kookr state directory (normally `~/.kookr`, or `~/.kookr-<port>`
+   * for non-prod ports). Used to read `last-restart-metrics.json` written by
+   * `scripts/prod-restart.sh` (issue #1973). Optional — when omitted, the
+   * deploy status route derives the path from `serverPort` + `homedir()`.
+   */
+  kookrDir?: string;
 }
 
 export interface RouteDeps {
