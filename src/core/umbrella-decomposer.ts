@@ -1240,6 +1240,141 @@ export const LUCY_1589_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * lucy#1594 "pre-registered forward contracts + frozen holdout — backtesting-audit
+ * P2". Residual acceptance from the 2026-07-25 self-reflection U9 / audit P2:
+ * versioned action-contract config with anti-backdating grade gate, frozen
+ * calibration/holdout manifest (scorer refuses tune-on-holdout), structured
+ * leakage arms on a frozen inventory, model-cutoff/memorization control for
+ * post-cutoff claims, and regime-timing haircuts / peer-relative baselines on
+ * the contract scorecard. Skips OPERATOR-only NBBO entitlement and pure inquiry
+ * re-seed process work (bounded one-repair seeds remain a separate ops seed).
+ * Authored by the queue-feeder (2026-08-03) after needsAuthoring blocked emit.
+ * Live GitHub leaves: emitted this run; openChildrenCount / title
+ * idempotency prevents re-emit once those exist.
+ */
+export const LUCY_1594_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title:
+      'feat(backtest): versioned action-contract registry with anti-backdating grade gate',
+    goal:
+      'Commit a versioned action-contract config (thresholds, latency buckets, ' +
+      'execution costs, min coverage) that must pre-date scored events, and make ' +
+      'the report refuse to grade any row against a contract registered after that ' +
+      "row's event date (umbrella #1594 / audit P2.2).",
+    acceptanceCriteria: [
+      'A durable, versioned action-contract registry (JSON/module) records at least: selective-precision thresholds, latency buckets, execution-cost schedule ids, and min coverage / min-n; each revision has a stable id + registeredAt (UTC date or ISO timestamp) committed in-repo before use.',
+      'Score/report/contract-scorer path refuses to grade a row (or marks the row/contract pair unavailable with an explicit backdated_contract / contract_postdates_event reason) when the chosen contract revision\'s registeredAt is strictly after the row\'s event/publication date — proven by a back-dated fixture test that fails open grading and passes only after the registry timestamp is corrected.',
+      'Unit tests: (a) contract registered before event grades normally; (b) same contract with registeredAt after event is refused with a stable reason code; (c) registry load fails closed on missing required fields rather than silently defaulting promotion-grade thresholds.',
+    ],
+    fileHints: [
+      'backtest/contract-outcome.js',
+      'backtest/contract-scorer.js',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'docs/backtesting-audit-2026-07-11.md (P2)',
+    ],
+    testHints: [
+      'unit test: back-dated fixture → grade refused with backdated_contract; pre-dated fixture → grades',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): frozen calibration/holdout manifest; scorer refuses tune-on-holdout',
+    goal:
+      'Ship a committed frozen calibration/holdout split manifest and make the ' +
+      'scorer/threshold selector mechanically refuse to tune or select operating ' +
+      'points on holdout rows (umbrella #1594 / audit P2.1).',
+    acceptanceCriteria: [
+      'A versioned holdout manifest (event ids and/or date boundary + schema version) is loadable offline and stamped onto score/report output so the calibration vs holdout partition is reconstructable without re-deriving fractions.',
+      'Confidence/threshold (and any rule/sweep) selection paths that claim holdout discipline only fit/select on calibration rows; any attempt to include holdout rows in the selection set throws or returns a hard error status (e.g. holdout_leak) rather than silently reporting a snooped bar.',
+      'Unit tests: (a) fixture manifest partitions known rows into cal/holdout; (b) selector with holdout rows injected into the fit set fails closed; (c) report path that only reads holdout once still succeeds for reporting metrics.',
+    ],
+    fileHints: [
+      'src/scorecard-stats.js',
+      'backtest/calibration.js',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'backtest/midcap-lag-prereg.js (prereg pattern reference)',
+    ],
+    testHints: [
+      'unit test: holdout rows in fit set → error; cal-only fit + holdout report once → ok',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): structured leakage-arm harness on frozen contract inventory',
+    goal:
+      'Run named leakage arms (name-redaction, temporal-recall, precision-vs-days-after-cutoff) ' +
+      'against one verified frozen inventory and surface paired results next to ' +
+      'contract headlines so promotion claims cannot ignore leakage (umbrella #1594 / audit P2.4).',
+    acceptanceCriteria: [
+      'A documented leakage-arm runner (CLI or library) accepts a frozen inventory path + model/prompt pins and emits arm results with arm id, n, primary metric, and paired comparison vs the baseline arm on the same row set.',
+      'Score/html-report (or contract-scorer companion) can attach or link leakage-arm results to the experiment; missing arms on a promotion-grade claim produce an explicit warning or non-promotable flag rather than silence.',
+      'Unit tests: mock inventory → at least two arms produce stable JSON; mismatched row sets between arms fail validation; report helper surfaces a missing-arm warning fixture.',
+    ],
+    fileHints: [
+      'backtest/probe.js',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'backtest/contract-scorer.js',
+      'rfc/RFC-001-backtesting-and-calibration.md (§ leakage)',
+    ],
+    testHints: [
+      'unit test: fixture inventory → leakage arms JSON schema; missing arm → non-promotable flag',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): model-cutoff map + memorization control for post-cutoff claims',
+    goal:
+      'Pin per-model training cutoffs and treat likely-memorized earnings dates as a ' +
+      'named regime so post-cutoff accuracy claims cannot silently include parametric ' +
+      'memorization (umbrella #1594; arXiv:2605.24564 / kb quant-trading).',
+    acceptanceCriteria: [
+      'A versioned model→cutoff map (at least the models Lucy uses for earnings analysis/replay) is committed and consulted when labeling rows as pre_cutoff, post_cutoff, or unknown_cutoff.',
+      'Scorecard/report exposes dual or filtered headline metrics excluding unknown_cutoff and optionally pre_cutoff-only diagnostics; rows near the cutoff boundary are bucketed (existing precision-near-cutoff path may be reused) with an explicit memorization_risk flag or regime when the report date is before/at cutoff for that model.',
+      'Unit tests: (a) known model id → cutoff applied; (b) report date before cutoff tagged pre_cutoff/memorization_risk; (c) post_cutoff-only metric n differs from full-corpus n on a mixed fixture.',
+    ],
+    fileHints: [
+      'backtest/replay-import.js (existing GPT_OSS cutoff)',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'backtest/label.js',
+    ],
+    testHints: [
+      'unit test: mixed pre/post cutoff fixture → dual metrics + memorization_risk tags',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(backtest): regime-timing haircut + peer-relative baseline on contract scorecard',
+    goal:
+      'Add regime-timing haircuts and a peer-relative baseline arm to the contract ' +
+      'scorecard so headline precision is not only pooled across regimes (umbrella ' +
+      '#1594; arXiv:2604.18821 / residual of closed #560 on the RFC-014 contract path).',
+    acceptanceCriteria: [
+      'Contract scorecard/report can stratify or haircut headline metrics by at least one regime dimension (e.g. session AMC/BMO, market regime proxy, or calendar cohort) with n and metric per stratum; strata below min-n are marked underpowered rather than pooled silently.',
+      'A peer-relative (or sector-excess) baseline is computed on the same acted-usable contract row set as the model headline and shown alongside always-buy/always-short where price inputs allow; when peer data is missing the baseline is unavailable with a reason, not invented.',
+      'Unit tests: fixture with two regimes → stratified metrics match hand counts; peer baseline present when peer returns supplied; missing peer → unavailable reason without crashing the model headline.',
+    ],
+    fileHints: [
+      'backtest/contract-scorer.js',
+      'backtest/score.js',
+      'backtest/html-report.js',
+      'src/scorecard-stats.js',
+    ],
+    testHints: [
+      'unit test: two-regime fixture → stratified n/metric; peer baseline optional path',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
@@ -1251,6 +1386,7 @@ export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> =
   'jeanibarz/lucy#1586': LUCY_1586_LEAF_PLAN,
   'jeanibarz/lucy#1593': LUCY_1593_LEAF_PLAN,
   'jeanibarz/lucy#1589': LUCY_1589_LEAF_PLAN,
+  'jeanibarz/lucy#1594': LUCY_1594_LEAF_PLAN,
 });
 
 /** Look up the curated leaf plan for a repo-qualified umbrella ref. */
