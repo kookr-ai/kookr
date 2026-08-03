@@ -2877,6 +2877,18 @@ describe('diagnostics routes', () => {
         totalEvents: 0,
         timeRange: null,
         eventCounts: expect.any(Object),
+        reconstructStats: expect.objectContaining({
+          busySkipped: expect.any(Number),
+          budgetExceeded: expect.any(Number),
+        }),
+        absoluteTuiRecoveryStats: expect.objectContaining({
+          started: expect.any(Number),
+          ctrlLInjected: expect.any(Number),
+        }),
+        terminalSwitchLatencyMetrics: expect.objectContaining({
+          byClass: [],
+          recoveryRate: null,
+        }),
       }));
     });
 
@@ -2899,6 +2911,67 @@ describe('diagnostics routes', () => {
       const body = await res.json();
       expect(body.totalEvents).toBe(1);
       expect(body.eventCounts.tab_switched).toBe(1);
+    });
+
+    test('exposes stratified attach latency and reconstruct counters', async () => {
+      const sessionDir = join(tempDir, 'session-attach');
+      mkdirSync(sessionDir, { recursive: true });
+      const interactionsPath = join(sessionDir, 'interactions.jsonl');
+      const telemetryPath = join(sessionDir, 'telemetry.jsonl');
+      writeFileSync(interactionsPath, '');
+      const events = [
+        {
+          type: 'terminal_switch_latency',
+          timestamp: '2026-08-03T10:00:00.000Z',
+          sessionId: 's',
+          platform: 'linux',
+          selectionToFirstPaintMs: 50,
+          warmLabel: 'warm',
+          agentType: 'claude-code',
+          serverStrategy: 'seed-cache',
+          seedCacheHit: true,
+          recoveryUsed: false,
+        },
+        {
+          type: 'terminal_switch_latency',
+          timestamp: '2026-08-03T10:00:01.000Z',
+          sessionId: 's',
+          platform: 'linux',
+          selectionToFirstPaintMs: 800,
+          warmLabel: 'cold',
+          agentType: 'grok-build',
+          serverStrategy: 'absolute-snapshot',
+          recoveryUsed: true,
+        },
+      ];
+      writeFileSync(telemetryPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+      const interactionLog = { getFilePath: () => interactionsPath };
+      const res = await mkApp({ interactionLog: interactionLog as never })
+        .request('/api/telemetry/report');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.terminalSwitchLatencyMetrics.sampleCount).toBe(2);
+      expect(body.terminalSwitchLatencyMetrics.recoveryRate).toBe(0.5);
+      expect(body.terminalSwitchLatencyMetrics.byClass).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: 'warm|claude-code|seed-cache',
+            sampleCount: 1,
+            p50FirstPaintMs: 50,
+          }),
+          expect.objectContaining({
+            key: 'cold|grok-build|absolute-snapshot',
+            sampleCount: 1,
+            p50FirstPaintMs: 800,
+          }),
+        ]),
+      );
+      expect(body.reconstructStats).toEqual(expect.objectContaining({
+        busySkipped: expect.any(Number),
+        budgetExceeded: expect.any(Number),
+        completed: expect.any(Number),
+      }));
     });
   });
 

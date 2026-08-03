@@ -319,6 +319,8 @@ describe('TerminalPanel', () => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
     });
     expect(mocks.webSocketInstances).toHaveLength(1);
+    // R3: pending chrome while attach in flight (before first PTY paint).
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
 
     const ws = mocks.webSocketInstances[0];
     ws.send.mockClear();
@@ -326,10 +328,114 @@ describe('TerminalPanel', () => {
       ws.onopen?.();
     });
 
+    // Send remains gated until first paint — WS open alone is not enough (R3).
+    const senderBeforePaint = [...registerMock.mock.calls].reverse().find(([candidate]) => typeof candidate === 'function')?.[0];
+    expect(senderBeforePaint).toBeUndefined();
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
+
+    act(() => {
+      ws.onmessage?.({ data: 'seed-bytes' });
+    });
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
+
     const visibleSender = [...registerMock.mock.calls].reverse().find(([candidate]) => typeof candidate === 'function')?.[0];
     expect(typeof visibleSender).toBe('function');
     (visibleSender as (data: string) => void)('1');
     expect(ws.send).toHaveBeenCalledWith('1');
+  });
+
+  test('blocks terminal keystrokes until first paint of the new session', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-a', visible: true }));
+    });
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+    ws.send.mockClear();
+
+    // Keystrokes during pending attach must not reach the socket (wrong-agent mitigation).
+    act(() => {
+      terminal.dataHandler?.('x');
+    });
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
+
+    act(() => {
+      ws.onmessage?.({ data: arrayBufferFrom(new TextEncoder().encode('frame')) });
+    });
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
+
+    act(() => {
+      terminal.dataHandler?.('y');
+    });
+    expect(ws.send).toHaveBeenCalledWith('y');
+  });
+
+  test('includes attach join keys on terminal_switch_latency after attach_timing', async () => {
+    const { track } = await import('../telemetry.js');
+    const trackMock = vi.mocked(track);
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, {
+        tmuxName: 'kookr-join',
+        visible: true,
+        agentType: 'claude-code',
+      }));
+    });
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+
+    const resizeCall = ws.send.mock.calls.find(
+      (call) => typeof call[0] === 'string' && String(call[0]).includes('"resize"'),
+    );
+    expect(resizeCall).toBeDefined();
+    const resizePayload = JSON.parse(String(resizeCall![0]));
+    expect(typeof resizePayload.attachId).toBe('string');
+    expect(resizePayload.attachId.length).toBeGreaterThan(0);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'attach_timing',
+          attachId: resizePayload.attachId,
+          strategy: 'full-ring',
+          seedCacheHit: false,
+          recoveryUsed: false,
+          totalMs: 12.5,
+          resizeWaitMs: 1,
+          captureMs: 2,
+          reconstructMs: 0,
+          replayBytes: 10,
+          earlySeedBytes: 0,
+        }),
+      });
+      ws.onmessage?.({ data: 'hello' });
+    });
+
+    // Telemetry may flush on attach_timing-after-paint or the 80ms fallback.
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+
+    const latency = trackMock.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((e) => e.type === 'terminal_switch_latency');
+    expect(latency).toMatchObject({
+      type: 'terminal_switch_latency',
+      attachId: resizePayload.attachId,
+      warmLabel: 'cold',
+      clientWarm: false,
+      serverStrategy: 'full-ring',
+      seedCacheHit: false,
+      recoveryUsed: false,
+      agentType: 'claude-code',
+    });
+    expect(typeof latency?.selectionToFirstPaintMs).toBe('number');
   });
 
   test('shows counted jump-to-latest pill for new output while scrolled up', () => {
@@ -454,6 +560,8 @@ describe('TerminalPanel', () => {
     const firstWs = mocks.webSocketInstances[0];
     act(() => {
       firstWs.onopen?.();
+      // Attach must paint before keystrokes reach the PTY (R3 send gate).
+      firstWs.onmessage?.({ data: 'seed' });
       terminal.dataHandler?.('hello');
     });
 
@@ -474,10 +582,11 @@ describe('TerminalPanel', () => {
       }));
     });
     const secondWs = mocks.webSocketInstances[1];
-    secondWs.send.mockClear();
     act(() => {
       secondWs.onopen?.();
+      secondWs.onmessage?.({ data: 'seed' });
     });
+    secondWs.send.mockClear();
 
     act(() => {
       terminal.dataHandler?.('\r');
@@ -781,6 +890,9 @@ describe('TerminalPanel', () => {
 
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
     setTerminalBufferLines(terminal, [
       'IGNORED_EARLY_ENTER:browser-pre-fix-reply',
       '❯ browser-pre-fix-reply',
@@ -829,6 +941,9 @@ describe('TerminalPanel', () => {
 
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
     setTerminalBufferLines(terminal, [
       'Choose the text style that looks best with your terminal',
       ' 1. Auto (match terminal)',
@@ -906,6 +1021,9 @@ describe('TerminalPanel', () => {
 
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
     setTerminalBufferLines(terminal, [
       ' 1. Auto (match terminal)',
       '❯ 2. Dark mode',
@@ -929,6 +1047,9 @@ describe('TerminalPanel', () => {
 
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
     setTerminalBufferLines(terminal, [
       'Pick a base branch',
       'main',
@@ -1384,6 +1505,9 @@ describe('TerminalPanel', () => {
 
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
     const xtermContainer = container.querySelector('.terminal-xterm');
     expect(xtermContainer).not.toBeNull();
 
@@ -1808,6 +1932,9 @@ describe('TerminalPanel', () => {
     });
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onmessage?.({ data: 'seed' });
+    });
 
     act(() => {
       terminal.dataHandler?.('h');

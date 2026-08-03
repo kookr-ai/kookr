@@ -831,6 +831,124 @@ describe('SessionBridge', () => {
     resetHotPathSamplerForTests();
   });
 
+  it('shares client attachId on terminal_bridge_timing and attach_timing control frame', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const backend = await makeReadySession('s1');
+    backend.setCaptureContent('s1', 'hello\n');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { initialResizeWaitMs: 40 },
+    );
+    const startPromise = bridge.start();
+    // Deliver client join key while start() waits for initial resize.
+    await new Promise((r) => setTimeout(r, 5));
+    ws.emit('message', JSON.stringify({
+      type: 'resize',
+      cols: 80,
+      rows: 24,
+      attachId: 'client-attach-abc',
+    }), false);
+    await startPromise;
+
+    const timingLogs = log.mock.calls
+      .map((c) => {
+        try { return JSON.parse(String(c[0])); } catch { return null; }
+      })
+      .filter((o): o is Record<string, unknown> => o?.msg === 'terminal_bridge_timing');
+    expect(timingLogs.length).toBeGreaterThanOrEqual(1);
+    expect(timingLogs[0]).toMatchObject({
+      msg: 'terminal_bridge_timing',
+      attachId: 'client-attach-abc',
+      strategy: 'full-ring',
+      seedCacheHit: false,
+      recoveryUsed: false,
+    });
+
+    const control = ws.sent.find(
+      (s) => typeof s === 'string' && s.includes('"attach_timing"'),
+    );
+    expect(typeof control).toBe('string');
+    const frame = JSON.parse(String(control));
+    expect(frame).toMatchObject({
+      type: 'attach_timing',
+      attachId: 'client-attach-abc',
+      strategy: 'full-ring',
+      seedCacheHit: false,
+      recoveryUsed: false,
+    });
+    log.mockRestore();
+  });
+
+  it('emits early attach_timing before seed-cache binary paint', async () => {
+    const { TerminalSeedFrameCache } = await import('./terminal-seed-frame-cache.js');
+    const seedCache = new TerminalSeedFrameCache();
+    const seedBytes = new TextEncoder().encode('\x1b[H\x1b[2JSEED-FRAME');
+    seedCache.set('s1', seedBytes, {
+      kind: 'absolute-reconstruct',
+      cols: 200,
+      rows: 50,
+      sourceRingBytes: 999,
+    });
+
+    const backend = await makeReadySession('s1');
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 40) + 1;
+      const col = 10 + (i % 170);
+      return `\x1b[?2026h\x1b[${row};${col}HF\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const originalCapture = backend.captureBytes.bind(backend);
+    backend.captureBytes = async (id) => {
+      await captureGate;
+      return originalCapture(id);
+    };
+
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 0,
+        liveRedrawNudgeMs: 0,
+        seedFrameCache: seedCache,
+      },
+    );
+
+    const startPromise = bridge.start();
+    await new Promise((r) => setTimeout(r, 5));
+
+    const earlyStrings = ws.sent.filter((s): s is string => typeof s === 'string');
+    const earlyControl = earlyStrings.find((s) => s.includes('"attach_timing"'));
+    expect(earlyControl).toBeDefined();
+    const frame = JSON.parse(earlyControl!);
+    expect(frame.strategy).toBe('seed-cache');
+    expect(frame.seedCacheHit).toBe(true);
+    // Control frame must precede the seed binary so clients can join before paint.
+    const controlIdx = ws.sent.indexOf(earlyControl!);
+    const seedIdx = ws.sent.findIndex(
+      (s) => Buffer.isBuffer(s) && s.toString('utf-8').includes('SEED-FRAME'),
+    );
+    expect(seedIdx).toBeGreaterThanOrEqual(0);
+    expect(controlIdx).toBeLessThan(seedIdx);
+
+    releaseCapture();
+    await startPromise;
+  });
+
   it('debounces post-startup resize thrash to the last size', async () => {
     const backend = await makeReadySession('s1');
     const resizeSpy = vi.spyOn(backend, 'resize');

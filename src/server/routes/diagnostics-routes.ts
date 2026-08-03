@@ -1097,16 +1097,29 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/telemetry/report', async (c) => {
     try {
       const logPath = interactionLog.getFilePath();
+      const { generateTelemetryReport } = await import('../../core/telemetry-report.js');
+      const { getReconstructAbsoluteTuiScreenStats } = await import('../absolute-position-tui-screen.js');
+      const { getAbsoluteTuiRecoveryStats } = await import('../session-bridge.js');
+      // Live process counters for operators (not derived from client JSONL).
+      const reconstructStats = getReconstructAbsoluteTuiScreenStats();
+      const absoluteTuiRecoveryStats = getAbsoluteTuiRecoveryStats();
+
       if (!logPath) {
-        const { generateTelemetryReport } = await import('../../core/telemetry-report.js');
-        return c.json(generateTelemetryReport([]));
+        return c.json({
+          ...generateTelemetryReport([]),
+          reconstructStats,
+          absoluteTuiRecoveryStats,
+        });
       }
 
       const telemetryPath = logPath.replace('interactions.jsonl', 'telemetry.jsonl');
       const events = await readTelemetryLog(telemetryPath);
-      const { generateTelemetryReport } = await import('../../core/telemetry-report.js');
       const report = generateTelemetryReport(events);
-      return c.json(report);
+      return c.json({
+        ...report,
+        reconstructStats,
+        absoluteTuiRecoveryStats,
+      });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }

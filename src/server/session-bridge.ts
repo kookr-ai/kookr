@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { WebSocket } from 'ws';
 import {
@@ -21,6 +22,26 @@ import {
   type TerminalSeedFrameCache,
   type TerminalSeedKind,
 } from './terminal-seed-frame-cache.js';
+
+/**
+ * Server → browser text control frame for attach join keys (RFC Phase 0.0).
+ * Binary frames remain raw PTY output; clients must ignore JSON with this type.
+ */
+export const ATTACH_TIMING_CONTROL_TYPE = 'attach_timing' as const;
+
+export interface AttachTimingControlFrame {
+  type: typeof ATTACH_TIMING_CONTROL_TYPE;
+  attachId: string;
+  strategy: string;
+  seedCacheHit: boolean;
+  recoveryUsed: boolean;
+  totalMs: number;
+  resizeWaitMs: number;
+  captureMs: number;
+  reconstructMs: number;
+  replayBytes: number;
+  earlySeedBytes: number;
+}
 
 /**
  * Per-session single-flight for inputful absolute-TUI recovery (Ctrl+L /
@@ -85,9 +106,11 @@ export function resetAbsoluteTuiRecoveryForTests(): void {
  * WebSocket protocol (wire-compatible with the v7 TerminalBridge):
  *   Browser → Server: binary frames (preferred) OR raw text (fallback) OR
  *                     JSON text control frames:
- *                       `{"type":"resize","cols":N,"rows":M}`
+ *                       `{"type":"resize","cols":N,"rows":M,"attachId"?:string}`
  *                       `{"type":"paste","text":"..."}`  (see kookr #356)
- *   Server → Browser: binary frames carrying raw child PTY output.
+ *   Server → Browser: binary frames carrying raw child PTY output, plus a
+ *                     single JSON text `attach_timing` control frame after
+ *                     attach settles (join key for client telemetry).
  */
 
 /**
@@ -277,6 +300,13 @@ export class SessionBridge {
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private debouncedResize: TerminalSize | null = null;
   private lastAppliedResize: TerminalSize | null = null;
+  /**
+   * Join key for client `terminal_switch_latency` ↔ server `terminal_bridge_timing`.
+   * Client may supply via first resize; otherwise generated at start().
+   */
+  private attachId: string | null = null;
+  /** True when attach used inputful recovery (absolute-snapshot / Ctrl+L path). */
+  private recoveryUsed = false;
 
   constructor(
     sessionId: SessionId,
@@ -353,6 +383,9 @@ export class SessionBridge {
       | 'absolute-snapshot' | 'full-ring' | 'empty' = 'empty';
     let replayBytes = 0;
     let earlySeedBytes = 0;
+    // Client may set attachId via the first resize control frame during
+    // waitForInitialResize; recordBridgeTiming falls back to a server UUID.
+    this.recoveryUsed = false;
 
     this.onBridgeOpened?.(this.sessionId);
     this.bridgeHealthStarted = true;
@@ -421,6 +454,19 @@ export class SessionBridge {
         seedCacheHit = true;
         earlySeedBytes = cached.bytes.length;
         strategy = 'seed-cache';
+        // Control frame first so client first-paint telemetry can join strategy
+        // before the seed binary paints (final attach_timing still sent at end).
+        this.sendAttachTimingControl({
+          strategy: 'seed-cache',
+          seedCacheHit: true,
+          recoveryUsed: false,
+          totalMs: roundTimingMs(performance.now() - startedAt),
+          resizeWaitMs: 0,
+          captureMs: 0,
+          reconstructMs: 0,
+          replayBytes: earlySeedBytes,
+          earlySeedBytes,
+        });
         if (this.safeSend(Buffer.from(cached.bytes), true)) {
           this.onBridgeReplay?.(this.sessionId);
           // Allow live fan-out immediately so the pane is not frozen while we
@@ -546,6 +592,7 @@ export class SessionBridge {
             if (frame && frame.length > 0) {
               replay = frame;
               seedKind = 'absolute-snapshot';
+              this.recoveryUsed = true;
               if (!seedCacheHit) strategy = 'absolute-snapshot';
             }
           }
@@ -640,6 +687,7 @@ export class SessionBridge {
     earlySeedBytes: number;
   }): void {
     const totalMs = performance.now() - parts.startedAt;
+    const attachId = this.attachId ?? randomUUID();
     const sampler = getHotPathSampler();
     sampler.record('terminal_bridge_start', totalMs);
     sampler.record('terminal_bridge_resize_wait', parts.resizeWaitMs);
@@ -653,19 +701,73 @@ export class SessionBridge {
     } else {
       sampler.record('terminal_bridge_seed_cache_miss', totalMs);
     }
-    console.log(JSON.stringify({
-      msg: 'terminal_bridge_timing',
+    const timingPayload = {
+      msg: 'terminal_bridge_timing' as const,
       sessionId: this.sessionId,
+      attachId,
       totalMs: roundTimingMs(totalMs),
       resizeWaitMs: roundTimingMs(parts.resizeWaitMs),
       captureMs: roundTimingMs(parts.captureMs),
       reconstructMs: roundTimingMs(parts.reconstructMs),
       seedCacheHit: parts.seedCacheHit,
       strategy: parts.strategy,
+      recoveryUsed: this.recoveryUsed,
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
       readOnly: this.readOnly,
-    }));
+    };
+    console.log(JSON.stringify(timingPayload));
+
+    // Share join keys with the browser so client terminal_switch_latency can
+    // carry strategy / seedCacheHit without log forensics (RFC Phase 0.0).
+    this.sendAttachTimingControl({
+      strategy: parts.strategy,
+      seedCacheHit: parts.seedCacheHit,
+      recoveryUsed: this.recoveryUsed,
+      totalMs: timingPayload.totalMs,
+      resizeWaitMs: timingPayload.resizeWaitMs,
+      captureMs: timingPayload.captureMs,
+      reconstructMs: timingPayload.reconstructMs,
+      replayBytes: parts.replayBytes,
+      earlySeedBytes: parts.earlySeedBytes,
+    });
+  }
+
+  private sendAttachTimingControl(parts: {
+    strategy: string;
+    seedCacheHit: boolean;
+    recoveryUsed: boolean;
+    totalMs: number;
+    resizeWaitMs: number;
+    captureMs: number;
+    reconstructMs: number;
+    replayBytes: number;
+    earlySeedBytes: number;
+  }): void {
+    if (this.closed || this.ws.readyState !== this.ws.OPEN) return;
+    const attachId = this.attachId ?? randomUUID();
+    if (!this.attachId) this.attachId = attachId;
+    const control: AttachTimingControlFrame = {
+      type: ATTACH_TIMING_CONTROL_TYPE,
+      attachId,
+      strategy: parts.strategy,
+      seedCacheHit: parts.seedCacheHit,
+      recoveryUsed: parts.recoveryUsed,
+      totalMs: parts.totalMs,
+      resizeWaitMs: parts.resizeWaitMs,
+      captureMs: parts.captureMs,
+      reconstructMs: parts.reconstructMs,
+      replayBytes: parts.replayBytes,
+      earlySeedBytes: parts.earlySeedBytes,
+    };
+    // Text frame (string), not binary — browser clients parse JSON strings;
+    // binaryType=arraybuffer would otherwise surface a Buffer as ArrayBuffer.
+    try {
+      this.ws.send(JSON.stringify(control));
+    } catch (err) {
+      console.error(`[session-bridge] attach_timing send failed for ${this.sessionId}:`, err);
+      this.closeBridgeForFailure('attach_timing send failed');
+    }
   }
 
   /**
@@ -695,6 +797,14 @@ export class SessionBridge {
         try {
           const parsed = JSON.parse(text);
           if (parsed.type === 'resize') {
+            if (
+              typeof parsed.attachId === 'string'
+              && parsed.attachId.length > 0
+              && parsed.attachId.length <= 128
+            ) {
+              // Prefer the client's join key so first-paint and bridge timing share attachId.
+              this.attachId = parsed.attachId;
+            }
             if (
               Number.isInteger(parsed.cols)
               && parsed.cols > 0

@@ -2461,6 +2461,39 @@ button.section-header.detection-stats-header:focus-visible {
   flex: 1;
   overflow: hidden;
 }
+/* Pending-session chrome while attach is in flight (RFC Phase 0.0 / R3). */
+.terminal-attach-pending {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(15, 17, 23, 0.92);
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+}
+.terminal-attach-pending::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber, #f59e0b);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+  animation: terminal-attach-pending-pulse 1.1s ease-in-out infinite;
+}
+@keyframes terminal-attach-pending-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
 /* Grok Build paints ~200 cols of absolute CUP cells. Keep horizontal scroll
    so the full frame is visible instead of clipping to a ~70–100 col FitAddon. */
 .terminal-xterm.terminal-xterm--absolute-tui {

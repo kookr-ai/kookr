@@ -199,6 +199,14 @@ describe('generateTelemetryReport', () => {
     expect(report.terminalSwitchLatencyMetrics.p95FirstPaintMs).toBe(1500);
     expect(report.terminalSwitchLatencyMetrics.maxFirstPaintMs).toBe(1500);
     expect(report.terminalSwitchLatencyMetrics.subSecondRate).toBe(0.75);
+    expect(report.terminalSwitchLatencyMetrics.recoveryRate).toBe(0);
+    expect(report.terminalSwitchLatencyMetrics.byClass).toHaveLength(1);
+    expect(report.terminalSwitchLatencyMetrics.byClass[0]).toMatchObject({
+      warm: 'cold',
+      agentType: 'unknown',
+      strategy: 'unknown',
+      sampleCount: 4,
+    });
   });
 
   test('empty terminal switch samples yield null percentiles', () => {
@@ -210,6 +218,69 @@ describe('generateTelemetryReport', () => {
       maxFirstPaintMs: null,
       meanFirstPaintMs: null,
       subSecondRate: null,
+      recoveryRate: null,
+      byClass: [],
+    });
+  });
+
+  test('stratifies terminal switch latency by warm|cold × agentType × strategy', () => {
+    const report = generateTelemetryReport([
+      makeEvent('terminal_switch_latency', {
+        selectionToFirstPaintMs: 40,
+        clientWarm: true,
+        agentType: 'claude-code',
+        serverStrategy: 'seed-cache',
+        seedCacheHit: true,
+      }),
+      makeEvent('terminal_switch_latency', {
+        selectionToFirstPaintMs: 60,
+        warmLabel: 'warm',
+        agentType: 'claude-code',
+        serverStrategy: 'seed-cache',
+        seedCacheHit: true,
+      }),
+      makeEvent('terminal_switch_latency', {
+        selectionToFirstPaintMs: 400,
+        clientWarm: false,
+        agentType: 'grok-build',
+        serverStrategy: 'absolute-reconstruct',
+        recoveryUsed: false,
+      }),
+      makeEvent('terminal_switch_latency', {
+        selectionToFirstPaintMs: 1200,
+        clientWarm: false,
+        agentType: 'grok-build',
+        serverStrategy: 'absolute-snapshot',
+        recoveryUsed: true,
+      }),
+      makeEvent('terminal_switch_latency', {
+        selectionToFirstPaintMs: 900,
+        agentType: 'grok-build',
+        serverStrategy: 'absolute-snapshot',
+        recoveryUsed: true,
+      }),
+    ]);
+
+    expect(report.terminalSwitchLatencyMetrics.sampleCount).toBe(5);
+    expect(report.terminalSwitchLatencyMetrics.recoveryRate).toBe(0.4);
+
+    const byKey = Object.fromEntries(
+      report.terminalSwitchLatencyMetrics.byClass.map((s) => [s.key, s]),
+    );
+    expect(byKey['warm|claude-code|seed-cache']).toMatchObject({
+      sampleCount: 2,
+      p50FirstPaintMs: 40,
+      p95FirstPaintMs: 60,
+    });
+    expect(byKey['cold|grok-build|absolute-reconstruct']).toMatchObject({
+      sampleCount: 1,
+      p50FirstPaintMs: 400,
+      p95FirstPaintMs: 400,
+    });
+    expect(byKey['cold|grok-build|absolute-snapshot']).toMatchObject({
+      sampleCount: 2,
+      p50FirstPaintMs: 900,
+      p95FirstPaintMs: 1200,
     });
   });
 
