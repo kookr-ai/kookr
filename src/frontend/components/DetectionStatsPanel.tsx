@@ -180,7 +180,12 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
 
   return (
     <div className="detection-stats-section">
-      <div className="section-header" onClick={() => setExpanded(!expanded)}>
+      <button
+        type="button"
+        className="section-header detection-stats-header"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
         <span className="section-chevron">{expanded ? '\u25BE' : '\u25B8'}</span>
         <span className="stats-label">
           Detection Stats
@@ -193,7 +198,7 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
             {formatDetectionStatsSummary(totalFires, serverStartedAt)}
           </span>
         </span>
-      </div>
+      </button>
       {expanded && (
         <div className="detection-stats-body">
           <DiagnosticSection />

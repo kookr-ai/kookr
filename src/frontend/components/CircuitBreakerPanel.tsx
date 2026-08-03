@@ -82,7 +82,12 @@ export function CircuitBreakerPanel({ send, defaultExpanded = false, showEmpty =
 
   return (
     <div className="circuit-breaker-section">
-      <div className="section-header" onClick={() => setExpanded(!expanded)}>
+      <button
+        type="button"
+        className="section-header circuit-breaker-header"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
         <span className="section-chevron">{expanded ? '\u25BE' : '\u25B8'}</span>
         <span className="stats-label">
           Circuit Breakers
@@ -92,7 +97,7 @@ export function CircuitBreakerPanel({ send, defaultExpanded = false, showEmpty =
               : 'all healthy'}
           </span>
         </span>
-      </div>
+      </button>
       {expanded && (
         <div className="cb-body">
           {breakers.length === 0 ? (

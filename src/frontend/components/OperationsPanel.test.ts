@@ -529,7 +529,8 @@ describe('OperationsPanel', () => {
     await flush();
 
     const close = el.querySelector<HTMLButtonElement>('.operations-panel-close');
-    const findingEvidenceHeader = el.querySelector<HTMLButtonElement>('.finding-evidence-header');
+    // Last focusable in tab order is Circuit Breakers (after Finding Evidence).
+    const lastDisclosureHeader = el.querySelector<HTMLButtonElement>('.circuit-breaker-header');
 
     close?.focus();
     act(() => {
@@ -540,7 +541,7 @@ describe('OperationsPanel', () => {
         cancelable: true,
       }));
     });
-    expect(document.activeElement).toBe(findingEvidenceHeader);
+    expect(document.activeElement).toBe(lastDisclosureHeader);
 
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', {
