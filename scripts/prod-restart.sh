@@ -247,11 +247,62 @@ wait_for_start_pids_to_exit() {
 # Drain is in-memory only on the running process. Process kill/restart clears
 # it automatically — the fresh process accepts launches by default. No post-
 # restart `kookr resume` is required (resume would be a no-op on a new PID).
+#
+# Before drain, write a short-lived server-restarting marker (issue #1983) so
+# schedule fires during pre-stop drain record `skipped_server_restarting`
+# instead of a generic operator drain — operators can see "missed due to
+# redeploy" after resume. Marker is age-capped by the server reader.
+write_server_restarting_marker() {
+  # Prefer the port-derived KOOKR_DIR (set by configure_port_derived_values in
+  # the main flow). When sourced in isolation (unit tests), fall back so the
+  # write is still best-effort rather than targeting an empty path.
+  if [[ -z "${KOOKR_DIR:-}" ]]; then
+    if [[ "${PORT:-4800}" == "4800" ]]; then
+      KOOKR_DIR="${HOME}/.kookr"
+    else
+      KOOKR_DIR="${HOME}/.kookr-${PORT}"
+    fi
+  fi
+  local marker_file at_iso tmp
+  marker_file="${KOOKR_DIR}/server-restarting.json"
+  at_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  if [[ -z "$at_iso" ]]; then
+    at_iso="unknown"
+  fi
+  set +e
+  mkdir -p "$KOOKR_DIR" 2>/dev/null
+  tmp="$(mktemp "${KOOKR_DIR}/server-restarting.XXXXXX" 2>/dev/null)"
+  if [[ -z "$tmp" ]]; then
+    echo "WARN: could not write ${marker_file} (mktemp failed)" >&2
+    set -e
+    return 0
+  fi
+  cat > "$tmp" <<EOF
+{
+  "schemaVersion": "server-restarting.v1",
+  "reason": "server_restarting",
+  "at": "${at_iso}",
+  "source": "prod-restart"
+}
+EOF
+  if [[ $? -eq 0 ]] && mv -f "$tmp" "$marker_file" 2>/dev/null; then
+    echo "Wrote server-restarting marker → ${marker_file}"
+  else
+    rm -f -- "$tmp" 2>/dev/null
+    echo "WARN: could not write ${marker_file}" >&2
+  fi
+  set -e
+}
+
 enter_drain_before_stop() {
   if [[ "${KOOKR_RESTART_SKIP_DRAIN:-}" == "1" ]]; then
     echo "Skipping pre-stop drain (KOOKR_RESTART_SKIP_DRAIN=1)"
     return 0
   fi
+
+  # Marker first so any schedule tick that races the drain POST already sees
+  # the redeploy signal (issue #1983). Best-effort; never blocks restart.
+  write_server_restarting_marker
 
   local drain_url="http://127.0.0.1:${PORT}/api/admin/drain"
   local max_time="${KOOKR_RESTART_DRAIN_TIMEOUT_SECONDS:-2}"

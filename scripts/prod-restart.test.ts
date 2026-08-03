@@ -788,7 +788,9 @@ describe('prod-restart pre-stop drain (issue #1971)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-drain-order-'));
     try {
       const binDir = join(dir, 'bin');
+      const kookrDir = join(dir, 'kookr-state');
       mkdirSync(binDir);
+      mkdirSync(kookrDir);
       const curlLog = join(dir, 'curl.log');
       // curl stub: record argv, print 200 so drain reports success.
       writeFileSync(
@@ -808,6 +810,7 @@ printf '200'
           [
             'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
             'PORT=4800',
+            `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
             'enter_drain_before_stop',
           ].join('; '),
         ],
@@ -822,10 +825,21 @@ printf '200'
       );
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Drain mode ON \(HTTP 200\)/);
+      expect(result.stdout).toMatch(/Wrote server-restarting marker/);
       const log = readFileSync(curlLog, 'utf8');
       expect(log).toMatch(/-X POST/);
       expect(log).toMatch(/http:\/\/127\.0\.0\.1:4800\/api\/admin\/drain/);
       expect(log).toMatch(/--max-time/);
+      // Issue #1983: marker must land before/with drain so schedule UI can
+      // surface server_restarting distinct from generic operator drain.
+      const marker = JSON.parse(readFileSync(join(kookrDir, 'server-restarting.json'), 'utf8')) as {
+        schemaVersion: string;
+        reason: string;
+        source?: string;
+      };
+      expect(marker.schemaVersion).toBe('server-restarting.v1');
+      expect(marker.reason).toBe('server_restarting');
+      expect(marker.source).toBe('prod-restart');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -877,7 +891,9 @@ printf '200'
     const dir = mkdtempSync(join(tmpdir(), 'kookr-drain-fail-'));
     try {
       const binDir = join(dir, 'bin');
+      const kookrDir = join(dir, 'kookr-state');
       mkdirSync(binDir);
+      mkdirSync(kookrDir);
       writeFileSync(
         join(binDir, 'curl'),
         `#!/usr/bin/env bash
@@ -893,6 +909,7 @@ exit 7
           [
             'KOOKR_PROD_RESTART_TEST_ONLY=1 source scripts/prod-restart.sh',
             'PORT=4800',
+            `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
             'enter_drain_before_stop',
             'echo CONTINUE_OK',
           ].join('; '),
