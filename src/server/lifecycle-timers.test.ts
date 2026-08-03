@@ -1619,6 +1619,52 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }
   });
 
+  test('schedules server.log size-cap rotation and stops on clear (issue #1991)', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      serverLogRotation: {
+        logPath: '/tmp/server.log',
+        maxBytes: 1024,
+        generations: 3,
+        intervalMs: 1_000,
+        run,
+      },
+    }) as any);
+    try {
+      expect(handles.serverLogRotationInterval).not.toBeNull();
+      expect(run).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_050);
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+    }
+    const callsAfterClear = run.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(run.mock.calls.length).toBe(callsAfterClear);
+  });
+
+  test('does not schedule server.log rotation when disabled (issue #1991)', () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const handles = startLifecycleTimers(baseTimerDeps({
+      serverLogRotation: {
+        logPath: '/tmp/server.log',
+        maxBytes: 0,
+        generations: 3,
+        intervalMs: 1_000,
+        run,
+      },
+    }) as any);
+    try {
+      expect(handles.serverLogRotationInterval).toBeNull();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   test('skips the next maintenance prune tick when nonCriticalTickPause is elevated (issue #1785)', async () => {
     vi.useFakeTimers();
     const run = vi.fn(async () => ({

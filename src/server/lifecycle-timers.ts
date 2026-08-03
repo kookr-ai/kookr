@@ -85,6 +85,10 @@ import {
   runScheduledReflectWorktreeSweep,
   type ReflectWorktreeSweepScheduleConfig,
 } from './use-cases/request-task-reflect.js';
+import {
+  runScheduledServerLogRotation,
+  type ServerLogRotationConfig,
+} from './server-log-rotation.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -267,6 +271,14 @@ export interface TimerDeps {
    */
   maintenancePrune?: MaintenancePruneScheduleConfig;
   /**
+   * Mid-process size-capped rotation for `server.log` (issue #1991). When
+   * `intervalMs > 0`, `maxBytes > 0`, and `generations > 0`, a dedicated
+   * interval stats the live log and renames generations when over threshold,
+   * reopening process stdio onto a fresh file so appends are not lost.
+   * Defaults are on (50 MiB / 3 generations / 60s) when wired from bootstrap.
+   */
+  serverLogRotation?: ServerLogRotationScheduleConfig;
+  /**
    * Optional hourly prod smoke tick (issue #1593). When provided, a dedicated
    * interval fires the bounded smoke suite against the live prod instance on
    * `prodSmokeTick.hostIntervalMs` and files/updates an operational alert
@@ -307,9 +319,10 @@ export interface TimerDeps {
   reflectWorktreeSweep?: ReflectWorktreeSweepScheduleConfig;
   /**
    * Optional event-loop pressure gate for non-critical intervals (issue #1785).
-   * When elevated, maintenance prune / relay-orphan / reflect-worktree /
-   * prod-smoke / deploy-lag ticks skip their body. Critical loops (token scan,
-   * watchdog, liveness, save, snooze, quota) are never gated. Fail-open when omitted.
+   * When elevated, maintenance prune / server-log rotation / relay-orphan /
+   * reflect-worktree / prod-smoke / deploy-lag ticks skip their body. Critical
+   * loops (token scan, watchdog, liveness, save, snooze, quota) are never
+   * gated. Fail-open when omitted.
    */
   nonCriticalTickPause?: {
     shouldSkipTick(): boolean;
@@ -335,6 +348,8 @@ export interface TimerHandles {
   quotaPollTimeout: ReturnType<typeof setTimeout> | null;
   /** Null unless a scheduled maintenance prune interval was configured. */
   maintenancePruneInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless mid-process server.log rotation (issue #1991) was configured. */
+  serverLogRotationInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the hourly prod smoke tick (issue #1593) was configured. */
   prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the deploy-lag detector (issue #1594) was configured. */
@@ -345,6 +360,17 @@ export interface TimerHandles {
   relayOrphanSweepStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the reflect-worktree orphan sweep (issue #1860) was configured. */
   reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null;
+}
+
+/** Config for the mid-process `server.log` size-cap timer (issue #1991). */
+export interface ServerLogRotationScheduleConfig {
+  logPath: string;
+  maxBytes: number;
+  generations: number;
+  /** Check interval in ms. `<= 0` disables the timer. */
+  intervalMs: number;
+  /** Test seam replacing the rotate tick body. */
+  run?: (config: ServerLogRotationScheduleConfig) => void;
 }
 
 /**
@@ -1187,6 +1213,38 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Mid-process server.log size-cap rotation (issue #1991), ON by default ---
+  // Prod launches redirect stdout/stderr to ~/.kookr/server.log; without a
+  // mid-process rotate that file grows without bound between restarts. When
+  // over threshold we rename generations (same scheme as prod-restart) and
+  // freopen stdio onto a fresh file so subsequent writes are not lost.
+  // Disable with KOOKR_SERVER_LOG_MAX_BYTES=0, KOOKR_LOG_GENERATIONS=0, or
+  // KOOKR_SERVER_LOG_ROTATE_INTERVAL_MS=0.
+  let serverLogRotationInterval: ReturnType<typeof setInterval> | null = null;
+  const serverLogRotation = deps.serverLogRotation;
+  if (
+    serverLogRotation
+    && serverLogRotation.intervalMs > 0
+    && serverLogRotation.maxBytes > 0
+    && serverLogRotation.generations > 0
+  ) {
+    const intervalMs = serverLogRotation.intervalMs;
+    console.log(
+      `[server-log-rotation] size-cap check every ${intervalMs}ms ` +
+        `(maxBytes=${serverLogRotation.maxBytes}, generations=${serverLogRotation.generations}, ` +
+        `path=${serverLogRotation.logPath})`,
+    );
+    timerHealth?.register('serverLogRotation', intervalMs);
+    serverLogRotationInterval = setInterval(() => {
+      // Disk-growth control is operational hygiene, not a critical control loop
+      // — skip under event-loop pressure like the other non-critical timers.
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'serverLogRotation')) return;
+      timerHealth?.recordFire('serverLogRotation', intervalMs);
+      const run = serverLogRotation.run ?? runServerLogRotationTick;
+      run(serverLogRotation);
+    }, intervalMs);
+  }
+
   // --- Relay-orphan sweep (issue #1723 / #1885), ON by default ---
   // Reaps leaked `relay/server.ts` processes whose task worktree no longer
   // exists OR which carry the test-spawn marker (#1885) — the always-on backstop
@@ -1291,12 +1349,23 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveInterval,
     quotaPollTimeout,
     maintenancePruneInterval,
+    serverLogRotationInterval,
     prodSmokeTickInterval,
     deployLagDetectorInterval,
     relayOrphanSweepInterval,
     relayOrphanSweepStartupTimer,
     reflectWorktreeSweepInterval,
   };
+}
+
+/** Thin adapter so the timer config shape maps cleanly onto the rotation module. */
+export function runServerLogRotationTick(config: ServerLogRotationScheduleConfig): void {
+  const rotationConfig: ServerLogRotationConfig = {
+    logPath: config.logPath,
+    maxBytes: config.maxBytes,
+    generations: config.generations,
+  };
+  runScheduledServerLogRotation(rotationConfig);
 }
 
 
@@ -1308,6 +1377,7 @@ export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.saveInterval);
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
   if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
+  if (handles.serverLogRotationInterval) clearInterval(handles.serverLogRotationInterval);
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);

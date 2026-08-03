@@ -63,8 +63,8 @@ as internal unless this table says they are safe to remove.
 | `relay-connection.json` and `node-id` | hosted/self-hosted relay pairing | Relay credentials and node id. | Keep; losing these requires re-pairing. |
 | `relay.sqlite*`, `relay.state.json`, `relay.pid`, `relay.log` | local relay lifecycle | Local relay durable state, process metadata, and logs. | See `session-sharing.md` for relay-specific reset/restore. |
 | `relay-state-backups/` | relay recovery | Backups made by relay reset flows. | Keep until the corresponding relay state is no longer needed. |
-| `server.log` | production restart script | Current server log for prod-style launches. | Keep current log while diagnosing. |
-| `server.log.N` | production restart script | Rotated server logs. | `kookr maintenance prune` can remove aged numbered generations. |
+| `server.log` | production restart script + mid-process size-cap rotation (issue #1991) | Current server log for prod-style launches. | Keep current log while diagnosing. |
+| `server.log.N` | production restart script + mid-process size-cap rotation (issue #1991) | Rotated server logs. | `kookr maintenance prune` can remove aged numbered generations. |
 | `last-restart-metrics.json` | production restart script | Last successful `prod:restart` phase timings (`apiBlackoutSeconds`, M1/M2, dominant phase). Read by `GET /api/deploy/status` as optional `lastRestart`. | Overwritten each successful restart; safe to delete (field omitted until next restart). |
 
 Dtach sockets, manifests, and terminal scrollback rings do not live in the data
