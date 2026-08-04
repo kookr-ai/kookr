@@ -146,7 +146,12 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     expect(broadcastToAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'alert', severity: 'warning' }),
     );
-    expect(metrics.getSnapshot()).toEqual({ reclaimedTotal: 1 });
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 1,
+      reclaimAttempted: 1,
+      reclaimSucceeded: 1,
+      lastCandidatesConsidered: 1,
+    });
   });
 
   it('records delivered_then_hung + obsolete when a merged PR is attributed', async () => {
@@ -273,7 +278,57 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
 
     expect(result.reclaimedTaskIds).toHaveLength(7);
     expect(taskStore.terminateTask).toHaveBeenCalledTimes(7);
-    expect(metrics.getSnapshot()).toEqual({ reclaimedTotal: 7 });
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 7,
+      reclaimAttempted: 7,
+      reclaimSucceeded: 7,
+    });
+  });
+
+  it('accumulates skip-reason counters without reclaiming (issue #2045)', async () => {
+    const underTtl = makeHungTask({ id: 'under' });
+    const noLiveness = makeHungTask({ id: 'noliv' });
+    const openPr = makeHungTask({ id: 'pr' });
+    const needsInput = makeHungTask({ id: 'needs' });
+    const taskStore = makeMockTaskStore([underTtl, noLiveness, openPr, needsInput]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+
+    const liveness = new Map<string, HungTaskLivenessEvidence | undefined>([
+      ['under', silentFor(60_000)],
+      ['noliv', undefined],
+      ['pr', silentFor(TTL_MS + 60_000)],
+      ['needs', silentFor(TTL_MS + 60_000)],
+    ]);
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHungSuspect: () => true,
+        getLiveness: (t) => liveness.get(t.id),
+        getQueuedAnomalyType: (t) => (t.id === 'needs' ? 'needs_input' : null),
+        isHoldingOpenPr: (t) => (t.id === 'pr' ? true : false),
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    const snap = metrics.getSnapshot();
+    expect(snap).toMatchObject({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      reclaimSucceeded: 0,
+      skippedUnderTtl: 1,
+      skippedNoLiveness: 1,
+      skippedOpenPrFailsafe: 1,
+      skippedExemptAnomaly: 1,
+      lastCandidatesConsidered: 4,
+    });
+    expect(result.selection?.skips.skipped_under_ttl).toBe(1);
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {

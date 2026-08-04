@@ -5,33 +5,87 @@ import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_HUNG_SUSPECT_TTL_MS,
-  listExpiredHungSuspectTasks,
+  emptyHungSuspectReclaimSkipCounts,
+  selectExpiredHungSuspectTasks,
+  type HungSuspectReclaimSkipCounts,
 } from '../core/hung-suspect-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 
-/** In-memory snapshot for the `/metrics` gauge (issue #1935). */
+/**
+ * In-memory snapshot for `/api/health` + `/metrics` (issues #1935 / #2045).
+ * Process-lifetime cumulative counters — restart zeros them (same trade-off
+ * as other in-memory reclaim gauges).
+ */
 export interface HungSuspectTtlReclaimMetricsSnapshot {
   /** Cumulative hungSuspect tasks terminated by the TTL reclaim since process start. */
   reclaimedTotal: number;
+  /**
+   * Cumulative candidates the sweep tried to terminate (selected past TTL +
+   * clear of fail-safes). Includes terminate races that did not succeed.
+   */
+  reclaimAttempted: number;
+  /** Cumulative successful terminates — equal to {@link reclaimedTotal}. */
+  reclaimSucceeded: number;
+  /** Skip-reason breakdown for hungSuspect candidates not selected (issue #2045). */
+  skippedNoLiveness: number;
+  skippedOpenPrFailsafe: number;
+  skippedUnderTtl: number;
+  skippedExemptAnomaly: number;
+  skippedProviderPaused: number;
+  /** Last selection pass: how many hungSuspect candidates were considered. */
+  lastCandidatesConsidered: number;
 }
 
 /**
- * Minimal process-lifetime counter for the hungSuspect TTL reclaim (issue
- * #1935). Mirrors `FinishedAwaitingAckTtlReclaimMetrics` — a single instance
- * is created once at bootstrap, threaded into the sweep and `/metrics`.
+ * Process-lifetime counters for the hungSuspect TTL reclaim (issues #1935 /
+ * #2045). One instance at bootstrap, threaded into the sweep, `/api/health`,
+ * and `/metrics`.
  */
 export class HungSuspectTtlReclaimMetrics {
   private reclaimedTotal = 0;
+  private reclaimAttempted = 0;
+  private skips: HungSuspectReclaimSkipCounts = emptyHungSuspectReclaimSkipCounts();
+  private lastCandidatesConsidered = 0;
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
   }
 
+  recordAttempted(count: number): void {
+    if (count > 0) this.reclaimAttempted += count;
+  }
+
+  /**
+   * Accumulate skip-reason counts from one selection pass and remember the
+   * candidate denominator for the health snapshot.
+   */
+  recordSelection(selection: {
+    candidatesConsidered: number;
+    skips: HungSuspectReclaimSkipCounts;
+  }): void {
+    this.lastCandidatesConsidered = selection.candidatesConsidered;
+    this.skips.skipped_no_liveness += selection.skips.skipped_no_liveness;
+    this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
+    this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
+    this.skips.skipped_exempt_anomaly += selection.skips.skipped_exempt_anomaly;
+    this.skips.skipped_provider_paused += selection.skips.skipped_provider_paused;
+  }
+
   getSnapshot(): HungSuspectTtlReclaimMetricsSnapshot {
-    return { reclaimedTotal: this.reclaimedTotal };
+    return {
+      reclaimedTotal: this.reclaimedTotal,
+      reclaimAttempted: this.reclaimAttempted,
+      reclaimSucceeded: this.reclaimedTotal,
+      skippedNoLiveness: this.skips.skipped_no_liveness,
+      skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
+      skippedUnderTtl: this.skips.skipped_under_ttl,
+      skippedExemptAnomaly: this.skips.skipped_exempt_anomaly,
+      skippedProviderPaused: this.skips.skipped_provider_paused,
+      lastCandidatesConsidered: this.lastCandidatesConsidered,
+    };
   }
 }
 
@@ -73,11 +127,20 @@ export interface ReclaimHungSuspectTasksDeps {
    * needs-human.
    */
   resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
-  metrics?: Pick<HungSuspectTtlReclaimMetrics, 'recordReclaimed'>;
+  metrics?: Pick<
+    HungSuspectTtlReclaimMetrics,
+    'recordReclaimed' | 'recordAttempted' | 'recordSelection'
+  >;
 }
 
 export interface ReclaimHungSuspectTasksResult {
   reclaimedTaskIds: string[];
+  /** Selection snapshot from this pass (for tests / residual alerter). */
+  selection?: {
+    candidatesConsidered: number;
+    skips: HungSuspectReclaimSkipCounts;
+    selectedCount: number;
+  };
 }
 
 /**
@@ -121,9 +184,12 @@ export function buildHungSuspectTtlDisposition(
  * - an audit.jsonl row, actor `system:hung-suspect-ttl`;
  * - a disposition-ledger entry (`obsolete` if delivered, else `needs-human`).
  *
- * The stranded-PR exemption in `listExpiredHungSuspectTasks` protects an
+ * The stranded-PR exemption in `selectExpiredHungSuspectTasks` protects an
  * in-flight `merge_required` delivery; this function only executes what that
  * selector already cleared. One summary alert per sweep (not per task).
+ *
+ * Skip-reason counters (issue #2045) accumulate every pass so `/api/health`
+ * can explain `reclaimedTotal=0` while hungSuspect occupancy stays high.
  */
 export async function reclaimAgedHungSuspectTasks(
   deps: ReclaimHungSuspectTasksDeps,
@@ -134,7 +200,7 @@ export async function reclaimAgedHungSuspectTasks(
 
   const now = opts.now ?? new Date();
   const ttlMs = opts.ttlMs ?? DEFAULT_HUNG_SUSPECT_TTL_MS;
-  const entries = listExpiredHungSuspectTasks(deps.taskStore.listTasks(), {
+  const selection = selectExpiredHungSuspectTasks(deps.taskStore.listTasks(), {
     now,
     ttlMs,
     isHungSuspect: deps.isHungSuspect,
@@ -144,8 +210,11 @@ export async function reclaimAgedHungSuspectTasks(
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
 
+  deps.metrics?.recordSelection(selection);
+  deps.metrics?.recordAttempted(selection.expired.length);
+
   const reclaimedTaskIds: string[] = [];
-  for (const { task, silentForMs } of entries) {
+  for (const { task, silentForMs } of selection.expired) {
     // Attribute delivery BEFORE terminating so a task that already merged its
     // PR is recorded as delivered_then_hung rather than masking delivery.
     const merged = deps.resolveMergedPr?.(task) ?? null;
@@ -212,7 +281,14 @@ export async function reclaimAgedHungSuspectTasks(
     });
   }
 
-  return { reclaimedTaskIds };
+  return {
+    reclaimedTaskIds,
+    selection: {
+      candidatesConsidered: selection.candidatesConsidered,
+      skips: selection.skips,
+      selectedCount: selection.expired.length,
+    },
+  };
 }
 
 async function writeHungSuspectDispositionEntry(

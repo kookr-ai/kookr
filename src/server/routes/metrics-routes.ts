@@ -63,7 +63,18 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
         ? { finishedAwaitingAckReclaim: { reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal } }
         : {}),
       ...(hungSuspectReclaim
-        ? { hungSuspectReclaim: { reclaimedTotal: hungSuspectReclaim.reclaimedTotal } }
+        ? {
+            hungSuspectReclaim: {
+              reclaimedTotal: hungSuspectReclaim.reclaimedTotal,
+              reclaimAttempted: hungSuspectReclaim.reclaimAttempted,
+              reclaimSucceeded: hungSuspectReclaim.reclaimSucceeded,
+              skippedNoLiveness: hungSuspectReclaim.skippedNoLiveness,
+              skippedOpenPrFailsafe: hungSuspectReclaim.skippedOpenPrFailsafe,
+              skippedUnderTtl: hungSuspectReclaim.skippedUnderTtl,
+              skippedExemptAnomaly: hungSuspectReclaim.skippedExemptAnomaly,
+              skippedProviderPaused: hungSuspectReclaim.skippedProviderPaused,
+            },
+          }
         : {}),
       ...(nonCriticalTimerPause
         ? {

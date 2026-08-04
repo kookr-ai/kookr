@@ -95,11 +95,20 @@ export interface PrometheusExpositionSnapshot {
    */
   finishedAwaitingAckReclaim?: { reclaimedTotal: number };
   /**
-   * hungSuspect TTL reclaim counter (issue #1935). Cumulative count of
-   * hungSuspect tasks terminated by the liveness-tick TTL sweep since process
-   * start. Omitted only in harnesses that never wire the sweep.
+   * hungSuspect TTL reclaim counters (issues #1935 / #2045). Cumulative
+   * reclaimed + skip-reason breakdown since process start. Omitted only in
+   * harnesses that never wire the sweep.
    */
-  hungSuspectReclaim?: { reclaimedTotal: number };
+  hungSuspectReclaim?: {
+    reclaimedTotal: number;
+    reclaimAttempted?: number;
+    reclaimSucceeded?: number;
+    skippedNoLiveness?: number;
+    skippedOpenPrFailsafe?: number;
+    skippedUnderTtl?: number;
+    skippedExemptAnomaly?: number;
+    skippedProviderPaused?: number;
+  };
   /**
    * Per-repo GitHub state-fetch non-rate-limit failure counters (issue #1946).
    * Empty array / omitted → HELP/TYPE only (no series) so scrapers see the
@@ -478,12 +487,25 @@ function appendFinishedAwaitingAckReclaimMetrics(
 }
 
 /**
- * hungSuspect TTL reclaim counter (issue #1935). Omitted when the sweep is
- * not wired — same optional convention as the FAA reclaim counter.
+ * hungSuspect TTL reclaim counters (issues #1935 / #2045). Omitted when the
+ * sweep is not wired — same optional convention as the FAA reclaim counter.
+ * Skip-reason series always emit when the snapshot is present so scrapers
+ * can chart why reclaimedTotal stays flat.
  */
 function appendHungSuspectReclaimMetrics(
   lines: string[],
-  snapshot: { reclaimedTotal: number } | undefined,
+  snapshot:
+    | {
+        reclaimedTotal: number;
+        reclaimAttempted?: number;
+        reclaimSucceeded?: number;
+        skippedNoLiveness?: number;
+        skippedOpenPrFailsafe?: number;
+        skippedUnderTtl?: number;
+        skippedExemptAnomaly?: number;
+        skippedProviderPaused?: number;
+      }
+    | undefined,
 ): void {
   if (!snapshot) return;
 
@@ -491,6 +513,43 @@ function appendHungSuspectReclaimMetrics(
     '# HELP kookr_hung_suspect_ttl_reclaimed_total Total hungSuspect tasks terminated by the TTL reclaim since process start.',
     '# TYPE kookr_hung_suspect_ttl_reclaimed_total counter',
     metricLine('kookr_hung_suspect_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
+    '# HELP kookr_hung_suspect_ttl_reclaim_attempted_total Total hungSuspect candidates selected for reclaim (terminate attempted) since process start.',
+    '# TYPE kookr_hung_suspect_ttl_reclaim_attempted_total counter',
+    metricLine('kookr_hung_suspect_ttl_reclaim_attempted_total', {}, snapshot.reclaimAttempted ?? 0),
+    '# HELP kookr_hung_suspect_ttl_reclaim_succeeded_total Total successful hungSuspect TTL reclaim terminates since process start.',
+    '# TYPE kookr_hung_suspect_ttl_reclaim_succeeded_total counter',
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_succeeded_total',
+      {},
+      snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
+    ),
+    '# HELP kookr_hung_suspect_ttl_reclaim_skipped_total HungSuspect TTL reclaim skips by reason (cumulative since process start).',
+    '# TYPE kookr_hung_suspect_ttl_reclaim_skipped_total counter',
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'no_liveness' },
+      snapshot.skippedNoLiveness ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_failsafe' },
+      snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'under_ttl' },
+      snapshot.skippedUnderTtl ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'exempt_anomaly' },
+      snapshot.skippedExemptAnomaly ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'provider_paused' },
+      snapshot.skippedProviderPaused ?? 0,
+    ),
   );
 }
 

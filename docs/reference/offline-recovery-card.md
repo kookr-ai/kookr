@@ -55,6 +55,30 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 '
 ```
 
+### Reading `hungSuspectTtlReclaim` skip reasons (issue #2045)
+
+`hungSuspectTtlReclaim` is process-lifetime cumulative (zeros on every restart):
+
+| Field | Meaning |
+| --- | --- |
+| `reclaimedTotal` / `reclaimSucceeded` | Soft-terminates that freed a hungSuspect slot |
+| `reclaimAttempted` | Candidates selected past TTL (includes terminate races that failed) |
+| `skippedUnderTtl` | HungSuspect but silence age still &lt; `hungSuspectTtlMinutes` (default 25m) |
+| `skippedOpenPrFailsafe` | Open/unknown PR hold — stranded-PR exemption, intentional |
+| `skippedNoLiveness` | No watchdog liveness timestamps (never invent silence-since-epoch) |
+| `skippedExemptAnomaly` | `needs_input` / `permission_blocked` — human-gated, never reclaim |
+| `skippedProviderPaused` | Billing/quota pause (#1667) hold-for-resume |
+| `lastCandidatesConsidered` | HungSuspect candidates on the most recent sweep pass |
+
+If `reclaimedTotal=0` while `capacity.byClass.hungSuspect≥2`:
+
+1. **Dominant `skippedUnderTtl` soon after restart** — normal for the first TTL window after boot *only if* agents truly just became silent. Pre-restart silence is restored via session `lastEventAt` (pane clock seeded from that timestamp on recovery — #2045). If under-TTL dominates for hours with `serverStartedAt` older than TTL, something is still refreshing liveness.
+2. **Dominant `skippedOpenPrFailsafe`** — check whether those tasks really hold open PRs; fail-safe treats *unknown* like a hold.
+3. **Dominant `skippedNoLiveness`** — watchdog never registered the agent after resume; investigate session recovery.
+4. **Residual page** — Discord/operator `hung:residual` (#1993) pages when residual stays high after a full reclaim window.
+
+Do **not** treat a brief `reclaimedTotal=0` co-occurring with `daemon_uptime_reset` as a reclaim bug — counters and residual-alerter episode state reset with the process. See [low-downtime redeploy](../runbooks/low-downtime-redeploy.md#hungsuspect-ttl-reclaim-across-redeploy).
+
 If residual stays high after TTL reclaim windows: complete or cancel clearly dead tasks, check Discord/operator signals for `hung:residual` (when enabled), avoid spawning more work until free slots return.
 
 ## 4. Resource watchdog env

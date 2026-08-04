@@ -202,7 +202,10 @@ export interface TimerDeps {
    */
   getHungSuspectTtlMs?: () => number;
   /** Optional counter for the hungSuspect TTL reclaim, exposed via `/metrics` (issue #1935). */
-  hungSuspectTtlReclaimMetrics?: Pick<HungSuspectTtlReclaimMetrics, 'recordReclaimed'>;
+  hungSuspectTtlReclaimMetrics?: Pick<
+    HungSuspectTtlReclaimMetrics,
+    'recordReclaimed' | 'recordAttempted' | 'recordSelection'
+  >;
   /**
    * Operator page when hungSuspect residual stays high after the TTL reclaim
    * window (issue #1993). Page-only — never terminates extra tasks. Prefer a

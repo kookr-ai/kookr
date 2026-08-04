@@ -897,6 +897,29 @@ describe('Watchdog', () => {
       }
     });
 
+    // Issue #2045: silence-age max(hook, pane, token) must not reset to
+    // restart time when lastEventAt is restored — otherwise hungSuspect TTL
+    // reclaim always sees skipped_under_ttl after redeploy.
+    test('restored lastEventAt also seeds lastPaneChangeAt (silence continuity)', () => {
+      const restartTime = 700_000;
+      const lastEventBefore = restartTime - 600_000;
+      const restartWatchdog = new Watchdog(FAST_CONFIG);
+      restartWatchdog.registerAgent(agentId, lastEventBefore, restartTime);
+      const state = restartWatchdog.getState(agentId);
+      expect(state?.lastEventAt).toBe(lastEventBefore);
+      expect(state?.lastPaneChangeAt).toBe(lastEventBefore);
+      expect(state?.registeredAt).toBe(restartTime);
+    });
+
+    test('fresh registration without lastEventAt still seeds pane at registration time', () => {
+      const regAt = 500_000;
+      const restartWatchdog = new Watchdog(FAST_CONFIG);
+      restartWatchdog.registerAgent(agentId, undefined, regAt);
+      const state = restartWatchdog.getState(agentId);
+      expect(state?.lastEventAt).toBe(regAt);
+      expect(state?.lastPaneChangeAt).toBe(regAt);
+    });
+
     // T5.8: Restart recovery — persisted lastEventAt but agent is actually fine
     test('T5.8: recovered events from hook replay update lastEventAt', () => {
       const restartTime = 100_000;

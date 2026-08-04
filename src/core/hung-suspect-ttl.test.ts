@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   listExpiredHungSuspectTasks,
+  selectExpiredHungSuspectTasks,
   DEFAULT_HUNG_SUSPECT_TTL_MS,
   MAX_HUNG_SUSPECT_TTL_MS,
+  emptyHungSuspectReclaimSkipCounts,
 } from './hung-suspect-ttl.js';
 import type { HungTaskLivenessEvidence } from './hung-task-reaper.js';
 import type { Task } from './task-read-model.js';
@@ -281,5 +283,199 @@ describe('listExpiredHungSuspectTasks (issue #1935)', () => {
       isHoldingOpenPr: () => false,
     });
     expect(expired.map((e) => e.task.id)).toEqual(['over-default']);
+  });
+});
+
+describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', () => {
+  it('counts skipped_under_ttl for a hungSuspect younger than the TTL', () => {
+    const fresh = hungTask({ id: 'fresh' });
+    const sel = selectExpiredHungSuspectTasks([fresh], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS - 60_000),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.candidatesConsidered).toBe(1);
+    expect(sel.skips).toEqual({
+      ...emptyHungSuspectReclaimSkipCounts(),
+      skipped_under_ttl: 1,
+    });
+  });
+
+  it('counts skipped_no_liveness when watchdog state is missing', () => {
+    const noState = hungTask({ id: 'no-liveness' });
+    const sel = selectExpiredHungSuspectTasks([noState], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => undefined,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_no_liveness).toBe(1);
+  });
+
+  it('counts skipped_no_liveness for all-zero liveness timestamps', () => {
+    const zeros = hungTask({ id: 'zeros' });
+    const sel = selectExpiredHungSuspectTasks([zeros], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => ({ lastHookEventAt: 0, lastPaneChangeAt: 0, lastTokenActivityAt: 0 }),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.skips.skipped_no_liveness).toBe(1);
+  });
+
+  it('counts skipped_open_pr_failsafe for true and unknown PR holds', () => {
+    const stranded = hungTask({ id: 'stranded' });
+    const unknown = hungTask({ id: 'unknown' });
+    const unwired = hungTask({ id: 'unwired' });
+
+    const holdTrue = selectExpiredHungSuspectTasks([stranded], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+      isHoldingOpenPr: () => true,
+    });
+    expect(holdTrue.skips.skipped_open_pr_failsafe).toBe(1);
+
+    const holdUnknown = selectExpiredHungSuspectTasks([unknown], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(holdUnknown.skips.skipped_open_pr_failsafe).toBe(1);
+
+    const noPredicate = selectExpiredHungSuspectTasks([unwired], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+    });
+    expect(noPredicate.skips.skipped_open_pr_failsafe).toBe(1);
+  });
+
+  it('counts skipped_exempt_anomaly for needs_input and permission_blocked', () => {
+    const waiting = hungTask({ id: 'waiting' });
+    const blocked = hungTask({ id: 'blocked' });
+    const sel = selectExpiredHungSuspectTasks([waiting, blocked], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+      getQueuedAnomalyType: (t) => (t.id === 'waiting' ? 'needs_input' : 'permission_blocked'),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_exempt_anomaly).toBe(2);
+  });
+
+  it('counts skipped_provider_paused for billing/quota hold', () => {
+    const paused = hungTask({ id: 'paused' });
+    const sel = selectExpiredHungSuspectTasks([paused], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+      isProviderPaused: () => true,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.skips.skipped_provider_paused).toBe(1);
+  });
+
+  it('does not count non-hungSuspect / non-inProgress tasks as candidates', () => {
+    const working = hungTask({ id: 'working' });
+    const completed = hungTask({ id: 'done', status: 'completed' });
+    const sel = selectExpiredHungSuspectTasks([working, completed], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: (t) => t.id === 'working' ? false : true,
+      getLiveness: () => silentFor(TTL_MS + 60_000),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.candidatesConsidered).toBe(0);
+    expect(sel.skips).toEqual(emptyHungSuspectReclaimSkipCounts());
+  });
+
+  it('mixed pass: one selected + one of each primary skip reason', () => {
+    const reclaimable = hungTask({ id: 'reclaim' });
+    const under = hungTask({ id: 'under' });
+    const noLiv = hungTask({ id: 'noliv' });
+    const prHold = hungTask({ id: 'pr' });
+    const needsIn = hungTask({ id: 'needs' });
+    const paused = hungTask({ id: 'paused' });
+
+    const liveness = new Map<string, HungTaskLivenessEvidence | undefined>([
+      ['reclaim', silentFor(TTL_MS + 10_000)],
+      ['under', silentFor(TTL_MS - 10_000)],
+      ['noliv', undefined],
+      ['pr', silentFor(TTL_MS + 10_000)],
+      ['needs', silentFor(TTL_MS + 10_000)],
+      ['paused', silentFor(TTL_MS + 10_000)],
+    ]);
+
+    const sel = selectExpiredHungSuspectTasks(
+      [reclaimable, under, noLiv, prHold, needsIn, paused],
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        isHungSuspect: alwaysHung,
+        getLiveness: (t) => liveness.get(t.id),
+        getQueuedAnomalyType: (t) => (t.id === 'needs' ? 'needs_input' : null),
+        isProviderPaused: (t) => t.id === 'paused',
+        isHoldingOpenPr: (t) => (t.id === 'pr' ? true : false),
+      },
+    );
+
+    expect(sel.candidatesConsidered).toBe(6);
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['reclaim']);
+    expect(sel.skips).toEqual({
+      skipped_no_liveness: 1,
+      skipped_open_pr_failsafe: 1,
+      skipped_under_ttl: 1,
+      skipped_exempt_anomaly: 1,
+      skipped_provider_paused: 1,
+    });
+  });
+
+  it('post-restart silence continuity: restored lastEvent-equivalent liveness past TTL selects', () => {
+    // Models the #2045 fix: after redeploy, seed pane clock from persisted
+    // lastEventAt so max(hook,pane,token) keeps pre-restart silence age.
+    const stale = hungTask({ id: 'pre-restart-silent' });
+    const lastActivityAt = NOW.getTime() - (TTL_MS + 5 * 60_000);
+    const sel = selectExpiredHungSuspectTasks([stale], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => ({
+        lastHookEventAt: lastActivityAt,
+        lastPaneChangeAt: lastActivityAt, // seeded from lastEventAt (not restart now)
+        lastTokenActivityAt: 0,
+      }),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toHaveLength(1);
+    expect(sel.skips.skipped_under_ttl).toBe(0);
+
+    // Regression: if pane were seeded to "restart now", silence age is 0.
+    const broken = selectExpiredHungSuspectTasks([stale], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => ({
+        lastHookEventAt: lastActivityAt,
+        lastPaneChangeAt: NOW.getTime(), // bug: regAt after redeploy
+        lastTokenActivityAt: 0,
+      }),
+      isHoldingOpenPr: () => false,
+    });
+    expect(broken.expired).toEqual([]);
+    expect(broken.skips.skipped_under_ttl).toBe(1);
   });
 });
