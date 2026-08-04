@@ -39,6 +39,9 @@ export interface SnoozeEntry {
   wakeOnChange?: boolean;
 }
 
+/** Default cap for resolved-anomaly fallbacks retained after remove(). */
+export const DEFAULT_LAST_REMOVED_MAX = 512;
+
 export interface AttentionQueueOpts {
   /**
    * Resolves a session/agent ID to its owning task ID. When provided, snoozes
@@ -48,6 +51,12 @@ export interface AttentionQueueOpts {
    * exercise the queue without a TaskStore.
    */
   taskIdFor?: (agentId: string) => string | null;
+  /**
+   * Max entries retained in the lastRemoved fallback map. When insert would
+   * exceed the cap, the oldest entry is dropped. Defaults to
+   * {@link DEFAULT_LAST_REMOVED_MAX}. Set to 0 to disable retention.
+   */
+  maxLastRemoved?: number;
 }
 
 export interface AttentionQueueAdmission {
@@ -86,6 +95,7 @@ export class AttentionQueue {
   private snoozed = new Map<string, SnoozeEntry>();
   /** Anomaly preserved from the last remove() call — fallback for snooze race. */
   private lastRemoved = new Map<string, Anomaly>();
+  private readonly maxLastRemoved: number;
   private taskIdFor: (agentId: string) => string | null;
   private observers = new Set<AttentionQueueObserver>();
   private suppressionCounts: AttentionQueueSuppressionCounts = {
@@ -95,6 +105,7 @@ export class AttentionQueue {
 
   constructor(opts: AttentionQueueOpts = {}) {
     this.taskIdFor = opts.taskIdFor ?? (() => null);
+    this.maxLastRemoved = Math.max(0, Math.floor(opts.maxLastRemoved ?? DEFAULT_LAST_REMOVED_MAX));
   }
 
   addObserver(observer: AttentionQueueObserver): () => void {
@@ -209,10 +220,29 @@ export class AttentionQueue {
   remove(agentId: string): void {
     const entry = this.entries.get(agentId);
     if (entry) {
-      this.lastRemoved.set(agentId, entry.anomaly);
+      this.rememberRemoved(agentId, entry.anomaly);
       this.notifyResolved(agentId, entry.anomaly);
     }
     this.entries.delete(agentId);
+  }
+
+  /**
+   * Store a resolved anomaly for getAnomaly()/snooze race fallbacks, dropping
+   * the oldest entry when the map would exceed {@link maxLastRemoved}.
+   */
+  private rememberRemoved(agentId: string, anomaly: Anomaly): void {
+    if (this.maxLastRemoved === 0) {
+      this.lastRemoved.delete(agentId);
+      return;
+    }
+    // Re-insert so this agent counts as most recent (Map preserves insert order).
+    this.lastRemoved.delete(agentId);
+    this.lastRemoved.set(agentId, anomaly);
+    while (this.lastRemoved.size > this.maxLastRemoved) {
+      const oldest = this.lastRemoved.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.lastRemoved.delete(oldest);
+    }
   }
 
   /**
