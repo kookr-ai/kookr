@@ -136,6 +136,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4800/api/ready
 
 ## Related
 
+- Symptom → health field → action (SAFE MODE, disk-critical, hung residual, smoke tick, resource watchdog): [unattended-recovery-runbook.md](./unattended-recovery-runbook.md)
 - Deploy / blackout probe recipe: [api-blackout-probe.md](./api-blackout-probe.md) (when present)
 - Health fields and capacity: `GET /api/health`, `GET /api/ready`
 - Resource watchdog / doctor: `kookr doctor`, env reference
