@@ -1262,18 +1262,51 @@ describe('diagnostics routes', () => {
       const before = await mkApp(baseDeps).request('/api/health');
       expect(before.status).toBe(200);
       const beforeBody = (await before.json()) as {
-        hungSuspectTtlReclaim?: { reclaimedTotal: number };
+        hungSuspectTtlReclaim?: {
+          reclaimedTotal: number;
+          reclaimAttempted: number;
+          skippedUnderTtl: number;
+        };
       };
-      expect(beforeBody.hungSuspectTtlReclaim).toEqual({ reclaimedTotal: 0 });
+      expect(beforeBody.hungSuspectTtlReclaim).toMatchObject({
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        reclaimSucceeded: 0,
+        skippedNoLiveness: 0,
+        skippedOpenPrFailsafe: 0,
+        skippedUnderTtl: 0,
+        skippedExemptAnomaly: 0,
+        skippedProviderPaused: 0,
+        lastCandidatesConsidered: 0,
+      });
 
+      metrics.recordAttempted(2);
       metrics.recordReclaimed(2);
+      metrics.recordSelection({
+        candidatesConsidered: 5,
+        skips: {
+          skipped_no_liveness: 1,
+          skipped_open_pr_failsafe: 1,
+          skipped_under_ttl: 1,
+          skipped_exempt_anomaly: 0,
+          skipped_provider_paused: 0,
+        },
+      });
 
       const after = await mkApp(baseDeps).request('/api/health');
       expect(after.status).toBe(200);
       const afterBody = (await after.json()) as {
-        hungSuspectTtlReclaim?: { reclaimedTotal: number };
+        hungSuspectTtlReclaim?: Record<string, number>;
       };
-      expect(afterBody.hungSuspectTtlReclaim).toEqual({ reclaimedTotal: 2 });
+      expect(afterBody.hungSuspectTtlReclaim).toMatchObject({
+        reclaimedTotal: 2,
+        reclaimAttempted: 2,
+        reclaimSucceeded: 2,
+        skippedNoLiveness: 1,
+        skippedOpenPrFailsafe: 1,
+        skippedUnderTtl: 1,
+        lastCandidatesConsidered: 5,
+      });
     });
   });
 

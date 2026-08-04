@@ -461,13 +461,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // classify as purely healthy_throughput.
     const hungSuspectCapacityFinding = evaluateHungSuspectCapacityFinding(capacity);
 
-    // Issue #1989: project hungSuspect TTL reclaim counters onto /api/health
-    // (already on Prometheus via /metrics). Cheap in-memory read only — never
-    // a fresh reclaim scan on this path. Optional lastReclaimedAt is reserved
-    // when the metrics class starts tracking it; today only reclaimedTotal.
+    // Issue #1989 / #2045: project hungSuspect TTL reclaim counters (including
+    // skip-reason breakdown) onto /api/health. Cheap in-memory read only —
+    // never a fresh reclaim scan on this path.
     const hungSuspectTtlReclaimSnapshot = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
     const hungSuspectTtlReclaimBlock = hungSuspectTtlReclaimSnapshot
-      ? { reclaimedTotal: hungSuspectTtlReclaimSnapshot.reclaimedTotal }
+      ? {
+          reclaimedTotal: hungSuspectTtlReclaimSnapshot.reclaimedTotal,
+          reclaimAttempted: hungSuspectTtlReclaimSnapshot.reclaimAttempted,
+          reclaimSucceeded: hungSuspectTtlReclaimSnapshot.reclaimSucceeded,
+          skippedNoLiveness: hungSuspectTtlReclaimSnapshot.skippedNoLiveness,
+          skippedOpenPrFailsafe: hungSuspectTtlReclaimSnapshot.skippedOpenPrFailsafe,
+          skippedUnderTtl: hungSuspectTtlReclaimSnapshot.skippedUnderTtl,
+          skippedExemptAnomaly: hungSuspectTtlReclaimSnapshot.skippedExemptAnomaly,
+          skippedProviderPaused: hungSuspectTtlReclaimSnapshot.skippedProviderPaused,
+          lastCandidatesConsidered: hungSuspectTtlReclaimSnapshot.lastCandidatesConsidered,
+        }
       : undefined;
 
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome

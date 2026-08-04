@@ -897,6 +897,19 @@ describe('Watchdog', () => {
       }
     });
 
+    // Issue #2045: pane clock stays at registration after restore so multi-channel
+    // silence does not invent pre-restart pane quiet for long-tool agents.
+    test('restored lastEventAt does not rewrite lastPaneChangeAt (reclaim safety)', () => {
+      const restartTime = 700_000;
+      const lastEventBefore = restartTime - 600_000;
+      const restartWatchdog = new Watchdog(FAST_CONFIG);
+      restartWatchdog.registerAgent(agentId, lastEventBefore, restartTime);
+      const state = restartWatchdog.getState(agentId);
+      expect(state?.lastEventAt).toBe(lastEventBefore);
+      expect(state?.lastPaneChangeAt).toBe(restartTime);
+      expect(state?.registeredAt).toBe(restartTime);
+    });
+
     // T5.8: Restart recovery — persisted lastEventAt but agent is actually fine
     test('T5.8: recovered events from hook replay update lastEventAt', () => {
       const restartTime = 100_000;

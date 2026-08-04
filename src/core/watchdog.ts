@@ -172,9 +172,18 @@ export class Watchdog {
   /**
    * Register an agent to be tracked. Sets initial timestamps.
    * @param lastEventAt - Override lastEventAt (e.g. from persisted session metadata on restart).
-   *                      If provided, watchdog can immediately detect agents that were stale before restart.
+   *                      If provided, watchdog can immediately detect agents that were stale before restart
+   *                      (tick() uses lastEventAt alone for staleness).
    *                      If not provided (default), lastEventAt is set to registeredAt.
    * @param registeredAt - Override registeredAt (for testing). Defaults to Date.now().
+   *
+   * lastPaneChangeAt always starts at registration time, even when lastEventAt is
+   * restored. hungSuspect TTL reclaim silence is max(hook, pane, token); seeding
+   * pane from a hook-only lastEventAt would false-reclaim long-tool agents whose
+   * pane was still advancing while hooks were silent (issue #2045 independent
+   * review). After redeploy, under-TTL skips until a full TTL of multi-channel
+   * silence is observed in the new process — intentional safety, not a bug.
+   * Operators read `skippedUnderTtl` on /api/health to see that.
    */
   registerAgent(agentId: string, lastEventAt?: number, registeredAt?: number): void {
     const regAt = registeredAt ?? Date.now();
