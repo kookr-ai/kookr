@@ -72,6 +72,7 @@ import {
   reclaimAgedHungSuspectTasks,
   type HungSuspectTtlReclaimMetrics,
 } from './hung-suspect-ttl-sweep.js';
+import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
@@ -202,6 +203,12 @@ export interface TimerDeps {
   getHungSuspectTtlMs?: () => number;
   /** Optional counter for the hungSuspect TTL reclaim, exposed via `/metrics` (issue #1935). */
   hungSuspectTtlReclaimMetrics?: Pick<HungSuspectTtlReclaimMetrics, 'recordReclaimed'>;
+  /**
+   * Operator page when hungSuspect residual stays high after the TTL reclaim
+   * window (issue #1993). Page-only — never terminates extra tasks. Prefer a
+   * `detectorBroadcast` path so fire/clear edges spool to Discord.
+   */
+  hungSuspectResidualAlerter?: Pick<HungSuspectResidualAlerter, 'evaluate'>;
   /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
   reportsDir?: string;
   /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
@@ -1028,6 +1035,39 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         },
         { ttlMs: deps.getHungSuspectTtlMs?.() },
       );
+
+      // hungSuspect residual page (issue #1993): after reclaim, if residual
+      // occupancy stays high without decreasing for the stale window, page
+      // the operator (Discord via detectorBroadcast). Never terminates extra
+      // tasks — the reclaim above already did what TTL allows.
+      if (deps.hungSuspectResidualAlerter) {
+        // Count like the capacity ledger's hungSuspect class: inProgress only,
+        // and not finishedAwaitingAck (completion_ready). isTaskHungSuspect
+        // short-circuits true on queued stale_agent without consulting
+        // pendingSignal, so FAA tasks would otherwise inflate residual and
+        // false-page while byClass.hungSuspect stays 0. Skip ids just
+        // reclaimed this tick — hungSuspectSignalsCache may still say true
+        // for them (filled during reclaim before terminate/purge).
+        const reclaimedIds = new Set(hungSuspectTtlResult.reclaimedTaskIds);
+        let residualHungSuspect = 0;
+        for (const task of taskStore.listTasks()) {
+          if (task.status !== 'inProgress') continue;
+          if (task.pendingSignal?.kind === 'completion_ready') continue;
+          if (reclaimedIds.has(task.id)) continue;
+          if (hungSuspectSignals(task).hungSuspect) residualHungSuspect += 1;
+        }
+        try {
+          deps.hungSuspectResidualAlerter.evaluate({
+            residualCount: residualHungSuspect,
+            reclaimedCount: hungSuspectTtlResult.reclaimedTaskIds.length,
+          });
+        } catch (err) {
+          console.warn(
+            '[liveness] hungSuspect residual alerter threw:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
 
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
