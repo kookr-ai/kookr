@@ -114,6 +114,20 @@ export function dispatchCoordinatorSnapshotMessageForClient(msg: Record<string, 
   useKookrStore.setState({ coordinator: msg.coordinator });
 }
 
+/**
+ * Apply a pre-blackout deployLifecycle notice (issue #1980).
+ * Sets the sticky session deploy flag so ConnectionBanner treats the coming
+ * disconnect as intentional. Unknown phases are ignored.
+ */
+export function dispatchDeployLifecycleMessageForClient(
+  msg: Record<string, unknown>,
+  setDeploying: (deploying: boolean, preDeployCommit?: string | null) => void,
+): void {
+  if (msg.phase === 'starting') {
+    setDeploying(true);
+  }
+}
+
 export function useWebSocket() {
   const controllerRef = useRef<ReconnectingSocket | null>(null);
   const disconnectedAtRef = useRef<number | null>(null);
@@ -372,6 +386,9 @@ export function useWebSocket() {
               break;
             case 'ossAttempts':
               store.handleOssAttempts(msg.store);
+              break;
+            case 'deployLifecycle':
+              dispatchDeployLifecycleMessageForClient(msg, store.setDeploying);
               break;
           }
         } catch {

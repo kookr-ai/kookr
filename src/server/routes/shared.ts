@@ -251,10 +251,11 @@ export interface ViewerShareDeps {
 
 /**
  * Narrower deps for the deploy / toolkit / plugin maintenance routes
- * (`/api/deploy/*`, issue #1072). These routes never touch task, monitor, or messaging
- * state — they only need to locate the production worktree, run plugin
- * maintenance, and report the running port. Keeping the slice exact prevents
- * the deploy module from reaching across unrelated server subsystems.
+ * (`/api/deploy/*`, issue #1072). They locate the production worktree, run
+ * plugin maintenance, report the running port, and (when wired) fan out a
+ * pre-blackout `deployLifecycle` WebSocket notice. They still do not touch
+ * task or monitor state. Keeping the slice exact prevents the deploy module
+ * from reaching across unrelated server subsystems.
  */
 export interface DeployRouteDeps {
   serverCwd: string;
@@ -282,6 +283,13 @@ export interface DeployRouteDeps {
    * deploy status route derives the path from `serverPort` + `homedir()`.
    */
   kookrDir?: string;
+  /**
+   * Dashboard WebSocket fan-out (issue #1980). When present, a successful
+   * `POST /api/deploy/trigger` broadcasts `deployLifecycle` before spawning
+   * `prod-update` so connected clients learn about the intentional blackout
+   * while still connected. Optional so unit tests can omit it.
+   */
+  broadcastToAll?: (msg: ServerMessage) => void;
 }
 
 export interface RouteDeps {

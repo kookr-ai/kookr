@@ -158,7 +158,7 @@ Authoritative deep dives stay linked; this table is the redeploy contract.
 | **Spawn** (`kookr spawn` / `POST /api/tasks`) | **Drain:** HTTP **503** + `code: "draining"` while accepting is false ([#659](https://github.com/kookr-ai/kookr/issues/659)). **Blackout:** connection error / timeout while the port is free. After M1, listener returns; full readiness may still be recovering. | Retry with backoff for **≤60s** total. Prefer idempotency keys ([spawn contract](../reference/spawn-contract.md)). **Do not** open GitHub issues or “Kookr is down” tasks for a single refused launch during a known deploy window. |
 | **Signal** (`kookr signal`) | Write-behind outbox before HTTP; offline/restart ⇒ exit **0** spooled; server drains outbox after boot ([#1541](https://github.com/kookr-ai/kookr/issues/1541), [signal-outbox](../reference/signal-outbox.md)). | Treat spool success as success. Do not burn a turn “investigating” a missing immediate ack. |
 | **Drain / ready 503** | `/api/ready` is 503 while draining or `startup-in-progress`. `/api/health` often stays 200 in drain (liveness ≠ ready). | Use ready only as **deploy gate / supervisor cordon**, not as “page the human.” |
-| **Dashboard** | WebSocket drops; `ConnectionBanner` shows **Redeploying** when deploy is in flight (“API should return within a few seconds”), else generic reconnect. Terminal panel reconnects and replays ring buffer. | Expected UX. Do not file “dashboard disconnected” bugs for a planned `prod:update`. |
+| **Dashboard** | WebSocket drops; `ConnectionBanner` shows **Redeploying** when deploy is in flight (“API should return within a few seconds”), else generic reconnect. Terminal panel reconnects and replays ring buffer. On dashboard **Deploy** (`POST /api/deploy/trigger`), a `deployLifecycle` `{ phase: "starting" }` frame is broadcast first so open tabs set the sticky deploy flag before the blackout ([#1980](https://github.com/kookr-ai/kookr/issues/1980)). | Expected UX. Do not file “dashboard disconnected” bugs for a planned `prod:update`. |
 | **Schedules** | Fires suppressed while draining; execution outcome **`skipped_draining`** / reason `draining` ([#659](https://github.com/kookr-ai/kookr/issues/659)). Next tick after accept resumes normal fire. | Missed fire during drain is intentional. Do not open “schedule broken” issues for a single skipped_draining during redeploy. |
 
 **Global orchestrator rule:** If you see brief spawn failures, spooled signals,
@@ -204,6 +204,21 @@ outage issues unless blackout or unavailability **exceeds ~5 minutes** without
 - Do **not** assume sub-second blackout without blue-green (deferred).
 - Do **not** run `pnpm prod:update` from batch/playbook agents unless the task
   explicitly owns deploy (self-batch schedule forbids it by default).
+
+---
+
+## `deployLifecycle` coverage
+
+| Path | Emits `deployLifecycle` `{ phase: "starting" }` on live WebSockets? |
+| --- | --- |
+| Dashboard Deploy / `POST /api/deploy/trigger` | **Yes** — broadcast runs after validation and **before** `prod-update` is spawned so open tabs can set the sticky deploy flag while still connected ([#1980](https://github.com/kookr-ai/kookr/issues/1980)). |
+| `pnpm prod:update` / `pnpm prod:restart` / `scripts/prod-restart.sh` from a shell (no trigger) | **No** — there is no pre-exit WebSocket event on the script path. Rely on sticky client flag if a prior trigger set it, status poll, or orchestrator knowledge of the planned restart. Optional pre-stop hook later. |
+| systemd restart of `kookr.service` | **No** — same gap as script-path restart. |
+
+Older dashboard clients ignore unknown WebSocket `type` values safely (no
+`default` branch in the client switch). New clients set `deploying` via
+`setDeploying(true)` → sessionStorage sticky intent → ConnectionBanner
+“Redeploying” copy.
 
 ---
 

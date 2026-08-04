@@ -799,7 +799,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `POST /api/oss-attempts/refresh` | Refresh PR and issue state for tracked OSS attempts |
 | `POST /api/oss-attempts/events` | Record an OSS attempt event, used by hooks |
 | `GET /api/deploy/status` | Production-update job status, toolkit/plugin freshness, and optional `lastRestart` phase timings from the last successful `prod:restart` |
-| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
+| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job. On success, broadcasts WebSocket `deployLifecycle` with `phase: "starting"` before the child process starts (issue #1980). |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 
 #### `GET /api/deploy/status` — `lastRestart` (optional)
@@ -1075,6 +1075,7 @@ delta sequence number.
 | `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |
 | `ossAttempts` | Push OSS contribution-attempt store state and refresh status. | `store`, optional `refreshStatus` |
 | `wsBackpressureNotice` | Compact dashboard fan-out notice (issue #1725): `resyncNeeded` after one socket drains from bufferedAmount backpressure (it may have missed frames while skipped); `loadShedActive`/`loadShedRecovered` when the event-loop-delay load-shed gate engages/disengages (full snapshots are suspended while active). Older clients ignore unknown `type`s, so this is forward-compatible with no required frontend change. | `kind`, optional `scopeKey`, optional `eventLoopDelayP95Ms` |
+| `deployLifecycle` | Pre-blackout deploy notice (issue #1980). Broadcast on successful `POST /api/deploy/trigger` **before** `prod-update` is spawned so connected dashboards can set the sticky session deploy flag (ConnectionBanner “Redeploying”) while the WebSocket is still open. Older clients ignore unknown `type`s safely. **Not emitted** by script-path `pnpm prod:restart` / `scripts/prod-restart.sh` without the trigger route — see [low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md#deploylifecycle-coverage). | `phase` (`starting`) |
 
 ### Client-to-server messages
 

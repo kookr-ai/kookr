@@ -446,6 +446,11 @@ const wsBackpressureNoticeMessage = z.object({
   eventLoopDelayP95Ms: z.number().nullable().optional(),
 });
 
+const deployLifecycleMessage = z.object({
+  type: z.literal('deployLifecycle'),
+  phase: z.literal('starting'),
+});
+
 const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
   deltaMessage,
@@ -477,6 +482,7 @@ const ServerMessageSchemaImpl = z.union([
   diagnosticReportMessage,
   ossAttemptsMessage,
   wsBackpressureNoticeMessage,
+  deployLifecycleMessage,
 ]);
 
 export const ServerMessageSchema = ServerMessageSchemaImpl;
