@@ -78,6 +78,24 @@ describe('Task Persistence', () => {
     expect(metrics.bytes).toBeGreaterThan(0);
   });
 
+  test('saveTasks writes compact JSON without pretty-print indentation (issue #2062)', async () => {
+    const store = new TaskStore();
+    createTaskForMutation(store, 'Compact save', '/cwd');
+
+    const metrics = await saveTasks(store.getAllTasks(), filePath);
+
+    const raw = readFileSync(filePath, 'utf-8');
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(raw).not.toMatch(/\n {2}"/);
+    // Envelope schema/version fields still present and parseable.
+    expect(raw).toContain('"version":2');
+    const loaded = await loadTasks(filePath);
+    expect(loaded.tasks).toHaveLength(1);
+    expect(loaded.tasks[0]?.prompt).toBe('Compact save');
+    // bytes metric matches on-disk compact payload size
+    expect(metrics.bytes).toBe(Buffer.byteLength(raw, 'utf-8'));
+  });
+
   test('records task_save into the hot-path sampler with the returned totalMs (issue #1781)', async () => {
     resetHotPathSamplerForTests();
     try {

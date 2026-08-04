@@ -104,7 +104,9 @@ export async function saveTasks(
   if (relations && relations.length > 0) {
     envelope.relations = relations;
   }
-  const serialized = JSON.stringify(envelope, null, 2);
+  // Compact JSON: multi-MB tasks.json is rewritten on every mutation; pretty-print
+  // inflates serialize time and disk bytes with no parse benefit (issue #2062).
+  const serialized = JSON.stringify(envelope);
   const serializedAt = performance.now();
   await atomicWriteFile(filePath, serialized);
   const finishedAt = performance.now();
