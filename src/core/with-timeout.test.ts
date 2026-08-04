@@ -30,6 +30,7 @@ describe('withTimeout', () => {
 
     // Late settlement must not change the already-resolved fallback result.
     resolveSlow('late');
+    await expect(resultPromise).resolves.toBe('timed-out');
   });
 
   test('propagates promise rejection instead of converting to fallback', async () => {
@@ -48,36 +49,39 @@ describe('withTimeout', () => {
 
   test('clears the deadline timer when the promise wins so no open handles remain', async () => {
     const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      const resultPromise = withTimeout(Promise.resolve(42), 5_000, 0);
+      await expect(resultPromise).resolves.toBe(42);
 
-    const resultPromise = withTimeout(Promise.resolve(42), 5_000, 0);
-    await expect(resultPromise).resolves.toBe(42);
-
-    expect(clearSpy).toHaveBeenCalled();
-    // After clearTimeout in finally, the fake-timer queue should be empty.
-    expect(vi.getTimerCount()).toBe(0);
-
-    clearSpy.mockRestore();
+      expect(clearSpy).toHaveBeenCalled();
+      // After clearTimeout in finally, the fake-timer queue should be empty.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clearSpy.mockRestore();
+    }
   });
 
   test('clears the deadline timer after timeout fires', async () => {
     const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
-    const never = new Promise<string>(() => {});
+    try {
+      const never = new Promise<string>(() => {});
 
-    const resultPromise = withTimeout(never, 200, 'fallback');
-    await vi.advanceTimersByTimeAsync(200);
+      const resultPromise = withTimeout(never, 200, 'fallback');
+      await vi.advanceTimersByTimeAsync(200);
 
-    await expect(resultPromise).resolves.toBe('fallback');
-    expect(clearSpy).toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
-
-    clearSpy.mockRestore();
+      await expect(resultPromise).resolves.toBe('fallback');
+      expect(clearSpy).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clearSpy.mockRestore();
+    }
   });
 
   test('unref path does not throw under Node', async () => {
     // Wrap Node Timeout.unref so we assert the helper actually calls it.
     const unrefSpy = vi.fn();
     const originalSetTimeout = globalThis.setTimeout;
-    vi.spyOn(globalThis, 'setTimeout').mockImplementation((
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((
       handler: Parameters<typeof setTimeout>[0],
       timeout?: number,
       ...args: unknown[]
@@ -93,15 +97,17 @@ describe('withTimeout', () => {
       return handle;
     });
 
-    const never = new Promise<string>(() => {});
-    const resultPromise = withTimeout(never, 100, 'fallback');
+    try {
+      const never = new Promise<string>(() => {});
+      const resultPromise = withTimeout(never, 100, 'fallback');
 
-    // unref is invoked synchronously when the timeout promise is constructed.
-    expect(unrefSpy).toHaveBeenCalled();
+      // unref is invoked synchronously when the timeout promise is constructed.
+      expect(unrefSpy).toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(100);
-    await expect(resultPromise).resolves.toBe('fallback');
-
-    vi.mocked(globalThis.setTimeout).mockRestore();
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(resultPromise).resolves.toBe('fallback');
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   });
 });
