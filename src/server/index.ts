@@ -39,6 +39,7 @@ import { PipelineStarvationService } from './pipeline-starvation-service.js';
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
+import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -1797,6 +1798,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
     : broadcastToAll;
 
+  // hungSuspect residual page after TTL reclaim (issue #1993). Page-only;
+  // uses detectorBroadcast so fire/clear edges spool to Discord.
+  const hungSuspectResidualAlerter = new HungSuspectResidualAlerter({
+    broadcast: detectorBroadcast,
+  });
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
@@ -2577,6 +2584,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,
       hungSuspectTtlReclaimMetrics,
+      // issue #1993: Discord page when residual hungSuspect stays high after TTL
+      hungSuspectResidualAlerter,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
       loopDeliveryWatchdog,
