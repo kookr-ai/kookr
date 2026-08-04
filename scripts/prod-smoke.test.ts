@@ -55,10 +55,31 @@ describe('parseAdapterVersionsFromLog', () => {
     ]);
   });
 
+  it('strips trailing probe= suffix from real preflight log lines (issue #2030)', () => {
+    // agent-preflight.ts logs: version=${snapshot.version} probe=${snapshot.probePath}
+    const log = [
+      '[startup] adapter=claude-code binary=/usr/local/bin/claude version=2.1.220 probe=--version',
+      '[startup] adapter=codex-cli binary=/usr/local/bin/codex version=0.145.0-alpha.4 probe=--version',
+    ].join('\n');
+    expect(parseAdapterVersionsFromLog(log)).toEqual([
+      { agentType: 'claude-code', version: '2.1.220' },
+      { agentType: 'codex-cli', version: '0.145.0-alpha.4' },
+    ]);
+  });
+
   it('captures --help usage text leaked into a version field', () => {
     const log = '[startup] adapter=claude-code binary=/usr/bin/claude version=Usage: claude [options] [command] [prompt]';
     expect(parseAdapterVersionsFromLog(log)).toEqual([
       { agentType: 'claude-code', version: 'Usage: claude [options] [command] [prompt]' },
+    ]);
+  });
+
+  it('does not strip probe= embedded inside usage text mid-string', () => {
+    // Over-stripping risk from #2030: only trailing ` probe=\S+` is removed.
+    const log =
+      '[startup] adapter=claude-code binary=/usr/bin/claude version=Usage: claude probe=--version [options]';
+    expect(parseAdapterVersionsFromLog(log)).toEqual([
+      { agentType: 'claude-code', version: 'Usage: claude probe=--version [options]' },
     ]);
   });
 
@@ -80,6 +101,16 @@ describe('checkAdapterVersionSanity', () => {
     expect(result).toEqual({ ok: true, checked: 2, invalid: [] });
   });
 
+  it('passes versions extracted from preflight lines with probe=--version (issue #2030)', () => {
+    const log = [
+      '[startup] adapter=claude-code binary=/usr/bin/claude version=2.1.220 probe=--version',
+      '[startup] adapter=codex-cli binary=/usr/bin/codex version=0.145.0-alpha.4 probe=--version',
+    ].join('\n');
+    const entries = parseAdapterVersionsFromLog(log);
+    const result = checkAdapterVersionSanity(entries);
+    expect(result).toEqual({ ok: true, checked: 2, invalid: [] });
+  });
+
   it('fails and names the offender on usage text', () => {
     const result = checkAdapterVersionSanity([
       { agentType: 'claude-code', version: 'Usage: claude [options]' },
@@ -87,6 +118,16 @@ describe('checkAdapterVersionSanity', () => {
     ]);
     expect(result.ok).toBe(false);
     expect(result.invalid).toEqual([{ agentType: 'claude-code', version: 'Usage: claude [options]' }]);
+  });
+
+  it('still rejects help-text leakage after probe strip path', () => {
+    const log =
+      '[startup] adapter=claude-code binary=/usr/bin/claude version=Usage: claude [options] [command] [prompt]';
+    const result = checkAdapterVersionSanity(parseAdapterVersionsFromLog(log));
+    expect(result.ok).toBe(false);
+    expect(result.invalid).toEqual([
+      { agentType: 'claude-code', version: 'Usage: claude [options] [command] [prompt]' },
+    ]);
   });
 });
 
@@ -196,7 +237,10 @@ describe('prod-smoke runner (integration, issue #1592)', () => {
     return { dir, logFile, alertPath: join(dir, 'prod-smoke-alert.json') };
   }
 
-  const SANE_LOG = '[startup] adapter=claude-code binary=/usr/bin/claude version=2.1.220\n';
+  // Matches current agent-preflight format: version + trailing probe= path (issue #2030).
+  const SANE_LOG =
+    '[startup] adapter=claude-code binary=/usr/bin/claude version=2.1.220 probe=--version\n' +
+    '[startup] adapter=codex-cli binary=/usr/bin/codex version=0.145.0-alpha.4 probe=--version\n';
 
   // Async spawn (not spawnSync): the stub HTTP server runs in THIS process, so
   // the parent event loop must stay free to serve the child's requests.
