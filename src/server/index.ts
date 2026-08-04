@@ -1976,6 +1976,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       if (msg.type === 'alert') noteOpsStatusAlert(msg);
     },
     kookrDir,
+    // Issue #2043: empty-queue ideation override needs live free + pending depth.
+    getCapacitySnapshot: () => {
+      const ledger = launchServiceDeps.getCapacityLedger?.();
+      if (!ledger) return null;
+      return { free: ledger.free, pendingQueueDepth: ledger.pendingQueueDepth };
+    },
     log: (line) => console.log(line),
   });
   // Hourly prod smoke tick (issue #1593 / #2031). Created before createRoutes so
