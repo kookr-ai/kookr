@@ -266,7 +266,8 @@ local configuration; do not store shared secrets in checked-in `.env` files.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_WEBHOOK_URL` | unset | HTTP or HTTPS URL | Enables generic outbound JSON POST notifications when findings enter the active attention queue. |
+| `KOOKR_WEBHOOK_URL` | unset | Public HTTP or HTTPS URL | Enables generic outbound JSON POST notifications when findings enter the active attention queue. Rejected (webhook disabled, warning logged) when the host is localhost, private/CGNAT/link-local, a cloud-metadata hostname, or the URL embeds credentials. |
+| `KOOKR_WEBHOOK_ALLOW_PRIVATE` | unset | `1` / `true` / `yes` / `on` | Opt-in for lab LAN receivers: allows loopback and private-LAN hosts in `KOOKR_WEBHOOK_URL`. Cloud metadata hosts and link-local addresses remain blocked. |
 | `KOOKR_WEBHOOK_MIN_SEVERITY` | `info` | `info`, `warning`, `critical` | Sends only findings at or above the configured severity. Invalid values fall back to `info` with a warning. |
 | `KOOKR_WEBHOOK_SECRET` | unset | Secret string, or comma-separated secrets for rotation | Adds `X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>` to outbound finding webhook POSTs. Kookr signs with the first configured secret; receivers should verify against any accepted secret during rotation. |
 

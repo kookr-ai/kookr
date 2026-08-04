@@ -12,6 +12,7 @@ import {
   buildDashboardBaseUrl,
   readWebhookConfigFromEnv,
   resolveWebhookRouting,
+  validateWebhookUrl,
 } from './index.js';
 
 const detectedAt = new Date('2026-06-12T10:00:00.000Z');
@@ -573,6 +574,43 @@ describe('webhook notifier', () => {
     })).toBe('https://public.example/kookr');
   });
 
+  test('disables webhook when KOOKR_WEBHOOK_URL is private or metadata (#2063)', () => {
+    const logger = { warn: vi.fn() };
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://169.254.169.254/latest/meta-data/',
+    }, { logger })).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('ignoring invalid KOOKR_WEBHOOK_URL'),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('outbound finding webhook disabled'),
+    );
+
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://127.0.0.1:9999/hook',
+    }, { logger })).toBeNull();
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://192.168.1.10/hook',
+    }, { logger })).toBeNull();
+  });
+
+  test('allows private webhook hosts only with KOOKR_WEBHOOK_ALLOW_PRIVATE (#2063)', () => {
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://192.168.1.10/hook',
+      KOOKR_WEBHOOK_ALLOW_PRIVATE: '1',
+    })).toMatchObject({ url: 'http://192.168.1.10/hook' });
+
+    // Metadata / link-local stay blocked even with the private opt-in.
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://169.254.169.254/latest/meta-data/',
+      KOOKR_WEBHOOK_ALLOW_PRIVATE: '1',
+    })).toBeNull();
+    expect(readWebhookConfigFromEnv({
+      KOOKR_WEBHOOK_URL: 'http://metadata.google.internal/',
+      KOOKR_WEBHOOK_ALLOW_PRIVATE: 'true',
+    })).toBeNull();
+  });
+
   test('resolves effective routing from per-project webhook settings with env fallback', () => {
     expect(resolveWebhookRouting({ globalMinSeverity: 'warning' })).toEqual({
       enabled: true,
@@ -591,6 +629,71 @@ describe('webhook notifier', () => {
     })).toEqual({
       enabled: false,
       minSeverity: 'critical',
+    });
+  });
+});
+
+describe('validateWebhookUrl (#2063)', () => {
+  test.each([
+    'https://hooks.example.com/kookr',
+    'http://hooks.example.com/kookr',
+    'https://93.184.216.34/hook',
+  ])('accepts public URL %s', (url) => {
+    expect(validateWebhookUrl(url)).toEqual({ ok: true, url });
+  });
+
+  test('trims whitespace on accepted URLs', () => {
+    expect(validateWebhookUrl('  https://hooks.example.com/kookr  ')).toEqual({
+      ok: true,
+      url: 'https://hooks.example.com/kookr',
+    });
+  });
+
+  test.each([
+    ['ftp://hooks.example.com/kookr', 'webhook URL must use http or https'],
+    ['https://user:pass@hooks.example.com/kookr', 'webhook URL must not include credentials'],
+    ['not-a-url', 'webhook URL must be a valid URL'],
+    ['http://localhost/hook', 'webhook URL host is not allowed'],
+    ['http://foo.localhost/hook', 'webhook URL host is not allowed'],
+    ['http://metadata.google.internal/computeMetadata/v1/', 'webhook URL host is not allowed'],
+    ['http://metadata/latest', 'webhook URL host is not allowed'],
+    ['http://169.254.169.254/latest/meta-data/', 'webhook URL address is not allowed'],
+    ['http://169.254.0.1/', 'webhook URL address is not allowed'],
+    ['http://127.0.0.1:8080/hook', 'webhook URL address is not allowed'],
+    ['http://10.0.0.5/hook', 'webhook URL address is not allowed'],
+    ['http://172.16.0.1/hook', 'webhook URL address is not allowed'],
+    ['http://192.168.0.1/hook', 'webhook URL address is not allowed'],
+    ['http://100.64.0.1/hook', 'webhook URL address is not allowed'],
+    ['http://0.0.0.0/hook', 'webhook URL address is not allowed'],
+    ['http://[::1]/hook', 'webhook URL address is not allowed'],
+    ['http://[fe80::1]/hook', 'webhook URL address is not allowed'],
+    ['http://[fc00::1]/hook', 'webhook URL address is not allowed'],
+    ['http://[::ffff:169.254.169.254]/', 'webhook URL address is not allowed'],
+    ['http://[::ffff:127.0.0.1]/', 'webhook URL address is not allowed'],
+  ])('rejects %s', (url, reason) => {
+    expect(validateWebhookUrl(url)).toEqual({ ok: false, reason });
+  });
+
+  test('allowPrivate accepts LAN and loopback but not metadata/link-local', () => {
+    expect(validateWebhookUrl('http://192.168.1.10/hook', { allowPrivate: true })).toEqual({
+      ok: true,
+      url: 'http://192.168.1.10/hook',
+    });
+    expect(validateWebhookUrl('http://127.0.0.1:9999/hook', { allowPrivate: true })).toEqual({
+      ok: true,
+      url: 'http://127.0.0.1:9999/hook',
+    });
+    expect(validateWebhookUrl('http://localhost/hook', { allowPrivate: true })).toEqual({
+      ok: true,
+      url: 'http://localhost/hook',
+    });
+    expect(validateWebhookUrl('http://169.254.169.254/', { allowPrivate: true })).toEqual({
+      ok: false,
+      reason: 'webhook URL address is not allowed',
+    });
+    expect(validateWebhookUrl('http://metadata.google.internal/', { allowPrivate: true })).toEqual({
+      ok: false,
+      reason: 'webhook URL host is not allowed',
     });
   });
 });

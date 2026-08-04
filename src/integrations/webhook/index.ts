@@ -1,10 +1,13 @@
 import { createHmac } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Anomaly, AnomalySeverity } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { DeliveryTraceRecorder } from '../../core/delivery-trace.js';
 import type { ProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 
 export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = 'kookr.finding.webhook.v1';
+/** Hard cap on KOOKR_WEBHOOK_URL length (env/config abuse / log noise). */
+export const MAX_WEBHOOK_URL_LENGTH = 2048;
 
 const DEFAULT_MIN_SEVERITY: AnomalySeverity = 'info';
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -13,6 +16,16 @@ const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 /** After a permanent delivery failure, suppress re-delivery for this long to avoid a hot loop. */
 const DEFAULT_FAILURE_COOLDOWN_MS = 30_000;
+
+const WEBHOOK_ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+
+/** Hostnames that always resolve to cloud instance-metadata services. */
+const WEBHOOK_BLOCKED_METADATA_HOSTNAMES = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+]);
 
 export const WEBHOOK_DELIVERY_OUTCOMES = ['success', 'failed', 'dropped'] as const;
 export type WebhookDeliveryOutcome = typeof WEBHOOK_DELIVERY_OUTCOMES[number];
@@ -107,12 +120,89 @@ export function resolveWebhookRouting(input: {
   };
 }
 
+export type WebhookUrlValidationResult =
+  | { ok: true; url: string }
+  | { ok: false; reason: string };
+
+/**
+ * Validate KOOKR_WEBHOOK_URL before any server-side fetch.
+ *
+ * Fail-closed by default: only public http(s) endpoints are accepted.
+ * Loopback, RFC1918, CGNAT, and ULA are rejected unless `allowPrivate` is set
+ * (operator opt-in via KOOKR_WEBHOOK_ALLOW_PRIVATE). Cloud metadata hosts and
+ * link-local addresses are always rejected — private-LAN opt-in is not a
+ * metadata SSRF loophole.
+ */
+export function validateWebhookUrl(
+  raw: string,
+  opts: { allowPrivate?: boolean } = {},
+): WebhookUrlValidationResult {
+  if (typeof raw !== 'string') {
+    return { ok: false, reason: 'webhook URL must be a string' };
+  }
+
+  const endpoint = raw.trim();
+  if (endpoint.length === 0) {
+    return { ok: false, reason: 'webhook URL is required' };
+  }
+  if (endpoint.length > MAX_WEBHOOK_URL_LENGTH) {
+    return { ok: false, reason: 'webhook URL is too long' };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return { ok: false, reason: 'webhook URL must be a valid URL' };
+  }
+
+  if (!WEBHOOK_ALLOWED_PROTOCOLS.has(url.protocol)) {
+    return { ok: false, reason: 'webhook URL must use http or https' };
+  }
+
+  if (url.username || url.password) {
+    return { ok: false, reason: 'webhook URL must not include credentials' };
+  }
+
+  const hostname = normalizeWebhookHostname(url.hostname);
+  if (!hostname) {
+    return { ok: false, reason: 'webhook URL host is required' };
+  }
+
+  if (isBlockedMetadataHostname(hostname)) {
+    return { ok: false, reason: 'webhook URL host is not allowed' };
+  }
+
+  if (!opts.allowPrivate && isBlockedLoopbackHostname(hostname)) {
+    return { ok: false, reason: 'webhook URL host is not allowed' };
+  }
+
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4 && isBlockedWebhookIPv4(hostname, opts.allowPrivate === true)) {
+    return { ok: false, reason: 'webhook URL address is not allowed' };
+  }
+  if (ipVersion === 6 && isBlockedWebhookIPv6(hostname, opts.allowPrivate === true)) {
+    return { ok: false, reason: 'webhook URL address is not allowed' };
+  }
+
+  return { ok: true, url: endpoint };
+}
+
 export function readWebhookConfigFromEnv(
   env: NodeJS.ProcessEnv,
   opts: { dashboardBaseUrl?: string; logger?: Pick<Console, 'warn'> } = {},
 ): WebhookConfig | null {
-  const url = env.KOOKR_WEBHOOK_URL?.trim();
-  if (!url) return null;
+  const rawUrl = env.KOOKR_WEBHOOK_URL?.trim();
+  if (!rawUrl) return null;
+
+  const allowPrivate = isTruthyEnvFlag(env.KOOKR_WEBHOOK_ALLOW_PRIVATE);
+  const validation = validateWebhookUrl(rawUrl, { allowPrivate });
+  if (!validation.ok) {
+    opts.logger?.warn(
+      `[webhook] ignoring invalid KOOKR_WEBHOOK_URL (${validation.reason}); outbound finding webhook disabled`,
+    );
+    return null;
+  }
 
   let minSeverity = DEFAULT_MIN_SEVERITY;
   const rawMinSeverity = env.KOOKR_WEBHOOK_MIN_SEVERITY?.trim();
@@ -125,7 +215,7 @@ export function readWebhookConfigFromEnv(
   }
 
   return {
-    url,
+    url: validation.url,
     minSeverity,
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
     initialRetryDelayMs: DEFAULT_INITIAL_RETRY_DELAY_MS,
@@ -448,4 +538,117 @@ function normalizeFetchError(err: unknown, requestTimeoutMs: number): Error {
 function delay(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTruthyEnvFlag(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const value = raw.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function normalizeWebhookHostname(hostname: string): string {
+  const lower = hostname.toLowerCase().replace(/\.+$/, '');
+  return lower.startsWith('[') && lower.endsWith(']')
+    ? lower.slice(1, -1)
+    : lower;
+}
+
+function isBlockedMetadataHostname(hostname: string): boolean {
+  return WEBHOOK_BLOCKED_METADATA_HOSTNAMES.has(hostname);
+}
+
+function isBlockedLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname.endsWith('.localhost');
+}
+
+/**
+ * Always-blocked: unspecified, link-local (cloud metadata), multicast, reserved.
+ * When `allowPrivate` is false, also block loopback + RFC1918 + CGNAT.
+ */
+function isBlockedWebhookIPv4(address: string, allowPrivate: boolean): boolean {
+  const octets = address.split('.').map((part) => Number.parseInt(part, 10));
+  if (
+    octets.length !== 4
+    || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) {
+    return true;
+  }
+
+  const [a, b] = octets as [number, number, number, number];
+
+  // Always unsafe for outbound webhook SSRF regardless of private opt-in.
+  if (
+    a === 0 // 0.0.0.0/8 unspecified
+    || (a === 169 && b === 254) // 169.254.0.0/16 link-local / cloud metadata
+    || a >= 224 // multicast + reserved
+  ) {
+    return true;
+  }
+
+  if (allowPrivate) return false;
+
+  return a === 10 // 10.0.0.0/8
+    || a === 127 // 127.0.0.0/8 loopback
+    || (a === 100 && b >= 64 && b <= 127) // 100.64.0.0/10 CGNAT
+    || (a === 172 && b >= 16 && b <= 31) // 172.16.0.0/12
+    || (a === 192 && b === 168); // 192.168.0.0/16
+}
+
+function isBlockedWebhookIPv6(address: string, allowPrivate: boolean): boolean {
+  const bytes = ipv6ToBytes(address);
+  if (!bytes) return true;
+
+  const isUnspecified = bytes.every((byte) => byte === 0);
+  const isLoopback =
+    bytes.slice(0, 15).every((byte) => byte === 0)
+    && bytes[15] === 1;
+  const isLinkLocal = bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80;
+  const isMulticast = bytes[0] === 0xff;
+  const isUniqueLocal = (bytes[0] & 0xfe) === 0xfc; // fc00::/7
+  const isIPv4Mapped =
+    bytes.slice(0, 10).every((byte) => byte === 0)
+    && bytes[10] === 0xff
+    && bytes[11] === 0xff;
+
+  if (isIPv4Mapped) {
+    return isBlockedWebhookIPv4(
+      `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`,
+      allowPrivate,
+    );
+  }
+
+  if (isUnspecified || isLinkLocal || isMulticast) return true;
+  if (allowPrivate) return false;
+  return isLoopback || isUniqueLocal;
+}
+
+function ipv6ToBytes(address: string): number[] | null {
+  const halves = address.split('::');
+  if (halves.length > 2) return null;
+
+  const left = parseIPv6Groups(halves[0] ?? '');
+  const right = parseIPv6Groups(halves[1] ?? '');
+  if (!left || !right) return null;
+
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 1 && missing !== 0) return null;
+  if (halves.length === 2 && missing < 1) return null;
+
+  const groups = [...left, ...Array.from({ length: missing }, () => 0), ...right];
+  if (groups.length !== 8) return null;
+
+  return groups.flatMap((group) => [group >> 8, group & 0xff]);
+}
+
+function parseIPv6Groups(value: string): number[] | null {
+  if (value === '') return [];
+  // Drop zone id if present (fe80::1%eth0) — treat as invalid for URL host form.
+  if (value.includes('%')) return null;
+  const groups = value.split(':').map((group) => {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) return Number.NaN;
+    return Number.parseInt(group, 16);
+  });
+  return groups.every((group) => Number.isInteger(group) && group >= 0 && group <= 0xffff)
+    ? groups
+    : null;
 }

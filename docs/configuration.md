@@ -255,9 +255,18 @@ Set a generic HTTP receiver URL to POST each new attention finding as JSON:
 
 ```bash
 KOOKR_WEBHOOK_URL=https://example.com/kookr-findings
+# KOOKR_WEBHOOK_ALLOW_PRIVATE=1   # lab LAN/loopback only; metadata/link-local still blocked
 KOOKR_WEBHOOK_MIN_SEVERITY=warning
 KOOKR_WEBHOOK_SECRET=change-me
 ```
+
+`KOOKR_WEBHOOK_URL` must be an `http` or `https` URL with no embedded credentials.
+By default only public hosts are accepted: localhost, private/CGNAT ranges,
+link-local, and cloud-metadata hostnames are rejected at config read (webhook
+stays disabled; a warning is logged). Set `KOOKR_WEBHOOK_ALLOW_PRIVATE=1`
+(also `true` / `yes` / `on`) to allow loopback and private-LAN receivers for
+lab use; cloud metadata hosts and link-local addresses remain blocked even with
+the opt-in.
 
 `KOOKR_WEBHOOK_MIN_SEVERITY` is optional and accepts `info`, `warning`, or `critical`.
 Repeated re-enqueues of the same finding fingerprint are deduplicated until the
