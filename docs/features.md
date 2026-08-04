@@ -272,6 +272,8 @@ For field debugging, Kookr can run a self-diagnostic pass (disk, memory, hook pi
 | F15.2 | **On-demand HTTP surface** | `routes/diagnostics-routes.ts` exposes `/api/diagnostic` for cached status, `/api/diagnostic/run` for manual diagnostic runs, and `/api/diagnostics/session-health` for versioned cross-signal session diagnostics. |
 | F15.3 | **Detection and session health diagnostics** | `DetectionStatsPanel.tsx` renders anomaly-detection stats; `SessionHealthPanel.tsx` exposes explainable cross-signal terminal health, attach/browser state, and coordinated-stall context. |
 
+**Ops runbook (unattended):** When Discord is the only channel and live health edges need recovery actions, use the symptom → health field → action map in [Unattended recovery runbook](reference/unattended-recovery-runbook.md) (SAFE MODE, disk-critical admission, hung residual, prod smoke tick artifact, resource watchdog enable). Short host return checklist: [offline recovery card](reference/offline-recovery-card.md).
+
 ### F-Settings: Settings UI
 
 Previously marked as deferred; now shipped in V1.

@@ -18,6 +18,8 @@ Operator and developer references for Kookr:
 - [Kookr Self-Batch Schedule](kookr-self-batch-schedule.md)
 - [Lucy Prod Update Watchdog](lucy-prod-update-watchdog.md)
 - [Low-downtime redeploy (runbook)](../runbooks/low-downtime-redeploy.md)
+- [Offline recovery card](offline-recovery-card.md)
+- [Unattended recovery runbook](unattended-recovery-runbook.md)
 - [Playbooks](playbooks.md)
 - [Production Server Service](production-server-service.md)
 - [Self-Hosted Relay Runbook](self-hosted-relay-runbook.md)
