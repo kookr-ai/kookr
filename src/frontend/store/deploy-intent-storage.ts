@@ -1,19 +1,29 @@
 /**
- * Sticky deploy-intent flag for the dashboard connection banner.
+ * Sticky client deploy-window flag for the dashboard connection banner (#1982).
  *
  * Survives the intentional WebSocket blackout during `prod:update` even if
- * in-memory store state is reset mid-deploy (process death / remount). Cleared
- * when deploy completes or after a short TTL so a stale flag cannot linger.
+ * in-memory store state is reset mid-deploy (process death / remount / reload).
+ * Cleared when deploy completes (new buildInfo commit), when the operator
+ * cancels, or after a short TTL so a stale flag cannot linger past the
+ * deploy window.
  *
  * Also persists the pre-deploy build short-hash so TopBar can clear the flag
  * after remount once a *different* buildInfo arrives (the in-memory ref alone
  * would be lost on refresh).
+ *
+ * Storage is sessionStorage (per-origin / per-tab session). That is enough for
+ * the local dashboard: reload of the same tab keeps redeploy copy; a brand-new
+ * tab does not share the flag (documented risk on #1982).
  */
 
 const DEPLOY_INTENT_STORAGE_KEY = 'kookr.deploying';
 
-/** How long a deploy intent stays sticky after the last set(true). Deploys are seconds; TTL is generous. */
-export const DEPLOY_INTENT_TTL_MS = 5 * 60 * 1000;
+/**
+ * How long a deploy intent stays sticky after the last set(true).
+ * Issue #1982 asked for ~2 minutes; keep a slightly generous window so a slow
+ * prod:update still shows calm redeploy copy through the blackout.
+ */
+export const DEPLOY_INTENT_TTL_MS = 2 * 60 * 1000;
 
 export interface DeployIntent {
   active: boolean;
@@ -77,6 +87,17 @@ export function loadDeployIntent(now = Date.now()): DeployIntent | null {
 
 export function loadDeployIntentActive(now = Date.now()): boolean {
   return loadDeployIntent(now)?.active === true;
+}
+
+/**
+ * Milliseconds until the sticky deploy window expires, or 0 when inactive/expired.
+ * Used to schedule an in-tab clear so long-lived disconnected tabs still leave
+ * the redeploy banner after the window (issue #1982 acceptance: timeout).
+ */
+export function deployIntentRemainingMs(now = Date.now()): number {
+  const intent = loadDeployIntent(now);
+  if (!intent) return 0;
+  return Math.max(0, DEPLOY_INTENT_TTL_MS - (now - intent.stampedAt));
 }
 
 export function saveDeployIntent(

@@ -126,9 +126,10 @@ export interface TransportSessionSlice {
   /**
    * True while a production redeploy is in flight (dashboard Deploy button or
    * `/api/deploy/status` reported `deploying`). Sticky across the intentional
-   * WS blackout so ConnectionBanner can show redeploy copy instead of an
-   * incident-style reconnect warning. Cleared when a new buildInfo commit
-   * arrives after reconnect, or when deploy fails before the blackout.
+   * WS blackout (sessionStorage deploy-window, #1982) so ConnectionBanner can
+   * show redeploy copy instead of an incident-style reconnect warning. Cleared
+   * when a new buildInfo commit arrives after reconnect, on deploy-window TTL
+   * expiry, or when deploy fails before the blackout.
    */
   deploying: boolean;
   terminalOutput: Record<string, string>;
