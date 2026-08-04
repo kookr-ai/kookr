@@ -56,6 +56,18 @@ export type HelperLlmUseCaseProviderDiagnostics = HelperLlmDiagnosticsCounters &
   model: string;
 };
 
+/** Provider/model currently skipped by FallbackLlmClient after an auth failure. */
+export interface HelperLlmPausedProvider {
+  provider: string;
+  model: string;
+  reason: 'auth';
+  pausedAt: number;
+  pausedUntil: number;
+  remainingMs: number;
+  skipCount: number;
+  lastMessage: string;
+}
+
 export interface HelperLlmDiagnosticsSnapshot {
   schemaVersion: 'helper-llm-diagnostics.v1';
   generatedAt: number;
@@ -63,6 +75,8 @@ export interface HelperLlmDiagnosticsSnapshot {
   byUseCase: HelperLlmUseCaseDiagnostics[];
   byProvider: HelperLlmProviderDiagnostics[];
   byUseCaseProvider: HelperLlmUseCaseProviderDiagnostics[];
+  /** Providers currently in the auth-failure cool-down window. */
+  pausedProviders: HelperLlmPausedProvider[];
 }
 
 export interface DiagnosticReport {
