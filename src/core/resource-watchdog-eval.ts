@@ -238,3 +238,54 @@ export function metaReflectionInWindow(
   if (!Number.isFinite(ms)) return false;
   return ms >= nowMs - windowMs;
 }
+
+/**
+ * Default soft bound for `staleProcesses.dtach.count` on the
+ * `pressureWhileDisabled` health signal (issue #2039). Lower than the
+ * agent-family process ceiling (40) because a live prod observation fired at
+ * ~21 dtach processes while the actuator was off — visibility should catch
+ * that class of pressure without auto-enabling the watchdog.
+ */
+export const DEFAULT_DTACH_PRESSURE_SOFT_BOUND = 20;
+
+/**
+ * Visibility-only pressure signal when the actuator is off (issue #2039).
+ *
+ * When `KOOKR_RESOURCE_WATCHDOG` is unset the service never samples and never
+ * spawns, so host pressure can sit silently on `/api/health`. This pure helper
+ * folds an already-cached external gauge (`staleProcesses.dtach`) into the
+ * resourceWatchdog health block so operators/sentinel see
+ * `pressureWhileDisabled=true` without changing the opt-in default.
+ *
+ * Soft-bound semantics match other watchdog thresholds: `softBound <= 0`
+ * disables the check. Does not enable, sample, or spawn.
+ */
+export function evaluatePressureWhileDisabled(input: {
+  enabled: boolean;
+  /** Cached `staleProcesses.dtach.count`; null when the gauge is unavailable. */
+  dtachCount: number | null;
+  /**
+   * Soft bound for the dtach gauge. Defaults to
+   * {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND} when the caller omits it.
+   * `0` disables the check.
+   */
+  softBound?: number;
+}): { pressureWhileDisabled: boolean; pressureWhileDisabledReason: string | null } {
+  const softBound = input.softBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
+  if (input.enabled) {
+    return { pressureWhileDisabled: false, pressureWhileDisabledReason: null };
+  }
+  if (softBound <= 0 || input.dtachCount === null) {
+    return { pressureWhileDisabled: false, pressureWhileDisabledReason: null };
+  }
+  if (input.dtachCount < softBound) {
+    return { pressureWhileDisabled: false, pressureWhileDisabledReason: null };
+  }
+  return {
+    pressureWhileDisabled: true,
+    pressureWhileDisabledReason:
+      `staleProcesses.dtach.count=${input.dtachCount} ≥ soft bound ${softBound} ` +
+      'while resourceWatchdog is disabled; host-pressure auto-investigation will not spawn ' +
+      '(set KOOKR_RESOURCE_WATCHDOG=1 to enable)',
+  };
+}
