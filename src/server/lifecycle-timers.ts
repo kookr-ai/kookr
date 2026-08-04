@@ -1041,13 +1041,18 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       // the operator (Discord via detectorBroadcast). Never terminates extra
       // tasks — the reclaim above already did what TTL allows.
       if (deps.hungSuspectResidualAlerter) {
-        // Count like the capacity ledger: inProgress only. Skip ids just
+        // Count like the capacity ledger's hungSuspect class: inProgress only,
+        // and not finishedAwaitingAck (completion_ready). isTaskHungSuspect
+        // short-circuits true on queued stale_agent without consulting
+        // pendingSignal, so FAA tasks would otherwise inflate residual and
+        // false-page while byClass.hungSuspect stays 0. Skip ids just
         // reclaimed this tick — hungSuspectSignalsCache may still say true
         // for them (filled during reclaim before terminate/purge).
         const reclaimedIds = new Set(hungSuspectTtlResult.reclaimedTaskIds);
         let residualHungSuspect = 0;
         for (const task of taskStore.listTasks()) {
           if (task.status !== 'inProgress') continue;
+          if (task.pendingSignal?.kind === 'completion_ready') continue;
           if (reclaimedIds.has(task.id)) continue;
           if (hungSuspectSignals(task).hungSuspect) residualHungSuspect += 1;
         }
