@@ -491,11 +491,45 @@ export interface OssAttemptsSlice {
   fetchOssAttempts: () => Promise<void>;
 }
 
+/**
+ * Slim projection of `GET /api/health.prodSmokeTick` for status-bar pills (#2037).
+ * Full server shape lives on `ProdSmokeTickHealthSnapshot`; the dashboard only
+ * needs the failing-streak fields for the compact pill.
+ */
+export interface ProdSmokeTickStatus {
+  consecutiveFailures: number;
+  status?: 'ok' | 'alert' | 'unknown';
+  failingChecks?: string[];
+  generatedAt?: string;
+  firstFailedAt?: string;
+}
+
+/**
+ * Slim projection of `GET /api/health.resourceWatchdog` for status-bar pills (#2037).
+ */
+export interface ResourceWatchdogStatus {
+  enabled: boolean;
+  lastDecision?: string | null;
+  pressureWhileDisabled?: boolean;
+  pressureWhileDisabledReason?: string | null;
+}
+
+export interface OpsHealthPayload {
+  prodSmokeTick?: ProdSmokeTickStatus | null;
+  resourceWatchdog?: ResourceWatchdogStatus | null;
+}
+
 export interface SystemStatusSlice {
   resourceStatus: SystemResourceStatus | null;
   resourceStatusReceivedAtMs: number | null;
+  /** Hourly prod smoke tick failing streak from `/api/health` (issue #2037). */
+  prodSmokeTick: ProdSmokeTickStatus | null;
+  /** Resource-watchdog enablement from `/api/health` (issue #2037). */
+  resourceWatchdog: ResourceWatchdogStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
+  /** Update smoke-tick / resource-watchdog projections used by status-bar pills. */
+  handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 
 /**

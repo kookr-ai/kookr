@@ -131,6 +131,33 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().resourceStatusReceivedAtMs).toBe(123);
   });
 
+  test('handleOpsHealth stores smoke-tick and resourceWatchdog projections', () => {
+    expect(store.getState().prodSmokeTick).toBeNull();
+    expect(store.getState().resourceWatchdog).toBeNull();
+
+    store.getState().handleOpsHealth({
+      prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
+      resourceWatchdog: { enabled: false, lastDecision: 'disabled' },
+    });
+
+    expect(store.getState().prodSmokeTick).toEqual({
+      consecutiveFailures: 2,
+      status: 'alert',
+      failingChecks: ['health'],
+    });
+    expect(store.getState().resourceWatchdog).toEqual({
+      enabled: false,
+      lastDecision: 'disabled',
+    });
+
+    // Partial update: only smoke — watchdog left alone.
+    store.getState().handleOpsHealth({
+      prodSmokeTick: { consecutiveFailures: 0, status: 'ok' },
+    });
+    expect(store.getState().prodSmokeTick?.consecutiveFailures).toBe(0);
+    expect(store.getState().resourceWatchdog?.enabled).toBe(false);
+  });
+
   test('handleUpdate updates single agent', () => {
     // First, set initial state
     store.getState().handleSnapshot([

@@ -8,6 +8,7 @@ import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
 import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
+import { useOpsHealthPoll } from './hooks/useOpsHealthPoll.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
@@ -330,6 +331,9 @@ export function App() {
   // See docs/rfc/rfc-completion-signal-audio-cue.md.
   useAudibleAlert();
   useTaskCompletionChime();
+  // Issue #2037: poll /api/health for smoke-tick streak + resourceWatchdog off
+  // so the status bar can show compact pills when those unattended risks fire.
+  useOpsHealthPoll();
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= MOBILE_BREAKPOINT_PX : false,
   );

@@ -7511,6 +7511,36 @@ label.task-share-row {
   margin-left: 6px;
 }
 
+/* Issue #2037: smoke-tick failing streak + resourceWatchdog disabled pills.
+   Hidden entirely when healthy; amber/red so they read as attention, not info. */
+.ops-health-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.ops-health-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ops-health-pill.ops-health-smoke {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--red);
+}
+
+.ops-health-pill.ops-health-watchdog {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--amber);
+}
+
 .btn-sound-toggle {
   background: none;
   border: none;
