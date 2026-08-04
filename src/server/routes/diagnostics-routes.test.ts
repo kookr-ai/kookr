@@ -75,6 +75,7 @@ function helperLlmSnapshot(overrides: Partial<HelperLlmDiagnosticsSnapshot> = {}
     byUseCase: [],
     byProvider: [],
     byUseCaseProvider: [],
+    pausedProviders: [],
     ...overrides,
   } satisfies HelperLlmDiagnosticsSnapshot;
 }

@@ -60,6 +60,7 @@ function helperLlm(): HelperLlmDiagnosticsSnapshot {
     byUseCase: [],
     byProvider: [],
     byUseCaseProvider: [],
+    pausedProviders: [],
   };
 }
 

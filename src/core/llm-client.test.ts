@@ -1,6 +1,10 @@
-import { describe, test, expect, vi } from 'vitest';
-import { FallbackLlmClient } from './llm-factory.js';
+import { afterEach, describe, test, expect, vi } from 'vitest';
+import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
 import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+
+afterEach(() => {
+  resetHelperLlmDiagnosticsForTest();
+});
 
 function makeClient(
   provider: string,

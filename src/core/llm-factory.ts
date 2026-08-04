@@ -8,6 +8,7 @@ import {
   isLlmProviderFailureCategory,
   type HelperLlmDiagnosticsCounters,
   type HelperLlmDiagnosticsSnapshot,
+  type HelperLlmPausedProvider,
   type LlmClient,
   type LlmCompletionAuditResult,
   type LlmCompletionDetail,
@@ -16,6 +17,97 @@ import {
   type LlmProviderFailureRecord,
   type LlmUseCase,
 } from './llm-types.js';
+
+/**
+ * Default cool-down after an auth / expired_api_key failure before the provider
+ * is tried again. Long enough that unattended helper calls stop hammering a
+ * dead key every request; short enough that fixing the key recovers without a
+ * process restart. Override with `KOOKR_LLM_AUTH_COOLDOWN_MS` (`0` disables).
+ */
+export const DEFAULT_LLM_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
+
+export function resolveLlmAuthCooldownMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_LLM_AUTH_COOLDOWN_MS?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_LLM_AUTH_COOLDOWN_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_LLM_AUTH_COOLDOWN_MS;
+  return Math.floor(parsed);
+}
+
+interface AuthPausedEntry {
+  provider: string;
+  model: string;
+  reason: 'auth';
+  pausedAt: number;
+  pausedUntil: number;
+  skipCount: number;
+  lastMessage: string;
+}
+
+const authPausedProviders = new Map<string, AuthPausedEntry>();
+
+function authPauseKey(provider: string, model: string): string {
+  return `${provider}\0${model}`;
+}
+
+function pruneExpiredAuthPauses(now: number = Date.now()): void {
+  for (const [key, entry] of authPausedProviders) {
+    if (entry.pausedUntil <= now) authPausedProviders.delete(key);
+  }
+}
+
+function getActiveAuthPause(provider: string, model: string, now: number = Date.now()): AuthPausedEntry | null {
+  const key = authPauseKey(provider, model);
+  const entry = authPausedProviders.get(key);
+  if (!entry) return null;
+  if (entry.pausedUntil <= now) {
+    authPausedProviders.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function pauseProviderAfterAuthFailure(
+  client: LlmClient,
+  message: string,
+  now: number = Date.now(),
+  cooldownMs: number = resolveLlmAuthCooldownMs(),
+): AuthPausedEntry | null {
+  if (cooldownMs <= 0) return null;
+  const key = authPauseKey(client.provider, client.model);
+  const existing = authPausedProviders.get(key);
+  const entry: AuthPausedEntry = {
+    provider: client.provider,
+    model: client.model,
+    reason: 'auth',
+    pausedAt: existing?.pausedAt ?? now,
+    pausedUntil: now + cooldownMs,
+    skipCount: existing?.skipCount ?? 0,
+    lastMessage: message,
+  };
+  authPausedProviders.set(key, entry);
+  return entry;
+}
+
+function recordAuthPauseSkip(entry: AuthPausedEntry): void {
+  entry.skipCount += 1;
+}
+
+function listPausedProviders(now: number = Date.now()): HelperLlmPausedProvider[] {
+  pruneExpiredAuthPauses(now);
+  return [...authPausedProviders.values()]
+    .map((entry) => ({
+      provider: entry.provider,
+      model: entry.model,
+      reason: entry.reason,
+      pausedAt: entry.pausedAt,
+      pausedUntil: entry.pausedUntil,
+      remainingMs: Math.max(0, entry.pausedUntil - now),
+      skipCount: entry.skipCount,
+      lastMessage: entry.lastMessage,
+    }))
+    .sort((a, b) => `${a.provider}\0${a.model}`.localeCompare(`${b.provider}\0${b.model}`));
+}
 
 function hasProviderFailureCategory(err: unknown): err is { providerFailureCategory: LlmProviderFailureCategory } {
   const category = (err as { providerFailureCategory?: unknown } | null)?.providerFailureCategory;
@@ -216,9 +308,10 @@ export function getHelperLlmDiagnosticsSnapshot(): HelperLlmDiagnosticsSnapshot 
     providers.set(providerKey, providerCounters);
   }
 
+  const generatedAt = Date.now();
   return {
     schemaVersion: 'helper-llm-diagnostics.v1',
-    generatedAt: Date.now(),
+    generatedAt,
     totals: freezeCounters(totals),
     byUseCase: [...useCases.entries()]
       .map(([useCase, counters]) => ({ useCase, ...freezeCounters(counters) }))
@@ -234,11 +327,13 @@ export function getHelperLlmDiagnosticsSnapshot(): HelperLlmDiagnosticsSnapshot 
         ...freezeCounters(bucket),
       }))
       .sort((a, b) => `${a.useCase}\0${a.provider}\0${a.model}`.localeCompare(`${b.useCase}\0${b.provider}\0${b.model}`)),
+    pausedProviders: listPausedProviders(generatedAt),
   };
 }
 
 export function resetHelperLlmDiagnosticsForTest(): void {
   helperLlmBuckets.clear();
+  authPausedProviders.clear();
 }
 
 export async function completeLlmWithFailureAudit(
@@ -366,6 +461,10 @@ class HelperLlmAccountingClient implements LlmClient {
 /**
  * An LlmClient that tries multiple providers in order.
  * On any failure, the next provider is attempted. If all fail, returns null.
+ *
+ * Auth failures (expired/invalid API keys) long-pause the failing provider so
+ * subsequent complete() calls skip it for a cool-down window instead of
+ * re-hitting dead credentials on every helper call (issue #2033).
  */
 export class FallbackLlmClient implements LlmClient {
   private clients: LlmClient[];
@@ -387,6 +486,9 @@ export class FallbackLlmClient implements LlmClient {
 
   async completeWithFailureAudit(request: LlmCompletionRequest): Promise<LlmCompletionAuditResult> {
     const failures: LlmProviderFailureRecord[] = [];
+    let attemptedCount = 0;
+    let skippedPausedCount = 0;
+
     for (const client of this.clients) {
       // Re-check between providers so an abort that fired during the previous
       // attempt does not silently retry on the next provider. See R8 in
@@ -397,6 +499,26 @@ export class FallbackLlmClient implements LlmClient {
         err.name = 'AbortError';
         throw err;
       }
+
+      const paused = getActiveAuthPause(client.provider, client.model);
+      if (paused) {
+        recordAuthPauseSkip(paused);
+        skippedPausedCount += 1;
+        const remainingMs = Math.max(0, paused.pausedUntil - Date.now());
+        const failure: LlmProviderFailureRecord = {
+          provider: client.provider,
+          model: client.model,
+          category: 'auth',
+          message: `provider paused for auth failure (${remainingMs}ms remaining): ${paused.lastMessage}`,
+        };
+        failures.push(failure);
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) skipped category=auth: paused until ${new Date(paused.pausedUntil).toISOString()} after auth failure, trying next provider`,
+        );
+        continue;
+      }
+
+      attemptedCount += 1;
       try {
         const result = await client.complete(request);
         if (result !== null) {
@@ -412,11 +534,31 @@ export class FallbackLlmClient implements LlmClient {
         if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
         const failure = caughtFailure(client, err);
         failures.push(failure);
-        console.warn(
-          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-        );
+        if (failure.category === 'auth') {
+          const entry = pauseProviderAfterAuthFailure(client, failure.message);
+          if (entry) {
+            console.warn(
+              `[llm] ${client.provider} (${client.model}) failed category=auth: ${failure.message}; pausing until ${new Date(entry.pausedUntil).toISOString()} (cooldown ${entry.pausedUntil - entry.pausedAt}ms), trying next provider`,
+            );
+          } else {
+            console.warn(
+              `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+            );
+          }
+        } else {
+          console.warn(
+            `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+          );
+        }
       }
     }
+
+    if (attemptedCount === 0 && skippedPausedCount > 0) {
+      console.warn(
+        `[llm] all ${skippedPausedCount} provider(s) paused after auth failures — no provider attempted this call`,
+      );
+    }
+
     const lastFailure = failures[failures.length - 1] ?? null;
     return { text: null, failures, failureCategory: lastFailure?.category ?? null };
   }
@@ -430,15 +572,32 @@ export class FallbackLlmClient implements LlmClient {
    * an all-providers-empty outcome stays diagnosable (issue #1555). Returns the
    * first provider whose completion has text; otherwise the last attempt's
    * detail (which carries its finish reason).
+   *
+   * Honors the same auth-pause skip path as {@link completeWithFailureAudit}.
    */
   async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
     let lastDetail: LlmCompletionDetail = { text: null, finishReason: null };
+    let attemptedCount = 0;
+    let skippedPausedCount = 0;
+
     for (const client of this.clients) {
       if (request.signal?.aborted) {
         const err = new Error('Request aborted');
         err.name = 'AbortError';
         throw err;
       }
+
+      const paused = getActiveAuthPause(client.provider, client.model);
+      if (paused) {
+        recordAuthPauseSkip(paused);
+        skippedPausedCount += 1;
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) skipped category=auth: paused until ${new Date(paused.pausedUntil).toISOString()} after auth failure, trying next provider`,
+        );
+        continue;
+      }
+
+      attemptedCount += 1;
       try {
         const detail = await completeLlmDetailed(client, request);
         if (detail.text !== null) return detail;
@@ -449,11 +608,31 @@ export class FallbackLlmClient implements LlmClient {
       } catch (err) {
         if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
         const failure = caughtFailure(client, err);
-        console.warn(
-          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-        );
+        if (failure.category === 'auth') {
+          const entry = pauseProviderAfterAuthFailure(client, failure.message);
+          if (entry) {
+            console.warn(
+              `[llm] ${client.provider} (${client.model}) failed category=auth: ${failure.message}; pausing until ${new Date(entry.pausedUntil).toISOString()} (cooldown ${entry.pausedUntil - entry.pausedAt}ms), trying next provider`,
+            );
+          } else {
+            console.warn(
+              `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+            );
+          }
+        } else {
+          console.warn(
+            `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+          );
+        }
       }
     }
+
+    if (attemptedCount === 0 && skippedPausedCount > 0) {
+      console.warn(
+        `[llm] all ${skippedPausedCount} provider(s) paused after auth failures — no provider attempted this call`,
+      );
+    }
+
     return lastDetail;
   }
 }
