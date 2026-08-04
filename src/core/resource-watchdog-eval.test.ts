@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   collectTriggers,
   countSpawnsInWindow,
+  evaluatePressureWhileDisabled,
   evaluateResourceWatchdog,
   pruneSpawnTimestamps,
 } from './resource-watchdog-eval.js';
@@ -332,5 +333,45 @@ describe('spawn window helpers + recordSpawn', () => {
     expect(next.lastSpawnKind).toBe('meta_reflection');
     expect(next.lastMetaReflectionAt).toBe(next.lastSpawnAt);
     expect(next.lastSpawnTaskId).toBe('t-1');
+  });
+});
+
+describe('evaluatePressureWhileDisabled (issue #2039)', () => {
+  test('true when disabled and dtach count meets soft bound', () => {
+    expect(
+      evaluatePressureWhileDisabled({ enabled: false, dtachCount: 21, softBound: 20 }),
+    ).toEqual({
+      pressureWhileDisabled: true,
+      pressureWhileDisabledReason: expect.stringContaining('staleProcesses.dtach.count=21'),
+    });
+    const hit = evaluatePressureWhileDisabled({
+      enabled: false,
+      dtachCount: 40,
+      softBound: 40,
+    });
+    expect(hit.pressureWhileDisabled).toBe(true);
+    expect(hit.pressureWhileDisabledReason).toContain('soft bound 40');
+    expect(hit.pressureWhileDisabledReason).toContain('KOOKR_RESOURCE_WATCHDOG=1');
+  });
+
+  test('false when enabled even with high dtach', () => {
+    expect(
+      evaluatePressureWhileDisabled({ enabled: true, dtachCount: 99, softBound: 20 }),
+    ).toEqual({ pressureWhileDisabled: false, pressureWhileDisabledReason: null });
+  });
+
+  test('false when disabled but pressure is low or unknown', () => {
+    expect(
+      evaluatePressureWhileDisabled({ enabled: false, dtachCount: 5, softBound: 40 }),
+    ).toEqual({ pressureWhileDisabled: false, pressureWhileDisabledReason: null });
+    expect(
+      evaluatePressureWhileDisabled({ enabled: false, dtachCount: null, softBound: 40 }),
+    ).toEqual({ pressureWhileDisabled: false, pressureWhileDisabledReason: null });
+  });
+
+  test('softBound 0 disables the check', () => {
+    expect(
+      evaluatePressureWhileDisabled({ enabled: false, dtachCount: 100, softBound: 0 }),
+    ).toEqual({ pressureWhileDisabled: false, pressureWhileDisabledReason: null });
   });
 });

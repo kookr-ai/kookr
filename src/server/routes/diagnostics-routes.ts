@@ -321,10 +321,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       shedTotal: 0,
     };
 
-    // Resource watchdog (issue #1724): last sample / trigger / throttle /
-    // spawns-in-24h from the service's in-memory snapshot only — never a
-    // fresh `/proc` or process-table scan on this request path (#1553).
-    const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot();
+    // Resource watchdog snapshot is assembled later (after staleProcesses) so
+    // issue #2039 can fold the cached dtach gauge into pressureWhileDisabled
+    // without a second scan. See getHealthSnapshot({ staleDtachCount }).
 
     // Prod smoke tick (issue #2031): consecutiveFailures + failingChecks from
     // the durable alert artifact only — never re-run smoke checks here. Absent
@@ -441,6 +440,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
 
     const staleProcesses = getStaleProcessSummary();
+    // Resource watchdog (issue #1724 + #2039): last sample / trigger / throttle
+    // / spawns-in-24h from the service's in-memory snapshot only — never a
+    // fresh `/proc` or process-table scan on this request path (#1553). The
+    // cached `staleProcesses.dtach` count is folded into
+    // `pressureWhileDisabled` when the actuator is off.
+    const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot({
+      staleDtachCount: staleProcesses?.dtach.count ?? null,
+    });
     // Issue #1885: first-class finding when relay-server orphans exceed the
     // bound, so sentinel/reflection can cite a stable code instead of
     // re-deriving a threshold from the raw count. Absent when within bound.

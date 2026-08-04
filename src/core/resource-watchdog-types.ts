@@ -190,4 +190,12 @@ export interface ResourceWatchdogHealthSnapshot {
   throttleOpen: boolean;
   throttleRemainingMs: number;
   lastDecision: ResourceWatchdogDecision['action'] | 'disabled' | null;
+  /**
+   * Issue #2039: true when the watchdog is intentionally disabled *and* a
+   * host-pressure gauge (currently `staleProcesses.dtach`) exceeds its soft
+   * bound. Visibility only — never auto-enables the actuator.
+   */
+  pressureWhileDisabled: boolean;
+  /** Human-readable detail when `pressureWhileDisabled` is true; else null. */
+  pressureWhileDisabledReason: string | null;
 }

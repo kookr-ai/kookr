@@ -105,6 +105,36 @@ describe('ResourceWatchdogService', () => {
     expect(audit.records).toHaveLength(0);
   });
 
+  test('pressureWhileDisabled true when disabled + high dtach (issue #2039)', async () => {
+    const { service } = makeService({ config: { enabled: false } });
+    await service.runOnce();
+    // Still no spawn — visibility only.
+    expect(launches).toHaveLength(0);
+    const underPressure = service.getHealthSnapshot({ staleDtachCount: 21 });
+    expect(underPressure.pressureWhileDisabled).toBe(true);
+    expect(underPressure.pressureWhileDisabledReason).toContain('staleProcesses.dtach.count=21');
+    expect(underPressure.enabled).toBe(false);
+
+    const lowPressure = service.getHealthSnapshot({ staleDtachCount: 3 });
+    expect(lowPressure.pressureWhileDisabled).toBe(false);
+    expect(lowPressure.pressureWhileDisabledReason).toBeNull();
+
+    // No gauge → not pressure (unknown, not assumed high).
+    const unknown = service.getHealthSnapshot();
+    expect(unknown.pressureWhileDisabled).toBe(false);
+  });
+
+  test('pressureWhileDisabled false when enabled even with high dtach (issue #2039)', async () => {
+    // Healthy sample so we do not spawn and muddy the snapshot.
+    sample = healthySample();
+    const { service } = makeService({ config: { enabled: true } });
+    await service.runOnce();
+    const snap = service.getHealthSnapshot({ staleDtachCount: 99 });
+    expect(snap.enabled).toBe(true);
+    expect(snap.pressureWhileDisabled).toBe(false);
+    expect(snap.pressureWhileDisabledReason).toBeNull();
+  });
+
   test('spawns investigation with hard-rules prompt on pressure', async () => {
     const audit = new MemoryResourceWatchdogAuditSink();
     const { service } = makeService({ audit });

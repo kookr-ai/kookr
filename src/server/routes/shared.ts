@@ -452,9 +452,10 @@ export interface RouteDeps {
   lessonYieldHealth?: LessonYieldHealthCache;
   /**
    * Resource watchdog (issue #1724). `/api/health` reads only
-   * `getHealthSnapshot()` — last sample, last trigger, throttle state,
-   * spawns-in-24h — never a fresh `/proc` scan on the request path
-   * (issue #1553 lesson).
+   * `getHealthSnapshot({ staleDtachCount })` — last sample, last trigger,
+   * throttle state, spawns-in-24h, plus `pressureWhileDisabled` from the
+   * already-cached staleProcesses.dtach gauge (issue #2039) — never a fresh
+   * `/proc` scan on the request path (issue #1553 lesson).
    */
   resourceWatchdog?: Pick<
     import('../resource-watchdog-service.js').ResourceWatchdogService,

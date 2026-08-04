@@ -9,6 +9,8 @@
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 import {
   evaluateResourceWatchdog,
+  evaluatePressureWhileDisabled,
+  DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
   countSpawnsInWindow,
 } from '../core/resource-watchdog-eval.js';
 import {
@@ -120,8 +122,16 @@ export class ResourceWatchdogService {
     }
   }
 
-  /** Cheap in-memory snapshot for `/api/health`. */
-  getHealthSnapshot(): ResourceWatchdogHealthSnapshot {
+  /**
+   * Cheap in-memory snapshot for `/api/health`.
+   *
+   * Optional `staleDtachCount` folds the already-cached `staleProcesses.dtach`
+   * gauge into `pressureWhileDisabled` (issue #2039) without a fresh `/proc`
+   * scan on this path.
+   */
+  getHealthSnapshot(opts?: {
+    staleDtachCount?: number | null;
+  }): ResourceWatchdogHealthSnapshot {
     const config = this.getConfig();
     const nowMs = this.nowMs();
     const spawnsIn24h = countSpawnsInWindow(
@@ -139,6 +149,11 @@ export class ResourceWatchdogService {
         throttleRemainingMs = config.throttleMs - elapsed;
       }
     }
+    const pressure = evaluatePressureWhileDisabled({
+      enabled: config.enabled,
+      dtachCount: opts?.staleDtachCount ?? null,
+      softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+    });
     return {
       enabled: config.enabled,
       lastSampleAt: this.lastSample?.sampledAt ?? null,
@@ -161,6 +176,8 @@ export class ResourceWatchdogService {
       throttleOpen,
       throttleRemainingMs,
       lastDecision: config.enabled ? this.lastDecision : 'disabled',
+      pressureWhileDisabled: pressure.pressureWhileDisabled,
+      pressureWhileDisabledReason: pressure.pressureWhileDisabledReason,
     };
   }
 
@@ -381,6 +398,8 @@ export function defaultResourceWatchdogHealthSnapshot(
     throttleOpen: true,
     throttleRemainingMs: 0,
     lastDecision: enabled ? null : 'disabled',
+    pressureWhileDisabled: false,
+    pressureWhileDisabledReason: null,
   };
 }
 
