@@ -1,7 +1,10 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { buildDoctorJsonReport, formatDoctorReport, runDoctorCli } from './kookr-doctor.js';
+import type { AlertArtifact } from '../server/prod-smoke.js';
 
 /** Stable happy-path check ids plus KB failure-mode ids that can replace `launch.kb`. */
 const DOCUMENTED_DOCTOR_CHECK_IDS = [
@@ -17,7 +20,14 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.codex',
   'agent.codex-plugin-dir',
   'ops.resource-watchdog',
+  'ops.prod-smoke-tick',
 ] as const;
+
+/** Hermetic seams so unit tests never touch the host ~/.kookr alert artifact. */
+const hermeticOps = {
+  probeResourceWatchdogEnabled: async () => null as boolean | null,
+  readProdSmokeTickAlert: () => null as AlertArtifact | null,
+};
 
 function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: string; exitCode?: number }>) {
   return vi.fn(async (file: string, args: readonly string[]) => {
@@ -57,7 +67,7 @@ describe('kookr doctor --json', () => {
       access: async () => {},
       now: () => new Date('2026-06-21T07:30:00.000Z'),
       // Hermetic: no live server probe (env-only path).
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
 
     expect(report).toMatchObject({
@@ -77,8 +87,17 @@ describe('kookr doctor --json', () => {
       'agent.codex',
       'agent.codex-plugin-dir',
       'ops.resource-watchdog',
+      'ops.prod-smoke-tick',
     ]));
-    expect(report.checks.filter((c) => c.id !== 'ops.resource-watchdog').every((c) => c.status === 'ok')).toBe(true);
+    expect(
+      report.checks
+        .filter((c) => c.id !== 'ops.resource-watchdog')
+        .every((c) => c.status === 'ok'),
+    ).toBe(true);
+    expect(report.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
+      status: 'ok',
+      required: false,
+    });
     expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
       status: 'warn',
       required: false,
@@ -93,7 +112,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
 
     expect(report).toMatchObject({ ok: true, status: 'ok' });
@@ -111,6 +130,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
+      ...hermeticOps,
       probeResourceWatchdogEnabled: async () => false,
     });
     expect(disabledLive.ok).toBe(true);
@@ -125,6 +145,7 @@ describe('kookr doctor --json', () => {
       env: {},
       commandRunner: run,
       access: async () => {},
+      ...hermeticOps,
       probeResourceWatchdogEnabled: async () => true,
     });
     expect(enabledLive.ok).toBe(true);
@@ -143,7 +164,7 @@ describe('kookr doctor --json', () => {
       env: {},
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: () => {},
@@ -157,6 +178,141 @@ describe('kookr doctor --json', () => {
       status: 'warn',
       required: false,
     });
+  });
+
+  it('WARNs on ops.prod-smoke-tick when alert artifact has consecutiveFailures (issue #2035)', async () => {
+    const run = commandRunner(happyFixtures());
+    const alert: AlertArtifact = {
+      schemaVersion: 'prod-smoke-alert.v1',
+      status: 'alert',
+      generatedAt: '2026-08-04T02:10:11.278Z',
+      firstFailedAt: '2026-07-28T15:45:37.810Z',
+      consecutiveFailures: 113,
+      failingChecks: ['version-probe'],
+      checks: [
+        { name: 'ready', ok: true, detail: 'ok' },
+        { name: 'version-probe', ok: false, detail: 'invalid adapter version' },
+      ],
+    };
+
+    const report = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_DIR: '/tmp/kookr-doctor-smoke-fixture' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      readProdSmokeTickAlert: (path) => {
+        expect(path).toBe(join('/tmp/kookr-doctor-smoke-fixture', 'prod-smoke-tick-alert.json'));
+        return alert;
+      },
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    expect(report.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('consecutiveFailures=113'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.prod-smoke-tick')?.summary).toContain(
+      'failingChecks=[version-probe]',
+    );
+  });
+
+  it('does not WARN when prod-smoke-tick artifact is missing or status=ok', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const missing = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      readProdSmokeTickAlert: () => null,
+    });
+    expect(missing.status).toBe('ok');
+    expect(missing.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('no alert artifact'),
+    });
+
+    const healthy: AlertArtifact = {
+      schemaVersion: 'prod-smoke-alert.v1',
+      status: 'ok',
+      generatedAt: '2026-08-04T02:10:11.278Z',
+      consecutiveFailures: 0,
+      failingChecks: [],
+      checks: [{ name: 'ready', ok: true, detail: 'ok' }],
+    };
+    const okReport = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      readProdSmokeTickAlert: () => healthy,
+    });
+    expect(okReport.status).toBe('ok');
+    expect(okReport.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('status=ok'),
+    });
+  });
+
+  it('reads a real temp alert fixture from disk (no injected reader)', async () => {
+    const run = commandRunner(happyFixtures());
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-doctor-smoke-'));
+    const alertPath = join(dir, 'prod-smoke-tick-alert.json');
+    const artifact: AlertArtifact = {
+      schemaVersion: 'prod-smoke-alert.v1',
+      status: 'alert',
+      generatedAt: '2026-08-01T00:00:00.000Z',
+      firstFailedAt: '2026-07-28T00:00:00.000Z',
+      consecutiveFailures: 42,
+      failingChecks: ['health', 'tasks-latency'],
+      checks: [
+        { name: 'health', ok: false, detail: 'timeout' },
+        { name: 'tasks-latency', ok: false, detail: 'slow' },
+      ],
+    };
+    writeFileSync(alertPath, `${JSON.stringify(artifact, null, 2)}\n`);
+
+    const report = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_DIR: dir },
+      commandRunner: run,
+      access: async () => {},
+      probeResourceWatchdogEnabled: async () => null,
+      // intentionally no readProdSmokeTickAlert — exercises default disk path
+    });
+
+    expect(report.status).toBe('warn');
+    const smoke = report.checks.find((c) => c.id === 'ops.prod-smoke-tick');
+    expect(smoke).toMatchObject({
+      status: 'warn',
+      required: false,
+    });
+    expect(smoke?.summary).toContain('consecutiveFailures=42');
+    expect(smoke?.summary).toContain('failingChecks=[health, tasks-latency]');
+  });
+
+  it('exits non-zero on advisory WARN only when --strict is set', async () => {
+    const run = commandRunner(happyFixtures());
+    const alert: AlertArtifact = {
+      schemaVersion: 'prod-smoke-alert.v1',
+      status: 'alert',
+      generatedAt: '2026-08-04T02:10:11.278Z',
+      consecutiveFailures: 5,
+      failingChecks: ['ready'],
+      checks: [{ name: 'ready', ok: false, detail: 'down' }],
+    };
+    const deps = {
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      readProdSmokeTickAlert: () => alert,
+      out: { log: () => {}, error: () => {} },
+    };
+
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
   });
 
   it('keeps KB doctor failures advisory and uses the launch dependency taxonomy', async () => {
@@ -175,7 +331,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
     const kb = report.checks.find((check) => check.id === 'launch.kb-doctor');
 
@@ -199,7 +355,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
 
     expect(report.ok).toBe(false);
@@ -219,7 +375,7 @@ describe('kookr doctor --json', () => {
       access: async () => {
         throw new Error('missing vendored dtach');
       },
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
 
     expect(report.ok).toBe(true);
@@ -238,7 +394,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),
@@ -261,7 +417,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: () => {},
@@ -281,7 +437,7 @@ describe('kookr doctor --json', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
     });
 
     for (const check of report.checks) {
@@ -351,7 +507,7 @@ describe('kookr doctor (human)', () => {
       commandRunner: run,
       access: async () => {},
       now: () => new Date('2026-06-21T07:30:00.000Z'),
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),
@@ -379,7 +535,7 @@ describe('kookr doctor (human)', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: () => {},
@@ -400,7 +556,7 @@ describe('kookr doctor (human)', () => {
       env: { KOOKR_RESOURCE_WATCHDOG: '1' },
       commandRunner: run,
       access: async () => {},
-      probeResourceWatchdogEnabled: async () => null,
+      ...hermeticOps,
       out: {
         log: (msg: string) => logs.push(msg),
         error: (msg: string) => errors.push(msg),

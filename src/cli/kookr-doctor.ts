@@ -13,6 +13,12 @@ import {
   probeBinaryFlagSupport,
   type ProbeExecRunner,
 } from '../adapters/probe-agent-binary.js';
+import {
+  readAlertArtifact,
+  type AlertArtifact,
+} from '../server/prod-smoke.js';
+import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
+import { resolveKookrDataDir } from './kookr-maintenance.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -43,6 +49,13 @@ interface CommandRunner {
 /** Live probe of resourceWatchdog.enabled from /api/health. null = unreachable / unknown. */
 type ResourceWatchdogEnabledProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | null>;
 
+/**
+ * Read the durable prod-smoke-tick alert artifact (issue #2035).
+ * Return null when the file is missing, unreadable, or not an alert.
+ * Injected in unit tests so hermetic runs never touch the host data dir.
+ */
+type ProdSmokeTickAlertReader = (alertPath: string) => AlertArtifact | null;
+
 interface RunDoctorDeps {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
@@ -55,6 +68,12 @@ interface RunDoctorDeps {
    * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
    */
   probeResourceWatchdogEnabled?: ResourceWatchdogEnabledProbe;
+  /**
+   * Optional override for reading `{dataDir}/prod-smoke-tick-alert.json`.
+   * Defaults to {@link readAlertArtifact}. Tests inject a fixture reader so
+   * the host `~/.kookr` never leaks into hermetic unit runs.
+   */
+  readProdSmokeTickAlert?: ProdSmokeTickAlertReader;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -62,14 +81,18 @@ const HELP_TEXT = `kookr doctor — run launch preflight checks.
 Usage:
   kookr doctor
   kookr doctor --json
+  kookr doctor --strict
 
 Options:
   --json       Print one JSON report to stdout (machine-readable).
+  --strict     Exit non-zero when any advisory WARN is present (default: only
+               required FAIL checks fail the process).
   -h, --help   Show this help.
 
 Without --json, prints a human-readable table of each check (status, summary,
-recommended action) covering runtime tools, gh auth, kb, agent binaries, and
-ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off).
+recommended action) covering runtime tools, gh auth, kb, agent binaries,
+ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
+and ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert).
 `;
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -138,7 +161,11 @@ export async function runDoctorCli(argv = process.argv.slice(2), deps: RunDoctor
   } else {
     out.log(formatDoctorReport(report));
   }
-  return report.ok ? 0 : 1;
+  // Default: only required FAIL checks fail the process (advisory WARNs allowed).
+  // --strict: any advisory WARN also exits non-zero so unattended gates can act.
+  if (!report.ok) return 1;
+  if (args.strict && report.status === 'warn') return 1;
+  return 0;
 }
 
 export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<DoctorJsonReport> {
@@ -156,6 +183,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(...await checkKbLaunchDependency(run));
   checks.push(...await checkAgentBinaries(env, run));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
+  checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
 
   const status = aggregateStatus(checks);
   return {
@@ -166,10 +194,11 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   };
 }
 
-function parseArgs(argv: string[]): { json: boolean; help: boolean; error?: string } {
-  const parsed = { json: false, help: false, error: undefined as string | undefined };
+function parseArgs(argv: string[]): { json: boolean; strict: boolean; help: boolean; error?: string } {
+  const parsed = { json: false, strict: false, help: false, error: undefined as string | undefined };
   for (const arg of argv) {
     if (arg === '--json') parsed.json = true;
+    else if (arg === '--strict') parsed.strict = true;
     else if (arg === '-h' || arg === '--help') parsed.help = true;
     else if (!parsed.error) parsed.error = `Unexpected argument: ${arg}`;
   }
@@ -296,6 +325,75 @@ async function checkResourceWatchdog(
     recommendedAction:
       'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server to enable host-pressure auto-investigation.',
   };
+}
+
+/**
+ * Advisory ops check (issue #2035): surface a sustained prod-smoke-tick failure
+ * streak from the durable on-disk alert artifact so doctor/preflight show the
+ * same signal autonomous recovery already has on disk / on /api/health.
+ *
+ * - status=alert → WARN with consecutiveFailures + failingChecks
+ * - status=ok or artifact missing/unreadable → OK (no warn)
+ * - Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN
+ */
+function checkProdSmokeTick(
+  env: NodeJS.ProcessEnv,
+  reader: ProdSmokeTickAlertReader | undefined,
+): DoctorCheck {
+  const dataDir = resolveDoctorKookrDataDir(env);
+  const alertPath = prodSmokeTickAlertPath(dataDir);
+  const read = reader ?? readAlertArtifact;
+  let artifact: AlertArtifact | null = null;
+  try {
+    artifact = read(alertPath);
+  } catch {
+    artifact = null;
+  }
+
+  if (!artifact || artifact.status !== 'alert') {
+    return okCheck(
+      'ops.prod-smoke-tick',
+      'Prod smoke tick',
+      'ops',
+      !artifact
+        ? `no alert artifact at ${alertPath}`
+        : 'hourly prod smoke tick is healthy (status=ok)',
+      false,
+    );
+  }
+
+  const consecutive = artifact.consecutiveFailures ?? 0;
+  const failing = artifact.failingChecks.length > 0
+    ? artifact.failingChecks.join(', ')
+    : 'unknown';
+  const since = artifact.firstFailedAt ?? artifact.generatedAt;
+
+  return {
+    id: 'ops.prod-smoke-tick',
+    label: 'Prod smoke tick',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary:
+      `hourly smoke failing: consecutiveFailures=${consecutive}, failingChecks=[${failing}]`,
+    detail:
+      `Artifact ${alertPath} status=alert` +
+      (since ? ` since ${since}` : '') +
+      `. Inspect failingChecks; do not delete the artifact alone — see unattended-recovery-runbook §4.`,
+    recommendedAction:
+      'Inspect prod-smoke-tick-alert.json failingChecks (and GET /api/health prodSmokeTick). ' +
+      'Fix the root cause (adapter version-probe, health latency, etc.); see docs/reference/unattended-recovery-runbook.md §4.',
+  };
+}
+
+/**
+ * Data dir for the smoke-tick artifact: explicit `KOOKR_DIR` wins, else the
+ * same port-based default as `kookr maintenance` (`~/.kookr` / `~/.kookr-<port>`).
+ */
+function resolveDoctorKookrDataDir(env: NodeJS.ProcessEnv): string {
+  const explicit = env.KOOKR_DIR?.trim();
+  if (explicit) return explicit;
+  return resolveKookrDataDir(env);
 }
 
 /** Same truthy semantics as `readResourceWatchdogConfigFromEnv` (1/true/yes/on). */
