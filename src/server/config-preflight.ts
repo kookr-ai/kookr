@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { isValidSpeechServiceUrl } from './speech-service-url.js';
 
 export type ConfigPreflightSeverity = 'fatal' | 'warning';
 
@@ -50,6 +51,20 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
   },
   { variable: 'KOOKR_STT_PORT', validate: isPort, description: INTEGER_PORT_DESCRIPTION },
   { variable: 'KOOKR_TTS_PORT', validate: isPort, description: INTEGER_PORT_DESCRIPTION },
+  {
+    // Issue #2057: reject cloud-metadata / link-local / credentialed speech URLs
+    // before server-side health and synthesize fetches can use them.
+    variable: 'KOOKR_STT_URL',
+    validate: isValidSpeechServiceUrl,
+    description:
+      'http(s)/ws(s) speech-to-text URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
+  },
+  {
+    variable: 'KOOKR_TTS_URL',
+    validate: isValidSpeechServiceUrl,
+    description:
+      'http(s)/ws(s) text-to-speech URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
+  },
   {
     variable: 'KOOKR_REQUEST_BODY_LIMIT_BYTES',
     validate: isPositiveInteger,

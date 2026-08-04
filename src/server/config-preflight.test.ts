@@ -299,6 +299,46 @@ describe('runConfigPreflight', () => {
     ]);
   });
 
+  it('fails on blocked KOOKR_STT_URL / KOOKR_TTS_URL values (#2057)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_STT_URL: 'http://169.254.169.254/latest/meta-data/',
+        KOOKR_TTS_URL: 'http://user:pass@127.0.0.1:8004',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues.map((issue) => issue.variable)).toEqual([
+      'KOOKR_STT_URL',
+      'KOOKR_TTS_URL',
+    ]);
+    expect(result.issues.every((issue) => issue.severity === 'fatal')).toBe(true);
+  });
+
+  it('accepts loopback and private-LAN speech service URLs (#2057)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_STT_URL: 'ws://127.0.0.1:8003',
+        KOOKR_TTS_URL: 'http://192.168.1.50:8004',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues.filter((issue) =>
+      issue.variable === 'KOOKR_STT_URL' || issue.variable === 'KOOKR_TTS_URL',
+    )).toEqual([]);
+  });
+
   it('warns on documented precedence pairs that are both set', async () => {
     const result = await runConfigPreflight(
       {

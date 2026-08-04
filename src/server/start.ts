@@ -25,6 +25,7 @@ import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
 import { createShutdownHandler } from './shutdown.js';
 import { readRingFleetBudgetBytesFromEnv } from './config.js';
+import { validateSpeechServiceUrl } from './speech-service-url.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -146,7 +147,17 @@ async function main(): Promise<void> {
   let sttUrl: string | undefined;
 
   if (STT_URL_OVERRIDE) {
-    sttUrl = STT_URL_OVERRIDE;
+    // Issue #2057: fail closed on SSRF-prone speech service URLs before any fetch.
+    const sttValidation = validateSpeechServiceUrl(STT_URL_OVERRIDE);
+    if (!sttValidation.ok) {
+      console.error(
+        `[fatal] KOOKR_STT_URL is invalid: ${sttValidation.reason}. ` +
+          'Use http(s)/ws(s) without credentials; loopback and private LAN are allowed; ' +
+          'cloud metadata and link-local hosts are rejected.',
+      );
+      process.exit(1);
+    }
+    sttUrl = STT_URL_OVERRIDE.trim();
   } else if (STT_ENABLED) {
     const sttDir = join(process.cwd(), 'stt');
     try {
@@ -168,7 +179,17 @@ async function main(): Promise<void> {
   let ttsUrl: string | undefined;
 
   if (TTS_URL_OVERRIDE) {
-    ttsUrl = TTS_URL_OVERRIDE;
+    // Issue #2057: fail closed on SSRF-prone speech service URLs before any fetch.
+    const ttsValidation = validateSpeechServiceUrl(TTS_URL_OVERRIDE);
+    if (!ttsValidation.ok) {
+      console.error(
+        `[fatal] KOOKR_TTS_URL is invalid: ${ttsValidation.reason}. ` +
+          'Use http(s)/ws(s) without credentials; loopback and private LAN are allowed; ' +
+          'cloud metadata and link-local hosts are rejected.',
+      );
+      process.exit(1);
+    }
+    ttsUrl = TTS_URL_OVERRIDE.trim();
   } else if (TTS_ENABLED) {
     const ttsDir = join(process.cwd(), 'tts');
     try {
