@@ -412,13 +412,25 @@ velocity gather phase. Pure math lives in `src/core/value-density-governor.ts`.
 
 ## `kookr queue-feeder`
 
-Queue-feeder / umbrella auto-decomposer (issue #1845). When the orchestration
-loop sees idle capacity with an empty queue (`free ≥ threshold` **and**
-`pendingQueueDepth == 0` — the `idle_capacity` warn shape), it shreds ONE
-eligible product umbrella into 3–5 spawnable leaf tasks (goal + acceptance
+Queue-feeder / umbrella auto-decomposer (issues #1845, #2044). When the
+orchestration loop sees idle capacity with an empty queue (`free ≥ threshold`
+**and** `pendingQueueDepth == 0` — the `idle_capacity` warn shape), it shreds
+ONE eligible product umbrella into 3–5 spawnable leaf tasks (goal + acceptance
 criteria + file/test hints). Umbrellas that already have open children are
 skipped (idempotent), and product-metric-blocking umbrellas rank above
 harness/internal ones so idle capacity flows to product outcomes.
+
+When product umbrella leaves are exhausted but free slots remain, the feeder
+takes a **secondary path** (#2044) instead of dead-ending on `skip-invent`:
+
+1. Pull open, **unassigned** idea-scout / ready-labeled issues into the
+   implementable set (cap ≤3 per fire; never auto-claim assignees).
+2. Else shred a residual umbrella that still has a curated leaf plan.
+3. Only then `action=skip-invent` when no safe secondary source exists.
+
+Ledger rows carry `action` (`shred` | `emit-secondary` | `skip-invent` |
+`not-triggered`) and `source` (`umbrella-shred` | `idea-scout` |
+`curated-umbrella` | null) for reflection audit.
 
 ```bash
 kookr queue-feeder plan --input <file|-> [--free N] [--pending N] \
@@ -427,14 +439,17 @@ kookr queue-feeder leaves --umbrella owner/repo#N [--json]
 ```
 
 - **plan** — read a capacity + umbrella snapshot, decide which ONE umbrella to
-  decompose, and print the dry-run plan. The snapshot JSON is
+  decompose (or which ready issues to secondary-emit), and print the dry-run
+  plan. The snapshot JSON is
   `{ "capacity": { "free": N, "pendingQueueDepth": N }, "candidates": [ { "repo":
   "owner/repo", "number": N, "title": "...", "labels": [...],
-  "openChildrenCount": N } ] }` from `--input <file>` or `-` for stdin. Appends
-  one observability row per call to
+  "openChildrenCount": N } ], "readyIssues": [ { "repo", "number", "title",
+  "labels", "assignees" } ], "openProductMetricIssues": N }` from
+  `--input <file>` or `-` for stdin. Appends one observability row per call to
   `~/.kookr/playbook-state/queue-feeder/decisions.jsonl` (skip with
-  `--no-persist`). **Dry-run by default** — `--emit` (opt-in) actually files the
-  leaves via `gh issue create`; without it nothing is created.
+  `--no-persist`). **Dry-run by default** — `--emit` (opt-in) files leaf issues
+  via `gh issue create` for `action=shred` only; secondary ready-issue emit
+  never creates issues (they already exist) and never claims assignees.
 - **leaves** — print the rendered GitHub issue bodies (goal + acceptance
   criteria + hints + backref) for a curated umbrella's leaf plan.
 

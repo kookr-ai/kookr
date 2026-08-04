@@ -3,6 +3,7 @@ import {
   CURATED_LEAF_PLANS,
   DEFAULT_FREE_SLOTS_THRESHOLD,
   DEFAULT_MAX_LEAVES,
+  DEFAULT_MAX_SECONDARY_PER_FIRE,
   LUCY_1586_LEAF_PLAN,
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
@@ -22,10 +23,13 @@ import {
   normalizeLeafPlan,
   queueFeederLedgerPath,
   rankUmbrellas,
+  readyIssueSkipReason,
+  selectReadyIssues,
   umbrellaRef,
   umbrellaSkipReason,
   validateLeafSpec,
   type LeafSpec,
+  type ReadyIssue,
   type UmbrellaCandidate,
 } from './umbrella-decomposer.js';
 
@@ -216,6 +220,7 @@ describe('evaluateQueueFeeder — gating', () => {
     });
     expect(decision.triggered).toBe(false);
     expect(decision.selected).toBeNull();
+    expect(decision.action).toBe('not-triggered');
     expect(decision.triggerReason).toMatch(/queue not empty/);
   });
 
@@ -225,6 +230,7 @@ describe('evaluateQueueFeeder — gating', () => {
       candidates: [umbrella()],
     });
     expect(decision.triggered).toBe(false);
+    expect(decision.action).toBe('not-triggered');
   });
 });
 
@@ -238,6 +244,8 @@ describe('evaluateQueueFeeder — selection + emission (AC1)', () => {
       resolveLeaves: () => nLeaves(4),
     });
     expect(decision.triggered).toBe(true);
+    expect(decision.action).toBe('shred');
+    expect(decision.actionSource).toBe('umbrella-shred');
     expect(decision.selected?.number).toBe(42);
     expect(decision.selected?.productMetricBlocking).toBe(true);
     expect(decision.selected?.needsAuthoring).toBe(false);
@@ -262,7 +270,7 @@ describe('evaluateQueueFeeder — selection + emission (AC1)', () => {
     expect(decision.skipped.some((s) => s.ref === 'jeanibarz/lucy#1')).toBe(true);
   });
 
-  it('flags needs-authoring when no vetted leaf plan resolves', () => {
+  it('flags needs-authoring when no vetted leaf plan resolves and skip-invents', () => {
     const decision = evaluateQueueFeeder({
       capacity: { free: 4, pendingQueueDepth: 0 },
       candidates: [umbrella({ number: 99, title: 'SEC anchors', labels: ['sec-anchor'] })],
@@ -271,6 +279,7 @@ describe('evaluateQueueFeeder — selection + emission (AC1)', () => {
     expect(decision.selected?.needsAuthoring).toBe(true);
     expect(decision.selected?.leafError).toMatch(/no leaf plan/);
     expect(decision.leafCount).toBe(0);
+    expect(decision.action).toBe('skip-invent');
   });
 
   it('reports no eligible umbrella when all are already decomposed (AC2)', () => {
@@ -283,8 +292,267 @@ describe('evaluateQueueFeeder — selection + emission (AC1)', () => {
     });
     expect(decision.triggered).toBe(true);
     expect(decision.selected).toBeNull();
+    expect(decision.action).toBe('skip-invent');
     expect(decision.skipped).toHaveLength(2);
     expect(decision.skipped.every((s) => /already/.test(s.reason))).toBe(true);
+  });
+
+  it('prefers a plan-ready lower-ranked umbrella over a needsAuthoring top pick', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({ number: 1, title: 'SEC anchors v2', labels: ['sec-anchor'], priority: 10 }),
+        umbrella({ number: 2, title: 'refactor harness', labels: ['refactor'], priority: 0 }),
+      ],
+      resolveLeaves: (c) => (c.number === 2 ? nLeaves(3) : undefined),
+    });
+    expect(decision.action).toBe('shred');
+    expect(decision.selected?.number).toBe(2);
+    expect(decision.selected?.needsAuthoring).toBe(false);
+  });
+});
+
+describe('selectReadyIssues / readyIssueSkipReason (#2044)', () => {
+  it('skips assigned issues (never auto-claim)', () => {
+    expect(
+      readyIssueSkipReason({
+        repo: 'kookr-ai/kookr',
+        number: 2032,
+        title: 'feat: x',
+        assignees: ['alice'],
+      }),
+    ).toMatch(/assigned to alice/);
+  });
+
+  it('skips alreadyEmitted (idempotent re-fire)', () => {
+    expect(
+      readyIssueSkipReason({
+        repo: 'kookr-ai/kookr',
+        number: 2032,
+        title: 'feat: x',
+        alreadyEmitted: true,
+      }),
+    ).toMatch(/already emitted/);
+  });
+
+  it('caps at maxSecondaryPerFire and prefers idea-scout labels', () => {
+    const issues: ReadyIssue[] = [
+      { repo: 'kookr-ai/kookr', number: 1, title: 'plain', labels: [] },
+      { repo: 'kookr-ai/kookr', number: 2, title: 'scout-a', labels: ['idea-scout'] },
+      { repo: 'kookr-ai/kookr', number: 3, title: 'scout-b', labels: ['idea-scout'] },
+      { repo: 'kookr-ai/kookr', number: 4, title: 'scout-c', labels: ['idea-scout'] },
+      { repo: 'kookr-ai/kookr', number: 5, title: 'scout-d', labels: ['idea-scout'] },
+    ];
+    const { selected, skipped } = selectReadyIssues(issues, { maxSecondaryPerFire: 3 });
+    expect(selected).toHaveLength(3);
+    expect(selected.map((s) => s.number)).toEqual([2, 3, 4]);
+    expect(skipped.some((s) => s.ref === 'kookr-ai/kookr#5')).toBe(true);
+    expect(DEFAULT_MAX_SECONDARY_PER_FIRE).toBe(3);
+  });
+});
+
+describe('evaluateQueueFeeder — secondary emit (#2044)', () => {
+  const residualUmbrella = umbrella({
+    number: 2047,
+    title: 'Umbrella: idea-scout residual — docs index',
+    labels: ['docs'],
+    openChildrenCount: 0,
+  });
+  const shreddedProduct = umbrella({
+    number: 1588,
+    title: 'anchor truth — SEC acceptance anchors',
+    labels: ['sec-anchor'],
+    openChildrenCount: 5,
+  });
+
+  it('emits open unassigned idea-scout issues when product leaves are empty', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [shreddedProduct, residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'feat: secondary path A',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2033,
+          title: 'feat: secondary path B',
+          labels: ['idea-scout'],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.triggered).toBe(true);
+    expect(decision.action).toBe('emit-secondary');
+    expect(decision.actionSource).toBe('idea-scout');
+    expect(decision.secondaryEmitted).toHaveLength(2);
+    expect(decision.secondaryEmitted.map((i) => i.ref)).toEqual([
+      'kookr-ai/kookr#2032',
+      'kookr-ai/kookr#2033',
+    ]);
+    expect(decision.leafCount).toBe(2);
+  });
+
+  it('does not auto-claim issues assigned to someone else', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'claimed',
+          labels: ['idea-scout'],
+          assignees: ['other-dev'],
+        },
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2033,
+          title: 'free',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('emit-secondary');
+    expect(decision.secondaryEmitted.map((i) => i.number)).toEqual([2033]);
+    expect(decision.skipped.some((s) => /assigned to other-dev/.test(s.reason))).toBe(true);
+  });
+
+  it('is idempotent: alreadyEmitted ready issues are not re-selected', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'already out',
+          labels: ['idea-scout'],
+          alreadyEmitted: true,
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('skip-invent');
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('caps secondary emit per fire (≤3 by default)', () => {
+    const readyIssues: ReadyIssue[] = Array.from({ length: 6 }, (_, i) => ({
+      repo: 'kookr-ai/kookr',
+      number: 2030 + i,
+      title: `idea ${i}`,
+      labels: ['idea-scout'],
+    }));
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues,
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('emit-secondary');
+    expect(decision.secondaryEmitted).toHaveLength(DEFAULT_MAX_SECONDARY_PER_FIRE);
+  });
+
+  it('keeps skip-invent when free < threshold even if ready issues exist', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 1, pendingQueueDepth: 0 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        { repo: 'kookr-ai/kookr', number: 2032, title: 'idea', labels: ['idea-scout'] },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('not-triggered');
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('keeps skip-invent when queue already has work', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 3 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        { repo: 'kookr-ai/kookr', number: 2032, title: 'idea', labels: ['idea-scout'] },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('not-triggered');
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('does not secondary-emit when open product-metric leaves already exist', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [residualUmbrella],
+      openProductMetricIssues: 4,
+      readyIssues: [
+        { repo: 'kookr-ai/kookr', number: 2032, title: 'idea', labels: ['idea-scout'] },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('skip-invent');
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('characterization: fixture ledger shape + mock idea-scout list → emit-secondary', () => {
+    // Mirrors the 2026-08-04 production deadlock: free≥3, queue empty,
+    // product umbrellas already shredded, residual needsAuthoring, open
+    // idea-scout issues present — must not skip-invent.
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'SEC anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 5,
+        }),
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 2047,
+          title: 'Umbrella: idea-scout residual — docs',
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'queue-feeder: secondary emit path',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    const record = buildQueueFeederRecord(decision, {
+      now: new Date('2026-08-04T01:15:00Z'),
+      dryRun: true,
+    });
+    expect(record.action).toBe('emit-secondary');
+    expect(record.source).toBe('idea-scout');
+    expect(record.secondaryEmitted).toEqual(['kookr-ai/kookr#2032']);
+    expect(record.free).toBe(7);
+    expect(record.pendingQueueDepth).toBe(0);
+    expect(record.leafCount).toBe(1);
+    const line = formatQueueFeederLine(record);
+    expect(line).toMatch(/action=emit-secondary/);
+    expect(line).toContain('idea-scout');
+    expect(line).toContain('kookr-ai/kookr#2032');
   });
 });
 
@@ -680,6 +948,8 @@ describe('observability (AC4)', () => {
     });
     const record = buildQueueFeederRecord(decision, { now: new Date('2026-08-01T18:00:00Z') });
     expect(record.schemaVersion).toBe(QUEUE_FEEDER_SCHEMA);
+    expect(record.action).toBe('shred');
+    expect(record.source).toBe('umbrella-shred');
     expect(record.selectedRef).toBe('jeanibarz/lucy#1588');
     expect(record.leafCount).toBe(3);
     expect(record.leafTitles).toHaveLength(3);
@@ -690,6 +960,7 @@ describe('observability (AC4)', () => {
     expect(line).toContain('DRY-RUN');
     expect(line).toContain('jeanibarz/lucy#1588');
     expect(line).toContain('3 leaf');
+    expect(line).toMatch(/action=shred/);
   });
 
   it('formats a not-triggered line', () => {
@@ -699,6 +970,17 @@ describe('observability (AC4)', () => {
     });
     const line = formatQueueFeederLine(buildQueueFeederRecord(decision));
     expect(line).toMatch(/not triggered/);
+  });
+
+  it('formats a skip-invent line when residual needs authoring and no ready issues', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [umbrella({ number: 99, title: 'docs residual' })],
+      resolveLeaves: () => undefined,
+    });
+    const record = buildQueueFeederRecord(decision);
+    expect(record.action).toBe('skip-invent');
+    expect(formatQueueFeederLine(record)).toMatch(/action=skip-invent/);
   });
 
   it('ledger path lives under playbook-state and trims trailing slashes', () => {

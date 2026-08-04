@@ -1,17 +1,19 @@
 /**
  * `kookr queue-feeder` — auto-decompose product umbrellas into spawnable leaves
- * when capacity idles (issue #1845).
+ * when capacity idles (issue #1845), with a secondary path for open idea-scout /
+ * ready issues when product leaves are exhausted (#2044).
  *
  *   kookr queue-feeder plan --input <file|-> [--free N] [--pending N] [--emit] [--json]
  *   kookr queue-feeder leaves --umbrella owner/repo#N [--json]
  *
  * The orchestration loop / velocity probe calls `plan` when it sees the
  * `idle_capacity` warn (free≥3, pendingQueueDepth==0). It hands a JSON snapshot
- * of the current capacity ledger + candidate umbrellas; the CLI runs the pure
- * decision (core/umbrella-decomposer.ts), prints which umbrella it would shred
- * and the leaf specs, and appends a dry-run observability row the next
- * reflection reads. `--emit` (opt-in, default OFF) actually files the leaf
- * issues via `gh issue create`; without it nothing is created — safe default.
+ * of the current capacity ledger + candidate umbrellas (+ optional readyIssues);
+ * the CLI runs the pure decision (core/umbrella-decomposer.ts), prints which
+ * umbrella it would shred or which ready issues to enqueue, and appends a
+ * dry-run observability row the next reflection reads. `--emit` (opt-in,
+ * default OFF) files leaf issues via `gh issue create` for shred actions;
+ * secondary ready-issue emit never auto-creates or auto-claims assigned work.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -31,17 +33,19 @@ import {
   type CapacitySignal,
   type LeafSpec,
   type QueueFeederDecision,
+  type ReadyIssue,
   type UmbrellaCandidate,
 } from '../core/umbrella-decomposer.js';
 
-export const USAGE = `kookr queue-feeder — auto-decompose product umbrellas into spawnable leaves (#1845).
+export const USAGE = `kookr queue-feeder — auto-decompose product umbrellas into spawnable leaves (#1845/#2044).
 
 Usage:
   kookr queue-feeder plan --input <file|-> [OPTIONS]
   kookr queue-feeder leaves --umbrella <owner/repo#N> [--json]
 
 plan          Read a capacity + umbrella snapshot, decide which ONE umbrella to
-              shred into 3–5 leaves, and print the dry-run plan. Appends an
+              shred into 3–5 leaves (or secondary-emit ready issues when product
+              leaves are empty — #2044), and print the dry-run plan. Appends an
               observability row to the queue-feeder ledger by default.
 leaves        Print the rendered GitHub issue bodies for a curated umbrella's
               leaf plan (goal + acceptance criteria + hints + backref).
@@ -52,7 +56,12 @@ Input JSON (plan), from --input <file> or '-' for stdin:
     "candidates": [
       { "repo": "owner/repo", "number": 1588, "title": "...",
         "labels": ["sec-anchor"], "openChildrenCount": 0 }
-    ]
+    ],
+    "readyIssues": [
+      { "repo": "owner/repo", "number": 2032, "title": "...",
+        "labels": ["idea-scout"], "assignees": [] }
+    ],
+    "openProductMetricIssues": 0
   }
 
 Options:
@@ -194,6 +203,38 @@ function defaultReadInput(path: string | null): string {
 interface QueueFeederSnapshot {
   capacity: CapacitySignal;
   candidates: UmbrellaCandidate[];
+  readyIssues: ReadyIssue[];
+  openProductMetricIssues?: number;
+}
+
+function parseReadyIssues(raw: unknown): ReadyIssue[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new QueueFeederUsageError('input.readyIssues must be an array when present');
+  }
+  return raw.map((c, i) => {
+    if (!c || typeof c !== 'object') {
+      throw new QueueFeederUsageError(`readyIssues[${i}] must be an object with { repo, number, title }`);
+    }
+    const row = c as Record<string, unknown>;
+    if (typeof row.repo !== 'string' || typeof row.number !== 'number' || typeof row.title !== 'string') {
+      throw new QueueFeederUsageError(`readyIssues[${i}] needs { repo, number, title }`);
+    }
+    const assignees = Array.isArray(row.assignees)
+      ? row.assignees.map((a) => String(a))
+      : undefined;
+    const state =
+      row.state === 'open' || row.state === 'closed' ? (row.state as 'open' | 'closed') : undefined;
+    return {
+      repo: row.repo,
+      number: row.number,
+      title: row.title,
+      labels: Array.isArray(row.labels) ? row.labels.map((l) => String(l)) : undefined,
+      assignees,
+      alreadyEmitted: typeof row.alreadyEmitted === 'boolean' ? row.alreadyEmitted : undefined,
+      state,
+    };
+  });
 }
 
 export function parseSnapshot(raw: string): QueueFeederSnapshot {
@@ -235,7 +276,14 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
       priority: typeof row.priority === 'number' ? row.priority : undefined,
     };
   });
-  return { capacity: { free: cap.free, pendingQueueDepth: cap.pendingQueueDepth }, candidates };
+  const openProductMetricIssues =
+    typeof obj.openProductMetricIssues === 'number' ? obj.openProductMetricIssues : undefined;
+  return {
+    capacity: { free: cap.free, pendingQueueDepth: cap.pendingQueueDepth },
+    candidates,
+    readyIssues: parseReadyIssues(obj.readyIssues),
+    openProductMetricIssues,
+  };
 }
 
 /** File one leaf as a GitHub issue in the umbrella's repo; returns the issue URL. */
@@ -281,6 +329,8 @@ function runPlan(
   const decision: QueueFeederDecision = evaluateQueueFeeder({
     capacity,
     candidates: snapshot.candidates,
+    readyIssues: snapshot.readyIssues,
+    openProductMetricIssues: snapshot.openProductMetricIssues,
     config: { freeSlotsThreshold: args.freeThreshold },
   });
 
@@ -288,7 +338,16 @@ function runPlan(
   let emitError: string | undefined;
   const dryRun = !args.emit;
 
-  if (args.emit && decision.selected && !decision.selected.needsAuthoring) {
+  // Primary shred only: create leaf issues for a plan-ready umbrella.
+  // Secondary ready-issue emit never creates issues (they already exist) and
+  // never auto-claims assignees — the playbook spawns implementers from
+  // decision.secondaryEmitted.
+  if (
+    args.emit &&
+    decision.action === 'shred' &&
+    decision.selected &&
+    !decision.selected.needsAuthoring
+  ) {
     // Accumulate created issue URLs as we go so a mid-loop failure still records
     // the issues that were already filed (they are otherwise orphaned — the next
     // run's live openChildrenCount refetch prevents duplicates, but the ledger
@@ -302,10 +361,26 @@ function runPlan(
     }
   }
 
+  // For secondary idea-scout path, surface selected refs as "emitted" (already
+  // open issues handed to the implement set) so the ledger matches agent audit.
+  if (decision.action === 'emit-secondary' && decision.actionSource === 'idea-scout') {
+    for (const item of decision.secondaryEmitted) {
+      emitted.push(item.ref);
+    }
+  }
+
   const record = buildQueueFeederRecord(decision, { now: io.now(), dryRun });
   if (args.persist) {
     const path = queueFeederLedgerPath(args.kookrDir);
-    io.appendLine(path, JSON.stringify({ ...record, emitted, emitError: emitError ?? null }));
+    io.appendLine(
+      path,
+      JSON.stringify({
+        ...record,
+        emitted,
+        emitError: emitError ?? null,
+        openProductMetricIssues: snapshot.openProductMetricIssues ?? null,
+      }),
+    );
   }
 
   if (emitError) {

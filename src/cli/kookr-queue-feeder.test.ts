@@ -105,7 +105,7 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     });
     const code = await runQueueFeederCli(['plan', '--input', '-'], { ...c, readInput: () => snap });
     expect(code).toBe(0);
-    expect(c.lines.join('\n')).toMatch(/no eligible umbrella/);
+    expect(c.lines.join('\n')).toMatch(/skip-invent|no eligible umbrella/);
   });
 
   it('does not trigger when overridden pending depth is non-zero', async () => {
@@ -166,7 +166,72 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     expect(ghCalls).toHaveLength(0); // needs-authoring guard prevents emission
     const payload = JSON.parse(c.lines[0]!);
     expect(payload.decision.selected.needsAuthoring).toBe(true);
+    expect(payload.decision.action).toBe('skip-invent');
     expect(payload.emitted).toHaveLength(0);
+  });
+
+  it('secondary-emits unassigned idea-scout issues when product leaves are empty (#2044)', async () => {
+    const c = capture();
+    const ghCalls: string[][] = [];
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'SEC anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 5,
+        },
+        {
+          repo: 'jeanibarz/lucy',
+          number: 2047,
+          title: 'Umbrella: idea-scout residual docs',
+          openChildrenCount: 0,
+        },
+      ],
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'feat: secondary A',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2033,
+          title: 'feat: claimed',
+          labels: ['idea-scout'],
+          assignees: ['someone-else'],
+        },
+      ],
+    });
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      readInput: () => snap,
+      runGh: (a) => {
+        ghCalls.push(a);
+        return '';
+      },
+    });
+    expect(code).toBe(0);
+    // Secondary path never creates issues (they already exist).
+    expect(ghCalls).toHaveLength(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.action).toBe('emit-secondary');
+    expect(payload.decision.actionSource).toBe('idea-scout');
+    expect(payload.decision.secondaryEmitted).toHaveLength(1);
+    expect(payload.decision.secondaryEmitted[0].ref).toBe('kookr-ai/kookr#2032');
+    expect(payload.emitted).toEqual(['kookr-ai/kookr#2032']);
+    expect(payload.record.action).toBe('emit-secondary');
+    expect(payload.record.source).toBe('idea-scout');
+    // Ledger row carries action for agent audit.
+    expect(c.ledger).toHaveLength(1);
+    const ledgerRow = JSON.parse(c.ledger[0]!.line);
+    expect(ledgerRow.action).toBe('emit-secondary');
+    expect(ledgerRow.secondaryEmitted).toEqual(['kookr-ai/kookr#2032']);
   });
 
   it('honours --free-threshold when overriding the idle-capacity gate', async () => {
