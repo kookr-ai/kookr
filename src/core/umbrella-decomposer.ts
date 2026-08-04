@@ -1,5 +1,5 @@
 /**
- * Queue-feeder / umbrella auto-decomposer (issue #1845).
+ * Queue-feeder / umbrella auto-decomposer (issue #1845 + #2044 secondary path).
  *
  * When the orchestration loop reports idle capacity with an empty queue
  * (`free >= threshold` AND `pendingQueueDepth == 0`), abundant product work
@@ -24,6 +24,16 @@
  *      blast radius.
  *   5. Produce a dry-run observability record the next reflection can read.
  *
+ * Issue #2044 secondary path — when product umbrellas are already shredded
+ * (or only needsAuthoring residuals remain) but free slots + empty queue still
+ * hold, do **not** dead-end on `skip-invent` while open idea-scout / ready
+ * issues sit unclaimed:
+ *
+ *   6. Prefer open, unassigned ready issues (idea-scout / ready-labeled),
+ *      cap ≤ N per fire, skip assignees and prior secondary emissions.
+ *   7. Else shred a residual umbrella that still has a curated leaf plan.
+ *   8. Only then `skip-invent` — free < threshold, queue busy, or no safe source.
+ *
  * Product-metric-blocking detection is reused from the value-density governor
  * (#1846) so the two governors agree on what "product-metric-blocking" means.
  */
@@ -43,6 +53,23 @@ export const DEFAULT_MIN_LEAVES = 3;
 
 /** Hard cap on leaves emitted per umbrella per run (bounds blast radius). */
 export const DEFAULT_MAX_LEAVES = 5;
+
+/**
+ * Cap on ready issues (idea-scout / ready-labeled) pulled into the implementable
+ * set per fire when primary product shred is empty (#2044). Bounds blast radius
+ * and keeps re-fires from flooding the queue.
+ */
+export const DEFAULT_MAX_SECONDARY_PER_FIRE = 3;
+
+/**
+ * Labels that mark an open issue as secondary-feed ready. Callers may pre-filter;
+ * when labels are present we still accept any issue the caller listed (they own
+ * the query), but prefer these tokens when ranking.
+ */
+export const DEFAULT_READY_ISSUE_LABELS: readonly string[] = Object.freeze([
+  'idea-scout',
+  'ready',
+]);
 
 /**
  * Labels/title tokens that mark an umbrella as harness / internal / orchestration
@@ -80,18 +107,24 @@ export interface QueueFeederConfig {
   minLeavesPerUmbrella: number;
   /** Emit at most this many leaves per umbrella per run. */
   maxLeavesPerUmbrella: number;
+  /** Cap ready-issue secondary emissions per fire (#2044). */
+  maxSecondaryPerFire: number;
   /** Labels marking product-metric-blocking work (case-insensitive). */
   productMetricLabels: readonly string[];
   /** Labels marking harness/internal umbrellas (case-insensitive). */
   harnessLabels: readonly string[];
+  /** Labels preferred when ranking ready issues for secondary emit. */
+  readyIssueLabels: readonly string[];
 }
 
 export const DEFAULT_QUEUE_FEEDER_CONFIG: Readonly<QueueFeederConfig> = Object.freeze({
   freeSlotsThreshold: DEFAULT_FREE_SLOTS_THRESHOLD,
   minLeavesPerUmbrella: DEFAULT_MIN_LEAVES,
   maxLeavesPerUmbrella: DEFAULT_MAX_LEAVES,
+  maxSecondaryPerFire: DEFAULT_MAX_SECONDARY_PER_FIRE,
   productMetricLabels: DEFAULT_PRODUCT_METRIC_LABELS,
   harnessLabels: DEFAULT_HARNESS_LABELS,
+  readyIssueLabels: DEFAULT_READY_ISSUE_LABELS,
 });
 
 /** The idle-capacity signal, sourced from `core/capacity-ledger.ts`. */
@@ -136,6 +169,51 @@ export interface LeafSpec {
   labels?: string[];
 }
 
+/**
+ * An already-open implementable issue (idea-scout / ready-labeled) that the
+ * feeder may pull into the implement set when product umbrella leaves are
+ * exhausted (#2044). Callers gather these from `gh issue list`; this module
+ * only ranks and caps.
+ */
+export interface ReadyIssue {
+  repo: string;
+  number: number;
+  title: string;
+  labels?: readonly string[];
+  /**
+   * Non-empty assignees mean the issue is claimed — never auto-emit / auto-claim
+   * work assigned to someone else.
+   */
+  assignees?: readonly string[];
+  /** When true, a prior secondary fire already selected this ref (idempotent). */
+  alreadyEmitted?: boolean;
+  /** Optional state; closed issues are skipped when present. */
+  state?: 'open' | 'closed';
+}
+
+/** What the feeder decided to do this fire (ledger `action` field). */
+export type QueueFeederAction =
+  | 'not-triggered'
+  | 'shred'
+  | 'emit-secondary'
+  | 'skip-invent';
+
+/** Provenance for an `emit-secondary` (or shred) decision. */
+export type QueueFeederActionSource =
+  | 'umbrella-shred'
+  | 'idea-scout'
+  | 'curated-umbrella'
+  | null;
+
+/** One ready issue selected for secondary emit, with a stable ref. */
+export interface SecondaryEmitItem {
+  ref: string;
+  repo: string;
+  number: number;
+  title: string;
+  labels: string[];
+}
+
 export interface UmbrellaClassification {
   productMetricBlocking: boolean;
   harness: boolean;
@@ -175,11 +253,20 @@ export interface QueueFeederDecision {
   triggered: boolean;
   triggerReason: string;
   capacity: CapacitySignal;
+  /** Ledger action: shred | emit-secondary | skip-invent | not-triggered. */
+  action: QueueFeederAction;
+  /** Provenance for shred / emit-secondary; null when not emitting. */
+  actionSource: QueueFeederActionSource;
   /** The chosen umbrella + its leaves, or null when nothing eligible/triggered. */
   selected: SelectedUmbrella | null;
+  /**
+   * Ready issues selected for secondary emit (#2044). Empty unless
+   * `action === 'emit-secondary'` and `actionSource === 'idea-scout'`.
+   */
+  secondaryEmitted: SecondaryEmitItem[];
   /** Every candidate that was not selected, with a reason (eligibility or lost-rank). */
   skipped: SkippedUmbrella[];
-  /** Count of well-formed leaves the selected umbrella would emit. */
+  /** Count of well-formed leaves the selected umbrella would emit (or secondary count). */
   leafCount: number;
   /** Always true here — this module never performs side effects. */
   dryRun: true;
@@ -197,7 +284,92 @@ export function mergeQueueFeederConfig(overrides?: Partial<QueueFeederConfig>): 
     productMetricLabels:
       overrides?.productMetricLabels ?? DEFAULT_QUEUE_FEEDER_CONFIG.productMetricLabels,
     harnessLabels: overrides?.harnessLabels ?? DEFAULT_QUEUE_FEEDER_CONFIG.harnessLabels,
+    readyIssueLabels: overrides?.readyIssueLabels ?? DEFAULT_QUEUE_FEEDER_CONFIG.readyIssueLabels,
   };
+}
+
+/** `owner/repo#123` for a ready issue — same shape as umbrella refs. */
+export function readyIssueRef(issue: Pick<ReadyIssue, 'repo' | 'number'>): string {
+  return `${issue.repo.trim()}#${issue.number}`;
+}
+
+/**
+ * Eligibility for secondary emit of a ready issue. Returns the skip reason when
+ * ineligible, or null when the issue may be emitted. Never auto-claims issues
+ * assigned to someone else (#2044).
+ */
+export function readyIssueSkipReason(issue: ReadyIssue): string | null {
+  if (!issue.repo || !issue.repo.includes('/')) {
+    return `invalid repo "${issue.repo}" — expected owner/repo`;
+  }
+  if (!Number.isInteger(issue.number) || issue.number <= 0) {
+    return `invalid issue number ${issue.number}`;
+  }
+  if (issue.state === 'closed') {
+    return 'issue is closed';
+  }
+  const assignees = (issue.assignees ?? []).map((a) => a.trim()).filter(Boolean);
+  if (assignees.length > 0) {
+    return `assigned to ${assignees.join(', ')} — do not auto-claim`;
+  }
+  if (issue.alreadyEmitted) {
+    return 'already emitted by a prior secondary fire (idempotent)';
+  }
+  return null;
+}
+
+/**
+ * Rank + cap ready issues for secondary emit. Skips assigned / closed / already
+ * emitted; prefers idea-scout / ready labels; stable input order as final key.
+ * Cap defaults to {@link DEFAULT_MAX_SECONDARY_PER_FIRE}.
+ */
+export function selectReadyIssues(
+  issues: readonly ReadyIssue[] | undefined,
+  config?: Partial<QueueFeederConfig>,
+): { selected: SecondaryEmitItem[]; skipped: SkippedUmbrella[] } {
+  const cfg = mergeQueueFeederConfig(config);
+  if (!issues || issues.length === 0) {
+    return { selected: [], skipped: [] };
+  }
+  const preferred = new Set(cfg.readyIssueLabels.map(normalizeLabel));
+  const eligible: Array<SecondaryEmitItem & { score: number; index: number }> = [];
+  const skipped: SkippedUmbrella[] = [];
+
+  issues.forEach((issue, index) => {
+    const reason = readyIssueSkipReason(issue);
+    if (reason) {
+      skipped.push({ ref: readyIssueRef(issue), reason });
+      return;
+    }
+    const labels = (issue.labels ?? []).map((l) => String(l));
+    const hasPreferred = labels.some((l) => preferred.has(normalizeLabel(l)));
+    // Preferred labels rank above unlabeled/other; within tier keep input order.
+    eligible.push({
+      ref: readyIssueRef(issue),
+      repo: issue.repo.trim(),
+      number: issue.number,
+      title: issue.title,
+      labels,
+      score: hasPreferred ? 10 : 0,
+      index,
+    });
+  });
+
+  eligible.sort((a, b) => b.score - a.score || a.index - b.index);
+  const selected = eligible.slice(0, cfg.maxSecondaryPerFire).map(({ ref, repo, number, title, labels }) => ({
+    ref,
+    repo,
+    number,
+    title,
+    labels,
+  }));
+  for (const extra of eligible.slice(cfg.maxSecondaryPerFire)) {
+    skipped.push({
+      ref: extra.ref,
+      reason: `over secondary cap (${cfg.maxSecondaryPerFire} per fire)`,
+    });
+  }
+  return { selected, skipped };
 }
 
 function normalizeLabel(label: string): string {
@@ -372,6 +544,18 @@ export interface QueueFeederInput {
   capacity: CapacitySignal;
   candidates: readonly UmbrellaCandidate[];
   /**
+   * Open implementable issues (idea-scout / ready-labeled) available when
+   * product umbrella shred cannot feed the queue (#2044). Pre-filter by the
+   * caller is fine; this module still enforces assignee / idempotency / cap.
+   */
+  readyIssues?: readonly ReadyIssue[];
+  /**
+   * Count of open product-metric leaf issues already on the belt. When `0`
+   * (or omitted while no shreddable product umbrella remains), the secondary
+   * ready-issue path may fire.
+   */
+  openProductMetricIssues?: number;
+  /**
    * Resolve the curated / authored leaf plan for a selected umbrella. Defaults
    * to {@link curatedLeafPlan} (the built-in vetted registry). Return undefined
    * when no plan exists yet — the umbrella is still selected but flagged
@@ -381,10 +565,28 @@ export interface QueueFeederInput {
   config?: Partial<QueueFeederConfig>;
 }
 
+function toSelected(
+  ranked: RankedUmbrella,
+  plan: NormalizedLeafPlan,
+): SelectedUmbrella {
+  return {
+    ref: umbrellaRef(ranked.candidate),
+    repo: ranked.candidate.repo,
+    number: ranked.candidate.number,
+    title: ranked.candidate.title,
+    productMetricBlocking: ranked.classification.productMetricBlocking,
+    harness: ranked.classification.harness,
+    rankScore: ranked.rankScore,
+    leaves: plan.leaves,
+    needsAuthoring: !plan.ok,
+    leafError: plan.ok ? undefined : plan.error,
+  };
+}
+
 /**
  * Full queue-feeder decision. Gates on idle capacity, ranks eligible umbrellas,
- * selects the top one, resolves + validates its leaf plan, and records every
- * non-selected candidate with a reason. Never performs side effects.
+ * prefers a shreddable product umbrella, then falls through to secondary emit
+ * of ready issues / residual curated plans (#2044). Never performs side effects.
  */
 export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecision {
   const cfg = mergeQueueFeederConfig(input.config);
@@ -400,7 +602,10 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
       triggered: false,
       triggerReason: reason,
       capacity,
+      action: 'not-triggered',
+      actionSource: null,
       selected: null,
+      secondaryEmitted: [],
       skipped: [],
       leafCount: 0,
       dryRun: true,
@@ -409,47 +614,124 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
 
   const { eligible, skipped } = rankUmbrellas(input.candidates, cfg);
 
-  if (eligible.length === 0) {
+  // Resolve leaf plans for every eligible umbrella once — primary shred picks
+  // the highest-ranked plan-ready umbrella; secondary curated residual reuses
+  // the same resolutions.
+  const resolved = eligible.map((ranked) => ({
+    ranked,
+    plan: normalizeLeafPlan(resolve(ranked.candidate), cfg),
+  }));
+
+  // --- Primary: shred a plan-ready umbrella (product-metric preferred by rank)
+  const shreddable = resolved.find((r) => r.plan.ok);
+  if (shreddable) {
+    const winner = shreddable.ranked;
+    const rest = eligible
+      .filter((r) => umbrellaRef(r.candidate) !== umbrellaRef(winner.candidate))
+      .map((r) => ({
+        ref: umbrellaRef(r.candidate),
+        reason: `not selected this run (${umbrellaRef(winner.candidate)} ranked higher, one umbrella per run)`,
+      }));
+    const selected = toSelected(winner, shreddable.plan);
     return {
       schemaVersion: QUEUE_FEEDER_SCHEMA,
       triggered: true,
       triggerReason: reason,
       capacity,
+      action: 'shred',
+      actionSource: 'umbrella-shred',
+      selected,
+      secondaryEmitted: [],
+      skipped: [...skipped, ...rest],
+      leafCount: shreddable.plan.leaves.length,
+      dryRun: true,
+    };
+  }
+
+  // Product leaf inventory is empty when the caller reports 0 open product-
+  // metric leaves, or (when the count is omitted) when no product-metric
+  // umbrella remains shreddable this run. A positive caller count blocks
+  // secondary emit — product leaves already exist for other actuators.
+  const productInventoryEmpty =
+    input.openProductMetricIssues !== undefined
+      ? input.openProductMetricIssues === 0
+      : !resolved.some(
+          (r) => r.ranked.classification.productMetricBlocking && r.plan.ok,
+        );
+
+  // --- Secondary #1: open unassigned idea-scout / ready issues (#2044)
+  if (productInventoryEmpty) {
+    const ready = selectReadyIssues(input.readyIssues, cfg);
+    if (ready.selected.length > 0) {
+      // Still surface the top needsAuthoring umbrella for observability, but
+      // the action is secondary emit — the playbook spawns ready issues, not invent.
+      const topResidual = resolved[0];
+      const residualSelected = topResidual
+        ? toSelected(topResidual.ranked, topResidual.plan)
+        : null;
+      const residualSkip = eligible.map((r) => ({
+        ref: umbrellaRef(r.candidate),
+        reason: residualSelected
+          ? `secondary emit preferred over residual umbrella ${residualSelected.ref} (needsAuthoring / no shreddable plan)`
+          : 'no shreddable plan — secondary ready-issue path selected',
+      }));
+      return {
+        schemaVersion: QUEUE_FEEDER_SCHEMA,
+        triggered: true,
+        triggerReason: reason,
+        capacity,
+        action: 'emit-secondary',
+        actionSource: 'idea-scout',
+        selected: residualSelected,
+        secondaryEmitted: ready.selected,
+        skipped: [...skipped, ...residualSkip, ...ready.skipped],
+        leafCount: ready.selected.length,
+        dryRun: true,
+      };
+    }
+  }
+
+  // --- Secondary #2 is already covered when shreddable exists above. If we
+  // reach here every eligible umbrella needs authoring (or none exist).
+
+  if (eligible.length === 0) {
+    // No umbrellas and no ready issues → honest skip-invent (or empty fire).
+    const readyEmpty = selectReadyIssues(input.readyIssues, cfg);
+    return {
+      schemaVersion: QUEUE_FEEDER_SCHEMA,
+      triggered: true,
+      triggerReason: reason,
+      capacity,
+      action: 'skip-invent',
+      actionSource: null,
       selected: null,
-      skipped,
+      secondaryEmitted: [],
+      skipped: [...skipped, ...readyEmpty.skipped],
       leafCount: 0,
       dryRun: true,
     };
   }
 
-  const winner = eligible[0]!;
+  // Residual needsAuthoring umbrella selected for ledger observability only —
+  // action is skip-invent so agents do not free-form invent leaves.
+  const top = resolved[0]!;
   const rest = eligible.slice(1).map((r) => ({
     ref: umbrellaRef(r.candidate),
-    reason: `not selected this run (${umbrellaRef(winner.candidate)} ranked higher, one umbrella per run)`,
+    reason: `not selected this run (${umbrellaRef(top.ranked.candidate)} ranked higher, one umbrella per run)`,
   }));
-
-  const plan = normalizeLeafPlan(resolve(winner.candidate), cfg);
-  const selected: SelectedUmbrella = {
-    ref: umbrellaRef(winner.candidate),
-    repo: winner.candidate.repo,
-    number: winner.candidate.number,
-    title: winner.candidate.title,
-    productMetricBlocking: winner.classification.productMetricBlocking,
-    harness: winner.classification.harness,
-    rankScore: winner.rankScore,
-    leaves: plan.leaves,
-    needsAuthoring: !plan.ok,
-    leafError: plan.ok ? undefined : plan.error,
-  };
-
+  const selected = toSelected(top.ranked, top.plan);
+  const readySkipped = selectReadyIssues(input.readyIssues, cfg).skipped;
   return {
     schemaVersion: QUEUE_FEEDER_SCHEMA,
     triggered: true,
     triggerReason: reason,
     capacity,
+    action: 'skip-invent',
+    actionSource: null,
     selected,
-    skipped: [...skipped, ...rest],
-    leafCount: plan.leaves.length,
+    secondaryEmitted: [],
+    skipped: [...skipped, ...rest, ...readySkipped],
+    leafCount: 0,
     dryRun: true,
   };
 }
@@ -490,12 +772,18 @@ export interface QueueFeederRecord {
   triggerReason: string;
   free: number;
   pendingQueueDepth: number;
+  /** Ledger action for reflection / agent audit (#2044). */
+  action: QueueFeederAction;
+  /** Provenance when action is shred / emit-secondary. */
+  source: QueueFeederActionSource;
   selectedRef: string | null;
   selectedTitle: string | null;
   productMetricBlocking: boolean | null;
   needsAuthoring: boolean;
   leafCount: number;
   leafTitles: string[];
+  /** Ready-issue refs selected for secondary emit (idea-scout path). */
+  secondaryEmitted: string[];
   skippedCount: number;
   skipped: SkippedUmbrella[];
   dryRun: boolean;
@@ -507,6 +795,10 @@ export function buildQueueFeederRecord(
   opts: { now?: Date; dryRun?: boolean } = {},
 ): QueueFeederRecord {
   const sel = decision.selected;
+  const secondaryTitles =
+    decision.action === 'emit-secondary' && decision.actionSource === 'idea-scout'
+      ? decision.secondaryEmitted.map((i) => i.title)
+      : sel?.leaves.map((l) => l.title) ?? [];
   return {
     schemaVersion: QUEUE_FEEDER_SCHEMA,
     ts: (opts.now ?? new Date()).toISOString(),
@@ -514,12 +806,15 @@ export function buildQueueFeederRecord(
     triggerReason: decision.triggerReason,
     free: decision.capacity.free,
     pendingQueueDepth: decision.capacity.pendingQueueDepth,
+    action: decision.action,
+    source: decision.actionSource,
     selectedRef: sel?.ref ?? null,
     selectedTitle: sel?.title ?? null,
     productMetricBlocking: sel ? sel.productMetricBlocking : null,
     needsAuthoring: sel?.needsAuthoring ?? false,
     leafCount: decision.leafCount,
-    leafTitles: sel?.leaves.map((l) => l.title) ?? [],
+    leafTitles: secondaryTitles,
+    secondaryEmitted: decision.secondaryEmitted.map((i) => i.ref),
     skippedCount: decision.skipped.length,
     skipped: decision.skipped,
     dryRun: opts.dryRun ?? true,
@@ -528,8 +823,27 @@ export function buildQueueFeederRecord(
 
 /** One-line summary for the reflection / velocity-probe log. */
 export function formatQueueFeederLine(record: QueueFeederRecord): string {
-  if (!record.triggered) {
+  if (!record.triggered || record.action === 'not-triggered') {
     return `queue-feeder: not triggered — ${record.triggerReason}`;
+  }
+  if (record.action === 'emit-secondary') {
+    const mode = record.dryRun ? 'DRY-RUN' : 'EMIT';
+    const src = record.source ?? 'secondary';
+    const refs =
+      record.secondaryEmitted.length > 0
+        ? record.secondaryEmitted.join(', ')
+        : record.selectedRef ?? '(none)';
+    return (
+      `queue-feeder [${mode}]: action=emit-secondary source=${src} → ${record.leafCount} item(s) ` +
+      `[${refs}]; ${record.skippedCount} skipped`
+    );
+  }
+  if (record.action === 'skip-invent') {
+    const sel = record.selectedRef ? ` selected=${record.selectedRef}` : '';
+    return (
+      `queue-feeder: action=skip-invent (free=${record.free}, queue empty)${sel} — ` +
+      `no safe secondary source (${record.skippedCount} skipped)`
+    );
   }
   if (!record.selectedRef) {
     return (
@@ -541,7 +855,7 @@ export function formatQueueFeederLine(record: QueueFeederRecord): string {
   const pm = record.productMetricBlocking ? 'product-metric' : 'harness/other';
   const authoring = record.needsAuthoring ? ' [needs-authoring: no vetted leaf plan]' : '';
   return (
-    `queue-feeder [${mode}]: shredded ${record.selectedRef} (${pm}) → ${record.leafCount} leaf(s)` +
+    `queue-feeder [${mode}]: action=shred shredded ${record.selectedRef} (${pm}) → ${record.leafCount} leaf(s)` +
     `${authoring}; ${record.skippedCount} umbrella(s) skipped`
   );
 }
