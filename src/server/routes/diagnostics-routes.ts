@@ -39,6 +39,7 @@ import { EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT } from '../terminal-input-rtt-metrics
 import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
+import { validateSpeechServiceUrl } from '../speech-service-url.js';
 import type { RouteDeps } from './shared.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
@@ -620,6 +621,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/health/stt', async (c) => {
     if (!deps.sttUrl) return c.json({ status: 'disabled' }, 200);
+    // Issue #2057: refuse to probe SSRF-prone STT URLs even if mis-injected after boot.
+    if (!validateSpeechServiceUrl(deps.sttUrl).ok) {
+      return c.json({ status: 'unavailable', reason: 'invalid-stt-url' }, 200);
+    }
     // Polling endpoint: frontend polls this and reads `status` from the body.
     // Returning 200 with status:'unavailable' lets the UI render a soft warning
     // without firing fetch() error handlers. Do not change to non-2xx.
@@ -633,6 +638,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/health/tts', async (c) => {
     if (!deps.ttsUrl) return c.json({ status: 'disabled' }, 200);
+    // Issue #2057: refuse to probe SSRF-prone TTS URLs even if mis-injected after boot.
+    if (!validateSpeechServiceUrl(deps.ttsUrl).ok) {
+      return c.json({ status: 'unavailable', reason: 'invalid-tts-url' }, 200);
+    }
     try {
       const res = await fetch(`${deps.ttsUrl.replace(/\/$/, '')}/health`, {
         signal: AbortSignal.timeout(3000),

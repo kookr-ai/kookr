@@ -1439,6 +1439,14 @@ describe('diagnostics routes', () => {
       const body = await res.json();
       expect(body.status).toBe('unavailable');
     });
+
+    test('returns {status:"unavailable"} without fetching when STT URL is blocked (#2057)', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const res = await mkApp({ sttUrl: 'http://169.254.169.254/latest/meta-data/' }).request('/api/health/stt');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'unavailable', reason: 'invalid-stt-url' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -1487,6 +1495,14 @@ describe('diagnostics routes', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ status: 'unavailable' });
+    });
+
+    test('returns {status:"unavailable"} without fetching when TTS URL is blocked (#2057)', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const res = await mkApp({ ttsUrl: 'http://metadata.google.internal/' }).request('/api/health/tts');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'unavailable', reason: 'invalid-tts-url' });
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 
