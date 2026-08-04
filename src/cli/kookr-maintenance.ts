@@ -63,13 +63,18 @@ interface ParsedArgs {
   maxAgeDays?: number;
   playbookMaxAgeDays?: number;
   playbookKeepLast?: number;
+  operatorSignalDeliveredMaxAgeDays?: number;
+  operatorSignalUndeliveredMaxAgeDays?: number;
+  operatorSignalMinAgeDays?: number;
   dir?: string;
   outDir?: string;
 }
 
 const USAGE = [
   'Usage:',
-  '  kookr maintenance prune [--dry-run] [--max-age-days N] [--playbook-max-age-days N] [--playbook-keep-last K] [--dir PATH] [--json]',
+  '  kookr maintenance prune [--dry-run] [--max-age-days N] [--playbook-max-age-days N] [--playbook-keep-last K]',
+  '    [--operator-signal-delivered-max-age-days N] [--operator-signal-undelivered-max-age-days N]',
+  '    [--operator-signal-min-age-days N] [--dir PATH] [--json]',
   '  kookr maintenance backup [--dir PATH] [--out PATH] [--json]',
 ].join('\n');
 
@@ -135,6 +140,50 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.playbookKeepLast = value;
         break;
       }
+      case '--operator-signal-delivered-max-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error =
+            '--operator-signal-delivered-max-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
+          parsed.error = `--operator-signal-delivered-max-age-days requires a positive number (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.operatorSignalDeliveredMaxAgeDays = value;
+        break;
+      }
+      case '--operator-signal-undelivered-max-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error =
+            '--operator-signal-undelivered-max-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
+          parsed.error = `--operator-signal-undelivered-max-age-days requires a positive number (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.operatorSignalUndeliveredMaxAgeDays = value;
+        break;
+      }
+      case '--operator-signal-min-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--operator-signal-min-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
+          parsed.error = `--operator-signal-min-age-days requires a positive number (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.operatorSignalMinAgeDays = value;
+        break;
+      }
       case '--dir': {
         const dir = argv[++i];
         if (!dir || dir.startsWith('--')) {
@@ -194,6 +243,12 @@ function formatHuman(result: MaintenancePruneResult): string {
       }
       if (r.kind === 'playbook-state-run') {
         lines.push(`    - playbook-state/${r.playbook}/${r.runKey}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        continue;
+      }
+      if (r.kind === 'operator-signal') {
+        lines.push(
+          `    - playbook-state/operator-signals/${r.fileName}  (${r.deliveryStatus}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`,
+        );
         continue;
       }
       lines.push(`    - ${basename(r.path)}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
@@ -259,6 +314,9 @@ export async function runMaintenanceCli(
       maxAgeDays: parsed.maxAgeDays,
       playbookStateMaxAgeDays: parsed.playbookMaxAgeDays,
       playbookStateKeepLast: parsed.playbookKeepLast,
+      operatorSignalDeliveredMaxAgeDays: parsed.operatorSignalDeliveredMaxAgeDays,
+      operatorSignalUndeliveredMaxAgeDays: parsed.operatorSignalUndeliveredMaxAgeDays,
+      operatorSignalMinAgeDays: parsed.operatorSignalMinAgeDays,
     });
     out.log(parsed.json ? JSON.stringify(result, null, 2) : formatHuman(result));
     return 0;
