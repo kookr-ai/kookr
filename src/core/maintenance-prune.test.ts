@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -591,5 +591,226 @@ describe('planAndPruneMaintenance', () => {
   test('rejects a negative playbookStateKeepLast', async () => {
     await writeTasks([]);
     await expect(planAndPruneMaintenance({ dataDir, maxAgeDays: 30, playbookStateKeepLast: -1, now })).rejects.toThrow(/non-negative/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Operator-signal spool retention (issue #2034)
+  // ---------------------------------------------------------------------------
+
+  async function writeOperatorSignal(
+    fileName: string,
+    opts: {
+      createdAt?: string;
+      mtimeDaysAgo?: number;
+      key?: string;
+    } = {},
+  ): Promise<string> {
+    const signalDir = join(dataDir, 'playbook-state', 'operator-signals');
+    await mkdir(signalDir, { recursive: true });
+    const path = join(signalDir, fileName);
+    const createdAt = opts.createdAt ?? daysAgo(opts.mtimeDaysAgo ?? 0);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 'operator-signal.v1',
+        key: opts.key ?? fileName.replace(/\.json$/, ''),
+        kind: 'alert',
+        source: 'test',
+        title: 'test signal',
+        createdAt,
+      }),
+      'utf8',
+    );
+    if (opts.mtimeDaysAgo !== undefined) {
+      const when = new Date(NOW - opts.mtimeDaysAgo * MS_PER_DAY);
+      await utimes(path, when, when);
+    }
+    return path;
+  }
+
+  async function writeDeliveredMarker(entries: Record<string, string>): Promise<string> {
+    const signalDir = join(dataDir, 'playbook-state', 'operator-signals');
+    await mkdir(signalDir, { recursive: true });
+    const path = join(signalDir, '.delivered.json');
+    await writeFile(path, JSON.stringify(entries, null, 2), 'utf8');
+    return path;
+  }
+
+  test('dry-run lists aged delivered operator-signal files without deleting', async () => {
+    await writeTasks([]);
+    const createdAt = daysAgo(14);
+    const aged = await writeOperatorSignal('deploy-lag-alert.json', {
+      createdAt,
+      mtimeDaysAgo: 14,
+    });
+    const markerPath = await writeDeliveredMarker({ 'deploy-lag-alert.json': createdAt });
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, dryRun: true, now });
+
+    const signals = result.planned.filter((p) => p.kind === 'operator-signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      kind: 'operator-signal',
+      reason: 'operator-signal-delivered-aged',
+      deliveryStatus: 'delivered',
+      fileName: 'deploy-lag-alert.json',
+    });
+    expect(result.removed).toHaveLength(0);
+    expect(await exists(aged)).toBe(true);
+    // Dry-run must not scrub the delivered marker either.
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, string>;
+    expect(marker['deploy-lag-alert.json']).toBe(createdAt);
+  });
+
+  test('live prune deletes aged delivered signals and scrubs the marker', async () => {
+    await writeTasks([]);
+    const createdAt = daysAgo(14);
+    const aged = await writeOperatorSignal('deploy-lag-alert.json', {
+      createdAt,
+      mtimeDaysAgo: 14,
+    });
+    const markerPath = await writeDeliveredMarker({
+      'deploy-lag-alert.json': createdAt,
+      'keep-me.json': daysAgo(1),
+    });
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    const signals = result.planned.filter((p) => p.kind === 'operator-signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0].reason).toBe('operator-signal-delivered-aged');
+    expect(result.removed).toHaveLength(1);
+    expect(await exists(aged)).toBe(false);
+    const marker = JSON.parse(await readFile(markerPath, 'utf8')) as Record<string, string>;
+    expect(marker['deploy-lag-alert.json']).toBeUndefined();
+    expect(marker['keep-me.json']).toBe(daysAgo(1));
+  });
+
+  test('keeps undelivered signals under the longer undelivered cap', async () => {
+    await writeTasks([]);
+    // 14 days old: past delivered default (7) but under undelivered default (30).
+    const pending = await writeOperatorSignal('prod-smoke-fail.json', {
+      createdAt: daysAgo(14),
+      mtimeDaysAgo: 14,
+    });
+    // No delivered marker entry → undelivered.
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned.filter((p) => p.kind === 'operator-signal')).toHaveLength(0);
+    expect(await exists(pending)).toBe(true);
+  });
+
+  test('prunes undelivered signals past the undelivered age cap', async () => {
+    await writeTasks([]);
+    const stale = await writeOperatorSignal('starvation.json', {
+      createdAt: daysAgo(45),
+      mtimeDaysAgo: 45,
+    });
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    const signals = result.planned.filter((p) => p.kind === 'operator-signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      reason: 'operator-signal-undelivered-aged',
+      deliveryStatus: 'undelivered',
+      fileName: 'starvation.json',
+    });
+    expect(await exists(stale)).toBe(false);
+  });
+
+  test('never deletes active fire keys younger than the min-age floor', async () => {
+    await writeTasks([]);
+    // Age past the delivery caps (1d) but still under the floor (3d) so the
+    // floor is the sole keep reason — without it this file would be pruned.
+    const createdAt = daysAgo(2);
+    const underFloor = await writeOperatorSignal('fresh-fire.json', {
+      createdAt,
+      mtimeDaysAgo: 2,
+    });
+    await writeDeliveredMarker({ 'fresh-fire.json': createdAt });
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      operatorSignalDeliveredMaxAgeDays: 1,
+      operatorSignalUndeliveredMaxAgeDays: 1,
+      operatorSignalMinAgeDays: 3,
+      now,
+    });
+
+    expect(result.planned.filter((p) => p.kind === 'operator-signal')).toHaveLength(0);
+    expect(await exists(underFloor)).toBe(true);
+  });
+
+  test('re-emitted signal with stale marker is treated as undelivered', async () => {
+    await writeTasks([]);
+    // Marker has an older createdAt than the current file → pending re-delivery.
+    const currentCreatedAt = daysAgo(20);
+    const file = await writeOperatorSignal('flap.json', {
+      createdAt: currentCreatedAt,
+      mtimeDaysAgo: 20,
+    });
+    await writeDeliveredMarker({ 'flap.json': daysAgo(40) });
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      operatorSignalDeliveredMaxAgeDays: 7,
+      operatorSignalUndeliveredMaxAgeDays: 14, // 20d > 14d → prune as undelivered
+      now,
+    });
+
+    const signals = result.planned.filter((p) => p.kind === 'operator-signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0].deliveryStatus).toBe('undelivered');
+    expect(await exists(file)).toBe(false);
+  });
+
+  test('does not treat operator-signals dir as a playbook-state run tree', async () => {
+    await writeTasks([]);
+    // Flat signal files only — no nested run dirs. Playbook planner must skip
+    // the well-known spool name even if a nested dir appears later.
+    await writeOperatorSignal('ok.json', { createdAt: daysAgo(2), mtimeDaysAgo: 2 });
+    const nested = join(dataDir, 'playbook-state', 'operator-signals', 'bogus-run');
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(nested, 'state.json'), '{}', 'utf8');
+    const when = new Date(NOW - 90 * MS_PER_DAY);
+    await utimes(nested, when, when);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned.filter((p) => p.kind === 'playbook-state-run')).toHaveLength(0);
+    expect(await exists(nested)).toBe(true);
+  });
+
+  test('malformed tasks.json still prunes aged operator-signal files', async () => {
+    await writeFile(join(dataDir, 'tasks.json'), '{ this is not json', 'utf8');
+    const createdAt = daysAgo(20);
+    const aged = await writeOperatorSignal('deploy-lag-alert.json', {
+      createdAt,
+      mtimeDaysAgo: 20,
+    });
+    await writeDeliveredMarker({ 'deploy-lag-alert.json': createdAt });
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.warnings.join('\n')).toMatch(/tasks\.json is unreadable/);
+    expect(result.planned.filter((p) => p.kind === 'operator-signal')).toHaveLength(1);
+    expect(await exists(aged)).toBe(false);
+  });
+
+  test('rejects non-positive operator-signal age options', async () => {
+    await writeTasks([]);
+    await expect(
+      planAndPruneMaintenance({ dataDir, maxAgeDays: 30, operatorSignalDeliveredMaxAgeDays: 0, now }),
+    ).rejects.toThrow(/operatorSignalDeliveredMaxAgeDays/);
+    await expect(
+      planAndPruneMaintenance({ dataDir, maxAgeDays: 30, operatorSignalUndeliveredMaxAgeDays: -1, now }),
+    ).rejects.toThrow(/operatorSignalUndeliveredMaxAgeDays/);
+    await expect(
+      planAndPruneMaintenance({ dataDir, maxAgeDays: 30, operatorSignalMinAgeDays: 0, now }),
+    ).rejects.toThrow(/operatorSignalMinAgeDays/);
   });
 });

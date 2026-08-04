@@ -1,4 +1,4 @@
-import { readFile, readdir, rm, stat, unlink } from 'node:fs/promises';
+import { readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 
@@ -18,8 +18,11 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  *    references any more;
  *  - activity-ledger files (`activity/<kookrSessionId>.jsonl` and their rotated
  *    `.jsonl.1` companion) under the same terminal/orphan-and-aged rules;
- *  - aged rotated `server.log.N` generations; and
- *  - aged `playbook-state/<playbook>/<runKey>` run directories.
+ *  - aged rotated `server.log.N` generations;
+ *  - aged `playbook-state/<playbook>/<runKey>` run directories; and
+ *  - aged operator-signal spool files under
+ *    `playbook-state/operator-signals/` (issue #2034), with separate caps for
+ *    delivered vs undelivered files and a minimum-age floor for active fire keys.
  *
  * ## Why these stores, and (deliberately) nothing else
  *
@@ -50,6 +53,21 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  * whose `runKey` matches a still-active task id, so an in-flight resume is never
  * pulled out from under a running task (idea-scout rank 6).
  *
+ * Operator-signal spool files live at
+ * `<dataDir>/playbook-state/operator-signals/<key>.json` (issue #1716/#2034).
+ * The delivery bridge marks delivered occurrences in a sibling
+ * `.delivered.json` (file name → delivered `createdAt`). Multi-day unattended
+ * runs can accumulate these files without retention; the planner therefore
+ * removes delivered files older than
+ * {@link MaintenancePruneOptions.operatorSignalDeliveredMaxAgeDays} and
+ * undelivered files older than
+ * {@link MaintenancePruneOptions.operatorSignalUndeliveredMaxAgeDays}, while
+ * never deleting files younger than
+ * {@link MaintenancePruneOptions.operatorSignalMinAgeDays} (active fire-key
+ * floor). Undelivered defaults are longer than delivered so offline paging is
+ * not truncated early. The well-known `operator-signals` directory is never
+ * treated as a playbook with run keys.
+ *
  * Every other on-disk store is left intact on purpose — see
  * {@link PRESERVED_STORES} for the per-store rationale. The guiding rule from
  * the issue: when a store is ambiguous to map, or is needed for crash recovery
@@ -63,6 +81,10 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
 const HOOKS_DIRNAME = 'hooks';
 const ACTIVITY_DIRNAME = 'activity';
 const PLAYBOOK_STATE_DIRNAME = 'playbook-state';
+/** Flat spool under playbook-state; matches operator-signal.ts path layout. */
+const OPERATOR_SIGNALS_DIRNAME = 'operator-signals';
+/** Delivery marker file name; mirrors DELIVERED_MARKER_FILE in operator-signal.ts. */
+const OPERATOR_SIGNAL_DELIVERED_MARKER = '.delivered.json';
 const SERVER_LOG_GENERATION_RE = /^server\.log\.(\d+)$/;
 /** Rotated JSONL segment: `<session>.jsonl.N`. Captures the owning session and
  *  the numeric generation. Shared by hook logs (issue #1433) and the activity
@@ -71,6 +93,12 @@ const ROTATED_JSONL_RE = /^(.*)\.jsonl\.(\d+)$/;
 const DEFAULT_MAX_AGE_DAYS = 30;
 /** Keep the newest N runs per playbook regardless of age (0 = age-only). */
 const DEFAULT_PLAYBOOK_STATE_KEEP_LAST = 0;
+/** Delivered operator-signal files older than this many days are pruneable. */
+const DEFAULT_OPERATOR_SIGNAL_DELIVERED_MAX_AGE_DAYS = 7;
+/** Undelivered files keep a longer default so offline pages are not lost early. */
+const DEFAULT_OPERATOR_SIGNAL_UNDELIVERED_MAX_AGE_DAYS = 30;
+/** Absolute floor: never delete fire keys younger than this many days. */
+const DEFAULT_OPERATOR_SIGNAL_MIN_AGE_DAYS = 1;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface MaintenancePruneOptions {
@@ -94,6 +122,26 @@ export interface MaintenancePruneOptions {
    * runs from removal — it never triggers extra deletion.
    */
   playbookStateKeepLast?: number;
+  /**
+   * Age threshold (days) for operator-signal files whose current occurrence is
+   * marked delivered in `.delivered.json`. Defaults to
+   * {@link DEFAULT_OPERATOR_SIGNAL_DELIVERED_MAX_AGE_DAYS}. Values <= 0 rejected.
+   */
+  operatorSignalDeliveredMaxAgeDays?: number;
+  /**
+   * Age threshold (days) for operator-signal files not yet delivered (or
+   * re-emitted with a fresher `createdAt` than the marker). Defaults to
+   * {@link DEFAULT_OPERATOR_SIGNAL_UNDELIVERED_MAX_AGE_DAYS}, which is longer
+   * than the delivered default so undelivered alerts survive offline windows.
+   * Values <= 0 rejected.
+   */
+  operatorSignalUndeliveredMaxAgeDays?: number;
+  /**
+   * Absolute minimum age (days) before any operator-signal file is eligible —
+   * the active fire-key floor. Defaults to
+   * {@link DEFAULT_OPERATOR_SIGNAL_MIN_AGE_DAYS}. Values <= 0 rejected.
+   */
+  operatorSignalMinAgeDays?: number;
   /** When true, compute the plan but do not delete anything. Defaults to false. */
   dryRun?: boolean;
   /** Injectable clock (ms since epoch) for deterministic tests. Defaults to `Date.now`. */
@@ -156,11 +204,22 @@ export interface PlaybookStateRunPlannedRemoval extends PlannedRemovalBase {
   runKey: string;
 }
 
+export interface OperatorSignalPlannedRemoval extends PlannedRemovalBase {
+  /** Artifact category. */
+  kind: 'operator-signal';
+  reason: 'operator-signal-delivered-aged' | 'operator-signal-undelivered-aged';
+  /** Basename of the signal file under `playbook-state/operator-signals/`. */
+  fileName: string;
+  /** Whether the current occurrence matched the delivered marker at plan time. */
+  deliveryStatus: 'delivered' | 'undelivered';
+}
+
 export type PlannedRemoval =
   | HookLogPlannedRemoval
   | ActivityLedgerPlannedRemoval
   | ServerLogGenerationPlannedRemoval
-  | PlaybookStateRunPlannedRemoval;
+  | PlaybookStateRunPlannedRemoval
+  | OperatorSignalPlannedRemoval;
 
 export interface PreservedStore {
   /** Human-readable label of the store left intact. */
@@ -635,6 +694,9 @@ async function planPlaybookStateRemovals({
   for (const playbookEntry of playbookDirs) {
     if (!playbookEntry.isDirectory()) continue;
     const playbook = playbookEntry.name;
+    // The operator-signal spool is a flat file directory under playbook-state,
+    // not a playbook with run keys — it has its own retention planner (issue #2034).
+    if (playbook === OPERATOR_SIGNALS_DIRNAME) continue;
     const playbookDir = join(root, playbook);
 
     let runEntries: Dirent[];
@@ -685,6 +747,163 @@ async function planPlaybookStateRemovals({
   return planned;
 }
 
+/**
+ * True when a basename looks like an operator-signal payload file (not a
+ * marker, temp, or other sidecar). Mirrors listSignalFiles() in
+ * operator-signal.ts without importing across the observability boundary.
+ */
+function isOperatorSignalPayloadFile(name: string): boolean {
+  return name.endsWith('.json') && !name.startsWith('.') && !name.includes('.tmp-');
+}
+
+/**
+ * Load the delivery marker. Corrupt/missing → empty object (all files treated
+ * as undelivered, which uses the longer retention and is the safe default).
+ */
+async function loadOperatorSignalDeliveredMarker(
+  signalDir: string,
+): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(join(signalDir, OPERATOR_SIGNAL_DELIVERED_MARKER), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // Corrupt/unreadable: fall through to empty marker.
+    }
+  }
+  return {};
+}
+
+/** Best-effort `createdAt` from a signal file; undefined when unreadable. */
+async function readOperatorSignalCreatedAt(filePath: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as { createdAt?: unknown }).createdAt === 'string'
+    ) {
+      return (parsed as { createdAt: string }).createdAt;
+    }
+  } catch {
+    // unreadable / invalid JSON — treat as undelivered below
+  }
+  return undefined;
+}
+
+async function planOperatorSignalRemovals({
+  dataDir,
+  deliveredMaxAgeDays,
+  undeliveredMaxAgeDays,
+  minAgeDays,
+  now,
+  warnings,
+}: {
+  dataDir: string;
+  deliveredMaxAgeDays: number;
+  undeliveredMaxAgeDays: number;
+  minAgeDays: number;
+  now: () => number;
+  warnings: string[];
+}): Promise<OperatorSignalPlannedRemoval[]> {
+  const planned: OperatorSignalPlannedRemoval[] = [];
+  const signalDir = join(dataDir, PLAYBOOK_STATE_DIRNAME, OPERATOR_SIGNALS_DIRNAME);
+  const floorMs = now() - minAgeDays * MS_PER_DAY;
+  const deliveredThresholdMs = now() - deliveredMaxAgeDays * MS_PER_DAY;
+  const undeliveredThresholdMs = now() - undeliveredMaxAgeDays * MS_PER_DAY;
+
+  let entries: string[];
+  try {
+    entries = await readdir(signalDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return planned;
+    warnings.push(`Could not read operator-signal directory ${signalDir}: ${(err as Error).message}`);
+    return planned;
+  }
+
+  const marker = await loadOperatorSignalDeliveredMarker(signalDir);
+
+  for (const fileName of entries) {
+    if (!isOperatorSignalPayloadFile(fileName)) continue;
+
+    const filePath = join(signalDir, fileName);
+    let bytes = 0;
+    let mtimeMs = now();
+    try {
+      const st = await stat(filePath);
+      if (!st.isFile()) continue;
+      bytes = st.size;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue; // vanished between readdir and stat
+    }
+
+    // Active fire-key floor: never delete anything younger than minAgeDays,
+    // even when the configured delivery cap would otherwise allow it.
+    if (mtimeMs > floorMs) continue;
+
+    const createdAt = await readOperatorSignalCreatedAt(filePath);
+    const isDelivered =
+      createdAt !== undefined && marker[fileName] === createdAt;
+    const thresholdMs = isDelivered ? deliveredThresholdMs : undeliveredThresholdMs;
+    if (mtimeMs > thresholdMs) continue;
+
+    planned.push({
+      path: filePath,
+      kind: 'operator-signal',
+      reason: isDelivered ? 'operator-signal-delivered-aged' : 'operator-signal-undelivered-aged',
+      fileName,
+      deliveryStatus: isDelivered ? 'delivered' : 'undelivered',
+      bytes,
+      ageDays: Math.floor((now() - mtimeMs) / MS_PER_DAY),
+    });
+  }
+
+  return planned;
+}
+
+/**
+ * Drop marker entries for files we just removed so the delivered map does not
+ * grow unbounded after the spool files themselves are gone.
+ */
+async function scrubOperatorSignalMarker(
+  dataDir: string,
+  removedFileNames: string[],
+  warnings: string[],
+): Promise<void> {
+  if (removedFileNames.length === 0) return;
+  const signalDir = join(dataDir, PLAYBOOK_STATE_DIRNAME, OPERATOR_SIGNALS_DIRNAME);
+  const markerPath = join(signalDir, OPERATOR_SIGNAL_DELIVERED_MARKER);
+  let marker: Record<string, string>;
+  try {
+    marker = await loadOperatorSignalDeliveredMarker(signalDir);
+  } catch {
+    return;
+  }
+  let changed = false;
+  for (const name of removedFileNames) {
+    if (name in marker) {
+      delete marker[name];
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  try {
+    const tmp = `${markerPath}.tmp-prune`;
+    await writeFile(tmp, JSON.stringify(marker, null, 2), 'utf8');
+    await rename(tmp, markerPath);
+  } catch (err) {
+    warnings.push(
+      `Failed to scrub operator-signal delivered marker after prune: ${(err as Error).message}`,
+    );
+  }
+}
+
 async function removeArtifact(removal: PlannedRemoval): Promise<void> {
   if (removal.kind === 'playbook-state-run') {
     await rm(removal.path, { recursive: true, force: true });
@@ -720,6 +939,27 @@ export async function planAndPruneMaintenance(
       `playbookStateKeepLast must be a non-negative integer (got ${String(options.playbookStateKeepLast)})`,
     );
   }
+  const operatorSignalDeliveredMaxAgeDays =
+    options.operatorSignalDeliveredMaxAgeDays ?? DEFAULT_OPERATOR_SIGNAL_DELIVERED_MAX_AGE_DAYS;
+  if (!Number.isFinite(operatorSignalDeliveredMaxAgeDays) || operatorSignalDeliveredMaxAgeDays <= 0) {
+    throw new Error(
+      `operatorSignalDeliveredMaxAgeDays must be a positive number (got ${String(options.operatorSignalDeliveredMaxAgeDays)})`,
+    );
+  }
+  const operatorSignalUndeliveredMaxAgeDays =
+    options.operatorSignalUndeliveredMaxAgeDays ?? DEFAULT_OPERATOR_SIGNAL_UNDELIVERED_MAX_AGE_DAYS;
+  if (!Number.isFinite(operatorSignalUndeliveredMaxAgeDays) || operatorSignalUndeliveredMaxAgeDays <= 0) {
+    throw new Error(
+      `operatorSignalUndeliveredMaxAgeDays must be a positive number (got ${String(options.operatorSignalUndeliveredMaxAgeDays)})`,
+    );
+  }
+  const operatorSignalMinAgeDays =
+    options.operatorSignalMinAgeDays ?? DEFAULT_OPERATOR_SIGNAL_MIN_AGE_DAYS;
+  if (!Number.isFinite(operatorSignalMinAgeDays) || operatorSignalMinAgeDays <= 0) {
+    throw new Error(
+      `operatorSignalMinAgeDays must be a positive number (got ${String(options.operatorSignalMinAgeDays)})`,
+    );
+  }
 
   const warnings: string[] = [];
   const result: MaintenancePruneResult = {
@@ -736,13 +976,22 @@ export async function planAndPruneMaintenance(
   const tasks = await readTasks(dataDir);
   if (tasks === undefined) {
     // We cannot tell active sessions from dead ones — refuse to delete any
-    // session-keyed or task-keyed artifact. server.log generations are process
-    // diagnostics with no task dependency, so they can still be pruned.
+    // session-keyed or task-keyed artifact. server.log generations and the
+    // operator-signal spool are process/outbox diagnostics with no task
+    // dependency, so they can still be pruned.
     warnings.push(
       'tasks.json is unreadable or malformed; skipping hook-log, activity-ledger, and playbook-state pruning to avoid deleting live state.',
     );
     result.planned.push(
       ...(await planServerLogGenerationRemovals({ dataDir, maxAgeDays, now, warnings })),
+      ...(await planOperatorSignalRemovals({
+        dataDir,
+        deliveredMaxAgeDays: operatorSignalDeliveredMaxAgeDays,
+        undeliveredMaxAgeDays: operatorSignalUndeliveredMaxAgeDays,
+        minAgeDays: operatorSignalMinAgeDays,
+        now,
+        warnings,
+      })),
     );
   } else {
     const classification = classifySessions(tasks, now);
@@ -758,12 +1007,21 @@ export async function planAndPruneMaintenance(
         classification,
         warnings,
       })),
+      ...(await planOperatorSignalRemovals({
+        dataDir,
+        deliveredMaxAgeDays: operatorSignalDeliveredMaxAgeDays,
+        undeliveredMaxAgeDays: operatorSignalUndeliveredMaxAgeDays,
+        minAgeDays: operatorSignalMinAgeDays,
+        now,
+        warnings,
+      })),
     );
   }
 
   // Stable, deterministic ordering for output and tests.
   result.planned.sort((a, b) => a.path.localeCompare(b.path));
 
+  const removedOperatorSignalNames: string[] = [];
   for (const removal of result.planned) {
     if (dryRun) {
       result.reclaimedBytes += removal.bytes; // reclaimable, not yet reclaimed
@@ -773,14 +1031,24 @@ export async function planAndPruneMaintenance(
       await removeArtifact(removal);
       result.removed.push(removal);
       result.reclaimedBytes += removal.bytes;
+      if (removal.kind === 'operator-signal') {
+        removedOperatorSignalNames.push(removal.fileName);
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         // Already gone — idempotent success, but no bytes actually reclaimed now.
         result.removed.push(removal);
+        if (removal.kind === 'operator-signal') {
+          removedOperatorSignalNames.push(removal.fileName);
+        }
         continue;
       }
       warnings.push(`Failed to remove ${removal.path}: ${(err as Error).message}`);
     }
+  }
+
+  if (!dryRun) {
+    await scrubOperatorSignalMarker(dataDir, removedOperatorSignalNames, warnings);
   }
 
   return result;

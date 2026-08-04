@@ -187,6 +187,60 @@ describe('runMaintenanceCli', () => {
     expect(c.errors.join('\n')).toMatch(/--playbook-keep-last requires a non-negative integer/);
   });
 
+  test('prune dry-run lists aged operator-signal files via CLI flags', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    const signalDir = join(dataDir, 'playbook-state', 'operator-signals');
+    await mkdir(signalDir, { recursive: true });
+    const createdAt = new Date(Date.now() - 14 * MS_PER_DAY).toISOString();
+    const signalPath = join(signalDir, 'deploy-lag-alert.json');
+    await writeFile(
+      signalPath,
+      JSON.stringify({
+        schemaVersion: 'operator-signal.v1',
+        key: 'deploy-lag:alert',
+        kind: 'alert',
+        source: 'deploy-lag',
+        title: 'behind',
+        createdAt,
+      }),
+      'utf8',
+    );
+    await writeFile(join(signalDir, '.delivered.json'), JSON.stringify({ 'deploy-lag-alert.json': createdAt }), 'utf8');
+    const old = new Date(Date.now() - 14 * MS_PER_DAY);
+    await utimes(signalPath, old, old);
+
+    const c = captureConsole();
+    const code = await runMaintenanceCli(
+      [
+        'prune',
+        '--dry-run',
+        '--dir',
+        dataDir,
+        '--operator-signal-delivered-max-age-days',
+        '7',
+        '--operator-signal-undelivered-max-age-days',
+        '30',
+        '--operator-signal-min-age-days',
+        '1',
+      ],
+      { out: c.out },
+    );
+    expect(code).toBe(0);
+    expect(c.logs.join('\n')).toMatch(/playbook-state\/operator-signals\/deploy-lag-alert\.json/);
+    expect(c.logs.join('\n')).toMatch(/delivered/);
+    expect(await exists(signalPath)).toBe(true);
+  });
+
+  test('rejects non-positive --operator-signal-*-max-age-days', async () => {
+    const c = captureConsole();
+    const code = await runMaintenanceCli(
+      ['prune', '--dir', dataDir, '--operator-signal-delivered-max-age-days', '0'],
+      { out: c.out },
+    );
+    expect(code).toBe(2);
+    expect(c.errors.join('\n')).toMatch(/operator-signal-delivered-max-age-days requires a positive/);
+  });
+
   test('rejects a non-positive --playbook-max-age-days', async () => {
     const c = captureConsole();
     const code = await runMaintenanceCli(['prune', '--dir', dataDir, '--playbook-max-age-days', '0'], { out: c.out });
