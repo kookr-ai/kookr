@@ -1,5 +1,9 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { PlaybookUsageTracker } from './playbook-usage.js';
+import {
+  PlaybookUsageTracker,
+  matchesUsageKey,
+  snapshotKey,
+} from './playbook-usage.js';
 
 function fakeStorage(data?: Map<string, string>) {
   const storage = data ?? new Map<string, string>();
@@ -11,6 +15,129 @@ function fakeStorage(data?: Map<string, string>) {
     } as Pick<Storage, 'getItem' | 'setItem'>,
   };
 }
+
+describe('snapshotKey / matchesUsageKey', () => {
+  test('snapshotKey is sourceCwd::playbookId', () => {
+    expect(snapshotKey('deploy.md', '/project-a')).toBe('/project-a::deploy.md');
+  });
+
+  test('matchesUsageKey accepts composite and bare legacy ids', () => {
+    expect(matchesUsageKey('/project-a::deploy.md', 'deploy.md', '/project-a')).toBe(true);
+    expect(matchesUsageKey('deploy.md', 'deploy.md', '/project-a')).toBe(true);
+    expect(matchesUsageKey('/project-b::deploy.md', 'deploy.md', '/project-a')).toBe(false);
+    expect(matchesUsageKey('other.md', 'deploy.md', '/project-a')).toBe(false);
+  });
+});
+
+describe('PlaybookUsageTracker — pin and recent (composite keys)', () => {
+  let storage: ReturnType<typeof fakeStorage>;
+  let tracker: PlaybookUsageTracker;
+
+  beforeEach(() => {
+    storage = fakeStorage();
+    tracker = new PlaybookUsageTracker(storage.impl);
+  });
+
+  test('recordLaunch stores composite key and isolates by sourceCwd', () => {
+    tracker.recordLaunch('deploy.md', '/project-a');
+    tracker.recordLaunch('deploy.md', '/project-b');
+
+    expect(tracker.getRecent()).toEqual([
+      '/project-b::deploy.md',
+      '/project-a::deploy.md',
+    ]);
+    expect(tracker.recentIndex('deploy.md', '/project-a')).toBe(1);
+    expect(tracker.recentIndex('deploy.md', '/project-b')).toBe(0);
+  });
+
+  test('recordLaunch re-launch moves entry to front without duplicates', () => {
+    tracker.recordLaunch('a.md', '/p');
+    tracker.recordLaunch('b.md', '/p');
+    tracker.recordLaunch('a.md', '/p');
+
+    expect(tracker.getRecent()).toEqual(['/p::a.md', '/p::b.md']);
+  });
+
+  test('togglePin / isPinned isolate by sourceCwd', () => {
+    expect(tracker.togglePin('deploy.md', '/project-a')).toBe(true);
+    expect(tracker.isPinned('deploy.md', '/project-a')).toBe(true);
+    expect(tracker.isPinned('deploy.md', '/project-b')).toBe(false);
+
+    expect(tracker.togglePin('deploy.md', '/project-b')).toBe(true);
+    expect(tracker.isPinned('deploy.md', '/project-a')).toBe(true);
+    expect(tracker.isPinned('deploy.md', '/project-b')).toBe(true);
+
+    expect(tracker.togglePin('deploy.md', '/project-a')).toBe(false);
+    expect(tracker.isPinned('deploy.md', '/project-a')).toBe(false);
+    expect(tracker.isPinned('deploy.md', '/project-b')).toBe(true);
+
+    expect(tracker.getPinned()).toEqual(new Set(['/project-b::deploy.md']));
+  });
+
+  test('legacy bare-id pin still matches until rewritten on toggle', () => {
+    storage.map.set('kookr:pinnedPlaybooks', JSON.stringify(['deploy.md']));
+    const legacy = new PlaybookUsageTracker(storage.impl);
+
+    expect(legacy.isPinned('deploy.md', '/project-a')).toBe(true);
+    expect(legacy.isPinned('deploy.md', '/project-b')).toBe(true);
+
+    // Toggle on project-a consumes the bare id (unpin)
+    expect(legacy.togglePin('deploy.md', '/project-a')).toBe(false);
+    expect(legacy.isPinned('deploy.md', '/project-a')).toBe(false);
+    expect(legacy.isPinned('deploy.md', '/project-b')).toBe(false);
+    expect(JSON.parse(storage.map.get('kookr:pinnedPlaybooks')!)).toEqual([]);
+  });
+
+  test('legacy bare-id recent still ranks until rewritten on launch', () => {
+    storage.map.set('kookr:recentPlaybooks', JSON.stringify(['deploy.md', 'other.md']));
+    const legacy = new PlaybookUsageTracker(storage.impl);
+
+    expect(legacy.recentIndex('deploy.md', '/any/cwd')).toBe(0);
+
+    legacy.recordLaunch('deploy.md', '/project-a');
+    expect(legacy.getRecent()).toEqual(['/project-a::deploy.md', 'other.md']);
+    expect(legacy.recentIndex('deploy.md', '/project-a')).toBe(0);
+    // Bare entry removed — other cwd no longer matches deploy via legacy
+    expect(legacy.recentIndex('deploy.md', '/project-b')).toBe(-1);
+  });
+
+  test('pinning after legacy bare-id already consumed uses composite only', () => {
+    storage.map.set('kookr:pinnedPlaybooks', JSON.stringify(['deploy.md']));
+    const legacy = new PlaybookUsageTracker(storage.impl);
+
+    legacy.togglePin('deploy.md', '/project-a'); // unpins bare
+    expect(legacy.togglePin('deploy.md', '/project-a')).toBe(true); // re-pin composite
+    expect(JSON.parse(storage.map.get('kookr:pinnedPlaybooks')!)).toEqual([
+      '/project-a::deploy.md',
+    ]);
+    expect(legacy.isPinned('deploy.md', '/project-b')).toBe(false);
+  });
+
+  test('persistence across instances for pin and recent', () => {
+    tracker.recordLaunch('deploy.md', '/project');
+    tracker.togglePin('deploy.md', '/project');
+
+    const tracker2 = new PlaybookUsageTracker(storage.impl);
+    expect(tracker2.getRecent()).toEqual(['/project::deploy.md']);
+    expect(tracker2.isPinned('deploy.md', '/project')).toBe(true);
+  });
+
+  test('hardened save() does not throw on quota exceeded for recordLaunch', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new DOMException('QuotaExceededError');
+      },
+    } as Pick<Storage, 'getItem' | 'setItem'>;
+
+    const failTracker = new PlaybookUsageTracker(failStorage);
+    expect(() => failTracker.recordLaunch('test.md', '/project')).not.toThrow();
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+});
 
 describe('PlaybookUsageTracker — param history', () => {
   let storage: ReturnType<typeof fakeStorage>;
@@ -119,22 +246,6 @@ describe('PlaybookUsageTracker — param history', () => {
       'PlaybookUsageTracker: failed to read param history',
       expect.any(Error),
     );
-
-    warnSpy.mockRestore();
-  });
-
-  test('hardened save() does not throw on quota exceeded', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const failStorage = {
-      getItem: () => null,
-      setItem: () => {
-        throw new DOMException('QuotaExceededError');
-      },
-    } as Pick<Storage, 'getItem' | 'setItem'>;
-
-    const failTracker = new PlaybookUsageTracker(failStorage);
-    expect(() => failTracker.recordLaunch('test.md')).not.toThrow();
-    expect(warnSpy).toHaveBeenCalled();
 
     warnSpy.mockRestore();
   });

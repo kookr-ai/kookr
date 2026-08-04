@@ -4,7 +4,7 @@ import type { LaunchDependency, PlaybookParameterOption, PlaybookScope } from '.
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { projectLabel, projectColor } from '../presentation.js';
-import { PlaybookUsageTracker } from '../store/playbook-usage.js';
+import { PlaybookUsageTracker, matchesUsageKey, snapshotKey } from '../store/playbook-usage.js';
 import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
@@ -374,12 +374,14 @@ export function PlaybookBrowser({
     }
 
     return [...filtered].sort((a, b) => {
-      const aPinned = pinnedIds.has(a.id);
-      const bPinned = pinnedIds.has(b.id);
+      const aPinned =
+        pinnedIds.has(snapshotKey(a.id, a.sourceCwd)) || pinnedIds.has(a.id);
+      const bPinned =
+        pinnedIds.has(snapshotKey(b.id, b.sourceCwd)) || pinnedIds.has(b.id);
       if (aPinned !== bPinned) return aPinned ? -1 : 1;
 
-      const aRecent = recent.indexOf(a.id);
-      const bRecent = recent.indexOf(b.id);
+      const aRecent = recent.findIndex((k) => matchesUsageKey(k, a.id, a.sourceCwd));
+      const bRecent = recent.findIndex((k) => matchesUsageKey(k, b.id, b.sourceCwd));
       const aHasRecent = aRecent !== -1;
       const bHasRecent = bRecent !== -1;
       if (aHasRecent !== bHasRecent) return aHasRecent ? -1 : 1;
@@ -471,7 +473,7 @@ export function PlaybookBrowser({
   async function proceedLaunch() {
     if (!selected) return;
     setSubmitting(true);
-    usageTracker.recordLaunch(selected.id);
+    usageTracker.recordLaunch(selected.id, selected.sourceCwd);
     usageTracker.recordParams(selected.id, selected.sourceCwd, paramValues);
     const trimmedCwd = effectiveTaskTargetCwd;
     if (trimmedCwd) recentPaths.add(trimmedCwd);
@@ -628,9 +630,9 @@ export function PlaybookBrowser({
     };
   }
 
-  function handleTogglePin(e: React.MouseEvent, playbookId: string) {
+  function handleTogglePin(e: React.MouseEvent, playbook: Playbook) {
     e.stopPropagation();
-    usageTracker.togglePin(playbookId);
+    usageTracker.togglePin(playbook.id, playbook.sourceCwd);
     setPinnedIds(usageTracker.getPinned());
   }
 
@@ -978,7 +980,7 @@ export function PlaybookBrowser({
   }
 
   // --- List view ---
-  const recentIds = new Set(usageTracker.getRecent());
+  const recentKeys = usageTracker.getRecent();
   const loopableCount = playbooks.filter((pb) => pb.tags.includes('loopable')).length;
 
   return (
@@ -1032,11 +1034,12 @@ export function PlaybookBrowser({
         >
           {sortedPlaybooks.map((pb, idx) => {
             const targetCwd = pb.cwd ?? cwd;
-            const isPinned = pinnedIds.has(pb.id);
-            const isRecent = recentIds.has(pb.id);
+            const isPinned =
+              pinnedIds.has(snapshotKey(pb.id, pb.sourceCwd)) || pinnedIds.has(pb.id);
+            const isRecent = recentKeys.some((k) => matchesUsageKey(k, pb.id, pb.sourceCwd));
             return (
               <div
-                key={pb.id}
+                key={snapshotKey(pb.id, pb.sourceCwd)}
                 className={`playbook-card${idx === focusIdx ? ' focused' : ''}`}
                 onClick={() => handleUse(pb)}
               >
@@ -1067,7 +1070,7 @@ export function PlaybookBrowser({
                     <button
                       type="button"
                       className={`playbook-pin-btn${isPinned ? ' pinned' : ''}`}
-                      onClick={(e) => handleTogglePin(e, pb.id)}
+                      onClick={(e) => handleTogglePin(e, pb)}
                       aria-label={isPinned ? 'Unpin playbook' : 'Pin playbook to top'}
                       title={isPinned ? 'Unpin' : 'Pin to top'}
                     >
