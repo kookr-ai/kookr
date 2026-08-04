@@ -326,6 +326,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // fresh `/proc` or process-table scan on this request path (#1553).
     const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot();
 
+    // Prod smoke tick (issue #2031): consecutiveFailures + failingChecks from
+    // the durable alert artifact only — never re-run smoke checks here. Absent
+    // when the tick is disabled (dep not wired).
+    const prodSmokeTickBlock = deps.prodSmokeTick?.getHealthSnapshot();
+
     // #808 / R10: surface the revocation sweep liveness + viewer count + grant
     // store writability so a dead sweep or a read-only store is visible to the
     // operator. Owner-only: viewers are denied every `/api/*` route but the
@@ -498,6 +503,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       nonCriticalTimerPause: nonCriticalTimerPauseBlock,
       snapshotShed: snapshotShedBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
+      ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(staleProcesses ? { staleProcesses } : {}),

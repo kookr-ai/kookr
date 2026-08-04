@@ -1278,6 +1278,75 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — prodSmokeTick block (issue #2031)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health prodSmokeTick block (issue #2031)', () => {
+    test('omits the block when the tick is disabled (dep not wired)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('prodSmokeTick');
+    });
+
+    test('projects status, consecutiveFailures, and failingChecks from a fixture alert artifact', async () => {
+      // Fixture-style stub: getHealthSnapshot returns what a real tick would
+      // project after reading prod-smoke-tick-alert.json (no smoke checks run).
+      const fixtureSnapshot = {
+        schemaVersion: 'prod-smoke-tick.v1' as const,
+        status: 'alert' as const,
+        consecutiveFailures: 113,
+        failingChecks: ['health'],
+        generatedAt: '2026-08-04T12:00:00.000Z',
+        firstFailedAt: '2026-07-30T12:00:00.000Z',
+      };
+      const getHealthSnapshot = vi.fn(() => fixtureSnapshot);
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        prodSmokeTick: { getHealthSnapshot },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        prodSmokeTick?: typeof fixtureSnapshot;
+      };
+      expect(body.prodSmokeTick).toEqual(fixtureSnapshot);
+      expect(getHealthSnapshot).toHaveBeenCalledTimes(1);
+    });
+
+    test('projects null-safe empty when tick is enabled but no artifact exists yet', async () => {
+      const getHealthSnapshot = vi.fn(() => ({
+        schemaVersion: 'prod-smoke-tick.v1' as const,
+        status: 'unknown' as const,
+        consecutiveFailures: 0,
+        failingChecks: [] as string[],
+      }));
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        prodSmokeTick: { getHealthSnapshot },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        prodSmokeTick?: { status: string; consecutiveFailures: number; failingChecks: string[] };
+      };
+      expect(body.prodSmokeTick).toEqual({
+        schemaVersion: 'prod-smoke-tick.v1',
+        status: 'unknown',
+        consecutiveFailures: 0,
+        failingChecks: [],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
