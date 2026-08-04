@@ -660,8 +660,8 @@ The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as 
 
 | Exit code | Meaning |
 | --- | --- |
-| exit 0 | All required checks passed (`ok` may still include advisory `warn` checks). |
-| exit 1 | One or more required checks failed (`ok: false` in the JSON report). |
+| exit 0 | All required checks passed (`ok` may still include advisory `warn` checks unless `--strict`). |
+| exit 1 | One or more required checks failed (`ok: false` in the JSON report), or `--strict` with any advisory `warn`. |
 | exit 2 | Usage error (unknown flag). |
 
 ### `kookr logs`
@@ -721,13 +721,15 @@ Exit behavior:
 
 ## `kookr doctor`
 
-Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, agent binary resolution, and the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI.
+Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), and the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
 
 This is complementary to `pnpm doctor` (`scripts/doctor.sh`), which covers env/build preflight (ports, docker, node-pty). The two check sets are not identical — `kookr doctor` is the launch-dependency path (see [Related Commands](#related-commands)).
 
 ```bash
 kookr doctor
 kookr doctor --json
+kookr doctor --strict
+kookr doctor --json --strict
 ```
 
 Without `--json`, prints aligned status rows for each check plus any recommended actions, then an overall status line. With `--json`, prints the JSON envelope below (shape is stable for scripts).
@@ -777,6 +779,7 @@ Stable `checks[].id` values on a healthy machine:
 | `agent.codex` | agent | yes if `KOOKR_CODEX_BIN` set; else advisory | Codex CLI binary (`KOOKR_CODEX_BIN` or `codex`) |
 | `agent.codex-plugin-dir` | agent | no | Codex advertises `--plugin-dir` (only emitted when `agent.codex` is `ok`) |
 | `ops.resource-watchdog` | ops | no | Host-pressure auto-investigation enabled (`KOOKR_RESOURCE_WATCHDOG`, or live `GET /api/health` `resourceWatchdog.enabled` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server). Advisory warn when disabled (default). |
+| `ops.prod-smoke-tick` | ops | no | Hourly prod smoke tick alert artifact (`{KOOKR_DIR or ~/.kookr}/prod-smoke-tick-alert.json`). Advisory warn when `status=alert`, summarizing `consecutiveFailures` and `failingChecks`. No warn when the artifact is missing or `status=ok`. |
 
 When the KB path fails, the single KB row is replaced by a more specific id:
 
@@ -790,12 +793,13 @@ Options:
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
 | `--json` | none | false | Print one machine-readable JSON report to stdout. Without this flag, prints a human-readable table. |
+| `--strict` | none | false | Exit `1` when any advisory `warn` is present (in addition to required failures). Default keeps advisory WARNs as exit `0` so scripts only gate on hard failures. |
 | `-h`, `--help` | none | false | Print command help and exit `0`. |
 
 Exit behavior:
 
-- `0` when all required checks pass (`ok: true`; advisory warnings allowed).
-- `1` when one or more required checks fail (`ok: false`).
+- `0` when all required checks pass (`ok: true`; advisory warnings allowed unless `--strict`).
+- `1` when one or more required checks fail (`ok: false`), or when `--strict` is set and the aggregate status is `warn`.
 - `2` for usage errors (unknown argument).
 
 ## `kookr logs`
@@ -1245,6 +1249,7 @@ pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
 pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/build preflight
-kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + ops.resource-watchdog)
+kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + ops.resource-watchdog + ops.prod-smoke-tick)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
+kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
 ```
