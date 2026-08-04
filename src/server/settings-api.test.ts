@@ -82,6 +82,7 @@ describe('Settings API', () => {
       pendingTaskTtlMinutes: 240,
       finishedAwaitingAckTtlMinutes: 15,
       hungSuspectTtlMinutes: 25,
+      firstHookDeadlineSeconds: 180,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,
       reservedActiveSlots: 2,

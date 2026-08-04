@@ -128,7 +128,14 @@ export type TaskDispositionReason =
    * vocabulary as {@link hung_reap}, but sourced from the capacity reclaim
    * path (default ~25m) rather than the hard 3h hung-task reaper.
    */
-  | 'hung_suspect_ttl';
+  | 'hung_suspect_ttl'
+  /**
+   * The first-hook miss reaper terminated a post-spawn session that never
+   * emitted SessionStart / any agent hook within the ack deadline (issue
+   * #2036). Distinct from {@link launch_timeout} (pre-session adapter race)
+   * and from {@link hung_reap} / {@link hung_suspect_ttl} (post-ack silence).
+   */
+  | 'first_hook_miss';
 
 /**
  * Outcome of a hung-task reap (issue #1559). A reaped task's `status` is always
@@ -149,7 +156,9 @@ export type TaskReapOutcome = 'terminated' | 'delivered_then_hung';
  * - the hung-task reaper (issue #1559: `hung_reap`), which additionally sets
  *   {@link outcome} and, on delivery, {@link deliveredPr}, and
  * - the hungSuspect TTL reclaim (issue #1935: `hung_suspect_ttl`), same
- *   outcome vocabulary at the shorter capacity-reclaim TTL.
+ *   outcome vocabulary at the shorter capacity-reclaim TTL, and
+ * - the first-hook miss reaper (issue #2036: `first_hook_miss`), for
+ *   post-spawn sessions that never acked with a hook.
  *
  * The recovery work-conservation ledger (#1540) is expected to build ITS
  * disposition records on this same shape rather than a parallel one.

@@ -1358,4 +1358,58 @@ describe('Watchdog', () => {
       expect(watchdog.getConfig().unconditionalStaleThresholdMs).toBe(999_000);
     });
   });
+
+  describe('firstHookAt tracking (issue #2036)', () => {
+    test('fresh registration (no lastEventAt) starts with firstHookAt=0', () => {
+      const t0 = 5_000;
+      watchdog.registerAgent(agentId, undefined, t0);
+      expect(watchdog.getState(agentId)).toMatchObject({
+        registeredAt: t0,
+        firstHookAt: 0,
+        lastEventAt: t0, // still seeded for short-timescale stale baseline
+      });
+    });
+
+    test('SessionStart / first agent hook sets firstHookAt once', () => {
+      const t0 = 5_000;
+      watchdog.registerAgent(agentId, undefined, t0);
+      watchdog.recordEvents(agentId, [makeSessionStart(agentId)], t0 + 2_000);
+      expect(watchdog.getState(agentId)?.firstHookAt).toBe(t0 + 2_000);
+
+      // Later hooks do not move firstHookAt.
+      watchdog.recordEvents(agentId, [makeToolUse(agentId, 'Bash', 'tu-1')], t0 + 9_000);
+      expect(watchdog.getState(agentId)?.firstHookAt).toBe(t0 + 2_000);
+    });
+
+    test('input_received alone does not count as a first agent hook', () => {
+      const t0 = 5_000;
+      watchdog.registerAgent(agentId, undefined, t0);
+      watchdog.recordInputReceived(agentId, t0 + 1_000);
+      expect(watchdog.getState(agentId)?.firstHookAt).toBe(0);
+    });
+
+    test('mcp_startup_starting notification counts as first hook (clears miss path)', () => {
+      const t0 = 5_000;
+      watchdog.registerAgent(agentId, undefined, t0);
+      watchdog.recordEvents(
+        agentId,
+        [{
+          type: 'notification',
+          sessionId: agentId,
+          notificationType: 'mcp_startup_starting',
+          message: 'Starting MCP servers',
+        }],
+        t0 + 3_000,
+      );
+      expect(watchdog.getState(agentId)?.firstHookAt).toBe(t0 + 3_000);
+      expect(watchdog.getState(agentId)?.mcpStartupAt).toBe(t0 + 3_000);
+    });
+
+    test('restore with prior lastEventAt seeds firstHookAt so restart does not false-miss', () => {
+      const last = 9_000;
+      watchdog.registerAgent(agentId, last, 10_000);
+      expect(watchdog.getState(agentId)?.firstHookAt).toBe(last);
+    });
+  });
 });
+

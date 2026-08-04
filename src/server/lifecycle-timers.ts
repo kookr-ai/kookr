@@ -72,6 +72,10 @@ import {
   reclaimAgedHungSuspectTasks,
   type HungSuspectTtlReclaimMetrics,
 } from './hung-suspect-ttl-sweep.js';
+import {
+  maybeReapFirstHookMiss,
+  type FirstHookMissMetrics,
+} from './first-hook-deadline-sweep.js';
 import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
@@ -206,6 +210,14 @@ export interface TimerDeps {
     HungSuspectTtlReclaimMetrics,
     'recordReclaimed' | 'recordAttempted' | 'recordSelection'
   >;
+  /**
+   * Live getter for the post-spawn first-hook ack deadline, in milliseconds
+   * (issue #2036, `firstHookDeadlineSeconds` setting). Read on every watchdog
+   * tick. Falls back to the module default (180s) when absent.
+   */
+  getFirstHookDeadlineMs?: () => number;
+  /** Optional counter for first-hook misses, exposed via `/api/health` + `/metrics` (issue #2036). */
+  firstHookMissMetrics?: Pick<FirstHookMissMetrics, 'recordMiss'>;
   /**
    * Operator page when hungSuspect residual stays high after the TTL reclaim
    * window (issue #1993). Page-only — never terminates extra tasks. Prefer a
@@ -769,6 +781,56 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           if (shadowRegistry) {
             const realAnomaly = monitor.getCurrentAnomaly(agentId);
             shadowRegistry.evaluate(agentId, { paneText: paneContent, realAnomaly });
+          }
+
+          // First-hook miss reaper (issue #2036). Independent of the watchdog
+          // verdict: a post-spawn session that never emits SessionStart / any
+          // agent hook must free capacity well before the multi-hour hung-task
+          // threshold. Runs after hook drain so a late-but-in-window SessionStart
+          // is recorded as firstHookAt before we evaluate. MCP-startup grace is
+          // honored inside evaluateFirstHookMiss.
+          {
+            const firstHookState = watchdog.getState(agentId);
+            if (
+              firstHookState
+              && await maybeReapFirstHookMiss(
+                agentId,
+                paneContent,
+                {
+                  taskStore,
+                  lifecycleDeps,
+                  getFirstHookDeadlineMs: deps.getFirstHookDeadlineMs,
+                  getMcpStartupGracePeriodMs: () => watchdog.getConfig().mcpStartupGracePeriodMs,
+                  reportsDir: deps.reportsDir,
+                  auditLogPath: deps.auditLogPath,
+                  dispositionLedgerPath: deps.dispositionLedgerPath,
+                  broadcastToAll: deps.broadcastToAll,
+                  metrics: deps.firstHookMissMetrics,
+                  now: () => new Date(),
+                  promotePending: deps.agentLifecycleDeps
+                    ? async () => {
+                      await promotePendingTasks({
+                        taskStore,
+                        adapterRegistry: deps.adapterRegistry,
+                        lifecycleDeps: deps.agentLifecycleDeps!,
+                        broadcastToAll: deps.broadcastToAll,
+                        serverCwd: deps.serverCwd,
+                        getMaxActiveTasks: deps.getMaxActiveTasks,
+                        bypassAllPermissions: deps.bypassAllPermissions,
+                      });
+                    }
+                    : undefined,
+                },
+                {
+                  registeredAt: firstHookState.registeredAt,
+                  firstHookAt: firstHookState.firstHookAt,
+                  mcpStartupAt: firstHookState.mcpStartupAt,
+                },
+              )
+            ) {
+              changed = true;
+              continue; // session is gone — skip hung-task reaper for this agent
+            }
           }
 
           // Hung-task reaper (issue #1526 Phase A / FM6). Gated on the SAME

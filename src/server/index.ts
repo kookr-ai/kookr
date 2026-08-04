@@ -39,6 +39,7 @@ import { PipelineStarvationService } from './pipeline-starvation-service.js';
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
+import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
@@ -520,6 +521,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const getFinishedAwaitingAckTtlMs = () => currentSettings.finishedAwaitingAckTtlMinutes * 60_000;
   // Live getter for the hungSuspect TTL reclaim (issue #1935). Same pattern.
   const getHungSuspectTtlMs = () => currentSettings.hungSuspectTtlMinutes * 60_000;
+  // Live getter for the post-spawn first-hook ack deadline (issue #2036).
+  const getFirstHookDeadlineMs = () => currentSettings.firstHookDeadlineSeconds * 1000;
   // Reserved self-maintenance capacity (issue #1564). Same live-binding
   // pattern — applies to the next launch without a restart.
   const getReservedActiveSlots = () => currentSettings.reservedActiveSlots;
@@ -943,6 +946,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   };
   const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
   const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
+  const firstHookMissMetrics = new FirstHookMissMetrics();
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks — SQLite by default (#1755), with one-shot migration
@@ -2112,6 +2116,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
     hungSuspectTtlReclaimMetrics,
+    firstHookMissMetrics,
     resourceWatchdog: resourceWatchdogService,
     ...(prodSmokeTick ? { prodSmokeTick } : {}),
     deliveryTrace,
@@ -2602,6 +2607,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,
       hungSuspectTtlReclaimMetrics,
+      getFirstHookDeadlineMs,
+      firstHookMissMetrics,
       // issue #1993: Discord page when residual hungSuspect stays high after TTL
       hungSuspectResidualAlerter,
       getPostMergeCleanupBudgetMs,

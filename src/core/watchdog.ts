@@ -60,6 +60,17 @@ export interface AgentWatchdogState {
    */
   lastPaneChangeAt: number;
   registeredAt: number; // ms since epoch — for grace period
+  /**
+   * Timestamp of the first agent-originated hook event after registration
+   * (ms since epoch). `0` means no real hook has arrived yet — used by the
+   * first-hook miss reaper (issue #2036) to free capacity when a post-spawn
+   * session never emits SessionStart / any first hook. Distinct from
+   * `lastEventAt`, which is seeded to `registeredAt` so short-timescale
+   * stale detection has a stable baseline even before hooks arrive.
+   * Restored sessions that pass a prior `lastEventAt` seed this field so a
+   * restart does not false-reclaim agents that already acked before boot.
+   */
+  firstHookAt: number;
   /** PreToolUse ids without matching PostToolUse, with start time for latency. */
   unmatchedToolUses: Map<string, OpenToolUse>;
   /** Fallback counter: number of tool_use events without matching tool_result (for events without toolUseId). */
@@ -187,11 +198,18 @@ export class Watchdog {
    */
   registerAgent(agentId: string, lastEventAt?: number, registeredAt?: number): void {
     const regAt = registeredAt ?? Date.now();
+    // Fresh launch: firstHookAt stays 0 until a real agent hook arrives.
+    // Restart restore with a known lastEventAt: treat the first hook as
+    // already seen so the post-spawn miss reaper does not re-kill sessions
+    // that had already acked before the process restart (issue #2036).
+    const firstHookAt =
+      lastEventAt !== undefined && lastEventAt > 0 ? lastEventAt : 0;
     this.agents.set(agentId, {
       lastEventAt: lastEventAt ?? regAt,
       lastPaneHash: '',
       lastPaneChangeAt: regAt,
       registeredAt: regAt,
+      firstHookAt,
       unmatchedToolUses: new Map(),
       unmatchedToolCountFallback: 0,
       lastTokenActivityAt: 0,
@@ -225,6 +243,19 @@ export class Watchdog {
     if (!state) return;
 
     if (options.updateLastEventAt !== false) state.lastEventAt = now;
+
+    // First agent-originated hook after registration (issue #2036). Operator
+    // keystrokes (`input_received`) do not count — only the hook pipeline
+    // proving the agent process is alive and emitting (SessionStart, tools,
+    // notifications including mcp_startup_starting, etc.).
+    if (state.firstHookAt === 0) {
+      for (const event of events) {
+        if (event.type !== 'input_received') {
+          state.firstHookAt = now;
+          break;
+        }
+      }
+    }
 
     // MCP startup (issue #224): Codex fork emits `Notification(mcp_startup_starting)` right
     // before the MCP connection manager spawns servers. Startup commonly takes 30–60s of

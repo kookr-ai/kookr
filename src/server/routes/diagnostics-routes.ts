@@ -526,6 +526,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
       ...(hungSuspectTtlReclaimBlock ? { hungSuspectTtlReclaim: hungSuspectTtlReclaimBlock } : {}),
+      // Issue #2036: post-spawn first-hook miss counter (cheap in-memory read).
+      ...(deps.firstHookMissMetrics
+        ? { firstHookMissTotal: deps.firstHookMissMetrics.getSnapshot().firstHookMissTotal }
+        : {}),
     });
   });
 

@@ -289,6 +289,15 @@ describe('validateSettings', () => {
     expect(validateSettings({ hungSuspectTtlMinutes: 'forever' }).hungSuspectTtlMinutes).toBe(25);
   });
 
+  it('defaults firstHookDeadlineSeconds to 180 and clamps to the 30–900 range (issue #2036)', () => {
+    expect(validateSettings({}).firstHookDeadlineSeconds).toBe(180);
+    expect(DEFAULT_SETTINGS.firstHookDeadlineSeconds).toBe(180);
+    expect(validateSettings({ firstHookDeadlineSeconds: 120 }).firstHookDeadlineSeconds).toBe(120);
+    expect(validateSettings({ firstHookDeadlineSeconds: 1 }).firstHookDeadlineSeconds).toBe(30);
+    expect(validateSettings({ firstHookDeadlineSeconds: 10_000 }).firstHookDeadlineSeconds).toBe(900);
+    expect(validateSettings({ firstHookDeadlineSeconds: 'never' }).firstHookDeadlineSeconds).toBe(180);
+  });
+
   it('defaults spawnBurstLimit to 30 and clamps to the 5–500 range (issue #1526 Phase C / C3)', () => {
     expect(validateSettings({}).spawnBurstLimit).toBe(30);
     expect(DEFAULT_SETTINGS.spawnBurstLimit).toBe(30);
@@ -571,6 +580,7 @@ describe('loadSettings / saveSettings', () => {
       pendingTaskTtlMinutes: 120,
       finishedAwaitingAckTtlMinutes: 20,
       hungSuspectTtlMinutes: 30,
+      firstHookDeadlineSeconds: 240,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
       reservedActiveSlots: 3,
