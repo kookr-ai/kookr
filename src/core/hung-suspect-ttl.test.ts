@@ -444,38 +444,39 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     });
   });
 
-  it('post-restart silence continuity: restored lastEvent-equivalent liveness past TTL selects', () => {
-    // Models the #2045 fix: after redeploy, seed pane clock from persisted
-    // lastEventAt so max(hook,pane,token) keeps pre-restart silence age.
+  it('post-redeploy pane seed at registration → skipped_under_ttl until full TTL (reclaim safety)', () => {
+    // After restart, registerAgent restores lastEventAt but leaves
+    // lastPaneChangeAt at registration time so max(hook,pane,token) does not
+    // invent pre-restart pane silence for long-tool agents (#2045 review).
     const stale = hungTask({ id: 'pre-restart-silent' });
-    const lastActivityAt = NOW.getTime() - (TTL_MS + 5 * 60_000);
+    const lastHookAt = NOW.getTime() - (TTL_MS + 5 * 60_000);
+    const registeredAt = NOW.getTime() - 60_000; // 1m since restart
     const sel = selectExpiredHungSuspectTasks([stale], {
       now: NOW,
       ttlMs: TTL_MS,
       isHungSuspect: alwaysHung,
       getLiveness: () => ({
-        lastHookEventAt: lastActivityAt,
-        lastPaneChangeAt: lastActivityAt, // seeded from lastEventAt (not restart now)
+        lastHookEventAt: lastHookAt,
+        lastPaneChangeAt: registeredAt,
         lastTokenActivityAt: 0,
       }),
       isHoldingOpenPr: () => false,
     });
-    expect(sel.expired).toHaveLength(1);
-    expect(sel.skips.skipped_under_ttl).toBe(0);
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
 
-    // Regression: if pane were seeded to "restart now", silence age is 0.
-    const broken = selectExpiredHungSuspectTasks([stale], {
+    // After a full TTL of multi-channel silence post-restart, reclaim selects.
+    const pastTtl = selectExpiredHungSuspectTasks([stale], {
       now: NOW,
       ttlMs: TTL_MS,
       isHungSuspect: alwaysHung,
       getLiveness: () => ({
-        lastHookEventAt: lastActivityAt,
-        lastPaneChangeAt: NOW.getTime(), // bug: regAt after redeploy
+        lastHookEventAt: lastHookAt,
+        lastPaneChangeAt: NOW.getTime() - TTL_MS,
         lastTokenActivityAt: 0,
       }),
       isHoldingOpenPr: () => false,
     });
-    expect(broken.expired).toEqual([]);
-    expect(broken.skips.skipped_under_ttl).toBe(1);
+    expect(pastTtl.expired).toHaveLength(1);
   });
 });

@@ -172,27 +172,25 @@ export class Watchdog {
   /**
    * Register an agent to be tracked. Sets initial timestamps.
    * @param lastEventAt - Override lastEventAt (e.g. from persisted session metadata on restart).
-   *                      If provided, watchdog can immediately detect agents that were stale before restart.
+   *                      If provided, watchdog can immediately detect agents that were stale before restart
+   *                      (tick() uses lastEventAt alone for staleness).
    *                      If not provided (default), lastEventAt is set to registeredAt.
    * @param registeredAt - Override registeredAt (for testing). Defaults to Date.now().
    *
-   * Issue #2045: when `lastEventAt` is restored from session metadata, also seed
-   * `lastPaneChangeAt` from that same instant. Silence age for hungSuspect TTL
-   * reclaim is `max(hook, pane, token)`; seeding pane to `registeredAt` (now)
-   * after every redeploy reset the silence clock and kept `reclaimedTotal` at 0
-   * even when the agent had been silent for hours before restart. Fresh
-   * registration (no lastEventAt) still uses regAt for both clocks.
+   * lastPaneChangeAt always starts at registration time, even when lastEventAt is
+   * restored. hungSuspect TTL reclaim silence is max(hook, pane, token); seeding
+   * pane from a hook-only lastEventAt would false-reclaim long-tool agents whose
+   * pane was still advancing while hooks were silent (issue #2045 independent
+   * review). After redeploy, under-TTL skips until a full TTL of multi-channel
+   * silence is observed in the new process — intentional safety, not a bug.
+   * Operators read `skippedUnderTtl` on /api/health to see that.
    */
   registerAgent(agentId: string, lastEventAt?: number, registeredAt?: number): void {
     const regAt = registeredAt ?? Date.now();
-    const eventAt = lastEventAt ?? regAt;
-    // Restore path: keep silence-age continuous across redeploy. Fresh path:
-    // both clocks start at registration so new agents are not instantly stale.
-    const paneAt = lastEventAt !== undefined ? eventAt : regAt;
     this.agents.set(agentId, {
-      lastEventAt: eventAt,
+      lastEventAt: lastEventAt ?? regAt,
       lastPaneHash: '',
-      lastPaneChangeAt: paneAt,
+      lastPaneChangeAt: regAt,
       registeredAt: regAt,
       unmatchedToolUses: new Map(),
       unmatchedToolCountFallback: 0,

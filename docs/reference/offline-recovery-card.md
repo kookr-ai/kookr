@@ -72,12 +72,12 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 
 If `reclaimedTotal=0` while `capacity.byClass.hungSuspect≥2`:
 
-1. **Dominant `skippedUnderTtl` soon after restart** — normal for the first TTL window after boot *only if* agents truly just became silent. Pre-restart silence is restored via session `lastEventAt` (pane clock seeded from that timestamp on recovery — #2045). If under-TTL dominates for hours with `serverStartedAt` older than TTL, something is still refreshing liveness.
+1. **Dominant `skippedUnderTtl` soon after restart** — **expected** for the first full TTL window after boot. Pane silence is re-baselined at process registration so long-tool agents are not reclaimed from hook-only pre-restart silence (#2045). If under-TTL still dominates for hours after `serverStartedAt` is older than TTL, something is still refreshing liveness (or agents keep getting re-registered).
 2. **Dominant `skippedOpenPrFailsafe`** — check whether those tasks really hold open PRs; fail-safe treats *unknown* like a hold.
 3. **Dominant `skippedNoLiveness`** — watchdog never registered the agent after resume; investigate session recovery.
 4. **Residual page** — Discord/operator `hung:residual` (#1993) pages when residual stays high after a full reclaim window.
 
-Do **not** treat a brief `reclaimedTotal=0` co-occurring with `daemon_uptime_reset` as a reclaim bug — counters and residual-alerter episode state reset with the process. See [low-downtime redeploy](../runbooks/low-downtime-redeploy.md#hungsuspect-ttl-reclaim-across-redeploy).
+Do **not** treat a brief `reclaimedTotal=0` co-occurring with `daemon_uptime_reset` as a reclaim bug — counters and residual-alerter episode state reset with the process, and under-TTL skips dominate until multi-channel silence is observed. See [low-downtime redeploy](../runbooks/low-downtime-redeploy.md#hungsuspect-ttl-reclaim-across-redeploy).
 
 If residual stays high after TTL reclaim windows: complete or cancel clearly dead tasks, check Discord/operator signals for `hung:residual` (when enabled), avoid spawning more work until free slots return.
 
