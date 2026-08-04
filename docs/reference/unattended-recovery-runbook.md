@@ -64,7 +64,8 @@ PY
 Shape: `{ "engaged": false }` or `{ "engaged": true, "since": "<ISO>" }`.
 
 **On-disk companion:** edge-triggered `ops-status.json` records `safe_mode_engage`
-(issue #1995). Read-only fields only:
+(issue #1995) plus `smoke_tick_fire` / `smoke_tick_clear` (issue #2032; fire
+detail = failingChecks names only). Read-only fields only:
 
 ```bash
 python3 -m json.tool "${KOOKR_DIR}/ops-status.json" 2>/dev/null | head -80

@@ -64,6 +64,7 @@ function stubConfig(overrides: Partial<SmokeConfig> = {}): SmokeConfig {
 function makeTick(deps: Partial<ProdSmokeTickDeps> & { runChecks: ProdSmokeTickDeps['runChecks'] }) {
   const store = new Map<string, AlertArtifact>();
   const broadcasts: ServerMessage[] = [];
+  const opsEdges: Array<{ kind: string; detail?: string }> = [];
   const alertPath = deps.alertPath ?? '/mem/prod-smoke-tick-alert.json';
   const writes: Array<{ path: string; artifact: AlertArtifact }> = [];
   const tick = new ProdSmokeTick({
@@ -77,10 +78,13 @@ function makeTick(deps: Partial<ProdSmokeTickDeps> & { runChecks: ProdSmokeTickD
       writes.push({ path: p, artifact: a });
     },
     broadcast: (m) => broadcasts.push(m),
+    noteOpsEdge: (kind, detail) => {
+      opsEdges.push(detail !== undefined ? { kind, detail } : { kind });
+    },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
     ...deps,
   });
-  return { tick, store, broadcasts, writes, alertPath };
+  return { tick, store, broadcasts, writes, alertPath, opsEdges };
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +121,12 @@ describe('AC1: wedged /api/health → alert artifact naming the failing check', 
       expect(msg.operationalAlert?.state).toBe('fired');
       expect(msg.summary).toContain('health');
     }
+  });
+
+  it('notes smoke_tick_fire with failingChecks detail on the fire edge (issue #2032)', async () => {
+    const { tick, opsEdges } = makeTick({ runChecks: async () => WEDGED_HEALTH });
+    await tick.maybeRun();
+    expect(opsEdges).toEqual([{ kind: 'smoke_tick_fire', detail: 'health' }]);
   });
 });
 
@@ -266,7 +276,7 @@ describe('AC4: repeated failures update one artifact, fire once per episode', ()
   it('broadcasts a single recovery when the wedge clears', async () => {
     let clock = 1_000;
     let checks: CheckResult[] = WEDGED_HEALTH;
-    const { tick, broadcasts } = makeTick({
+    const { tick, broadcasts, opsEdges } = makeTick({
       runChecks: async () => checks,
       now: () => (clock += 3_600_000),
     });
@@ -283,10 +293,30 @@ describe('AC4: repeated failures update one artifact, fire once per episode', ()
     expect(fired).toHaveLength(1);
     expect(rec).toHaveLength(1);
 
+    // Ops-status edges track the same fire/clear edge (issue #2032): one fire
+    // for the sustained episode, one clear on recover — not one per hourly tick.
+    expect(opsEdges).toEqual([
+      { kind: 'smoke_tick_fire', detail: 'health' },
+      { kind: 'smoke_tick_clear' },
+    ]);
+
     // A subsequent failure starts a NEW episode → a fresh fired broadcast.
     checks = WEDGED_HEALTH;
     await tick.maybeRun();
     expect(broadcasts.filter((m) => m.type === 'alert' && m.operationalAlert?.state === 'fired')).toHaveLength(2);
+    expect(opsEdges.filter((e) => e.kind === 'smoke_tick_fire')).toHaveLength(2);
+  });
+
+  it('does not note ops edges on sustained failures mid-episode (issue #2032)', async () => {
+    let clock = 1_000;
+    const { tick, opsEdges } = makeTick({
+      runChecks: async () => WEDGED_HEALTH,
+      now: () => (clock += 3_600_000),
+    });
+    await tick.maybeRun();
+    await tick.maybeRun();
+    await tick.maybeRun();
+    expect(opsEdges).toEqual([{ kind: 'smoke_tick_fire', detail: 'health' }]);
   });
 });
 

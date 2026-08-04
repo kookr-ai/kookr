@@ -131,6 +131,22 @@ describe('opsStatusEdgeFromOperationalAlert', () => {
 
     expect(opsStatusEdgeFromOperationalAlert({})).toBeNull();
   });
+
+  it('maps prod_smoke_tick fire and recover (issue #2032)', () => {
+    expect(
+      opsStatusEdgeFromOperationalAlert({
+        summary: 'Prod smoke tick failing: health, ready',
+        operationalAlert: { key: 'smoke:hourly', metric: 'prod_smoke_tick', state: 'fired' },
+      }),
+    ).toEqual({ kind: 'smoke_tick_fire', detail: 'Prod smoke tick failing: health, ready' });
+
+    expect(
+      opsStatusEdgeFromOperationalAlert({
+        summary: 'Prod smoke tick recovered',
+        operationalAlert: { key: 'smoke:hourly', metric: 'prod_smoke_tick', state: 'recovered' },
+      }),
+    ).toEqual({ kind: 'smoke_tick_clear', detail: 'Prod smoke tick recovered' });
+  });
 });
 
 describe('OpsStatusWriter', () => {
@@ -190,7 +206,7 @@ describe('OpsStatusWriter', () => {
       operationalAlert: { key: 'schedule:dead_man', metric: 'schedule_starvation', state: 'fired' },
     });
     await writer.noteSafeModeEngaged(true, 'operator kill-switch');
-    const final = await writer.noteFromAlert({
+    await writer.noteFromAlert({
       summary: 'starved',
       operationalAlert: {
         key: 'pipeline:starvation:kookr-ai/kookr',
@@ -198,13 +214,46 @@ describe('OpsStatusWriter', () => {
         state: 'fired',
       },
     });
+    await writer.noteEdge('smoke_tick_fire', 'health, version-probe');
+    const final = await writer.noteEdge('smoke_tick_clear');
 
     expect(final?.lastEdges.map((e) => e.kind)).toEqual([
       'ready_degrade',
       'dead_man_fire',
       'safe_mode_engage',
       'starvation_fire',
+      'smoke_tick_fire',
+      'smoke_tick_clear',
     ]);
+    expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
+  });
+
+  it('schema guard accepts smoke_tick_fire/clear and ring-caps them (issue #2032)', async () => {
+    let tick = 0;
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: () => new Date(`2026-08-03T16:${String(tick++).padStart(2, '0')}:00.000Z`),
+      logger: { warn: vi.fn() },
+      maxEdges: 3,
+    });
+
+    // Overflow the ring with smoke fire/clear pairs so older edges drop.
+    await writer.noteEdge('smoke_tick_fire', 'health');
+    await writer.noteEdge('smoke_tick_clear');
+    await writer.noteEdge('smoke_tick_fire', 'ready, tasks-latency');
+    const final = await writer.noteEdge('smoke_tick_clear');
+
+    expect(final?.lastEdges).toHaveLength(3);
+    expect(final?.lastEdges.map((e) => e.kind)).toEqual([
+      'smoke_tick_clear',
+      'smoke_tick_fire',
+      'smoke_tick_clear',
+    ]);
+    expect(final?.lastEdges[1]?.detail).toBe('ready, tasks-latency');
+    expect(isOpsStatusSnapshot(final)).toBe(true);
     expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
   });
 
