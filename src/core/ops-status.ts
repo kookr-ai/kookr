@@ -14,6 +14,7 @@
  * - schedule dead-man fire
  * - pipeline starvation fire
  * - SAFE MODE engage
+ * - prod smoke tick fire / clear (issue #2032)
  */
 
 import { join } from 'node:path';
@@ -30,7 +31,11 @@ export type OpsStatusEdgeKind =
   | 'ready_degrade'
   | 'dead_man_fire'
   | 'starvation_fire'
-  | 'safe_mode_engage';
+  | 'safe_mode_engage'
+  /** Hourly prod smoke tick entered a failing episode (issue #2032). */
+  | 'smoke_tick_fire'
+  /** Hourly prod smoke tick recovered after a failing episode (issue #2032). */
+  | 'smoke_tick_clear';
 
 export interface OpsStatusEdge {
   kind: OpsStatusEdgeKind;
@@ -76,6 +81,8 @@ const EDGE_KINDS: ReadonlySet<string> = new Set([
   'dead_man_fire',
   'starvation_fire',
   'safe_mode_engage',
+  'smoke_tick_fire',
+  'smoke_tick_clear',
 ]);
 
 export function opsStatusPath(kookrDir: string): string {
@@ -120,20 +127,33 @@ export function buildOpsStatusSnapshot(
 }
 
 /**
- * Map an operational-alert fire to an ops-status edge kind.
- * Recovery transitions and non-critical metrics return null.
+ * Map an operational-alert transition to an ops-status edge kind.
+ *
+ * - schedule / pipeline starvation: fire only (recovery ignored so the card
+ *   is not flapped by flapping monitors)
+ * - prod smoke tick (`prod_smoke_tick`): fire → `smoke_tick_fire`, recover →
+ *   `smoke_tick_clear` (issue #2032 — multi-day smoke false positives need a
+ *   durable clear edge for offline diagnosis)
+ * - other metrics / states: null
  */
 export function opsStatusEdgeFromOperationalAlert(alert: {
   operationalAlert?: { metric?: string; state?: string; key?: string } | undefined;
   summary?: string;
 }): { kind: OpsStatusEdgeKind; detail?: string } | null {
   const meta = alert.operationalAlert;
-  if (!meta || meta.state !== 'fired') return null;
+  if (!meta) return null;
 
   const metric = typeof meta.metric === 'string' ? meta.metric : '';
+  const state = typeof meta.state === 'string' ? meta.state : '';
   let kind: OpsStatusEdgeKind | null = null;
-  if (metric === 'schedule_starvation') kind = 'dead_man_fire';
-  else if (metric === 'pipeline_starvation') kind = 'starvation_fire';
+
+  if (metric === 'prod_smoke_tick') {
+    if (state === 'fired') kind = 'smoke_tick_fire';
+    else if (state === 'recovered') kind = 'smoke_tick_clear';
+  } else if (state === 'fired') {
+    if (metric === 'schedule_starvation') kind = 'dead_man_fire';
+    else if (metric === 'pipeline_starvation') kind = 'starvation_fire';
+  }
   if (!kind) return null;
 
   const detail =
@@ -285,8 +305,9 @@ export class OpsStatusWriter {
   }
 
   /**
-   * Observe an operational-alert message. Writes only for dead-man / pipeline
-   * starvation *fire* transitions; recovery and other metrics are ignored.
+   * Observe an operational-alert message. Writes for dead-man / pipeline
+   * starvation *fire* transitions and prod-smoke fire/clear (issue #2032);
+   * other recovery transitions and non-critical metrics are ignored.
    */
   noteFromAlert(alert: {
     operationalAlert?: { metric?: string; state?: string; key?: string } | undefined;

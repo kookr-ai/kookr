@@ -24,6 +24,7 @@
 
 import { join } from 'node:path';
 
+import type { OpsStatusEdgeKind } from '../core/ops-status.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import {
   buildAlertArtifact,
@@ -37,6 +38,18 @@ import {
   type CheckResult,
   type SmokeConfig,
 } from './prod-smoke.js';
+
+/** Ops-status edge kinds the smoke tick may record (issue #2032). */
+export type SmokeTickOpsEdgeKind = Extract<OpsStatusEdgeKind, 'smoke_tick_fire' | 'smoke_tick_clear'>;
+
+/**
+ * Best-effort hook for durable ops-status.json edges on smoke fire/clear.
+ * Implementations must not throw (OpsStatusWriter.noteEdge already swallows).
+ */
+export type NoteSmokeTickOpsEdge = (
+  kind: SmokeTickOpsEdgeKind,
+  detail?: string,
+) => void | Promise<unknown>;
 
 /** Stable operational-alert key so repeated failures dedup into one episode. */
 export const PROD_SMOKE_TICK_ALERT_KEY = 'smoke:hourly';
@@ -151,6 +164,12 @@ export interface ProdSmokeTickDeps {
   kookrDir: string;
   /** Broadcast a fire/recover operational alert. Absent in tests without a bus. */
   broadcast?: (msg: ServerMessage) => void;
+  /**
+   * Record durable ops-status.json edges on fire/clear (issue #2032).
+   * Invoked on the same edge-trigger as {@link broadcast} (once per episode).
+   * Fire detail is the failingChecks list (no secrets).
+   */
+  noteOpsEdge?: NoteSmokeTickOpsEdge;
   /** Minimum spacing between runs; a fire is skipped if the last one is newer. */
   intervalMs?: number;
   /** Env used to resolve the underlying smoke config (URLs/bounds). */
@@ -184,6 +203,7 @@ export class ProdSmokeTick {
   private readonly alertPath: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly broadcast?: (msg: ServerMessage) => void;
+  private readonly noteOpsEdge?: NoteSmokeTickOpsEdge;
   private readonly resolveConfig: (env: NodeJS.ProcessEnv) => SmokeConfig;
   private readonly runChecks: (config: SmokeConfig) => Promise<CheckResult[]>;
   private readonly readArtifact: (path: string) => AlertArtifact | null;
@@ -196,6 +216,7 @@ export class ProdSmokeTick {
     this.alertPath = deps.alertPath ?? prodSmokeTickAlertPath(deps.kookrDir);
     this.env = deps.env ?? process.env;
     this.broadcast = deps.broadcast;
+    this.noteOpsEdge = deps.noteOpsEdge;
     this.resolveConfig = deps.resolveConfig ?? resolveSmokeConfig;
     this.runChecks = deps.runChecks ?? runSmokeChecks;
     this.readArtifact = deps.readArtifact ?? readAlertArtifact;
@@ -281,16 +302,24 @@ export class ProdSmokeTick {
           `— artifact ${this.alertPath}`,
       );
       // Edge-trigger: fire once per episode, so a sustained outage updates the
-      // one artifact each tick but does not re-broadcast every hour.
+      // one artifact each tick but does not re-broadcast every hour. Same edge
+      // gates the durable ops-status card (issue #2032).
       if (!this.firing) {
         this.firing = true;
         this.broadcast?.(buildSmokeTickAlertMessage(artifact, 'fired', this.alertPath));
+        // failingChecks only — check names, never paths/tokens/secrets.
+        const failingDetail = artifact.failingChecks.join(', ');
+        void this.noteOpsEdge?.(
+          'smoke_tick_fire',
+          failingDetail.length > 0 ? failingDetail : undefined,
+        );
       }
     } else {
       this.logger.log('[prod-smoke-tick] all checks passed');
       if (this.firing) {
         this.firing = false;
         this.broadcast?.(buildSmokeTickAlertMessage(artifact, 'recovered', this.alertPath));
+        void this.noteOpsEdge?.('smoke_tick_clear');
       }
     }
     return artifact;
@@ -384,6 +413,8 @@ export function createProdSmokeTickFromEnv(deps: {
   port: number | string;
   kookrDir: string;
   broadcast?: (msg: ServerMessage) => void;
+  /** Durable ops-status edges on fire/clear (issue #2032). */
+  noteOpsEdge?: NoteSmokeTickOpsEdge;
 }): ProdSmokeTick | undefined {
   const { enabled, intervalMs } = resolveProdSmokeTickSettings(deps.env, deps.port);
   if (!enabled) return undefined;
@@ -392,5 +423,6 @@ export function createProdSmokeTickFromEnv(deps: {
     env: deps.env,
     intervalMs,
     ...(deps.broadcast ? { broadcast: deps.broadcast } : {}),
+    ...(deps.noteOpsEdge ? { noteOpsEdge: deps.noteOpsEdge } : {}),
   });
 }

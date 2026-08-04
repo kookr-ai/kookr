@@ -1997,6 +1997,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     port,
     kookrDir,
     broadcast: detectorBroadcast,
+    // issue #2032: smoke fire/clear also refresh the durable ops-status card
+    // so multi-day smoke episodes are visible offline when Discord is down.
+    noteOpsEdge: (kind, detail) => {
+      void opsStatusWriter.noteEdge(kind, detail);
+    },
   });
 
   // Disk-critical launch admission (issue #1992). Constructed before createRoutes
