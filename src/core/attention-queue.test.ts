@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Anomaly } from './types.js';
-import { AttentionQueue } from './attention-queue.js';
+import { AttentionQueue, DEFAULT_LAST_REMOVED_MAX } from './attention-queue.js';
 import { SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS } from '../shared/contracts/messages.js';
 
 const FIXED_TIME = new Date('2026-01-01T00:00:00Z');
@@ -631,6 +631,50 @@ describe('AttentionQueue', () => {
       // remove() when nothing is in entries should not pollute lastRemoved
       queue.remove('a1');
       expect(queue.getAnomaly('a1')).toBeNull();
+    });
+
+    test('lastRemoved drops oldest entries when over maxLastRemoved cap', () => {
+      const capped = new AttentionQueue({ maxLastRemoved: 3 });
+      for (let i = 1; i <= 4; i++) {
+        const id = `a${i}`;
+        capped.enqueue(id, makeAnomaly(id, 'needs_input', 'info'));
+        capped.remove(id);
+      }
+
+      // Oldest (a1) evicted; retained keys still resolve via getAnomaly
+      expect(capped.getAnomaly('a1')).toBeNull();
+      expect(capped.getAnomaly('a2')?.agentId).toBe('a2');
+      expect(capped.getAnomaly('a3')?.agentId).toBe('a3');
+      expect(capped.getAnomaly('a4')?.agentId).toBe('a4');
+    });
+
+    test('lastRemoved re-remove of same agent refreshes recency without growing past cap', () => {
+      const capped = new AttentionQueue({ maxLastRemoved: 2 });
+      capped.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      capped.remove('a1');
+      capped.enqueue('a2', makeAnomaly('a2', 'needs_input', 'info'));
+      capped.remove('a2');
+
+      // a1 becomes newest again — a2 is now oldest and should be evicted next
+      capped.enqueue('a1', makeAnomaly('a1', 'permission_blocked', 'warning'));
+      capped.remove('a1');
+      capped.enqueue('a3', makeAnomaly('a3', 'needs_input', 'info'));
+      capped.remove('a3');
+
+      expect(capped.getAnomaly('a2')).toBeNull();
+      expect(capped.getAnomaly('a1')?.type).toBe('permission_blocked');
+      expect(capped.getAnomaly('a3')?.agentId).toBe('a3');
+    });
+
+    test('maxLastRemoved of 0 disables lastRemoved retention', () => {
+      const noRetention = new AttentionQueue({ maxLastRemoved: 0 });
+      noRetention.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      noRetention.remove('a1');
+      expect(noRetention.getAnomaly('a1')).toBeNull();
+    });
+
+    test('DEFAULT_LAST_REMOVED_MAX is 512', () => {
+      expect(DEFAULT_LAST_REMOVED_MAX).toBe(512);
     });
 
     test('full race scenario: enqueue → remove → getAnomaly → snooze', () => {
