@@ -735,6 +735,13 @@ Called by `parallel-issue-batch` after it writes a machine-readable
    successful ideation ran in the last 4h, no scout is already in flight, and
    no starvation-triggered scout was spawned in the last 4h. Spawns are
    stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+   **Empty-queue ideation override (issue #2043):** when a recent ideation
+   *did* publish issues but capacity still shows `free ≥ 3` and
+   `pendingQueueDepth == 0`, the 4h "successful ideation" suppress is **not**
+   honored — re-scout instead of `batch_kick_only` (kicks cannot create
+   issues). Decision audit rows set `ideationSuccessEmptyQueue: true` and
+   include `free` / `pendingQueueDepth` inputs. When the queue still has work
+   or free slots are busy, the 4h dedup still prevents thrash-scouting.
 3. On the **second** consecutive `blocked-empty` for the same repo within 12h,
    emits one pipeline-starvation operational alert (the first empty does not
    alert).

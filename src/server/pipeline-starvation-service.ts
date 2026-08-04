@@ -15,6 +15,11 @@
  * PR4 (overnight-throughput R5): capacity-gated parallel-issue-batch re-entry
  * on `batch_kick_only` handle path and on idea-scout terminal, behind
  * `KOOKR_PIPELINE_BATCH_KICK` (default off).
+ *
+ * Issue #2043: when recent ideation left free≥3 + pendingQueueDepth==0, do not
+ * honor the 4h successful-ideation suppress (re-scout; audit
+ * `ideationSuccessEmptyQueue`). Requires `getCapacitySnapshot` from the live
+ * capacity ledger.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -41,6 +46,7 @@ import {
   summarizeDisqualifiers,
   type BatchOutcomeRecord,
   type PipelineBatchKickResult,
+  type PipelineStarvationCapacitySnapshot,
   type PipelineStarvationDecision,
   type PipelineStarvationRepoState,
 } from '../core/pipeline-starvation.js';
@@ -92,6 +98,12 @@ export interface PipelineStarvationServiceDeps {
   resolveBatchOutcomePath?: (task: Task) => string | null;
   /** Override home for default playbook-state paths (tests). */
   homeDir?: string;
+  /**
+   * Live capacity snapshot for empty-queue ideation override (issue #2043).
+   * Prefer free + pendingQueueDepth from {@link buildCapacityLedger}.
+   * Omitted → pure decision keeps legacy 4h ideation suppress.
+   */
+  getCapacitySnapshot?: () => PipelineStarvationCapacitySnapshot | null;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -160,12 +172,25 @@ export class PipelineStarvationService {
     });
     const recentSuccessfulIdeationAtMs = ideationHit?.atMs ?? null;
     const scoutInFlight = isIdeaScoutInFlightForRepo(outcome.repo, this.deps.taskStore.listTasks());
+    let capacity: PipelineStarvationCapacitySnapshot | null = null;
+    if (this.deps.getCapacitySnapshot) {
+      try {
+        capacity = this.deps.getCapacitySnapshot() ?? null;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.log?.(
+          `[pipeline-starvation] getCapacitySnapshot failed (ignoring capacity override): ${message}`,
+        );
+        capacity = null;
+      }
+    }
 
     const decision = evaluatePipelineStarvationRefill(outcome, {
       nowMs,
       recentSuccessfulIdeationAtMs,
       scoutInFlight,
       prior,
+      capacity,
     });
 
     const emptyClass = decision.emptyClass ?? resolveBatchEmptyClass(outcome) ?? null;
@@ -180,6 +205,10 @@ export class PipelineStarvationService {
       disqualifierSummary: summarizeDisqualifiers(outcome.disqualified),
       emptyClass,
       source,
+      // Issue #2043 decision-audit inputs (RFC R2 capacity snapshot fields).
+      free: capacity?.free ?? null,
+      pendingQueueDepth: capacity?.pendingQueueDepth ?? null,
+      ideationSuccessEmptyQueue: decision.ideationSuccessEmptyQueue === true,
     };
 
     const batchKickEnabled = isPipelineBatchKickEnabled();

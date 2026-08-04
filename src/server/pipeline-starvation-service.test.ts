@@ -186,6 +186,31 @@ describe('PipelineStarvationService (#1715)', () => {
       'utf-8',
     );
 
+    // Capacity shows work still queued → 4h ideation suppress holds (#2043).
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const task = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      getCapacitySnapshot: () => ({ free: 2, pendingQueueDepth: 4 }),
+      now: () => clock,
+    });
+
     const result = await service.handleBatchOutcome({
       outcome: outcome(),
       localPath: checkout,
@@ -193,6 +218,7 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(result.decision.spawnScout).toBe(false);
     expect(result.decision.spawnSkipReason).toMatch(/successful ideation/i);
     expect(result.decision.followOnAction).toBe('batch_kick_only');
+    expect(result.decision.ideationSuccessEmptyQueue).toBeUndefined();
     // Flag default off: no launch, but audit records flag_off (PR4).
     expect(launches).toHaveLength(0);
     expect(result.batchKickResult).toBe('batch_skipped_flag_off');
@@ -204,6 +230,61 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(audit).toContain('flag_off');
     expect(audit).toContain('pipeline_starvation_batch_kick');
     expect(audit).toContain('batch_skipped_flag_off');
+    expect(audit).toContain('"pendingQueueDepth":4');
+    expect(audit).toContain('"ideationSuccessEmptyQueue":false');
+  });
+
+  test('empty-queue capacity after successful ideation re-opens scout (#2043)', async () => {
+    const runDir = join(ideaScoutBase, 'empty-success-run');
+    await mkdir(join(runDir, 'recommendations', '01-leaf'), { recursive: true });
+    await writeFile(join(runDir, 'state.md'), '# scout\n\n<promise>DONE</promise>\n', 'utf-8');
+    await writeFile(
+      join(runDir, 'recommendations', '01-leaf', 'issue-created.json'),
+      JSON.stringify({ number: 99, title: 'feat: leaf that batch cannot implement' }),
+      'utf-8',
+    );
+
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const task = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      getCapacitySnapshot: () => ({ free: 7, pendingQueueDepth: 0 }),
+      now: () => clock,
+    });
+
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'empty-ideation-handle' }),
+      localPath: checkout,
+    });
+    expect(result.decision.spawnScout).toBe(true);
+    expect(result.decision.followOnAction).toBe('idea_scout');
+    expect(result.decision.ideationSuccessEmptyQueue).toBe(true);
+    expect(result.spawnedScoutTaskId).toBeTruthy();
+    expect(launches).toHaveLength(1);
+    expect(result.batchKickResult).toBeUndefined();
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_decision');
+    expect(audit).toContain('"ideationSuccessEmptyQueue":true');
+    expect(audit).toContain('"free":7');
+    expect(audit).toContain('"pendingQueueDepth":0');
+    expect(audit).toContain('pipeline_starvation_scout_spawn');
   });
 
   test('DONE without issue-created does NOT suppress spawn (content-blind fix)', async () => {

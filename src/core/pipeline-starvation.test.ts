@@ -4,8 +4,10 @@ import {
   BATCH_OUTCOME_SCHEMA_VERSION,
   classifyStarvationLight,
   clearKickBatchPending,
+  EMPTY_IDEATION_FREE_SLOTS_THRESHOLD,
   evaluatePipelineStarvationRefill,
   isBatchKickInCooldown,
+  isIdeationSuccessEmptyQueue,
   isKickBatchPendingArmed,
   isParallelIssueBatchInFlightForRepo,
   isPipelineBatchKickEnabled,
@@ -162,6 +164,64 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     });
     expect(decision.spawnScout).toBe(false);
     expect(decision.spawnSkipReason).toMatch(/successful ideation/i);
+    expect(decision.ideationSuccessEmptyQueue).toBeUndefined();
+  });
+
+  test('skips spawn on successful ideation when queue still has work (4h dedup holds)', () => {
+    // Issue #2043: capacity busy / non-empty queue → ideation was a real refill.
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 30 * 60 * 1000,
+      scoutInFlight: false,
+      prior: null,
+      capacity: { free: 7, pendingQueueDepth: 3 },
+    });
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.followOnAction).toBe('batch_kick_only');
+    expect(decision.spawnSkipReason).toMatch(/successful ideation/i);
+    expect(decision.ideationSuccessEmptyQueue).toBeUndefined();
+  });
+
+  test('does NOT 4h-suppress on successful ideation when free≥3 and queue empty (#2043)', () => {
+    // Lucy 2026-08-04: ideation "success" left zero implementable leaves;
+    // free=7/16 idle while lastSpawnSkipReason stayed "successful ideation".
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'empty-ideation' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 45 * 60 * 1000,
+      scoutInFlight: false,
+      prior: null,
+      capacity: { free: 7, pendingQueueDepth: 0 },
+    });
+    expect(decision.spawnScout).toBe(true);
+    expect(decision.followOnAction).toBe('idea_scout');
+    expect(decision.ideationSuccessEmptyQueue).toBe(true);
+    expect(decision.spawnSkipReason).toBeUndefined();
+  });
+
+  test('empty-queue ideation override still honors starvation scout 4h dedup', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'after-scout' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: NOW - 30 * 60 * 1000,
+      scoutInFlight: false,
+      prior: prior({
+        lastStarvationScoutAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
+        lastStarvationScoutTaskId: 'recent-scout',
+      }),
+      capacity: { free: EMPTY_IDEATION_FREE_SLOTS_THRESHOLD, pendingQueueDepth: 0 },
+    });
+    expect(decision.ideationSuccessEmptyQueue).toBe(true);
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.spawnSkipReason).toMatch(/already spawned/i);
+    expect(decision.followOnAction).toBe('none');
+  });
+
+  test('isIdeationSuccessEmptyQueue gate', () => {
+    expect(isIdeationSuccessEmptyQueue(null)).toBe(false);
+    expect(isIdeationSuccessEmptyQueue(undefined)).toBe(false);
+    expect(isIdeationSuccessEmptyQueue({ free: 2, pendingQueueDepth: 0 })).toBe(false);
+    expect(isIdeationSuccessEmptyQueue({ free: 3, pendingQueueDepth: 1 })).toBe(false);
+    expect(isIdeationSuccessEmptyQueue({ free: 3, pendingQueueDepth: 0 })).toBe(true);
+    expect(isIdeationSuccessEmptyQueue({ free: 7, pendingQueueDepth: 0 })).toBe(true);
   });
 
   test('skips spawn when starvation scout already fired inside 4h window', () => {
@@ -447,6 +507,8 @@ describe('classifyStarvationLight + waiting_on_open_prs (PR3)', () => {
       recentSuccessfulIdeationAtMs: NOW - 60_000,
       scoutInFlight: false,
       prior: null,
+      // Non-empty queue: real refill — keep batch_kick_only.
+      capacity: { free: 1, pendingQueueDepth: 2 },
     });
     expect(decision.spawnScout).toBe(false);
     expect(decision.followOnAction).toBe('batch_kick_only');

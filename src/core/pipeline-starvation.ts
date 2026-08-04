@@ -21,9 +21,18 @@ export const STARVATION_SCOUT_DEDUP_MS = 4 * 60 * 60 * 1000; // 4h
 
 /**
  * "Successful ideation" lookback: if a scout completed for the repo inside
- * this window, do not re-trigger on-demand.
+ * this window, do not re-trigger on-demand — **unless** capacity shows the
+ * ideation left no implementable work (see {@link isIdeationSuccessEmptyQueue}).
  */
 export const SUCCESSFUL_IDEATION_LOOKBACK_MS = STARVATION_SCOUT_DEDUP_MS;
+
+/**
+ * Free-slot floor for treating recent ideation as non-refilling (issue #2043).
+ * Matches queue-feeder idle-capacity gate (`DEFAULT_FREE_SLOTS_THRESHOLD`).
+ * When free ≥ this and pendingQueueDepth == 0, a 4h "successful ideation"
+ * suppress must not block re-scout: batch kicks cannot create issues.
+ */
+export const EMPTY_IDEATION_FREE_SLOTS_THRESHOLD = 3;
 
 /** Second consecutive blocked-empty inside this window raises the alert. */
 export const STARVATION_ALERT_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h
@@ -137,6 +146,15 @@ export type PipelineBatchKickResult =
   | 'batch_skipped_cooldown'
   | 'batch_kick_failed';
 
+/**
+ * Minimal capacity inputs for empty-queue ideation override (issue #2043).
+ * Callers pass free + pending from the live capacity ledger.
+ */
+export interface PipelineStarvationCapacitySnapshot {
+  free: number;
+  pendingQueueDepth: number;
+}
+
 export interface PipelineStarvationContext {
   nowMs: number;
   /**
@@ -151,6 +169,13 @@ export interface PipelineStarvationContext {
    * NOT yet appended — the evaluator appends conceptually when counting.
    */
   prior: PipelineStarvationRepoState | null;
+  /**
+   * Live capacity snapshot (issue #2043). When free ≥ threshold and
+   * pendingQueueDepth == 0, recent "successful ideation" does **not** suppress
+   * re-scout — empty queue means the ideation did not leave implementable work.
+   * Omitted/null keeps legacy thrash-prevention (honor 4h ideation suppress).
+   */
+  capacity?: PipelineStarvationCapacitySnapshot | null;
 }
 
 /**
@@ -203,6 +228,12 @@ export interface PipelineStarvationDecision {
   starvationClass?: StarvationClass;
   /** Derived follow-on for service/audit (PR3/PR4). */
   followOnAction?: StarvationFollowOnAction;
+  /**
+   * True when recent successful ideation was present but capacity shows empty
+   * queue + idle free slots, so the 4h ideation suppress was overridden (#2043).
+   * Surfaced on `pipeline_starvation_decision` audit as `ideationSuccessEmptyQueue`.
+   */
+  ideationSuccessEmptyQueue?: boolean;
 }
 
 /**
@@ -419,6 +450,24 @@ export function summarizeDisqualifiers(
 }
 
 /**
+ * True when capacity shows idle free slots and an empty pending queue —
+ * recent ideation did not leave implementable work (issue #2043).
+ * Missing capacity snapshot → false (preserve 4h suppress).
+ */
+export function isIdeationSuccessEmptyQueue(
+  capacity: PipelineStarvationCapacitySnapshot | null | undefined,
+  opts?: { freeSlotsThreshold?: number },
+): boolean {
+  if (!capacity) return false;
+  const free = capacity.free;
+  const pending = capacity.pendingQueueDepth;
+  if (!Number.isFinite(free) || !Number.isFinite(pending)) return false;
+  if (pending < 0 || free < 0) return false;
+  const threshold = opts?.freeSlotsThreshold ?? EMPTY_IDEATION_FREE_SLOTS_THRESHOLD;
+  return free >= threshold && pending === 0;
+}
+
+/**
  * Pure decision function — no I/O. See issue #1715 acceptance criteria and
  * RFC overnight-throughput closed loop (PR1 lookback semantics live in
  * {@link findRecentSuccessfulIdeationAtMs}: requires issue-created ≥1).
@@ -426,7 +475,9 @@ export function summarizeDisqualifiers(
  * Spawn when:
  *   - outcome is blocked-empty, AND
  *   - no scout currently running/queued for the repo, AND
- *   - no successful ideation (with published issues) in the last 4h, AND
+ *   - no successful ideation (with published issues) in the last 4h
+ *     **unless** capacity is idle+empty-queue (issue #2043 — empty-queue
+ *     ideation is not a refill), AND
  *   - no starvation-triggered scout in the last 4h.
  *
  * Alert when:
@@ -513,6 +564,14 @@ export function evaluatePipelineStarvationRefill(
   let spawnSkipReason: string | undefined;
   let followOnAction: StarvationFollowOnAction = 'idea_scout';
 
+  const recentIdeation =
+    ctx.recentSuccessfulIdeationAtMs !== null
+    && nowMs - ctx.recentSuccessfulIdeationAtMs < SUCCESSFUL_IDEATION_LOOKBACK_MS;
+  // Issue #2043: treat ideation as a refill only when the queue still has work
+  // or capacity is busy. Idle free slots + empty queue after "success" means
+  // batch_kick_only would thrash with no implementable leaves — re-open scout.
+  const ideationSuccessEmptyQueue = recentIdeation && isIdeationSuccessEmptyQueue(ctx.capacity);
+
   // PR3: all open-PR covered → cannot_refill (no thrash scouts).
   if (starvationClass === 'waiting_on_open_prs') {
     spawnScout = false;
@@ -522,15 +581,14 @@ export function evaluatePipelineStarvationRefill(
     spawnScout = false;
     spawnSkipReason = 'scout already running or queued for this repo';
     followOnAction = 'none';
-  } else if (
-    ctx.recentSuccessfulIdeationAtMs !== null
-    && nowMs - ctx.recentSuccessfulIdeationAtMs < SUCCESSFUL_IDEATION_LOOKBACK_MS
-  ) {
+  } else if (recentIdeation && !ideationSuccessEmptyQueue) {
     spawnScout = false;
     spawnSkipReason = `successful ideation within last ${Math.round(SUCCESSFUL_IDEATION_LOOKBACK_MS / 3_600_000)}h`;
     // PR4: kick implement instead of re-scouting when supply already exists.
     followOnAction = 'batch_kick_only';
   } else {
+    // Includes empty-queue ideation override (#2043): still honor starvation
+    // scout 4h dedup so we do not thrash scouts after a recent spawn.
     const lastScoutMs = ctx.prior?.lastStarvationScoutAt
       ? Date.parse(ctx.prior.lastStarvationScoutAt)
       : NaN;
@@ -577,6 +635,7 @@ export function evaluatePipelineStarvationRefill(
     emptyClass,
     starvationClass,
     followOnAction: spawnScout ? 'idea_scout' : followOnAction,
+    ...(ideationSuccessEmptyQueue ? { ideationSuccessEmptyQueue: true } : {}),
   };
 }
 
