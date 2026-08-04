@@ -56,12 +56,26 @@ export interface AdapterVersionEntry {
 }
 
 /**
+ * Strip the preflight probe suffix that `agent-preflight.ts` appends after the
+ * version (` probe=--version`, ` probe=--help`, …). Without this, a healthy
+ * boot line like `version=2.1.220 probe=--version` fails isValidAdapterVersion
+ * and the hourly version-probe stays red forever (issue #2030).
+ *
+ * Only a trailing ` probe=<non-whitespace>` segment is removed — keep the
+ * strip narrow so `Usage: …` help-text leakage still fails validation.
+ */
+export function stripTrailingProbeSuffix(versionField: string): string {
+  return versionField.replace(/ probe=\S+\s*$/, '').trim();
+}
+
+/**
  * Parse `[startup] adapter=<name> binary=<path> version=<v>` lines out of a
  * server log. The version is everything after `version=` (it may contain
- * spaces — that is precisely the `Usage: ...` failure we want to catch). When
- * an adapter appears more than once (e.g. a systemd Restart=on-failure loop
- * appends to the same log), the LAST occurrence wins so we judge the current
- * boot.
+ * spaces — that is precisely the `Usage: ...` failure we want to catch), with
+ * a trailing ` probe=…` segment stripped so real preflight log lines validate.
+ * When an adapter appears more than once (e.g. a systemd Restart=on-failure
+ * loop appends to the same log), the LAST occurrence wins so we judge the
+ * current boot.
  */
 export function parseAdapterVersionsFromLog(logText: string): AdapterVersionEntry[] {
   const byAdapter = new Map<string, string>();
@@ -69,7 +83,7 @@ export function parseAdapterVersionsFromLog(logText: string): AdapterVersionEntr
   for (const raw of logText.split('\n')) {
     const match = raw.match(line);
     if (!match) continue;
-    byAdapter.set(match[1]!, match[3]!.trim());
+    byAdapter.set(match[1]!, stripTrailingProbeSuffix(match[3]!));
   }
   return [...byAdapter.entries()].map(([agentType, version]) => ({ agentType, version }));
 }
