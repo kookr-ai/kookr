@@ -3,15 +3,27 @@ const PINNED_KEY = 'kookr:pinnedPlaybooks';
 const PARAM_HISTORY_KEY = 'kookr:playbookParamHistory';
 const MAX_RECENT = 5;
 
-// TODO: recordLaunch, isPinned, and togglePin use bare playbookId without sourceCwd.
-// New methods (recordParams, getParamSnapshot) use a composite key to avoid cross-project
-// collisions. When the older methods are refactored, they should adopt the composite key too.
+/** Composite storage key — same shape as param history (`sourceCwd::playbookId`). */
+export function snapshotKey(playbookId: string, sourceCwd: string): string {
+  return `${sourceCwd}::${playbookId}`;
+}
+
+/**
+ * Match a stored pin/recent entry against a playbook.
+ * Composite keys are preferred; bare playbookId is accepted for pre-migration data.
+ */
+export function matchesUsageKey(stored: string, playbookId: string, sourceCwd: string): boolean {
+  return stored === snapshotKey(playbookId, sourceCwd) || stored === playbookId;
+}
 
 export class PlaybookUsageTracker {
   private recent: string[];
   private pinned: Set<string>;
 
   constructor(private storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage) {
+    // Best-effort migration on load: keep bare playbookId entries readable via
+    // matchesUsageKey. Without sourceCwd context we cannot rewrite them here;
+    // recordLaunch / togglePin rewrite to composite keys on next write.
     this.recent = this.loadList(RECENT_KEY);
     this.pinned = new Set(this.loadList(PINNED_KEY));
   }
@@ -36,8 +48,13 @@ export class PlaybookUsageTracker {
     }
   }
 
-  recordLaunch(playbookId: string): void {
-    this.recent = [playbookId, ...this.recent.filter((id) => id !== playbookId)].slice(0, MAX_RECENT);
+  recordLaunch(playbookId: string, sourceCwd: string): void {
+    const key = snapshotKey(playbookId, sourceCwd);
+    // Drop matching composite and any legacy bare id for this playbook (migrates on write)
+    this.recent = [key, ...this.recent.filter((id) => id !== key && id !== playbookId)].slice(
+      0,
+      MAX_RECENT,
+    );
     this.save();
   }
 
@@ -45,18 +62,32 @@ export class PlaybookUsageTracker {
     return [...this.recent];
   }
 
-  isPinned(playbookId: string): boolean {
-    return this.pinned.has(playbookId);
+  /** Index in the recent list for this playbook+cwd (composite or legacy bare), or -1. */
+  recentIndex(playbookId: string, sourceCwd: string): number {
+    return this.recent.findIndex((stored) => matchesUsageKey(stored, playbookId, sourceCwd));
   }
 
-  togglePin(playbookId: string): boolean {
-    if (this.pinned.has(playbookId)) {
-      this.pinned.delete(playbookId);
-    } else {
-      this.pinned.add(playbookId);
+  isPinned(playbookId: string, sourceCwd: string): boolean {
+    return (
+      this.pinned.has(snapshotKey(playbookId, sourceCwd)) || this.pinned.has(playbookId)
+    );
+  }
+
+  togglePin(playbookId: string, sourceCwd: string): boolean {
+    const key = snapshotKey(playbookId, sourceCwd);
+    const hasComposite = this.pinned.has(key);
+    const hasLegacy = this.pinned.has(playbookId);
+    const wasPinned = hasComposite || hasLegacy;
+
+    this.pinned.delete(key);
+    // Consume legacy bare id when this playbook is toggled (best-effort migrate-on-write)
+    if (hasLegacy) this.pinned.delete(playbookId);
+
+    if (!wasPinned) {
+      this.pinned.add(key);
     }
     this.save();
-    return this.pinned.has(playbookId);
+    return this.pinned.has(key);
   }
 
   getPinned(): Set<string> {
@@ -109,8 +140,4 @@ export class PlaybookUsageTracker {
     }
     return result;
   }
-}
-
-function snapshotKey(playbookId: string, sourceCwd: string): string {
-  return `${sourceCwd}::${playbookId}`;
 }
