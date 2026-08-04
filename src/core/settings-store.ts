@@ -218,6 +218,17 @@ export interface KookrSettings {
    */
   hungSuspectTtlMinutes: number;
   /**
+   * Post-spawn first-hook ack deadline (seconds), issue #2036. After a
+   * successful adapter launch, a session that never emits SessionStart / any
+   * agent hook within this window is terminated (disposition `first_hook_miss`)
+   * so it cannot hold a capacity slot until the multi-hour hung-task reaper.
+   * Distinct from {@link launchTimeoutSeconds} (pre-session adapter race) and
+   * from {@link hungSuspectTtlMinutes} (post-ack silence). Composes with the
+   * watchdog's MCP-startup grace: a live `mcp_startup_starting` window defers
+   * the miss. Default 180s; same clamp range as the launch timeout.
+   */
+  firstHookDeadlineSeconds: number;
+  /**
    * Per-source spawn budget (issue #1526 Phase C / C3): max task creations
    * allowed per launch source (cli/api/websocket/…, actor-qualified when the
    * `X-Kookr-Actor` header is present) within a sliding
@@ -313,6 +324,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   pendingTaskTtlMinutes: 240,
   finishedAwaitingAckTtlMinutes: 15,
   hungSuspectTtlMinutes: 25,
+  firstHookDeadlineSeconds: 180,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
   reservedActiveSlots: 2,
@@ -528,6 +540,16 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  // Reuse launch-timeout clamp range (30–900s): first-hook ack is the same
+  // order of magnitude as a cold spawn, not a multi-minute hang.
+  let firstHookDeadlineSeconds = DEFAULT_SETTINGS.firstHookDeadlineSeconds;
+  if (typeof raw.firstHookDeadlineSeconds === 'number' && Number.isFinite(raw.firstHookDeadlineSeconds)) {
+    firstHookDeadlineSeconds = Math.max(
+      MIN_LAUNCH_TIMEOUT_SEC,
+      Math.min(MAX_LAUNCH_TIMEOUT_SEC, Math.round(raw.firstHookDeadlineSeconds)),
+    );
+  }
+
   let spawnBurstLimit = DEFAULT_SETTINGS.spawnBurstLimit;
   if (typeof raw.spawnBurstLimit === 'number' && Number.isFinite(raw.spawnBurstLimit)) {
     spawnBurstLimit = Math.max(
@@ -681,6 +703,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       pendingTaskTtlMinutes,
       finishedAwaitingAckTtlMinutes,
       hungSuspectTtlMinutes,
+      firstHookDeadlineSeconds,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
       reservedActiveSlots,

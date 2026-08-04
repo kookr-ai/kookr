@@ -445,6 +445,15 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * First-hook miss counter (issue #2036). `/metrics` and `/api/health` read
+   * only `getSnapshot()` — process-lifetime cumulative count of post-spawn
+   * sessions reaped for never emitting SessionStart / any agent hook.
+   */
+  firstHookMissMetrics?: Pick<
+    import('../first-hook-deadline-sweep.js').FirstHookMissMetrics,
+    'getSnapshot'
+  >;
+  /**
    * Lesson-yield health cache (issues #1538, #1553, #1857). Diagnostics warms
    * it via bounded background scans; `/metrics` only calls `getCached24h()`
    * and never scans hook logs on the scrape path.

@@ -40,6 +40,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const snapshotShed = deps.snapshotShed?.getSnapshotShedMetrics();
     const finishedAwaitingAckReclaim = deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
     const hungSuspectReclaim = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
+    const firstHookMiss = deps.firstHookMissMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
@@ -75,6 +76,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               skippedProviderPaused: hungSuspectReclaim.skippedProviderPaused,
             },
           }
+        : {}),
+      ...(firstHookMiss
+        ? { firstHookMiss: { firstHookMissTotal: firstHookMiss.firstHookMissTotal } }
         : {}),
       ...(nonCriticalTimerPause
         ? {

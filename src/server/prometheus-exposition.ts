@@ -110,6 +110,12 @@ export interface PrometheusExpositionSnapshot {
     skippedProviderPaused?: number;
   };
   /**
+   * First-hook miss counter (issue #2036). Cumulative post-spawn sessions
+   * reaped for never emitting SessionStart / any agent hook. Omitted when
+   * the reaper is not wired.
+   */
+  firstHookMiss?: { firstHookMissTotal: number };
+  /**
    * Per-repo GitHub state-fetch non-rate-limit failure counters (issue #1946).
    * Empty array / omitted → HELP/TYPE only (no series) so scrapers see the
    * family without fabricated zero-label series.
@@ -143,6 +149,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
+  appendFirstHookMissMetrics(lines, snapshot.firstHookMiss);
   appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 
   return `${lines.join('\n')}\n`;
@@ -465,6 +472,22 @@ function appendCapacityMetrics(
         ? -1
         : msToSeconds(snapshot.oldestFinishedAwaitingAckAgeMs),
     ),
+  );
+}
+
+/**
+ * First-hook miss counter (issue #2036). Omitted when the reaper is not wired.
+ */
+function appendFirstHookMissMetrics(
+  lines: string[],
+  snapshot: { firstHookMissTotal: number } | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_first_hook_miss_total Total post-spawn sessions reaped for never emitting SessionStart / any agent hook since process start.',
+    '# TYPE kookr_first_hook_miss_total counter',
+    metricLine('kookr_first_hook_miss_total', {}, snapshot.firstHookMissTotal),
   );
 }
 
