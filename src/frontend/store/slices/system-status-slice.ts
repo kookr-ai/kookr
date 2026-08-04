@@ -4,12 +4,25 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
   return {
     resourceStatus: null,
     resourceStatusReceivedAtMs: null,
+    prodSmokeTick: null,
+    resourceWatchdog: null,
 
     handleResourceStatus: (status, receivedAtMs = Date.now()) => {
       set({
         resourceStatus: status,
         resourceStatusReceivedAtMs: receivedAtMs,
       });
+    },
+
+    handleOpsHealth: (payload) => {
+      const next: Partial<SystemStatusSlice> = {};
+      if ('prodSmokeTick' in payload) {
+        next.prodSmokeTick = payload.prodSmokeTick ?? null;
+      }
+      if ('resourceWatchdog' in payload) {
+        next.resourceWatchdog = payload.resourceWatchdog ?? null;
+      }
+      if (Object.keys(next).length > 0) set(next);
     },
   };
 }

@@ -155,6 +155,70 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
   );
 }
 
+/**
+ * Compact ops-health pills for smoke-tick failing streak + resourceWatchdog off
+ * (issue #2037). Hidden when healthy / enabled / no data yet.
+ */
+function OpsHealthPills() {
+  const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
+  const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
+
+  const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
+  const showSmoke = smokeFailures >= 1;
+  const showWatchdog = resourceWatchdog != null && resourceWatchdog.enabled === false;
+
+  if (!showSmoke && !showWatchdog) return null;
+
+  const smokeTitle = showSmoke
+    ? [
+        `Prod smoke tick failing for ${smokeFailures} consecutive hour${smokeFailures === 1 ? '' : 's'}`,
+        prodSmokeTick?.failingChecks?.length
+          ? `failing checks: ${prodSmokeTick.failingChecks.join(', ')}`
+          : null,
+        prodSmokeTick?.firstFailedAt
+          ? `streak began ${prodSmokeTick.firstFailedAt}`
+          : null,
+        'See GET /api/health.prodSmokeTick',
+      ].filter(Boolean).join(' · ')
+    : '';
+
+  const watchdogTitle = showWatchdog
+    ? [
+        'Resource watchdog is disabled — host-pressure auto-investigation will not spawn',
+        resourceWatchdog?.lastDecision ? `lastDecision=${resourceWatchdog.lastDecision}` : null,
+        resourceWatchdog?.pressureWhileDisabled && resourceWatchdog.pressureWhileDisabledReason
+          ? resourceWatchdog.pressureWhileDisabledReason
+          : null,
+        'Set KOOKR_RESOURCE_WATCHDOG=1 to enable · GET /api/health.resourceWatchdog',
+      ].filter(Boolean).join(' · ')
+    : '';
+
+  return (
+    <span className="ops-health-pills" data-testid="ops-health-pills">
+      {showSmoke && (
+        <span
+          className="ops-health-pill ops-health-smoke"
+          data-testid="ops-health-smoke-pill"
+          title={smokeTitle}
+          role="status"
+        >
+          Smoke: fail×{smokeFailures}
+        </span>
+      )}
+      {showWatchdog && (
+        <span
+          className="ops-health-pill ops-health-watchdog"
+          data-testid="ops-health-watchdog-pill"
+          title={watchdogTitle}
+          role="status"
+        >
+          Watchdog: off
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function StatusBar({
   findings,
   total,
@@ -194,6 +258,7 @@ export function StatusBar({
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
+        <OpsHealthPills />
         {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
         <button
           className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}
