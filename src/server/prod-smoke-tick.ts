@@ -63,6 +63,54 @@ export function prodSmokeTickAlertPath(kookrDir: string): string {
 }
 
 /**
+ * Operator-facing health projection of the hourly prod smoke tick (issue #2031).
+ * Projected on `GET /api/health.prodSmokeTick` so offline operators / remote
+ * probes can see consecutiveFailures + failingChecks without filesystem access.
+ * Built from the durable alert artifact only — never re-runs smoke checks.
+ */
+export const PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION = 'prod-smoke-tick.v1' as const;
+
+export interface ProdSmokeTickHealthSnapshot {
+  schemaVersion: typeof PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION;
+  /**
+   * Artifact status when present; `unknown` when the tick is enabled but no
+   * readable artifact exists yet (first hour after enable / clean data dir).
+   */
+  status: 'ok' | 'alert' | 'unknown';
+  consecutiveFailures: number;
+  failingChecks: string[];
+  /** ISO timestamp of the latest artifact write, when an artifact exists. */
+  generatedAt?: string;
+  /** ISO timestamp when the current failing streak began, when status is alert. */
+  firstFailedAt?: string;
+}
+
+/**
+ * Project a health snapshot from a previously-read alert artifact.
+ * Pure; never touches disk or re-runs checks. Null artifact → null-safe empty.
+ */
+export function buildProdSmokeTickHealthSnapshot(
+  artifact: AlertArtifact | null,
+): ProdSmokeTickHealthSnapshot {
+  if (!artifact) {
+    return {
+      schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+      status: 'unknown',
+      consecutiveFailures: 0,
+      failingChecks: [],
+    };
+  }
+  return {
+    schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+    status: artifact.status,
+    consecutiveFailures: artifact.consecutiveFailures ?? 0,
+    failingChecks: [...artifact.failingChecks],
+    generatedAt: artifact.generatedAt,
+    ...(artifact.firstFailedAt ? { firstFailedAt: artifact.firstFailedAt } : {}),
+  };
+}
+
+/**
  * Build the edge-triggered operational-alert message for a state transition.
  * `fired` on healthy→failing, `recovered` on failing→healthy. The stable
  * `operationalAlert.key` lets the dashboard correlate a fire with its recovery
@@ -163,6 +211,14 @@ export class ProdSmokeTick {
 
   get alertArtifactPath(): string {
     return this.alertPath;
+  }
+
+  /**
+   * Cheap health projection for GET /api/health (issue #2031).
+   * Reads the durable alert artifact only — never re-runs smoke checks.
+   */
+  getHealthSnapshot(): ProdSmokeTickHealthSnapshot {
+    return buildProdSmokeTickHealthSnapshot(this.readArtifact(this.alertPath));
   }
 
   /**

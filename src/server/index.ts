@@ -1978,6 +1978,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     kookrDir,
     log: (line) => console.log(line),
   });
+  // Hourly prod smoke tick (issue #1593 / #2031). Created before createRoutes so
+  // GET /api/health can project consecutiveFailures + failingChecks from the
+  // alert artifact without re-running checks. Enabled by default only on the
+  // canonical prod port (4800); undefined ⇒ no health block and no timer.
+  const prodSmokeTick = createProdSmokeTickFromEnv({
+    env: process.env,
+    port,
+    kookrDir,
+    broadcast: detectorBroadcast,
+  });
+
   // Disk-critical launch admission (issue #1992). Constructed before createRoutes
   // so the route deps can hold the live tracker instance; the resource-status
   // service (created later) feeds it on every sample tick.
@@ -2096,6 +2107,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     finishedAwaitingAckTtlReclaimMetrics,
     hungSuspectTtlReclaimMetrics,
     resourceWatchdog: resourceWatchdogService,
+    ...(prodSmokeTick ? { prodSmokeTick } : {}),
     deliveryTrace,
     coordinatorSuppressions,
     drainController,
@@ -2681,11 +2693,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         taskStore,
         intervalHours: resolveReflectWorktreeSweepIntervalHours(process.env),
       },
-      // Hourly prod smoke tick (issue #1593). Enabled by default only on the
-      // canonical prod port (4800) so a fresh deploy is protected with no
-      // operational change; dev servers and the test suite stay silent unless
-      // KOOKR_PROD_SMOKE_TICK forces it on. Undefined ⇒ no interval started.
-      prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: detectorBroadcast }),
+      // Hourly prod smoke tick (issue #1593 / #2031). Same instance wired into
+      // RouteDeps so /api/health projects the alert-artifact snapshot. Undefined
+      // when disabled ⇒ no interval started and no health block.
+      ...(prodSmokeTick ? { prodSmokeTick } : {}),
       // Deploy-lag detector (issue #1594). Compares each monitored prod's
       // running SHA against origin/main and alerts when merged commits sit
       // undeployed past the threshold (default 6h); it never triggers a deploy.

@@ -9,6 +9,8 @@ import {
   DEFAULT_PROD_SMOKE_TICK_INTERVAL_MS,
   ProdSmokeTick,
   PROD_SMOKE_TICK_ALERT_KEY,
+  PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+  buildProdSmokeTickHealthSnapshot,
   createProdSmokeTickFromEnv,
   prodSmokeTickAlertPath,
   resolveProdSmokeTickSettings,
@@ -461,5 +463,90 @@ describe('createProdSmokeTickFromEnv', () => {
     expect(tick).toBeInstanceOf(ProdSmokeTick);
     expect(tick?.alertArtifactPath).toBe(prodSmokeTickAlertPath('/data/.kookr'));
     expect(tick?.hostIntervalMs).toBe(DEFAULT_PROD_SMOKE_TICK_INTERVAL_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Health projection (issue #2031) — artifact read only, never re-runs checks.
+// ---------------------------------------------------------------------------
+
+describe('buildProdSmokeTickHealthSnapshot (issue #2031)', () => {
+  it('returns a null-safe empty snapshot when no artifact exists', () => {
+    expect(buildProdSmokeTickHealthSnapshot(null)).toEqual({
+      schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+      status: 'unknown',
+      consecutiveFailures: 0,
+      failingChecks: [],
+    });
+  });
+
+  it('projects status, consecutiveFailures, and failingChecks from a failing artifact', () => {
+    const artifact = mergeAlertArtifact(
+      null,
+      buildAlertArtifact(WEDGED_HEALTH, '2026-08-04T10:00:00.000Z'),
+    );
+    // Simulate a long failing streak as written by mergeAlertArtifact on later ticks.
+    const streaked: AlertArtifact = {
+      ...artifact,
+      consecutiveFailures: 113,
+      firstFailedAt: '2026-07-30T12:00:00.000Z',
+      failingChecks: ['health', 'ready'],
+    };
+    expect(buildProdSmokeTickHealthSnapshot(streaked)).toEqual({
+      schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+      status: 'alert',
+      consecutiveFailures: 113,
+      failingChecks: ['health', 'ready'],
+      generatedAt: '2026-08-04T10:00:00.000Z',
+      firstFailedAt: '2026-07-30T12:00:00.000Z',
+    });
+  });
+
+  it('projects a healthy artifact with consecutiveFailures 0', () => {
+    const artifact = mergeAlertArtifact(
+      null,
+      buildAlertArtifact(HEALTHY, '2026-08-04T11:00:00.000Z'),
+    );
+    expect(buildProdSmokeTickHealthSnapshot(artifact)).toEqual({
+      schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+      status: 'ok',
+      consecutiveFailures: 0,
+      failingChecks: [],
+      generatedAt: '2026-08-04T11:00:00.000Z',
+    });
+  });
+
+  it('defaults missing consecutiveFailures to 0 (deploy-gate shape)', () => {
+    const raw = buildAlertArtifact(WEDGED_HEALTH, '2026-08-04T10:00:00.000Z');
+    // buildAlertArtifact does not set consecutiveFailures; health path must not crash.
+    expect(raw.consecutiveFailures).toBeUndefined();
+    expect(buildProdSmokeTickHealthSnapshot(raw).consecutiveFailures).toBe(0);
+  });
+});
+
+describe('ProdSmokeTick.getHealthSnapshot (issue #2031)', () => {
+  it('reads the durable artifact without re-running smoke checks', async () => {
+    const runChecks = vi.fn(async () => WEDGED_HEALTH);
+    const { tick, store, alertPath } = makeTick({ runChecks });
+
+    // No artifact yet → null-safe unknown.
+    expect(tick.getHealthSnapshot()).toEqual({
+      schemaVersion: PROD_SMOKE_TICK_HEALTH_SCHEMA_VERSION,
+      status: 'unknown',
+      consecutiveFailures: 0,
+      failingChecks: [],
+    });
+    expect(runChecks).not.toHaveBeenCalled();
+
+    await tick.maybeRun();
+    expect(runChecks).toHaveBeenCalledTimes(1);
+
+    const snap = tick.getHealthSnapshot();
+    expect(snap.status).toBe('alert');
+    expect(snap.failingChecks).toContain('health');
+    expect(snap.consecutiveFailures).toBe(1);
+    // getHealthSnapshot must not re-run checks (second call after maybeRun).
+    expect(runChecks).toHaveBeenCalledTimes(1);
+    expect(store.get(alertPath)?.status).toBe('alert');
   });
 });

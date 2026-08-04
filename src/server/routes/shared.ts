@@ -460,6 +460,14 @@ export interface RouteDeps {
     import('../resource-watchdog-service.js').ResourceWatchdogService,
     'getHealthSnapshot'
   >;
+  /**
+   * Hourly prod smoke tick (issues #1593, #2031). `/api/health` reads only
+   * `getHealthSnapshot()` — a cheap artifact read projecting status /
+   * consecutiveFailures / failingChecks; never re-runs smoke checks on the
+   * request path (issue #1553 lesson). Absent when KOOKR_PROD_SMOKE_TICK is
+   * disabled (dev/test, or explicitly off) so the block is omitted.
+   */
+  prodSmokeTick?: Pick<import('../prod-smoke-tick.js').ProdSmokeTick, 'getHealthSnapshot'>;
   /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /**
