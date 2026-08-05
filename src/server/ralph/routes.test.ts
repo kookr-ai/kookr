@@ -7,7 +7,6 @@ import { TaskStore } from '../../core/tasks.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import type { RouteDeps } from '../routes/shared.js';
-import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 
 vi.mock('../launch-service.js', async (importActual) => {
@@ -39,10 +38,6 @@ function mkApp(deps: Partial<RouteDeps>): Hono {
   return app;
 }
 
-function broadcastNoop(_msg: ServerMessage): void {
-  /* no-op */
-}
-
 function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
   const task = targetStore.getTaskForMutation(created.id);
@@ -54,7 +49,7 @@ function mkRalphDeps(
   taskStore = new TaskStore(),
   overrides: {
     ralphLoopService?: Partial<RalphLoopService>;
-    broadcastToAll?: (msg: ServerMessage) => void;
+    requestSnapshotBroadcast?: () => void;
   } = {},
 ): RouteDeps {
   const monitor = new Monitor(taskStore, new AttentionQueue());
@@ -85,7 +80,9 @@ function mkRalphDeps(
     taskStore,
     monitor,
     ralphLoopService,
-    broadcastToAll: overrides.broadcastToAll ?? broadcastNoop,
+    // #2096: routes request a coalesced snapshot; tests inject a spy.
+    requestSnapshotBroadcast: overrides.requestSnapshotBroadcast ?? vi.fn(),
+    broadcastToAll: vi.fn(),
     serverCwd: '/server',
     launchServiceDeps: { taskStore, adapterRegistry: {}, lifecycleDeps: {} } as never,
     adapter: {} as never,
@@ -173,11 +170,11 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
         value: [],
       };
     });
-    const broadcastToAll = vi.fn();
+    const requestSnapshotBroadcast = vi.fn();
 
     const res = await mkApp(mkRalphDeps(taskStore, {
       ralphLoopService: { modifyBurnedTargets } as never,
-      broadcastToAll,
+      requestSnapshotBroadcast,
     })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -187,9 +184,8 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, burnedOutTargets: [] });
     expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: ['src/a.ts'], clear: false });
-    expect(broadcastToAll).toHaveBeenCalledTimes(1);
-    const snapshot = broadcastToAll.mock.calls[0]?.[0] as Extract<ServerMessage, { type: 'snapshot' }>;
-    expect(snapshot.agents.find((agent) => agent.taskId === task.id)?.ralphLoop?.burnedOutTargets).toEqual([]);
+    // #2096: mutate path requests one coalesced snapshot; does not build payloads here.
+    expect(requestSnapshotBroadcast).toHaveBeenCalledTimes(1);
   });
 
   test('forwards clear-all burned-target updates to RalphLoopService', async () => {
@@ -238,11 +234,11 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
       cumulativeIterations: 2,
     };
     const modifyBurnedTargets = vi.fn();
-    const broadcastToAll = vi.fn();
+    const requestSnapshotBroadcast = vi.fn();
 
     const res = await mkApp(mkRalphDeps(taskStore, {
       ralphLoopService: { modifyBurnedTargets } as never,
-      broadcastToAll,
+      requestSnapshotBroadcast,
     })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -252,7 +248,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'remove, when present, must be an array of strings' });
     expect(modifyBurnedTargets).not.toHaveBeenCalled();
-    expect(broadcastToAll).not.toHaveBeenCalled();
+    expect(requestSnapshotBroadcast).not.toHaveBeenCalled();
   });
 
   test('returns service errors without broadcasting', async () => {
@@ -271,11 +267,11 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
       status: 404,
       body: { error: 'task has no Ralph loop attached' },
     }));
-    const broadcastToAll = vi.fn();
+    const requestSnapshotBroadcast = vi.fn();
 
     const res = await mkApp(mkRalphDeps(taskStore, {
       ralphLoopService: { modifyBurnedTargets } as never,
-      broadcastToAll,
+      requestSnapshotBroadcast,
     })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -285,7 +281,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'task has no Ralph loop attached' });
     expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: ['src/a.ts'], clear: false });
-    expect(broadcastToAll).not.toHaveBeenCalled();
+    expect(requestSnapshotBroadcast).not.toHaveBeenCalled();
   });
 
   test('does not broadcast unchanged burned-target updates', async () => {
@@ -305,11 +301,11 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
       changed: false,
       value: [],
     }));
-    const broadcastToAll = vi.fn();
+    const requestSnapshotBroadcast = vi.fn();
 
     const res = await mkApp(mkRalphDeps(taskStore, {
       ralphLoopService: { modifyBurnedTargets } as never,
-      broadcastToAll,
+      requestSnapshotBroadcast,
     })).request(`/api/tasks/${task.id}/ralph-loop/burned-targets`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -319,7 +315,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, burnedOutTargets: [] });
     expect(modifyBurnedTargets).toHaveBeenCalledWith(task.id, { remove: [], clear: false });
-    expect(broadcastToAll).not.toHaveBeenCalled();
+    expect(requestSnapshotBroadcast).not.toHaveBeenCalled();
   });
 });
 

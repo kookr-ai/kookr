@@ -1751,7 +1751,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   );
   let getEventLoopDelayP95MsForSnapshotShed: () => number | null | undefined = () => null;
 
-  const { abortPendingSuggestion, getSnapshotShedMetrics } = wireEventPipeline({
+  const {
+    abortPendingSuggestion,
+    requestSnapshotBroadcast,
+    getSnapshotShedMetrics,
+  } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
     telemetryLog,
@@ -2148,6 +2152,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
+    // #2096: Ralph HTTP mutates share the event-pipeline coalesce/shed path
+    // instead of rebuilding full snapshots synchronously on every success.
+    requestSnapshotBroadcast,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
     // issue #1590 / #1992: feed the load-based POST /api/tasks admission gates
     // the same already-sampled resource snapshot (event-loop p95 + data-dir

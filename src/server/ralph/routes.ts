@@ -17,18 +17,22 @@ import {
   LoopedPlaybookLaunchError,
   replaceLoopedPlaybook,
 } from '../use-cases/looped-playbook-launch.js';
-import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import type { RouteDeps } from '../routes/shared.js';
 
 export interface RalphRouteDeps {
   adapter: RouteDeps['adapter'];
-  broadcastToAll: RouteDeps['broadcastToAll'];
   hookIngestion?: RouteDeps['hookIngestion'];
   hookWatcher: RouteDeps['hookWatcher'];
   interactionLog: RouteDeps['interactionLog'];
   launchServiceDeps: RouteDeps['launchServiceDeps'];
   monitor: RouteDeps['monitor'];
   ralphLoopService: RouteDeps['ralphLoopService'];
+  /**
+   * Coalesced full-snapshot rebuild (#704 residual / #2096). Production
+   * bootstrap always wires the event-pipeline handle; unit tests inject a spy
+   * (or omit and get a no-op) so handlers never build snapshot payloads.
+   */
+  requestSnapshotBroadcast?: () => void;
   serverCwd: RouteDeps['serverCwd'];
   shadowRegistry?: RouteDeps['shadowRegistry'];
   suppressionTracker?: RouteDeps['suppressionTracker'];
@@ -45,7 +49,10 @@ function removedGenericRalphBody(): { error: string; code: 'generic_ralph_remove
 }
 
 export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
-  const { taskStore, ralphLoopService, monitor, serverCwd, hookIngestion, broadcastToAll } = deps;
+  const { taskStore, ralphLoopService } = deps;
+  // Prefer the event-pipeline coalesce/shed path (#2096). No-op when omitted
+  // so lightweight route unit tests stay hermetic without a full pipeline.
+  const requestSnapshotBroadcast = deps.requestSnapshotBroadcast ?? (() => {});
 
   app.post('/api/tasks/ralph-loop', (c) => c.json(removedGenericRalphBody(), 410));
 
@@ -141,7 +148,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = await ralphLoopService.modifyBurnedTargets(id, { remove: remove as string[], clear });
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
     }
     return c.json({ ok: true, burnedOutTargets: result.value });
   });
@@ -155,7 +162,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.cancelLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
     }
     return c.json({ ok: true, status: result.value });
   });
@@ -169,7 +176,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.completeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
     }
     return c.json({ ok: true, status: result.value });
   });
@@ -189,7 +196,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
 
     const result = await ralphLoopService.updatePrompt(task, body.prompt);
     if (!result.ok) return c.json(result.body, result.status);
-    broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+    requestSnapshotBroadcast();
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
 
@@ -202,7 +209,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = ralphLoopService.pauseLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -216,7 +223,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     const result = await ralphLoopService.resumeLoop(task);
     if (!result.ok) return c.json(result.body, result.status);
     if (result.changed) {
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
     }
     return c.json({ ok: true, status: result.value.status, ralphLoop: result.value });
   });
@@ -250,7 +257,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
       return c.json({ ...result.task, ...(result.queued ? { queued: true } : {}) }, 201);
     } catch (err) {
       return ralphLaunchErrorResponse(c, err);
@@ -333,7 +340,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
         scope,
       });
 
-      broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
+      requestSnapshotBroadcast();
       return c.json(
         {
           ...result.task,
