@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   loadSettings,
@@ -532,22 +532,98 @@ describe('loadSettings / saveSettings', () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it('returns defaults for corrupt JSON', async () => {
+  it('fails closed on corrupt JSON (issue #2085)', async () => {
     const filePath = join(tmpDir, 'settings.json');
+    const nowIso = '2026-08-05T12:00:00.000Z';
     await writeFile(filePath, '{ invalid json', 'utf-8');
-    const result = await loadSettings(filePath);
-    expect(result.settings).toEqual(DEFAULT_SETTINGS);
+    const result = await loadSettings(filePath, nowIso);
     expect(result.loadedFromDefaults).toBe(true);
+    expect(result.loadError).toMatch(/not valid JSON/i);
+    expect(result.settings.automationKillSwitch).toBe(true);
+    expect(result.settings.safeModeSince).toBe(nowIso);
+    // Other fields still come from defaults.
+    expect(result.settings.maxActiveTasks).toBe(DEFAULT_SETTINGS.maxActiveTasks);
     expect(result.warnings).toEqual([]);
   });
 
-  it('returns defaults for JSON array', async () => {
+  it('fails closed on JSON array (issue #2085)', async () => {
     const filePath = join(tmpDir, 'settings.json');
+    const nowIso = '2026-08-05T12:00:00.000Z';
     await writeFile(filePath, '[1, 2, 3]', 'utf-8');
-    const result = await loadSettings(filePath);
-    expect(result.settings).toEqual(DEFAULT_SETTINGS);
+    const result = await loadSettings(filePath, nowIso);
     expect(result.loadedFromDefaults).toBe(true);
-    expect(result.warnings).toEqual([]);
+    expect(result.loadError).toMatch(/not an object/i);
+    expect(result.settings.automationKillSwitch).toBe(true);
+    expect(result.settings.safeModeSince).toBe(nowIso);
+  });
+
+  it('fails closed when automationKillSwitch field is corrupt (issue #2085)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    const nowIso = '2026-08-05T12:00:00.000Z';
+    await writeFile(filePath, JSON.stringify({
+      maxActiveTasks: 12,
+      automationKillSwitch: 'yes',
+    }), 'utf-8');
+    const result = await loadSettings(filePath, nowIso);
+    expect(result.loadedFromDefaults).toBe(false);
+    expect(result.loadError).toMatch(/Corrupt automationKillSwitch/i);
+    expect(result.settings.automationKillSwitch).toBe(true);
+    expect(result.settings.safeModeSince).toBe(nowIso);
+    // Non-kill-switch fields still parse normally.
+    expect(result.settings.maxActiveTasks).toBe(12);
+  });
+
+  it('keeps kill-switch off when the field is missing from a valid file (upgrade-safe)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    await writeFile(filePath, JSON.stringify({ maxActiveTasks: 8 }), 'utf-8');
+    const result = await loadSettings(filePath);
+    expect(result.loadError).toBeUndefined();
+    expect(result.settings.automationKillSwitch).toBe(false);
+    expect(result.settings.safeModeSince).toBeNull();
+    expect(result.loadedFromDefaults).toBe(false);
+  });
+
+  it('does not fail closed on ENOENT first-run defaults', async () => {
+    const result = await loadSettings(join(tmpDir, 'never-created.json'));
+    expect(result.loadError).toBeUndefined();
+    expect(result.settings.automationKillSwitch).toBe(false);
+    expect(result.loadedFromDefaults).toBe(true);
+  });
+
+  it('fails closed on unreadable settings file (non-ENOENT I/O, issue #2085)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    const nowIso = '2026-08-05T12:30:00.000Z';
+    await writeFile(filePath, JSON.stringify({ automationKillSwitch: false }), 'utf-8');
+    await chmod(filePath, 0);
+    try {
+      const result = await loadSettings(filePath, nowIso);
+      // On platforms where root can still read mode-0 files this may not fail;
+      // assert the fail-closed contract only when the OS actually denied access.
+      if (result.loadError) {
+        expect(result.loadError).toMatch(/Failed to read settings file/i);
+        expect(result.settings.automationKillSwitch).toBe(true);
+        expect(result.settings.safeModeSince).toBe(nowIso);
+        expect(result.loadedFromDefaults).toBe(true);
+      } else {
+        // Fallback when chmod-0 is still readable (e.g. root): skip contract.
+        expect(result.settings.automationKillSwitch).toBe(false);
+      }
+    } finally {
+      await chmod(filePath, 0o600);
+    }
+  });
+
+  it('preserves a valid engaged kill-switch on load (issue #2085)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    await writeFile(filePath, JSON.stringify({
+      automationKillSwitch: true,
+      safeModeSince: '2026-08-01T12:00:00.000Z',
+    }), 'utf-8');
+    const result = await loadSettings(filePath);
+    expect(result.loadError).toBeUndefined();
+    expect(result.settings.automationKillSwitch).toBe(true);
+    expect(result.settings.safeModeSince).toBe('2026-08-01T12:00:00.000Z');
+    expect(result.loadedFromDefaults).toBe(false);
   });
 
   it('round-trips valid settings', async () => {

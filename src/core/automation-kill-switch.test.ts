@@ -44,6 +44,37 @@ describe('resolveSafeModeStatus / formatSafeModeDigestLine', () => {
     expect(status).toEqual({ engaged: true });
     expect(formatSafeModeDigestLine(status)).toBe('SAFE MODE');
   });
+
+  it('fails closed and surfaces loadError when settings are untrusted (issue #2085)', () => {
+    const status = resolveSafeModeStatus({
+      automationKillSwitch: false,
+      safeModeSince: null,
+      loadError: 'Settings file is not valid JSON',
+    });
+    expect(status).toEqual({
+      engaged: true,
+      loadError: 'Settings file is not valid JSON',
+    });
+    expect(formatSafeModeDigestLine(status)).toBe(
+      'SAFE MODE (settings load error: Settings file is not valid JSON)',
+    );
+  });
+
+  it('includes since + loadError together when both are set', () => {
+    const status = resolveSafeModeStatus({
+      automationKillSwitch: true,
+      safeModeSince: '2026-08-01T12:00:00.000Z',
+      loadError: 'Corrupt automationKillSwitch field',
+    });
+    expect(status).toEqual({
+      engaged: true,
+      since: '2026-08-01T12:00:00.000Z',
+      loadError: 'Corrupt automationKillSwitch field',
+    });
+    expect(formatSafeModeDigestLine(status)).toBe(
+      'SAFE MODE since 2026-08-01T12:00:00.000Z (settings load error: Corrupt automationKillSwitch field)',
+    );
+  });
 });
 
 describe('applyKillSwitchTransition', () => {

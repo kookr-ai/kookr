@@ -95,6 +95,7 @@ export function dispatchSnapshotMessageForClient(
           ? {
               engaged: true,
               ...(typeof msg.safeMode.since === 'string' ? { since: msg.safeMode.since } : {}),
+              ...(typeof msg.safeMode.loadError === 'string' ? { loadError: msg.safeMode.loadError } : {}),
             }
           : { engaged: false },
       });

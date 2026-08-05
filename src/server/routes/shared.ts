@@ -376,6 +376,8 @@ export interface RouteDeps {
     get: () => KookrSettings;
     getLoadedFromDefaults: () => boolean;
     getLoadWarnings?: () => string[];
+    /** Issue #2085: settings load failure that forced fail-closed SAFE MODE. */
+    getLoadError?: () => string | undefined;
     update: (settings: KookrSettings) => Promise<string[]>;
   };
   /**

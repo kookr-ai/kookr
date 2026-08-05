@@ -15,6 +15,12 @@ export interface SafeModeStatus {
   engaged: boolean;
   /** ISO timestamp the current SAFE MODE period began; absent while disengaged. */
   since?: string;
+  /**
+   * When set, kill-switch state could not be trusted from disk (corrupt or
+   * unreadable settings). Autonomous launches fail closed until settings
+   * recover (issue #2085). Manual launches remain accepted.
+   */
+  loadError?: string;
 }
 
 /**
@@ -32,15 +38,28 @@ export function isAutonomousLaunchSource(
 export function resolveSafeModeStatus(input: {
   automationKillSwitch: boolean;
   safeModeSince: string | null | undefined;
+  /** Settings load failure — forces engaged + surfaces on health (issue #2085). */
+  loadError?: string | null;
 }): SafeModeStatus {
-  if (!input.automationKillSwitch) {
-    return { engaged: false };
-  }
-  const since =
-    typeof input.safeModeSince === 'string' && input.safeModeSince.length > 0
-      ? input.safeModeSince
+  const loadError =
+    typeof input.loadError === 'string' && input.loadError.trim().length > 0
+      ? input.loadError.trim()
       : undefined;
-  return since ? { engaged: true, since } : { engaged: true };
+
+  // Unknown kill-switch state fails closed: treat as engaged until recovered.
+  if (loadError || input.automationKillSwitch) {
+    const since =
+      typeof input.safeModeSince === 'string' && input.safeModeSince.length > 0
+        ? input.safeModeSince
+        : undefined;
+    return {
+      engaged: true,
+      ...(since ? { since } : {}),
+      ...(loadError ? { loadError } : {}),
+    };
+  }
+
+  return { engaged: false };
 }
 
 /**
@@ -49,9 +68,15 @@ export function resolveSafeModeStatus(input: {
  */
 export function formatSafeModeDigestLine(status: SafeModeStatus): string | null {
   if (!status.engaged) return null;
-  return status.since
+  const base = status.since
     ? `SAFE MODE since ${status.since}`
     : 'SAFE MODE';
+  if (!status.loadError) return base;
+  // Keep the digest one line; truncate long load errors for status CLIs.
+  const detail = status.loadError.length > 120
+    ? `${status.loadError.slice(0, 117)}...`
+    : status.loadError;
+  return `${base} (settings load error: ${detail})`;
 }
 
 /**
