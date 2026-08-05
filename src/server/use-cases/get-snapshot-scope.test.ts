@@ -215,6 +215,9 @@ describe('getProjectSummaries — scope filtering', () => {
     getWeekCount: () => 0,
     getAttemptsByProject: () => [],
     getAttemptsByProjectRecent: () => [],
+    getTodayCountsByProject: () => new Map(),
+    getWeekCountsByProject: () => new Map(),
+    getAttemptsByProjectMap: () => new Map(),
     getProjects: () => [],
     getTodayBlockedEntries: () => [],
   } as any;

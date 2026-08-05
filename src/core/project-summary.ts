@@ -259,6 +259,16 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
 
   const summaries: ProjectSummary[] = [];
 
+  // Aggregate the ledger once for the whole fan-out rather than re-scanning
+  // (and re-cloning) it per project. These three batch reads collapse the
+  // former `2 × projects` ledger clones + `3 × projects` scans into two ledger
+  // scans and one non-cloning attempts pass. Keyed by projectId; missing
+  // projects resolve to 0 / [] exactly as the per-project methods would.
+  const projectIds = [...projectAgents.keys()];
+  const todayCounts = ledgerAnalytics.getTodayCountsByProject(projectIds);
+  const weekCounts = ledgerAnalytics.getWeekCountsByProject(projectIds);
+  const attemptsByProject = ledgerAnalytics.getAttemptsByProjectMap(projectIds);
+
   for (const [projectId, agentList] of projectAgents) {
     const config = configStore.getConfig(projectId);
 
@@ -276,9 +286,9 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       continue;
     }
 
-    const todayCount = ledgerAnalytics.getTodayCount(projectId);
-    const weekCount = ledgerAnalytics.getWeekCount(projectId);
-    const attempts = ledgerAnalytics.getAttemptsByProject(projectId);
+    const todayCount = todayCounts.get(projectId) ?? 0;
+    const weekCount = weekCounts.get(projectId) ?? 0;
+    const attempts = attemptsByProject.get(projectId) ?? [];
     const openContributionAttempts = attempts.filter((a) => a.state === 'pr_open').length;
     const lastContrib = attempts.length > 0
       ? attempts.reduce((a, b) => a.createdAt > b.createdAt ? a : b).createdAt

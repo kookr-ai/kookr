@@ -106,6 +106,100 @@ export class LedgerAnalytics {
   }
 
   /**
+   * Build a reverse index from each project's repo variants back to the
+   * project IDs that own them, in a single pass over `projectIds`. Multiple
+   * projects can share a variant, so values are arrays. The `projects` array
+   * is the materialized `projectIds` (an `Iterable` can only be consumed once)
+   * and preserves iteration order for deterministic result maps.
+   *
+   * Shared by the batch aggregation methods below so `computeProjectSummaries`
+   * can resolve every project in a constant number of ledger/attempt scans
+   * instead of one scan (plus one array clone) per project.
+   */
+  private buildVariantIndex(projectIds: Iterable<string>): {
+    variantToProjects: Map<string, string[]>;
+    projects: string[];
+  } {
+    const variantToProjects = new Map<string, string[]>();
+    const projects: string[] = [];
+    for (const projectId of projectIds) {
+      projects.push(projectId);
+      for (const variant of projectIdToRepoVariants(projectId)) {
+        const list = variantToProjects.get(variant);
+        if (list) list.push(projectId);
+        else variantToProjects.set(variant, [projectId]);
+      }
+    }
+    return { variantToProjects, projects };
+  }
+
+  /**
+   * Batch equivalent of {@link getTodayCount} for many projects in one ledger
+   * scan. Returns a `Map` keyed by every id in `projectIds` (projects with no
+   * matching ledger rows resolve to `0`). Value for a project equals
+   * `getTodayCount(project)` exactly. See {@link buildVariantIndex}.
+   */
+  getTodayCountsByProject(projectIds: Iterable<string>): Map<string, number> {
+    const today = new Date().toISOString().split('T')[0];
+    const { variantToProjects, projects } = this.buildVariantIndex(projectIds);
+    const net = new Map<string, number>();
+    for (const projectId of projects) net.set(projectId, 0);
+    for (const e of this.source.getAllLedgerEntries()) {
+      if (!e.timestamp.startsWith(today)) continue;
+      const delta = e.action === 'pr_created' ? 1 : e.action === 'slot_reset' ? -1 : 0;
+      if (delta === 0) continue;
+      const matched = variantToProjects.get(e.repo.toLowerCase());
+      if (!matched) continue;
+      for (const projectId of matched) net.set(projectId, net.get(projectId)! + delta);
+    }
+    for (const [projectId, value] of net) net.set(projectId, Math.max(0, value));
+    return net;
+  }
+
+  /**
+   * Batch equivalent of {@link getWeekCount} for many projects in one ledger
+   * scan. Returns a `Map` keyed by every id in `projectIds` (projects with no
+   * matching ledger rows resolve to `0`). Value for a project equals
+   * `getWeekCount(project)` exactly. See {@link buildVariantIndex}.
+   */
+  getWeekCountsByProject(projectIds: Iterable<string>): Map<string, number> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    const cutoffStr = cutoff.toISOString();
+    const { variantToProjects, projects } = this.buildVariantIndex(projectIds);
+    const counts = new Map<string, number>();
+    for (const projectId of projects) counts.set(projectId, 0);
+    for (const e of this.source.getAllLedgerEntries()) {
+      if (e.action !== 'pr_created') continue;
+      if (e.timestamp < cutoffStr) continue;
+      const matched = variantToProjects.get(e.repo.toLowerCase());
+      if (!matched) continue;
+      for (const projectId of matched) counts.set(projectId, counts.get(projectId)! + 1);
+    }
+    return counts;
+  }
+
+  /**
+   * Batch equivalent of {@link getAttemptsByProject} for many projects in one
+   * pass over the (non-cloning) attempts view. Returns a `Map` keyed by every
+   * id in `projectIds` (projects with no matching attempts resolve to an empty
+   * array). Value for a project equals `getAttemptsByProject(project)` exactly,
+   * including attempt order. See {@link buildVariantIndex}.
+   */
+  getAttemptsByProjectMap(projectIds: Iterable<string>): Map<string, ContributionAttempt[]> {
+    const { variantToProjects, projects } = this.buildVariantIndex(projectIds);
+    const result = new Map<string, ContributionAttempt[]>();
+    for (const projectId of projects) result.set(projectId, []);
+    for (const a of this.source.getAttemptsReadonly()) {
+      if (a.state === 'scouted') continue;
+      const matched = variantToProjects.get(a.repo.toLowerCase());
+      if (!matched) continue;
+      for (const projectId of matched) result.get(projectId)!.push(a);
+    }
+    return result;
+  }
+
+  /**
    * Blocked / rate-limited ledger entries from today. Surfaced to the UI as
    * warning banners by the ledger watcher.
    */
