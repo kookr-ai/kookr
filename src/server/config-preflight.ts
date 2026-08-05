@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { isValidRelayNodeUrl } from '../remote/relay-node-url.js';
 import { isValidSpeechServiceUrl } from './speech-service-url.js';
 
 export type ConfigPreflightSeverity = 'fatal' | 'warning';
@@ -64,6 +65,14 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     validate: isValidSpeechServiceUrl,
     description:
       'http(s)/ws(s) text-to-speech URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
+  },
+  {
+    // Issue #2107: reject cloud-metadata / link-local / credentialed relay URLs
+    // before the node WebSocket connect path can use them.
+    variable: 'KOOKR_RELAY_URL',
+    validate: isValidRelayNodeUrl,
+    description:
+      'http(s)/ws(s) relay URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
   },
   {
     variable: 'KOOKR_REQUEST_BODY_LIMIT_BYTES',

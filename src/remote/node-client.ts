@@ -12,6 +12,8 @@ import type { TerminalDemandProof } from './terminal-publication-gate.js';
 
 import type { WebSocket } from 'ws';
 
+import { validateRelayNodeUrl } from './relay-node-url.js';
+
 export type RemoteNodeMode = 'active' | 'degraded';
 export type RemoteNodeConnectionState = 'idle' | 'connecting' | 'connected' | 'backing-off' | 'stopped';
 
@@ -161,7 +163,11 @@ async function loadNodeIdentity(kookrDir: string, logger: Pick<typeof console, '
 }
 
 function toNodeWebSocketUrl(relayUrl: string): string {
-  const url = new URL('/relay/node', relayUrl);
+  const validation = validateRelayNodeUrl(relayUrl);
+  if (!validation.ok) {
+    throw new Error(validation.reason);
+  }
+  const url = new URL('/relay/node', relayUrl.trim());
   if (url.protocol === 'https:') url.protocol = 'wss:';
   if (url.protocol === 'http:') url.protocol = 'ws:';
   return url.toString();
@@ -264,6 +270,11 @@ function isTerminalPublicationDemandMessage(value: unknown): value is TerminalPu
 }
 
 export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Promise<RemoteNodeClient> {
+  const relayUrlValidation = validateRelayNodeUrl(opts.relayUrl);
+  if (!relayUrlValidation.ok) {
+    throw new Error(`Invalid KOOKR_RELAY_URL: ${relayUrlValidation.reason}`);
+  }
+
   const {
     isRelayHello,
     makeNodeHello,
