@@ -215,6 +215,56 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(d.deliveredPr).toBeUndefined();
   });
 
+  it('skips hard TTL when recordProviderPause says holdForResume (#1896)', async () => {
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+    const recordProviderPause = vi.fn(() => ({ holdForResume: true }));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(recordProviderPause).toHaveBeenCalled();
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+  });
+
+  it('reclaims after recordProviderPause returns holdForResume false (reset elapsed)', async () => {
+    const task = makePausedTask();
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause: () => ({ holdForResume: false }),
+        isHoldingOpenPr: () => false,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
   it('exposes occupancy on metrics even when nothing is reclaimed', async () => {
     const a = makePausedTask({ id: 'a' });
     const b = makePausedTask({ id: 'b' });

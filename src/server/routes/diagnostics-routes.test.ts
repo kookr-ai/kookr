@@ -1460,6 +1460,7 @@ describe('diagnostics routes', () => {
         skippedUnderTtl: 0,
         skippedOpenPrFailsafe: 0,
         skippedNoPauseStart: 0,
+        skippedAwaitingProviderReset: 0,
         lastCandidatesConsidered: 0,
         lastOutcomes: [],
         lastAttemptedTaskIds: [],
@@ -1480,6 +1481,7 @@ describe('diagnostics routes', () => {
           skipped_under_ttl: 1,
           skipped_open_pr_failsafe: 1,
           skipped_no_pause_start: 0,
+          skipped_awaiting_provider_reset: 0,
         },
         outcomes: [
           { taskId: 'p1', outcome: 'selected', pausedForMs: 2 * 60 * 60_000 },

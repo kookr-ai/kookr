@@ -530,6 +530,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           skippedUnderTtl: providerPausedOccupancySnapshot.skippedUnderTtl,
           skippedOpenPrFailsafe: providerPausedOccupancySnapshot.skippedOpenPrFailsafe,
           skippedNoPauseStart: providerPausedOccupancySnapshot.skippedNoPauseStart,
+          skippedAwaitingProviderReset:
+            providerPausedOccupancySnapshot.skippedAwaitingProviderReset,
           lastCandidatesConsidered:
             providerPausedOccupancySnapshot.lastCandidatesConsidered,
           lastOutcomes: providerPausedOccupancySnapshot.lastOutcomes,

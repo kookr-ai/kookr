@@ -1261,6 +1261,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               broadcastToAll: deps.broadcastToAll,
               isProviderPaused: isTaskProviderPaused,
               pauseStartTracker: deps.providerPausedStartTracker,
+              // Same liveness + provider-reset seams as hung reclaim so hard
+              // TTL does not strand #1896 auto-resume or kill sticky-but-live
+              // agents (issue #2079 independent review).
+              getLiveness: (task) => hungSuspectSignals(task).liveness,
+              recordProviderPause: deps.recordProviderPause,
               isHoldingOpenPr: deps.isTaskHoldingOpenPr,
               metrics: deps.providerPausedOccupancyMetrics,
             },

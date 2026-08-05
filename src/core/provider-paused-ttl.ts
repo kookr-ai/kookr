@@ -104,9 +104,7 @@ export function summarizeProviderPausedOccupancy(
     oldestPauseAgeMs:
       count > 0 && oldestStart !== undefined
         ? Math.max(0, nowMs - oldestStart)
-        : count > 0
-          ? null
-          : null,
+        : null,
     taskIds,
   };
 }
@@ -120,12 +118,15 @@ export interface ExpiredProviderPausedEntry {
 export type ProviderPausedTtlSkipReason =
   | 'skipped_under_ttl'
   | 'skipped_open_pr_failsafe'
-  | 'skipped_no_pause_start';
+  | 'skipped_no_pause_start'
+  /** Provider reset not yet elapsed — hold for #1896 auto-resume (issue #2079). */
+  | 'skipped_awaiting_provider_reset';
 
 export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipReason[] = [
   'skipped_under_ttl',
   'skipped_open_pr_failsafe',
   'skipped_no_pause_start',
+  'skipped_awaiting_provider_reset',
 ] as const;
 
 export type ProviderPausedTtlSkipCounts = Record<ProviderPausedTtlSkipReason, number>;
@@ -135,6 +136,7 @@ export function emptyProviderPausedTtlSkipCounts(): ProviderPausedTtlSkipCounts 
     skipped_under_ttl: 0,
     skipped_open_pr_failsafe: 0,
     skipped_no_pause_start: 0,
+    skipped_awaiting_provider_reset: 0,
   };
 }
 
@@ -161,6 +163,19 @@ export interface SelectExpiredProviderPausedTasksOpts {
    */
   getPauseStartedAtMs: (task: Task) => number | undefined;
   /**
+   * Optional last liveness activity (ms). When present and after the latch
+   * start, hard-TTL age is measured from the later of the two so a recovered
+   * agent that still has a sticky billing event in its event window is not
+   * terminated while it is demonstrably working (issue #2079 review).
+   */
+  getLastActivityAtMs?: (task: Task) => number | undefined;
+  /**
+   * Provider-reset hold (#1896). When true, hard-TTL reclaim skips so the
+   * auto-resume scheduler can re-dispatch at reset. When false, reclaim is
+   * allowed (reset elapsed — free the slot/lease). When omitted, no skip.
+   */
+  isAwaitingProviderReset?: (task: Task) => boolean;
+  /**
    * Stranded-PR / open-PR fail-safe (same contract as hungSuspect TTL):
    * - `true`  — holds a confirmed-open PR. Exempt, always.
    * - `false` — confirmed no open PR. Safe to reclaim.
@@ -171,13 +186,34 @@ export interface SelectExpiredProviderPausedTasksOpts {
 }
 
 /**
+ * Effective continuous-pause start for hard TTL (issue #2079).
+ * Later of first-observed pause latch and last liveness activity — so sticky
+ * historical billing events do not accumulate age while the agent works.
+ */
+export function effectiveProviderPausedStartMs(
+  pauseStartedAtMs: number,
+  lastActivityAtMs: number | undefined,
+): number {
+  if (
+    typeof lastActivityAtMs === 'number'
+    && Number.isFinite(lastActivityAtMs)
+    && lastActivityAtMs > 0
+    && lastActivityAtMs > pauseStartedAtMs
+  ) {
+    return lastActivityAtMs;
+  }
+  return pauseStartedAtMs;
+}
+
+/**
  * Pure selection of provider_paused tasks past the hard TTL (issue #2079).
  *
  * Boundary is inclusive: `pausedForMs >= ttlMs` selects. Guards (order):
  * - only `status === 'inProgress'` without `completion_ready`;
  * - `isProviderPaused` must return true;
  * - missing pause start → `skipped_no_pause_start`;
- * - pause age under TTL → `skipped_under_ttl`;
+ * - effective pause age under TTL → `skipped_under_ttl`;
+ * - awaiting provider reset (#1896) → `skipped_awaiting_provider_reset`;
  * - open-PR fail-safe (true or unknown) → `skipped_open_pr_failsafe`;
  * - otherwise selected (oldest-paused first).
  */
@@ -206,10 +242,25 @@ export function selectExpiredProviderPausedTasks(
       continue;
     }
 
-    const pausedForMs = nowMs - started;
+    const effectiveStart = effectiveProviderPausedStartMs(
+      started,
+      opts.getLastActivityAtMs?.(task),
+    );
+    const pausedForMs = nowMs - effectiveStart;
     if (pausedForMs < ttlMs) {
       skips.skipped_under_ttl += 1;
       outcomes.push({ taskId: task.id, outcome: 'skipped_under_ttl', pausedForMs });
+      continue;
+    }
+
+    // #1896: hold until provider reset so auto-resume can re-dispatch.
+    if (opts.isAwaitingProviderReset?.(task) === true) {
+      skips.skipped_awaiting_provider_reset += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_awaiting_provider_reset',
+        pausedForMs,
+      });
       continue;
     }
 

@@ -203,4 +203,47 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
     });
     expect(sel.expired.map((e) => e.task.id)).toEqual(['b', 'a']);
   });
+
+  it('does not escalate when recent liveness advances effective pause start (sticky event)', () => {
+    const task = pausedTask();
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: alwaysPaused,
+      // Latch is ancient, but last activity is recent → under TTL.
+      getPauseStartedAtMs: startAgo(TTL_MS + 60_000),
+      getLastActivityAtMs: () => NOW.getTime() - 60_000,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+  });
+
+  it('skips while awaiting provider reset (#1896 hold-for-resume)', () => {
+    const task = pausedTask();
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(TTL_MS + 60_000),
+      isAwaitingProviderReset: () => true,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_awaiting_provider_reset).toBe(1);
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('escalates after provider reset elapsed (holdForResume false)', () => {
+    const task = pausedTask();
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(TTL_MS + 60_000),
+      isAwaitingProviderReset: () => false,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['paused-1']);
+  });
 });

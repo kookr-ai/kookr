@@ -1,6 +1,7 @@
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
+import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   emptyProviderPausedTtlSkipCounts,
@@ -97,6 +98,7 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
   skippedUnderTtl: number;
   skippedOpenPrFailsafe: number;
   skippedNoPauseStart: number;
+  skippedAwaitingProviderReset: number;
   lastCandidatesConsidered: number;
   lastOutcomes: ProviderPausedTtlCandidateOutcome[];
   lastAttemptedTaskIds: string[];
@@ -154,6 +156,8 @@ export class ProviderPausedOccupancyMetrics {
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
     this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
     this.skips.skipped_no_pause_start += selection.skips.skipped_no_pause_start;
+    this.skips.skipped_awaiting_provider_reset +=
+      selection.skips.skipped_awaiting_provider_reset;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
@@ -173,6 +177,7 @@ export class ProviderPausedOccupancyMetrics {
       skippedUnderTtl: this.skips.skipped_under_ttl,
       skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
       skippedNoPauseStart: this.skips.skipped_no_pause_start,
+      skippedAwaitingProviderReset: this.skips.skipped_awaiting_provider_reset,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
@@ -190,6 +195,22 @@ export interface ReclaimProviderPausedTasksDeps {
   isProviderPaused: (task: Task) => boolean;
   /** First-observed pause start tracker (shared across ticks). */
   pauseStartTracker: ProviderPausedStartTracker;
+  /**
+   * Optional liveness evidence — used so hard-TTL age follows last activity
+   * when sticky billing events remain in the event window (issue #2079).
+   */
+  getLiveness?: (task: Task) => HungTaskLivenessEvidence | undefined;
+  /**
+   * Provider-reset registration (#1896). Same contract as the hung-task
+   * reaper's `recordProviderPause`: returns whether to keep holding for resume.
+   * When holdForResume is true, hard-TTL reclaim skips the task so auto-resume
+   * can fire at reset; when false (reset elapsed), reclaim proceeds and frees
+   * the lease for the scheduled relaunch.
+   */
+  recordProviderPause?: (
+    task: Task,
+    detail?: string,
+  ) => { holdForResume: boolean } | void;
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
   metrics?: Pick<
     ProviderPausedOccupancyMetrics,
@@ -275,6 +296,31 @@ export async function reclaimAgedProviderPausedTasks(
     ttlMs,
     isProviderPaused: deps.isProviderPaused,
     getPauseStartedAtMs: (task) => getPauseStartedAtMs(task),
+    getLastActivityAtMs: (task) => {
+      const liveness = deps.getLiveness?.(task);
+      if (!liveness) return undefined;
+      const last = Math.max(
+        liveness.lastHookEventAt,
+        liveness.lastPaneChangeAt,
+        liveness.lastTokenActivityAt,
+      );
+      return last > 0 ? last : undefined;
+    },
+    isAwaitingProviderReset: (task) => {
+      if (!deps.recordProviderPause) return false;
+      try {
+        const decision = deps.recordProviderPause(task, 'provider_paused_ttl');
+        return decision?.holdForResume === true;
+      } catch (err) {
+        // Fail-safe: if registration throws, hold rather than reclaim out
+        // from under a possible auto-resume path (#1896).
+        console.error(
+          `[provider-paused-ttl] recordProviderPause failed for task ${task.id}:`,
+          err,
+        );
+        return true;
+      }
+    },
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
 
