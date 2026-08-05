@@ -76,7 +76,11 @@ Options:
   --free-threshold <N>    Idle-capacity gate (default ${DEFAULT_FREE_SLOTS_THRESHOLD}).
   --umbrella <ref>        owner/repo#N for leaves.
   --emit                  Actually file leaf issues via 'gh issue create'
-                          (opt-in; default OFF — dry-run only).
+                          (opt-in; default OFF — dry-run only). Idempotent by
+                          title: a leaf whose title already exists as an OPEN or
+                          CLOSED issue in the umbrella repo is skipped (the
+                          existing ref is reused and recorded in the ledger),
+                          so landed leaves are never re-filed (#2120).
   --kookr-dir <PATH>      State root (default ~/.kookr).
   --no-persist            Skip the observability ledger write.
   --json                  Machine-readable envelope on stdout.
@@ -291,17 +295,64 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
   };
 }
 
-/** File one leaf as a GitHub issue in the umbrella's repo; returns the issue URL. */
+/**
+ * Query the umbrella repo for an existing issue — open OR closed — whose title
+ * exactly matches `title`. Returns its ref (owner/repo#N) when found, else null.
+ *
+ * Playbook rule (queue-feeder §0): never re-file a leaf title that already
+ * exists as an open or closed issue (#2120). We search `in:title` (a fuzzy
+ * GitHub match) to narrow the set, then require EXACT title equality so a
+ * near-match never suppresses a genuinely new leaf. A gh failure here throws,
+ * so emit fails closed (exit 4) rather than risk re-filing a duplicate.
+ */
+function findExistingIssueByTitle(
+  runGh: (args: string[]) => string,
+  repo: string,
+  title: string,
+): string | null {
+  const raw = runGh([
+    'issue',
+    'list',
+    '-R',
+    repo,
+    '--state',
+    'all',
+    '--search',
+    `in:title ${JSON.stringify(title)}`,
+    '--json',
+    'number,title',
+    '--limit',
+    '100',
+  ]).trim();
+  let rows: Array<{ number: number; title: string }>;
+  try {
+    rows = raw ? (JSON.parse(raw) as Array<{ number: number; title: string }>) : [];
+  } catch {
+    // Unparseable payload — treat as no match rather than crashing the loop.
+    return null;
+  }
+  const match = Array.isArray(rows) ? rows.find((r) => r.title === title) : undefined;
+  return match ? `${repo}#${match.number}` : null;
+}
+
+/**
+ * File one leaf as a GitHub issue in the umbrella's repo, unless an issue with
+ * the same title already exists (open or closed) — in which case we skip the
+ * create and reuse the existing ref. Returns the issue ref (URL for a fresh
+ * create, owner/repo#N for a reused one) and whether we created it.
+ */
 function emitLeaf(
   runGh: (args: string[]) => string,
   repo: string,
   leaf: LeafSpec,
   umbrella: string,
-): string {
+): { ref: string; created: boolean } {
+  const existing = findExistingIssueByTitle(runGh, repo, leaf.title);
+  if (existing) return { ref: existing, created: false };
   const body = buildLeafIssueBody(leaf, umbrella);
   const args = ['issue', 'create', '-R', repo, '--title', leaf.title, '--body', body];
   for (const label of leaf.labels ?? []) args.push('--label', label);
-  return runGh(args).trim();
+  return { ref: runGh(args).trim(), created: true };
 }
 
 function emit(
@@ -340,6 +391,9 @@ function runPlan(
   });
 
   const emitted: string[] = [];
+  // Leaves whose title already existed (open or closed) → skipped create,
+  // existing ref reused (#2120). Recorded in the ledger for agent audit.
+  const skipped: Array<{ title: string; existing: string }> = [];
   let emitError: string | undefined;
   const dryRun = !args.emit;
 
@@ -359,7 +413,9 @@ function runPlan(
     // must show what this run actually created).
     try {
       for (const leaf of decision.selected.leaves) {
-        emitted.push(emitLeaf(io.runGh, decision.selected.repo, leaf, decision.selected.ref));
+        const res = emitLeaf(io.runGh, decision.selected.repo, leaf, decision.selected.ref);
+        emitted.push(res.ref);
+        if (!res.created) skipped.push({ title: leaf.title, existing: res.ref });
       }
     } catch (e) {
       emitError = e instanceof Error ? e.message : String(e);
@@ -382,6 +438,7 @@ function runPlan(
       JSON.stringify({
         ...record,
         emitted,
+        skipped,
         emitError: emitError ?? null,
         openProductMetricIssues: snapshot.openProductMetricIssues ?? null,
       }),
@@ -394,7 +451,9 @@ function runPlan(
   }
 
   const line = formatQueueFeederLine(record);
-  emit(args.json, io.out, { decision, record, emitted }, line);
+  const skipNote =
+    skipped.length > 0 ? ` (skipped ${skipped.length} existing-title leaf(s))` : '';
+  emit(args.json, io.out, { decision, record, emitted, skipped }, `${line}${skipNote}`);
   return 0;
 }
 
