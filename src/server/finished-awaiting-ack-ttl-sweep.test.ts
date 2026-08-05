@@ -120,9 +120,90 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
 
     expect(metrics.getSnapshot()).toMatchObject({
       reclaimedTotal: 1,
+      reclaimAttempted: 1,
+      reclaimSucceeded: 1,
+      skippedBadRaisedAt: 0,
+      skippedOpenPrFailsafe: 0,
+      skippedUnderTtl: 0,
+      lastCandidatesConsidered: 1,
+      lastAttemptedTaskIds: ['task-1'],
       autoCompletedTotal: 0,
       autoCompleteDeferredTotal: 0,
     });
+    expect(result.selection).toMatchObject({
+      candidatesConsidered: 1,
+      selectedCount: 1,
+    });
+  });
+
+  it('records open-PR failsafe skip metrics without reclaiming (issue #2084)', async () => {
+    const task = makeFaaTask({ id: 'stranded' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const isHoldingOpenPr = vi.fn(() => true);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr, metrics },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(isHoldingOpenPr).toHaveBeenCalledWith(task);
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedOpenPrFailsafe: 1,
+      lastCandidatesConsidered: 1,
+      lastAttemptedTaskIds: [],
+    });
+    expect(result.selection?.skips.skipped_open_pr_failsafe).toBe(1);
+    await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
+  });
+
+  it('accumulates mixed skip-reason counters across a single pass (issue #2084)', async () => {
+    const reclaimable = makeFaaTask({ id: 'reclaim' });
+    const under = makeFaaTask({
+      id: 'under',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - TTL_MS + 60_000).toISOString(),
+      },
+    });
+    const prHold = makeFaaTask({ id: 'pr' });
+    const bogus = makeFaaTask({
+      id: 'bogus',
+      pendingSignal: { kind: 'completion_ready', raisedAt: 'not-a-date' },
+    });
+    const tasks = [reclaimable, under, prHold, bogus];
+    const taskStore = makeMockTaskStore(tasks);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: (t) => (t.id === 'pr' ? true : false),
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['reclaim']);
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 1,
+      reclaimAttempted: 1,
+      skippedUnderTtl: 1,
+      skippedOpenPrFailsafe: 1,
+      skippedBadRaisedAt: 1,
+      lastCandidatesConsidered: 4,
+      lastAttemptedTaskIds: ['reclaim'],
+    });
+    expect(result.selection?.candidatesConsidered).toBe(4);
+    expect(result.selection?.selectedCount).toBe(1);
   });
 
   it('exempts a stranded-PR task (isHoldingOpenPr === true) — the merge_required path is never clobbered', async () => {

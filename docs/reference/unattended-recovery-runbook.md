@@ -34,6 +34,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Need to stop schedule fires during an incident | `safeMode.engaged == false` | **Engage** SAFE MODE via settings (not drain — drain blocks *all* launches) |
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
+| Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
@@ -193,6 +194,7 @@ print("capacity.byClass", cap.get("byClass"))
 print("capacity.free", cap.get("free"), "active", cap.get("active"))
 print("hungSuspectTtlReclaim", h.get("hungSuspectTtlReclaim"))
 print("hungSuspectCapacityFinding", h.get("hungSuspectCapacityFinding"))
+print("finishedAwaitingAckTtlReclaim", h.get("finishedAwaitingAckTtlReclaim"))
 PY
 ```
 
@@ -202,12 +204,16 @@ PY
    `reclaimedTotal=0` with dominant `skippedUnderTtl` is **expected** until
    multi-channel silence ages past `hungSuspectTtlMinutes` (default 25m). See
    [offline-recovery-card.md](./offline-recovery-card.md) §3 for skip-reason
-   table (issue #2045).
+   table (issue #2045). Same pattern for FAA residual: flat
+   `finishedAwaitingAckTtlReclaim.reclaimedTotal` with high
+   `capacity.byClass.finishedAwaitingAck` → read skip dominance (often
+   `skippedOpenPrFailsafe` when PR refs are unfetched; issue #2084).
 2. If residual stays high for a full TTL window: complete/cancel clearly dead
    tasks; investigate `skippedOpenPrFailsafe` / `skippedNoLiveness` /
-   `skippedProviderPaused` / `skippedOpenPrFailsafe` / `lastOutcomes` before
-   manual intervention (after #2072, past-TTL silence reclaims long-silent
-   needs_input; open-PR and provider-pause remain hard bars).
+   `skippedProviderPaused` / `lastOutcomes` before manual intervention (after
+   #2072, past-TTL silence reclaims long-silent needs_input; open-PR and
+   provider-pause remain hard bars). For FAA, map
+   `finishedAwaitingAckTtlReclaim.lastOutcomes` the same way.
 3. Avoid new general-source spawns until `capacity.free` recovers (reserved slots
    may still accept `kookr`-sourced launches depending on settings).
 

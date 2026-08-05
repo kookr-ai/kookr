@@ -85,6 +85,66 @@ export interface ExpiredFinishedAwaitingAckEntry {
   ageMs: number;
 }
 
+/**
+ * Why a finishedAwaitingAck candidate was not selected for strict TTL reclaim
+ * (issue #2084). Cumulative counters live on `FinishedAwaitingAckTtlReclaimMetrics`.
+ *
+ * - `skipped_bad_raised_at` — missing/unparseable `pendingSignal.raisedAt`
+ *   (cannot compute age; fail-safe leave alone).
+ * - `skipped_under_ttl` — completion_ready younger than the TTL.
+ * - `skipped_open_pr_failsafe` — open/unknown PR hold (`isHoldingOpenPr !== false`).
+ *   Dominant residual after #1884/#2070 when unfetched PR refs keep implementers
+ *   (and non-allowlisted tasks) exempt from both strict and meta reclaim.
+ */
+export type FinishedAwaitingAckReclaimSkipReason =
+  | 'skipped_bad_raised_at'
+  | 'skipped_under_ttl'
+  | 'skipped_open_pr_failsafe';
+
+export const FINISHED_AWAITING_ACK_RECLAIM_SKIP_REASONS: readonly FinishedAwaitingAckReclaimSkipReason[] =
+  ['skipped_bad_raised_at', 'skipped_under_ttl', 'skipped_open_pr_failsafe'] as const;
+
+export type FinishedAwaitingAckReclaimSkipCounts = Record<
+  FinishedAwaitingAckReclaimSkipReason,
+  number
+>;
+
+export function emptyFinishedAwaitingAckReclaimSkipCounts(): FinishedAwaitingAckReclaimSkipCounts {
+  return {
+    skipped_bad_raised_at: 0,
+    skipped_under_ttl: 0,
+    skipped_open_pr_failsafe: 0,
+  };
+}
+
+/**
+ * One finishedAwaitingAck candidate's fate on a single strict-path selection
+ * pass (issue #2084). Answers why residual FAA occupancy stays high when
+ * `reclaimedTotal` is flat.
+ */
+export interface FinishedAwaitingAckReclaimCandidateOutcome {
+  taskId: string;
+  /** Selected for reclaim, or the skip reason that applied. */
+  outcome: 'selected' | FinishedAwaitingAckReclaimSkipReason;
+  /** Present when age was computed (not for bad raisedAt). */
+  ageMs?: number;
+}
+
+/** Full selection result for one strict FAA reclaim pass (issue #2084). */
+export interface FinishedAwaitingAckReclaimSelection {
+  /** Tasks past TTL and clear of the open-PR fail-safe — oldest-first. */
+  expired: ExpiredFinishedAwaitingAckEntry[];
+  /**
+   * How many inProgress + completion_ready tasks were considered this pass
+   * (denominator for skip-reason breakdown). Non-FAA tasks are not counted.
+   */
+  candidatesConsidered: number;
+  /** Per-reason skip counts for candidates that were not selected. */
+  skips: FinishedAwaitingAckReclaimSkipCounts;
+  /** Per-candidate outcomes with task ids. */
+  outcomes: FinishedAwaitingAckReclaimCandidateOutcome[];
+}
+
 export interface ListExpiredFinishedAwaitingAckTasksOpts {
   now?: Date;
   ttlMs?: number;
@@ -109,48 +169,93 @@ export interface ListExpiredFinishedAwaitingAckTasksOpts {
 }
 
 /**
- * Pure selection of finishedAwaitingAck tasks past the TTL, oldest-first.
+ * Pure selection of finishedAwaitingAck tasks past the TTL, with skip-reason
+ * breakdown (issue #2084). Mirrors {@link selectExpiredHungSuspectTasks}.
  *
  * Age is measured from `task.pendingSignal.raisedAt` (ISO string) — the same
  * field `buildCapacityLedger` uses for `oldestFinishedAwaitingAckAgeMs`, so
  * "past the TTL" here agrees with what the capacity ledger already reports.
- * Boundary is inclusive: `ageMs >= ttlMs` selects. Guards:
+ * Boundary is inclusive: `ageMs >= ttlMs` selects. Guards (evaluation order
+ * for a finishedAwaitingAck candidate):
  *
  * - only `status === 'inProgress'` with `pendingSignal?.kind === 'completion_ready'`
- *   counts as finishedAwaitingAck — matches `classifyTaskCapacity` exactly.
- * - a missing or unparseable `raisedAt` skips the task rather than surfacing a
- *   bogus age (persisted state from a malformed signal is not trusted blindly).
- * - the stranded-PR predicate above gates every candidate before it is selected.
+ *   counts as a candidate — matches `classifyTaskCapacity` exactly;
+ * - missing / unparseable `raisedAt` → `skipped_bad_raised_at`;
+ * - age under TTL → `skipped_under_ttl`;
+ * - open-PR fail-safe (true or unknown / unwired) → `skipped_open_pr_failsafe`;
+ * - otherwise selected.
+ *
+ * Invariant: `candidatesConsidered === expired.length + sum(skips.*)`.
  */
-export function listExpiredFinishedAwaitingAckTasks(
+export function selectExpiredFinishedAwaitingAckTasks(
   tasks: readonly Task[],
   opts: ListExpiredFinishedAwaitingAckTasksOpts = {},
-): ExpiredFinishedAwaitingAckEntry[] {
+): FinishedAwaitingAckReclaimSelection {
   const nowMs = (opts.now ?? new Date()).getTime();
   const ttlMs = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
   const out: ExpiredFinishedAwaitingAckEntry[] = [];
+  const skips = emptyFinishedAwaitingAckReclaimSkipCounts();
+  const outcomes: FinishedAwaitingAckReclaimCandidateOutcome[] = [];
+  let candidatesConsidered = 0;
 
   for (const task of tasks) {
     if (task.status !== 'inProgress') continue;
     const signal = task.pendingSignal;
     if (signal?.kind !== 'completion_ready') continue;
 
+    candidatesConsidered += 1;
+
     const raisedAtMs = Date.parse(signal.raisedAt);
-    if (!Number.isFinite(raisedAtMs)) continue;
+    if (!Number.isFinite(raisedAtMs)) {
+      skips.skipped_bad_raised_at += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_bad_raised_at' });
+      continue;
+    }
 
     const ageMs = nowMs - raisedAtMs;
-    if (ageMs < ttlMs) continue;
+    if (ageMs < ttlMs) {
+      skips.skipped_under_ttl += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_under_ttl', ageMs });
+      continue;
+    }
 
     // Fail-safe: only a definite `false` clears the task for reclaim. `true`
     // and `undefined` (including "no predicate wired") both exempt it.
-    if (opts.isHoldingOpenPr?.(task) !== false) continue;
+    if (opts.isHoldingOpenPr?.(task) !== false) {
+      skips.skipped_open_pr_failsafe += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_open_pr_failsafe',
+        ageMs,
+      });
+      continue;
+    }
 
     out.push({ task, ageMs });
+    outcomes.push({ taskId: task.id, outcome: 'selected', ageMs });
   }
 
-  return out.sort(
-    (a, b) => Date.parse(a.task.pendingSignal!.raisedAt) - Date.parse(b.task.pendingSignal!.raisedAt),
-  );
+  return {
+    expired: out.sort(
+      (a, b) =>
+        Date.parse(a.task.pendingSignal!.raisedAt) - Date.parse(b.task.pendingSignal!.raisedAt),
+    ),
+    candidatesConsidered,
+    skips,
+    outcomes,
+  };
+}
+
+/**
+ * Pure selection of finishedAwaitingAck tasks past the TTL, oldest-first.
+ * Thin wrapper over {@link selectExpiredFinishedAwaitingAckTasks} for call
+ * sites that only need the expired list (issue #1884 API).
+ */
+export function listExpiredFinishedAwaitingAckTasks(
+  tasks: readonly Task[],
+  opts: ListExpiredFinishedAwaitingAckTasksOpts = {},
+): ExpiredFinishedAwaitingAckEntry[] {
+  return selectExpiredFinishedAwaitingAckTasks(tasks, opts).expired;
 }
 
 /**

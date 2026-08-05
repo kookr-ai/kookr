@@ -484,18 +484,29 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         }
       : undefined;
 
-    // Issue #2070: meta/playbook FAA auto-complete counters + age histogram so
-    // residual finishedAwaitingAck holds stay measurable. Cheap in-memory only.
+    // Issue #2070 / #2084: FAA reclaim + meta auto-complete counters, skip-reason
+    // breakdown, and age histogram so residual finishedAwaitingAck holds stay
+    // measurable (open-PR fail-safe vs under-TTL vs bad raisedAt). Cheap
+    // in-memory only — never a fresh reclaim scan on this path.
     const finishedAwaitingAckReclaimSnapshot =
       deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
     const finishedAwaitingAckReclaimBlock = finishedAwaitingAckReclaimSnapshot
       ? {
           reclaimedTotal: finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
-          autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal ?? 0,
+          reclaimAttempted: finishedAwaitingAckReclaimSnapshot.reclaimAttempted,
+          reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded,
+          skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt,
+          skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe,
+          skippedUnderTtl: finishedAwaitingAckReclaimSnapshot.skippedUnderTtl,
+          lastCandidatesConsidered:
+            finishedAwaitingAckReclaimSnapshot.lastCandidatesConsidered,
+          lastOutcomes: finishedAwaitingAckReclaimSnapshot.lastOutcomes,
+          lastAttemptedTaskIds: finishedAwaitingAckReclaimSnapshot.lastAttemptedTaskIds,
+          autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal,
           autoCompleteDeferredTotal:
-            finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal ?? 0,
+            finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal,
           autoCompleteAgeHistogram:
-            finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram ?? {},
+            finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram,
         }
       : undefined;
 
