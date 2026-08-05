@@ -238,6 +238,27 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     expect(payload.skipped).toHaveLength(1);
     expect(payload.skipped[0].existing).toBe('jeanibarz/lucy#2099');
     expect(payload.emitted).toHaveLength(3); // 1 reused ref + 2 fresh URLs
+    // The reused ref is carried in `emitted`, not only in `skipped` (#2120).
+    expect(payload.emitted).toContain('jeanibarz/lucy#2099');
+  });
+
+  it('fails open and files the leaf when the existence check returns unparseable JSON', async () => {
+    const c = capture();
+    const createCalls: string[][] = [];
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      readInput: () => SNAPSHOT,
+      runGh: (a) => {
+        if (a[1] === 'list') return 'not json at all'; // gh exit 0, garbage stdout
+        createCalls.push(a);
+        return 'https://github.com/jeanibarz/lucy/issues/9001';
+      },
+    });
+    expect(code).toBe(0);
+    // Unparseable payload → treated as no match → leaf is still filed (fail open).
+    expect(createCalls).toHaveLength(3);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.skipped).toHaveLength(0);
   });
 
   it('with --emit but no vetted leaf plan, files nothing and exits 0', async () => {
@@ -354,13 +375,30 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     expect(c.lines.join('\n')).toContain('jeanibarz/lucy#1588');
   });
 
-  it('returns exit 4 when gh issue create fails during --emit', async () => {
+  it('returns exit 4 when the existence check gh call fails during --emit', async () => {
+    // With #2120 the first gh call in the emit loop is `gh issue list` (the
+    // title existence check). A failure there fails closed → exit 4, never a
+    // blind create.
     const c = capture();
     const code = await runQueueFeederCli(['plan', '--input', '-', '--emit'], {
       ...c,
       readInput: () => SNAPSHOT,
       runGh: () => {
         throw new Error('gh: rate limited');
+      },
+    });
+    expect(code).toBe(4);
+    expect(c.errs.join('\n')).toMatch(/gh issue create failed/);
+  });
+
+  it('returns exit 4 when gh issue create itself fails during --emit', async () => {
+    const c = capture();
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit'], {
+      ...c,
+      readInput: () => SNAPSHOT,
+      runGh: (a) => {
+        if (a[1] === 'list') return '[]'; // existence check passes...
+        throw new Error('gh: rate limited'); // ...but the create fails
       },
     });
     expect(code).toBe(4);

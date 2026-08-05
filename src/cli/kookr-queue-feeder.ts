@@ -80,7 +80,7 @@ Options:
                           title: a leaf whose title already exists as an OPEN or
                           CLOSED issue in the umbrella repo is skipped (the
                           existing ref is reused and recorded in the ledger),
-                          so landed leaves are never re-filed (#2120).
+                          so an already-landed leaf is not re-filed (#2120).
   --kookr-dir <PATH>      State root (default ~/.kookr).
   --no-persist            Skip the observability ledger write.
   --json                  Machine-readable envelope on stdout.
@@ -302,8 +302,17 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
  * Playbook rule (queue-feeder §0): never re-file a leaf title that already
  * exists as an open or closed issue (#2120). We search `in:title` (a fuzzy
  * GitHub match) to narrow the set, then require EXACT title equality so a
- * near-match never suppresses a genuinely new leaf. A gh failure here throws,
- * so emit fails closed (exit 4) rather than risk re-filing a duplicate.
+ * near-match never suppresses a genuinely new leaf.
+ *
+ * Failure posture: a gh *process* failure throws → the emit loop catches it →
+ * exit 4 (fail closed — we never blind-create when the check could not run). A
+ * gh success with an unparseable payload instead fails OPEN (returns null →
+ * create), since a malformed `--json` stdout is near-impossible in practice and
+ * crashing the whole plan is worse. The gate is therefore best-effort: it
+ * relies on GitHub search surfacing the existing issue, so a search-index miss
+ * (ingestion lag on a just-filed issue, >100 fuzzy matches, or a title GitHub
+ * search can't phrase-quote) can still let a duplicate through. That is an
+ * acceptable degradation for #2120's target (long-closed, long-indexed leaves).
  */
 function findExistingIssueByTitle(
   runGh: (args: string[]) => string,
