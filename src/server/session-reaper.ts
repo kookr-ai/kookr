@@ -34,10 +34,13 @@ import { nowISO } from '../core/interaction-log.js';
 import type { TaskStore } from '../core/tasks.js';
 import {
   decideSessionReap,
+  isDtachUnderPressure,
+  resolveEffectiveOrphanAgeMs,
   type SessionOwnership,
   type SessionReapConfig,
   type SessionReapDecision,
 } from '../core/session-reap-policy.js';
+import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eval.js';
 import type { SessionId, TerminalBackend } from '../adapters/terminal-backend.js';
 import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import { collectProcessTree } from '../adapters/process-tree.js';
@@ -49,14 +52,40 @@ import {
 } from '../adapters/dtach-attach-reaper.js';
 import { existsSync } from 'node:fs';
 
+/**
+ * Env/base reaper config plus the under-pressure orphan age (issue #2081).
+ * `orphanAgeThresholdMs` is the steady-state (default 24h) value; the service
+ * resolves the effective age per sweep from pressure + `orphanAgeUnderPressureMs`.
+ */
+export type SessionReaperBaseConfig = SessionReapConfig & {
+  /**
+   * Unowned-orphan age used when the dtach soft-bound pressure signal is high
+   * (default 2h). Omitted → same as `orphanAgeThresholdMs` (no pressure adapt).
+   */
+  orphanAgeUnderPressureMs?: number;
+};
+
 export interface SessionReaperDeps {
   taskStore: TaskStore;
   backend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>;
   /** Path to the shared audit.jsonl log. Omitted in tests that don't care about the trail. */
   auditLogPath?: string;
   /** Live config getter — same "live getter" convention as `getCleanupWorktreeOnComplete`. */
-  getConfig: () => SessionReapConfig;
+  getConfig: () => SessionReaperBaseConfig;
   now?: () => number;
+  /**
+   * Optional host-pressure gauge for issue #2081 adaptive orphan age.
+   * Returns cached/live `staleProcesses.dtach.count` (or an equivalent dtach
+   * master count). When omitted / null, the service falls back to the current
+   * sweep's live session count so pressure still adapts without a /proc walk.
+   */
+  getStaleDtachCount?: () => number | null;
+  /**
+   * Soft bound for the dtach pressure signal (default
+   * {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND} = 20). `<= 0` disables pressure
+   * adaptation (always use the steady-state orphan age).
+   */
+  dtachPressureSoftBound?: number;
   /**
    * Optional thunk sweeping stale Monitor state, bound by the server to both
    * `monitor.sweepAgedTerminalAgents(now - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
@@ -96,6 +125,14 @@ export interface SessionReaperHealthSnapshot {
   totalSessionsReaped: number;
   totalStaleAttachersReaped: number;
   lastStaleAttacherSweepAt: string | null;
+  /**
+   * Effective unowned-orphan age (ms) used by the last sweep (issue #2081).
+   * Null until the first sweep runs. Surfaces whether pressure adaptation
+   * shortened the threshold without requiring a re-scan.
+   */
+  effectiveOrphanAgeMs: number | null;
+  /** Whether the last sweep considered the host under dtach pressure (#2081). */
+  underPressure: boolean;
 }
 
 /** Build a `session id -> ownership` lookup from the current TaskStore snapshot. */
@@ -139,15 +176,60 @@ export class SessionReaperService {
   private totalSessionsReaped = 0;
   private totalStaleAttachersReaped = 0;
   private lastStaleAttacherSweepAt: string | null = null;
+  private lastEffectiveOrphanAgeMs: number | null = null;
+  private lastUnderPressure = false;
 
   constructor(private readonly deps: SessionReaperDeps) {}
 
   /** Run the orphan + terminal-task-leak sweep. Safe to call at boot and on every periodic tick. */
   async runSweep(): Promise<SessionReapSweepResult> {
-    const config = this.deps.getConfig();
+    const base = this.deps.getConfig();
     const now = this.deps.now?.() ?? Date.now();
     const ownershipMap = buildOwnershipMap(this.deps.taskStore);
     const liveSessions = await this.deps.backend.listSessions();
+
+    // Issue #2081: shorten unowned-orphan age under dtach pressure so 24h wait
+    // cannot OOM the host while resourceWatchdog stays off. Prefer an injected
+    // staleProcesses.dtach count; fall back to this sweep's live session count
+    // (same soft bound as pressureWhileDisabled — DEFAULT_DTACH_PRESSURE_SOFT_BOUND).
+    const softBound = this.deps.dtachPressureSoftBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
+    let dtachCount: number | null = null;
+    if (this.deps.getStaleDtachCount) {
+      try {
+        dtachCount = this.deps.getStaleDtachCount();
+      } catch (err) {
+        console.warn(
+          '[session-reaper] getStaleDtachCount failed; falling back to live session count:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    if (dtachCount == null) {
+      dtachCount = liveSessions.length;
+    }
+    const underPressure = isDtachUnderPressure(dtachCount, softBound);
+    const underPressureAgeMs = base.orphanAgeUnderPressureMs ?? base.orphanAgeThresholdMs;
+    const effectiveOrphanAgeMs = resolveEffectiveOrphanAgeMs(
+      base.orphanAgeThresholdMs,
+      underPressureAgeMs,
+      underPressure,
+    );
+    this.lastEffectiveOrphanAgeMs = effectiveOrphanAgeMs;
+    this.lastUnderPressure = underPressure;
+    console.log(
+      `[session-reaper] sweep thresholds: effectiveOrphanAgeMs=${effectiveOrphanAgeMs}` +
+      ` underPressure=${underPressure}` +
+      ` dtachCount=${dtachCount}` +
+      ` softBound=${softBound}` +
+      ` steadyStateOrphanAgeMs=${base.orphanAgeThresholdMs}` +
+      ` underPressureOrphanAgeMs=${underPressureAgeMs}`,
+    );
+
+    const config: SessionReapConfig = {
+      enabled: base.enabled,
+      orphanAgeThresholdMs: effectiveOrphanAgeMs,
+      terminalTaskGraceMs: base.terminalTaskGraceMs,
+    };
 
     const reaped: SessionReapDecision[] = [];
     let orphanCount = 0;
@@ -267,6 +349,8 @@ export class SessionReaperService {
       totalSessionsReaped: this.totalSessionsReaped,
       totalStaleAttachersReaped: this.totalStaleAttachersReaped,
       lastStaleAttacherSweepAt: this.lastStaleAttacherSweepAt,
+      effectiveOrphanAgeMs: this.lastEffectiveOrphanAgeMs,
+      underPressure: this.lastUnderPressure,
     };
   }
 }

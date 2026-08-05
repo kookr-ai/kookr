@@ -10,9 +10,10 @@ import { SessionReaperService } from './session-reaper.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 
-const ENABLED_CONFIG: SessionReapConfig = {
+const ENABLED_CONFIG: SessionReapConfig & { orphanAgeUnderPressureMs: number } = {
   enabled: true,
   orphanAgeThresholdMs: 24 * HOUR_MS,
+  orphanAgeUnderPressureMs: 2 * HOUR_MS,
   terminalTaskGraceMs: 60_000,
 };
 
@@ -240,6 +241,7 @@ describe('SessionReaperService.runSweep', () => {
 
     const reaper = new SessionReaperService({ taskStore, backend, getConfig: () => ENABLED_CONFIG });
     expect(reaper.getHealthSnapshot().lastSweepAt).toBeNull();
+    expect(reaper.getHealthSnapshot().effectiveOrphanAgeMs).toBeNull();
 
     await reaper.runSweep();
 
@@ -248,6 +250,105 @@ describe('SessionReaperService.runSweep', () => {
     expect(snapshot.lastSweepAt).not.toBeNull();
     expect(snapshot.totalSessionsReaped).toBe(1);
     expect(snapshot.lastOrphanCount).toBe(1);
+    // Single live session → below soft bound → steady-state 24h threshold.
+    expect(snapshot.effectiveOrphanAgeMs).toBe(24 * HOUR_MS);
+    expect(snapshot.underPressure).toBe(false);
+  });
+
+  it('under pressure: reaps a 3h unowned orphan using the 2h threshold and reports effectiveOrphanAgeMs (issue #2081)', async () => {
+    await withTempAuditLog(async (auditLogPath) => {
+      const taskStore = new TaskStore();
+      const backend = new FakeTerminalBackend();
+      await backend.createSession(spec('kookr-orphan-pressure'));
+      backend.setSessionStartedAt('kookr-orphan-pressure', Date.now() - 3 * HOUR_MS);
+
+      const reaper = new SessionReaperService({
+        taskStore,
+        backend,
+        auditLogPath,
+        getConfig: () => ENABLED_CONFIG,
+        // Soft bound 20; inject a high gauge so pressure adapts without
+        // needing 20 live fake sessions.
+        getStaleDtachCount: () => 32,
+      });
+
+      const result = await reaper.runSweep();
+      expect(result.reaped.map((d) => d.sessionId)).toEqual(['kookr-orphan-pressure']);
+      expect(await backend.isAlive('kookr-orphan-pressure')).toBe(false);
+
+      const snapshot = reaper.getHealthSnapshot();
+      expect(snapshot.effectiveOrphanAgeMs).toBe(2 * HOUR_MS);
+      expect(snapshot.underPressure).toBe(true);
+      expect(snapshot.totalSessionsReaped).toBe(1);
+    });
+  });
+
+  it('without pressure: preserves the 24h default and does not reap a 3h orphan (issue #2081)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession(spec('kookr-orphan-young'));
+    backend.setSessionStartedAt('kookr-orphan-young', Date.now() - 3 * HOUR_MS);
+
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      getStaleDtachCount: () => 5, // well below soft bound 20
+    });
+
+    const result = await reaper.runSweep();
+    expect(result.reaped).toEqual([]);
+    expect(await backend.isAlive('kookr-orphan-young')).toBe(true);
+    expect(reaper.getHealthSnapshot().effectiveOrphanAgeMs).toBe(24 * HOUR_MS);
+    expect(reaper.getHealthSnapshot().underPressure).toBe(false);
+  });
+
+  it('omitted getStaleDtachCount: pressure derives from live session count (prod fallback path)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    // Soft bound 3 for this test so we don't need 20 fake sessions.
+    const softBound = 3;
+    for (let i = 0; i < softBound; i += 1) {
+      const id = `kookr-live-${i}`;
+      await backend.createSession(spec(id));
+      // Only the first is past the 2h pressure age; the rest are brand new.
+      backend.setSessionStartedAt(id, Date.now() - (i === 0 ? 3 * HOUR_MS : 10_000));
+    }
+
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      dtachPressureSoftBound: softBound,
+      // deliberately omit getStaleDtachCount
+    });
+
+    const result = await reaper.runSweep();
+    expect(reaper.getHealthSnapshot().underPressure).toBe(true);
+    expect(reaper.getHealthSnapshot().effectiveOrphanAgeMs).toBe(2 * HOUR_MS);
+    expect(result.reaped.map((d) => d.sessionId)).toEqual(['kookr-live-0']);
+  });
+
+  it('getStaleDtachCount throw falls back to live session count without aborting the sweep', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession(spec('kookr-orphan-fallback'));
+    backend.setSessionStartedAt('kookr-orphan-fallback', Date.now() - 3 * HOUR_MS);
+
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      getStaleDtachCount: () => {
+        throw new Error('proc unavailable');
+      },
+    });
+
+    const result = await reaper.runSweep();
+    // 1 live session → below soft bound 20 → steady-state 24h → no reap.
+    expect(result.reaped).toEqual([]);
+    expect(reaper.getHealthSnapshot().underPressure).toBe(false);
+    expect(reaper.getHealthSnapshot().effectiveOrphanAgeMs).toBe(24 * HOUR_MS);
   });
 });
 
