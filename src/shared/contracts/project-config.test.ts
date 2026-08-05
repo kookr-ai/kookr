@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { sanitizeProjectConfig } from './project-config.js';
+import { MAX_PROJECT_NOTES_LENGTH, sanitizeProjectConfig } from './project-config.js';
 
 describe('sanitizeProjectConfig', () => {
   test('requires a non-empty project string', () => {
@@ -77,5 +77,39 @@ describe('sanitizeProjectConfig', () => {
   test('drops non-finite budgetWarnUsd', () => {
     expect(sanitizeProjectConfig({ project: 'p', budgetWarnUsd: Infinity })?.budgetWarnUsd).toBeUndefined();
     expect(sanitizeProjectConfig({ project: 'p', budgetWarnUsd: NaN })?.budgetWarnUsd).toBeUndefined();
+  });
+
+  test('truncates an over-cap notes string to the leading maximum-length characters', () => {
+    // Heterogeneous head/tail so the assertion distinguishes front-truncation
+    // (slice(0, cap)) from a wrong-end variant like slice(-cap)/substring(n).
+    const head = 'HEAD';
+    const overCap = head + 'x'.repeat(MAX_PROJECT_NOTES_LENGTH) + 'TAIL';
+    const config = sanitizeProjectConfig({ project: 'p', notes: overCap });
+    expect(config?.notes).toHaveLength(MAX_PROJECT_NOTES_LENGTH);
+    expect(config?.notes?.startsWith(head)).toBe(true);
+    expect(config?.notes).not.toContain('TAIL');
+    expect(config?.notes).toBe(overCap.slice(0, MAX_PROJECT_NOTES_LENGTH));
+  });
+
+  test('stores an at-cap notes string unchanged', () => {
+    const atCap = 'b'.repeat(MAX_PROJECT_NOTES_LENGTH);
+    const config = sanitizeProjectConfig({ project: 'p', notes: atCap });
+    expect(config?.notes).toBe(atCap);
+    expect(config?.notes).toHaveLength(MAX_PROJECT_NOTES_LENGTH);
+  });
+
+  test('stores an under-cap notes string unchanged without affecting other fields', () => {
+    const config = sanitizeProjectConfig({
+      project: 'p',
+      notes: 'a normal project note',
+      tracked: true,
+      dailyPrLimit: 5,
+    });
+    expect(config).toEqual({
+      project: 'p',
+      notes: 'a normal project note',
+      tracked: true,
+      dailyPrLimit: 5,
+    });
   });
 });

@@ -125,7 +125,7 @@ All three paths run through `sanitizeProjectConfig` before persistence.
 | `dailyPrLimit` | non-negative integer | Max PRs per calendar day. Manual value **overrides** `rate-limits.json`. Omitted when unset. Invalid values (`Infinity`, `NaN`, negatives, fractions) are **dropped**, not clamped, so a bad write cannot silence the rate-limit fallback |
 | `weeklyPrLimit` | non-negative integer | Max PRs per calendar week. Same reject-and-drop rules as `dailyPrLimit` |
 | `budgetWarnUsd` | finite number ≥ 0 | Per-task cost warning threshold in USD. **`0` disables** budget alerts for this project. Negatives are clamped to `0`; non-finite values are dropped. Overrides the global `KOOKR_BUDGET_WARN_USD` when set |
-| `notes` | string | Free-form operator notes |
+| `notes` | string | Free-form operator notes. Values longer than 2000 characters are **truncated** on write |
 | `localPath` | string | Absolute local checkout path (first-write wins on task start) |
 | `webhook` | object | Optional `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` routing override |
 

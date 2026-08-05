@@ -706,7 +706,7 @@ before save (`sanitizeProjectConfig`).
 | `dailyPrLimit` | no | non-negative integer | Invalid values (`Infinity`, `NaN`, negatives, fractions) are dropped rather than clamped; dropped values fall back to `rate-limits.json` |
 | `weeklyPrLimit` | no | non-negative integer | Same reject-and-drop rules as `dailyPrLimit` |
 | `budgetWarnUsd` | no | finite number or `null` | Per-task cost warning in USD; `0` disables alerts for this project; negatives clamp to `0`; `null` clears the override |
-| `notes` | no | string | Free-form notes |
+| `notes` | no | string | Free-form notes; truncated to 2000 characters if longer |
 | `webhook` | no | object | `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` |
 
 Returns the full sanitized config object for that project.
