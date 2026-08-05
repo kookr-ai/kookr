@@ -40,6 +40,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const snapshotShed = deps.snapshotShed?.getSnapshotShedMetrics();
     const finishedAwaitingAckReclaim = deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
     const hungSuspectReclaim = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
+    const providerPausedOccupancy = deps.providerPausedOccupancyMetrics?.getSnapshot();
     const firstHookMiss = deps.firstHookMissMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
@@ -86,6 +87,20 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               skippedUnderTtl: hungSuspectReclaim.skippedUnderTtl,
               skippedExemptAnomaly: hungSuspectReclaim.skippedExemptAnomaly,
               skippedProviderPaused: hungSuspectReclaim.skippedProviderPaused,
+            },
+          }
+        : {}),
+      ...(providerPausedOccupancy
+        ? {
+            providerPausedOccupancy: {
+              count: providerPausedOccupancy.count,
+              oldestPauseAgeMs: providerPausedOccupancy.oldestPauseAgeMs,
+              reclaimedTotal: providerPausedOccupancy.reclaimedTotal,
+              reclaimAttempted: providerPausedOccupancy.reclaimAttempted,
+              reclaimSucceeded: providerPausedOccupancy.reclaimSucceeded,
+              skippedUnderTtl: providerPausedOccupancy.skippedUnderTtl,
+              skippedOpenPrFailsafe: providerPausedOccupancy.skippedOpenPrFailsafe,
+              skippedNoPauseStart: providerPausedOccupancy.skippedNoPauseStart,
             },
           }
         : {}),

@@ -515,6 +515,29 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         }
       : undefined;
 
+    // Issue #2079: provider_paused occupancy (count + oldest pause age) and
+    // hard-TTL reclaim counters. Cheap in-memory only — never a fresh scan.
+    const providerPausedOccupancySnapshot =
+      deps.providerPausedOccupancyMetrics?.getSnapshot();
+    const providerPausedOccupancyBlock = providerPausedOccupancySnapshot
+      ? {
+          count: providerPausedOccupancySnapshot.count,
+          oldestPauseAgeMs: providerPausedOccupancySnapshot.oldestPauseAgeMs,
+          taskIds: providerPausedOccupancySnapshot.taskIds,
+          reclaimedTotal: providerPausedOccupancySnapshot.reclaimedTotal,
+          reclaimAttempted: providerPausedOccupancySnapshot.reclaimAttempted,
+          reclaimSucceeded: providerPausedOccupancySnapshot.reclaimSucceeded,
+          skippedUnderTtl: providerPausedOccupancySnapshot.skippedUnderTtl,
+          skippedOpenPrFailsafe: providerPausedOccupancySnapshot.skippedOpenPrFailsafe,
+          skippedNoPauseStart: providerPausedOccupancySnapshot.skippedNoPauseStart,
+          lastCandidatesConsidered:
+            providerPausedOccupancySnapshot.lastCandidatesConsidered,
+          lastOutcomes: providerPausedOccupancySnapshot.lastOutcomes,
+          lastAttemptedTaskIds: providerPausedOccupancySnapshot.lastAttemptedTaskIds,
+          hardTtlMs: providerPausedOccupancySnapshot.hardTtlMs,
+        }
+      : undefined;
+
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
     // this process is *actually* serving without digging into `build`.
@@ -564,6 +587,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(hungSuspectTtlReclaimBlock ? { hungSuspectTtlReclaim: hungSuspectTtlReclaimBlock } : {}),
       ...(finishedAwaitingAckReclaimBlock
         ? { finishedAwaitingAckTtlReclaim: finishedAwaitingAckReclaimBlock }
+        : {}),
+      // Issue #2079: provider_paused occupancy count + oldest pause age + hard-TTL reclaim.
+      ...(providerPausedOccupancyBlock
+        ? { providerPausedOccupancy: providerPausedOccupancyBlock }
         : {}),
       // Issue #2036: post-spawn first-hook miss counter (cheap in-memory read).
       ...(deps.firstHookMissMetrics

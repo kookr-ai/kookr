@@ -31,6 +31,7 @@ import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
+import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
@@ -1416,6 +1417,93 @@ describe('diagnostics routes', () => {
           { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
           { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_600_000 },
         ],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — providerPausedOccupancy block (issue #2079)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health providerPausedOccupancy block (issue #2079)', () => {
+    test('omits the block when occupancy metrics are not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('providerPausedOccupancy');
+    });
+
+    test('exposes occupancy count, oldest pause age, and reclaim counters', async () => {
+      const metrics = new ProviderPausedOccupancyMetrics();
+      const baseDeps = {
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        providerPausedOccupancyMetrics: metrics,
+      };
+
+      const before = await mkApp(baseDeps).request('/api/health');
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as {
+        providerPausedOccupancy?: Record<string, unknown>;
+      };
+      expect(beforeBody.providerPausedOccupancy).toMatchObject({
+        count: 0,
+        oldestPauseAgeMs: null,
+        taskIds: [],
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        reclaimSucceeded: 0,
+        skippedUnderTtl: 0,
+        skippedOpenPrFailsafe: 0,
+        skippedNoPauseStart: 0,
+        lastCandidatesConsidered: 0,
+        lastOutcomes: [],
+        lastAttemptedTaskIds: [],
+        hardTtlMs: expect.any(Number),
+      });
+
+      metrics.recordOccupancy({
+        count: 3,
+        oldestPauseAgeMs: 90 * 60_000,
+        taskIds: ['p1', 'p2', 'p3'],
+      });
+      metrics.recordHardTtlMs(2 * 60 * 60_000);
+      metrics.recordAttempted(1);
+      metrics.recordReclaimed(1);
+      metrics.recordSelection({
+        candidatesConsidered: 3,
+        skips: {
+          skipped_under_ttl: 1,
+          skipped_open_pr_failsafe: 1,
+          skipped_no_pause_start: 0,
+        },
+        outcomes: [
+          { taskId: 'p1', outcome: 'selected', pausedForMs: 2 * 60 * 60_000 },
+          { taskId: 'p2', outcome: 'skipped_open_pr_failsafe', pausedForMs: 3 * 60 * 60_000 },
+        ],
+      });
+
+      const after = await mkApp(baseDeps).request('/api/health');
+      expect(after.status).toBe(200);
+      const afterBody = (await after.json()) as {
+        providerPausedOccupancy?: Record<string, unknown>;
+      };
+      expect(afterBody.providerPausedOccupancy).toMatchObject({
+        count: 3,
+        oldestPauseAgeMs: 90 * 60_000,
+        taskIds: ['p1', 'p2', 'p3'],
+        reclaimedTotal: 1,
+        reclaimAttempted: 1,
+        reclaimSucceeded: 1,
+        skippedUnderTtl: 1,
+        skippedOpenPrFailsafe: 1,
+        lastCandidatesConsidered: 3,
+        lastAttemptedTaskIds: ['p1'],
+        hardTtlMs: 2 * 60 * 60_000,
       });
     });
   });

@@ -48,6 +48,15 @@ import {
   scanStaleProcesses,
   summarizeStaleProcesses,
 } from '../core/orphan-process-scanner.js';
+import {
+  ProviderPausedOccupancyMetrics,
+  ProviderPausedStartTracker,
+} from './provider-paused-ttl-sweep.js';
+import { ProviderPausedOccupancyAlerter } from './provider-paused-occupancy-alert.js';
+import {
+  DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+} from '../core/provider-paused-ttl.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -970,6 +979,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
   const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
   const firstHookMissMetrics = new FirstHookMissMetrics();
+  const providerPausedStartTracker = new ProviderPausedStartTracker();
+  const providerPausedOccupancyMetrics = new ProviderPausedOccupancyMetrics();
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks — SQLite by default (#1755), with one-shot migration
@@ -1872,6 +1883,26 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcast: detectorBroadcast,
   });
 
+  // provider_paused occupancy page (issue #2079). Page-only for the occupancy
+  // bound; hard-TTL reclaim is separate on the liveness tick. detectorBroadcast
+  // spools fire/clear edges to Discord.
+  const providerPausedOccupancyAlerter = new ProviderPausedOccupancyAlerter({
+    broadcast: detectorBroadcast,
+  });
+
+  // Live hard TTL for provider_paused reclaim (default 2h, cap 6h). Env
+  // `KOOKR_PROVIDER_PAUSED_HARD_TTL_MS` overrides when finite and positive.
+  const getProviderPausedHardTtlMs = (): number => {
+    const raw = process.env.KOOKR_PROVIDER_PAUSED_HARD_TTL_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.min(Math.floor(parsed), MAX_PROVIDER_PAUSED_HARD_TTL_MS);
+      }
+    }
+    return DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  };
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
@@ -2187,6 +2218,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     finishedAwaitingAckTtlReclaimMetrics,
     hungSuspectTtlReclaimMetrics,
     firstHookMissMetrics,
+    providerPausedOccupancyMetrics,
     resourceWatchdog: resourceWatchdogService,
     ...(prodSmokeTick ? { prodSmokeTick } : {}),
     deliveryTrace,
@@ -2691,6 +2723,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hungSuspectResidualAlerter,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
       finishedAwaitingAckResidualAlerter,
+      // issue #2079: provider_paused occupancy bound + hard TTL reclaim
+      providerPausedStartTracker,
+      getProviderPausedHardTtlMs,
+      providerPausedOccupancyMetrics,
+      providerPausedOccupancyAlerter,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
       loopDeliveryWatchdog,

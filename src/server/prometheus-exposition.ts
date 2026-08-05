@@ -120,6 +120,20 @@ export interface PrometheusExpositionSnapshot {
     skippedProviderPaused?: number;
   };
   /**
+   * provider_paused occupancy + hard-TTL reclaim (issue #2079). Live count
+   * plus cumulative reclaim / skip-reason counters. Omitted when not wired.
+   */
+  providerPausedOccupancy?: {
+    count: number;
+    oldestPauseAgeMs?: number | null;
+    reclaimedTotal: number;
+    reclaimAttempted?: number;
+    reclaimSucceeded?: number;
+    skippedUnderTtl?: number;
+    skippedOpenPrFailsafe?: number;
+    skippedNoPauseStart?: number;
+  };
+  /**
    * First-hook miss counter (issue #2036). Cumulative post-spawn sessions
    * reaped for never emitting SessionStart / any agent hook. Omitted when
    * the reaper is not wired.
@@ -159,6 +173,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
+  appendProviderPausedOccupancyMetrics(lines, snapshot.providerPausedOccupancy);
   appendFirstHookMissMetrics(lines, snapshot.firstHookMiss);
   appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 
@@ -660,6 +675,73 @@ function appendHungSuspectReclaimMetrics(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
       { reason: 'provider_paused' },
       snapshot.skippedProviderPaused ?? 0,
+    ),
+  );
+}
+
+/**
+ * provider_paused occupancy + hard-TTL reclaim counters (issue #2079).
+ * Omitted when the sweep is not wired.
+ */
+function appendProviderPausedOccupancyMetrics(
+  lines: string[],
+  snapshot:
+    | {
+        count: number;
+        oldestPauseAgeMs?: number | null;
+        reclaimedTotal: number;
+        reclaimAttempted?: number;
+        reclaimSucceeded?: number;
+        skippedUnderTtl?: number;
+        skippedOpenPrFailsafe?: number;
+        skippedNoPauseStart?: number;
+      }
+    | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_provider_paused_occupancy Current inProgress tasks classified provider_paused (billing/quota hold).',
+    '# TYPE kookr_provider_paused_occupancy gauge',
+    metricLine('kookr_provider_paused_occupancy', {}, snapshot.count),
+    '# HELP kookr_provider_paused_oldest_age_ms Age of the oldest continuous provider_pause in milliseconds (0 when none or unknown).',
+    '# TYPE kookr_provider_paused_oldest_age_ms gauge',
+    metricLine(
+      'kookr_provider_paused_oldest_age_ms',
+      {},
+      typeof snapshot.oldestPauseAgeMs === 'number' && Number.isFinite(snapshot.oldestPauseAgeMs)
+        ? snapshot.oldestPauseAgeMs
+        : 0,
+    ),
+    '# HELP kookr_provider_paused_ttl_reclaimed_total Total provider_paused tasks terminated by the hard TTL reclaim since process start.',
+    '# TYPE kookr_provider_paused_ttl_reclaimed_total counter',
+    metricLine('kookr_provider_paused_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
+    '# HELP kookr_provider_paused_ttl_reclaim_attempted_total Total provider_paused candidates selected for hard-TTL reclaim since process start.',
+    '# TYPE kookr_provider_paused_ttl_reclaim_attempted_total counter',
+    metricLine('kookr_provider_paused_ttl_reclaim_attempted_total', {}, snapshot.reclaimAttempted ?? 0),
+    '# HELP kookr_provider_paused_ttl_reclaim_succeeded_total Total successful provider_paused hard-TTL reclaim terminates since process start.',
+    '# TYPE kookr_provider_paused_ttl_reclaim_succeeded_total counter',
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_succeeded_total',
+      {},
+      snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
+    ),
+    '# HELP kookr_provider_paused_ttl_reclaim_skipped_total Provider_paused hard-TTL reclaim skips by reason (cumulative since process start).',
+    '# TYPE kookr_provider_paused_ttl_reclaim_skipped_total counter',
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'under_ttl' },
+      snapshot.skippedUnderTtl ?? 0,
+    ),
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_failsafe' },
+      snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'no_pause_start' },
+      snapshot.skippedNoPauseStart ?? 0,
     ),
   );
 }
