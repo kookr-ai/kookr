@@ -493,21 +493,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const finishedAwaitingAckReclaimBlock = finishedAwaitingAckReclaimSnapshot
       ? {
           reclaimedTotal: finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
-          reclaimAttempted: finishedAwaitingAckReclaimSnapshot.reclaimAttempted ?? 0,
-          reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded
-            ?? finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
-          skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt ?? 0,
-          skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe ?? 0,
-          skippedUnderTtl: finishedAwaitingAckReclaimSnapshot.skippedUnderTtl ?? 0,
+          reclaimAttempted: finishedAwaitingAckReclaimSnapshot.reclaimAttempted,
+          reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded,
+          skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt,
+          skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe,
+          skippedUnderTtl: finishedAwaitingAckReclaimSnapshot.skippedUnderTtl,
           lastCandidatesConsidered:
-            finishedAwaitingAckReclaimSnapshot.lastCandidatesConsidered ?? 0,
-          lastOutcomes: finishedAwaitingAckReclaimSnapshot.lastOutcomes ?? [],
-          lastAttemptedTaskIds: finishedAwaitingAckReclaimSnapshot.lastAttemptedTaskIds ?? [],
-          autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal ?? 0,
+            finishedAwaitingAckReclaimSnapshot.lastCandidatesConsidered,
+          lastOutcomes: finishedAwaitingAckReclaimSnapshot.lastOutcomes,
+          lastAttemptedTaskIds: finishedAwaitingAckReclaimSnapshot.lastAttemptedTaskIds,
+          autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal,
           autoCompleteDeferredTotal:
-            finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal ?? 0,
+            finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal,
           autoCompleteAgeHistogram:
-            finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram ?? {},
+            finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram,
         }
       : undefined;
 

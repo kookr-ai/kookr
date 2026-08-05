@@ -45,6 +45,7 @@ cap=h.get("capacity") or {}
 print("capacity", cap)
 print("hungSuspectCapacityFinding", h.get("hungSuspectCapacityFinding"))
 print("hungSuspectTtlReclaim", h.get("hungSuspectTtlReclaim"))
+print("finishedAwaitingAckTtlReclaim", h.get("finishedAwaitingAckTtlReclaim"))
 '
 
 # Per-task view (dashboard or API)
@@ -84,6 +85,29 @@ If `reclaimedTotal=0` while `capacity.byClass.hungSuspect≥2`:
 Do **not** treat a brief `reclaimedTotal=0` co-occurring with `daemon_uptime_reset` as a reclaim bug — counters and residual-alerter episode state reset with the process, and under-TTL skips dominate until multi-channel silence is observed. See [low-downtime redeploy](../runbooks/low-downtime-redeploy.md#hungsuspect-ttl-reclaim-across-redeploy).
 
 If residual stays high after TTL reclaim windows: complete or cancel clearly dead tasks, check Discord/operator signals for `hung:residual` (when enabled), avoid spawning more work until free slots return.
+
+### Reading `finishedAwaitingAckTtlReclaim` skip reasons (issue #2084)
+
+`finishedAwaitingAckTtlReclaim` is process-lifetime cumulative (zeros on every restart) — same convention as hungSuspect. Strict-path skip counters explain residual FAA when `reclaimedTotal` is flat while `capacity.byClass.finishedAwaitingAck` stays high (open-PR fail-safe is often dominant after #1884/#2070).
+
+| Field | Meaning |
+| --- | --- |
+| `reclaimedTotal` / `reclaimSucceeded` | Strict TTL force-completes that freed an FAA slot |
+| `reclaimAttempted` | Candidates selected past TTL (includes complete races that failed) |
+| `skippedUnderTtl` | `completion_ready` younger than FAA TTL (`finishedAwaitingAckTtlMinutes`, default 15m) |
+| `skippedOpenPrFailsafe` | Open/unknown PR hold — fail-safe leave alone; dominant residual when PR refs unfetched |
+| `skippedBadRaisedAt` | Missing/unparseable `pendingSignal.raisedAt` (cannot age; fail-safe leave alone) |
+| `lastCandidatesConsidered` | FAA candidates on the most recent strict selection pass |
+| `lastOutcomes` | Last pass: `{ taskId, outcome, ageMs? }[]` |
+| `lastAttemptedTaskIds` | Last pass: task ids selected for reclaim |
+| `autoCompletedTotal` / `autoCompleteDeferredTotal` | Meta/playbook FAA path (#2070) + TOCTOU deferrals |
+
+If `reclaimedTotal` is flat while FAA occupancy is high:
+
+1. **Dominant `skippedOpenPrFailsafe`** — check whether those tasks really hold open PRs; unknown/unfetched refs are treated like a hold on the strict path. Meta auto-complete (#2070) may still drain *allowlisted* meta/playbook tasks under the relaxed fail-safe — non-allowlisted implementers stay held.
+2. **Dominant `skippedUnderTtl`** — expected soon after restart or for fresh completion_ready signals; wait for the FAA TTL window.
+3. **Dominant `skippedBadRaisedAt`** — corrupted/missing signal timestamps; investigate the raising path rather than force-reclaiming.
+4. **`lastOutcomes` / `lastAttemptedTaskIds`** — map each FAA candidate to selected vs skip reason with task id.
 
 ## 4. Resource watchdog env
 

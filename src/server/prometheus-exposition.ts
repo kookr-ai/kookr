@@ -506,6 +506,11 @@ function appendFirstHookMissMetrics(
  * #1884 / #2070). Omitted when the sweep is not wired (lightweight unit
  * harnesses) rather than emitting a fabricated zero series.
  */
+/**
+ * finishedAwaitingAck TTL reclaim counters (issues #1884 / #2070 / #2084).
+ * Omitted when the sweep is not wired. Skip-reason series always emit when the
+ * snapshot is present so scrapers can chart why reclaimedTotal stays flat.
+ */
 function appendFinishedAwaitingAckReclaimMetrics(
   lines: string[],
   snapshot:

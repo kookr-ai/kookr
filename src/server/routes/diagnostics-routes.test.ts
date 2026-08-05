@@ -1314,6 +1314,21 @@ describe('diagnostics routes', () => {
           { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', ageMs: 1_000_000 },
         ],
       });
+      // Single-pass invariant: selected + sum(skips) === candidates considered.
+      // lastOutcomes may be a capped sample; use reclaimAttempted + skip totals.
+      const faa = afterBody.finishedAwaitingAckTtlReclaim as {
+        reclaimAttempted: number;
+        skippedBadRaisedAt: number;
+        skippedOpenPrFailsafe: number;
+        skippedUnderTtl: number;
+        lastCandidatesConsidered: number;
+      };
+      expect(
+        faa.reclaimAttempted
+          + faa.skippedBadRaisedAt
+          + faa.skippedOpenPrFailsafe
+          + faa.skippedUnderTtl,
+      ).toBe(faa.lastCandidatesConsidered);
     });
   });
 
