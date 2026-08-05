@@ -29,6 +29,25 @@ Choosing a tier:
 - Use `user` scope (`~/.kookr/playbooks/*.md`) for personal workflows you don't want to commit to a repo.
 - Use `plugin` scope for workflows you want bundled with Kookr and available in every matching repo — Kookr coupling is fine here.
 
+## CWD expansion
+
+Playbook and schedule launches expand a narrow set of portable home spellings via `expandConfiguredCwd` ([`src/server/cwd-paths.ts`](../src/server/cwd-paths.ts)). Expansion runs at **schedule validation** and **playbook launch** only — not inside shell scripts or agent prompts.
+
+Supported forms (when `HOME` is set):
+
+| Form | Expands to |
+| --- | --- |
+| `~` | `$HOME` |
+| `$HOME` | `$HOME` |
+| `${HOME}` | `$HOME` |
+| `~/path` | `$HOME/path` |
+| `$HOME/path` | `$HOME/path` |
+| `${HOME}/path` | `$HOME/path` |
+
+If `HOME` is unset, expansion is a **no-op**: the configured string is returned unchanged. Other spellings (for example `~user`, `$HOMEFOO`, or bare environment variables) are not expanded — only the forms above.
+
+Use these spellings in playbook frontmatter `cwd` and in schedule/target CWD fields so the same definition works across machines without hardcoding absolute home paths.
+
 ## Precedence
 
 When two tiers contain a playbook with the same filename (id), the higher-precedence tier wins:
