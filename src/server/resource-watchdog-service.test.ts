@@ -68,6 +68,8 @@ describe('ResourceWatchdogService', () => {
     config?: Partial<ResourceWatchdogConfig>;
     audit?: MemoryResourceWatchdogAuditSink;
     launchImpl?: (opts: LaunchOpts) => Promise<LaunchResult>;
+    getStaleDtachCount?: () => number | null;
+    pressureWhileDisabledAlerter?: { evaluate: ReturnType<typeof vi.fn> };
   } = {}) {
     const statePath = join(dir, 'resource-watchdog.state.json');
     const config = baseConfig({
@@ -89,6 +91,10 @@ describe('ResourceWatchdogService', () => {
       stateStore: new FileResourceWatchdogStateStore(statePath),
       auditSink: audit,
       launchTask,
+      ...(opts.getStaleDtachCount ? { getStaleDtachCount: opts.getStaleDtachCount } : {}),
+      ...(opts.pressureWhileDisabledAlerter
+        ? { pressureWhileDisabledAlerter: opts.pressureWhileDisabledAlerter }
+        : {}),
       nowMs: () => nowMs,
       nowIso: () => new Date(nowMs).toISOString(),
       logger: { info: vi.fn(), warn: vi.fn() },
@@ -133,6 +139,58 @@ describe('ResourceWatchdogService', () => {
     expect(snap.enabled).toBe(true);
     expect(snap.pressureWhileDisabled).toBe(false);
     expect(snap.pressureWhileDisabledReason).toBeNull();
+  });
+
+  test('disabled-under-pressure alerter pages when pressure stays true (issue #2078)', async () => {
+    const evaluate = vi.fn();
+    const getStaleDtachCount = vi.fn(() => 32);
+    const { service } = makeService({
+      config: { enabled: false },
+      getStaleDtachCount,
+      pressureWhileDisabledAlerter: { evaluate },
+    });
+    await service.runOnce();
+    expect(launches).toHaveLength(0);
+    expect(getStaleDtachCount).toHaveBeenCalled();
+    expect(evaluate).toHaveBeenCalledWith({
+      pressureWhileDisabled: true,
+      reason: expect.stringContaining('staleProcesses.dtach.count=32'),
+      dtachCount: 32,
+    });
+  });
+
+  test('disabled-under-pressure alerter clears when enabled (issue #2078)', async () => {
+    sample = healthySample();
+    const evaluate = vi.fn();
+    const getStaleDtachCount = vi.fn(() => 99);
+    const { service } = makeService({
+      config: { enabled: true },
+      getStaleDtachCount,
+      pressureWhileDisabledAlerter: { evaluate },
+    });
+    await service.runOnce();
+    // When enabled, skip the gauge read and report pressure=false so the
+    // alerter can clear any prior episode.
+    expect(getStaleDtachCount).not.toHaveBeenCalled();
+    expect(evaluate).toHaveBeenCalledWith({
+      pressureWhileDisabled: false,
+      reason: null,
+      dtachCount: null,
+    });
+  });
+
+  test('disabled-under-pressure alerter never spawns investigation (issue #2078)', async () => {
+    const evaluate = vi.fn();
+    const { service } = makeService({
+      config: { enabled: false },
+      getStaleDtachCount: () => 100,
+      pressureWhileDisabledAlerter: { evaluate },
+    });
+    await service.runOnce();
+    await service.runOnce();
+    expect(launches).toHaveLength(0);
+    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(evaluate.mock.calls.every((c) => c[0].pressureWhileDisabled === true)).toBe(true);
   });
 
   test('spawns investigation with hard-rules prompt on pressure', async () => {

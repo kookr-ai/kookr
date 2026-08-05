@@ -42,6 +42,12 @@ import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
+import { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
+import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
+import {
+  scanStaleProcesses,
+  summarizeStaleProcesses,
+} from '../core/orphan-process-scanner.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -1591,7 +1597,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // briefed, throttled investigation task. OFF by default
   // (`KOOKR_RESOURCE_WATCHDOG=1` to enable). Spawns go through launchTask so
   // capacity/backpressure and reserved-slot posture apply unchanged.
-  const resourceWatchdogEnv = readResourceWatchdogConfigFromEnv(process.env);
+  //
+  // Issue #2078: when the actuator stays off under pressure, page Discord via
+  // WatchdogDisabledPressureAlerter. The alerter is installed after
+  // detectorBroadcast is built (holder below) so fire/clear edges spool to
+  // the operator-signal outbox; until then evaluate is a no-op.
   const resourceWatchdogStatePath = join(kookrDir, 'resource-watchdog.state.json');
   const resourceWatchdogAuditPath = defaultResourceWatchdogAuditPath(kookrDir);
   const buildResourceWatchdogConfig = (): ResourceWatchdogConfig => ({
@@ -1600,6 +1610,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stateFilePath: resourceWatchdogStatePath,
     auditLogPath: resourceWatchdogAuditPath,
   });
+  // Filled once detectorBroadcast exists (after signal-delivery config).
+  const watchdogDisabledPressureAlerterHolder: {
+    current: WatchdogDisabledPressureAlerter | null;
+  } = { current: null };
   const resourceWatchdogService = createResourceWatchdogService({
     getConfig: buildResourceWatchdogConfig,
     sampler: createResourceWatchdogHostSampler({
@@ -1617,6 +1631,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Byte-capped tail only — never readFileSync the whole server.log under
     // pressure (issue #1553 lesson; prod logs can be multi-GB).
     readServerLogTail: () => readTrailingFileBytes(join(kookrDir, 'server.log'), 32 * 1024),
+    // Same gauge as /api/health resourceWatchdog.pressureWhileDisabled (#2039).
+    // Only consulted while the actuator is off; cadence is the watchdog interval.
+    getStaleDtachCount: () => {
+      try {
+        const procs = scanStaleProcesses({
+          listProcesses: listProcessSnapshots,
+          now: Date.now(),
+        });
+        return summarizeStaleProcesses(procs).dtach.count;
+      } catch {
+        return null;
+      }
+    },
+    pressureWhileDisabledAlerter: {
+      evaluate: (input) => {
+        watchdogDisabledPressureAlerterHolder.current?.evaluate(input);
+      },
+    },
   });
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1830,6 +1862,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
   const finishedAwaitingAckResidualAlerter = new FinishedAwaitingAckResidualAlerter({
+    broadcast: detectorBroadcast,
+  });
+
+  // resourceWatchdog disabled-under-pressure page (issue #2078). Page-only;
+  // enable remains an operator decision. Holder is installed before
+  // startBackgroundServices so the first tick can page.
+  watchdogDisabledPressureAlerterHolder.current = new WatchdogDisabledPressureAlerter({
     broadcast: detectorBroadcast,
   });
 
