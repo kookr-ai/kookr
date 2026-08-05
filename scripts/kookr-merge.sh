@@ -165,6 +165,23 @@ command -v gh >/dev/null || { echo "kookr-merge: gh (GitHub CLI) is required" >&
 command -v jq >/dev/null || { echo "kookr-merge: jq is required" >&2; exit 1; }
 
 watch_checks() {
+  # Shared pre-flight for BOTH the --watch fast path and the poll loop.
+  # A PR with no reported checks has statusCheckRollup=null (repos without CI)
+  # or []; treat that as pass immediately. Without this:
+  #   - poll path: jq iteration over null errors; empty [] never satisfies a
+  #     "total != 0 && pending == 0" success condition and spins to timeout
+  #     (issue #1850)
+  #   - `gh pr checks [--watch]` exits 1 with "no checks reported on the
+  #     '<branch>' branch" — which used to surface as kookr-merge exit 3
+  #     (issue #2102), even when mergeStateStatus=CLEAN / mergeable=MERGEABLE
+  local checks total
+  checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup)" || return 3
+  total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
+  if [[ "$total" == "0" ]]; then
+    echo "kookr-merge: no status checks reported — nothing to wait on"
+    return 0
+  fi
+
   if gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
     gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch
     return $?
@@ -172,21 +189,18 @@ watch_checks() {
 
   local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
   local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
-  local start now elapsed checks failed pending total
+  local start now elapsed failed pending
   start=$(date +%s)
   echo "kookr-merge: gh pr checks --watch unavailable; polling statusCheckRollup"
 
   while true; do
     checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup)" || return 3
-    # A PR with no reported checks has statusCheckRollup=null (repos without CI)
-    # or []; `// []` keeps the jq iterations from erroring on null.
+    # `// []` keeps the jq iterations from erroring if the rollup becomes null mid-poll.
     total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
     failed="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL"))] | length')"
     pending="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status != "COMPLETED")] | length')"
 
-    # No checks reported → nothing to wait on; treat as passing (matches the
-    # `gh pr checks --watch` path's "no checks reported" behavior). Without this,
-    # a null rollup errors and an empty [] rollup would poll until timeout.
+    # Defense in depth: rollup emptied between the pre-flight and this tick.
     if [[ "$total" == "0" ]]; then
       echo "kookr-merge: no status checks reported — nothing to wait on"
       return 0
