@@ -498,6 +498,7 @@ describe('FallbackLlmClient auth cool-down', () => {
 describe('FallbackLlmClient provider attempt budget', () => {
   const originalBudget = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
   const originalWindow = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
+  const originalAuthCooldown = process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
 
   function client(provider: string, impl: () => Promise<string | null>) {
     return { provider, model: `${provider}-model`, complete: vi.fn().mockImplementation(impl) };
@@ -517,6 +518,8 @@ describe('FallbackLlmClient provider attempt budget', () => {
     else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = originalBudget;
     if (originalWindow === undefined) delete process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
     else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS = originalWindow;
+    if (originalAuthCooldown === undefined) delete process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
+    else process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = originalAuthCooldown;
     resetHelperLlmDiagnosticsForTest();
   });
 
@@ -566,7 +569,8 @@ describe('FallbackLlmClient provider attempt budget', () => {
     expect(c.complete).toHaveBeenCalledOnce();
 
     const snapshot = getHelperLlmDiagnosticsSnapshot();
-    expect(snapshot.stormsSuppressed).toBeGreaterThanOrEqual(2);
+    // Call2 mid-chain deny (1) + fully suppressed calls 3 and 4 (2) = 3.
+    expect(snapshot.stormsSuppressed).toBe(3);
     expect(snapshot.providerAttemptBudget).toEqual({
       limit: 4,
       windowMs: 60_000,
@@ -597,7 +601,7 @@ describe('FallbackLlmClient provider attempt budget', () => {
 
     const snapshot = getHelperLlmDiagnosticsSnapshot();
     expect(snapshot.providerAttemptBudget.attemptsInWindow).toBe(1);
-    expect(snapshot.stormsSuppressed).toBeGreaterThanOrEqual(1);
+    expect(snapshot.stormsSuppressed).toBe(1);
     warn.mockRestore();
   });
 
@@ -623,7 +627,63 @@ describe('FallbackLlmClient provider attempt budget', () => {
     expect(a.complete).toHaveBeenCalledOnce();
     expect(b.complete).not.toHaveBeenCalled();
     expect(second.failureCategory).toBe('other');
-    expect(getHelperLlmDiagnosticsSnapshot().stormsSuppressed).toBeGreaterThanOrEqual(1);
+    // First call denied groq (1) + second call denied google (2).
+    expect(getHelperLlmDiagnosticsSnapshot().stormsSuppressed).toBe(2);
+    warn.mockRestore();
+  });
+
+  test('process-wide budget is shared across FallbackLlmClient instances', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '3';
+    const rateLimit = Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+    const a = client('google', async () => { throw rateLimit; });
+    const b = client('groq', async () => { throw rateLimit; });
+    const c = client('baseten', async () => { throw rateLimit; });
+    const d = client('openrouter', async () => { throw rateLimit; });
+    const fb1 = new FallbackLlmClient([a, b]);
+    const fb2 = new FallbackLlmClient([c, d]);
+
+    await fb1.complete({ maxTokens: 10, userMessage: 'from-1' }); // a,b → 2
+    await fb2.complete({ maxTokens: 10, userMessage: 'from-2' }); // c only (3rd), d denied
+
+    const totalNetwork =
+      (a.complete as ReturnType<typeof vi.fn>).mock.calls.length
+      + (b.complete as ReturnType<typeof vi.fn>).mock.calls.length
+      + (c.complete as ReturnType<typeof vi.fn>).mock.calls.length
+      + (d.complete as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(totalNetwork).toBe(3);
+    expect(d.complete).not.toHaveBeenCalled();
+    expect(getHelperLlmDiagnosticsSnapshot().stormsSuppressed).toBe(1);
+    expect(getHelperLlmDiagnosticsSnapshot().providerAttemptBudget.attemptsInWindow).toBe(3);
+    warn.mockRestore();
+  });
+
+  test('auth-paused providers do not burn attempt budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '2';
+    process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = '60000';
+    const authErr = Object.assign(new Error('expired_api_key'), { providerFailureCategory: 'auth' as const });
+    const rateLimit = Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+    const a = client('groq', async () => { throw authErr; });
+    const b = client('google', async () => { throw rateLimit; });
+    const fb = new FallbackLlmClient([a, b]);
+
+    // Call 1: groq auth-fails (burns 1 attempt + pause), google 429 (burns 2nd).
+    await fb.complete({ maxTokens: 10, userMessage: '1' });
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledOnce();
+
+    // Call 2: groq is auth-paused (no acquire), google denied by budget.
+    await fb.complete({ maxTokens: 10, userMessage: '2' });
+    expect(a.complete).toHaveBeenCalledOnce(); // still only the first hit
+    expect(b.complete).toHaveBeenCalledOnce(); // budget blocked second hit
+
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.providerAttemptBudget.attemptsInWindow).toBe(2);
+    expect(snapshot.stormsSuppressed).toBe(1);
+    expect(snapshot.pausedProviders).toEqual([
+      expect.objectContaining({ provider: 'groq', reason: 'auth' }),
+    ]);
     warn.mockRestore();
   });
 
