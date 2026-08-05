@@ -20,6 +20,10 @@ import {
 import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
 import { resolveMaintenancePruneIntervalHours } from '../server/maintenance-prune-schedule.js';
 import { resolveKookrDataDir } from './kookr-maintenance.js';
+import {
+  parseGithubStatusBody,
+  type GithubStatusSnapshot,
+} from './kookr-github.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -60,6 +64,14 @@ type MaintenancePruneTimerProbe = (
 ) => Promise<{ lastFiredAt: string | null } | null>;
 
 /**
+ * Live probe of GET /api/github/status (issue #2098). null = unreachable /
+ * unknown / no API base configured — doctor stays green (hermetic offline).
+ */
+type GithubScannerStatusProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<GithubStatusSnapshot | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -85,6 +97,11 @@ interface RunDoctorDeps {
    */
   probeMaintenancePruneTimer?: MaintenancePruneTimerProbe;
   /**
+   * Optional override for the live GET /api/github/status probe (issue #2098).
+   * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
+   */
+  probeGithubScannerStatus?: GithubScannerStatusProbe;
+  /**
    * Optional override for reading `{dataDir}/prod-smoke-tick-alert.json`.
    * Defaults to {@link readAlertArtifact}. Tests inject a fixture reader so
    * the host `~/.kookr` never leaks into hermetic unit runs.
@@ -107,6 +124,7 @@ Options:
 
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
+github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
@@ -115,6 +133,11 @@ and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
 const AGENT_PROBE_TIMEOUT_MS = 2_000;
 const KB_SMOKE_QUERY = 'kookr launch dependency smoke';
+/**
+ * Ignore brief state-fetch backoff windows so doctor does not flap WARN during
+ * short rate-limit recoveries (issue #2098). Multi-minute pauses surface as WARN.
+ */
+export const GITHUB_SCANNER_BACKOFF_WARN_MS = 30_000;
 const STATUS_LABEL: Record<DoctorCheckStatus, string> = {
   ok: 'OK',
   warn: 'WARN',
@@ -197,6 +220,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
   checks.push(await checkGhAuth(run));
+  checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
   checks.push(...await checkAgentBinaries(env, run));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
@@ -297,6 +321,69 @@ async function checkGhAuth(run: CommandRunner): Promise<DoctorCheck> {
     detail: firstNonEmpty(result.stderr, result.stdout),
     recommendedAction: 'Run `gh auth login` if you want GitHub PR/issue monitoring and automation.',
   };
+}
+
+/**
+ * Advisory github check (issue #2098): surface that the GitHub scanner is in a
+ * multi-minute state-fetch rate-limit backoff so operators do not mis-attribute
+ * stale PR/issue cards to a "broken scanner" after SSH preflight.
+ *
+ * - stateFetchBackoffMs >= {@link GITHUB_SCANNER_BACKOFF_WARN_MS} → WARN
+ * - probe null / unreachable / no API base → OK with "probe skipped" (hermetic)
+ * - Never a required fail; gh-auth remains the only hard-ish github signal
+ */
+async function checkGithubScannerBackoff(
+  env: NodeJS.ProcessEnv,
+  probe: GithubScannerStatusProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeGithubScannerStatus;
+  let snap: GithubStatusSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'github.scanner-backoff',
+      'GitHub scanner backoff',
+      'github',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or status unreachable)',
+      false,
+    );
+  }
+
+  if (snap.stateFetchBackoffMs >= GITHUB_SCANNER_BACKOFF_WARN_MS) {
+    const remainingSec = Math.ceil(snap.stateFetchBackoffMs / 1000);
+    return {
+      id: 'github.scanner-backoff',
+      label: 'GitHub scanner backoff',
+      category: 'github',
+      status: 'warn',
+      required: false,
+      summary:
+        `state-fetch rate-limit backoff active: remaining≈${remainingSec}s, ` +
+        `trackedRefCount=${snap.trackedRefCount}`,
+      detail:
+        `GET /api/github/status stateFetchBackoffMs=${snap.stateFetchBackoffMs}` +
+        (snap.repoHealthBackoffMs > 0 ? ` repoHealthBackoffMs=${snap.repoHealthBackoffMs}` : '') +
+        ` active=${snap.active}`,
+      recommendedAction:
+        'Wait for the GitHub rate-limit reset, reduce tracked terminal refs, or check `gh api rate_limit`. ' +
+        'PR/issue cards may stay stale until state-fetch resumes.',
+    };
+  }
+
+  return okCheck(
+    'github.scanner-backoff',
+    'GitHub scanner backoff',
+    'github',
+    snap.stateFetchBackoffMs > 0
+      ? `state-fetch backoff ${snap.stateFetchBackoffMs}ms is below ${GITHUB_SCANNER_BACKOFF_WARN_MS}ms threshold (trackedRefCount=${snap.trackedRefCount})`
+      : `no state-fetch rate-limit backoff (trackedRefCount=${snap.trackedRefCount})`,
+    false,
+  );
 }
 
 /**
@@ -533,6 +620,34 @@ async function defaultProbeMaintenancePruneTimer(
     if (loop.lastFiredAt === null) return { lastFiredAt: null };
     if (typeof loop.lastFiredAt === 'string') return { lastFiredAt: loop.lastFiredAt };
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort live probe of GET /api/github/status (issue #2098). Only hits the
+ * network when `KOOKR_API_BASE_URL` or numeric `KOOKR_PORT` is set — hermetic
+ * offline doctor stays green without scanning default ports.
+ */
+async function defaultProbeGithubScannerStatus(
+  env: NodeJS.ProcessEnv,
+): Promise<GithubStatusSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/github/status`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseGithubStatusBody(body);
   } catch {
     return null;
   }

@@ -3,8 +3,14 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { buildDoctorJsonReport, formatDoctorReport, runDoctorCli } from './kookr-doctor.js';
+import {
+  buildDoctorJsonReport,
+  formatDoctorReport,
+  GITHUB_SCANNER_BACKOFF_WARN_MS,
+  runDoctorCli,
+} from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
+import type { GithubStatusSnapshot } from './kookr-github.js';
 
 /** Stable happy-path check ids plus KB failure-mode ids that can replace `launch.kb`. */
 const DOCUMENTED_DOCTOR_CHECK_IDS = [
@@ -13,6 +19,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.git',
   'runtime.dtach',
   'github.gh-auth',
+  'github.scanner-backoff',
   'launch.kb',
   'launch.kb-doctor',
   'launch.kb-search',
@@ -34,8 +41,19 @@ const opsOkEnv = {
 const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
+  probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
 };
+
+function githubStatusSnap(partial: Partial<GithubStatusSnapshot> = {}): GithubStatusSnapshot {
+  return {
+    active: true,
+    stateFetchBackoffMs: 0,
+    repoHealthBackoffMs: 0,
+    trackedRefCount: 12,
+    ...partial,
+  };
+}
 
 /** Advisory ops check ids that are off-by-default and emit WARN with empty env. */
 const ADVISORY_OFF_BY_DEFAULT = new Set(['ops.resource-watchdog', 'ops.maintenance-prune']);
@@ -93,6 +111,7 @@ describe('kookr doctor --json', () => {
       'runtime.git',
       'runtime.dtach',
       'github.gh-auth',
+      'github.scanner-backoff',
       'launch.kb',
       'agent.claude',
       'agent.codex',
@@ -106,6 +125,11 @@ describe('kookr doctor --json', () => {
         .filter((c) => !ADVISORY_OFF_BY_DEFAULT.has(c.id))
         .every((c) => c.status === 'ok'),
     ).toBe(true);
+    expect(report.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
     expect(report.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
       status: 'ok',
       required: false,
@@ -119,6 +143,88 @@ describe('kookr doctor --json', () => {
       status: 'warn',
       required: false,
       summary: 'scheduled data-dir prune is disabled',
+    });
+  });
+
+  it('WARNs on github.scanner-backoff when stateFetchBackoffMs is multi-minute (issue #2098)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeGithubScannerStatus: async () => githubStatusSnap({
+        stateFetchBackoffMs: 180_000,
+        trackedRefCount: 1093,
+        repoHealthBackoffMs: 12_000,
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'github.scanner-backoff');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('trackedRefCount=1093'),
+    });
+    expect(check?.summary).toMatch(/remaining≈180s/);
+    expect(check?.detail).toContain('stateFetchBackoffMs=180000');
+    expect(check?.detail).toContain('repoHealthBackoffMs=12000');
+    expect(check?.recommendedAction).toContain('gh api rate_limit');
+  });
+
+  it('stays OK for github.scanner-backoff when backoff is zero or below threshold (issue #2098)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const zero = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeGithubScannerStatus: async () => githubStatusSnap({ stateFetchBackoffMs: 0, trackedRefCount: 4 }),
+    });
+    expect(zero.status).toBe('ok');
+    expect(zero.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('no state-fetch rate-limit backoff'),
+    });
+
+    const brief = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeGithubScannerStatus: async () => githubStatusSnap({
+        stateFetchBackoffMs: GITHUB_SCANNER_BACKOFF_WARN_MS - 1,
+        trackedRefCount: 8,
+      }),
+    });
+    expect(brief.status).toBe('ok');
+    expect(brief.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('below'),
+    });
+  });
+
+  it('keeps github.scanner-backoff green when the probe is unavailable (hermetic offline)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeGithubScannerStatus: async () => null,
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
     });
   });
 
@@ -373,6 +479,7 @@ describe('kookr doctor --json', () => {
       access: async () => {},
       probeResourceWatchdogEnabled: async () => null,
       probeMaintenancePruneTimer: async () => null,
+      probeGithubScannerStatus: async () => null,
       // intentionally no readProdSmokeTickAlert — exercises default disk path
     });
 
