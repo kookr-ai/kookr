@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { OssAttemptStore } from './oss-attempt-store.js';
+import { OssAttemptStore, projectIdToRepoVariants } from './oss-attempt-store.js';
 import { LedgerAnalytics } from './ledger-analytics.js';
 
 describe('LedgerAnalytics', () => {
@@ -295,6 +295,147 @@ describe('LedgerAnalytics', () => {
     test('returns empty list when ledger has no blocked entries', async () => {
       await store.load();
       expect(analytics.getTodayBlockedEntries()).toEqual([]);
+    });
+  });
+
+  describe('batch aggregation equivalence', () => {
+    test('batch maps equal the per-project methods across a fixture ledger', async () => {
+      const today = new Date().toISOString().split('T')[0];
+      const sixDaysAgo = new Date(Date.now() - 6 * 86_400_000).toISOString();
+      const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString();
+      const ledger = [
+        // grafana: 2 created today, 1 slot_reset today -> todayCount 1
+        JSON.stringify({ timestamp: `${today}T09:00:00Z`, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/1' }),
+        JSON.stringify({ timestamp: `${today}T10:00:00Z`, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/2' }),
+        JSON.stringify({ timestamp: `${today}T11:00:00Z`, repo: 'grafana/grafana', action: 'slot_reset', reason: 'user reset' }),
+        // grafana: one within the week, one older than the week
+        JSON.stringify({ timestamp: sixDaysAgo, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/3' }),
+        JSON.stringify({ timestamp: eightDaysAgo, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/4' }),
+        // rust-lang: 1 created today
+        JSON.stringify({ timestamp: `${today}T08:00:00Z`, repo: 'rust-lang/rust', action: 'pr_created', prUrl: 'https://github.com/rust-lang/rust/pull/9' }),
+        // llama.cpp: only a blocked entry -> no created/week rows, but has no attempt either
+        JSON.stringify({ timestamp: `${today}T07:00:00Z`, repo: 'ggml-org/llama.cpp', action: 'pr_blocked_rate_limit', blockReason: 'Rate limit' }),
+      ].join('\n');
+      writeFileSync(join(tempDir, 'contribution-ledger.jsonl'), ledger);
+      await store.load();
+      await store.loadFromLedger();
+
+      // Include a local/non-GitHub project that should resolve to 0/empty, and
+      // a GitHub project present in the ledger only via a blocked entry.
+      const projectIds = [
+        'github.com/grafana/grafana',
+        'github.com/rust-lang/rust',
+        'github.com/ggml-org/llama.cpp',
+        'local/my-checkout',
+      ];
+
+      const todayCounts = analytics.getTodayCountsByProject(projectIds);
+      const weekCounts = analytics.getWeekCountsByProject(projectIds);
+      const attemptsMap = analytics.getAttemptsByProjectMap(projectIds);
+
+      // Every requested project appears as a key, even with no matching rows.
+      expect([...todayCounts.keys()].sort()).toEqual([...projectIds].sort());
+      expect([...weekCounts.keys()].sort()).toEqual([...projectIds].sort());
+      expect([...attemptsMap.keys()].sort()).toEqual([...projectIds].sort());
+
+      for (const projectId of projectIds) {
+        expect(todayCounts.get(projectId)).toBe(analytics.getTodayCount(projectId));
+        expect(weekCounts.get(projectId)).toBe(analytics.getWeekCount(projectId));
+        expect(attemptsMap.get(projectId)).toEqual(analytics.getAttemptsByProject(projectId));
+      }
+
+      // Spot-check the derived values so the equivalence isn't 0-vs-0 trivial.
+      expect(todayCounts.get('github.com/grafana/grafana')).toBe(1);
+      // 2 created today + 1 six days ago are within the week; 8-days-ago is not.
+      expect(weekCounts.get('github.com/grafana/grafana')).toBe(3);
+      expect(todayCounts.get('github.com/rust-lang/rust')).toBe(1);
+      expect(todayCounts.get('local/my-checkout')).toBe(0);
+      expect(weekCounts.get('local/my-checkout')).toBe(0);
+      expect(attemptsMap.get('local/my-checkout')).toEqual([]);
+    });
+
+    test('credits every project that shares a repo variant, not just the first', async () => {
+      // Two project IDs on different hosts collapse to the same `owner/repo`
+      // variant, so one ledger row must credit both — exercises the
+      // `for (const projectId of matched)` fan-out that a single-project
+      // ledger can never reach.
+      const today = new Date().toISOString().split('T')[0];
+      const ledger = [
+        JSON.stringify({ timestamp: `${today}T09:00:00Z`, repo: 'acme/app', action: 'pr_created', prUrl: 'https://github.com/acme/app/pull/1' }),
+        JSON.stringify({ timestamp: `${today}T10:00:00Z`, repo: 'acme/app', action: 'pr_created', prUrl: 'https://github.com/acme/app/pull/2' }),
+      ].join('\n');
+      writeFileSync(join(tempDir, 'contribution-ledger.jsonl'), ledger);
+      await store.load();
+      await store.loadFromLedger();
+
+      const ids = ['github.com/acme/app', 'gitlab.com/acme/app'];
+      expect(projectIdToRepoVariants('github.com/acme/app')).toEqual(['acme/app']);
+      expect(projectIdToRepoVariants('gitlab.com/acme/app')).toEqual(['acme/app']);
+
+      const todayCounts = analytics.getTodayCountsByProject(ids);
+      const weekCounts = analytics.getWeekCountsByProject(ids);
+      const attemptsMap = analytics.getAttemptsByProjectMap(ids);
+      for (const id of ids) {
+        expect(todayCounts.get(id)).toBe(2);
+        expect(weekCounts.get(id)).toBe(2);
+        expect(attemptsMap.get(id)).toHaveLength(2);
+        // Equivalent to the per-project method for each shared-variant project.
+        expect(todayCounts.get(id)).toBe(analytics.getTodayCount(id));
+        expect(attemptsMap.get(id)).toEqual(analytics.getAttemptsByProject(id));
+      }
+    });
+
+    test('batch today count clamps a net-negative project to zero', async () => {
+      // The batch clamp (`Math.max(0, value)`) is a separate code path from the
+      // per-project one, so pin it directly with a project whose resets exceed
+      // its creations.
+      const today = new Date().toISOString().split('T')[0];
+      const ledger = [
+        JSON.stringify({ timestamp: `${today}T09:00:00Z`, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/1' }),
+        JSON.stringify({ timestamp: `${today}T10:00:00Z`, repo: 'grafana/grafana', action: 'slot_reset' }),
+        JSON.stringify({ timestamp: `${today}T11:00:00Z`, repo: 'grafana/grafana', action: 'slot_reset' }),
+      ].join('\n');
+      writeFileSync(join(tempDir, 'contribution-ledger.jsonl'), ledger);
+      await store.load();
+      await store.loadFromLedger();
+
+      const counts = analytics.getTodayCountsByProject(['github.com/grafana/grafana']);
+      expect(counts.get('github.com/grafana/grafana')).toBe(0);
+      expect(counts.get('github.com/grafana/grafana')).toBe(analytics.getTodayCount('github.com/grafana/grafana'));
+    });
+
+    test('scans the ledger a constant number of times regardless of project count', async () => {
+      const today = new Date().toISOString().split('T')[0];
+      writeFileSync(
+        join(tempDir, 'contribution-ledger.jsonl'),
+        JSON.stringify({ timestamp: `${today}T09:00:00Z`, repo: 'grafana/grafana', action: 'pr_created', prUrl: 'https://github.com/grafana/grafana/pull/1' }),
+      );
+      await store.load();
+      await store.loadFromLedger();
+
+      let ledgerScans = 0;
+      let attemptScans = 0;
+      const countingSource = {
+        getAllLedgerEntries: () => {
+          ledgerScans += 1;
+          return store.getAllLedgerEntries();
+        },
+        getAttemptsReadonly: () => {
+          attemptScans += 1;
+          return store.getAttemptsReadonly();
+        },
+      };
+      const counting = new LedgerAnalytics(countingSource);
+      const manyProjects = Array.from({ length: 25 }, (_, i) => `github.com/owner/repo-${i}`);
+
+      counting.getTodayCountsByProject(manyProjects);
+      counting.getWeekCountsByProject(manyProjects);
+      counting.getAttemptsByProjectMap(manyProjects);
+
+      // One ledger scan per count method, one attempt scan for the map — not
+      // one-per-project as the old per-project loop did.
+      expect(ledgerScans).toBe(2);
+      expect(attemptScans).toBe(1);
     });
   });
 
