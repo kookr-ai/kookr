@@ -4,6 +4,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { importMaybeTs } from './import-maybe-ts.js';
 
 const HELP_TEXT = `kookr - local AI agent supervisor.
 
@@ -291,7 +292,7 @@ async function runEffortSplitCommand(argv, { env = process.env, out = console, e
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runEffortSplitCli(argv, { env, out, err });
 }
 
@@ -306,7 +307,7 @@ async function runReflectCommand(argv, { env = process.env, out = console, err =
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runReflectCli(argv, { env, out, err });
 }
 
@@ -334,7 +335,7 @@ async function runValueDensityCommand(argv, { env = process.env, out = console, 
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runValueDensityCli(argv, { env, out, err });
 }
 
@@ -349,7 +350,7 @@ async function runQueueFeederCommand(argv, { env = process.env, out = console, e
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runQueueFeederCli(argv, { env, out, err });
 }
 
@@ -388,7 +389,7 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
 }
 
@@ -403,7 +404,7 @@ async function runGithubCommand(argv, { env = process.env, out = console, err = 
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runGithubCli(argv, { env, out, err });
 }
 
@@ -417,7 +418,7 @@ async function runContextPackCommand(argv, { env = process.env, out = console, e
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runContextPackCli(argv, { env, out });
 }
 
@@ -431,7 +432,7 @@ async function runSignalEmitCommand(argv, { env = process.env, out = console, er
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runSignalEmitCli(argv);
 }
 
@@ -455,7 +456,7 @@ async function runDoctorCommand(argv, { env = process.env, out = console, err = 
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runDoctorCli(argv, { env, out, cwd: process.cwd() });
 }
 
@@ -469,7 +470,7 @@ async function runPrChecklistCommand(argv, { env = process.env, out = console, e
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runPrChecklistCli(argv, { env, out, err, cwd: process.cwd() });
 }
 
@@ -483,7 +484,7 @@ async function loadCompletionModule() {
     console.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  return import(pathToFileURL(entry).href);
+  return importMaybeTs(entry);
 }
 
 async function runPushCommand(argv) {
