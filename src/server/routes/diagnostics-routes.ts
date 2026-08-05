@@ -480,6 +480,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         }
       : undefined;
 
+    // Issue #2070: meta/playbook FAA auto-complete counters + age histogram so
+    // residual finishedAwaitingAck holds stay measurable. Cheap in-memory only.
+    const finishedAwaitingAckReclaimSnapshot =
+      deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
+    const finishedAwaitingAckReclaimBlock = finishedAwaitingAckReclaimSnapshot
+      ? {
+          reclaimedTotal: finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
+          autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal ?? 0,
+          autoCompleteDeferredTotal:
+            finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal ?? 0,
+          autoCompleteAgeHistogram:
+            finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram ?? {},
+        }
+      : undefined;
+
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
     // this process is *actually* serving without digging into `build`.
@@ -527,6 +542,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
       ...(hungSuspectTtlReclaimBlock ? { hungSuspectTtlReclaim: hungSuspectTtlReclaimBlock } : {}),
+      ...(finishedAwaitingAckReclaimBlock
+        ? { finishedAwaitingAckTtlReclaim: finishedAwaitingAckReclaimBlock }
+        : {}),
       // Issue #2036: post-spawn first-hook miss counter (cheap in-memory read).
       ...(deps.firstHookMissMetrics
         ? { firstHookMissTotal: deps.firstHookMissMetrics.getSnapshot().firstHookMissTotal }

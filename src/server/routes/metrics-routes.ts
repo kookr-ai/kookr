@@ -61,7 +61,14 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Never scans hook logs on the scrape path — cold cache omits series.
       lessonYield: collectLessonYield(deps),
       ...(finishedAwaitingAckReclaim
-        ? { finishedAwaitingAckReclaim: { reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal } }
+        ? {
+            finishedAwaitingAckReclaim: {
+              reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal,
+              autoCompletedTotal: finishedAwaitingAckReclaim.autoCompletedTotal,
+              autoCompleteDeferredTotal: finishedAwaitingAckReclaim.autoCompleteDeferredTotal,
+              autoCompleteAgeHistogram: finishedAwaitingAckReclaim.autoCompleteAgeHistogram,
+            },
+          }
         : {}),
       ...(hungSuspectReclaim
         ? {

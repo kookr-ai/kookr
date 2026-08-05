@@ -493,10 +493,14 @@ export async function completeTask(
      * Override the interaction-log `task_completed` reason (default
      * `'user_marked'`). Used by system-driven force-completes — e.g. the
      * finishedAwaitingAck TTL reclaim (issue #1884) stamps
-     * `'finished_awaiting_ack_ttl'` so the log distinguishes an autonomous
-     * slot reclaim from a manual ack.
+     * `'finished_awaiting_ack_ttl'`, and meta FAA auto-complete (issue #2070)
+     * stamps `'finished_awaiting_ack_auto_complete'`, so the log distinguishes
+     * autonomous slot reclaim from a manual ack.
      */
-    interactionLogReason?: 'user_marked' | 'finished_awaiting_ack_ttl';
+    interactionLogReason?:
+      | 'user_marked'
+      | 'finished_awaiting_ack_ttl'
+      | 'finished_awaiting_ack_auto_complete';
   } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);

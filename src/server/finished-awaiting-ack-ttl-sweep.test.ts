@@ -118,7 +118,11 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
     expect(broadcastToAll).toHaveBeenCalledTimes(1);
     expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({ type: 'alert', severity: 'warning' }));
 
-    expect(metrics.getSnapshot()).toEqual({ reclaimedTotal: 1 });
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 1,
+      autoCompletedTotal: 0,
+      autoCompleteDeferredTotal: 0,
+    });
   });
 
   it('exempts a stranded-PR task (isHoldingOpenPr === true) — the merge_required path is never clobbered', async () => {
@@ -181,7 +185,198 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
     );
 
     expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.autoCompletedTaskIds).toEqual([]);
     expect(broadcastToAll).not.toHaveBeenCalled();
     await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
+  });
+});
+
+describe('meta FAA auto-complete (issue #2070)', () => {
+  let auditDir: string;
+  let auditLogPath: string;
+  const META_TTL = 12 * 60_000;
+
+  beforeEach(async () => {
+    auditDir = await mkdtemp(join(tmpdir(), 'faa-auto-'));
+    auditLogPath = join(auditDir, 'audit.jsonl');
+  });
+
+  afterEach(async () => {
+    await rm(auditDir, { recursive: true, force: true });
+  });
+
+  function makeMetaFaaTask(overrides: Partial<Task> = {}): Task {
+    return makeFaaTask({
+      id: 'meta-1',
+      playbookId: 'cross-repo-orchestrator.md',
+      name: 'Cross-Repo Autonomous Orchestrator',
+      sessions: [
+        aSession({
+          tmuxSession: 'kookr-meta',
+          lastStatus: 'inProgress',
+          lastTurnState: 'completed_turn',
+        }),
+      ],
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - META_TTL - 60_000).toISOString(),
+        source: 'http',
+      },
+      ...overrides,
+    });
+  }
+
+  it('auto-completes an aged meta playbook FAA task when PR-hold is unknown (relaxed fail-safe)', async () => {
+    const task = makeMetaFaaTask();
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        // Unknown PR state: strict path skips; meta path completes.
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.autoCompletedTaskIds).toEqual(['meta-1']);
+    expect(taskStore.completeTask).toHaveBeenCalledWith('meta-1');
+    expect(lifecycleDeps.interactionLog!.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'task_completed',
+        taskId: 'meta-1',
+        reason: 'finished_awaiting_ack_auto_complete',
+      }),
+    );
+
+    const rows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      type: 'task.finishedAwaitingAckAutoCompleted',
+      actor: 'system:finished-awaiting-ack-auto-complete',
+      taskId: 'meta-1',
+      playbookId: 'cross-repo-orchestrator.md',
+    });
+
+    const snap = metrics.getSnapshot();
+    expect(snap.autoCompletedTotal).toBe(1);
+    expect(snap.reclaimedTotal).toBe(0);
+    expect(Object.values(snap.autoCompleteAgeHistogram).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  it('defers when the live turn is running (TOCTOU re-GET characterization)', async () => {
+    const task = makeMetaFaaTask({
+      id: 'live',
+      sessions: [
+        aSession({
+          tmuxSession: 'kookr-live',
+          lastStatus: 'inProgress',
+          lastTurnState: 'running',
+        }),
+      ],
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      { now: NOW, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['live']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().autoCompleteDeferredTotal).toBe(1);
+  });
+
+  it('defers when pane text shows a high-confidence human interactive prompt', async () => {
+    const task = makeMetaFaaTask({ id: 'interactive' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => undefined,
+        getTaskPaneText: () => 'Some output\n❯\n',
+      },
+      { now: NOW, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['interactive']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-complete meta tasks with a confirmed-open PR', async () => {
+    const task = makeMetaFaaTask({ id: 'open-pr' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => true,
+      },
+      { now: NOW, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+  });
+
+  it('does not double-count a task already reclaimed by the strict TTL path', async () => {
+    const task = makeMetaFaaTask({
+      id: 'both-paths',
+      // Clear PR state → strict path takes it.
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      { now: NOW, ttlMs: META_TTL, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['both-paths']);
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 1,
+      autoCompletedTotal: 0,
+    });
+  });
+});
+
+describe('paneHasHumanInteractiveMarkers', () => {
+  it('detects Claude idle input prompt and ignores empty / streaming text', async () => {
+    const { paneHasHumanInteractiveMarkers } = await import('./finished-awaiting-ack-ttl-sweep.js');
+    expect(paneHasHumanInteractiveMarkers('Some output\n❯\n')).toBe(true);
+    expect(paneHasHumanInteractiveMarkers('')).toBe(false);
+    expect(paneHasHumanInteractiveMarkers(undefined)).toBe(false);
+    expect(paneHasHumanInteractiveMarkers('just some agent output')).toBe(false);
   });
 });

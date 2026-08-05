@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   listExpiredFinishedAwaitingAckTasks,
+  listMetaFinishedAwaitingAckAutoCompleteTasks,
+  isMetaFaaAutoCompletePlaybook,
+  isMetaFaaAutoCompleteEligible,
+  taskHasLiveTurn,
   DEFAULT_FINISHED_AWAITING_ACK_TTL_MS,
+  DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   MAX_FINISHED_AWAITING_ACK_TTL_MS,
 } from './finished-awaiting-ack-ttl.js';
 import type { Task } from './task-read-model.js';
+import type { SessionInfo } from './session-read-model.js';
 
 const NOW = new Date('2026-08-02T12:00:00Z');
 
@@ -187,5 +193,220 @@ describe('listExpiredFinishedAwaitingAckTasks (issue #1884)', () => {
       isHoldingOpenPr: () => false,
     });
     expect(expired.map((e) => e.task.id)).toEqual(['over-default']);
+  });
+});
+
+describe('meta FAA auto-complete eligibility (issue #2070)', () => {
+  it('matches allowlisted meta/playbook ids and name-only fallback', () => {
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'cross-repo-orchestrator.md' })).toBe(true);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'parallel-issue-batch.md' })).toBe(true);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'lucy-workflow-incident-sentinel.md' })).toBe(true);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'lucy-workflow-reflection.md' })).toBe(true);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'repository-idea-scout.md' })).toBe(true);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'pr-merge-rebase-watchdog.md' })).toBe(true);
+    // Name fallback only when playbookId is absent.
+    expect(isMetaFaaAutoCompletePlaybook({ name: 'Lucy Progress Watchdog' })).toBe(true);
+    // Implementers must NOT match.
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'implement-github-issue.md' })).toBe(false);
+    expect(isMetaFaaAutoCompletePlaybook({ playbookId: 'oss-bug-fix.md' })).toBe(false);
+  });
+
+  it('does not relax PR fail-safe when an implementer name contains a meta substring', () => {
+    // Regression for reviewer B1: playbookId wins; name is ignored when set.
+    expect(
+      isMetaFaaAutoCompletePlaybook({
+        playbookId: 'implement-github-issue.md',
+        name: 'Fix orchestrator race in sentinel reflection',
+      }),
+    ).toBe(false);
+    expect(
+      isMetaFaaAutoCompleteEligible({
+        playbookId: 'implement-github-issue.md',
+        name: 'Fix orchestrator race in sentinel reflection',
+        pendingSignal: {
+          kind: 'completion_ready',
+          raisedAt: NOW.toISOString(),
+          source: 'http',
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it('does not treat bare source=http as meta-eligible without an allowlist match', () => {
+    expect(
+      isMetaFaaAutoCompleteEligible({
+        pendingSignal: {
+          kind: 'completion_ready',
+          raisedAt: NOW.toISOString(),
+          source: 'http',
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it('taskHasLiveTurn detects running / waiting_for_input / blocked sessions', () => {
+    const running: SessionInfo = {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: NOW,
+      lastTurnState: 'running',
+    };
+    const waiting: SessionInfo = {
+      tmuxSession: 's3',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: NOW,
+      lastTurnState: 'waiting_for_input',
+    };
+    const blocked: SessionInfo = {
+      tmuxSession: 's4',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: NOW,
+      lastTurnState: 'blocked',
+    };
+    const idle: SessionInfo = {
+      tmuxSession: 's2',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: NOW,
+      lastTurnState: 'completed_turn',
+    };
+    expect(taskHasLiveTurn({ sessions: [running] })).toBe(true);
+    expect(taskHasLiveTurn({ sessions: [waiting] })).toBe(true);
+    expect(taskHasLiveTurn({ sessions: [blocked] })).toBe(true);
+    expect(taskHasLiveTurn({ sessions: [idle] })).toBe(false);
+    expect(
+      taskHasLiveTurn({
+        sessions: [{ ...running, lastStatus: 'completed' }],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('listMetaFinishedAwaitingAckAutoCompleteTasks (issue #2070)', () => {
+  const ttlMs = DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS;
+
+  it('selects an aged meta playbook FAA task even when PR-hold is unknown (relaxed fail-safe)', () => {
+    const stale = faaTask({
+      id: 'orchestrator',
+      playbookId: 'cross-repo-orchestrator.md',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+        source: 'http',
+      },
+      sessions: [
+        {
+          tmuxSession: 's',
+          agentType: 'grok-build',
+          cwd: '/tmp',
+          createdAt: new Date(NOW.getTime() - 30 * 60_000),
+          lastTurnState: 'completed_turn',
+        } as SessionInfo,
+      ],
+    });
+    // Strict path would skip (undefined ≠ false).
+    expect(
+      listExpiredFinishedAwaitingAckTasks([stale], {
+        now: NOW,
+        ttlMs,
+        isHoldingOpenPr: () => undefined,
+      }),
+    ).toEqual([]);
+
+    const selected = listMetaFinishedAwaitingAckAutoCompleteTasks([stale], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(selected.map((e) => e.task.id)).toEqual(['orchestrator']);
+  });
+
+  it('still blocks meta tasks with a confirmed-open PR', () => {
+    const stranded = faaTask({
+      id: 'meta-with-pr',
+      playbookId: 'parallel-issue-batch.md',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+        source: 'http',
+      },
+    });
+    const selected = listMetaFinishedAwaitingAckAutoCompleteTasks([stranded], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => true,
+    });
+    expect(selected).toEqual([]);
+  });
+
+  it('still selects a live-turn task at pure select time (TOCTOU defer is the sweep\'s job)', () => {
+    const live = faaTask({
+      id: 'live-turn',
+      playbookId: 'lucy-workflow-reflection.md',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+        source: 'http',
+      },
+      sessions: [
+        {
+          tmuxSession: 's',
+          agentType: 'claude-code',
+          cwd: '/tmp',
+          createdAt: new Date(NOW.getTime() - 30 * 60_000),
+          lastTurnState: 'running',
+        } as SessionInfo,
+      ],
+    });
+    // Pure selector leaves live-turn veto to the sweep so deferrals are countable.
+    const selected = listMetaFinishedAwaitingAckAutoCompleteTasks([live], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(selected.map((e) => e.task.id)).toEqual(['live-turn']);
+    expect(taskHasLiveTurn(live)).toBe(true);
+  });
+
+  it('does not select an implementer playbook under the relaxed path (even with clear PR)', () => {
+    const implementer = faaTask({
+      id: 'implementer',
+      playbookId: 'implement-github-issue.md',
+      name: 'Fix orchestrator race',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+        source: 'http',
+      },
+    });
+    // Not allowlisted — stays on the strict #1884 path only.
+    const selected = listMetaFinishedAwaitingAckAutoCompleteTasks([implementer], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(selected).toEqual([]);
+  });
+
+  it('does not select younger than the meta TTL', () => {
+    const fresh = faaTask({
+      id: 'fresh-meta',
+      playbookId: 'cross-repo-orchestrator.md',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs + 60_000).toISOString(),
+        source: 'http',
+      },
+    });
+    expect(
+      listMetaFinishedAwaitingAckAutoCompleteTasks([fresh], {
+        now: NOW,
+        ttlMs,
+        isHoldingOpenPr: () => undefined,
+      }),
+    ).toEqual([]);
   });
 });

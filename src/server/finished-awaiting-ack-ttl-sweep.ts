@@ -1,33 +1,108 @@
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { completeTask, type LifecycleDeps } from './agent-lifecycle.js';
-import { listExpiredFinishedAwaitingAckTasks } from '../core/finished-awaiting-ack-ttl.js';
+import {
+  listExpiredFinishedAwaitingAckTasks,
+  listMetaFinishedAwaitingAckAutoCompleteTasks,
+  taskHasLiveTurn,
+  DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
+} from '../core/finished-awaiting-ack-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { analyzePaneSemantics } from '../shared/pane-semantics.js';
 
-/** In-memory snapshot for the `/metrics` gauge (issue #1884). */
+/** Age histogram buckets (ms) for meta FAA auto-complete (issue #2070). */
+export const META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS = [
+  12 * 60_000,
+  15 * 60_000,
+  30 * 60_000,
+  60 * 60_000,
+  120 * 60_000,
+] as const;
+
+/** In-memory snapshot for `/metrics` + `/api/health` (issues #1884 / #2070). */
 export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
-  /** Cumulative finishedAwaitingAck tasks force-completed by the TTL reclaim since process start. */
+  /** Cumulative finishedAwaitingAck tasks force-completed by the strict TTL reclaim since process start. */
   reclaimedTotal: number;
+  /**
+   * Cumulative meta/playbook FAA tasks auto-completed by the #2070 path
+   * (allowlist + relaxed PR fail-safe + TOCTOU).
+   */
+  autoCompletedTotal: number;
+  /** Cumulative TOCTOU deferrals (live turn / interactive pane) on the #2070 path. */
+  autoCompleteDeferredTotal: number;
+  /**
+   * Age-at-auto-complete histogram counts, keyed by upper-bound minutes
+   * (`"12"`, `"15"`, …, `"+Inf"`). Cumulative since process start.
+   */
+  autoCompleteAgeHistogram: Record<string, number>;
 }
 
 /**
- * Minimal process-lifetime counter for the finishedAwaitingAck TTL reclaim
- * (issue #1884). Mirrors the existing `NonCriticalTimerPauseGate` /
- * `SnapshotShedMetrics` counters — a single instance is created once at
- * bootstrap, threaded into the sweep (which calls {@link recordReclaimed}) and
- * into `/metrics` (which reads {@link getSnapshot}).
+ * Process-lifetime counters for finishedAwaitingAck reclaim (#1884) and
+ * meta auto-complete (#2070). One instance at bootstrap, threaded into the
+ * sweep, `/metrics`, and `/api/health`.
  */
 export class FinishedAwaitingAckTtlReclaimMetrics {
   private reclaimedTotal = 0;
+  private autoCompletedTotal = 0;
+  private autoCompleteDeferredTotal = 0;
+  private autoCompleteAgeHistogram: Record<string, number> = emptyAgeHistogram();
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
   }
 
-  getSnapshot(): FinishedAwaitingAckTtlReclaimMetricsSnapshot {
-    return { reclaimedTotal: this.reclaimedTotal };
+  recordAutoCompleted(count: number, agesMs: readonly number[] = []): void {
+    if (count > 0) this.autoCompletedTotal += count;
+    for (const ageMs of agesMs) {
+      const key = ageHistogramBucketKey(ageMs);
+      this.autoCompleteAgeHistogram[key] = (this.autoCompleteAgeHistogram[key] ?? 0) + 1;
+    }
   }
+
+  recordAutoCompleteDeferred(count: number): void {
+    if (count > 0) this.autoCompleteDeferredTotal += count;
+  }
+
+  getSnapshot(): FinishedAwaitingAckTtlReclaimMetricsSnapshot {
+    return {
+      reclaimedTotal: this.reclaimedTotal,
+      autoCompletedTotal: this.autoCompletedTotal,
+      autoCompleteDeferredTotal: this.autoCompleteDeferredTotal,
+      autoCompleteAgeHistogram: { ...this.autoCompleteAgeHistogram },
+    };
+  }
+}
+
+function emptyAgeHistogram(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const bound of META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS) {
+    out[String(bound / 60_000)] = 0;
+  }
+  out['+Inf'] = 0;
+  return out;
+}
+
+function ageHistogramBucketKey(ageMs: number): string {
+  for (const bound of META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS) {
+    if (ageMs <= bound) return String(bound / 60_000);
+  }
+  return '+Inf';
+}
+
+/**
+ * True when pane text shows a human-interactive prompt (permission dialog or
+ * idle input prompt). Used as the Lucy #2238-style tail veto so we never
+ * auto-complete under an active human composer / approval UI.
+ */
+export function paneHasHumanInteractiveMarkers(paneText: string | undefined | null): boolean {
+  if (!paneText) return false;
+  const semantics = analyzePaneSemantics(paneText);
+  return (
+    (semantics.state === 'input_prompt' || semantics.state === 'permission_dialog')
+    && semantics.confidence === 'high'
+  );
 }
 
 export interface ReclaimFinishedAwaitingAckTasksDeps {
@@ -44,41 +119,59 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
    * every candidate is treated as a possible PR hold and left alone.
    */
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
-  /** Optional counter, incremented once per sweep by the reclaimed count. */
-  metrics?: Pick<FinishedAwaitingAckTtlReclaimMetrics, 'recordReclaimed'>;
+  /**
+   * Optional live pane/tail reader for the #2070 TOCTOU veto. When present,
+   * high-confidence human interactive markers defer auto-complete. May be
+   * async (e.g. TaskTailStore.getByTaskId).
+   */
+  getTaskPaneText?: (
+    taskId: string,
+  ) => string | undefined | null | Promise<string | undefined | null>;
+  /** Optional counters for strict reclaim + meta auto-complete. */
+  metrics?: Pick<
+    FinishedAwaitingAckTtlReclaimMetrics,
+    'recordReclaimed' | 'recordAutoCompleted' | 'recordAutoCompleteDeferred'
+  >;
 }
 
 export interface ReclaimFinishedAwaitingAckTasksResult {
   reclaimedTaskIds: string[];
+  /** Meta/playbook FAA tasks auto-completed by the #2070 path this sweep. */
+  autoCompletedTaskIds: string[];
+  /** Candidates deferred by TOCTOU (live turn / interactive pane) this sweep. */
+  deferredTaskIds: string[];
 }
 
 /**
- * Reclaim finishedAwaitingAck tasks past the TTL (issue #1884). Runs on the
- * liveness tick, after the pending-task TTL sweep. Each reclaimed task is
- * force-completed through the existing `completeTask` transition — the same
- * one manual acks and the completion-ready auto-close sweep use — with:
+ * Reclaim finishedAwaitingAck tasks past the TTL (issue #1884) and
+ * age-gated meta/playbook auto-complete (issue #2070). Runs on the liveness
+ * tick, after the pending-task TTL sweep.
  *
- * - reason `finished_awaiting_ack_ttl` on the interaction-log `task_completed`
- *   row, so an autonomous slot reclaim is distinguishable from a manual ack;
- * - an `audit.jsonl` row, actor `system:finished-awaiting-ack-ttl` (the
- *   convention `system:pending-ttl` / `system:completion-ready-ttl` established);
- * - `taskStore.clearPendingSignal` so the (now completed) task no longer
- *   reports a stale `completion_ready` signal.
+ * Strict path (#1884): force-complete when `isHoldingOpenPr === false` only.
  *
- * Force-complete, not cancel — cancelling a task that already finished its
- * work would inflate `cancelled_delta` noise for no benefit (lucy #1995
- * lesson). The stranded-PR exemption in `listExpiredFinishedAwaitingAckTasks`
- * is what actually protects an in-flight `merge_required` delivery; this
- * function only executes what that selector already cleared.
+ * Meta path (#2070): allowlisted meta/playbook (or http-source) tasks past
+ * the meta age gate, with relaxed PR fail-safe (only confirmed-open blocks)
+ * and TOCTOU re-GET + live-turn / interactive-pane veto immediately before
+ * complete. Reuses the existing `completeTask` transition — no new kill path.
  *
  * One summary alert per sweep (not per task), matching `expirePendingTasks`.
  */
 export async function reclaimAgedFinishedAwaitingAckTasks(
   deps: ReclaimFinishedAwaitingAckTasksDeps,
-  opts: { now?: Date; ttlMs?: number } = {},
+  opts: {
+    now?: Date;
+    ttlMs?: number;
+    /** Meta auto-complete age gate; defaults to {@link DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS}. */
+    metaAutoCompleteTtlMs?: number;
+  } = {},
 ): Promise<ReclaimFinishedAwaitingAckTasksResult> {
+  const empty: ReclaimFinishedAwaitingAckTasksResult = {
+    reclaimedTaskIds: [],
+    autoCompletedTaskIds: [],
+    deferredTaskIds: [],
+  };
   const lifecycleDeps = deps.lifecycleDeps;
-  if (!lifecycleDeps) return { reclaimedTaskIds: [] };
+  if (!lifecycleDeps) return empty;
 
   const now = opts.now ?? new Date();
   const entries = listExpiredFinishedAwaitingAckTasks(deps.taskStore.listTasks(), {
@@ -119,18 +212,99 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
 
   deps.metrics?.recordReclaimed(reclaimedTaskIds.length);
 
-  if (reclaimedTaskIds.length > 0) {
+  // Issue #2070: meta/playbook FAA auto-complete for the unfetched-PR-ref residual.
+  const alreadyHandled = new Set(reclaimedTaskIds);
+  const metaEntries = listMetaFinishedAwaitingAckAutoCompleteTasks(deps.taskStore.listTasks(), {
+    now,
+    ttlMs: opts.metaAutoCompleteTtlMs ?? DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
+    isHoldingOpenPr: deps.isHoldingOpenPr,
+  }).filter((e) => !alreadyHandled.has(e.task.id));
+
+  const autoCompletedTaskIds: string[] = [];
+  const deferredTaskIds: string[] = [];
+  const autoCompletedAges: number[] = [];
+
+  for (const { task, ageMs } of metaEntries) {
+    // TOCTOU re-GET (Lucy #2238 pattern): refuse if the live record no longer
+    // looks like a clean finishedAwaitingAck, the turn is running, or the
+    // pane shows human interactive markers.
+    const fresh = deps.taskStore.getTask(task.id);
+    if (
+      !fresh
+      || fresh.status !== 'inProgress'
+      || fresh.pendingSignal?.kind !== 'completion_ready'
+    ) {
+      continue;
+    }
+    if (taskHasLiveTurn(fresh)) {
+      deferredTaskIds.push(task.id);
+      continue;
+    }
+    const paneText = deps.getTaskPaneText ? await deps.getTaskPaneText(task.id) : undefined;
+    if (paneHasHumanInteractiveMarkers(paneText)) {
+      deferredTaskIds.push(task.id);
+      continue;
+    }
+    // Re-check PR hold on the fresh record (state may have landed mid-sweep).
+    if (deps.isHoldingOpenPr?.(fresh) === true) {
+      continue;
+    }
+
+    try {
+      await completeTask(task.id, lifecycleDeps, {
+        interactionLogReason: 'finished_awaiting_ack_auto_complete',
+      });
+    } catch (err) {
+      console.warn(
+        `[finished-awaiting-ack-auto-complete] could not complete task ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+    deps.taskStore.clearPendingSignal(task.id);
+    autoCompletedTaskIds.push(task.id);
+    autoCompletedAges.push(ageMs);
+    console.warn(
+      `[finished-awaiting-ack-auto-complete] completed meta task ${task.id} — ` +
+        `finishedAwaitingAck ${Math.round(ageMs / 60_000)}m unacknowledged`,
+    );
+
+    await appendAuditRow(deps.auditLogPath, {
+      type: 'task.finishedAwaitingAckAutoCompleted',
+      timestamp: nowISO(),
+      actor: 'system:finished-awaiting-ack-auto-complete',
+      taskId: task.id,
+      reason: 'finished_awaiting_ack_auto_complete',
+      ageMs,
+      playbookId: fresh.playbookId,
+      ttlMs: opts.metaAutoCompleteTtlMs ?? DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
+    });
+  }
+
+  deps.metrics?.recordAutoCompleted(autoCompletedTaskIds.length, autoCompletedAges);
+  deps.metrics?.recordAutoCompleteDeferred(deferredTaskIds.length);
+
+  const totalClosed = reclaimedTaskIds.length + autoCompletedTaskIds.length;
+  if (totalClosed > 0) {
+    const parts: string[] = [];
+    if (reclaimedTaskIds.length > 0) {
+      parts.push(`${reclaimedTaskIds.length} strict-TTL`);
+    }
+    if (autoCompletedTaskIds.length > 0) {
+      parts.push(`${autoCompletedTaskIds.length} meta-auto-complete`);
+    }
     deps.broadcastToAll?.({
       type: 'alert',
       agentId: '',
-      summary: `Reclaimed ${reclaimedTaskIds.length} finishedAwaitingAck task(s) (TTL)`,
+      summary: `Reclaimed ${totalClosed} finishedAwaitingAck task(s) (${parts.join(', ')})`,
       details:
         'These tasks finished their work and signalled completion_ready, but sat unacknowledged past ' +
-        'finishedAwaitingAckTtlMinutes and were force-completed to free the active concurrency slot. ' +
+        'the finishedAwaitingAck age gate and were force-completed to free the active concurrency slot. ' +
+        'Meta/playbook auto-complete (#2070) only acts when TOCTOU is clean (no live turn / interactive pane). ' +
         'Review the completed task if manual follow-up is still needed.',
       severity: 'warning',
     });
   }
 
-  return { reclaimedTaskIds };
+  return { reclaimedTaskIds, autoCompletedTaskIds, deferredTaskIds };
 }

@@ -93,7 +93,12 @@ export interface PrometheusExpositionSnapshot {
    * finishedAwaitingAck tasks force-completed by the liveness-tick TTL sweep
    * since process start. Omitted only in harnesses that never wire the sweep.
    */
-  finishedAwaitingAckReclaim?: { reclaimedTotal: number };
+  finishedAwaitingAckReclaim?: {
+    reclaimedTotal: number;
+    autoCompletedTotal?: number;
+    autoCompleteDeferredTotal?: number;
+    autoCompleteAgeHistogram?: Record<string, number>;
+  };
   /**
    * hungSuspect TTL reclaim counters (issues #1935 / #2045). Cumulative
    * reclaimed + skip-reason breakdown since process start. Omitted only in
@@ -492,13 +497,20 @@ function appendFirstHookMissMetrics(
 }
 
 /**
- * finishedAwaitingAck TTL reclaim counter (issue #1884). Omitted when the
- * sweep is not wired (lightweight unit harnesses) rather than emitting a
- * fabricated zero series.
+ * finishedAwaitingAck TTL reclaim + meta auto-complete counters (issues
+ * #1884 / #2070). Omitted when the sweep is not wired (lightweight unit
+ * harnesses) rather than emitting a fabricated zero series.
  */
 function appendFinishedAwaitingAckReclaimMetrics(
   lines: string[],
-  snapshot: { reclaimedTotal: number } | undefined,
+  snapshot:
+    | {
+        reclaimedTotal: number;
+        autoCompletedTotal?: number;
+        autoCompleteDeferredTotal?: number;
+        autoCompleteAgeHistogram?: Record<string, number>;
+      }
+    | undefined,
 ): void {
   if (!snapshot) return;
 
@@ -507,6 +519,36 @@ function appendFinishedAwaitingAckReclaimMetrics(
     '# TYPE kookr_finished_awaiting_ack_ttl_reclaimed_total counter',
     metricLine('kookr_finished_awaiting_ack_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
   );
+
+  if (typeof snapshot.autoCompletedTotal === 'number') {
+    lines.push(
+      '# HELP kookr_finished_awaiting_ack_auto_completed_total Total meta/playbook finishedAwaitingAck tasks auto-completed past the age gate (issue #2070).',
+      '# TYPE kookr_finished_awaiting_ack_auto_completed_total counter',
+      metricLine('kookr_finished_awaiting_ack_auto_completed_total', {}, snapshot.autoCompletedTotal),
+    );
+  }
+  if (typeof snapshot.autoCompleteDeferredTotal === 'number') {
+    lines.push(
+      '# HELP kookr_finished_awaiting_ack_auto_complete_deferred_total Total meta FAA auto-complete TOCTOU deferrals (live turn / interactive pane).',
+      '# TYPE kookr_finished_awaiting_ack_auto_complete_deferred_total counter',
+      metricLine(
+        'kookr_finished_awaiting_ack_auto_complete_deferred_total',
+        {},
+        snapshot.autoCompleteDeferredTotal,
+      ),
+    );
+  }
+  if (snapshot.autoCompleteAgeHistogram) {
+    lines.push(
+      '# HELP kookr_finished_awaiting_ack_auto_complete_age_bucket Age-at-auto-complete histogram counts by upper-bound minutes (issue #2070).',
+      '# TYPE kookr_finished_awaiting_ack_auto_complete_age_bucket counter',
+    );
+    for (const [le, count] of Object.entries(snapshot.autoCompleteAgeHistogram)) {
+      lines.push(
+        metricLine('kookr_finished_awaiting_ack_auto_complete_age_bucket', { le }, count),
+      );
+    }
+  }
 }
 
 /**
