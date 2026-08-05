@@ -11,12 +11,15 @@ import {
   isKickBatchPendingArmed,
   isParallelIssueBatchInFlightForRepo,
   isPipelineBatchKickEnabled,
+  isScoutDedupBeltEmptyBypass,
   KICK_BATCH_PENDING_TTL_MS,
   looksLikeConcurrentBatchEmpty,
   nextPipelineStarvationState,
   parseBatchOutcomeRecord,
+  REFILL_POSTCONDITION_MIN_CONSECUTIVE,
   repoToPlaybookSlug,
   resolveBatchEmptyClass,
+  SCOUT_ANTI_THRASH_MS,
   STARVATION_ALERT_WINDOW_MS,
   STARVATION_SCOUT_DEDUP_MS,
   starvationScoutIdempotencyKey,
@@ -198,21 +201,28 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(decision.spawnSkipReason).toBeUndefined();
   });
 
-  test('empty-queue ideation override still honors starvation scout 4h dedup', () => {
+  test('empty-queue ideation + belt empty bypasses 4h scout dedup after thrash floor (#2068)', () => {
+    // Prior: empty-queue ideation still re-opened scout path (#2043), but the
+    // 4h starvation-scout spawn gate blocked re-fire. #2068: after anti-thrash
+    // floor, free≥3 + pending=0 allows refill even inside the 4h window.
     const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'after-scout' }), {
       nowMs: NOW,
       recentSuccessfulIdeationAtMs: NOW - 30 * 60 * 1000,
       scoutInFlight: false,
       prior: prior({
+        blockedEmptyAt: [new Date(NOW - 90 * 60 * 1000).toISOString()],
+        handledRunKeys: ['prior-empty'],
         lastStarvationScoutAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
         lastStarvationScoutTaskId: 'recent-scout',
       }),
       capacity: { free: EMPTY_IDEATION_FREE_SLOTS_THRESHOLD, pendingQueueDepth: 0 },
     });
     expect(decision.ideationSuccessEmptyQueue).toBe(true);
-    expect(decision.spawnScout).toBe(false);
-    expect(decision.spawnSkipReason).toMatch(/already spawned/i);
-    expect(decision.followOnAction).toBe('none');
+    expect(decision.spawnScout).toBe(true);
+    expect(decision.followOnAction).toBe('idea_scout');
+    expect(decision.scoutDedupBypassedForBeltEmpty).toBe(true);
+    expect(decision.starvationRefillPostcondition).toBe('pass');
+    expect(decision.spawnSkipReason).toBeUndefined();
   });
 
   test('isIdeationSuccessEmptyQueue gate', () => {
@@ -225,6 +235,7 @@ describe('pipeline-starvation pure decision (#1715)', () => {
   });
 
   test('skips spawn when starvation scout already fired inside 4h window', () => {
+    // No capacity snapshot → legacy 4h gate holds (missing capacity preserves suppress).
     const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
       nowMs: NOW,
       recentSuccessfulIdeationAtMs: null,
@@ -236,6 +247,7 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     });
     expect(decision.spawnScout).toBe(false);
     expect(decision.spawnSkipReason).toMatch(/already spawned/i);
+    expect(decision.starvationRefillPostcondition).toBeUndefined();
   });
 
   test('allows a new scout after the 4h dedup window', () => {
@@ -253,6 +265,145 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(decision.spawnScout).toBe(true);
     expect(decision.consecutiveBlockedEmpty).toBe(1);
     expect(decision.emitStarvationAlert).toBe(false);
+  });
+
+  describe('belt-empty residual scout cooldown bypass (#2068 / #2071)', () => {
+    test('scout completed + belt empty + free slots → refill allowed inside 4h', () => {
+      // Live residual: scout at T-90m filed shallow leaves that burned; free=7,
+      // queue=0, consecutiveBlockedEmpty climbing under 4h "already spawned".
+      const decision = evaluatePipelineStarvationRefill(
+        blockedEmpty({ runKey: 'belt-empty-refill' }),
+        {
+          nowMs: NOW,
+          recentSuccessfulIdeationAtMs: null,
+          scoutInFlight: false,
+          prior: prior({
+            blockedEmptyAt: [
+              new Date(NOW - 3 * 60 * 60 * 1000).toISOString(),
+              new Date(NOW - 90 * 60 * 1000).toISOString(),
+            ],
+            handledRunKeys: ['e1', 'e2'],
+            lastStarvationScoutAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
+            lastStarvationScoutTaskId: 'scout-4e935500',
+            lastSpawnSkipReason:
+              'starvation-triggered scout already spawned within last 4h',
+          }),
+          capacity: { free: 7, pendingQueueDepth: 0 },
+        },
+      );
+      expect(decision.spawnScout).toBe(true);
+      expect(decision.followOnAction).toBe('idea_scout');
+      expect(decision.scoutDedupBypassedForBeltEmpty).toBe(true);
+      expect(decision.starvationRefillPostcondition).toBe('pass');
+      expect(decision.scoutCooldownSkipWhileBeltEmpty).toBeUndefined();
+      expect(decision.consecutiveBlockedEmpty).toBe(3);
+    });
+
+    test('anti-thrash floor still blocks double-fire within N minutes', () => {
+      const lastScoutAt = NOW - (SCOUT_ANTI_THRASH_MS - 60_000); // 1m inside thrash floor
+      const decision = evaluatePipelineStarvationRefill(
+        blockedEmpty({ runKey: 'thrash-floor' }),
+        {
+          nowMs: NOW,
+          recentSuccessfulIdeationAtMs: null,
+          scoutInFlight: false,
+          prior: prior({
+            blockedEmptyAt: [new Date(NOW - 30 * 60 * 1000).toISOString()],
+            handledRunKeys: ['e1'],
+            lastStarvationScoutAt: new Date(lastScoutAt).toISOString(),
+            lastStarvationScoutTaskId: 'just-spawned',
+          }),
+          capacity: { free: 7, pendingQueueDepth: 0 },
+        },
+      );
+      expect(decision.spawnScout).toBe(false);
+      expect(decision.spawnSkipReason).toMatch(/already spawned/i);
+      expect(decision.scoutCooldownSkipWhileBeltEmpty).toBe(true);
+      expect(decision.starvationRefillPostcondition).toBe('fail');
+      expect(decision.scoutDedupBypassedForBeltEmpty).toBeUndefined();
+
+      const state = nextPipelineStarvationState('jeanibarz/lucy', prior({
+        blockedEmptyAt: [new Date(NOW - 30 * 60 * 1000).toISOString()],
+        handledRunKeys: ['e1'],
+        lastStarvationScoutAt: new Date(lastScoutAt).toISOString(),
+        scoutCooldownSkipsWhileBeltEmpty: 2,
+      }), decision, { nowMs: NOW });
+      expect(state.scoutCooldownSkipsWhileBeltEmpty).toBe(3);
+    });
+
+    test('free≥5 + empty queue + consecutive≥2 cannot stay on 4h skip (#2071)', () => {
+      // Three consecutive feeder/starvation ticks with free≥5 must not all end
+      // in "scout skipped within 4h" once thrash floor elapsed — emit attempt.
+      const lastScoutAt = NOW - 40 * 60 * 1000; // past 25m thrash, inside 4h
+      const decision = evaluatePipelineStarvationRefill(
+        blockedEmpty({ runKey: 'postcondition-tick' }),
+        {
+          nowMs: NOW,
+          recentSuccessfulIdeationAtMs: null,
+          scoutInFlight: false,
+          prior: prior({
+            blockedEmptyAt: [
+              new Date(NOW - 2 * 60 * 60 * 1000).toISOString(),
+              new Date(NOW - 50 * 60 * 1000).toISOString(),
+            ],
+            handledRunKeys: ['t1', 't2'],
+            lastStarvationScoutAt: new Date(lastScoutAt).toISOString(),
+            lastStarvationScoutTaskId: 'prior-scout',
+          }),
+          capacity: { free: 5, pendingQueueDepth: 0 },
+        },
+      );
+      expect(decision.consecutiveBlockedEmpty).toBeGreaterThanOrEqual(
+        REFILL_POSTCONDITION_MIN_CONSECUTIVE,
+      );
+      expect(decision.spawnScout).toBe(true);
+      expect(decision.starvationRefillPostcondition).toBe('pass');
+      expect(decision.scoutDedupBypassedForBeltEmpty).toBe(true);
+    });
+
+    test('4h gate still holds when free slots idle but queue has work', () => {
+      const decision = evaluatePipelineStarvationRefill(
+        blockedEmpty({ runKey: 'queued-work' }),
+        {
+          nowMs: NOW,
+          recentSuccessfulIdeationAtMs: null,
+          scoutInFlight: false,
+          prior: prior({
+            blockedEmptyAt: [new Date(NOW - 60 * 60 * 1000).toISOString()],
+            handledRunKeys: ['e1'],
+            lastStarvationScoutAt: new Date(NOW - 60 * 60 * 1000).toISOString(),
+          }),
+          capacity: { free: 7, pendingQueueDepth: 2 },
+        },
+      );
+      expect(decision.spawnScout).toBe(false);
+      expect(decision.spawnSkipReason).toMatch(/already spawned/i);
+      expect(decision.starvationRefillPostcondition).toBeUndefined();
+      expect(decision.scoutCooldownSkipWhileBeltEmpty).toBeUndefined();
+    });
+
+    test('isScoutDedupBeltEmptyBypass helper edges', () => {
+      expect(isScoutDedupBeltEmptyBypass(null, {
+        nowMs: NOW,
+        lastStarvationScoutAtMs: NOW - 60 * 60 * 1000,
+        consecutiveBlockedEmpty: 3,
+      })).toBe(false);
+      expect(isScoutDedupBeltEmptyBypass({ free: 7, pendingQueueDepth: 0 }, {
+        nowMs: NOW,
+        lastStarvationScoutAtMs: NOW - 10 * 60 * 1000, // inside thrash
+        consecutiveBlockedEmpty: 3,
+      })).toBe(false);
+      expect(isScoutDedupBeltEmptyBypass({ free: 7, pendingQueueDepth: 0 }, {
+        nowMs: NOW,
+        lastStarvationScoutAtMs: NOW - 60 * 60 * 1000,
+        consecutiveBlockedEmpty: 1, // below min consecutive
+      })).toBe(false);
+      expect(isScoutDedupBeltEmptyBypass({ free: 7, pendingQueueDepth: 0 }, {
+        nowMs: NOW,
+        lastStarvationScoutAtMs: NOW - 60 * 60 * 1000,
+        consecutiveBlockedEmpty: 2,
+      })).toBe(true);
+    });
   });
 
   test('ignores non-blocked-empty outcomes', () => {

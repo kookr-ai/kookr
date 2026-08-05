@@ -27,6 +27,11 @@ export interface PipelineStarvationHealthRepo {
   lastStarvationAlertAt: string | null;
   lastBatchKickAt: string | null;
   kickBatchWhenScoutCompletes: boolean;
+  /**
+   * Times cooldown/anti-thrash blocked a scout while capacity was belt-empty
+   * (issue #2068). 0 when never observed.
+   */
+  scoutCooldownSkipsWhileBeltEmpty: number;
   updatedAt: string;
 }
 
@@ -80,6 +85,12 @@ export async function listPipelineStarvationHealth(
           ? parsed.lastBatchKickAt
           : null,
         kickBatchWhenScoutCompletes: parsed.kickBatchWhenScoutCompletes === true,
+        scoutCooldownSkipsWhileBeltEmpty:
+          typeof parsed.scoutCooldownSkipsWhileBeltEmpty === 'number'
+          && Number.isFinite(parsed.scoutCooldownSkipsWhileBeltEmpty)
+          && parsed.scoutCooldownSkipsWhileBeltEmpty > 0
+            ? Math.floor(parsed.scoutCooldownSkipsWhileBeltEmpty)
+            : 0,
         updatedAt: typeof parsed.updatedAt === 'string'
           ? parsed.updatedAt
           : new Date(nowMs).toISOString(),
@@ -137,6 +148,12 @@ export async function loadPipelineStarvationState(
       kickBatchWhenScoutCompletesAt: typeof parsed.kickBatchWhenScoutCompletesAt === 'string'
         ? parsed.kickBatchWhenScoutCompletesAt
         : undefined,
+      scoutCooldownSkipsWhileBeltEmpty:
+        typeof parsed.scoutCooldownSkipsWhileBeltEmpty === 'number'
+        && Number.isFinite(parsed.scoutCooldownSkipsWhileBeltEmpty)
+        && parsed.scoutCooldownSkipsWhileBeltEmpty > 0
+          ? Math.floor(parsed.scoutCooldownSkipsWhileBeltEmpty)
+          : undefined,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(nowMs).toISOString(),
     };
   } catch (err) {

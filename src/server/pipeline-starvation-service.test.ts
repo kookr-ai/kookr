@@ -234,6 +234,110 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(audit).toContain('"ideationSuccessEmptyQueue":false');
   });
 
+  test('belt-empty capacity bypasses 4h scout dedup after thrash floor (#2068/#2071)', async () => {
+    // First empty spawns a scout (no capacity needed).
+    const first = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'belt-1' }),
+      localPath: checkout,
+    });
+    expect(first.spawnedScoutTaskId).toBeTruthy();
+    expect(launches).toHaveLength(1);
+    // Prior scout must be terminal for re-scout (#2068: after scout completed).
+    store.startTask(first.spawnedScoutTaskId!);
+    store.completeTask(first.spawnedScoutTaskId!);
+
+    // +40m: past 25m anti-thrash, inside 4h; free≥5 + empty queue → re-scout.
+    clock = NOW + 40 * 60 * 1000;
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const task = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      getCapacitySnapshot: () => ({ free: 5, pendingQueueDepth: 0 }),
+      now: () => clock,
+    });
+
+    const second = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'belt-2', generatedAt: new Date(clock).toISOString() }),
+      localPath: checkout,
+    });
+    expect(second.decision.spawnScout).toBe(true);
+    expect(second.decision.scoutDedupBypassedForBeltEmpty).toBe(true);
+    expect(second.decision.starvationRefillPostcondition).toBe('pass');
+    expect(second.spawnedScoutTaskId).toBeTruthy();
+    expect(launches).toHaveLength(2);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('"scoutDedupBypassedForBeltEmpty":true');
+    expect(audit).toContain('"starvationRefillPostcondition":"pass"');
+  });
+
+  test('anti-thrash floor blocks belt-empty re-scout and counts residual (#2068)', async () => {
+    const first = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'thrash-1' }),
+      localPath: checkout,
+    });
+    expect(first.spawnedScoutTaskId).toBeTruthy();
+    store.startTask(first.spawnedScoutTaskId!);
+    store.completeTask(first.spawnedScoutTaskId!);
+
+    // +10m: still inside 25m thrash floor with idle capacity.
+    clock = NOW + 10 * 60 * 1000;
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const task = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        const result: LaunchResult<Task> = { task, queued: false, idempotentReplay: false };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      getCapacitySnapshot: () => ({ free: 7, pendingQueueDepth: 0 }),
+      now: () => clock,
+    });
+
+    const second = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'thrash-2', generatedAt: new Date(clock).toISOString() }),
+      localPath: checkout,
+    });
+    expect(second.decision.spawnScout).toBe(false);
+    expect(second.decision.scoutCooldownSkipWhileBeltEmpty).toBe(true);
+    expect(second.decision.starvationRefillPostcondition).toBe('fail');
+    expect(second.spawnedScoutTaskId).toBeUndefined();
+    expect(second.state.scoutCooldownSkipsWhileBeltEmpty).toBe(1);
+    expect(launches).toHaveLength(1);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('"scoutCooldownSkipWhileBeltEmpty":true');
+    expect(audit).toContain('"starvationRefillPostcondition":"fail"');
+  });
+
   test('empty-queue capacity after successful ideation re-opens scout (#2043)', async () => {
     const runDir = join(ideaScoutBase, 'empty-success-run');
     await mkdir(join(runDir, 'recommendations', '01-leaf'), { recursive: true });

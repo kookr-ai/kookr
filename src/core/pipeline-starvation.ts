@@ -31,8 +31,28 @@ export const SUCCESSFUL_IDEATION_LOOKBACK_MS = STARVATION_SCOUT_DEDUP_MS;
  * Matches queue-feeder idle-capacity gate (`DEFAULT_FREE_SLOTS_THRESHOLD`).
  * When free ≥ this and pendingQueueDepth == 0, a 4h "successful ideation"
  * suppress must not block re-scout: batch kicks cannot create issues.
+ *
+ * Same floor for belt-empty residual scout-dedup bypass (#2068 / #2071):
+ * free capacity + empty queue means the prior scout did not leave work.
  */
 export const EMPTY_IDEATION_FREE_SLOTS_THRESHOLD = 3;
+
+/**
+ * Anti-thrash floor inside the nominal 4h scout-spawn window (issues #2068, #2071).
+ * After a starvation scout completes, block immediate re-fire for this long even
+ * when capacity shows belt empty — prevents double-spawn thrash. Once elapsed,
+ * free≥{@link EMPTY_IDEATION_FREE_SLOTS_THRESHOLD} + pendingQueueDepth==0 may
+ * bypass the remaining 4h gate so free slots are not wasted for hours.
+ */
+export const SCOUT_ANTI_THRASH_MS = 25 * 60 * 1000; // 25m
+
+/**
+ * Minimum consecutive product blocked-empty events (including current) required
+ * for the refill postcondition bypass of the 4h scout-spawn gate (#2071).
+ * Second empty after a recent scout is enough signal that leaves burned / belt
+ * stayed empty.
+ */
+export const REFILL_POSTCONDITION_MIN_CONSECUTIVE = 2;
 
 /** Second consecutive blocked-empty inside this window raises the alert. */
 export const STARVATION_ALERT_WINDOW_MS = 12 * 60 * 60 * 1000; // 12h
@@ -133,6 +153,12 @@ export interface PipelineStarvationRepoState {
   kickBatchWhenScoutCompletes?: boolean;
   /** When kickBatchWhenScoutCompletes was armed (for TTL). */
   kickBatchWhenScoutCompletesAt?: string;
+  /**
+   * Times we skipped a starvation scout because of the 4h/anti-thrash gate
+   * while capacity already showed belt empty (free≥threshold + pending=0).
+   * Surfaced on `/api/health` for L3/reflection (#2068).
+   */
+  scoutCooldownSkipsWhileBeltEmpty?: number;
   updatedAt: string;
 }
 
@@ -234,6 +260,22 @@ export interface PipelineStarvationDecision {
    * Surfaced on `pipeline_starvation_decision` audit as `ideationSuccessEmptyQueue`.
    */
   ideationSuccessEmptyQueue?: boolean;
+  /**
+   * True when the nominal 4h starvation-scout spawn gate was bypassed because
+   * capacity shows belt empty after the anti-thrash floor (#2068 / #2071).
+   */
+  scoutDedupBypassedForBeltEmpty?: boolean;
+  /**
+   * True when we skipped spawn due to scout cooldown/anti-thrash while capacity
+   * already showed free≥threshold + empty queue (#2068 observability).
+   */
+  scoutCooldownSkipWhileBeltEmpty?: boolean;
+  /**
+   * Refill postcondition outcome for this tick (#2071): whether idle capacity
+   * + empty queue produced a scout emit *attempt* (pass) or was still blocked
+   * (fail). Omitted when capacity is not idle-empty (not applicable).
+   */
+  starvationRefillPostcondition?: 'pass' | 'fail';
 }
 
 /**
@@ -453,6 +495,9 @@ export function summarizeDisqualifiers(
  * True when capacity shows idle free slots and an empty pending queue —
  * recent ideation did not leave implementable work (issue #2043).
  * Missing capacity snapshot → false (preserve 4h suppress).
+ *
+ * Also the belt-empty residual signal for scout-spawn cooldown bypass
+ * (#2068 / #2071): free slots + empty queue means the belt has no work.
  */
 export function isIdeationSuccessEmptyQueue(
   capacity: PipelineStarvationCapacitySnapshot | null | undefined,
@@ -468,6 +513,42 @@ export function isIdeationSuccessEmptyQueue(
 }
 
 /**
+ * Whether the 4h starvation-scout spawn gate may be bypassed for belt-empty
+ * residual (#2068) / refill postcondition (#2071).
+ *
+ * Requires:
+ *   - capacity free ≥ threshold and pendingQueueDepth == 0
+ *   - anti-thrash floor elapsed since last starvation scout spawn
+ *   - consecutive product blocked-empty (incl. current) ≥ min consecutive
+ *
+ * Missing capacity or lastScoutMs → false (preserve 4h gate).
+ */
+export function isScoutDedupBeltEmptyBypass(
+  capacity: PipelineStarvationCapacitySnapshot | null | undefined,
+  opts: {
+    nowMs: number;
+    lastStarvationScoutAtMs: number | null;
+    consecutiveBlockedEmpty: number;
+    freeSlotsThreshold?: number;
+    antiThrashMs?: number;
+    minConsecutive?: number;
+  },
+): boolean {
+  if (!isIdeationSuccessEmptyQueue(capacity, {
+    freeSlotsThreshold: opts.freeSlotsThreshold,
+  })) {
+    return false;
+  }
+  const lastMs = opts.lastStarvationScoutAtMs;
+  if (lastMs === null || !Number.isFinite(lastMs)) return false;
+  const antiThrash = opts.antiThrashMs ?? SCOUT_ANTI_THRASH_MS;
+  if (opts.nowMs - lastMs < antiThrash) return false;
+  const minConsec = opts.minConsecutive ?? REFILL_POSTCONDITION_MIN_CONSECUTIVE;
+  if (opts.consecutiveBlockedEmpty < minConsec) return false;
+  return true;
+}
+
+/**
  * Pure decision function — no I/O. See issue #1715 acceptance criteria and
  * RFC overnight-throughput closed loop (PR1 lookback semantics live in
  * {@link findRecentSuccessfulIdeationAtMs}: requires issue-created ≥1).
@@ -478,7 +559,9 @@ export function isIdeationSuccessEmptyQueue(
  *   - no successful ideation (with published issues) in the last 4h
  *     **unless** capacity is idle+empty-queue (issue #2043 — empty-queue
  *     ideation is not a refill), AND
- *   - no starvation-triggered scout in the last 4h.
+ *   - no starvation-triggered scout in the last 4h
+ *     **unless** capacity is still idle+empty after the anti-thrash floor
+ *     (issues #2068 / #2071 — scout-spawned is not belt-refilled).
  *
  * Alert when:
  *   - this is at least the second blocked-empty for the repo inside 12h
@@ -587,15 +670,26 @@ export function evaluatePipelineStarvationRefill(
     // PR4: kick implement instead of re-scouting when supply already exists.
     followOnAction = 'batch_kick_only';
   } else {
-    // Includes empty-queue ideation override (#2043): still honor starvation
-    // scout 4h dedup so we do not thrash scouts after a recent spawn.
+    // Nominal 4h starvation-scout dedup, with belt-empty residual bypass
+    // (#2068 / #2071): when free slots sit idle and the queue is empty after
+    // the anti-thrash floor, scout-spawned ≠ belt-refilled — allow re-scout.
     const lastScoutMs = ctx.prior?.lastStarvationScoutAt
       ? Date.parse(ctx.prior.lastStarvationScoutAt)
       : NaN;
     if (Number.isFinite(lastScoutMs) && nowMs - lastScoutMs < STARVATION_SCOUT_DEDUP_MS) {
-      spawnScout = false;
-      spawnSkipReason = `starvation-triggered scout already spawned within last ${Math.round(STARVATION_SCOUT_DEDUP_MS / 3_600_000)}h`;
-      followOnAction = 'none';
+      const beltEmptyBypass = isScoutDedupBeltEmptyBypass(ctx.capacity, {
+        nowMs,
+        lastStarvationScoutAtMs: lastScoutMs,
+        consecutiveBlockedEmpty,
+      });
+      if (beltEmptyBypass) {
+        // Keep spawnScout=true; mark bypass for audit/health.
+        followOnAction = 'idea_scout';
+      } else {
+        spawnScout = false;
+        spawnSkipReason = `starvation-triggered scout already spawned within last ${Math.round(STARVATION_SCOUT_DEDUP_MS / 3_600_000)}h`;
+        followOnAction = 'none';
+      }
     }
   }
 
@@ -622,6 +716,26 @@ export function evaluatePipelineStarvationRefill(
     }
   }
 
+  const beltEmptyCapacity = isIdeationSuccessEmptyQueue(ctx.capacity);
+  const scoutDedupBypassedForBeltEmpty =
+    spawnScout
+    && beltEmptyCapacity
+    && Boolean(
+      ctx.prior?.lastStarvationScoutAt
+      && Number.isFinite(Date.parse(ctx.prior.lastStarvationScoutAt))
+      && nowMs - Date.parse(ctx.prior.lastStarvationScoutAt) < STARVATION_SCOUT_DEDUP_MS,
+    );
+  // Cooldown residual while belt empty: skipped for 4h/anti-thrash (not other reasons).
+  const scoutCooldownSkipWhileBeltEmpty =
+    !spawnScout
+    && beltEmptyCapacity
+    && typeof spawnSkipReason === 'string'
+    && /already spawned within last/i.test(spawnSkipReason);
+  // #2071: when capacity is idle+empty, did this tick produce a refill attempt?
+  const starvationRefillPostcondition: 'pass' | 'fail' | undefined = beltEmptyCapacity
+    ? (spawnScout ? 'pass' : 'fail')
+    : undefined;
+
   return {
     applicable: true,
     alreadyHandled: false,
@@ -636,6 +750,9 @@ export function evaluatePipelineStarvationRefill(
     starvationClass,
     followOnAction: spawnScout ? 'idea_scout' : followOnAction,
     ...(ideationSuccessEmptyQueue ? { ideationSuccessEmptyQueue: true } : {}),
+    ...(scoutDedupBypassedForBeltEmpty ? { scoutDedupBypassedForBeltEmpty: true } : {}),
+    ...(scoutCooldownSkipWhileBeltEmpty ? { scoutCooldownSkipWhileBeltEmpty: true } : {}),
+    ...(starvationRefillPostcondition ? { starvationRefillPostcondition } : {}),
   };
 }
 
@@ -657,6 +774,7 @@ export function nextPipelineStarvationState(
   },
 ): PipelineStarvationRepoState {
   const nowIso = new Date(opts.nowMs).toISOString();
+  const priorCooldownSkips = prior?.scoutCooldownSkipsWhileBeltEmpty ?? 0;
   const next: PipelineStarvationRepoState = {
     schemaVersion: PIPELINE_STARVATION_STATE_SCHEMA,
     repo,
@@ -668,6 +786,7 @@ export function nextPipelineStarvationState(
     lastBatchKickAt: prior?.lastBatchKickAt,
     kickBatchWhenScoutCompletes: prior?.kickBatchWhenScoutCompletes,
     kickBatchWhenScoutCompletesAt: prior?.kickBatchWhenScoutCompletesAt,
+    scoutCooldownSkipsWhileBeltEmpty: priorCooldownSkips > 0 ? priorCooldownSkips : undefined,
     updatedAt: nowIso,
   };
   if (opts.spawnedTaskId) {
@@ -685,6 +804,10 @@ export function nextPipelineStarvationState(
   } else {
     next.lastSpawnSkipReason = prior?.lastSpawnSkipReason;
     next.lastSpawnSkipAt = prior?.lastSpawnSkipAt;
+  }
+  // #2068: durable residual counter for L3/health when cooldown blocks belt-empty.
+  if (decision.scoutCooldownSkipWhileBeltEmpty && decision.applicable && !decision.alreadyHandled) {
+    next.scoutCooldownSkipsWhileBeltEmpty = priorCooldownSkips + 1;
   }
   if (opts.batchKicked) {
     next.lastBatchKickAt = nowIso;
