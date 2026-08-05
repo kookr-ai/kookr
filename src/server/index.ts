@@ -10,6 +10,7 @@ import {
 import type { TaskSqliteStore } from '../core/task-sqlite-store.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
+import { createCachedStaleDtachCountReader } from './stale-dtach-pressure.js';
 import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv } from './config.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
@@ -1119,11 +1120,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // convention. Wired here (rather than constructed inline at each call site)
   // so start.ts, the boot sweep below, and the periodic liveness tick in
   // lifecycle-timers.ts all share one instance's audit trail + health counters.
+  // Issue #2081: host-wide staleProcesses.dtach.count (TTL-cached) drives the
+  // pressure-adaptive orphan age. When /proc is unavailable the reaper falls
+  // back to this sweep's live session count (see SessionReaperService.runSweep).
+  const getStaleDtachCount = createCachedStaleDtachCountReader();
   const sessionReaper = new SessionReaperService({
     taskStore,
     backend: terminalBackend,
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     getConfig: () => readSessionReapConfigFromEnv(process.env),
+    getStaleDtachCount,
     // Clear stale Monitor state on every sweep (boot + periodic). Two classes:
     //  - #1761: agents of aged terminal tasks. Same age cutoff as the snapshot
     //    payload diet — recent terminal tasks keep their monitor state and

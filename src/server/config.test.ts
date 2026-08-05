@@ -14,11 +14,15 @@ import {
   DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT,
   DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H,
   DEFAULT_RING_FLEET_BUDGET_BYTES,
+  DEFAULT_REAP_ORPHAN_AGE_MS,
+  DEFAULT_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS,
+  DEFAULT_REAP_TERMINAL_TASK_GRACE_MS,
   readOperationalAlertConfigFromEnv,
   readRequestBodyLimitBytesFromEnv,
   readMaxHostLoadPerCpuFromEnv,
   readResourceWatchdogConfigFromEnv,
   readRingFleetBudgetBytesFromEnv,
+  readSessionReapConfigFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -218,5 +222,45 @@ describe('readResourceWatchdogConfigFromEnv (issue #1724)', () => {
     expect(cfg.intervalMs).toBe(1_000);
     // Non-positive budget falls back to the documented default (then floored ≥1).
     expect(cfg.spawnBudget24h).toBe(DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H);
+  });
+});
+
+describe('readSessionReapConfigFromEnv (issues #1720 / #2081)', () => {
+  test('defaults: reaping on, 24h steady orphan age, 2h under-pressure age, 60s terminal grace', () => {
+    expect(readSessionReapConfigFromEnv({})).toEqual({
+      enabled: true,
+      orphanAgeThresholdMs: DEFAULT_REAP_ORPHAN_AGE_MS,
+      orphanAgeUnderPressureMs: DEFAULT_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS,
+      terminalTaskGraceMs: DEFAULT_REAP_TERMINAL_TASK_GRACE_MS,
+    });
+  });
+
+  test('KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS overrides the under-pressure age', () => {
+    expect(
+      readSessionReapConfigFromEnv({
+        KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS: '3600000',
+      }).orphanAgeUnderPressureMs,
+    ).toBe(3_600_000);
+  });
+
+  test('KOOKR_SESSION_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS alias is accepted (issue #2081 name)', () => {
+    expect(
+      readSessionReapConfigFromEnv({
+        KOOKR_SESSION_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS: '7200000',
+      }).orphanAgeUnderPressureMs,
+    ).toBe(7_200_000);
+  });
+
+  test('KOOKR_REAP_* preferred over the SESSION_REAP alias when both are set', () => {
+    expect(
+      readSessionReapConfigFromEnv({
+        KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS: '1000',
+        KOOKR_SESSION_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS: '9999',
+      }).orphanAgeUnderPressureMs,
+    ).toBe(1000);
+  });
+
+  test('KOOKR_REAP_ORPHAN_SESSIONS=false disables reaping', () => {
+    expect(readSessionReapConfigFromEnv({ KOOKR_REAP_ORPHAN_SESSIONS: 'false' }).enabled).toBe(false);
   });
 });

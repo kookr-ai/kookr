@@ -171,6 +171,15 @@ export function readMaxHostLoadPerCpuFromEnv(
 export const DEFAULT_REAP_ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Default under-pressure unowned-orphan age (issue #2081) — 2h. When
+ * `staleProcesses.dtach.count` is at/above the soft bound the reaper uses this
+ * shorter threshold so unowned masters reclaim before a full-day wait risks
+ * OOM. Override with `KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS` (preferred) or
+ * the issue-#2081 alias `KOOKR_SESSION_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS`.
+ */
+export const DEFAULT_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * Default grace period (ms) a session whose OWNING TASK has already reached a
  * terminal status must sit before the reaper terminates it (issue #1720 leak
  * class 2 — a `completed`/`terminated` task whose session process tree is
@@ -183,22 +192,37 @@ export const DEFAULT_REAP_TERMINAL_TASK_GRACE_MS = 60 * 1000;
 
 export interface SessionReapEnvConfig {
   enabled: boolean;
+  /** Steady-state unowned-orphan age (default 24h). */
   orphanAgeThresholdMs: number;
+  /**
+   * Under-pressure unowned-orphan age (default 2h, issue #2081). Applied when
+   * the dtach soft-bound pressure signal is high.
+   */
+  orphanAgeUnderPressureMs: number;
   terminalTaskGraceMs: number;
 }
 
 /**
- * Read the orphan/terminal-task session reaper configuration (issue #1720)
- * from the environment. `KOOKR_REAP_ORPHAN_SESSIONS` defaults ON — set to
- * `'false'` to disable the whole sweep (both leak classes it acts on; the
+ * Read the orphan/terminal-task session reaper configuration (issue #1720 /
+ * #2081) from the environment. `KOOKR_REAP_ORPHAN_SESSIONS` defaults ON — set
+ * to `'false'` to disable the whole sweep (both leak classes it acts on; the
  * boot-only stale-attach-client sweep shares this same flag).
  */
 export function readSessionReapConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): SessionReapEnvConfig {
+  // Prefer the `KOOKR_REAP_*` family; accept the issue-#2081
+  // `KOOKR_SESSION_REAP_*` alias so operators following that name still bind.
+  const underPressureRaw =
+    env.KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS
+    ?? env.KOOKR_SESSION_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS;
   return {
     enabled: env.KOOKR_REAP_ORPHAN_SESSIONS !== 'false',
     orphanAgeThresholdMs: readNonNegativeNumber(env.KOOKR_REAP_ORPHAN_AGE_MS, DEFAULT_REAP_ORPHAN_AGE_MS),
+    orphanAgeUnderPressureMs: readNonNegativeNumber(
+      underPressureRaw,
+      DEFAULT_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS,
+    ),
     terminalTaskGraceMs: readNonNegativeNumber(
       env.KOOKR_REAP_TERMINAL_TASK_GRACE_MS,
       DEFAULT_REAP_TERMINAL_TASK_GRACE_MS,

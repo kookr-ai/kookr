@@ -3,15 +3,19 @@ import type { TaskStatus } from '../shared/contracts/task-status.js';
 import {
   classifySessionReapKind,
   decideSessionReap,
+  isDtachUnderPressure,
+  resolveEffectiveOrphanAgeMs,
   type SessionOwnership,
   type SessionReapConfig,
 } from './session-reap-policy.js';
 
 const HOUR_MS = 60 * 60 * 1000;
+const STEADY_ORPHAN_AGE_MS = 24 * HOUR_MS;
+const PRESSURE_ORPHAN_AGE_MS = 2 * HOUR_MS;
 
 const DEFAULT_CONFIG: SessionReapConfig = {
   enabled: true,
-  orphanAgeThresholdMs: 24 * HOUR_MS,
+  orphanAgeThresholdMs: STEADY_ORPHAN_AGE_MS,
   terminalTaskGraceMs: 60_000,
 };
 
@@ -145,5 +149,61 @@ describe('decideSessionReap', () => {
     const decision = decideSessionReap('s1', UNOWNED, null, now, disabled);
     expect(decision.shouldReap).toBe(false);
     expect(decision.reason).toMatch(/disabled/);
+  });
+
+  it('under pressure: reaps unowned orphans past the 2h pressure threshold (issue #2081)', () => {
+    // Config already carries the *effective* age (service resolves before call).
+    const underPressureConfig: SessionReapConfig = {
+      ...DEFAULT_CONFIG,
+      orphanAgeThresholdMs: PRESSURE_ORPHAN_AGE_MS,
+    };
+    // 3h old: past 2h pressure threshold, well below 24h steady-state.
+    const decision = decideSessionReap('s1', UNOWNED, now - 3 * HOUR_MS, now, underPressureConfig);
+    expect(decision.shouldReap).toBe(true);
+    expect(decision.kind).toBe('unowned');
+  });
+
+  it('without pressure: 3h orphan stays below the 24h default (issue #2081)', () => {
+    const decision = decideSessionReap('s1', UNOWNED, now - 3 * HOUR_MS, now, DEFAULT_CONFIG);
+    expect(decision.shouldReap).toBe(false);
+    expect(decision.kind).toBe('unowned');
+  });
+
+  it('under pressure: does not reap an unowned session younger than the pressure threshold', () => {
+    const underPressureConfig: SessionReapConfig = {
+      ...DEFAULT_CONFIG,
+      orphanAgeThresholdMs: PRESSURE_ORPHAN_AGE_MS,
+    };
+    const decision = decideSessionReap('s1', UNOWNED, now - HOUR_MS, now, underPressureConfig);
+    expect(decision.shouldReap).toBe(false);
+  });
+});
+
+describe('resolveEffectiveOrphanAgeMs (issue #2081)', () => {
+  it('returns the steady-state age when not under pressure', () => {
+    expect(resolveEffectiveOrphanAgeMs(STEADY_ORPHAN_AGE_MS, PRESSURE_ORPHAN_AGE_MS, false)).toBe(
+      STEADY_ORPHAN_AGE_MS,
+    );
+  });
+
+  it('returns the under-pressure age when under pressure', () => {
+    expect(resolveEffectiveOrphanAgeMs(STEADY_ORPHAN_AGE_MS, PRESSURE_ORPHAN_AGE_MS, true)).toBe(
+      PRESSURE_ORPHAN_AGE_MS,
+    );
+  });
+});
+
+describe('isDtachUnderPressure (issue #2081)', () => {
+  it('is true when count is at or above the soft bound', () => {
+    expect(isDtachUnderPressure(20, 20)).toBe(true);
+    expect(isDtachUnderPressure(32, 20)).toBe(true);
+  });
+
+  it('is false when count is below the soft bound, null, or bound is disabled', () => {
+    expect(isDtachUnderPressure(19, 20)).toBe(false);
+    expect(isDtachUnderPressure(null, 20)).toBe(false);
+    expect(isDtachUnderPressure(undefined, 20)).toBe(false);
+    expect(isDtachUnderPressure(100, 0)).toBe(false);
+    expect(isDtachUnderPressure(100, -1)).toBe(false);
   });
 });

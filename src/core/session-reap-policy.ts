@@ -58,7 +58,9 @@ export interface SessionReapConfig {
    * Minimum age (ms) an UNOWNED session must have before it is reaped, so the
    * sweep never races a mid-launch session (#1537 item 2: a launch-abort leak
    * "leaks until reconciliation *reports* (not kills) it as an orphan").
-   * Default 24h.
+   * Default 24h. Callers under host pressure may pass the shorter
+   * under-pressure threshold here (issue #2081) — this field is always the
+   * *effective* age used by {@link decideSessionReap}.
    */
   orphanAgeThresholdMs: number;
   /**
@@ -73,6 +75,37 @@ export interface SessionReapConfig {
    * showing up in the audit log as system-reaper actions). Default 60s.
    */
   terminalTaskGraceMs: number;
+}
+
+/**
+ * Pick the effective unowned-orphan age threshold (issue #2081).
+ *
+ * Under host pressure (`staleProcesses.dtach.count` ≥ soft bound) the reaper
+ * uses the shorter under-pressure age so unowned masters reclaim memory before
+ * a full 24h wait risks OOM. Without pressure the normal 24h default is
+ * preserved so mid-launch races stay impossible.
+ */
+export function resolveEffectiveOrphanAgeMs(
+  orphanAgeThresholdMs: number,
+  orphanAgeUnderPressureMs: number,
+  underPressure: boolean,
+): number {
+  return underPressure ? orphanAgeUnderPressureMs : orphanAgeThresholdMs;
+}
+
+/**
+ * Whether the dtach gauge is at/above the soft pressure bound (issue #2081).
+ * `null` count or non-positive bound → not under pressure (fail open to the
+ * longer threshold).
+ */
+export function isDtachUnderPressure(
+  dtachCount: number | null | undefined,
+  softBound: number,
+): boolean {
+  if (dtachCount == null || !Number.isFinite(dtachCount) || softBound <= 0) {
+    return false;
+  }
+  return dtachCount >= softBound;
 }
 
 export interface SessionReapDecision {
