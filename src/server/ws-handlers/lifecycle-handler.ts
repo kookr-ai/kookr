@@ -60,6 +60,8 @@ export interface LifecycleHandlerDeps {
   feedbackDir?: string;
   /** Where anytime task snapshot bundles are written. Typically `<kookrDir>/task-snapshots`. */
   taskSnapshotDir?: string;
+  /** Where hung-task reap reports are written. Typically `<kookrDir>/reports`. */
+  reportsDir?: string;
   /** Where ephemeral reflect worktrees live. Typically `<kookrDir>/reflect-worktrees`. */
   reflectWorktreesDir?: string;
   /** Where hook JSONLs live. Typically `<kookrDir>/hooks`. */
@@ -130,6 +132,7 @@ export class LifecycleHandler {
       auditLogPath: deps.auditLogPath,
       feedbackDir: deps.feedbackDir,
       taskSnapshotDir: deps.taskSnapshotDir,
+      reportsDir: deps.reportsDir,
       reflectWorktreesDir: deps.reflectWorktreesDir,
       hooksDir: deps.hooksDir,
       readInteractionLogSnapshot: deps.readInteractionLogSnapshot,

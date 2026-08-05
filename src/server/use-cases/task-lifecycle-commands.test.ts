@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -399,6 +399,87 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(result).toEqual({ outcome: 'cleared', deletedTaskIds: [] });
     expect(takePredeleteSnapshot).not.toHaveBeenCalled();
     expect(taskStore.getTask(completed.id)?.status).toBe('completed');
+  });
+
+  test('GCs the deleted task hung-task reports without touching other tasks (issue #2126)', async () => {
+    const reportsDir = await mkdtemp(join(tmpdir(), 'kookr-reports-gc-'));
+    try {
+      const taskStore = new TaskStore();
+      const doomed = taskStore.createTask('Doomed', '/repo');
+      taskStore.startTask(doomed.id);
+      taskStore.completeTask(doomed.id);
+      const survivor = taskStore.createTask('Survivor', '/repo');
+      taskStore.startTask(survivor.id);
+
+      // Two reap reports for the doomed task (the reaper writes one per reap).
+      const doomedReportA = join(reportsDir, `hung-task-${doomed.id}-2026-08-06T00-00-00-000Z.md`);
+      const doomedReportB = join(reportsDir, `hung-task-${doomed.id}-2026-08-06T01-00-00-000Z.md`);
+      // A survivor whose id differs: gcHungTaskReports scans the whole dir, so this
+      // proves the prefix filter, not merely that the task was never swept.
+      const survivorReport = join(reportsDir, `hung-task-${survivor.id}-2026-08-06T00-00-00-000Z.md`);
+      // A task whose id has the doomed id as a strict prefix — the trailing
+      // '-' boundary must spare it.
+      const prefixSibling = join(reportsDir, `hung-task-${doomed.id}xyz-2026-08-06T00-00-00-000Z.md`);
+      // A doomed-prefixed but non-`.md` partial (e.g. an interrupted write):
+      // the GC matches the reaper's `*.md` glob, so this must survive.
+      const doomedPartial = join(reportsDir, `hung-task-${doomed.id}-2026-08-06T02-00-00-000Z.md.tmp`);
+      const unrelated = join(reportsDir, 'some-other-report.md');
+      await Promise.all(
+        [doomedReportA, doomedReportB, survivorReport, prefixSibling, doomedPartial, unrelated].map((p) =>
+          writeFile(p, 'report', 'utf-8'),
+        ),
+      );
+
+      const { deps } = makeDeps(taskStore, { reportsDir, takePredeleteSnapshot: vi.fn(async () => undefined) });
+
+      const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({});
+
+      expect(result).toMatchObject({ outcome: 'cleared', deletedTaskIds: [doomed.id] });
+      // The GC is fire-and-forget; wait for the doomed `.md` reports to disappear.
+      await vi.waitFor(async () => {
+        const remaining = (await readdir(reportsDir)).sort();
+        expect(remaining).toEqual(
+          [
+            `hung-task-${survivor.id}-2026-08-06T00-00-00-000Z.md`,
+            `hung-task-${doomed.id}xyz-2026-08-06T00-00-00-000Z.md`,
+            `hung-task-${doomed.id}-2026-08-06T02-00-00-000Z.md.tmp`,
+            'some-other-report.md',
+          ].sort(),
+        );
+      });
+    } finally {
+      await rm(reportsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('report GC is fail-open when the reports dir is absent (issue #2126)', async () => {
+    const taskStore = new TaskStore();
+    const doomed = taskStore.createTask('Doomed', '/repo');
+    taskStore.startTask(doomed.id);
+    taskStore.completeTask(doomed.id);
+    const { deps } = makeDeps(taskStore, {
+      reportsDir: join(tmpdir(), 'kookr-reports-does-not-exist', 'nested'),
+      takePredeleteSnapshot: vi.fn(async () => undefined),
+    });
+
+    // gcHungTaskReports is fire-and-forget (a void IIFE), so a `readdir` failure on the
+    // absent dir would escape as a process-level unhandledRejection rather than
+    // failing the awaited clear. Capture rejections to prove the guard actually
+    // swallows the error (mirrors session-bridge.test.ts's resilience checks).
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({});
+
+      expect(result).toMatchObject({ outcome: 'cleared', deletedTaskIds: [doomed.id] });
+      expect(taskStore.getTask(doomed.id)).toBeUndefined();
+      // Let microtasks + a macrotask settle so any escaped rejection materializes.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 });
 

@@ -2635,6 +2635,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     supervisorFeedbackCaseStore,
     feedbackDir: join(kookrDir, 'feedback'),
     taskSnapshotDir: join(kookrDir, 'task-snapshots'),
+    reportsDir: join(kookrDir, 'reports'),
     reflectWorktreesDir,
     hooksDir,
     selectionController,

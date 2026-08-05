@@ -24,6 +24,7 @@ import { deleteTask, type DeleteTaskDeps } from './delete-task.js';
 import { writeFeedbackBundle } from './write-feedback-bundle.js';
 import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
 import { requestTaskReflect } from './request-task-reflect.js';
+import { hungTaskReportPrefix } from '../hung-task-report-paths.js';
 
 type RuntimeLifecycleDeps = LifecycleDeps & DeleteTaskDeps;
 
@@ -41,6 +42,8 @@ export interface TaskLifecycleCommandDeps {
   tryPromotePending?: () => Promise<void>;
   feedbackDir?: string;
   taskSnapshotDir?: string;
+  /** Where hung-task reap reports are written. Typically `<kookrDir>/reports`. */
+  reportsDir?: string;
   reflectWorktreesDir?: string;
   hooksDir?: string;
   auditLogPath?: string;
@@ -715,6 +718,38 @@ export class TaskLifecycleCommands {
     rm(bundleTaskDir, { recursive: true, force: true }).catch(() => {});
   }
 
+  /**
+   * Remove the hung-task reap reports for a deleted task (issue #2126). The
+   * reaper writes `reports/hung-task-<taskId>-<slug>.md`; unlike the feedback
+   * and snapshot bundles these were never GC'd, so on a long-lived daemon they
+   * outlived the very task they describe. The prefix comes from the shared
+   * `hungTaskReportPrefix` so writer and sweeper stay in lockstep; its trailing
+   * `-` bounds the id, and task ids are fixed-length UUIDs, so one task's prefix
+   * can never match another task's reports. Restrict to the reaper's `.md`
+   * output — any non-`.md` entry is ignored. Reports live flat in one dir, so
+   * unlike the per-task-subdir bundle GCs this scans + filters by prefix.
+   * Fail-open like the sibling GCs — a report-delete failure must not block the
+   * record deletion.
+   */
+  private gcHungTaskReports(taskId: string): void {
+    const reportsDir = this.deps.reportsDir;
+    if (!reportsDir) return;
+    const prefix = hungTaskReportPrefix(taskId);
+    void (async () => {
+      let entries: string[];
+      try {
+        entries = await readdir(reportsDir);
+      } catch {
+        return; // reports dir absent → nothing to GC
+      }
+      await Promise.all(
+        entries
+          .filter((name) => name.startsWith(prefix) && name.endsWith('.md'))
+          .map((name) => rm(join(reportsDir, name), { force: true }).catch(() => {})),
+      );
+    })();
+  }
+
   private deleteFinishedTaskRecord(task: Task, opts: { gcFeedbackBundle: boolean }): void {
     // Clear-finished is a terminal record sweep, not an active task delete. Do
     // not call adapter.stop here; legacy terminal records can have stale
@@ -726,6 +761,7 @@ export class TaskLifecycleCommands {
     if (opts.gcFeedbackBundle) {
       this.gcFeedbackBundle(task.id);
       this.gcTaskSnapshotBundle(task.id);
+      this.gcHungTaskReports(task.id);
     }
   }
 

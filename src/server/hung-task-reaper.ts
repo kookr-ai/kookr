@@ -8,6 +8,7 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { buildReapDisposition } from '../core/hung-task-reaper.js';
 import { nowISO } from '../core/interaction-log.js';
+import { hungTaskReportBasename } from './hung-task-report-paths.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 
 const PANE_TAIL_LINES = 50;
@@ -95,7 +96,7 @@ async function writeHungTaskReport(
   now: Date,
 ): Promise<string | undefined> {
   const slug = now.toISOString().replace(/[:.]/g, '-');
-  const reportPath = join(reportsDir, `hung-task-${task.id}-${slug}.md`);
+  const reportPath = join(reportsDir, hungTaskReportBasename(task.id, slug));
   try {
     await mkdir(reportsDir, { recursive: true });
     await writeFile(reportPath, buildHungTaskReportMarkdown(task, evidence, now), 'utf-8');
