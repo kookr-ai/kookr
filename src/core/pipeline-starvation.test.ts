@@ -465,12 +465,17 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(replay.consecutiveBlockedEmpty).toBe(1);
   });
 
-  test('idempotency key is stable inside a 4h bucket', () => {
+  test('idempotency key is stable inside anti-thrash bucket, rolls for belt-empty re-scout', () => {
+    // Align with SCOUT_ANTI_THRASH_MS so #2068/#2071 bypass is not defeated by
+    // launch-path idempotentReplay of a terminal prior scout (#2073 review).
     const a = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW);
     const b = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW + 60_000);
-    const c = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW + STARVATION_SCOUT_DEDUP_MS);
+    const c = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW + SCOUT_ANTI_THRASH_MS);
     expect(a).toBe(b);
     expect(a).not.toBe(c);
+    // Still distinct from a full 4h later (new bucket).
+    const d = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW + STARVATION_SCOUT_DEDUP_MS);
+    expect(a).not.toBe(d);
     expect(a).toMatch(/^starvation-scout:jeanibarz-lucy:\d+$/);
   });
 });

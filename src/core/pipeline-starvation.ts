@@ -925,10 +925,14 @@ export function defaultCheckoutGuess(repo: string, home = homedir()): string {
 
 /**
  * Idempotency key bucket for starvation-triggered scouts — one key per repo
- * per 4h wall-clock bucket so retries of the same logical trigger do not
- * create a second scout.
+ * per anti-thrash window so true double-fires collapse, while a deliberate
+ * belt-empty residual re-scout after {@link SCOUT_ANTI_THRASH_MS} (#2068 /
+ * #2071) gets a distinct key and is not replayed as the prior terminal scout.
+ *
+ * Must stay aligned with the decision thrash floor: a 4h-stable key would
+ * defeat the in-window bypass via launch-path idempotentReplay.
  */
 export function starvationScoutIdempotencyKey(repo: string, nowMs: number): string {
-  const bucket = Math.floor(nowMs / STARVATION_SCOUT_DEDUP_MS);
+  const bucket = Math.floor(nowMs / SCOUT_ANTI_THRASH_MS);
   return `starvation-scout:${repoToPlaybookSlug(repo)}:${bucket}`;
 }
