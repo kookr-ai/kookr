@@ -7,6 +7,7 @@ import {
   deleteStoredRelayConnectionCredentials,
   envRelayConnectionCredentials,
   loadStoredRelayConnectionCredentials,
+  normalizeRelayUrl,
   relayConnectionCredentialsPath,
   saveStoredRelayConnectionCredentials,
 } from './relay-connection-store.js';
@@ -49,5 +50,13 @@ describe('relay connection credential store', () => {
       displayName: 'Env desk',
     });
     expect(envRelayConnectionCredentials({ KOOKR_RELAY_URL: 'http://relay.test' } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it('rejects cloud-metadata and credentialed relay URLs during normalize (#2107)', () => {
+    expect(() => normalizeRelayUrl('http://169.254.169.254/')).toThrow(/address is not allowed/);
+    expect(() => normalizeRelayUrl('http://metadata.google.internal/')).toThrow(/host is not allowed/);
+    expect(() => normalizeRelayUrl('http://user:pass@127.0.0.1:4800')).toThrow(/credentials/);
+    expect(normalizeRelayUrl('http://192.168.1.50:4800/')).toBe('http://192.168.1.50:4800');
+    expect(normalizeRelayUrl('http://127.0.0.1:4800')).toBe('http://127.0.0.1:4800');
   });
 });

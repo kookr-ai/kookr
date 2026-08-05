@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { validateRelayNodeUrl } from '../shared/relay-node-url.js';
+
 export interface StoredRelayConnectionCredentials {
   schemaVersion: 'relay-connection.v1';
   relayUrl: string;
@@ -39,6 +41,12 @@ function optionalString(value: unknown): string | undefined {
 }
 
 export function normalizeRelayUrl(value: string): string {
+  // Host safety first so env/stored/API paths never hand a metadata URL to fetch
+  // or WebSocket (issue #2107). Protocol is narrowed to http(s) after that.
+  const hostSafety = validateRelayNodeUrl(value);
+  if (!hostSafety.ok) {
+    throw new Error(hostSafety.reason);
+  }
   const parsed = new URL(value.trim());
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('relayUrl must use http or https');
