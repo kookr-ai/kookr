@@ -5,6 +5,34 @@ import { TaskStore } from '../../core/tasks.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
 import { getHotPathSampler, resetHotPathSamplerForTests } from '../../core/hot-path-sampler.js';
 
+// Count displayPromptForTask invocations while preserving real behavior so we
+// can assert it is not recomputed per-session on the hot rebuild path (#2125).
+const promptDisplaySpy = vi.hoisted(() => ({ taskIds: [] as (string | undefined)[] }));
+vi.mock('../../core/prompt-display.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../core/prompt-display.js')>();
+  return {
+    ...actual,
+    displayPromptForTask: (task: Parameters<typeof actual.displayPromptForTask>[0]) => {
+      promptDisplaySpy.taskIds.push((task as { id?: string }).id);
+      return actual.displayPromptForTask(task);
+    },
+  };
+});
+
+// Same counting-wrapper for projectDisplayLabel so the terminal-skip test can
+// assert the per-session compute is actually skipped (not just displayPrompt).
+const projectLabelSpy = vi.hoisted(() => ({ projectIds: [] as (string | undefined)[] }));
+vi.mock('../../core/project-identity.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../core/project-identity.js')>();
+  return {
+    ...actual,
+    projectDisplayLabel: (args: Parameters<typeof actual.projectDisplayLabel>[0]) => {
+      projectLabelSpy.projectIds.push(args.projectId);
+      return actual.projectDisplayLabel(args);
+    },
+  };
+});
+
 function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   const created = (targetStore.createTask as (...innerArgs: unknown[]) => { id: string })(...args);
   const task = targetStore.getTaskForMutation(created.id);
@@ -632,6 +660,61 @@ describe('snapshot projection', () => {
       anomaly: null,
       taskStatus: 'inProgress',
       ralphLoop: { ownerSessionId: 'agent-live' },
+    });
+  });
+
+  it('evaluates displayPromptForTask at most once per task for a multi-session live task', () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Multi-session live task', '/workspace/app');
+    for (const tmuxSession of ['live-a', 'live-b', 'live-c']) {
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: '/workspace/app',
+        createdAt: new Date(),
+      });
+    }
+
+    promptDisplaySpy.taskIds.length = 0;
+    project(taskStore, [liveAgent('live-a'), liveAgent('live-b'), liveAgent('live-c')]);
+
+    // Hoisted + memoized: one compute for the task even across three sessions.
+    expect(promptDisplaySpy.taskIds.filter((id) => id === task.id)).toHaveLength(1);
+  });
+
+  it('skips per-session displayPrompt/projectDisplayLabel compute for terminal-task sessions', () => {
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Completed multi-session task', '/workspace/app');
+    taskStore.setProjectId(task.id, 'github.com/acme/webapp');
+    for (const tmuxSession of ['done-a', 'done-b', 'done-c']) {
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: '/workspace/app',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+      });
+    }
+    taskStore.completeTask(task.id);
+
+    promptDisplaySpy.taskIds.length = 0;
+    projectLabelSpy.projectIds.length = 0;
+    const snapshot = project(taskStore, [
+      liveAgent('done-a'),
+      liveAgent('done-b'),
+      liveAgent('done-c'),
+    ]);
+
+    // sessionIndex loop skips both computes for all three terminal sessions; the
+    // only remaining call to each is the single synthetic terminal entry.
+    expect(promptDisplaySpy.taskIds.filter((id) => id === task.id)).toHaveLength(1);
+    expect(projectLabelSpy.projectIds.filter((id) => id === 'github.com/acme/webapp')).toHaveLength(1);
+    // The retained synthetic terminal entry still carries the real fields.
+    const entry = snapshot.find((state) => state.taskId === task.id);
+    expect(entry).toMatchObject({
+      taskStatus: 'completed',
+      taskName: 'Completed multi-session task',
+      projectDisplayLabel: 'webapp',
     });
   });
 });

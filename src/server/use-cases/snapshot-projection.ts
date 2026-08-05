@@ -91,12 +91,25 @@ export function buildSnapshotProjection(deps: {
   const startedAt = performance.now();
   const sessionIndex = new Map<string, SessionSnapshotMeta>();
   for (const task of deps.tasks) {
+    const taskIsTerminal = isTerminalStatus(task.status);
+    // displayPromptForTask depends only on the task (regex over the full prompt),
+    // so hoist it to at most once per task and compute it lazily — only when a
+    // live session actually needs it. Terminal/completed/aborted sessions are
+    // `continue`d in the monitorStates loop below after reading only
+    // taskStatus/sessionStatus, so their displayPrompt and projectDisplayLabel
+    // are never consumed; skipping those two computes trims wasted work on the
+    // hot snapshot_rebuild path (issue #2125). Placeholder empty strings keep the
+    // meta shape intact without touching the retained (live) output.
+    let taskDisplayPrompt: string | undefined;
     for (const session of task.sessions) {
+      const sessionIsTerminal = taskIsTerminal
+        || session.lastStatus === 'completed'
+        || session.lastStatus === 'aborted';
       sessionIndex.set(session.tmuxSession, {
         task,
         taskId: task.id,
         name: task.name,
-        displayPrompt: displayPromptForTask(task),
+        displayPrompt: sessionIsTerminal ? '' : (taskDisplayPrompt ??= displayPromptForTask(task)),
         cwd: session.cwd,
         agentType: session.agentType,
         createdAt: session.createdAt,
@@ -107,7 +120,9 @@ export function buildSnapshotProjection(deps: {
         launchHealthSummary: task.launchHealthSummary,
         launchPermissionPosture: task.metadata?.launchPermissionPosture,
         projectId: task.projectId,
-        projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
+        projectDisplayLabel: sessionIsTerminal
+          ? ''
+          : projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
         priority: task.priority,
         gitBranch: session.gitBranch,
         gitCommit: session.gitCommit,
