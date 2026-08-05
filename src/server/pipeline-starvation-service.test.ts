@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { TaskStore, type Task } from '../core/tasks.js';
 import {
   BATCH_OUTCOME_SCHEMA_VERSION,
+  SCOUT_ANTI_THRASH_MS,
   type BatchOutcomeRecord,
 } from '../core/pipeline-starvation.js';
 import {
@@ -246,8 +247,8 @@ describe('PipelineStarvationService (#1715)', () => {
     store.startTask(first.spawnedScoutTaskId!);
     store.completeTask(first.spawnedScoutTaskId!);
 
-    // +40m: past 25m anti-thrash, inside 4h; free≥5 + empty queue → re-scout.
-    clock = NOW + 40 * 60 * 1000;
+    // Past anti-thrash floor, still inside 4h; free≥5 + empty queue → re-scout.
+    clock = NOW + SCOUT_ANTI_THRASH_MS + 15 * 60 * 1000;
     service = new PipelineStarvationService({
       taskStore: store,
       launcher: async (opts) => {
@@ -296,8 +297,8 @@ describe('PipelineStarvationService (#1715)', () => {
     store.startTask(first.spawnedScoutTaskId!);
     store.completeTask(first.spawnedScoutTaskId!);
 
-    // +10m: still inside 25m thrash floor with idle capacity.
-    clock = NOW + 10 * 60 * 1000;
+    // Still inside anti-thrash floor with idle capacity.
+    clock = NOW + Math.floor(SCOUT_ANTI_THRASH_MS / 2);
     service = new PipelineStarvationService({
       taskStore: store,
       launcher: async (opts) => {
