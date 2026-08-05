@@ -205,7 +205,9 @@ PY
    table (issue #2045).
 2. If residual stays high for a full TTL window: complete/cancel clearly dead
    tasks; investigate `skippedOpenPrFailsafe` / `skippedNoLiveness` /
-   `skippedExemptAnomaly` / `skippedProviderPaused` before manual intervention.
+   `skippedProviderPaused` / `skippedOpenPrFailsafe` / `lastOutcomes` before
+   manual intervention (after #2072, past-TTL silence reclaims long-silent
+   needs_input; open-PR and provider-pause remain hard bars).
 3. Avoid new general-source spawns until `capacity.free` recovers (reserved slots
    may still accept `kookr`-sourced launches depending on settings).
 

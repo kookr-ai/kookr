@@ -66,16 +66,20 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 | `skippedUnderTtl` | HungSuspect but silence age still &lt; `hungSuspectTtlMinutes` (default 25m) |
 | `skippedOpenPrFailsafe` | Open/unknown PR hold — stranded-PR exemption, intentional |
 | `skippedNoLiveness` | No watchdog liveness timestamps (never invent silence-since-epoch) |
-| `skippedExemptAnomaly` | `needs_input` / `permission_blocked` — human-gated, never reclaim |
+| `skippedExemptAnomaly` | Legacy (#2045). After #2072 always 0 on new processes — past-TTL silence reclaims long-silent `needs_input` / `permission_blocked` (stuckReason already labels them `hung_suspect`) |
 | `skippedProviderPaused` | Billing/quota pause (#1667) hold-for-resume |
 | `lastCandidatesConsidered` | HungSuspect candidates on the most recent sweep pass |
+| `lastOutcomes` | Last pass: `{ taskId, outcome, silentForMs? }[]` (#2072 task-id audit) |
+| `lastAttemptedTaskIds` | Last pass: task ids selected for terminate |
 
 If `reclaimedTotal=0` while `capacity.byClass.hungSuspect≥2`:
 
 1. **Dominant `skippedUnderTtl` soon after restart** — **expected** for the first full TTL window after boot. Pane silence is re-baselined at process registration so long-tool agents are not reclaimed from hook-only pre-restart silence (#2045). If under-TTL still dominates for hours after `serverStartedAt` is older than TTL, something is still refreshing liveness (or agents keep getting re-registered).
-2. **Dominant `skippedOpenPrFailsafe`** — check whether those tasks really hold open PRs; fail-safe treats *unknown* like a hold.
+2. **Dominant `skippedOpenPrFailsafe`** — check whether those tasks really hold open PRs; fail-safe treats *unknown* like a hold. Not widened by #2072.
 3. **Dominant `skippedNoLiveness`** — watchdog never registered the agent after resume; investigate session recovery.
-4. **Residual page** — Discord/operator `hung:residual` (#1993) pages when residual stays high after a full reclaim window.
+4. **Dominant `skippedProviderPaused`** — billing/quota hold; do not force-reclaim without a separate invariant.
+5. **`lastOutcomes` / `lastAttemptedTaskIds`** — map each hungSuspect candidate to selected vs skip reason with task id (#2072). When non-exempt (past TTL, no PR hold, not provider-paused), `reclaimAttempted` must advance.
+6. **Residual page** — Discord/operator `hung:residual` (#1993) pages when residual stays high after a full reclaim window.
 
 Do **not** treat a brief `reclaimedTotal=0` co-occurring with `daemon_uptime_reset` as a reclaim bug — counters and residual-alerter episode state reset with the process, and under-TTL skips dominate until multi-channel silence is observed. See [low-downtime redeploy](../runbooks/low-downtime-redeploy.md#hungsuspect-ttl-reclaim-across-redeploy).
 

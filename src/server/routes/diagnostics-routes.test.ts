@@ -1279,6 +1279,8 @@ describe('diagnostics routes', () => {
         skippedExemptAnomaly: 0,
         skippedProviderPaused: 0,
         lastCandidatesConsidered: 0,
+        lastOutcomes: [],
+        lastAttemptedTaskIds: [],
       });
 
       metrics.recordAttempted(2);
@@ -1292,12 +1294,16 @@ describe('diagnostics routes', () => {
           skipped_exempt_anomaly: 0,
           skipped_provider_paused: 0,
         },
+        outcomes: [
+          { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_600_000 },
+        ],
       });
 
       const after = await mkApp(baseDeps).request('/api/health');
       expect(after.status).toBe(200);
       const afterBody = (await after.json()) as {
-        hungSuspectTtlReclaim?: Record<string, number>;
+        hungSuspectTtlReclaim?: Record<string, unknown>;
       };
       expect(afterBody.hungSuspectTtlReclaim).toMatchObject({
         reclaimedTotal: 2,
@@ -1307,6 +1313,11 @@ describe('diagnostics routes', () => {
         skippedOpenPrFailsafe: 1,
         skippedUnderTtl: 1,
         lastCandidatesConsidered: 5,
+        lastAttemptedTaskIds: ['t-selected'],
+        lastOutcomes: [
+          { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_600_000 },
+        ],
       });
     });
   });

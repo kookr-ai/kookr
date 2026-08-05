@@ -2,7 +2,8 @@ import type { Task } from './task-read-model.js';
 import type { HungTaskLivenessEvidence } from './hung-task-reaper.js';
 
 /**
- * hungSuspect TTL reclaim (issue #1935 / residual metrics #2045).
+ * hungSuspect TTL reclaim (issue #1935 / residual metrics #2045 / reclaim
+ * effectiveness #2072).
  *
  * `hungSuspect` is a CAPACITY CLASS (see `core/capacity-ledger.ts`
  * `classifyTaskCapacity`), not a task status: a task is hungSuspect when
@@ -30,7 +31,14 @@ import type { HungTaskLivenessEvidence } from './hung-task-reaper.js';
  * Skip-reason breakdown (issue #2045): every hungSuspect candidate that is
  * not selected is counted under exactly one skip reason so operators can see
  * why `reclaimedTotal` stays 0 (under-TTL after redeploy, open-PR fail-safe,
- * missing liveness, exempt anomaly, provider pause).
+ * missing liveness, provider pause). Issue #2072: long-silent
+ * `needs_input` / `permission_blocked` no longer permanently block reclaim —
+ * once multi-channel silence ≥ TTL they are selected (same class L3 already
+ * reclaims via stuckReason `hung_suspect`, which outranks waiting_on_input).
+ * Provider-pause and open-PR fail-safe remain hard bars.
+ *
+ * Per-candidate outcomes (issue #2072) carry task ids so a pass with
+ * `candidatesConsidered>0` and `reclaimAttempted=0` is auditable.
  */
 
 /** Default TTL (issue #1935): 25 minutes of all-channel silence. */
@@ -54,6 +62,10 @@ export interface ExpiredHungSuspectEntry {
 /**
  * Why a hungSuspect candidate was not selected for reclaim (issue #2045).
  * Cumulative counters live on `HungSuspectTtlReclaimMetrics`.
+ *
+ * `skipped_exempt_anomaly` is retained for API/metrics stability (issue #2045)
+ * but is no longer produced by the selector after #2072 — past-TTL silence
+ * supersedes human-gated anomalies. Historical health docs may still mention it.
  */
 export type HungSuspectReclaimSkipReason =
   | 'skipped_no_liveness'
@@ -82,7 +94,20 @@ export function emptyHungSuspectReclaimSkipCounts(): HungSuspectReclaimSkipCount
   };
 }
 
-/** Full selection result for one reclaim pass (issue #2045). */
+/**
+ * One hungSuspect candidate's fate on a single selection pass (issue #2072).
+ * Gives operators task-id granularity when aggregate counters show
+ * `candidatesConsidered>0` but `reclaimAttempted=0`.
+ */
+export interface HungSuspectReclaimCandidateOutcome {
+  taskId: string;
+  /** Selected for reclaim, or the skip reason that applied. */
+  outcome: 'selected' | HungSuspectReclaimSkipReason;
+  /** Present when silence age was computed (not for no-liveness). */
+  silentForMs?: number;
+}
+
+/** Full selection result for one reclaim pass (issues #2045 / #2072). */
 export interface HungSuspectReclaimSelection {
   /** Tasks past TTL and clear of fail-safes — oldest-silent first. */
   expired: ExpiredHungSuspectEntry[];
@@ -93,13 +118,9 @@ export interface HungSuspectReclaimSelection {
   candidatesConsidered: number;
   /** Per-reason skip counts for candidates that were not selected. */
   skips: HungSuspectReclaimSkipCounts;
+  /** Per-candidate outcomes with task ids (issue #2072 audit). */
+  outcomes: HungSuspectReclaimCandidateOutcome[];
 }
-
-/** Queued anomaly types that mean "waiting on human / external", never reclaim. */
-const RECLAIM_EXEMPT_ANOMALY_TYPES = new Set([
-  'needs_input',
-  'permission_blocked',
-]);
 
 export interface ListExpiredHungSuspectTasksOpts {
   now?: Date;
@@ -119,15 +140,22 @@ export interface ListExpiredHungSuspectTasksOpts {
   getLiveness: (task: Task) => HungTaskLivenessEvidence | undefined;
   /**
    * Queued attention anomaly for the task's agent (`AttentionQueue.peek` type),
-   * or `null`/`undefined` when nothing is queued. Reclaim refuses
-   * `needs_input` / `permission_blocked` — those are human-gated stalls, not
-   * silent death (mirrors the hard hung-task reaper's `stale_agent`-only gate;
-   * issue #1935 safety: never force-kill a waiting agent).
+   * or `null`/`undefined` when nothing is queued.
+   *
+   * Issue #2072: `needs_input` / `permission_blocked` no longer permanently
+   * block reclaim. `stuckReason` already surfaces long-silent human-gated
+   * stalls as `hung_suspect` (hung wins over waiting_on_input), matching the
+   * class L3 RECLAIM_HUNG_L1 already completes. Once multi-channel silence
+   * reaches the hungSuspect TTL, soft-reclaim frees the slot (needs-human
+   * disposition). Under-TTL silence still skips via `skipped_under_ttl`.
+   *
+   * Kept as an option for callers/tests that still pass it (no-op for
+   * selection after #2072; reserved for future anomaly-aware policy).
    */
   getQueuedAnomalyType?: (task: Task) => string | null | undefined;
   /**
    * Provider billing/quota pause (#1667). When true, reclaim skips the task —
-   * same hold-for-resume rule as `maybeReapHungTask`.
+   * same hold-for-resume rule as `maybeReapHungTask`. Not widened by #2072.
    */
   isProviderPaused?: (task: Task) => boolean;
   /**
@@ -141,13 +169,14 @@ export interface ListExpiredHungSuspectTasksOpts {
    * Omitting this option entirely has the same fail-safe effect as a predicate
    * that always returns `undefined` — every candidate is left alone. Callers
    * that want the TTL to actually reclaim anything MUST wire a real predicate.
+   * Not widened by #2072 (open-PR fail-safe stays).
    */
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
 }
 
 /**
  * Pure selection of hungSuspect tasks past the silence TTL, with skip-reason
- * breakdown for every candidate not selected (issue #2045).
+ * breakdown and per-candidate task-id outcomes (issues #2045 / #2072).
  *
  * Silence age is measured from the most recent of the three liveness channels
  * (hook event / pane change / token activity) — the same clock
@@ -158,11 +187,12 @@ export interface ListExpiredHungSuspectTasksOpts {
  *   class; finishedAwaitingAck has its own reclaim path) — non-candidates are
  *   not counted;
  * - `isHungSuspect` must return true — never reclaim a working agent;
- * - exempt anomaly → `skipped_exempt_anomaly`;
  * - provider pause → `skipped_provider_paused`;
  * - missing / all-zero liveness → `skipped_no_liveness`;
  * - silence under TTL → `skipped_under_ttl`;
- * - open-PR fail-safe (true or unknown) → `skipped_open_pr_failsafe`.
+ * - open-PR fail-safe (true or unknown) → `skipped_open_pr_failsafe`;
+ * - otherwise selected (including long-silent needs_input / permission_blocked
+ *   past TTL — issue #2072; disposition stays needs-human).
  */
 export function selectExpiredHungSuspectTasks(
   tasks: readonly Task[],
@@ -172,6 +202,7 @@ export function selectExpiredHungSuspectTasks(
   const ttlMs = opts.ttlMs ?? DEFAULT_HUNG_SUSPECT_TTL_MS;
   const out: ExpiredHungSuspectEntry[] = [];
   const skips = emptyHungSuspectReclaimSkipCounts();
+  const outcomes: HungSuspectReclaimCandidateOutcome[] = [];
   let candidatesConsidered = 0;
 
   for (const task of tasks) {
@@ -182,23 +213,17 @@ export function selectExpiredHungSuspectTasks(
 
     candidatesConsidered += 1;
 
-    // Human-gated / external stalls must never be reclaimed as "hung" — the
-    // capacity class can still label long-silent needs_input as hungSuspect via
-    // the silence fallback, but termination requires the same safety the hard
-    // reaper gets from its stale_agent-only gate (issue #1935 / #1667).
-    const queuedAnomaly = opts.getQueuedAnomalyType?.(task) ?? null;
-    if (queuedAnomaly !== null && RECLAIM_EXEMPT_ANOMALY_TYPES.has(queuedAnomaly)) {
-      skips.skipped_exempt_anomaly += 1;
-      continue;
-    }
+    // Provider pause stays a hard bar (#1667 / issue #2072: do not widen).
     if (opts.isProviderPaused?.(task)) {
       skips.skipped_provider_paused += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_provider_paused' });
       continue;
     }
 
     const liveness = opts.getLiveness(task);
     if (!liveness) {
       skips.skipped_no_liveness += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_no_liveness' });
       continue;
     }
 
@@ -210,28 +235,43 @@ export function selectExpiredHungSuspectTasks(
     // All-zero liveness (never recorded) is "unknown", not "silent forever".
     if (lastActivityAt <= 0) {
       skips.skipped_no_liveness += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_no_liveness' });
       continue;
     }
 
     const silentForMs = nowMs - lastActivityAt;
     if (silentForMs < ttlMs) {
       skips.skipped_under_ttl += 1;
+      outcomes.push({ taskId: task.id, outcome: 'skipped_under_ttl', silentForMs });
       continue;
     }
 
     // Fail-safe: only a definite `false` clears the task for reclaim.
+    // Not widened by #2072 — open/unknown PR holds still skip.
     if (opts.isHoldingOpenPr?.(task) !== false) {
       skips.skipped_open_pr_failsafe += 1;
+      outcomes.push({
+        taskId: task.id,
+        outcome: 'skipped_open_pr_failsafe',
+        silentForMs,
+      });
       continue;
     }
 
+    // Past TTL + clear of hard bars → select. Queued needs_input /
+    // permission_blocked no longer permanent-blocks here (#2072): silence age
+    // is the invariant; soft reclaim records needs-human disposition.
+    // `getQueuedAnomalyType` is retained on opts for API/call-site compat but
+    // is not a selection gate after #2072.
     out.push({ task, silentForMs });
+    outcomes.push({ taskId: task.id, outcome: 'selected', silentForMs });
   }
 
   return {
     expired: out.sort((a, b) => b.silentForMs - a.silentForMs),
     candidatesConsidered,
     skips,
+    outcomes,
   };
 }
 

@@ -477,6 +477,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           skippedExemptAnomaly: hungSuspectTtlReclaimSnapshot.skippedExemptAnomaly,
           skippedProviderPaused: hungSuspectTtlReclaimSnapshot.skippedProviderPaused,
           lastCandidatesConsidered: hungSuspectTtlReclaimSnapshot.lastCandidatesConsidered,
+          // Issue #2072: task-id outcomes for the last reclaim pass so operators
+          // can map hungSuspect candidates to skip/attempt classes.
+          lastOutcomes: hungSuspectTtlReclaimSnapshot.lastOutcomes,
+          lastAttemptedTaskIds: hungSuspectTtlReclaimSnapshot.lastAttemptedTaskIds,
         }
       : undefined;
 
