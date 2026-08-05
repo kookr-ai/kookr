@@ -262,20 +262,37 @@ export class InteractionLogWriter {
 // --- Deferred Writer ---
 
 /**
+ * Cap on pre-materialize non-substantive events retained in memory.
+ * Oldest events are dropped first on overflow (FIFO eviction).
+ * Sized high enough for normal launch chatter; bounds pathological streams.
+ */
+export const DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS = 512;
+
+/**
  * Wraps InteractionLogWriter with lazy session creation.
  * The session directory is not created until the first substantive event
  * (agent_launched, user_input, finding). Non-substantive events are buffered
  * and flushed when the session materializes.
+ *
+ * The pre-materialize buffer is bounded ({@link DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS}
+ * by default). On overflow, oldest events are spliced from the front and a
+ * single `console.warn` is emitted per overflow burst.
  */
 export class DeferredInteractionLogWriter {
   private writer: InteractionLogWriter | null = null;
   private buffer: InteractionEvent[] = [];
   private materializePromise: Promise<void> | null = null;
+  private readonly maxEntries: number;
+  /** True after the first drop in the current pre-materialize buffer burst. */
+  private overflowWarned = false;
 
   constructor(
     private sessionsDir: string,
     private resolveSessionId: () => Promise<string>,
-  ) {}
+    opts: { maxEntries?: number } = {},
+  ) {
+    this.maxEntries = Math.max(0, Math.floor(opts.maxEntries ?? DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS));
+  }
 
   async append(event: InteractionEvent): Promise<void> {
     if (this.writer) {
@@ -289,8 +306,29 @@ export class DeferredInteractionLogWriter {
       return;
     }
 
-    // Buffer non-substantive events until session is created
+    // Buffer non-substantive events until session is created (bounded).
+    if (this.maxEntries === 0) return;
     this.buffer.push(event);
+    if (this.buffer.length > this.maxEntries) {
+      const dropCount = this.buffer.length - this.maxEntries;
+      this.buffer.splice(0, dropCount);
+      if (!this.overflowWarned) {
+        this.overflowWarned = true;
+        console.warn(
+          `[interaction-log] DeferredInteractionLogWriter buffer overflow: dropped oldest events (maxEntries=${this.maxEntries})`,
+        );
+      }
+    }
+  }
+
+  /** Current pre-materialize buffer length (0 after materialization). */
+  getBufferedEventCount(): number {
+    return this.buffer.length;
+  }
+
+  /** Configured buffer cap. */
+  getMaxEntries(): number {
+    return this.maxEntries;
   }
 
   /** Force session materialization and flush buffered events. Concurrent calls coalesce. */
