@@ -285,7 +285,7 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     });
   });
 
-  it('accumulates skip-reason counters without reclaiming (issue #2045)', async () => {
+  it('accumulates skip-reason counters; past-TTL needs_input reclaims (issues #2045 / #2072)', async () => {
     const underTtl = makeHungTask({ id: 'under' });
     const noLiveness = makeHungTask({ id: 'noliv' });
     const openPr = makeHungTask({ id: 'pr' });
@@ -315,20 +315,85 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       { now: NOW, ttlMs: TTL_MS },
     );
 
-    expect(result.reclaimedTaskIds).toEqual([]);
-    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    // #2072: past-TTL needs_input is attempted/reclaimed; open-PR failsafe stays.
+    expect(result.reclaimedTaskIds).toEqual(['needs']);
+    expect(taskStore.terminateTask).toHaveBeenCalledWith('needs', expect.anything());
     const snap = metrics.getSnapshot();
     expect(snap).toMatchObject({
-      reclaimedTotal: 0,
-      reclaimAttempted: 0,
-      reclaimSucceeded: 0,
+      reclaimedTotal: 1,
+      reclaimAttempted: 1,
+      reclaimSucceeded: 1,
       skippedUnderTtl: 1,
       skippedNoLiveness: 1,
       skippedOpenPrFailsafe: 1,
-      skippedExemptAnomaly: 1,
+      skippedExemptAnomaly: 0,
       lastCandidatesConsidered: 4,
+      lastAttemptedTaskIds: ['needs'],
     });
+    expect(snap.lastOutcomes.find((o) => o.taskId === 'pr')?.outcome).toBe(
+      'skipped_open_pr_failsafe',
+    );
+    expect(snap.lastOutcomes.find((o) => o.taskId === 'needs')?.outcome).toBe('selected');
     expect(result.selection?.skips.skipped_under_ttl).toBe(1);
+  });
+
+  it('issue #2072 fixture: non-exempt hungSuspect → reclaimAttempted ≥ 1 and reclaimed', async () => {
+    const task = makeHungTask({ id: 'non-exempt-l1' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        getQueuedAnomalyType: () => 'stale_agent',
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['non-exempt-l1']);
+    const snap = metrics.getSnapshot();
+    expect(snap.reclaimAttempted).toBeGreaterThanOrEqual(1);
+    expect(snap.reclaimedTotal).toBe(1);
+    expect(snap.lastAttemptedTaskIds).toEqual(['non-exempt-l1']);
+    expect(snap.lastOutcomes).toEqual([
+      expect.objectContaining({ taskId: 'non-exempt-l1', outcome: 'selected' }),
+    ]);
+  });
+
+  it('issue #2072: terminal skip records task id (open-PR failsafe, no attempt)', async () => {
+    const task = makeHungTask({ id: 'stranded-pr' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => true,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().reclaimAttempted).toBe(0);
+    expect(metrics.getSnapshot().lastOutcomes).toEqual([
+      expect.objectContaining({
+        taskId: 'stranded-pr',
+        outcome: 'skipped_open_pr_failsafe',
+      }),
+    ]);
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {

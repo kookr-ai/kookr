@@ -7,6 +7,7 @@ import {
   DEFAULT_HUNG_SUSPECT_TTL_MS,
   emptyHungSuspectReclaimSkipCounts,
   selectExpiredHungSuspectTasks,
+  type HungSuspectReclaimCandidateOutcome,
   type HungSuspectReclaimSkipCounts,
 } from '../core/hung-suspect-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
@@ -14,10 +15,13 @@ import { appendDispositionEntry, type DispositionEntry } from '../core/dispositi
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 
+/** Cap last-pass outcome samples on health (issue #2072 task-id audit). */
+const MAX_LAST_OUTCOMES = 16;
+
 /**
- * In-memory snapshot for `/api/health` + `/metrics` (issues #1935 / #2045).
- * Process-lifetime cumulative counters — restart zeros them (same trade-off
- * as other in-memory reclaim gauges).
+ * In-memory snapshot for `/api/health` + `/metrics` (issues #1935 / #2045 /
+ * #2072). Process-lifetime cumulative counters — restart zeros them (same
+ * trade-off as other in-memory reclaim gauges).
  */
 export interface HungSuspectTtlReclaimMetricsSnapshot {
   /** Cumulative hungSuspect tasks terminated by the TTL reclaim since process start. */
@@ -33,22 +37,36 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
   skippedNoLiveness: number;
   skippedOpenPrFailsafe: number;
   skippedUnderTtl: number;
+  /**
+   * Legacy #2045 counter. After #2072 the selector no longer permanent-skips
+   * human-gated anomalies past TTL; this stays at 0 on new processes.
+   */
   skippedExemptAnomaly: number;
   skippedProviderPaused: number;
   /** Last selection pass: how many hungSuspect candidates were considered. */
   lastCandidatesConsidered: number;
+  /**
+   * Last selection pass: per-candidate outcomes with task ids (issue #2072).
+   * Answers why `reclaimAttempted` stayed 0 when `candidatesConsidered>0`.
+   * Capped at {@link MAX_LAST_OUTCOMES}.
+   */
+  lastOutcomes: HungSuspectReclaimCandidateOutcome[];
+  /** Last pass: task ids selected for reclaim (terminate attempted). */
+  lastAttemptedTaskIds: string[];
 }
 
 /**
  * Process-lifetime counters for the hungSuspect TTL reclaim (issues #1935 /
- * #2045). One instance at bootstrap, threaded into the sweep, `/api/health`,
- * and `/metrics`.
+ * #2045 / #2072). One instance at bootstrap, threaded into the sweep,
+ * `/api/health`, and `/metrics`.
  */
 export class HungSuspectTtlReclaimMetrics {
   private reclaimedTotal = 0;
   private reclaimAttempted = 0;
   private skips: HungSuspectReclaimSkipCounts = emptyHungSuspectReclaimSkipCounts();
   private lastCandidatesConsidered = 0;
+  private lastOutcomes: HungSuspectReclaimCandidateOutcome[] = [];
+  private lastAttemptedTaskIds: string[] = [];
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
@@ -60,11 +78,12 @@ export class HungSuspectTtlReclaimMetrics {
 
   /**
    * Accumulate skip-reason counts from one selection pass and remember the
-   * candidate denominator for the health snapshot.
+   * candidate denominator + task-id outcomes for the health snapshot.
    */
   recordSelection(selection: {
     candidatesConsidered: number;
     skips: HungSuspectReclaimSkipCounts;
+    outcomes?: readonly HungSuspectReclaimCandidateOutcome[];
   }): void {
     this.lastCandidatesConsidered = selection.candidatesConsidered;
     this.skips.skipped_no_liveness += selection.skips.skipped_no_liveness;
@@ -72,6 +91,12 @@ export class HungSuspectTtlReclaimMetrics {
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
     this.skips.skipped_exempt_anomaly += selection.skips.skipped_exempt_anomaly;
     this.skips.skipped_provider_paused += selection.skips.skipped_provider_paused;
+    const outcomes = selection.outcomes ?? [];
+    this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
+    this.lastAttemptedTaskIds = outcomes
+      .filter((o) => o.outcome === 'selected')
+      .map((o) => o.taskId)
+      .slice(0, MAX_LAST_OUTCOMES);
   }
 
   getSnapshot(): HungSuspectTtlReclaimMetricsSnapshot {
@@ -85,6 +110,8 @@ export class HungSuspectTtlReclaimMetrics {
       skippedExemptAnomaly: this.skips.skipped_exempt_anomaly,
       skippedProviderPaused: this.skips.skipped_provider_paused,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
+      lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
+      lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
     };
   }
 }
@@ -140,6 +167,8 @@ export interface ReclaimHungSuspectTasksResult {
     candidatesConsidered: number;
     skips: HungSuspectReclaimSkipCounts;
     selectedCount: number;
+    /** Per-candidate outcomes with task ids (issue #2072). */
+    outcomes: HungSuspectReclaimCandidateOutcome[];
   };
 }
 
@@ -190,6 +219,10 @@ export function buildHungSuspectTtlDisposition(
  *
  * Skip-reason counters (issue #2045) accumulate every pass so `/api/health`
  * can explain `reclaimedTotal=0` while hungSuspect occupancy stays high.
+ * Issue #2072: past-TTL silence selects even when needs_input /
+ * permission_blocked is still queued (stuckReason already labels those
+ * hung_suspect); open-PR fail-safe and provider pause remain hard bars.
+ * Per-pass outcomes carry task ids for audit.
  */
 export async function reclaimAgedHungSuspectTasks(
   deps: ReclaimHungSuspectTasksDeps,
@@ -287,6 +320,7 @@ export async function reclaimAgedHungSuspectTasks(
       candidatesConsidered: selection.candidatesConsidered,
       skips: selection.skips,
       selectedCount: selection.expired.length,
+      outcomes: selection.outcomes,
     },
   };
 }

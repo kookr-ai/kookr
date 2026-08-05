@@ -88,7 +88,10 @@ describe('listExpiredHungSuspectTasks (issue #1935)', () => {
     expect(expired).toEqual([]);
   });
 
-  it('does not reclaim needs_input even when silence + hungSuspect (human-gated stall)', () => {
+  it('reclaims past-TTL needs_input when silence + hungSuspect (issue #2072 stale human-gate)', () => {
+    // stuckReason already surfaces long-silent needs_input as hung_suspect
+    // (hung wins over waiting_on_input). Permanent exempt left reclaimAttempted=0
+    // while hungSuspect>0; past-TTL silence is the reclaim invariant.
     const waiting = hungTask({ id: 'waiting' });
     const expired = listExpiredHungSuspectTasks([waiting], {
       now: NOW,
@@ -98,10 +101,10 @@ describe('listExpiredHungSuspectTasks (issue #1935)', () => {
       getQueuedAnomalyType: () => 'needs_input',
       isHoldingOpenPr: () => false,
     });
-    expect(expired).toEqual([]);
+    expect(expired.map((e) => e.task.id)).toEqual(['waiting']);
   });
 
-  it('does not reclaim permission_blocked even when silence + hungSuspect', () => {
+  it('reclaims past-TTL permission_blocked when silence + hungSuspect (issue #2072)', () => {
     const blocked = hungTask({ id: 'blocked' });
     const expired = listExpiredHungSuspectTasks([blocked], {
       now: NOW,
@@ -109,6 +112,19 @@ describe('listExpiredHungSuspectTasks (issue #1935)', () => {
       isHungSuspect: alwaysHung,
       getLiveness: () => silentFor(TTL_MS + 60_000),
       getQueuedAnomalyType: () => 'permission_blocked',
+      isHoldingOpenPr: () => false,
+    });
+    expect(expired.map((e) => e.task.id)).toEqual(['blocked']);
+  });
+
+  it('still under-TTL skips needs_input (no reclaim before silence age)', () => {
+    const waiting = hungTask({ id: 'waiting-young' });
+    const expired = listExpiredHungSuspectTasks([waiting], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS - 60_000),
+      getQueuedAnomalyType: () => 'needs_input',
       isHoldingOpenPr: () => false,
     });
     expect(expired).toEqual([]);
@@ -361,7 +377,7 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     expect(noPredicate.skips.skipped_open_pr_failsafe).toBe(1);
   });
 
-  it('counts skipped_exempt_anomaly for needs_input and permission_blocked', () => {
+  it('issue #2072: past-TTL needs_input/permission_blocked select (not skipped_exempt_anomaly)', () => {
     const waiting = hungTask({ id: 'waiting' });
     const blocked = hungTask({ id: 'blocked' });
     const sel = selectExpiredHungSuspectTasks([waiting, blocked], {
@@ -372,8 +388,9 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       getQueuedAnomalyType: (t) => (t.id === 'waiting' ? 'needs_input' : 'permission_blocked'),
       isHoldingOpenPr: () => false,
     });
-    expect(sel.expired).toEqual([]);
-    expect(sel.skips.skipped_exempt_anomaly).toBe(2);
+    expect(sel.expired.map((e) => e.task.id).sort()).toEqual(['blocked', 'waiting']);
+    expect(sel.skips.skipped_exempt_anomaly).toBe(0);
+    expect(sel.outcomes.filter((o) => o.outcome === 'selected')).toHaveLength(2);
   });
 
   it('counts skipped_provider_paused for billing/quota hold', () => {
@@ -403,7 +420,7 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     expect(sel.skips).toEqual(emptyHungSuspectReclaimSkipCounts());
   });
 
-  it('mixed pass: one selected + one of each primary skip reason', () => {
+  it('mixed pass: past-TTL needs_input selects; other primary skips remain', () => {
     const reclaimable = hungTask({ id: 'reclaim' });
     const under = hungTask({ id: 'under' });
     const noLiv = hungTask({ id: 'noliv' });
@@ -434,14 +451,40 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     );
 
     expect(sel.candidatesConsidered).toBe(6);
-    expect(sel.expired.map((e) => e.task.id)).toEqual(['reclaim']);
+    // #2072: needs_input past TTL is selected alongside the clean reclaimable.
+    expect(sel.expired.map((e) => e.task.id).sort()).toEqual(['needs', 'reclaim']);
     expect(sel.skips).toEqual({
       skipped_no_liveness: 1,
       skipped_open_pr_failsafe: 1,
       skipped_under_ttl: 1,
-      skipped_exempt_anomaly: 1,
+      skipped_exempt_anomaly: 0,
       skipped_provider_paused: 1,
     });
+    // Task-id outcomes cover every candidate (issue #2072 audit).
+    expect(sel.outcomes).toHaveLength(6);
+    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_failsafe');
+    expect(sel.outcomes.find((o) => o.taskId === 'paused')?.outcome).toBe('skipped_provider_paused');
+    expect(sel.outcomes.find((o) => o.taskId === 'needs')?.outcome).toBe('selected');
+  });
+
+  it('issue #2072: non-exempt hungSuspect → selected with task-id outcome (reclaimAttempted path)', () => {
+    const nonExempt = hungTask({ id: 'non-exempt-l1' });
+    const sel = selectExpiredHungSuspectTasks([nonExempt], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isHungSuspect: alwaysHung,
+      getLiveness: () => silentFor(TTL_MS + 5_000),
+      getQueuedAnomalyType: () => 'stale_agent',
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toHaveLength(1);
+    expect(sel.outcomes).toEqual([
+      expect.objectContaining({
+        taskId: 'non-exempt-l1',
+        outcome: 'selected',
+      }),
+    ]);
+    expect(sel.skips).toEqual(emptyHungSuspectReclaimSkipCounts());
   });
 
   it('post-redeploy pane seed at registration → skipped_under_ttl until full TTL (reclaim safety)', () => {
