@@ -34,6 +34,7 @@ import type {
   ResourceWatchdogSample,
 } from '../core/resource-watchdog-types.js';
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
+import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 
 export interface ResourceWatchdogServiceDeps {
   getConfig: () => ResourceWatchdogConfig;
@@ -49,6 +50,17 @@ export interface ResourceWatchdogServiceDeps {
   readServerLogTail?: () => string | null;
   /** Optional recent audit lines for the brief. */
   readAuditTail?: () => string | null;
+  /**
+   * Cached `staleProcesses.dtach.count` for the disabled-under-pressure page
+   * (issue #2078). Only consulted when the actuator is off; null skips the
+   * pressure signal for that tick. Injected so tests never scan `/proc`.
+   */
+  getStaleDtachCount?: () => number | null;
+  /**
+   * Page-only alerter when pressureWhileDisabled stays true (issue #2078).
+   * Never enables the actuator and never spawns.
+   */
+  pressureWhileDisabledAlerter?: Pick<WatchdogDisabledPressureAlerter, 'evaluate'>;
   nowMs?: () => number;
   nowIso?: () => string;
   logger?: Pick<typeof console, 'info' | 'warn'>;
@@ -64,6 +76,11 @@ export class ResourceWatchdogService {
   private readonly launchTask: ResourceWatchdogServiceDeps['launchTask'];
   private readonly readServerLogTail: () => string | null;
   private readonly readAuditTail: () => string | null;
+  private readonly getStaleDtachCount: (() => number | null) | null;
+  private readonly pressureWhileDisabledAlerter: Pick<
+    WatchdogDisabledPressureAlerter,
+    'evaluate'
+  > | null;
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
   private readonly logger: Pick<typeof console, 'info' | 'warn'>;
@@ -86,6 +103,8 @@ export class ResourceWatchdogService {
     this.launchTask = deps.launchTask;
     this.readServerLogTail = deps.readServerLogTail ?? (() => null);
     this.readAuditTail = deps.readAuditTail ?? (() => null);
+    this.getStaleDtachCount = deps.getStaleDtachCount ?? null;
+    this.pressureWhileDisabledAlerter = deps.pressureWhileDisabledAlerter ?? null;
     this.nowMs = deps.nowMs ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
     this.logger = deps.logger ?? console;
@@ -211,6 +230,11 @@ export class ResourceWatchdogService {
     this.tickInFlight = true;
     try {
       const config = this.getConfig();
+      // Page when disabled-under-pressure stays true (issue #2078). Runs on
+      // every tick — including the enabled path, which clears the episode.
+      // Page-only: never enables the actuator and never spawns.
+      this.evaluateDisabledPressureAlert(config);
+
       if (!config.enabled) {
         this.lastDecision = 'disabled';
         return;
@@ -370,6 +394,37 @@ export class ResourceWatchdogService {
     } catch (err) {
       this.logger.warn(
         '[resource-watchdog] failed to persist state:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Issue #2078: page Discord when pressureWhileDisabled stays true long
+   * enough. Skips the dtach gauge read when the actuator is on (pressure is
+   * always false then). Must never throw into the tick.
+   */
+  private evaluateDisabledPressureAlert(config: ResourceWatchdogConfig): void {
+    if (!this.pressureWhileDisabledAlerter) return;
+    try {
+      // Only pay for the gauge when the actuator is off; when enabled the
+      // helper returns false without consulting dtachCount.
+      const dtachCount = config.enabled
+        ? null
+        : (this.getStaleDtachCount?.() ?? null);
+      const pressure = evaluatePressureWhileDisabled({
+        enabled: config.enabled,
+        dtachCount,
+        softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+      });
+      this.pressureWhileDisabledAlerter.evaluate({
+        pressureWhileDisabled: pressure.pressureWhileDisabled,
+        reason: pressure.pressureWhileDisabledReason,
+        dtachCount,
+      });
+    } catch (err) {
+      this.logger.warn(
+        '[resource-watchdog] disabled-pressure alerter failed:',
         err instanceof Error ? err.message : err,
       );
     }
