@@ -114,9 +114,11 @@ export function buildOpsStatusSnapshot(
     dataDirectoryFreePercent: fields.dataDirectoryFreePercent,
     dataDirectoryFreeBytes: fields.dataDirectoryFreeBytes,
     safeMode: fields.safeMode.engaged
-      ? (fields.safeMode.since
-          ? { engaged: true, since: fields.safeMode.since }
-          : { engaged: true })
+      ? {
+          engaged: true as const,
+          ...(fields.safeMode.since ? { since: fields.safeMode.since } : {}),
+          ...(fields.safeMode.loadError ? { loadError: fields.safeMode.loadError } : {}),
+        }
       : { engaged: false },
     lastEdges: lastEdges.map((edge) => ({
       kind: edge.kind,
@@ -196,6 +198,7 @@ function isSafeModeShape(value: unknown): value is SafeModeStatus {
   const s = value as Record<string, unknown>;
   if (typeof s.engaged !== 'boolean') return false;
   if (s.since !== undefined && typeof s.since !== 'string') return false;
+  if (s.loadError !== undefined && typeof s.loadError !== 'string') return false;
   return true;
 }
 

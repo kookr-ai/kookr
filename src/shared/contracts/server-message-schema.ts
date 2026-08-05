@@ -115,6 +115,7 @@ const snapshotMessage = z.object({
   safeMode: z.object({
     engaged: z.boolean(),
     since: z.string().optional(),
+    loadError: z.string().optional(),
   }).optional(),
   maxActiveTasks: z.number().optional(),
   coordinator: jsonObject.optional(),

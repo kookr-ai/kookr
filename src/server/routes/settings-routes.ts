@@ -58,6 +58,7 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         safeMode: resolveSafeModeStatus({
           automationKillSwitch: committed.automationKillSwitch,
           safeModeSince: committed.safeModeSince,
+          loadError: deps.settings?.getLoadError?.(),
         }),
       }));
       // Return what the server actually committed, not `validated`: the update

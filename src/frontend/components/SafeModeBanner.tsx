@@ -12,13 +12,17 @@ export function SafeModeBanner() {
   if (!safeMode.engaged) return null;
 
   const sinceLabel = safeMode.since ? ` since ${safeMode.since}` : '';
+  const loadErrorText = typeof safeMode.loadError === 'string' && safeMode.loadError.length > 0
+    ? safeMode.loadError
+    : null;
 
   return (
     <div className="safe-mode-banner" role="status" aria-live="polite" data-testid="safe-mode-banner">
       <span className="safe-mode-banner__badge">SAFE MODE{sinceLabel}</span>
       <span className="safe-mode-banner__text">
-        Automation kill-switch engaged — schedule fires and autonomous launches are paused.
-        Manual launches still work. Disable via Settings → Automation kill-switch.
+        {loadErrorText
+          ? `Settings load error forced fail-closed SAFE MODE (${loadErrorText}). Schedule fires and autonomous launches are paused until settings recover. Manual launches still work.`
+          : 'Automation kill-switch engaged — schedule fires and autonomous launches are paused. Manual launches still work. Disable via Settings → Automation kill-switch.'}
       </span>
     </div>
   );

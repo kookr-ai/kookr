@@ -462,6 +462,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let currentSettings = coreStores.currentSettings;
   let settingsLoadedFromDefaults = coreStores.settingsLoadedFromDefaults;
   let settingsLoadWarnings = coreStores.settingsLoadWarnings;
+  // Issue #2085: corrupt/unreadable settings force fail-closed SAFE MODE until
+  // a successful settings write recovers. Tracked separately from the settings
+  // blob so it is not persisted to disk.
+  let settingsLoadError: string | undefined = coreStores.settingsLoadError;
+  if (settingsLoadError) {
+    console.warn(
+      `[settings] SAFE MODE fail-closed at boot: ${settingsLoadError}`,
+    );
+  }
   const {
     interactionLog,
     telemetryLog,
@@ -667,6 +676,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         ...currentSettings,
         roundRobinIndex: currentSettings.roundRobinIndex + 1,
       };
+      // Issue #2085: while settings are untrusted (loadError), do not rewrite
+      // settings.json with fail-closed defaults — that would clobber a
+      // repairable corrupt file and freeze kill-on without a loadError after
+      // restart. Memory cursor still advances; next intentional settings write
+      // (or restart after repair) recovers.
+      if (settingsLoadError) return;
       void persistSettings().catch((err) => {
         console.warn(
           '[round-robin] failed to persist rotation cursor:',
@@ -719,6 +734,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const getSafeModeStatus = () => resolveSafeModeStatus({
     automationKillSwitch: currentSettings.automationKillSwitch,
     safeModeSince: currentSettings.safeModeSince,
+    loadError: settingsLoadError,
   });
   const scopedSnapshotDeps = (scope: Scope, precomputedClientAgents?: AgentState[]): SnapshotMessageDeps => ({
     monitor,
@@ -1483,7 +1499,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
-    isAutomationEnabled: () => !currentSettings.automationKillSwitch,
+    // Issue #2085: loadError alone is enough to block autonomous launches even
+    // if the in-memory kill-switch bit were somehow cleared without recovery.
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
     idempotencyLedger,
@@ -1817,7 +1835,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // via the same operator-signal bridge as deploy-lag / prod-smoke.
     broadcastToAll: detectorBroadcast,
     isAccepting: () => drainController.isAccepting(),
-    isAutomationEnabled: () => !currentSettings.automationKillSwitch,
+    // Issue #2085: same fail-closed gate as launch-service (loadError blocks autonomous).
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
@@ -2159,6 +2178,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
       getLoadWarnings: () => settingsLoadWarnings,
+      getLoadError: () => settingsLoadError,
       update: async (newSettings: KookrSettings) => {
         const prev = currentSettings;
         // `roundRobinIndex` is server-managed — advanced per launch by the
@@ -2191,6 +2211,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         currentSettings = merged;
         settingsLoadedFromDefaults = false;
         settingsLoadWarnings = [];
+        // Successful write recovers fail-closed loadError (issue #2085).
+        if (settingsLoadError) {
+          console.log(
+            `[settings] SAFE MODE loadError cleared after successful write (was: ${settingsLoadError})`,
+          );
+          settingsLoadError = undefined;
+        }
         // Issue #1995: SAFE MODE engage edge writes the durable ops-status card
         // so a kill-switch flip is visible on disk when Discord is down.
         void opsStatusWriter.noteSafeModeEngaged(

@@ -53,4 +53,22 @@ describe('SafeModeBanner', () => {
     expect(container.textContent).toContain('SAFE MODE since 2026-08-01T12:00:00.000Z');
     expect(container.textContent).toContain('schedule fires and autonomous launches are paused');
   });
+
+  test('surfaces settings loadError when fail-closed SAFE MODE is forced (issue #2085)', () => {
+    useKookrStore.setState({
+      safeMode: {
+        engaged: true,
+        since: '2026-08-05T12:00:00.000Z',
+        loadError: 'Settings file is not valid JSON',
+      },
+    });
+
+    act(() => {
+      root.render(React.createElement(SafeModeBanner));
+    });
+
+    expect(container.textContent).toContain('SAFE MODE since 2026-08-05T12:00:00.000Z');
+    expect(container.textContent).toContain('Settings load error forced fail-closed SAFE MODE');
+    expect(container.textContent).toContain('Settings file is not valid JSON');
+  });
 });

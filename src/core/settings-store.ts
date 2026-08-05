@@ -592,9 +592,18 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
-  const automationKillSwitch = typeof raw.automationKillSwitch === 'boolean'
-    ? raw.automationKillSwitch
-    : DEFAULT_SETTINGS.automationKillSwitch;
+  // Kill-switch field (issue #2085): missing key keeps the upgrade-safe
+  // default (false). Present-but-non-boolean is corrupt — fail closed by
+  // engaging SAFE MODE so schedule launches cannot run on unknown state.
+  // `loadSettings` surfaces a loadError for the non-boolean case.
+  let automationKillSwitch = DEFAULT_SETTINGS.automationKillSwitch;
+  if (raw.automationKillSwitch === undefined) {
+    automationKillSwitch = DEFAULT_SETTINGS.automationKillSwitch;
+  } else if (typeof raw.automationKillSwitch === 'boolean') {
+    automationKillSwitch = raw.automationKillSwitch;
+  } else {
+    automationKillSwitch = true;
+  }
 
   // safeModeSince is only meaningful while engaged. Accept a parseable ISO
   // string; anything else collapses to null (or, when engaged without a
@@ -777,26 +786,106 @@ export interface SettingsLoadResult {
   settings: KookrSettings;
   loadedFromDefaults: boolean;
   warnings: string[];
+  /**
+   * When set, settings could not be trusted for the automation kill-switch
+   * (corrupt JSON, unreadable file, or corrupt kill-switch field). Callers
+   * must fail closed on autonomous launches and surface this on health
+   * (`safeMode.loadError`) until a successful settings write recovers
+   * (issue #2085). Absent for ENOENT (first-run defaults — kill-switch off).
+   */
+  loadError?: string;
 }
 
-/** Load settings from a JSON file. Returns defaults on missing/corrupt file. */
-export async function loadSettings(filePath: string): Promise<SettingsLoadResult> {
+/**
+ * Defaults used when the on-disk settings file is corrupt or unreadable.
+ * Forces the automation kill-switch engaged so schedule launches cannot run
+ * on unknown state (issue #2085). ENOENT first-run does NOT use this path.
+ */
+function failClosedSettingsDefaults(
+  loadError: string,
+  nowIso: string,
+): SettingsLoadResult {
+  console.warn(
+    `[settings] ${loadError}; SAFE MODE engaged (fail-closed autonomous launches)`,
+  );
+  return {
+    settings: {
+      ...DEFAULT_SETTINGS,
+      automationKillSwitch: true,
+      safeModeSince: nowIso,
+    },
+    loadedFromDefaults: true,
+    warnings: [],
+    loadError,
+  };
+}
+
+function describeKillSwitchValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+/**
+ * Load settings from a JSON file.
+ * - ENOENT (first run): defaults, kill-switch off, no loadError.
+ * - Corrupt / unreadable / corrupt kill-switch field: defaults with
+ *   kill-switch engaged + loadError (fail-closed autonomous launches, #2085).
+ */
+export async function loadSettings(
+  filePath: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<SettingsLoadResult> {
   try {
     const content = await readFile(filePath, 'utf-8');
-    const parsed = JSON.parse(content);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      console.warn(`[settings] Invalid settings file (not an object), using defaults`);
-      return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return failClosedSettingsDefaults('Settings file is not valid JSON', nowIso);
     }
-    const validated = validateSettingsWithWarnings(parsed as Record<string, unknown>);
-    return { settings: validated.settings, loadedFromDefaults: false, warnings: validated.warnings };
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return failClosedSettingsDefaults('Invalid settings file (not an object)', nowIso);
+    }
+    const raw = parsed as Record<string, unknown>;
+    const validated = validateSettingsWithWarnings(raw);
+
+    // Present-but-non-boolean kill-switch: fail closed (issue #2085). Missing
+    // key keeps the upgrade-safe default (false) via validateSettings.
+    if (raw.automationKillSwitch !== undefined && typeof raw.automationKillSwitch !== 'boolean') {
+      const loadError =
+        `Corrupt automationKillSwitch field (expected boolean, got ${describeKillSwitchValue(raw.automationKillSwitch)})`;
+      console.warn(
+        `[settings] ${loadError}; SAFE MODE engaged (fail-closed autonomous launches)`,
+      );
+      const since =
+        validated.settings.safeModeSince
+        ?? nowIso;
+      return {
+        settings: {
+          ...validated.settings,
+          automationKillSwitch: true,
+          safeModeSince: since,
+        },
+        loadedFromDefaults: false,
+        warnings: validated.warnings,
+        loadError,
+      };
+    }
+
+    return {
+      settings: validated.settings,
+      loadedFromDefaults: false,
+      warnings: validated.warnings,
+    };
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT') {
-      // File doesn't exist yet — normal on first run
+      // File doesn't exist yet — normal on first run. Kill-switch stays off;
+      // there is no operator-intended state to fail closed over.
       return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
     }
-    console.warn(`[settings] Failed to read settings file, using defaults:`, err instanceof Error ? err.message : err);
-    return { settings: { ...DEFAULT_SETTINGS }, loadedFromDefaults: true, warnings: [] };
+    const message = err instanceof Error ? err.message : String(err);
+    return failClosedSettingsDefaults(`Failed to read settings file: ${message}`, nowIso);
   }
 }
 

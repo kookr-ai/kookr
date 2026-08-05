@@ -185,6 +185,11 @@ export interface SafeModeStatusSnapshot {
   engaged: boolean;
   /** ISO timestamp the current SAFE MODE period began; absent while disengaged. */
   since?: string;
+  /**
+   * Settings load failure that forced fail-closed SAFE MODE (issue #2085).
+   * Cleared after a successful settings write recovers the kill-switch state.
+   */
+  loadError?: string;
 }
 
 export interface OperationalAlertEventMetadata {

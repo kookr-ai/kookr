@@ -374,17 +374,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // Automation kill-switch / SAFE MODE (issue #1710 / #1699 WS0.4). Live
     // settings read so engage/disengage is visible without a restart. Omitted
     // when settings are not wired (older test harnesses).
-    let safeModeBlock: { engaged: boolean; since?: string; digest?: string } | undefined;
+    let safeModeBlock:
+      | { engaged: boolean; since?: string; digest?: string; loadError?: string }
+      | undefined;
     if (reservationSettings) {
       const status = resolveSafeModeStatus({
         automationKillSwitch: reservationSettings.automationKillSwitch,
         safeModeSince: reservationSettings.safeModeSince,
+        // Issue #2085: surface settings-load failures that forced fail-closed SAFE MODE.
+        loadError: deps.settings?.getLoadError?.(),
       });
       const digest = formatSafeModeDigestLine(status);
       safeModeBlock = {
         engaged: status.engaged,
         ...(status.since ? { since: status.since } : {}),
         ...(digest ? { digest } : {}),
+        ...(status.loadError ? { loadError: status.loadError } : {}),
       };
     }
 

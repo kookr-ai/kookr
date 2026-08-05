@@ -59,6 +59,11 @@ export interface CoreStores {
   currentSettings: KookrSettings;
   settingsLoadedFromDefaults: boolean;
   settingsLoadWarnings: string[];
+  /**
+   * When set, settings load could not trust the kill-switch (issue #2085).
+   * Cleared after a successful settings write recovers.
+   */
+  settingsLoadError?: string;
   circuitBreakerRegistry: CircuitBreakerRegistry;
   llmBreaker: CircuitBreaker;
   githubBreaker: CircuitBreaker;
@@ -206,6 +211,7 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     currentSettings,
     settingsLoadedFromDefaults: settingsResult.loadedFromDefaults,
     settingsLoadWarnings: settingsResult.warnings,
+    ...(settingsResult.loadError ? { settingsLoadError: settingsResult.loadError } : {}),
     circuitBreakerRegistry,
     llmBreaker,
     githubBreaker,
