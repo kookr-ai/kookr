@@ -308,6 +308,11 @@ export async function reclaimAgedProviderPausedTasks(
     },
     isAwaitingProviderReset: (task) => {
       if (!deps.recordProviderPause) return false;
+      // Production recordProviderPause returns holdForResume:true for tasks
+      // with no issueClaim (hung reaper keeps holding forever — no resume to
+      // schedule). Hard TTL is the upper bound that frees those slots with
+      // needs-human; only skip when a real #1896 resume path can exist.
+      if (!task.issueClaim) return false;
       try {
         const decision = deps.recordProviderPause(task, 'provider_paused_ttl');
         return decision?.holdForResume === true;

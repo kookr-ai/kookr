@@ -215,8 +215,10 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(d.deliveredPr).toBeUndefined();
   });
 
-  it('skips hard TTL when recordProviderPause says holdForResume (#1896)', async () => {
-    const task = makePausedTask();
+  it('skips hard TTL when claim-backed recordProviderPause says holdForResume (#1896)', async () => {
+    const task = makePausedTask({
+      issueClaim: { repo: 'kookr-ai/kookr', number: 2079 },
+    });
     const taskStore = makeMockTaskStore([task]);
     const lifecycleDeps = makeLifecycleDeps(taskStore);
     const metrics = new ProviderPausedOccupancyMetrics();
@@ -244,7 +246,9 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
   });
 
   it('reclaims after recordProviderPause returns holdForResume false (reset elapsed)', async () => {
-    const task = makePausedTask();
+    const task = makePausedTask({
+      issueClaim: { repo: 'kookr-ai/kookr', number: 2079 },
+    });
     const taskStore = makeMockTaskStore([task]);
     const lifecycleDeps = makeLifecycleDeps(taskStore);
     const tracker = new ProviderPausedStartTracker();
@@ -263,6 +267,34 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     );
 
     expect(result.reclaimedTaskIds).toEqual(['task-1']);
+  });
+
+  it('reclaims no-claim free-form tasks even when recordProviderPause would hold forever', async () => {
+    // Production wiring returns holdForResume:true when issueClaim is missing
+    // (no #1896 resume to schedule). Hard TTL must still free those slots.
+    const task = makePausedTask(); // no issueClaim
+    expect(task.issueClaim).toBeUndefined();
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+    const recordProviderPause = vi.fn(() => ({ holdForResume: true }));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause,
+        isHoldingOpenPr: () => false,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    // No-claim short-circuit must not call recordProviderPause.
+    expect(recordProviderPause).not.toHaveBeenCalled();
   });
 
   it('exposes occupancy on metrics even when nothing is reclaimed', async () => {
