@@ -166,7 +166,10 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     expect(ghCalls).toHaveLength(0); // needs-authoring guard prevents emission
     const payload = JSON.parse(c.lines[0]!);
     expect(payload.decision.selected.needsAuthoring).toBe(true);
-    expect(payload.decision.action).toBe('skip-invent');
+    // Product umbrella + no curated plan → invent-product-wave (#2069), not
+    // silent skip-invent. CLI still does not auto-create leaves without a plan.
+    expect(payload.decision.action).toBe('invent-product-wave');
+    expect(payload.decision.inventLeafCap).toBe(3);
     expect(payload.emitted).toHaveLength(0);
   });
 
