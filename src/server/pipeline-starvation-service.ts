@@ -20,6 +20,12 @@
  * honor the 4h successful-ideation suppress (re-scout; audit
  * `ideationSuccessEmptyQueue`). Requires `getCapacitySnapshot` from the live
  * capacity ledger.
+ *
+ * Issues #2068 / #2071: when free≥3 + pendingQueueDepth==0 after a prior
+ * starvation scout, bypass the remaining 4h scout-spawn gate once the
+ * anti-thrash floor elapses (scout-spawned ≠ belt-refilled). Audit fields:
+ * `scoutDedupBypassedForBeltEmpty`, `starvationRefillPostcondition`,
+ * durable `scoutCooldownSkipsWhileBeltEmpty` on the per-repo ledger.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -209,6 +215,10 @@ export class PipelineStarvationService {
       free: capacity?.free ?? null,
       pendingQueueDepth: capacity?.pendingQueueDepth ?? null,
       ideationSuccessEmptyQueue: decision.ideationSuccessEmptyQueue === true,
+      // Issues #2068 / #2071: belt-empty residual cooldown bypass + postcondition.
+      scoutDedupBypassedForBeltEmpty: decision.scoutDedupBypassedForBeltEmpty === true,
+      scoutCooldownSkipWhileBeltEmpty: decision.scoutCooldownSkipWhileBeltEmpty === true,
+      starvationRefillPostcondition: decision.starvationRefillPostcondition ?? null,
     };
 
     const batchKickEnabled = isPipelineBatchKickEnabled();

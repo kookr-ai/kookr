@@ -733,15 +733,27 @@ Called by `parallel-issue-batch` after it writes a machine-readable
    (`~/.kookr/playbook-state/pipeline-starvation/<repo-slug>.json`).
 2. Spawns at most one on-demand `repository-idea-scout` for the repo when no
    successful ideation ran in the last 4h, no scout is already in flight, and
-   no starvation-triggered scout was spawned in the last 4h. Spawns are
-   stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+   no starvation-triggered scout was spawned in the last 4h **unless** a
+   belt-empty residual bypass applies (below). Spawns are stamped in
+   `audit.jsonl` with `provenance: "starvation-trigger"`.
    **Empty-queue ideation override (issue #2043):** when a recent ideation
    *did* publish issues but capacity still shows `free ≥ 3` and
    `pendingQueueDepth == 0`, the 4h "successful ideation" suppress is **not**
    honored — re-scout instead of `batch_kick_only` (kicks cannot create
    issues). Decision audit rows set `ideationSuccessEmptyQueue: true` and
    include `free` / `pendingQueueDepth` inputs. When the queue still has work
-   or free slots are busy, the 4h dedup still prevents thrash-scouting.
+   or free slots are busy, the 4h ideation suppress still prevents thrash-scouting.
+   **Belt-empty residual scout-dedup bypass (issues #2068 / #2071):** when a
+   starvation scout already fired inside the 4h window but capacity still shows
+   `free ≥ 3` and `pendingQueueDepth == 0`, and at least two consecutive product
+   `blocked-empty` events have accumulated, re-scout is allowed once the 25m
+   anti-thrash floor since `lastStarvationScoutAt` has elapsed
+   (scout-spawned ≠ belt-refilled). Decision audit may set
+   `scoutDedupBypassedForBeltEmpty: true` and
+   `starvationRefillPostcondition: "pass"|"fail"`. While still inside the thrash
+   floor (or otherwise still gated on cooldown while belt-empty), skips
+   increment durable `scoutCooldownSkipsWhileBeltEmpty` on the per-repo ledger
+   (also projected under `/api/health` → `pipelineStarvation.repos[*]`).
 3. On the **second** consecutive `blocked-empty` for the same repo within 12h,
    emits one pipeline-starvation operational alert (the first empty does not
    alert).
