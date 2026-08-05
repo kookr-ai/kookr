@@ -1486,6 +1486,7 @@ export function App() {
         total={filteredAgents.length}
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
+        onOpenCapacity={openSettingsAtMaxActiveTasks}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}

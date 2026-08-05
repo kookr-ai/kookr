@@ -13,12 +13,22 @@ import {
   memorySeverity,
 } from '../resource-status.js';
 import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
+import {
+  formatFaaResidualAge,
+  formatFaaResidualLabel,
+  shouldShowFaaResidualPill,
+} from './faa-residual-pill.js';
 
 interface Props {
   findings: number;
   total: number;
   compact?: boolean;
   onShowShortcuts: () => void;
+  /**
+   * Open the capacity settings section when the FAA residual pill is clicked
+   * (issue #2082). Optional so isolated StatusBar tests need no App wiring.
+   */
+  onOpenCapacity?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -156,18 +166,23 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
 }
 
 /**
- * Compact ops-health pills for smoke-tick failing streak + resourceWatchdog off
- * (issue #2037). Hidden when healthy / enabled / no data yet.
+ * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
+ * (issue #2037), and chronic finishedAwaitingAck residual (issue #2082).
+ * Hidden when healthy / enabled / residual clear / no data yet.
  */
-function OpsHealthPills() {
+function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
+  const capacityResidual = useKookrStore((s) => s.capacityResidual);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
   const showWatchdog = resourceWatchdog != null && resourceWatchdog.enabled === false;
+  const faaCount = capacityResidual?.finishedAwaitingAck ?? 0;
+  const faaAgeMs = capacityResidual?.oldestFinishedAwaitingAckAgeMs ?? null;
+  const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
 
-  if (!showSmoke && !showWatchdog) return null;
+  if (!showSmoke && !showWatchdog && !showFaa) return null;
 
   const smokeTitle = showSmoke
     ? [
@@ -193,6 +208,19 @@ function OpsHealthPills() {
       ].filter(Boolean).join(' · ')
     : '';
 
+  const faaLabel = showFaa ? formatFaaResidualLabel(faaCount, faaAgeMs) : '';
+  const faaAgeLabel = showFaa ? formatFaaResidualAge(faaAgeMs) : null;
+  const faaTitle = showFaa
+    ? [
+        `${faaCount} task${faaCount === 1 ? '' : 's'} finished and awaiting completion ack`,
+        faaAgeLabel ? `oldest residual age ${faaAgeLabel}` : null,
+        onOpenCapacity
+          ? 'Capacity slots held with no forward progress — open capacity settings'
+          : 'Capacity slots held with no forward progress',
+        'See GET /api/health.capacity',
+      ].filter(Boolean).join(' · ')
+    : '';
+
   return (
     <span className="ops-health-pills" data-testid="ops-health-pills">
       {showSmoke && (
@@ -215,6 +243,29 @@ function OpsHealthPills() {
           Watchdog: off
         </span>
       )}
+      {showFaa && (
+        onOpenCapacity ? (
+          <button
+            type="button"
+            className="ops-health-pill ops-health-faa"
+            data-testid="ops-health-faa-pill"
+            title={faaTitle}
+            aria-label={`${faaLabel}. Open capacity settings`}
+            onClick={onOpenCapacity}
+          >
+            {faaLabel}
+          </button>
+        ) : (
+          <span
+            className="ops-health-pill ops-health-faa"
+            data-testid="ops-health-faa-pill"
+            title={faaTitle}
+            role="status"
+          >
+            {faaLabel}
+          </span>
+        )
+      )}
     </span>
   );
 }
@@ -224,6 +275,7 @@ export function StatusBar({
   total,
   compact = false,
   onShowShortcuts,
+  onOpenCapacity,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -258,7 +310,7 @@ export function StatusBar({
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
-        <OpsHealthPills />
+        <OpsHealthPills onOpenCapacity={onOpenCapacity} />
         {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
         <button
           className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}

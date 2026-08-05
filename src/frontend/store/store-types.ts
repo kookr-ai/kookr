@@ -514,9 +514,20 @@ export interface ResourceWatchdogStatus {
   pressureWhileDisabledReason?: string | null;
 }
 
+/**
+ * Slim projection of `GET /api/health.capacity` for the FAA residual status-bar
+ * pill (issue #2082). Only the chronic finishedAwaitingAck count + oldest age
+ * are needed for threshold + label.
+ */
+export interface CapacityResidualStatus {
+  finishedAwaitingAck: number;
+  oldestFinishedAwaitingAckAgeMs: number | null;
+}
+
 export interface OpsHealthPayload {
   prodSmokeTick?: ProdSmokeTickStatus | null;
   resourceWatchdog?: ResourceWatchdogStatus | null;
+  capacityResidual?: CapacityResidualStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -526,9 +537,11 @@ export interface SystemStatusSlice {
   prodSmokeTick: ProdSmokeTickStatus | null;
   /** Resource-watchdog enablement from `/api/health` (issue #2037). */
   resourceWatchdog: ResourceWatchdogStatus | null;
+  /** Capacity FAA residual from `/api/health.capacity` (issue #2082). */
+  capacityResidual: CapacityResidualStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog projections used by status-bar pills. */
+  /** Update smoke-tick / resource-watchdog / capacity residual projections used by status-bar pills. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 
