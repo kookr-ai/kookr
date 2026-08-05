@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
-import { isValidRelayNodeUrl } from '../shared/relay-node-url.js';
+import { isValidRelayNodeUrl } from '../shared/contracts/relay-node-url.js';
 import { isValidSpeechServiceUrl } from './speech-service-url.js';
 
 export type ConfigPreflightSeverity = 'fatal' | 'warning';

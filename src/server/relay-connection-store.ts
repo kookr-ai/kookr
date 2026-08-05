@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { validateRelayNodeUrl } from '../shared/relay-node-url.js';
+import { validateRelayNodeUrl } from '../shared/contracts/relay-node-url.js';
 
 export interface StoredRelayConnectionCredentials {
   schemaVersion: 'relay-connection.v1';

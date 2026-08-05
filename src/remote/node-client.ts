@@ -12,7 +12,7 @@ import type { TerminalDemandProof } from './terminal-publication-gate.js';
 
 import type { WebSocket } from 'ws';
 
-import { validateRelayNodeUrl } from '../shared/relay-node-url.js';
+import { validateRelayNodeUrl } from '../shared/contracts/relay-node-url.js';
 
 export type RemoteNodeMode = 'active' | 'degraded';
 export type RemoteNodeConnectionState = 'idle' | 'connecting' | 'connected' | 'backing-off' | 'stopped';
