@@ -21,13 +21,24 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.codex-plugin-dir',
   'ops.resource-watchdog',
   'ops.prod-smoke-tick',
+  'ops.maintenance-prune',
 ] as const;
 
-/** Hermetic seams so unit tests never touch the host ~/.kookr alert artifact. */
+/** Env that silences all advisory ops WARNs (resource-watchdog + maintenance-prune). */
+const opsOkEnv = {
+  KOOKR_RESOURCE_WATCHDOG: '1',
+  KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24',
+} as const;
+
+/** Hermetic seams so unit tests never touch the host ~/.kookr or live HTTP. */
 const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
+  probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
 };
+
+/** Advisory ops check ids that are off-by-default and emit WARN with empty env. */
+const ADVISORY_OFF_BY_DEFAULT = new Set(['ops.resource-watchdog', 'ops.maintenance-prune']);
 
 function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: string; exitCode?: number }>) {
   return vi.fn(async (file: string, args: readonly string[]) => {
@@ -58,7 +69,7 @@ function happyFixtures() {
 }
 
 describe('kookr doctor --json', () => {
-  it('emits a passing JSON report for required launch prerequisites (watchdog advisory when off)', async () => {
+  it('emits a passing JSON report for required launch prerequisites (ops advisory when off)', async () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
@@ -72,7 +83,7 @@ describe('kookr doctor --json', () => {
 
     expect(report).toMatchObject({
       ok: true,
-      // Resource watchdog is off by default → advisory warn, not a hard failure.
+      // Resource watchdog + maintenance prune are off by default → advisory warn.
       status: 'warn',
       generatedAt: '2026-06-21T07:30:00.000Z',
     });
@@ -88,10 +99,11 @@ describe('kookr doctor --json', () => {
       'agent.codex-plugin-dir',
       'ops.resource-watchdog',
       'ops.prod-smoke-tick',
+      'ops.maintenance-prune',
     ]));
     expect(
       report.checks
-        .filter((c) => c.id !== 'ops.resource-watchdog')
+        .filter((c) => !ADVISORY_OFF_BY_DEFAULT.has(c.id))
         .every((c) => c.status === 'ok'),
     ).toBe(true);
     expect(report.checks.find((c) => c.id === 'ops.prod-smoke-tick')).toMatchObject({
@@ -103,13 +115,18 @@ describe('kookr doctor --json', () => {
       required: false,
       summary: 'host-pressure auto-investigation is disabled',
     });
+    expect(report.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'scheduled data-dir prune is disabled',
+    });
   });
 
   it('reports ops.resource-watchdog ok when KOOKR_RESOURCE_WATCHDOG is truthy', async () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -127,7 +144,7 @@ describe('kookr doctor --json', () => {
     const run = commandRunner(happyFixtures());
 
     const disabledLive = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -142,7 +159,7 @@ describe('kookr doctor --json', () => {
     });
 
     const enabledLive = await buildDoctorJsonReport({
-      env: {},
+      env: { KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24' },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -180,6 +197,82 @@ describe('kookr doctor --json', () => {
     });
   });
 
+  it('WARNs on ops.maintenance-prune when interval is 0/unset (issue #2080)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const unset = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+    expect(unset.ok).toBe(true);
+    expect(unset.status).toBe('warn');
+    expect(unset.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'scheduled data-dir prune is disabled',
+      recommendedAction: expect.stringContaining('KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=24'),
+    });
+
+    const zero = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '0' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+    expect(zero.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'warn',
+      summary: 'scheduled data-dir prune is disabled',
+    });
+  });
+
+  it('reports ops.maintenance-prune ok when interval > 0 (issue #2080)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('scheduled every 24h'),
+    });
+  });
+
+  it('enriches ops.maintenance-prune ok with timer-health lastFiredAt when probed', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const withFire = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeMaintenancePruneTimer: async () => ({ lastFiredAt: '2026-08-04T12:00:00.000Z' }),
+    });
+    expect(withFire.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('lastFiredAt=2026-08-04T12:00:00.000Z'),
+    });
+
+    const notYet = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeMaintenancePruneTimer: async () => ({ lastFiredAt: null }),
+    });
+    expect(notYet.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('not fired yet'),
+    });
+  });
+
   it('WARNs on ops.prod-smoke-tick when alert artifact has consecutiveFailures (issue #2035)', async () => {
     const run = commandRunner(happyFixtures());
     const alert: AlertArtifact = {
@@ -196,7 +289,7 @@ describe('kookr doctor --json', () => {
     };
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_DIR: '/tmp/kookr-doctor-smoke-fixture' },
+      env: { ...opsOkEnv, KOOKR_DIR: '/tmp/kookr-doctor-smoke-fixture' },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -222,7 +315,7 @@ describe('kookr doctor --json', () => {
     const run = commandRunner(happyFixtures());
 
     const missing = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -243,7 +336,7 @@ describe('kookr doctor --json', () => {
       checks: [{ name: 'ready', ok: true, detail: 'ok' }],
     };
     const okReport = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -275,10 +368,11 @@ describe('kookr doctor --json', () => {
     writeFileSync(alertPath, `${JSON.stringify(artifact, null, 2)}\n`);
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_DIR: dir },
+      env: { ...opsOkEnv, KOOKR_DIR: dir },
       commandRunner: run,
       access: async () => {},
       probeResourceWatchdogEnabled: async () => null,
+      probeMaintenancePruneTimer: async () => null,
       // intentionally no readProdSmokeTickAlert — exercises default disk path
     });
 
@@ -303,7 +397,7 @@ describe('kookr doctor --json', () => {
       checks: [{ name: 'ready', ok: false, detail: 'down' }],
     };
     const deps = {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -328,7 +422,7 @@ describe('kookr doctor --json', () => {
     });
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -352,7 +446,7 @@ describe('kookr doctor --json', () => {
     });
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -370,7 +464,7 @@ describe('kookr doctor --json', () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {
         throw new Error('missing vendored dtach');
@@ -391,7 +485,7 @@ describe('kookr doctor --json', () => {
     const errors: string[] = [];
 
     const code = await runDoctorCli(['--json'], {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -414,7 +508,7 @@ describe('kookr doctor --json', () => {
     const logs: string[] = [];
 
     const code = await runDoctorCli(['--json'], {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -434,7 +528,7 @@ describe('kookr doctor --json', () => {
 
     const run = commandRunner(happyFixtures());
     const report = await buildDoctorJsonReport({
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -503,7 +597,7 @@ describe('kookr doctor (human)', () => {
     const errors: string[] = [];
 
     const code = await runDoctorCli([], {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       now: () => new Date('2026-06-21T07:30:00.000Z'),
@@ -532,7 +626,7 @@ describe('kookr doctor (human)', () => {
     const logs: string[] = [];
 
     const code = await runDoctorCli([], {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,
@@ -553,7 +647,7 @@ describe('kookr doctor (human)', () => {
     const errors: string[] = [];
 
     await runDoctorCli([], {
-      env: { KOOKR_RESOURCE_WATCHDOG: '1' },
+      env: { ...opsOkEnv },
       commandRunner: run,
       access: async () => {},
       ...hermeticOps,

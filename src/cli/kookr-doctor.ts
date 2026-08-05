@@ -18,6 +18,7 @@ import {
   type AlertArtifact,
 } from '../server/prod-smoke.js';
 import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
+import { resolveMaintenancePruneIntervalHours } from '../server/maintenance-prune-schedule.js';
 import { resolveKookrDataDir } from './kookr-maintenance.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
@@ -50,6 +51,15 @@ interface CommandRunner {
 type ResourceWatchdogEnabledProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | null>;
 
 /**
+ * Live probe of maintenancePrune.lastFiredAt from /api/diagnostics/timer-health
+ * (issue #2080). Outer null = unreachable / unknown; inner lastFiredAt null =
+ * loop registered but never fired yet.
+ */
+type MaintenancePruneTimerProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<{ lastFiredAt: string | null } | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -68,6 +78,12 @@ interface RunDoctorDeps {
    * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
    */
   probeResourceWatchdogEnabled?: ResourceWatchdogEnabledProbe;
+  /**
+   * Optional override for the live timer-health maintenancePrune probe.
+   * Defaults to a short-timeout fetch of GET /api/diagnostics/timer-health when
+   * KOOKR_API_BASE_URL or KOOKR_PORT points at a server.
+   */
+  probeMaintenancePruneTimer?: MaintenancePruneTimerProbe;
   /**
    * Optional override for reading `{dataDir}/prod-smoke-tick-alert.json`.
    * Defaults to {@link readAlertArtifact}. Tests inject a fixture reader so
@@ -92,7 +108,8 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
-and ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert).
+ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
+and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 `;
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -184,6 +201,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(...await checkAgentBinaries(env, run));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
+  checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 
   const status = aggregateStatus(checks);
   return {
@@ -328,6 +346,60 @@ async function checkResourceWatchdog(
 }
 
 /**
+ * Advisory ops check (issue #2080): surface that the scheduled maintenance prune
+ * is off by default (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` unset/0). Disk/log
+ * growth under unattended multi-day runs is a host-class failure operators
+ * cannot discover without reading lifecycle code — doctor makes it visible.
+ *
+ * - intervalHours <= 0 → WARN with remediation to set interval=24
+ * - intervalHours > 0 → OK; optional timer-health lastFiredAt enriches summary
+ * - Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN
+ */
+async function checkMaintenancePruneSchedule(
+  env: NodeJS.ProcessEnv,
+  probe: MaintenancePruneTimerProbe | undefined,
+): Promise<DoctorCheck> {
+  const intervalHours = resolveMaintenancePruneIntervalHours(env);
+  const probeFn = probe ?? defaultProbeMaintenancePruneTimer;
+  let live: { lastFiredAt: string | null } | null = null;
+  try {
+    live = await probeFn(env);
+  } catch {
+    live = null;
+  }
+
+  if (intervalHours > 0) {
+    let summary = `scheduled every ${intervalHours}h (KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=${intervalHours})`;
+    if (live) {
+      summary = live.lastFiredAt
+        ? `scheduled every ${intervalHours}h (timer-health lastFiredAt=${live.lastFiredAt})`
+        : `scheduled every ${intervalHours}h (timer registered; not fired yet)`;
+    }
+    return okCheck(
+      'ops.maintenance-prune',
+      'Maintenance prune',
+      'ops',
+      summary,
+      false,
+    );
+  }
+
+  return {
+    id: 'ops.maintenance-prune',
+    label: 'Maintenance prune',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary: 'scheduled data-dir prune is disabled',
+    detail:
+      'KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is unset, 0, or non-positive (opt-in only). ' +
+      'Aged hooks/logs/playbook-state will not be reclaimed automatically.',
+    recommendedAction:
+      'Set KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS=24 and restart the server so unattended multi-day runs reclaim aged data-dir artifacts.',
+  };
+}
+
+/**
  * Advisory ops check (issue #2035): surface a sustained prod-smoke-tick failure
  * streak from the durable on-disk alert artifact so doctor/preflight show the
  * same signal autonomous recovery already has on disk / on /api/health.
@@ -426,6 +498,40 @@ async function defaultProbeResourceWatchdogEnabled(env: NodeJS.ProcessEnv): Prom
     if (typeof body?.resourceWatchdog?.enabled === 'boolean') {
       return body.resourceWatchdog.enabled;
     }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort live probe of maintenancePrune on timer-health. Only hits the
+ * network when the operator has pointed at a server (`KOOKR_API_BASE_URL` or
+ * numeric `KOOKR_PORT`) — no auto 4800/4801 scan.
+ */
+async function defaultProbeMaintenancePruneTimer(
+  env: NodeJS.ProcessEnv,
+): Promise<{ lastFiredAt: string | null } | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/diagnostics/timer-health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      loops?: Array<{ name?: unknown; lastFiredAt?: unknown }>;
+    };
+    const loop = body?.loops?.find((entry) => entry?.name === 'maintenancePrune');
+    if (!loop) return null;
+    if (loop.lastFiredAt === null) return { lastFiredAt: null };
+    if (typeof loop.lastFiredAt === 'string') return { lastFiredAt: loop.lastFiredAt };
     return null;
   } catch {
     return null;
