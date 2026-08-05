@@ -9,6 +9,7 @@ import {
   type HelperLlmDiagnosticsCounters,
   type HelperLlmDiagnosticsSnapshot,
   type HelperLlmPausedProvider,
+  type HelperLlmProviderAttemptBudget,
   type LlmClient,
   type LlmCompletionAuditResult,
   type LlmCompletionDetail,
@@ -26,11 +27,41 @@ import {
  */
 export const DEFAULT_LLM_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
 
+/**
+ * Process-wide cap on helper-LLM *provider network attempts* inside a sliding
+ * window (issue #2083). Free-tier 429 storms cascade through every fallback
+ * provider on each naming/summary call; this budget stops further network once
+ * the window is full and returns a deterministic degrade instead.
+ *
+ * Sized for normal multi-task load (several concurrent naming/summary calls
+ * across a short fallback chain) while still bounding thrash. Override with
+ * `KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET` (`0` disables) and
+ * `KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS`.
+ */
+export const DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET = 90;
+export const DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS = 60_000;
+
 export function resolveLlmAuthCooldownMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.KOOKR_LLM_AUTH_COOLDOWN_MS?.trim();
   if (raw === undefined || raw === '') return DEFAULT_LLM_AUTH_COOLDOWN_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_LLM_AUTH_COOLDOWN_MS;
+  return Math.floor(parsed);
+}
+
+export function resolveLlmProviderAttemptBudget(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET;
+  return Math.floor(parsed);
+}
+
+export function resolveLlmProviderAttemptWindowMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
   return Math.floor(parsed);
 }
 
@@ -107,6 +138,66 @@ function listPausedProviders(now: number = Date.now()): HelperLlmPausedProvider[
       lastMessage: entry.lastMessage,
     }))
     .sort((a, b) => `${a.provider}\0${a.model}`.localeCompare(`${b.provider}\0${b.model}`));
+}
+
+/** Ascending timestamps of recent provider network attempts (process-wide). */
+const providerAttemptTimestamps: number[] = [];
+/** Lifetime count of attempts refused because the sliding-window budget was full. */
+let stormsSuppressedTotal = 0;
+
+function pruneProviderAttemptWindow(now: number, windowMs: number): void {
+  const cutoff = now - windowMs;
+  let firstLive = 0;
+  while (firstLive < providerAttemptTimestamps.length && providerAttemptTimestamps[firstLive]! <= cutoff) {
+    firstLive += 1;
+  }
+  if (firstLive > 0) providerAttemptTimestamps.splice(0, firstLive);
+}
+
+/**
+ * Reserve one process-wide provider network attempt. When the budget is
+ * exhausted, returns false and increments {@link stormsSuppressedTotal}
+ * without recording a timestamp (a refused attempt must not burn the budget).
+ * `limit <= 0` disables the budget and always allows.
+ */
+function tryAcquireProviderAttempt(now: number = Date.now()): boolean {
+  const limit = resolveLlmProviderAttemptBudget();
+  if (limit <= 0) return true;
+
+  const windowMs = resolveLlmProviderAttemptWindowMs();
+  pruneProviderAttemptWindow(now, windowMs);
+
+  if (providerAttemptTimestamps.length >= limit) {
+    stormsSuppressedTotal += 1;
+    return false;
+  }
+
+  providerAttemptTimestamps.push(now);
+  return true;
+}
+
+function getProviderAttemptBudgetSnapshot(now: number = Date.now()): HelperLlmProviderAttemptBudget {
+  const limit = resolveLlmProviderAttemptBudget();
+  const windowMs = resolveLlmProviderAttemptWindowMs();
+  if (limit > 0) pruneProviderAttemptWindow(now, windowMs);
+  return {
+    limit,
+    windowMs,
+    attemptsInWindow: limit > 0 ? providerAttemptTimestamps.length : 0,
+  };
+}
+
+function budgetExhaustedFailure(client: LlmClient, now: number = Date.now()): LlmProviderFailureRecord {
+  const budget = getProviderAttemptBudgetSnapshot(now);
+  return {
+    provider: client.provider,
+    model: client.model,
+    category: 'other',
+    message:
+      `helper LLM provider attempt budget exhausted ` +
+      `(${budget.attemptsInWindow}/${budget.limit} attempts in ${budget.windowMs}ms window); ` +
+      `degrading without network`,
+  };
 }
 
 function hasProviderFailureCategory(err: unknown): err is { providerFailureCategory: LlmProviderFailureCategory } {
@@ -328,12 +419,16 @@ export function getHelperLlmDiagnosticsSnapshot(): HelperLlmDiagnosticsSnapshot 
       }))
       .sort((a, b) => `${a.useCase}\0${a.provider}\0${a.model}`.localeCompare(`${b.useCase}\0${b.provider}\0${b.model}`)),
     pausedProviders: listPausedProviders(generatedAt),
+    stormsSuppressed: stormsSuppressedTotal,
+    providerAttemptBudget: getProviderAttemptBudgetSnapshot(generatedAt),
   };
 }
 
 export function resetHelperLlmDiagnosticsForTest(): void {
   helperLlmBuckets.clear();
   authPausedProviders.clear();
+  providerAttemptTimestamps.length = 0;
+  stormsSuppressedTotal = 0;
 }
 
 export async function completeLlmWithFailureAudit(
@@ -465,6 +560,10 @@ class HelperLlmAccountingClient implements LlmClient {
  * Auth failures (expired/invalid API keys) long-pause the failing provider so
  * subsequent complete() calls skip it for a cool-down window instead of
  * re-hitting dead credentials on every helper call (issue #2033).
+ *
+ * Process-wide provider-attempt budget (issue #2083) caps network attempts
+ * across all FallbackLlmClient instances so free-tier 429 cascades cannot
+ * thrash the event loop; when exhausted the call degrades without network.
  */
 export class FallbackLlmClient implements LlmClient {
   private clients: LlmClient[];
@@ -488,6 +587,7 @@ export class FallbackLlmClient implements LlmClient {
     const failures: LlmProviderFailureRecord[] = [];
     let attemptedCount = 0;
     let skippedPausedCount = 0;
+    let stormSuppressed = false;
 
     for (const client of this.clients) {
       // Re-check between providers so an abort that fired during the previous
@@ -516,6 +616,18 @@ export class FallbackLlmClient implements LlmClient {
           `[llm] ${client.provider} (${client.model}) skipped category=auth: paused until ${new Date(paused.pausedUntil).toISOString()} after auth failure, trying next provider`,
         );
         continue;
+      }
+
+      if (!tryAcquireProviderAttempt()) {
+        stormSuppressed = true;
+        const failure = budgetExhaustedFailure(client);
+        failures.push(failure);
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) skipped: ${failure.message}`,
+        );
+        // Remaining providers would also be denied in this window — stop the
+        // cascade without further network or extra counter noise.
+        break;
       }
 
       attemptedCount += 1;
@@ -553,9 +665,14 @@ export class FallbackLlmClient implements LlmClient {
       }
     }
 
-    if (attemptedCount === 0 && skippedPausedCount > 0) {
+    if (attemptedCount === 0 && skippedPausedCount > 0 && !stormSuppressed) {
       console.warn(
         `[llm] all ${skippedPausedCount} provider(s) paused after auth failures — no provider attempted this call`,
+      );
+    }
+    if (attemptedCount === 0 && stormSuppressed) {
+      console.warn(
+        `[llm] helper LLM provider attempt budget exhausted — no provider attempted this call`,
       );
     }
 
@@ -573,12 +690,14 @@ export class FallbackLlmClient implements LlmClient {
    * first provider whose completion has text; otherwise the last attempt's
    * detail (which carries its finish reason).
    *
-   * Honors the same auth-pause skip path as {@link completeWithFailureAudit}.
+   * Honors the same auth-pause and attempt-budget paths as
+   * {@link completeWithFailureAudit}.
    */
   async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
     let lastDetail: LlmCompletionDetail = { text: null, finishReason: null };
     let attemptedCount = 0;
     let skippedPausedCount = 0;
+    let stormSuppressed = false;
 
     for (const client of this.clients) {
       if (request.signal?.aborted) {
@@ -595,6 +714,15 @@ export class FallbackLlmClient implements LlmClient {
           `[llm] ${client.provider} (${client.model}) skipped category=auth: paused until ${new Date(paused.pausedUntil).toISOString()} after auth failure, trying next provider`,
         );
         continue;
+      }
+
+      if (!tryAcquireProviderAttempt()) {
+        stormSuppressed = true;
+        const failure = budgetExhaustedFailure(client);
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) skipped: ${failure.message}`,
+        );
+        break;
       }
 
       attemptedCount += 1;
@@ -627,9 +755,14 @@ export class FallbackLlmClient implements LlmClient {
       }
     }
 
-    if (attemptedCount === 0 && skippedPausedCount > 0) {
+    if (attemptedCount === 0 && skippedPausedCount > 0 && !stormSuppressed) {
       console.warn(
         `[llm] all ${skippedPausedCount} provider(s) paused after auth failures — no provider attempted this call`,
+      );
+    }
+    if (attemptedCount === 0 && stormSuppressed) {
+      console.warn(
+        `[llm] helper LLM provider attempt budget exhausted — no provider attempted this call`,
       );
     }
 

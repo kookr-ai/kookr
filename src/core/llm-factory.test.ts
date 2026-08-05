@@ -3,10 +3,14 @@ import {
   classifyLlmProviderFailure,
   completeLlmWithFailureAudit,
   DEFAULT_LLM_AUTH_COOLDOWN_MS,
+  DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET,
+  DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS,
   FallbackLlmClient,
   getHelperLlmDiagnosticsSnapshot,
   resetHelperLlmDiagnosticsForTest,
   resolveLlmAuthCooldownMs,
+  resolveLlmProviderAttemptBudget,
+  resolveLlmProviderAttemptWindowMs,
   withHelperLlmAccounting,
 } from './llm-factory.js';
 import type { LlmClient } from './llm-types.js';
@@ -27,6 +31,8 @@ const ENV_KEYS = [
   'KOOKR_LLM_APP_TITLE',
   'KOOKR_LLM_TIMEOUT_MS',
   'KOOKR_LLM_AUTH_COOLDOWN_MS',
+  'KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET',
+  'KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS',
 ] as const;
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
@@ -484,6 +490,188 @@ describe('FallbackLlmClient auth cool-down', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('all 1 provider(s) paused after auth failures'),
     );
+    warn.mockRestore();
+  });
+});
+
+// #2083: process-wide helper-LLM provider-attempt budget under free-tier 429 storms.
+describe('FallbackLlmClient provider attempt budget', () => {
+  const originalBudget = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+  const originalWindow = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
+
+  function client(provider: string, impl: () => Promise<string | null>) {
+    return { provider, model: `${provider}-model`, complete: vi.fn().mockImplementation(impl) };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '4';
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS = '60000';
+    resetHelperLlmDiagnosticsForTest();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    if (originalBudget === undefined) delete process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+    else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = originalBudget;
+    if (originalWindow === undefined) delete process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS;
+    else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS = originalWindow;
+    resetHelperLlmDiagnosticsForTest();
+  });
+
+  test('resolveLlmProviderAttemptBudget defaults and validates env', () => {
+    expect(resolveLlmProviderAttemptBudget({})).toBe(DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET);
+    expect(resolveLlmProviderAttemptBudget({ KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET: '30' })).toBe(30);
+    expect(resolveLlmProviderAttemptBudget({ KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET: '0' })).toBe(0);
+    expect(resolveLlmProviderAttemptBudget({ KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET: '-1' })).toBe(
+      DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET,
+    );
+    expect(resolveLlmProviderAttemptBudget({ KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET: 'nope' })).toBe(
+      DEFAULT_LLM_PROVIDER_ATTEMPT_BUDGET,
+    );
+    expect(resolveLlmProviderAttemptWindowMs({})).toBe(DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS);
+    expect(resolveLlmProviderAttemptWindowMs({ KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS: '120000' })).toBe(120_000);
+    expect(resolveLlmProviderAttemptWindowMs({ KOOKR_LLM_PROVIDER_ATTEMPT_WINDOW_MS: '0' })).toBe(
+      DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS,
+    );
+  });
+
+  test('under a synthetic 429 storm, network attempts stay ≤ budget and stormsSuppressed increments', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rateLimit = Object.assign(new Error('RESOURCE_EXHAUSTED'), {
+      status: 429,
+      providerFailureCategory: 'other' as const,
+    });
+    // Three providers — each complete() would try up to 3 network calls without a budget.
+    const a = client('google', async () => { throw rateLimit; });
+    const b = client('groq', async () => { throw rateLimit; });
+    const c = client('baseten', async () => { throw rateLimit; });
+    const fb = new FallbackLlmClient([a, b, c]);
+
+    // Call 1: 3 attempts (a,b,c). Call 2: 1 attempt (a) then budget full → degrade.
+    // Call 3+: zero network.
+    await expect(fb.complete({ maxTokens: 10, userMessage: '1' })).resolves.toBeNull();
+    await expect(fb.complete({ maxTokens: 10, userMessage: '2' })).resolves.toBeNull();
+    await expect(fb.complete({ maxTokens: 10, userMessage: '3' })).resolves.toBeNull();
+    await expect(fb.complete({ maxTokens: 10, userMessage: '4' })).resolves.toBeNull();
+
+    const totalNetwork =
+      (a.complete as ReturnType<typeof vi.fn>).mock.calls.length
+      + (b.complete as ReturnType<typeof vi.fn>).mock.calls.length
+      + (c.complete as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(totalNetwork).toBe(4);
+    expect(a.complete).toHaveBeenCalledTimes(2);
+    expect(b.complete).toHaveBeenCalledOnce();
+    expect(c.complete).toHaveBeenCalledOnce();
+
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.stormsSuppressed).toBeGreaterThanOrEqual(2);
+    expect(snapshot.providerAttemptBudget).toEqual({
+      limit: 4,
+      windowMs: 60_000,
+      attemptsInWindow: 4,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('attempt budget exhausted'));
+    warn.mockRestore();
+  });
+
+  test('budget window slides and allows new attempts after the window elapses', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rateLimit = Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+    const a = client('google', async () => { throw rateLimit; });
+    const fb = new FallbackLlmClient([a]);
+
+    for (let i = 0; i < 4; i += 1) {
+      await fb.complete({ maxTokens: 10, userMessage: `burn-${i}` });
+    }
+    expect(a.complete).toHaveBeenCalledTimes(4);
+
+    // Budget full — no network.
+    await fb.complete({ maxTokens: 10, userMessage: 'blocked' });
+    expect(a.complete).toHaveBeenCalledTimes(4);
+
+    vi.advanceTimersByTime(60_001);
+    await fb.complete({ maxTokens: 10, userMessage: 'recovered' });
+    expect(a.complete).toHaveBeenCalledTimes(5);
+
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.providerAttemptBudget.attemptsInWindow).toBe(1);
+    expect(snapshot.stormsSuppressed).toBeGreaterThanOrEqual(1);
+    warn.mockRestore();
+  });
+
+  test('deterministic degrade returns null without throwing and records audit failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '1';
+    const a = client('google', async () => {
+      throw Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+    });
+    const b = client('groq', async () => 'should-not-run');
+    const fb = new FallbackLlmClient([a, b]);
+
+    // First call spends the only slot on google (fails), then budget blocks groq.
+    const first = await fb.completeWithFailureAudit({ maxTokens: 10, userMessage: '1' });
+    expect(first.text).toBeNull();
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).not.toHaveBeenCalled();
+    expect(first.failures.some((f) => f.message.includes('attempt budget exhausted'))).toBe(true);
+
+    // Second call is fully suppressed — no network.
+    const second = await fb.completeWithFailureAudit({ maxTokens: 10, userMessage: '2' });
+    expect(second.text).toBeNull();
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).not.toHaveBeenCalled();
+    expect(second.failureCategory).toBe('other');
+    expect(getHelperLlmDiagnosticsSnapshot().stormsSuppressed).toBeGreaterThanOrEqual(1);
+    warn.mockRestore();
+  });
+
+  test('KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET=0 disables the budget', async () => {
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '0';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = client('google', async () => {
+      throw Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+    });
+    const fb = new FallbackLlmClient([a]);
+
+    for (let i = 0; i < 10; i += 1) {
+      await fb.complete({ maxTokens: 10, userMessage: String(i) });
+    }
+    expect(a.complete).toHaveBeenCalledTimes(10);
+    expect(getHelperLlmDiagnosticsSnapshot().stormsSuppressed).toBe(0);
+    expect(getHelperLlmDiagnosticsSnapshot().providerAttemptBudget.limit).toBe(0);
+    warn.mockRestore();
+  });
+
+  test('completeDetailed also honors the attempt budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '1';
+    const a: LlmClient = {
+      provider: 'google',
+      model: 'google-model',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(
+        Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 }),
+      ),
+    };
+    const b: LlmClient = {
+      provider: 'groq',
+      model: 'groq-model',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockResolvedValue({ text: 'never', finishReason: 'stop' }),
+    };
+    const fb = new FallbackLlmClient([a, b]);
+
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '1' }))
+      .resolves.toEqual({ text: null, finishReason: null });
+    expect(a.completeDetailed).toHaveBeenCalledOnce();
+    expect(b.completeDetailed).not.toHaveBeenCalled();
+
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: '2' }))
+      .resolves.toEqual({ text: null, finishReason: null });
+    expect(a.completeDetailed).toHaveBeenCalledOnce();
+    expect(b.completeDetailed).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 });
