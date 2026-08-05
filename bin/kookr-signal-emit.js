@@ -4,13 +4,15 @@
 // SignalDeliveryService then pushes new signals to Discord / Telegram.
 //
 // Thin entry that loads the compiled CLI (dist/cli/kookr-signal-emit.js),
-// falling back to the TypeScript source when running under tsx in dev.
+// falling back to the TypeScript source via tsx when dist is missing (dev /
+// clean-clone / IVL).
 //
 // See src/cli/kookr-signal-emit.ts for subcommands and flags.
 
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { importMaybeTs } from './import-maybe-ts.js';
 
 async function main() {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +24,7 @@ async function main() {
     console.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runSignalEmitCli(process.argv.slice(2));
 }
 
