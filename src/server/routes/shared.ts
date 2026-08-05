@@ -447,6 +447,15 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * provider_paused occupancy + hard-TTL reclaim counters (issue #2079).
+   * `/api/health` and `/metrics` read only `getSnapshot()` — live occupancy
+   * plus process-lifetime reclaim counters; never a fresh scan on the request path.
+   */
+  providerPausedOccupancyMetrics?: Pick<
+    import('../provider-paused-ttl-sweep.js').ProviderPausedOccupancyMetrics,
+    'getSnapshot'
+  >;
+  /**
    * First-hook miss counter (issue #2036). `/metrics` and `/api/health` read
    * only `getSnapshot()` — process-lifetime cumulative count of post-spawn
    * sessions reaped for never emitting SessionStart / any agent hook.

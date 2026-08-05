@@ -78,7 +78,16 @@ import {
 } from './first-hook-deadline-sweep.js';
 import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import type { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
+import {
+  reclaimAgedProviderPausedTasks,
+  type ProviderPausedOccupancyMetrics,
+  type ProviderPausedStartTracker,
+} from './provider-paused-ttl-sweep.js';
+import type { ProviderPausedOccupancyAlerter } from './provider-paused-occupancy-alert.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
+import {
+  DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+} from '../core/provider-paused-ttl.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import {
@@ -243,6 +252,31 @@ export interface TimerDeps {
    * `detectorBroadcast` path so fire/clear edges spool to Discord.
    */
   hungSuspectResidualAlerter?: Pick<HungSuspectResidualAlerter, 'evaluate'>;
+  /**
+   * First-observed continuous provider_pause start tracker (issue #2079).
+   * Shared across liveness ticks so hard-TTL age is stable.
+   */
+  providerPausedStartTracker?: ProviderPausedStartTracker;
+  /**
+   * Live getter for the provider_paused hard TTL, in milliseconds (issue
+   * #2079). Read on every liveness tick. Falls back to 2h when absent.
+   */
+  getProviderPausedHardTtlMs?: () => number;
+  /** Optional counters for provider_paused occupancy + hard-TTL reclaim (issue #2079). */
+  providerPausedOccupancyMetrics?: Pick<
+    ProviderPausedOccupancyMetrics,
+    | 'recordReclaimed'
+    | 'recordAttempted'
+    | 'recordSelection'
+    | 'recordOccupancy'
+    | 'recordHardTtlMs'
+  >;
+  /**
+   * Operator page when provider_paused occupancy stays high (issue #2079).
+   * Page-only for the occupancy bound — hard TTL reclaim is separate.
+   * Prefer `detectorBroadcast` so fire/clear edges spool to Discord.
+   */
+  providerPausedOccupancyAlerter?: Pick<ProviderPausedOccupancyAlerter, 'evaluate'>;
   /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
   reportsDir?: string;
   /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
@@ -1206,6 +1240,64 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
 
+      // provider_paused occupancy bound + hard TTL (issue #2079): observe
+      // pauseStartedAt, hard-TTL reclaim aged pauses (needs-human, never
+      // delivered), then page when occupancy stays ≥ bound past the stale window.
+      let providerPausedTtlResult: Awaited<ReturnType<typeof reclaimAgedProviderPausedTasks>> | null =
+        null;
+      if (deps.providerPausedStartTracker) {
+        try {
+          providerPausedTtlResult = await reclaimAgedProviderPausedTasks(
+            {
+              taskStore,
+              lifecycleDeps: {
+                ...lifecycleDeps,
+                ...(deps.agentLifecycleDeps?.interactionLog
+                  ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+                  : {}),
+              },
+              auditLogPath: deps.auditLogPath,
+              dispositionLedgerPath: deps.dispositionLedgerPath,
+              broadcastToAll: deps.broadcastToAll,
+              isProviderPaused: isTaskProviderPaused,
+              pauseStartTracker: deps.providerPausedStartTracker,
+              // Same liveness + provider-reset seams as hung reclaim so hard
+              // TTL does not strand #1896 auto-resume or kill sticky-but-live
+              // agents (issue #2079 independent review).
+              getLiveness: (task) => hungSuspectSignals(task).liveness,
+              recordProviderPause: deps.recordProviderPause,
+              isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+              metrics: deps.providerPausedOccupancyMetrics,
+            },
+            {
+              ttlMs:
+                deps.getProviderPausedHardTtlMs?.()
+                ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+            },
+          );
+        } catch (err) {
+          console.warn(
+            '[liveness] provider_paused hard-TTL reclaim threw:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+
+        if (deps.providerPausedOccupancyAlerter && providerPausedTtlResult) {
+          try {
+            deps.providerPausedOccupancyAlerter.evaluate({
+              occupancyCount: providerPausedTtlResult.occupancy.count,
+              oldestPauseAgeMs: providerPausedTtlResult.occupancy.oldestPauseAgeMs,
+              reclaimedCount: providerPausedTtlResult.reclaimedTaskIds.length,
+            });
+          } catch (err) {
+            console.warn(
+              '[liveness] provider_paused occupancy alerter threw:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      }
+
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
       // the agent-lifecycle wrappers, so this additive call is where claims
@@ -1283,6 +1375,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0
         || hungSuspectTtlResult.reclaimedTaskIds.length > 0
+        || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).

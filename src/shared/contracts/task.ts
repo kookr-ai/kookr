@@ -135,7 +135,14 @@ export type TaskDispositionReason =
    * #2036). Distinct from {@link launch_timeout} (pre-session adapter race)
    * and from {@link hung_reap} / {@link hung_suspect_ttl} (post-ack silence).
    */
-  | 'first_hook_miss';
+  | 'first_hook_miss'
+  /**
+   * The provider_paused hard-TTL reclaim terminated a billing/quota-paused
+   * task after the continuous-pause TTL (issue #2079). Always needs-human —
+   * never force-completed as delivered. Open-PR fail-safe skips reclaim when
+   * the task still holds an unmerged PR (same contract as hungSuspect TTL).
+   */
+  | 'provider_paused_ttl';
 
 /**
  * Outcome of a hung-task reap (issue #1559). A reaped task's `status` is always
@@ -158,7 +165,9 @@ export type TaskReapOutcome = 'terminated' | 'delivered_then_hung';
  * - the hungSuspect TTL reclaim (issue #1935: `hung_suspect_ttl`), same
  *   outcome vocabulary at the shorter capacity-reclaim TTL, and
  * - the first-hook miss reaper (issue #2036: `first_hook_miss`), for
- *   post-spawn sessions that never acked with a hook.
+ *   post-spawn sessions that never acked with a hook, and
+ * - the provider_paused hard-TTL reclaim (issue #2079: `provider_paused_ttl`),
+ *   which always records needs-human (never delivered auto-complete).
  *
  * The recovery work-conservation ledger (#1540) is expected to build ITS
  * disposition records on this same shape rather than a parallel one.
