@@ -721,7 +721,7 @@ Exit behavior:
 
 ## `kookr doctor`
 
-Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak), and the advisory `ops.maintenance-prune` check (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` / optional timer-health `lastFiredAt`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
+Run launch preflight checks covering runtime tools, `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `github.scanner-backoff` check (live `GET /api/github/status` `stateFetchBackoffMs` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server), the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak), and the advisory `ops.maintenance-prune` check (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` / optional timer-health `lastFiredAt`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
 
 This is complementary to `pnpm doctor` (`scripts/doctor.sh`), which covers env/build preflight (ports, docker, node-pty). The two check sets are not identical — `kookr doctor` is the launch-dependency path (see [Related Commands](#related-commands)).
 
@@ -774,6 +774,7 @@ Stable `checks[].id` values on a healthy machine:
 | `runtime.git` | runtime | yes | `git` available |
 | `runtime.dtach` | runtime | yes | Vendored `vendor/dtach/dtach` executable, or system `dtach` on `PATH` |
 | `github.gh-auth` | github | no | `gh auth status` succeeds (advisory warn when not configured) |
+| `github.scanner-backoff` | github | no | Live `GET /api/github/status` state-fetch rate-limit backoff when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server. Advisory warn when `stateFetchBackoffMs` ≥ 30s (remaining backoff + `trackedRefCount`). OK with "probe skipped" when no API base or the probe is unreachable (hermetic offline stays green). |
 | `launch.kb` | launch-dependency | no | `kb doctor --format=json` and a smoke `kb search` both succeed |
 | `agent.claude` | agent | yes if `KOOKR_AGENT_BIN` set; else advisory | Claude Code binary (`KOOKR_AGENT_BIN` or `claude`) |
 | `agent.codex` | agent | yes if `KOOKR_CODEX_BIN` set; else advisory | Codex CLI binary (`KOOKR_CODEX_BIN` or `codex`) |
@@ -1250,7 +1251,7 @@ pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
 pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/build preflight
-kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + ops.resource-watchdog + ops.prod-smoke-tick + ops.maintenance-prune)
+kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + github.scanner-backoff + ops.resource-watchdog + ops.prod-smoke-tick + ops.maintenance-prune)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
 ```
