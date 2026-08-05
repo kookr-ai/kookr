@@ -43,6 +43,8 @@ function createMockDeps(overrides?: Partial<DiagnosticRunnerDeps>): DiagnosticRu
       byProvider: [],
       byUseCaseProvider: [],
       pausedProviders: [],
+      stormsSuppressed: 0,
+      providerAttemptBudget: { limit: 90, windowMs: 60_000, attemptsInWindow: 0 },
     }),
     ...overrides,
   };

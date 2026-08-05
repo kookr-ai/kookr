@@ -68,6 +68,16 @@ export interface HelperLlmPausedProvider {
   lastMessage: string;
 }
 
+/** Process-wide helper-LLM provider-attempt budget (issue #2083). */
+export interface HelperLlmProviderAttemptBudget {
+  /** Max network attempts allowed inside the sliding window (`0` = disabled). */
+  limit: number;
+  /** Sliding-window size in ms. */
+  windowMs: number;
+  /** Attempts already recorded inside the current window. */
+  attemptsInWindow: number;
+}
+
 export interface HelperLlmDiagnosticsSnapshot {
   schemaVersion: 'helper-llm-diagnostics.v1';
   generatedAt: number;
@@ -77,6 +87,13 @@ export interface HelperLlmDiagnosticsSnapshot {
   byUseCaseProvider: HelperLlmUseCaseProviderDiagnostics[];
   /** Providers currently in the auth-failure cool-down window. */
   pausedProviders: HelperLlmPausedProvider[];
+  /**
+   * Lifetime count of provider network attempts refused because the process-wide
+   * attempt budget was exhausted (free-tier 429 / cascade thrash suppression).
+   */
+  stormsSuppressed: number;
+  /** Live view of the process-wide provider-attempt budget window. */
+  providerAttemptBudget: HelperLlmProviderAttemptBudget;
 }
 
 export interface DiagnosticReport {
