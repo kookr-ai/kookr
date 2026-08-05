@@ -30,6 +30,7 @@ import { DrainController } from '../drain-state.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
+import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
@@ -1233,6 +1234,86 @@ describe('diagnostics routes', () => {
       }).request('/api/health');
       const body = await res.json() as { capacity: { reservedActiveSlots?: number } };
       expect(body.capacity.reservedActiveSlots).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — finishedAwaitingAckTtlReclaim skip breakdown (issue #2084)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health finishedAwaitingAckTtlReclaim skip block (issue #2084)', () => {
+    test('omits the block when reclaim metrics are not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('finishedAwaitingAckTtlReclaim');
+    });
+
+    test('includes skip counters and increments after selection/reclaim', async () => {
+      const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+      const baseDeps = {
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        finishedAwaitingAckTtlReclaimMetrics: metrics,
+      };
+
+      const before = await mkApp(baseDeps).request('/api/health');
+      expect(before.status).toBe(200);
+      const beforeBody = (await before.json()) as {
+        finishedAwaitingAckTtlReclaim?: Record<string, unknown>;
+      };
+      expect(beforeBody.finishedAwaitingAckTtlReclaim).toMatchObject({
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        reclaimSucceeded: 0,
+        skippedBadRaisedAt: 0,
+        skippedOpenPrFailsafe: 0,
+        skippedUnderTtl: 0,
+        lastCandidatesConsidered: 0,
+        lastOutcomes: [],
+        lastAttemptedTaskIds: [],
+        autoCompletedTotal: 0,
+        autoCompleteDeferredTotal: 0,
+      });
+
+      metrics.recordAttempted(1);
+      metrics.recordReclaimed(1);
+      metrics.recordSelection({
+        candidatesConsidered: 4,
+        skips: {
+          skipped_bad_raised_at: 1,
+          skipped_open_pr_failsafe: 1,
+          skipped_under_ttl: 1,
+        },
+        outcomes: [
+          { taskId: 't-selected', outcome: 'selected', ageMs: 1_000_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', ageMs: 1_000_000 },
+        ],
+      });
+
+      const after = await mkApp(baseDeps).request('/api/health');
+      expect(after.status).toBe(200);
+      const afterBody = (await after.json()) as {
+        finishedAwaitingAckTtlReclaim?: Record<string, unknown>;
+      };
+      expect(afterBody.finishedAwaitingAckTtlReclaim).toMatchObject({
+        reclaimedTotal: 1,
+        reclaimAttempted: 1,
+        reclaimSucceeded: 1,
+        skippedBadRaisedAt: 1,
+        skippedOpenPrFailsafe: 1,
+        skippedUnderTtl: 1,
+        lastCandidatesConsidered: 4,
+        lastAttemptedTaskIds: ['t-selected'],
+        lastOutcomes: [
+          { taskId: 't-selected', outcome: 'selected', ageMs: 1_000_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', ageMs: 1_000_000 },
+        ],
+      });
     });
   });
 

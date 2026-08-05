@@ -484,13 +484,25 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         }
       : undefined;
 
-    // Issue #2070: meta/playbook FAA auto-complete counters + age histogram so
-    // residual finishedAwaitingAck holds stay measurable. Cheap in-memory only.
+    // Issue #2070 / #2084: FAA reclaim + meta auto-complete counters, skip-reason
+    // breakdown, and age histogram so residual finishedAwaitingAck holds stay
+    // measurable (open-PR fail-safe vs under-TTL vs bad raisedAt). Cheap
+    // in-memory only — never a fresh reclaim scan on this path.
     const finishedAwaitingAckReclaimSnapshot =
       deps.finishedAwaitingAckTtlReclaimMetrics?.getSnapshot();
     const finishedAwaitingAckReclaimBlock = finishedAwaitingAckReclaimSnapshot
       ? {
           reclaimedTotal: finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
+          reclaimAttempted: finishedAwaitingAckReclaimSnapshot.reclaimAttempted ?? 0,
+          reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded
+            ?? finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
+          skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt ?? 0,
+          skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe ?? 0,
+          skippedUnderTtl: finishedAwaitingAckReclaimSnapshot.skippedUnderTtl ?? 0,
+          lastCandidatesConsidered:
+            finishedAwaitingAckReclaimSnapshot.lastCandidatesConsidered ?? 0,
+          lastOutcomes: finishedAwaitingAckReclaimSnapshot.lastOutcomes ?? [],
+          lastAttemptedTaskIds: finishedAwaitingAckReclaimSnapshot.lastAttemptedTaskIds ?? [],
           autoCompletedTotal: finishedAwaitingAckReclaimSnapshot.autoCompletedTotal ?? 0,
           autoCompleteDeferredTotal:
             finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal ?? 0,

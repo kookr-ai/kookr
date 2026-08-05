@@ -120,9 +120,46 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
 
     expect(metrics.getSnapshot()).toMatchObject({
       reclaimedTotal: 1,
+      reclaimAttempted: 1,
+      reclaimSucceeded: 1,
+      skippedBadRaisedAt: 0,
+      skippedOpenPrFailsafe: 0,
+      skippedUnderTtl: 0,
+      lastCandidatesConsidered: 1,
+      lastAttemptedTaskIds: ['task-1'],
       autoCompletedTotal: 0,
       autoCompleteDeferredTotal: 0,
     });
+    expect(result.selection).toMatchObject({
+      candidatesConsidered: 1,
+      selectedCount: 1,
+    });
+  });
+
+  it('records open-PR failsafe skip metrics without reclaiming (issue #2084)', async () => {
+    const task = makeFaaTask({ id: 'stranded' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const isHoldingOpenPr = vi.fn(() => true);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr, metrics },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(isHoldingOpenPr).toHaveBeenCalledWith(task);
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedOpenPrFailsafe: 1,
+      lastCandidatesConsidered: 1,
+      lastAttemptedTaskIds: [],
+    });
+    expect(result.selection?.skips.skipped_open_pr_failsafe).toBe(1);
+    await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
   });
 
   it('exempts a stranded-PR task (isHoldingOpenPr === true) — the merge_required path is never clobbered', async () => {

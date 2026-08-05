@@ -89,12 +89,17 @@ export interface PrometheusExpositionSnapshot {
    */
   lessonYield?: LessonYieldSnapshot;
   /**
-   * finishedAwaitingAck TTL reclaim counter (issue #1884). Cumulative count of
-   * finishedAwaitingAck tasks force-completed by the liveness-tick TTL sweep
-   * since process start. Omitted only in harnesses that never wire the sweep.
+   * finishedAwaitingAck TTL reclaim counters (issues #1884 / #2070 / #2084).
+   * Cumulative reclaimed + skip-reason breakdown since process start. Omitted
+   * only in harnesses that never wire the sweep.
    */
   finishedAwaitingAckReclaim?: {
     reclaimedTotal: number;
+    reclaimAttempted?: number;
+    reclaimSucceeded?: number;
+    skippedBadRaisedAt?: number;
+    skippedOpenPrFailsafe?: number;
+    skippedUnderTtl?: number;
     autoCompletedTotal?: number;
     autoCompleteDeferredTotal?: number;
     autoCompleteAgeHistogram?: Record<string, number>;
@@ -506,6 +511,11 @@ function appendFinishedAwaitingAckReclaimMetrics(
   snapshot:
     | {
         reclaimedTotal: number;
+        reclaimAttempted?: number;
+        reclaimSucceeded?: number;
+        skippedBadRaisedAt?: number;
+        skippedOpenPrFailsafe?: number;
+        skippedUnderTtl?: number;
         autoCompletedTotal?: number;
         autoCompleteDeferredTotal?: number;
         autoCompleteAgeHistogram?: Record<string, number>;
@@ -518,6 +528,37 @@ function appendFinishedAwaitingAckReclaimMetrics(
     '# HELP kookr_finished_awaiting_ack_ttl_reclaimed_total Total finishedAwaitingAck tasks force-completed by the TTL reclaim since process start.',
     '# TYPE kookr_finished_awaiting_ack_ttl_reclaimed_total counter',
     metricLine('kookr_finished_awaiting_ack_ttl_reclaimed_total', {}, snapshot.reclaimedTotal),
+    '# HELP kookr_finished_awaiting_ack_ttl_reclaim_attempted_total Total finishedAwaitingAck candidates selected for reclaim (complete attempted) since process start.',
+    '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_attempted_total counter',
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_attempted_total',
+      {},
+      snapshot.reclaimAttempted ?? 0,
+    ),
+    '# HELP kookr_finished_awaiting_ack_ttl_reclaim_succeeded_total Total successful finishedAwaitingAck TTL reclaim force-completes since process start.',
+    '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_succeeded_total counter',
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_succeeded_total',
+      {},
+      snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
+    ),
+    '# HELP kookr_finished_awaiting_ack_ttl_reclaim_skipped_total FinishedAwaitingAck TTL reclaim skips by reason (cumulative since process start; issue #2084).',
+    '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_skipped_total counter',
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
+      { reason: 'bad_raised_at' },
+      snapshot.skippedBadRaisedAt ?? 0,
+    ),
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_failsafe' },
+      snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
+      { reason: 'under_ttl' },
+      snapshot.skippedUnderTtl ?? 0,
+    ),
   );
 
   if (typeof snapshot.autoCompletedTotal === 'number') {

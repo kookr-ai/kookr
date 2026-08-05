@@ -2,14 +2,20 @@ import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { completeTask, type LifecycleDeps } from './agent-lifecycle.js';
 import {
-  listExpiredFinishedAwaitingAckTasks,
+  selectExpiredFinishedAwaitingAckTasks,
   listMetaFinishedAwaitingAckAutoCompleteTasks,
+  emptyFinishedAwaitingAckReclaimSkipCounts,
   taskHasLiveTurn,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
+  type FinishedAwaitingAckReclaimCandidateOutcome,
+  type FinishedAwaitingAckReclaimSkipCounts,
 } from '../core/finished-awaiting-ack-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { analyzePaneSemantics } from '../shared/pane-semantics.js';
+
+/** Cap last-pass outcome samples on health (issue #2084 task-id audit). */
+const MAX_LAST_OUTCOMES = 16;
 
 /** Age histogram buckets (ms) for meta FAA auto-complete (issue #2070). */
 export const META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS = [
@@ -20,10 +26,31 @@ export const META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS = [
   120 * 60_000,
 ] as const;
 
-/** In-memory snapshot for `/metrics` + `/api/health` (issues #1884 / #2070). */
+/** In-memory snapshot for `/metrics` + `/api/health` (issues #1884 / #2070 / #2084). */
 export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   /** Cumulative finishedAwaitingAck tasks force-completed by the strict TTL reclaim since process start. */
   reclaimedTotal: number;
+  /**
+   * Cumulative candidates the sweep tried to force-complete (selected past TTL
+   * + clear of fail-safes). Includes complete races that did not succeed.
+   */
+  reclaimAttempted: number;
+  /** Cumulative successful force-completes — equal to {@link reclaimedTotal}. */
+  reclaimSucceeded: number;
+  /** Skip-reason breakdown for finishedAwaitingAck candidates not selected (issue #2084). */
+  skippedBadRaisedAt: number;
+  skippedOpenPrFailsafe: number;
+  skippedUnderTtl: number;
+  /** Last selection pass: how many finishedAwaitingAck candidates were considered. */
+  lastCandidatesConsidered: number;
+  /**
+   * Last selection pass: per-candidate outcomes with task ids (issue #2084).
+   * Answers why residual FAA stays high when `reclaimedTotal` is flat.
+   * Capped at {@link MAX_LAST_OUTCOMES}.
+   */
+  lastOutcomes: FinishedAwaitingAckReclaimCandidateOutcome[];
+  /** Last pass: task ids selected for reclaim (complete attempted). */
+  lastAttemptedTaskIds: string[];
   /**
    * Cumulative meta/playbook FAA tasks auto-completed by the #2070 path
    * (allowlist + relaxed PR fail-safe + TOCTOU).
@@ -39,18 +66,49 @@ export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
 }
 
 /**
- * Process-lifetime counters for finishedAwaitingAck reclaim (#1884) and
- * meta auto-complete (#2070). One instance at bootstrap, threaded into the
- * sweep, `/metrics`, and `/api/health`.
+ * Process-lifetime counters for finishedAwaitingAck reclaim (#1884),
+ * meta auto-complete (#2070), and skip-reason breakdown (#2084). One instance
+ * at bootstrap, threaded into the sweep, `/metrics`, and `/api/health`.
  */
 export class FinishedAwaitingAckTtlReclaimMetrics {
   private reclaimedTotal = 0;
+  private reclaimAttempted = 0;
+  private skips: FinishedAwaitingAckReclaimSkipCounts =
+    emptyFinishedAwaitingAckReclaimSkipCounts();
+  private lastCandidatesConsidered = 0;
+  private lastOutcomes: FinishedAwaitingAckReclaimCandidateOutcome[] = [];
+  private lastAttemptedTaskIds: string[] = [];
   private autoCompletedTotal = 0;
   private autoCompleteDeferredTotal = 0;
   private autoCompleteAgeHistogram: Record<string, number> = emptyAgeHistogram();
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
+  }
+
+  recordAttempted(count: number): void {
+    if (count > 0) this.reclaimAttempted += count;
+  }
+
+  /**
+   * Accumulate skip-reason counts from one strict selection pass and remember
+   * the candidate denominator + task-id outcomes for the health snapshot.
+   */
+  recordSelection(selection: {
+    candidatesConsidered: number;
+    skips: FinishedAwaitingAckReclaimSkipCounts;
+    outcomes?: readonly FinishedAwaitingAckReclaimCandidateOutcome[];
+  }): void {
+    this.lastCandidatesConsidered = selection.candidatesConsidered;
+    this.skips.skipped_bad_raised_at += selection.skips.skipped_bad_raised_at;
+    this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
+    this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
+    const outcomes = selection.outcomes ?? [];
+    this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
+    this.lastAttemptedTaskIds = outcomes
+      .filter((o) => o.outcome === 'selected')
+      .map((o) => o.taskId)
+      .slice(0, MAX_LAST_OUTCOMES);
   }
 
   recordAutoCompleted(count: number, agesMs: readonly number[] = []): void {
@@ -68,6 +126,14 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
   getSnapshot(): FinishedAwaitingAckTtlReclaimMetricsSnapshot {
     return {
       reclaimedTotal: this.reclaimedTotal,
+      reclaimAttempted: this.reclaimAttempted,
+      reclaimSucceeded: this.reclaimedTotal,
+      skippedBadRaisedAt: this.skips.skipped_bad_raised_at,
+      skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
+      skippedUnderTtl: this.skips.skipped_under_ttl,
+      lastCandidatesConsidered: this.lastCandidatesConsidered,
+      lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
+      lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
       autoCompletedTotal: this.autoCompletedTotal,
       autoCompleteDeferredTotal: this.autoCompleteDeferredTotal,
       autoCompleteAgeHistogram: { ...this.autoCompleteAgeHistogram },
@@ -127,10 +193,14 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
   getTaskPaneText?: (
     taskId: string,
   ) => string | undefined | null | Promise<string | undefined | null>;
-  /** Optional counters for strict reclaim + meta auto-complete. */
+  /** Optional counters for strict reclaim + meta auto-complete + skip breakdown. */
   metrics?: Pick<
     FinishedAwaitingAckTtlReclaimMetrics,
-    'recordReclaimed' | 'recordAutoCompleted' | 'recordAutoCompleteDeferred'
+    | 'recordReclaimed'
+    | 'recordAttempted'
+    | 'recordSelection'
+    | 'recordAutoCompleted'
+    | 'recordAutoCompleteDeferred'
   >;
 }
 
@@ -140,6 +210,13 @@ export interface ReclaimFinishedAwaitingAckTasksResult {
   autoCompletedTaskIds: string[];
   /** Candidates deferred by TOCTOU (live turn / interactive pane) this sweep. */
   deferredTaskIds: string[];
+  /** Strict-path selection snapshot from this pass (issue #2084). */
+  selection?: {
+    candidatesConsidered: number;
+    skips: FinishedAwaitingAckReclaimSkipCounts;
+    selectedCount: number;
+    outcomes: FinishedAwaitingAckReclaimCandidateOutcome[];
+  };
 }
 
 /**
@@ -174,14 +251,18 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   if (!lifecycleDeps) return empty;
 
   const now = opts.now ?? new Date();
-  const entries = listExpiredFinishedAwaitingAckTasks(deps.taskStore.listTasks(), {
+  // Issue #2084: accumulate skip-reason counts every pass so /api/health can
+  // explain residual finishedAwaitingAck when reclaimedTotal stays flat.
+  const selection = selectExpiredFinishedAwaitingAckTasks(deps.taskStore.listTasks(), {
     now,
     ttlMs: opts.ttlMs,
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
+  deps.metrics?.recordSelection(selection);
+  deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
-  for (const { task, ageMs } of entries) {
+  for (const { task, ageMs } of selection.expired) {
     try {
       await completeTask(task.id, lifecycleDeps, { interactionLogReason: 'finished_awaiting_ack_ttl' });
     } catch (err) {
@@ -306,5 +387,15 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     });
   }
 
-  return { reclaimedTaskIds, autoCompletedTaskIds, deferredTaskIds };
+  return {
+    reclaimedTaskIds,
+    autoCompletedTaskIds,
+    deferredTaskIds,
+    selection: {
+      candidatesConsidered: selection.candidatesConsidered,
+      skips: selection.skips,
+      selectedCount: selection.expired.length,
+      outcomes: selection.outcomes,
+    },
+  };
 }

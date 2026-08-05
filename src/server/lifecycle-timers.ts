@@ -198,12 +198,17 @@ export interface TimerDeps {
    */
   isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
   /**
-   * Optional counters for the finishedAwaitingAck TTL reclaim (#1884) and
-   * meta auto-complete (#2070), exposed via `/metrics` + `/api/health`.
+   * Optional counters for the finishedAwaitingAck TTL reclaim (#1884),
+   * meta auto-complete (#2070), and skip-reason breakdown (#2084), exposed
+   * via `/metrics` + `/api/health`.
    */
   finishedAwaitingAckTtlReclaimMetrics?: Pick<
     FinishedAwaitingAckTtlReclaimMetrics,
-    'recordReclaimed' | 'recordAutoCompleted' | 'recordAutoCompleteDeferred'
+    | 'recordReclaimed'
+    | 'recordAttempted'
+    | 'recordSelection'
+    | 'recordAutoCompleted'
+    | 'recordAutoCompleteDeferred'
   >;
   /**
    * Live getter for the hungSuspect TTL, in milliseconds (issue #1935,

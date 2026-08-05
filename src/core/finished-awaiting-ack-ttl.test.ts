@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   listExpiredFinishedAwaitingAckTasks,
+  selectExpiredFinishedAwaitingAckTasks,
   listMetaFinishedAwaitingAckAutoCompleteTasks,
   isMetaFaaAutoCompletePlaybook,
   isMetaFaaAutoCompleteEligible,
   taskHasLiveTurn,
+  emptyFinishedAwaitingAckReclaimSkipCounts,
   DEFAULT_FINISHED_AWAITING_ACK_TTL_MS,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   MAX_FINISHED_AWAITING_ACK_TTL_MS,
@@ -193,6 +195,188 @@ describe('listExpiredFinishedAwaitingAckTasks (issue #1884)', () => {
       isHoldingOpenPr: () => false,
     });
     expect(expired.map((e) => e.task.id)).toEqual(['over-default']);
+  });
+});
+
+describe('selectExpiredFinishedAwaitingAckTasks skip-reason breakdown (issue #2084)', () => {
+  const ttlMs = 15 * 60_000;
+
+  function sumSkips(skips: ReturnType<typeof emptyFinishedAwaitingAckReclaimSkipCounts>): number {
+    return Object.values(skips).reduce((a, b) => a + b, 0);
+  }
+
+  it('counts skipped_under_ttl for a finishedAwaitingAck younger than the TTL', () => {
+    const fresh = faaTask({
+      id: 'fresh',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs + 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([fresh], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.candidatesConsidered).toBe(1);
+    expect(sel.skips).toEqual({
+      ...emptyFinishedAwaitingAckReclaimSkipCounts(),
+      skipped_under_ttl: 1,
+    });
+    expect(sel.outcomes).toEqual([
+      { taskId: 'fresh', outcome: 'skipped_under_ttl', ageMs: ttlMs - 60_000 },
+    ]);
+    expect(sel.candidatesConsidered).toBe(sel.expired.length + sumSkips(sel.skips));
+  });
+
+  it('counts skipped_open_pr_failsafe for true, unknown, and unwired PR holds', () => {
+    const stranded = faaTask({
+      id: 'stranded',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+      },
+    });
+    const unknown = faaTask({
+      id: 'unknown',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+      },
+    });
+    const unwired = faaTask({
+      id: 'unwired',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+      },
+    });
+
+    const holdTrue = selectExpiredFinishedAwaitingAckTasks([stranded], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => true,
+    });
+    expect(holdTrue.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(holdTrue.outcomes[0]?.outcome).toBe('skipped_open_pr_failsafe');
+
+    const holdUnknown = selectExpiredFinishedAwaitingAckTasks([unknown], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(holdUnknown.skips.skipped_open_pr_failsafe).toBe(1);
+
+    const noPredicate = selectExpiredFinishedAwaitingAckTasks([unwired], {
+      now: NOW,
+      ttlMs,
+    });
+    expect(noPredicate.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(noPredicate.candidatesConsidered).toBe(
+      noPredicate.expired.length + sumSkips(noPredicate.skips),
+    );
+  });
+
+  it('counts skipped_bad_raised_at for missing/unparseable raisedAt', () => {
+    const bogus = faaTask({
+      id: 'bogus',
+      pendingSignal: { kind: 'completion_ready', raisedAt: 'not-a-date' },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([bogus], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.candidatesConsidered).toBe(1);
+    expect(sel.skips.skipped_bad_raised_at).toBe(1);
+    expect(sel.outcomes).toEqual([{ taskId: 'bogus', outcome: 'skipped_bad_raised_at' }]);
+  });
+
+  it('does not count non-FAA / non-inProgress tasks as candidates', () => {
+    const working = faaTask({ id: 'working', pendingSignal: undefined });
+    const completed = faaTask({ id: 'done', status: 'completed' });
+    const sel = selectExpiredFinishedAwaitingAckTasks([working, completed], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.candidatesConsidered).toBe(0);
+    expect(sel.skips).toEqual(emptyFinishedAwaitingAckReclaimSkipCounts());
+    expect(sel.outcomes).toEqual([]);
+  });
+
+  it('mixed pass: selected + each skip path; candidates = selected + sum(skips)', () => {
+    const reclaimable = faaTask({
+      id: 'reclaim',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 10_000).toISOString(),
+      },
+    });
+    const under = faaTask({
+      id: 'under',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs + 10_000).toISOString(),
+      },
+    });
+    const prHold = faaTask({
+      id: 'pr',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 10_000).toISOString(),
+      },
+    });
+    const bogus = faaTask({
+      id: 'bogus',
+      pendingSignal: { kind: 'completion_ready', raisedAt: 'bad' },
+    });
+    const notFaa = faaTask({ id: 'working', pendingSignal: undefined });
+
+    const sel = selectExpiredFinishedAwaitingAckTasks(
+      [reclaimable, under, prHold, bogus, notFaa],
+      {
+        now: NOW,
+        ttlMs,
+        isHoldingOpenPr: (t) => (t.id === 'pr' ? true : false),
+      },
+    );
+
+    expect(sel.candidatesConsidered).toBe(4);
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['reclaim']);
+    expect(sel.skips).toEqual({
+      skipped_bad_raised_at: 1,
+      skipped_under_ttl: 1,
+      skipped_open_pr_failsafe: 1,
+    });
+    expect(sel.candidatesConsidered).toBe(sel.expired.length + sumSkips(sel.skips));
+    expect(sel.outcomes.find((o) => o.taskId === 'reclaim')?.outcome).toBe('selected');
+    expect(sel.outcomes.find((o) => o.taskId === 'under')?.outcome).toBe('skipped_under_ttl');
+    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_failsafe');
+    expect(sel.outcomes.find((o) => o.taskId === 'bogus')?.outcome).toBe('skipped_bad_raised_at');
+  });
+
+  it('listExpiredFinishedAwaitingAckTasks stays a thin wrapper over select', () => {
+    const stale = faaTask({
+      id: 'stale',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ttlMs - 60_000).toISOString(),
+      },
+    });
+    const listed = listExpiredFinishedAwaitingAckTasks([stale], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    const selected = selectExpiredFinishedAwaitingAckTasks([stale], {
+      now: NOW,
+      ttlMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(listed.map((e) => e.task.id)).toEqual(selected.expired.map((e) => e.task.id));
   });
 });
 
