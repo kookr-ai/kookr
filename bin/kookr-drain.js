@@ -9,6 +9,11 @@
 //   kookr resume          POST /api/admin/resume  → accept launches again
 //   kookr drain status    GET  /api/admin/drain   → print current state
 //
+// Pass --json to any of these to emit a single machine-readable envelope
+// instead of human text: { ok:true, draining, since, runningTasks, changed } on
+// success, or { ok:false, code, message } on failure (mirroring `kookr status
+// --json`), so scripts can branch on `ok` and read the exit code.
+//
 // Loopback is trusted by the server, so no token is needed for local use; if
 // KOOKR_ADMIN_TOKEN is set it is forwarded via the x-kookr-admin-token header.
 
@@ -32,25 +37,53 @@ function formatStatus(body) {
 }
 
 /**
+ * Emit a failure and return its exit code. In --json mode this prints an
+ * `{ ok: false, code, message }` envelope (mirroring `kookr status --json`) so
+ * scripts can discriminate failure via `ok`; otherwise the human message goes to
+ * stderr exactly as before — the non-JSON text path is byte-for-byte unchanged.
+ */
+function fail(out, json, { code, message, exitCode }) {
+  if (json) {
+    out.log(JSON.stringify({ ok: false, code, message }));
+  } else {
+    out.error(message);
+  }
+  return exitCode;
+}
+
+/**
  * @param {string[]} argv  CLI args after `kookr` (e.g. ['drain'], ['resume'], ['drain','status'])
  */
 async function runDrainCli(argv, { env = process.env, out = console, fetchImpl = fetch } = {}) {
-  const verb = argv[0];
+  // Strip `--json` before deriving the verb/action so `kookr drain status --json`
+  // (or the flag in any position) still resolves the read-only status action.
+  const json = argv.includes('--json');
+  const positional = argv.filter((tok) => tok !== '--json');
+  const verb = positional[0];
   if (verb !== 'drain' && verb !== 'resume') {
-    out.error('Usage: kookr <drain|resume|drain status>');
-    return 2;
+    return fail(out, json, {
+      code: 'USER_ERROR',
+      message: 'Usage: kookr <drain|resume|drain status> [--json]',
+      exitCode: 2,
+    });
   }
   // `kookr drain status` reads state without mutating; `kookr drain` / `kookr resume` mutate.
-  const action = verb === 'drain' && argv[1] === 'status' ? 'status' : verb;
+  const action = verb === 'drain' && positional[1] === 'status' ? 'status' : verb;
 
   const resolved = await resolvePort(env);
   if (resolved.kind === 'invalid') {
-    out.error(`KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`);
-    return 1;
+    return fail(out, json, {
+      code: 'USER_ERROR',
+      message: `KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`,
+      exitCode: 1,
+    });
   }
   if (resolved.kind === 'none') {
-    out.error('Kookr is not running on the default ports. Set KOOKR_PORT if using a non-default port.');
-    return 1;
+    return fail(out, json, {
+      code: 'NO_SERVER',
+      message: 'Kookr is not running on the default ports. Set KOOKR_PORT if using a non-default port.',
+      exitCode: 1,
+    });
   }
 
   const base = `http://127.0.0.1:${resolved.port}`;
@@ -66,18 +99,42 @@ async function runDrainCli(argv, { env = process.env, out = console, fetchImpl =
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    out.error(`Failed to reach Kookr on port ${resolved.port}: ${msg}`);
-    return 1;
+    return fail(out, json, {
+      code: 'UNREACHABLE',
+      message: `Failed to reach Kookr on port ${resolved.port}: ${msg}`,
+      exitCode: 1,
+    });
   }
 
   const body = await res.json().catch(() => ({}));
   if (res.status === 403) {
-    out.error('Forbidden: admin auth required. Run on the same host (loopback) or set KOOKR_ADMIN_TOKEN.');
-    return 1;
+    return fail(out, json, {
+      code: 'FORBIDDEN',
+      message: 'Forbidden: admin auth required. Run on the same host (loopback) or set KOOKR_ADMIN_TOKEN.',
+      exitCode: 1,
+    });
   }
   if (!res.ok) {
-    out.error(`Request failed: HTTP ${res.status} ${JSON.stringify(body)}`);
-    return 1;
+    return fail(out, json, {
+      code: 'HTTP_ERROR',
+      message: `Request failed: HTTP ${res.status} ${JSON.stringify(body)}`,
+      exitCode: 1,
+    });
+  }
+
+  if (json) {
+    // Machine-readable envelope mirroring `kookr status --json`. Fields default
+    // to null so consumers see a stable shape (e.g. GET status omits `changed`).
+    out.log(
+      JSON.stringify({
+        ok: true,
+        draining: body.draining ?? null,
+        since: body.since ?? null,
+        runningTasks: body.runningTasks ?? null,
+        changed: body.changed ?? null,
+      }),
+    );
+    return 0;
   }
 
   if (action === 'drain' && body.changed === false) {
