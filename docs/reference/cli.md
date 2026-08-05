@@ -455,8 +455,12 @@ kookr queue-feeder leaves --umbrella owner/repo#N [--json]
   `--input <file>` or `-` for stdin. Appends one observability row per call to
   `~/.kookr/playbook-state/queue-feeder/decisions.jsonl` (skip with
   `--no-persist`). **Dry-run by default** — `--emit` (opt-in) files leaf issues
-  via `gh issue create` for `action=shred` only; secondary ready-issue emit
-  never creates issues (they already exist) and never claims assignees.
+  via `gh issue create` for `action=shred` only. **Idempotent by title** — a
+  leaf whose title already exists as an OPEN or CLOSED issue in the umbrella
+  repo is skipped, the existing ref reused and recorded in the ledger's
+  `skipped[]`, so an already-landed leaf is not re-filed (#2120). Secondary
+  ready-issue emit never creates issues (they already exist) and never claims
+  assignees.
 - **leaves** — print the rendered GitHub issue bodies (goal + acceptance
   criteria + hints + backref) for a curated umbrella's leaf plan.
 
