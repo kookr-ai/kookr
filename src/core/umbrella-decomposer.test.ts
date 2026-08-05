@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CURATED_LEAF_PLANS,
   DEFAULT_FREE_SLOTS_THRESHOLD,
+  DEFAULT_MAX_INVENT_LEAVES,
   DEFAULT_MAX_LEAVES,
   DEFAULT_MAX_SECONDARY_PER_FIRE,
   LUCY_1586_LEAF_PLAN,
@@ -270,16 +271,19 @@ describe('evaluateQueueFeeder — selection + emission (AC1)', () => {
     expect(decision.skipped.some((s) => s.ref === 'jeanibarz/lucy#1')).toBe(true);
   });
 
-  it('flags needs-authoring when no vetted leaf plan resolves and skip-invents', () => {
+  it('flags needs-authoring and invent-product-wave when product belt empty (#2069)', () => {
     const decision = evaluateQueueFeeder({
       capacity: { free: 4, pendingQueueDepth: 0 },
       candidates: [umbrella({ number: 99, title: 'SEC anchors', labels: ['sec-anchor'] })],
+      openProductMetricIssues: 0,
       resolveLeaves: () => undefined,
     });
     expect(decision.selected?.needsAuthoring).toBe(true);
     expect(decision.selected?.leafError).toMatch(/no leaf plan/);
     expect(decision.leafCount).toBe(0);
-    expect(decision.action).toBe('skip-invent');
+    expect(decision.action).toBe('invent-product-wave');
+    expect(decision.actionSource).toBe('product-wave');
+    expect(decision.inventLeafCap).toBe(DEFAULT_MAX_INVENT_LEAVES);
   });
 
   it('reports no eligible umbrella when all are already decomposed (AC2)', () => {
@@ -553,6 +557,171 @@ describe('evaluateQueueFeeder — secondary emit (#2044)', () => {
     expect(line).toMatch(/action=emit-secondary/);
     expect(line).toContain('idea-scout');
     expect(line).toContain('kookr-ai/kookr#2032');
+  });
+});
+
+describe('evaluateQueueFeeder — invent-product-wave (#2069)', () => {
+  it('closed children do not count: openChildrenCount=0 → invent allowed when openPM=0', () => {
+    // Live deadlock shape: umbrella children all CLOSED (must not be counted as
+    // openChildrenCount), free≥3, openPM=0, no curated residual plan → invent
+    // next product-metric leaf wave instead of permanent skip-invent.
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 1587,
+          title: 'acquisition failover — product metric belt',
+          labels: ['acquisition', 'product-metric'],
+          // Closed leaves were wrongly counted as open; correct count is 0.
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.triggered).toBe(true);
+    expect(decision.action).toBe('invent-product-wave');
+    expect(decision.actionSource).toBe('product-wave');
+    expect(decision.selected?.ref).toBe('jeanibarz/lucy#1587');
+    expect(decision.selected?.productMetricBlocking).toBe(true);
+    expect(decision.selected?.needsAuthoring).toBe(true);
+    expect(decision.inventLeafCap).toBe(DEFAULT_MAX_INVENT_LEAVES);
+    expect(decision.inventLeafCap).toBeLessThanOrEqual(3);
+    expect(decision.inventLeafCap).toBeGreaterThanOrEqual(1);
+    expect(decision.secondaryEmitted).toHaveLength(0);
+
+    const record = buildQueueFeederRecord(decision, {
+      now: new Date('2026-08-04T22:00:00Z'),
+      dryRun: true,
+    });
+    expect(record.action).toBe('invent-product-wave');
+    expect(record.source).toBe('product-wave');
+    expect(record.selectedRef).toBe('jeanibarz/lucy#1587');
+    expect(record.inventLeafCap).toBe(DEFAULT_MAX_INVENT_LEAVES);
+    expect(formatQueueFeederLine(record)).toMatch(/action=invent-product-wave/);
+  });
+
+  it('open unassigned children → skip invent (use existing open leaves)', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 1588,
+          title: 'SEC acceptance anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 3, // open leaves still on the board
+        }),
+      ],
+      openProductMetricIssues: 0,
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).not.toBe('invent-product-wave');
+    expect(decision.selected).toBeNull();
+    expect(decision.skipped.some((s) => /already has 3 open child/.test(s.reason))).toBe(true);
+    // No product umbrella eligible → invent blocked; secondary empty → skip-invent.
+    expect(decision.action).toBe('skip-invent');
+  });
+
+  it('non-PM residual still blocked when product umbrellas have open work', () => {
+    // Product umbrella still has open children (do not invent under it).
+    // Non-PM residual must not get invent-product-wave either — only skip or
+    // secondary idea-scout when present.
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 9, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 1588,
+          title: 'SEC acceptance anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 4,
+        }),
+        umbrella({
+          number: 2047,
+          title: 'Umbrella: idea-scout residual — docs index',
+          labels: ['docs'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).not.toBe('invent-product-wave');
+    expect(decision.selected?.number).not.toBe(1588);
+    // Residual docs may surface as skip-invent selected for observability.
+    expect(['skip-invent', 'emit-secondary']).toContain(decision.action);
+    if (decision.action === 'skip-invent') {
+      expect(decision.selected?.productMetricBlocking ?? false).toBe(false);
+    }
+  });
+
+  it('prefers invent-product-wave over idea-scout secondary when product residual needs authoring', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 1590,
+          title: 'headline metrics product belt',
+          labels: ['product-metric'],
+          openChildrenCount: 0,
+        }),
+        umbrella({
+          number: 2047,
+          title: 'Umbrella: idea-scout residual — docs',
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      readyIssues: [
+        {
+          repo: 'kookr-ai/kookr',
+          number: 2032,
+          title: 'feat: discord slash polish',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('invent-product-wave');
+    expect(decision.selected?.number).toBe(1590);
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('does not invent when open product-metric leaves already exist on the belt', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 99,
+          title: 'SEC anchors next wave',
+          labels: ['sec-anchor'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 4,
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('skip-invent');
+    expect(decision.inventLeafCap).toBeNull();
+  });
+
+  it('still shreds a plan-ready product umbrella before invent', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 1588,
+          title: 'SEC acceptance anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      // curated plan resolves via default registry
+    });
+    expect(decision.action).toBe('shred');
+    expect(decision.leafCount).toBeGreaterThanOrEqual(3);
+    expect(decision.inventLeafCap).toBeNull();
   });
 });
 

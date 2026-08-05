@@ -412,25 +412,32 @@ velocity gather phase. Pure math lives in `src/core/value-density-governor.ts`.
 
 ## `kookr queue-feeder`
 
-Queue-feeder / umbrella auto-decomposer (issues #1845, #2044). When the
+Queue-feeder / umbrella auto-decomposer (issues #1845, #2044, #2069). When the
 orchestration loop sees idle capacity with an empty queue (`free ≥ threshold`
 **and** `pendingQueueDepth == 0` — the `idle_capacity` warn shape), it shreds
 ONE eligible product umbrella into 3–5 spawnable leaf tasks (goal + acceptance
-criteria + file/test hints). Umbrellas that already have open children are
-skipped (idempotent), and product-metric-blocking umbrellas rank above
-harness/internal ones so idle capacity flows to product outcomes.
+criteria + file/test hints). Umbrellas that already have **open** children are
+skipped (idempotent — use those leaves first). **Closed children must not be
+counted** in `openChildrenCount` (#2069); they do not permanently block
+re-author when the product belt is empty. Product-metric-blocking umbrellas
+rank above harness/internal ones so idle capacity flows to product outcomes.
 
-When product umbrella leaves are exhausted but free slots remain, the feeder
-takes a **secondary path** (#2044) instead of dead-ending on `skip-invent`:
+When product umbrella leaves are exhausted but free slots remain:
 
-1. Pull open, **unassigned** idea-scout / ready-labeled issues into the
-   implementable set (cap ≤3 per fire; never auto-claim assignees).
-2. Else shred a residual umbrella that still has a curated leaf plan.
-3. Only then `action=skip-invent` when no safe secondary source exists.
+1. **`invent-product-wave` (#2069)** — if `openProductMetricIssues=0` and an
+   eligible product-metric umbrella has no open children and no curated plan,
+   authorize a bounded next leaf batch (cap ≤3) under that umbrella. Prefer
+   this over idea-scout residual so free slots refill the product belt.
+2. **Secondary path (#2044)** — pull open, **unassigned** idea-scout /
+   ready-labeled issues into the implementable set (cap ≤3 per fire; never
+   auto-claim assignees).
+3. Else shred a residual umbrella that still has a curated leaf plan (primary
+   shred already covers plan-ready cases).
+4. Only then `action=skip-invent` when no safe source exists.
 
-Ledger rows carry `action` (`shred` | `emit-secondary` | `skip-invent` |
-`not-triggered`) and `source` (`umbrella-shred` | `idea-scout` |
-`curated-umbrella` | null) for reflection audit.
+Ledger rows carry `action` (`shred` | `invent-product-wave` | `emit-secondary` |
+`skip-invent` | `not-triggered`) and `source` (`umbrella-shred` | `product-wave` |
+`idea-scout` | `curated-umbrella` | null) for reflection audit.
 
 ```bash
 kookr queue-feeder plan --input <file|-> [--free N] [--pending N] \

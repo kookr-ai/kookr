@@ -48,10 +48,10 @@ You fill **idle task slots** by turning open **product umbrellas** into shreddab
 - Always use `--idempotency-key` on spawns: `queue-feeder-<repo-slug>-<issue>-$(date -u +%Y%m%d%H)`.
 - If capacity free < freeThreshold or pendingQueueDepth > 0: log and exit (no emit).
 - `dryRun=true` → plan only, no issue create, no spawn.
-- **Do not re-file** a leaf title that already exists as an open **or closed** issue in the same repo (idempotent shred).
-- When counting children for `openChildrenCount`, include **closed** issues whose body contains `Leaf of umbrella …#N` (or the queue-feeder backref). Closed leaves still mean "already shredded" — the CLI only skips when `openChildrenCount > 0`.
+- **Do not re-file** a leaf title that already exists as an open **or closed** issue in the same repo (idempotent shred / invent).
+- When counting children for `openChildrenCount`, count **only OPEN** non-umbrella children whose body contains `Leaf of umbrella …#N` (or the queue-feeder backref). **Closed children must not be counted** (#2069) — they do not permanently block re-author. The CLI skips shred/invent under an umbrella only when `openChildrenCount > 0` (use those open leaves first).
 - **Never auto-claim** issues assigned to someone else. Secondary emit only considers unassigned ready issues.
-- Trust CLI `decision.action`: `shred` | `emit-secondary` | `skip-invent` | `not-triggered`. Do not free-form invent when the CLI says `skip-invent`.
+- Trust CLI `decision.action`: `shred` | `invent-product-wave` | `emit-secondary` | `skip-invent` | `not-triggered`. Do not free-form invent when the CLI says `skip-invent`. When `invent-product-wave`, author 1–`inventLeafCap` product-metric leaves under the selected umbrella only.
 
 ## Phase 1 — Capacity
 
@@ -72,7 +72,7 @@ gh issue list -R jeanibarz/lucy --label umbrella --state open --limit 20 \
   --json number,title,labels,assignees
 ```
 
-For each candidate, count children (**open or closed**) whose body mentions `Leaf of umbrella …#N` or the queue-feeder backref. Prefer candidates with `openChildrenCount == 0` and product-facing titles (SEC, anchor, acquisition, reaction, detection).
+For each candidate, count **OPEN** children only whose body mentions `Leaf of umbrella …#N` or the queue-feeder backref. Do **not** include closed children in `openChildrenCount` (#2069). Prefer candidates with `openChildrenCount == 0` and product-facing titles (SEC, anchor, acquisition, reaction, detection).
 
 When building the snapshot, set `priority` higher for product-facing titles (acquisition, detection, metric, SEC, reaction) than harness/docs/reflection umbrellas so ranking does not pick idea-scout residuals first.
 
@@ -118,20 +118,22 @@ Read `decision.action` from the JSON envelope:
 |---|---|
 | `not-triggered` | Capacity gate closed — report and complete. |
 | `shred` | Primary path: leaf issues filed (if `--emit`) from the selected umbrella plan. Continue to Phase 4 for spawned implementers. |
-| `emit-secondary` | Product leaves empty; CLI selected `decision.secondaryEmitted` ready issues (source=`idea-scout`). **Do not invent.** Spawn implementers for those refs (Phase 4). Never re-assign assignees. |
-| `skip-invent` | No shreddable plan and no safe ready issues — report and complete. **Do not invent** leaves for harness/docs residuals. |
+| `invent-product-wave` | Product belt empty (`openProductMetricIssues=0`); selected product umbrella has no open children and no curated plan. **Author 1–`decision.inventLeafCap` (default 3) product-metric leaves** under that umbrella (#2069). Prefer over idea-scout secondary. Ledger `action=invent-product-wave` + umbrella ref + leaf titles. |
+| `emit-secondary` | Product leaves empty and invent not authorized; CLI selected `decision.secondaryEmitted` ready issues (source=`idea-scout`). **Do not invent.** Spawn implementers for those refs (Phase 4). Never re-assign assignees. |
+| `skip-invent` | No shreddable plan, no invent-product-wave, and no safe ready issues — report and complete. **Do not invent** leaves for harness/docs residuals. |
 
-### needsAuthoring + authorLeaves (only when action would otherwise be skip-invent and product signal is strong)
+### invent-product-wave / needsAuthoring + authorLeaves (#2069)
 
-If the plan returns `action=skip-invent` with `selected.needsAuthoring: true` **and** the selected umbrella is product-metric / product-facing (SEC, acquisition, detection, reaction, headline metrics) **and** `authorLeaves=true`:
+If the plan returns `action=invent-product-wave` (or legacy `skip-invent` with `selected.needsAuthoring: true` **and** the selected umbrella is product-metric / product-facing) **and** `authorLeaves=true`:
 
 1. Read the umbrella issue body. List Children / acceptance bullets.
-2. Drop work already closed as GitHub issues (by number or matching title). Keep residual acceptance gaps.
-3. Author **3–5** leaf specs: `title`, one-sentence `goal`, ≥2 testable acceptance criteria, optional file/test hints, labels (`product-metric` and domain labels).
+2. Drop work already open **or** closed as GitHub issues (by number or matching title). Keep residual acceptance gaps for the **next** product leaf wave.
+3. Author **1–`inventLeafCap`** (default 1–3) leaf specs: `title`, one-sentence `goal`, ≥2 testable acceptance criteria, optional file/test hints, labels (`product-metric` and domain labels). Prefer product-metric leaves over Discord slash / docs residual.
 4. **Durable path (preferred):** in a **fresh kookr worktree** off `origin/main`, add the plan to `CURATED_LEAF_PLANS` in `src/core/umbrella-decomposer.ts`, extend tests, push, open PR, merge (Jean-owned default). If kookr-prod is still behind, still **emit leaves this run** via `gh issue create` so idle capacity is not wasted waiting for deploy.
 5. **Immediate path (always when emit=true):** create the leaf issues with `Leaf of umbrella jeanibarz/lucy#N — emitted by the queue-feeder` backref (same body shape as `buildLeafIssueBody`), apply labels (create missing labels once via `gh api` if needed).
-6. Continue to Phase 4 for newly created leaves.
-7. Never invent leaf plans for harness-only umbrellas even when `authorLeaves=true`.
+6. Append ledger row `action=invent-product-wave` with umbrella ref + leaf titles when the CLI did not already.
+7. Continue to Phase 4 for newly created leaves.
+8. Never invent leaf plans for harness-only umbrellas even when `authorLeaves=true`. Open children under a product umbrella mean **use those leaves** — do not invent under that umbrella.
 
 If labels fail on create: create missing labels via `gh api -X POST repos/.../labels` once, then retry emit once.
 

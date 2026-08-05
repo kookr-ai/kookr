@@ -1,7 +1,8 @@
 /**
  * `kookr queue-feeder` — auto-decompose product umbrellas into spawnable leaves
- * when capacity idles (issue #1845), with a secondary path for open idea-scout /
- * ready issues when product leaves are exhausted (#2044).
+ * when capacity idles (issue #1845), with invent-product-wave when the product
+ * belt is empty and open umbrella children are all closed (#2069), and a
+ * secondary path for open idea-scout / ready issues (#2044).
  *
  *   kookr queue-feeder plan --input <file|-> [--free N] [--pending N] [--emit] [--json]
  *   kookr queue-feeder leaves --umbrella owner/repo#N [--json]
@@ -10,10 +11,12 @@
  * `idle_capacity` warn (free≥3, pendingQueueDepth==0). It hands a JSON snapshot
  * of the current capacity ledger + candidate umbrellas (+ optional readyIssues);
  * the CLI runs the pure decision (core/umbrella-decomposer.ts), prints which
- * umbrella it would shred or which ready issues to enqueue, and appends a
- * dry-run observability row the next reflection reads. `--emit` (opt-in,
- * default OFF) files leaf issues via `gh issue create` for shred actions;
- * secondary ready-issue emit never auto-creates or auto-claims assigned work.
+ * umbrella it would shred / invent under or which ready issues to enqueue, and
+ * appends a dry-run observability row the next reflection reads. `--emit`
+ * (opt-in, default OFF) files leaf issues via `gh issue create` for shred
+ * actions; invent-product-wave authorizes the playbook to author leaves (CLI
+ * does not invent content); secondary ready-issue emit never auto-creates or
+ * auto-claims assigned work.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -37,16 +40,18 @@ import {
   type UmbrellaCandidate,
 } from '../core/umbrella-decomposer.js';
 
-export const USAGE = `kookr queue-feeder — auto-decompose product umbrellas into spawnable leaves (#1845/#2044).
+export const USAGE = `kookr queue-feeder — auto-decompose product umbrellas into spawnable leaves (#1845/#2044/#2069).
 
 Usage:
   kookr queue-feeder plan --input <file|-> [OPTIONS]
   kookr queue-feeder leaves --umbrella <owner/repo#N> [--json]
 
 plan          Read a capacity + umbrella snapshot, decide which ONE umbrella to
-              shred into 3–5 leaves (or secondary-emit ready issues when product
-              leaves are empty — #2044), and print the dry-run plan. Appends an
-              observability row to the queue-feeder ledger by default.
+              shred into 3–5 leaves, invent-product-wave (1–3 next product leaves
+              when openPM=0 and open children are 0 — #2069), or secondary-emit
+              ready issues when product leaves are empty (#2044). Print the
+              dry-run plan. Appends an observability row to the queue-feeder
+              ledger by default.
 leaves        Print the rendered GitHub issue bodies for a curated umbrella's
               leaf plan (goal + acceptance criteria + hints + backref).
 
