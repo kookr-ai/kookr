@@ -1,5 +1,14 @@
 import type { AnomalySeverity } from './anomalies.js';
 
+/**
+ * Maximum stored length for the free-text `notes` field. Over-long values are
+ * truncated (not rejected) so a config write degrades gracefully. Aligned with
+ * the sibling agent-signal note cap (`MAX_AGENT_SIGNAL_NOTE_LENGTH`, 2000) and
+ * generous versus the shorter feedback-note cap, since project notes may carry
+ * longer operator prose.
+ */
+export const MAX_PROJECT_NOTES_LENGTH = 2000;
+
 export interface ProjectWebhookRoutingSettings {
   enabled?: boolean;
   minSeverity?: AnomalySeverity;
@@ -60,7 +69,12 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
   if (typeof input.budgetWarnUsd === 'number' && Number.isFinite(input.budgetWarnUsd)) {
     config.budgetWarnUsd = Math.max(0, input.budgetWarnUsd);
   }
-  if (typeof input.notes === 'string') config.notes = input.notes;
+  if (typeof input.notes === 'string') {
+    config.notes =
+      input.notes.length > MAX_PROJECT_NOTES_LENGTH
+        ? input.notes.slice(0, MAX_PROJECT_NOTES_LENGTH)
+        : input.notes;
+  }
   if (typeof input.localPath === 'string') config.localPath = input.localPath;
   const webhook = normalizeProjectWebhookRoutingSettings(input.webhook);
   if (webhook !== undefined) config.webhook = webhook;
