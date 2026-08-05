@@ -108,6 +108,9 @@ If `reclaimedTotal` is flat while FAA occupancy is high:
 2. **Dominant `skippedUnderTtl`** — expected soon after restart or for fresh completion_ready signals; wait for the FAA TTL window.
 3. **Dominant `skippedBadRaisedAt`** — corrupted/missing signal timestamps; investigate the raising path rather than force-reclaiming.
 4. **`lastOutcomes` / `lastAttemptedTaskIds`** — map each FAA candidate to selected vs skip reason with task id.
+5. **Residual page** — Discord/operator `faa:residual` (#2077) pages when residual stays ≥ bound for a full stale window after reclaim without decreasing. Page-only (no extra force-completes). Clear when FAA returns to 0.
+
+If residual stays high after TTL reclaim windows: ack/complete/cancel clearly dead FAA tasks, check Discord/operator signals for `faa:residual` (when enabled), avoid spawning more work until free slots return. Episode state for the residual alerter is process memory — a restart resets the wait window (same as `hung:residual`).
 
 ## 4. Resource watchdog env
 

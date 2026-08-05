@@ -64,7 +64,7 @@ pnpm prod:update
 
 `pnpm prod:update` fetches, builds, restarts, and health-checks the production-style worktree. The dashboard auto-deploy button calls the same script when Kookr is running on port `4800`.
 
-When returning to an unattended host (or only having brief SSH), use the operator offline recovery card: [docs/reference/offline-recovery-card.md](reference/offline-recovery-card.md) — ready probe, disk free, hungSuspect residual, resource watchdog, Discord webhook smoke test, and when to reboot.
+When returning to an unattended host (or only having brief SSH), use the operator offline recovery card: [docs/reference/offline-recovery-card.md](reference/offline-recovery-card.md) — ready probe, disk free, hungSuspect / finishedAwaitingAck residual, resource watchdog, Discord webhook smoke test, and when to reboot.
 
 The usual contributor setup is the production-style instance on `4800` for real agent supervision, plus `pnpm dev` on `4801`/`5173` only when you need to check current modifications with hot reload.
 

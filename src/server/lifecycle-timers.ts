@@ -77,6 +77,7 @@ import {
   type FirstHookMissMetrics,
 } from './first-hook-deadline-sweep.js';
 import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
+import type { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
@@ -210,6 +211,13 @@ export interface TimerDeps {
     | 'recordAutoCompleted'
     | 'recordAutoCompleteDeferred'
   >;
+  /**
+   * Operator page when finishedAwaitingAck residual stays high after the TTL
+   * reclaim window (issue #2077). Page-only — never force-completes extra
+   * tasks. Prefer a `detectorBroadcast` path so fire/clear edges spool to
+   * Discord.
+   */
+  finishedAwaitingAckResidualAlerter?: Pick<FinishedAwaitingAckResidualAlerter, 'evaluate'>;
   /**
    * Live getter for the hungSuspect TTL, in milliseconds (issue #1935,
    * `hungSuspectTtlMinutes` setting). Read on every liveness tick. Falls back
@@ -1071,6 +1079,48 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         },
         { ttlMs: deps.getFinishedAwaitingAckTtlMs?.() },
       );
+
+      // finishedAwaitingAck residual page (issue #2077): after reclaim, if
+      // residual occupancy stays high without decreasing for the stale window,
+      // page the operator (Discord via detectorBroadcast). Never force-completes
+      // extra tasks — the reclaim above already did what TTL allows.
+      if (deps.finishedAwaitingAckResidualAlerter) {
+        const closedIds = new Set([
+          ...finishedAwaitingAckTtlResult.reclaimedTaskIds,
+          ...finishedAwaitingAckTtlResult.autoCompletedTaskIds,
+        ]);
+        let residualFaa = 0;
+        let oldestRaisedAtMs: number | undefined;
+        const nowMs = Date.now();
+        for (const task of taskStore.listTasks()) {
+          if (task.status !== 'inProgress') continue;
+          if (task.pendingSignal?.kind !== 'completion_ready') continue;
+          if (closedIds.has(task.id)) continue;
+          residualFaa += 1;
+          const raisedAt = task.pendingSignal.raisedAt
+            ? Date.parse(task.pendingSignal.raisedAt)
+            : NaN;
+          if (Number.isFinite(raisedAt)
+            && (oldestRaisedAtMs === undefined || raisedAt < oldestRaisedAtMs)) {
+            oldestRaisedAtMs = raisedAt;
+          }
+        }
+        try {
+          deps.finishedAwaitingAckResidualAlerter.evaluate({
+            residualCount: residualFaa,
+            reclaimedCount:
+              finishedAwaitingAckTtlResult.reclaimedTaskIds.length
+              + finishedAwaitingAckTtlResult.autoCompletedTaskIds.length,
+            oldestAgeMs:
+              oldestRaisedAtMs !== undefined ? nowMs - oldestRaisedAtMs : null,
+          });
+        } catch (err) {
+          console.warn(
+            '[liveness] finishedAwaitingAck residual alerter threw:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
 
       // hungSuspect TTL reclaim (issue #1935): terminate tasks classified
       // hungSuspect that have been all-channels-silent past the short TTL,

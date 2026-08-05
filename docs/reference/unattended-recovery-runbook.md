@@ -34,7 +34,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Need to stop schedule fires during an incident | `safeMode.engaged == false` | **Engage** SAFE MODE via settings (not drain — drain blocks *all* launches) |
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
-| Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084) — [hung residual](#3-hung-residual) (FAA sibling) |
+| Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
@@ -181,7 +181,9 @@ Full admission semantics: [backpressure.md](./backpressure.md) §5b.
 
 **Symptom.** Capacity feels full while little real work runs:
 `capacity.byClass.hungSuspect` stays high; Discord may page `hung:residual`
-after a reclaim window (issue #1993).
+after a reclaim window (issue #1993). Sibling: high
+`capacity.byClass.finishedAwaitingAck` may page `faa:residual` after a
+reclaim window (issue #2077) — page-only, no extra force-completes.
 
 **Health fields:**
 
@@ -213,7 +215,9 @@ PY
    `skippedProviderPaused` / `lastOutcomes` before manual intervention (after
    #2072, past-TTL silence reclaims long-silent needs_input; open-PR and
    provider-pause remain hard bars). For FAA, map
-   `finishedAwaitingAckTtlReclaim.lastOutcomes` the same way.
+   `finishedAwaitingAckTtlReclaim.lastOutcomes` the same way; check Discord
+   for `faa:residual` / `op:faa:residual:alert` when residual stays ≥ bound
+   for the stale window without decreasing.
 3. Avoid new general-source spawns until `capacity.free` recovers (reserved slots
    may still accept `kookr`-sourced launches depending on settings).
 
