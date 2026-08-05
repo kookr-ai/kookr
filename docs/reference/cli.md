@@ -925,6 +925,20 @@ Drain mode refuses new task launches while already-running agents continue. Use 
 
 `kookr drain status` is read-only. `kookr drain` and `kookr resume` POST to the server admin endpoints and print the resulting state, including the number of running tasks when the server reports it.
 
+Pass `--json` to any of these (`kookr drain --json`, `kookr resume --json`, `kookr drain status --json`) to emit a single machine-readable envelope instead of human text — useful for scripting a maintenance restart. On success:
+
+```json
+{ "ok": true, "draining": true, "since": "2026-05-29T12:00:00.000Z", "runningTasks": 3, "changed": true }
+```
+
+`since` is `null` when not draining, and `changed` is `null` for the read-only `drain status` query. On failure (server unreachable, admin auth rejected, bad `KOOKR_PORT`, etc.) it emits an error envelope mirroring `kookr status --json`, so scripts can branch on `ok`:
+
+```json
+{ "ok": false, "code": "FORBIDDEN", "message": "Forbidden: admin auth required. …" }
+```
+
+Exit codes are identical to the default text mode in both cases.
+
 Target selection:
 
 - `KOOKR_PORT=<port>` targets a specific local instance on `127.0.0.1`.
