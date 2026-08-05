@@ -458,3 +458,128 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).toMatch(/no status checks reported/i);
   });
 });
+
+/**
+ * issue #2102 — the `gh pr checks --watch` fast path exits 1 with
+ * "no checks reported on the '<branch>' branch" when the base has no CI.
+ * kookr-merge must short-circuit on a null/empty statusCheckRollup *before*
+ * invoking --watch, otherwise a CLEAN/MERGEABLE PR still fails with exit 3.
+ * The stub advertises --watch and would poison the merge if called.
+ */
+describe('kookr-merge.sh watch_checks skips --watch when no checks are reported (issue #2102)', () => {
+  let binDir: string;
+  let viewFile: string;
+  let rollupFile: string;
+  let checksCalledFile: string;
+
+  const fakeGhWatchPoison = (
+    viewJsonPath: string,
+    rollupJsonPath: string,
+    checksCalledPath: string,
+  ) => `#!/usr/bin/env bash
+args="$*"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
+    echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
+  fi
+  if [[ "$args" == *"comments,labels,commits"* ]]; then
+    cat "${viewJsonPath}"; exit 0
+  fi
+  if [[ "$args" == *"statusCheckRollup"* ]]; then
+    cat "${rollupJsonPath}"; exit 0
+  fi
+  echo '{}'; exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "checks" ]]; then
+  if [[ "$args" == *"--help"* ]]; then echo "  --watch  Watch checks and exit"; exit 0; fi
+  # Real gh exits 1 with this message when the branch has no CI. If the merge
+  # script still reaches this path after a null rollup, the test must fail.
+  printf 'called\\n' >> "${checksCalledPath}"
+  echo "no checks reported on the 'main' branch" >&2
+  exit 1
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then
+  if [[ "$args" == *"--help"* ]]; then
+    echo "  --match-head-commit string   Commit SHA that the HEAD of the PR must match"; exit 0
+  fi
+  echo "FAKE-GH-MERGED"; exit 0
+fi
+echo "fake-gh: unhandled: $args" >&2; exit 99
+`;
+
+  const verdictBody = (verdict: string, sha: string) =>
+    `${INDEPENDENT_REVIEW_MARKER}\nkookr-review-verdict: ${verdict}\nreview-head-sha: ${sha}`;
+
+  function run(): { status: number; stdout: string; stderr: string } {
+    try {
+      const stdout = execFileSync('bash', [mergeScript, '123', '--repo', 'owner/repo'], {
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+        encoding: 'utf-8',
+        timeout: 15_000,
+      });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { status: e.status ?? -1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  }
+
+  beforeAll(() => {
+    binDir = mkdtempSync(join(tmpdir(), 'kookr-merge-watch-poison-'));
+    viewFile = join(binDir, 'view.json');
+    rollupFile = join(binDir, 'rollup.json');
+    checksCalledFile = join(binDir, 'checks-called');
+    writeFileSync(
+      viewFile,
+      JSON.stringify(gateView({ headOid: 'abc123', comments: [{ body: verdictBody('pass', 'abc123') }] })),
+    );
+    const ghPath = join(binDir, 'gh');
+    writeFileSync(ghPath, fakeGhWatchPoison(viewFile, rollupFile, checksCalledFile));
+    chmodSync(ghPath, 0o755);
+  });
+
+  afterAll(() => {
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  test('null rollup short-circuits before gh pr checks --watch (which would exit 1)', () => {
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null }));
+    try {
+      rmSync(checksCalledFile);
+    } catch {
+      /* not present yet */
+    }
+    const res = run();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    expect(res.stdout).toMatch(/no status checks reported/i);
+    // --watch must not have been invoked; otherwise the poison path would have
+    // written this file and returned exit 1.
+    let checksCalled = false;
+    try {
+      checksCalled = readFileSync(checksCalledFile, 'utf-8').includes('called');
+    } catch {
+      checksCalled = false;
+    }
+    expect(checksCalled).toBe(false);
+  });
+
+  test('empty rollup also short-circuits before a failing --watch path', () => {
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [] }));
+    try {
+      rmSync(checksCalledFile);
+    } catch {
+      /* not present yet */
+    }
+    const res = run();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    let checksCalled = false;
+    try {
+      checksCalled = readFileSync(checksCalledFile, 'utf-8').includes('called');
+    } catch {
+      checksCalled = false;
+    }
+    expect(checksCalled).toBe(false);
+  });
+});
