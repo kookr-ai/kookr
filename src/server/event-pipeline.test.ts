@@ -1182,6 +1182,27 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       vi.useRealTimers();
     }
   });
+
+  test('requestSnapshotBroadcast() is the coalesced path for HTTP mutate residual (#2096)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, broadcasts } = createMockDeps();
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { requestSnapshotBroadcast } = wireEventPipeline(deps);
+
+      // External HTTP paths mark dirty without building a payload themselves.
+      requestSnapshotBroadcast();
+      requestSnapshotBroadcast();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

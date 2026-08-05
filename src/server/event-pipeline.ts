@@ -260,6 +260,12 @@ function getProjectedAgentState(monitor: Monitor, taskStore: TaskStore, agentId:
 export function wireEventPipeline(deps: EventPipelineDeps): {
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
   /**
+   * Request a coalesced full-snapshot rebuild + fan-out (#704 / #2096).
+   * Marks dirty and arms the throttle timer; bursts collapse to one rebuild.
+   * Prefer this over building `createSnapshotMessage` on HTTP mutate paths.
+   */
+  requestSnapshotBroadcast: () => void;
+  /**
    * Force any pending coalesced snapshot broadcast to fan out now (#704).
    * Critical path: bypasses snapshot-shed under event-loop saturation (#1775).
    */
@@ -598,6 +604,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
 
   return {
     abortPendingSuggestion: responseAssistProcessor.abortPendingSuggestion,
+    requestSnapshotBroadcast: broadcastSnapshot,
     flushSnapshotNow,
     getSnapshotShedMetrics: () => ({
       schemaVersion: 'snapshot-shed.v1',

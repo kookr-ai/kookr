@@ -330,6 +330,13 @@ export interface RouteDeps {
   kookrDir: string;
   frontendDir: string;
   broadcastToAll: (msg: ServerMessage) => void;
+  /**
+   * Coalesced full-snapshot rebuild request from the event pipeline (#704 / #2096).
+   * HTTP mutate handlers (Ralph, etc.) should call this instead of building
+   * `createSnapshotMessage` + `broadcastToAll` synchronously. Optional so
+   * lightweight unit tests can omit it; production bootstrap always wires it.
+   */
+  requestSnapshotBroadcast?: () => void;
   shadowRegistry?: ShadowDetectorRegistry;
   httpPushTracker?: HttpPushTracker;
   /**
