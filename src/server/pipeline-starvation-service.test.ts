@@ -282,6 +282,9 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(second.decision.starvationRefillPostcondition).toBe('pass');
     expect(second.spawnedScoutTaskId).toBeTruthy();
     expect(launches).toHaveLength(2);
+    // Distinct idempotency keys so launch-path ledger does not replay terminal scout A.
+    expect(launches[0]!.idempotencyKey).not.toBe(launches[1]!.idempotencyKey);
+    expect(launches[1]!.idempotencyKey).toMatch(/^starvation-scout:jeanibarz-lucy:/);
 
     const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('"scoutDedupBypassedForBeltEmpty":true');
