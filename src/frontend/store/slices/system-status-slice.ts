@@ -6,6 +6,7 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
     resourceStatusReceivedAtMs: null,
     prodSmokeTick: null,
     resourceWatchdog: null,
+    capacityResidual: null,
 
     handleResourceStatus: (status, receivedAtMs = Date.now()) => {
       set({
@@ -21,6 +22,9 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
       }
       if ('resourceWatchdog' in payload) {
         next.resourceWatchdog = payload.resourceWatchdog ?? null;
+      }
+      if ('capacityResidual' in payload) {
+        next.capacityResidual = payload.capacityResidual ?? null;
       }
       if (Object.keys(next).length > 0) set(next);
     },

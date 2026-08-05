@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type {
+  CapacityResidualStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
 } from '../store/store-types.js';
 
-/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog). */
+/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual). */
 export const OPS_HEALTH_POLL_INTERVAL_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -51,9 +52,36 @@ function parseResourceWatchdog(value: unknown): ResourceWatchdogStatus | null {
 }
 
 /**
- * Poll `GET /api/health` for smoke-tick failing streak + resourceWatchdog
- * enablement, and push the slim projections into the store for status-bar pills
- * (issue #2037). Soft-fails on network/parse errors so the dashboard stays up.
+ * Parse `GET /api/health.capacity` for the FAA residual pill (issue #2082).
+ * Returns null when the block is missing or missing the FAA count field.
+ */
+export function parseCapacityResidual(value: unknown): CapacityResidualStatus | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  const byClass = asRecord(rec.byClass);
+  if (!byClass) return null;
+  const finishedAwaitingAck = byClass.finishedAwaitingAck;
+  if (typeof finishedAwaitingAck !== 'number' || !Number.isFinite(finishedAwaitingAck)) {
+    return null;
+  }
+  const oldest = rec.oldestFinishedAwaitingAckAgeMs;
+  const oldestFinishedAwaitingAckAgeMs =
+    oldest === null
+      ? null
+      : typeof oldest === 'number' && Number.isFinite(oldest)
+        ? Math.max(0, oldest)
+        : null;
+  return {
+    finishedAwaitingAck: Math.max(0, Math.floor(finishedAwaitingAck)),
+    oldestFinishedAwaitingAckAgeMs,
+  };
+}
+
+/**
+ * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
+ * enablement, and capacity FAA residual, and push the slim projections into
+ * the store for status-bar pills (issues #2037, #2082). Soft-fails on
+ * network/parse errors so the dashboard stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
   const handleOpsHealth = useKookrStore((s) => s.handleOpsHealth);
@@ -73,6 +101,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
         handleOpsHealth({
           prodSmokeTick: parseProdSmokeTick(rec.prodSmokeTick),
           resourceWatchdog: parseResourceWatchdog(rec.resourceWatchdog),
+          capacityResidual: parseCapacityResidual(rec.capacity),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.

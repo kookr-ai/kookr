@@ -7511,8 +7511,9 @@ label.task-share-row {
   margin-left: 6px;
 }
 
-/* Issue #2037: smoke-tick failing streak + resourceWatchdog disabled pills.
-   Hidden entirely when healthy; amber/red so they read as attention, not info. */
+/* Issue #2037 / #2082: smoke-tick failing streak, resourceWatchdog disabled,
+   and chronic FAA residual pills. Hidden entirely when healthy; amber/red so
+   they read as attention, not info. */
 .ops-health-pills {
   display: inline-flex;
   align-items: center;
@@ -7529,6 +7530,10 @@ label.task-share-row {
   border-radius: 4px;
   white-space: nowrap;
   cursor: default;
+  font-family: inherit;
+  line-height: inherit;
+  border: none;
+  background: transparent;
 }
 
 .ops-health-pill.ops-health-smoke {
@@ -7539,6 +7544,25 @@ label.task-share-row {
 .ops-health-pill.ops-health-watchdog {
   background: rgba(251, 191, 36, 0.14);
   color: var(--amber);
+}
+
+/* FAA residual: amber like capacity waste (not a hard red fail). */
+.ops-health-pill.ops-health-faa {
+  background: rgba(251, 146, 60, 0.16);
+  color: #fb923c;
+}
+
+button.ops-health-pill.ops-health-faa {
+  cursor: pointer;
+}
+
+button.ops-health-pill.ops-health-faa:hover {
+  background: rgba(251, 146, 60, 0.28);
+}
+
+button.ops-health-pill.ops-health-faa:focus-visible {
+  outline: 1px solid #fb923c;
+  outline-offset: 1px;
 }
 
 .btn-sound-toggle {

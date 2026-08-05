@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import React from 'react';
-import { useOpsHealthPoll } from './useOpsHealthPoll.js';
+import { parseCapacityResidual, useOpsHealthPoll } from './useOpsHealthPoll.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 
 function syncGlobalStore() {
@@ -44,7 +44,7 @@ describe('useOpsHealthPoll', () => {
     vi.unstubAllGlobals();
   });
 
-  test('parses /api/health smoke + watchdog into the store', async () => {
+  test('parses /api/health smoke + watchdog + capacity residual into the store', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -62,6 +62,13 @@ describe('useOpsHealthPoll', () => {
           lastDecision: 'disabled',
           pressureWhileDisabled: false,
           pressureWhileDisabledReason: null,
+        },
+        capacity: {
+          maxActiveTasks: 10,
+          active: 8,
+          free: 2,
+          byClass: { working: 1, finishedAwaitingAck: 7, hungSuspect: 0, launching: 0 },
+          oldestFinishedAwaitingAckAgeMs: 9e6,
         },
       }),
     });
@@ -89,6 +96,10 @@ describe('useOpsHealthPoll', () => {
       pressureWhileDisabled: false,
       pressureWhileDisabledReason: null,
     });
+    expect(useKookrStore.getState().capacityResidual).toEqual({
+      finishedAwaitingAck: 7,
+      oldestFinishedAwaitingAckAgeMs: 9e6,
+    });
   });
 
   test('soft-fails on network error without throwing', async () => {
@@ -104,5 +115,41 @@ describe('useOpsHealthPoll', () => {
 
     expect(useKookrStore.getState().prodSmokeTick).toBeNull();
     expect(useKookrStore.getState().resourceWatchdog).toBeNull();
+    expect(useKookrStore.getState().capacityResidual).toBeNull();
+  });
+});
+
+describe('parseCapacityResidual (issue #2082)', () => {
+  test('returns null for missing or malformed capacity blocks', () => {
+    expect(parseCapacityResidual(null)).toBeNull();
+    expect(parseCapacityResidual(undefined)).toBeNull();
+    expect(parseCapacityResidual('x')).toBeNull();
+    expect(parseCapacityResidual({})).toBeNull();
+    expect(parseCapacityResidual({ byClass: null })).toBeNull();
+    expect(parseCapacityResidual({ byClass: {} })).toBeNull();
+    expect(parseCapacityResidual({ byClass: { finishedAwaitingAck: '7' } })).toBeNull();
+    expect(parseCapacityResidual({ byClass: { finishedAwaitingAck: Number.NaN } })).toBeNull();
+  });
+
+  test('parses count and oldest age, clamping/nulling age safely', () => {
+    expect(parseCapacityResidual({
+      byClass: { finishedAwaitingAck: 7 },
+      oldestFinishedAwaitingAckAgeMs: 9e6,
+    })).toEqual({ finishedAwaitingAck: 7, oldestFinishedAwaitingAckAgeMs: 9e6 });
+
+    expect(parseCapacityResidual({
+      byClass: { finishedAwaitingAck: 3.9 },
+      oldestFinishedAwaitingAckAgeMs: null,
+    })).toEqual({ finishedAwaitingAck: 3, oldestFinishedAwaitingAckAgeMs: null });
+
+    expect(parseCapacityResidual({
+      byClass: { finishedAwaitingAck: 2 },
+      oldestFinishedAwaitingAckAgeMs: 'old',
+    })).toEqual({ finishedAwaitingAck: 2, oldestFinishedAwaitingAckAgeMs: null });
+
+    expect(parseCapacityResidual({
+      byClass: { finishedAwaitingAck: 1 },
+      oldestFinishedAwaitingAckAgeMs: -50,
+    })).toEqual({ finishedAwaitingAck: 1, oldestFinishedAwaitingAckAgeMs: 0 });
   });
 });
