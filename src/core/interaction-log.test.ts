@@ -1,8 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { InteractionLogWriter, DeferredInteractionLogWriter, readInteractionLog, nowISO, isSubstantiveEvent, type InteractionEvent } from './interaction-log.js';
+import {
+  InteractionLogWriter,
+  DeferredInteractionLogWriter,
+  DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS,
+  readInteractionLog,
+  nowISO,
+  isSubstantiveEvent,
+  type InteractionEvent,
+} from './interaction-log.js';
 
 describe('InteractionLogWriter', () => {
   let tempDir: string;
@@ -365,6 +373,84 @@ describe('DeferredInteractionLogWriter', () => {
     expect(events).toHaveLength(2);
     expect(events[0].type).toBe('agent_launched');
     expect(events[1].type).toBe('user_input');
+  });
+
+  test('defaults maxEntries to DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS', () => {
+    const writer = new DeferredInteractionLogWriter(sessionsDir, async () => 'test-session');
+    expect(writer.getMaxEntries()).toBe(DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS);
+  });
+
+  test('buffer length never exceeds configured max; oldest dropped first', async () => {
+    const maxEntries = 3;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const writer = new DeferredInteractionLogWriter(sessionsDir, async () => 'test-session', { maxEntries });
+
+    for (let i = 0; i < 5; i++) {
+      await writer.append({
+        type: 'agent_stopped',
+        agentId: `a${i}`,
+        reason: 'completed',
+        timestamp: `t${i}`,
+      });
+      expect(writer.getBufferedEventCount()).toBeLessThanOrEqual(maxEntries);
+    }
+
+    expect(writer.getBufferedEventCount()).toBe(maxEntries);
+    // Overflow warn once per burst
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('buffer overflow');
+    expect(warnSpy.mock.calls[0][0]).toContain('maxEntries=3');
+
+    // Further overflow does not re-warn in the same burst
+    await writer.append({
+      type: 'agent_stopped',
+      agentId: 'a5',
+      reason: 'completed',
+      timestamp: 't5',
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(writer.getBufferedEventCount()).toBe(maxEntries);
+
+    // Materialize flushes retained (newest maxEntries) events; oldest were dropped
+    await writer.append({
+      type: 'agent_launched',
+      agentId: 'launch',
+      taskPrompt: 'go',
+      timestamp: 't-launch',
+    });
+
+    expect(writer.getBufferedEventCount()).toBe(0);
+    const events = await readInteractionLog(writer.getFilePath()!);
+    // 3 retained buffered + 1 substantive launch
+    expect(events).toHaveLength(maxEntries + 1);
+    // FIFO: after t0..t5 with max=3, retained newest three (t3,t4,t5)
+    expect(events.slice(0, maxEntries).map((e) => e.timestamp)).toEqual(['t3', 't4', 't5']);
+    expect(events[maxEntries].type).toBe('agent_launched');
+
+    warnSpy.mockRestore();
+  });
+
+  test('maxEntries=0 drops all pre-materialize non-substantive events', async () => {
+    const writer = new DeferredInteractionLogWriter(sessionsDir, async () => 'test-session', { maxEntries: 0 });
+
+    await writer.append({
+      type: 'agent_stopped',
+      agentId: 'a1',
+      reason: 'completed',
+      timestamp: 't1',
+    });
+    expect(writer.getBufferedEventCount()).toBe(0);
+
+    await writer.append({
+      type: 'agent_launched',
+      agentId: 'a2',
+      taskPrompt: 'go',
+      timestamp: 't2',
+    });
+
+    const events = await readInteractionLog(writer.getFilePath()!);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('agent_launched');
   });
 });
 
