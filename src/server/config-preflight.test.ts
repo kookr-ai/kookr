@@ -320,6 +320,44 @@ describe('runConfigPreflight', () => {
     expect(result.issues.every((issue) => issue.severity === 'fatal')).toBe(true);
   });
 
+  it('fails on blocked KOOKR_RELAY_URL values (#2107)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_RELAY_URL: 'http://169.254.169.254/latest/meta-data/',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        severity: 'fatal',
+        variable: 'KOOKR_RELAY_URL',
+        message: expect.stringContaining('metadata/link-local blocked'),
+      }),
+    ]);
+  });
+
+  it('accepts loopback and private-LAN KOOKR_RELAY_URL values (#2107)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_RELAY_URL: 'http://192.168.1.50:4800',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues.filter((issue) => issue.variable === 'KOOKR_RELAY_URL')).toEqual([]);
+  });
+
   it('accepts loopback and private-LAN speech service URLs (#2057)', async () => {
     const result = await runConfigPreflight(
       {

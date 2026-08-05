@@ -93,6 +93,31 @@ describe('RemoteNodeClient', () => {
     await expect(readFile(join(kookrDir, 'node-id'), 'utf8')).resolves.toContain(observedHello!.nodeId);
   });
 
+  it('rejects cloud-metadata and credentialed relay URLs before connect (#2107)', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-ssrf-'));
+
+    await expect(createRemoteNodeClient({
+      relayUrl: 'http://169.254.169.254/',
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+    })).rejects.toThrow(/relay URL address is not allowed/);
+
+    await expect(createRemoteNodeClient({
+      relayUrl: 'http://metadata.google.internal/',
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+    })).rejects.toThrow(/relay URL host is not allowed/);
+
+    await expect(createRemoteNodeClient({
+      relayUrl: 'http://user:pass@127.0.0.1:4800',
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+    })).rejects.toThrow(/must not include credentials/);
+  });
+
   it('does not open a socket when stopped during async startup', async () => {
     const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-race-'));
     let constructed = 0;

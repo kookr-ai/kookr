@@ -150,6 +150,14 @@ function setupDiagnosis(opts: { kookrDir: string; cwd?: string; env: NodeJS.Proc
 
 async function validateNodeCredentials(credentials: RelayConnectionCredentials): Promise<RelayConnectionErrorView | null> {
   try {
+    // Fail closed before any outbound fetch (issue #2107). Credentials may come
+    // from stored JSON that pre-dates host validation, or from API payloads.
+    try {
+      normalizeRelayUrl(credentials.relayUrl);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Relay URL is invalid.';
+      return errorView('relay-validation-failed', message);
+    }
     const statusUrl = new URL('/relay/node/status', credentials.relayUrl);
     const res = await fetch(statusUrl, {
       headers: { authorization: `Bearer ${credentials.relayToken}` },
