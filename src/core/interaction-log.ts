@@ -32,8 +32,15 @@ export type InteractionEvent =
       type: 'task_completed';
       taskId: string;
       agentId: string;
-      /** `finished_awaiting_ack_ttl` — force-completed by the finishedAwaitingAck TTL reclaim (issue #1884). */
-      reason: 'user_marked' | 'user_acked_terminated' | 'finished_awaiting_ack_ttl';
+      /**
+       * `finished_awaiting_ack_ttl` — force-completed by the finishedAwaitingAck TTL reclaim (issue #1884).
+       * `finished_awaiting_ack_auto_complete` — meta/playbook FAA auto-complete (issue #2070).
+       */
+      reason:
+        | 'user_marked'
+        | 'user_acked_terminated'
+        | 'finished_awaiting_ack_ttl'
+        | 'finished_awaiting_ack_auto_complete';
       durationMs: number;
       timestamp: string;
     }

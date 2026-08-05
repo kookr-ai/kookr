@@ -197,8 +197,14 @@ export interface TimerDeps {
    * `core/finished-awaiting-ack-ttl.ts`).
    */
   isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
-  /** Optional counter for the finishedAwaitingAck TTL reclaim, exposed via `/metrics` (issue #1884). */
-  finishedAwaitingAckTtlReclaimMetrics?: Pick<FinishedAwaitingAckTtlReclaimMetrics, 'recordReclaimed'>;
+  /**
+   * Optional counters for the finishedAwaitingAck TTL reclaim (#1884) and
+   * meta auto-complete (#2070), exposed via `/metrics` + `/api/health`.
+   */
+  finishedAwaitingAckTtlReclaimMetrics?: Pick<
+    FinishedAwaitingAckTtlReclaimMetrics,
+    'recordReclaimed' | 'recordAutoCompleted' | 'recordAutoCompleteDeferred'
+  >;
   /**
    * Live getter for the hungSuspect TTL, in milliseconds (issue #1935,
    * `hungSuspectTtlMinutes` setting). Read on every liveness tick. Falls back
@@ -1028,11 +1034,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         { ttlMs: deps.getPendingTaskTtlMs?.() },
       );
 
-      // finishedAwaitingAck TTL reclaim (issue #1884): force-complete tasks
-      // that finished their work and raised completion_ready but sat
-      // unacknowledged past the TTL, chronically holding an active
-      // concurrency slot. The stranded-PR exemption (isTaskHoldingOpenPr)
-      // keeps a merge_required delivery from ever being clobbered.
+      // finishedAwaitingAck TTL reclaim (issue #1884) + meta auto-complete
+      // (issue #2070): force-complete aged completion_ready tasks. Strict path
+      // requires isHoldingOpenPr === false; meta allowlist relaxes unknown PR
+      // refs and applies Lucy #2238-style TOCTOU (re-GET + live turn / tail veto).
       const finishedAwaitingAckTtlResult = await reclaimAgedFinishedAwaitingAckTasks(
         {
           taskStore,
@@ -1046,6 +1051,18 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           broadcastToAll: deps.broadcastToAll,
           isHoldingOpenPr: deps.isTaskHoldingOpenPr,
           metrics: deps.finishedAwaitingAckTtlReclaimMetrics,
+          ...(deps.taskTailStore
+            ? {
+                getTaskPaneText: async (taskId: string) => {
+                  try {
+                    const record = await deps.taskTailStore!.getByTaskId(taskId);
+                    return record?.text;
+                  } catch {
+                    return undefined;
+                  }
+                },
+              }
+            : {}),
         },
         { ttlMs: deps.getFinishedAwaitingAckTtlMs?.() },
       );
@@ -1209,6 +1226,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || deliveredResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
+        || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0
         || hungSuspectTtlResult.reclaimedTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
