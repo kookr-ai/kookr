@@ -41,6 +41,7 @@ import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-tt
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
+import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -1826,6 +1827,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcast: detectorBroadcast,
   });
 
+  // finishedAwaitingAck residual page after TTL reclaim (issue #2077). Page-only;
+  // uses detectorBroadcast so fire/clear edges spool to Discord.
+  const finishedAwaitingAckResidualAlerter = new FinishedAwaitingAckResidualAlerter({
+    broadcast: detectorBroadcast,
+  });
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
@@ -2643,6 +2650,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       firstHookMissMetrics,
       // issue #1993: Discord page when residual hungSuspect stays high after TTL
       hungSuspectResidualAlerter,
+      // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
+      finishedAwaitingAckResidualAlerter,
       getPostMergeCleanupBudgetMs,
       resolveMergedPr,
       loopDeliveryWatchdog,
