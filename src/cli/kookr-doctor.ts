@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   classifyKbDoctorCommandResult,
   classifyKbSearchSmokeResult,
@@ -219,6 +219,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkPnpm(run));
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
+  checks.push(await checkPersistence(env, accessFn));
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
@@ -304,6 +305,97 @@ async function checkDtach(
       'Run `pnpm build:dtach` to compile the vendored copy, or install dtach via your package manager.',
     );
   }
+}
+
+/**
+ * Operator-facing parity with the server readiness probe (issue #2155): the
+ * data dir must be writable or Kookr cannot persist state. Mirrors
+ * `checkPersistenceWritable` in diagnostics-routes.ts (`accessSync(dir, W_OK)`
+ * wired into `/api/ready`, a *critical* readiness check). A full disk, a
+ * read-only mount, or a permissions change surfaces the errno (`EACCES`,
+ * `EROFS`, …) at preflight instead of later as opaque write errors.
+ *
+ * One deliberate divergence from the server check: `kookr doctor` is a
+ * *pre-launch* preflight, but the data dir is created lazily by the server at
+ * startup (single-writer-lock `mkdirSync`). The server's check only ever runs
+ * once the dir already exists; doctor can run before first launch, when the
+ * default `~/.kookr` legitimately does not exist yet. So a missing-but-creatable
+ * dir (`ENOENT` with a writable parent) is an advisory WARN, not a required
+ * FAIL — otherwise every fresh host would fail doctor on an otherwise healthy
+ * machine. A dir that exists but is unwritable, or one that cannot be created
+ * because its parent is also unwritable, remains a required FAIL.
+ */
+async function checkPersistence(
+  env: NodeJS.ProcessEnv,
+  accessFn: (path: string, mode?: number) => Promise<void>,
+): Promise<DoctorCheck> {
+  const dataDir = resolveDoctorKookrDataDir(env);
+  try {
+    await accessFn(dataDir, constants.W_OK);
+    return okCheck('runtime.persistence', 'Data dir writable', 'runtime', `${dataDir} is writable`, true);
+  } catch (err) {
+    if (errnoOf(err) === 'ENOENT') {
+      // Missing dir: distinguish "not created yet, but creatable" (benign on a
+      // fresh host) from "cannot be created" (a real failure). The server
+      // creates the dir with `mkdirSync(..., { recursive: true })`, so the whole
+      // chain is creatable as long as the *nearest existing ancestor* is
+      // writable. Walk up (bounded) until an ancestor resolves (writable →
+      // creatable) or rejects with a non-ENOENT errno (e.g. EACCES/EROFS → not
+      // creatable). Checking only the immediate parent would false-FAIL a nested
+      // KOOKR_DIR whose intermediate dirs the server would have created.
+      let ancestor = dirname(dataDir);
+      for (let depth = 0; depth < 64; depth += 1) {
+        let ancestorErrno: string | undefined;
+        try {
+          await accessFn(ancestor, constants.W_OK);
+        } catch (ancestorErr) {
+          ancestorErrno = errnoOf(ancestorErr);
+        }
+        if (ancestorErrno === undefined) {
+          return {
+            id: 'runtime.persistence',
+            label: 'Data dir writable',
+            category: 'runtime',
+            status: 'warn',
+            required: false,
+            summary: 'Kookr data dir does not exist yet; the server creates it at startup',
+            detail: `${dataDir}: ENOENT (creatable — nearest existing ancestor ${ancestor} is writable)`,
+            recommendedAction:
+              'No action needed for a fresh install — the server creates the data dir on first launch. ' +
+              'If it existed before, investigate why it disappeared (unexpected deletion, or a wrong KOOKR_DIR/KOOKR_PORT pointing doctor at the wrong path).',
+          };
+        }
+        const parent = dirname(ancestor);
+        if (ancestorErrno === 'ENOENT' && parent !== ancestor) {
+          ancestor = parent;
+          continue;
+        }
+        return failCheck(
+          'runtime.persistence',
+          'Data dir writable',
+          'runtime',
+          `Kookr data dir cannot be created (${ancestorErrno})`,
+          `${dataDir}: nearest resolvable ancestor ${ancestor} ${ancestorErrno}`,
+          'Ensure the Kookr data dir (KOOKR_DIR or ~/.kookr) can be created — check that an ancestor dir is writable, plus disk space, mount flags (read-only?), and permissions.',
+        );
+      }
+    }
+    const errno = errnoOf(err);
+    return failCheck(
+      'runtime.persistence',
+      'Data dir writable',
+      'runtime',
+      `Kookr data dir is not writable (${errno})`,
+      `${dataDir}: ${errno}`,
+      'Ensure the Kookr data dir (KOOKR_DIR or ~/.kookr) is writable — check disk space, mount flags (read-only?), and permissions.',
+    );
+  }
+}
+
+/** errno code from a rejected `access`, falling back to a generic label. */
+function errnoOf(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && code ? code : 'unwritable';
 }
 
 async function checkGhAuth(run: CommandRunner): Promise<DoctorCheck> {

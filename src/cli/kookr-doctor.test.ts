@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { constants, mkdtempSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.pnpm',
   'runtime.git',
   'runtime.dtach',
+  'runtime.persistence',
   'github.gh-auth',
   'github.scanner-backoff',
   'launch.kb',
@@ -567,14 +568,201 @@ describe('kookr doctor --json', () => {
     });
   });
 
+  it('reports runtime.persistence ok when the resolved data dir is writable', async () => {
+    const run = commandRunner(happyFixtures());
+    const calls: Array<{ path: string; mode?: number }> = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_DIR: '/srv/kookr-data' },
+      commandRunner: run,
+      access: async (path: string, mode?: number) => {
+        calls.push({ path, mode });
+      },
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({
+      status: 'ok',
+      required: true,
+      category: 'runtime',
+    });
+    expect(check?.summary).toContain('/srv/kookr-data');
+    // Actually probed the resolved data dir with W_OK — not merely defaulted to ok.
+    expect(calls).toContainEqual({ path: '/srv/kookr-data', mode: constants.W_OK });
+    expect(report.ok).toBe(true);
+  });
+
+  it('reports runtime.persistence as advisory warn (not a fresh-install failure) when the dir is missing but its parent is writable', async () => {
+    const run = commandRunner(happyFixtures());
+    const calls: Array<{ path: string; mode?: number }> = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_DIR: '/srv/data/.kookr' },
+      commandRunner: run,
+      access: async (path: string, mode?: number) => {
+        calls.push({ path, mode });
+        if (path === '/srv/data/.kookr') {
+          const err = new Error('no such directory') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+        // Parent '/srv/data' (and the dtach path) resolve → creatable.
+      },
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({ status: 'warn', required: false, category: 'runtime' });
+    expect(check?.detail).toContain('ENOENT');
+    expect(check?.detail).toContain('/srv/data');
+    // Probed both the data dir and its parent with W_OK.
+    expect(calls).toContainEqual({ path: '/srv/data/.kookr', mode: constants.W_OK });
+    expect(calls).toContainEqual({ path: '/srv/data', mode: constants.W_OK });
+    // Advisory warn must NOT fail the report — the fresh-install false-positive guard.
+    expect(report.ok).toBe(true);
+  });
+
+  it('walks up to the nearest existing ancestor: nested missing intermediate dirs are still creatable (warn, not fail)', async () => {
+    const run = commandRunner(happyFixtures());
+    const probed: string[] = [];
+
+    const report = await buildDoctorJsonReport({
+      // The server creates the whole chain with mkdirSync(recursive), so a
+      // missing intermediate dir under a writable mount must not hard-fail.
+      env: { ...opsOkEnv, KOOKR_DIR: '/srv/newmount/sub/.kookr' },
+      commandRunner: run,
+      access: async (path: string) => {
+        probed.push(path);
+        // Data dir and its immediate parent are missing; the mount is writable.
+        if (path === '/srv/newmount/sub/.kookr' || path === '/srv/newmount/sub') {
+          const err = new Error('missing') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+        // '/srv/newmount' (and dtach) resolve → writable ancestor.
+      },
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.detail).toContain('/srv/newmount');
+    // Walked data dir → parent → grandparent until a writable ancestor resolved.
+    expect(probed).toEqual(
+      expect.arrayContaining(['/srv/newmount/sub/.kookr', '/srv/newmount/sub', '/srv/newmount']),
+    );
+    expect(report.ok).toBe(true);
+  });
+
+  it('reports runtime.persistence as a required fail when the dir is missing and its parent is not writable', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_DIR: '/mnt/ro/.kookr' },
+      commandRunner: run,
+      access: async (path: string) => {
+        if (path === '/mnt/ro/.kookr') {
+          const err = new Error('missing') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+        if (path === '/mnt/ro') {
+          const err = new Error('read-only file system') as NodeJS.ErrnoException;
+          err.code = 'EROFS';
+          throw err;
+        }
+      },
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({ status: 'fail', required: true, category: 'runtime' });
+    expect(check?.summary).toContain('cannot be created');
+    expect(check?.summary).toContain('EROFS');
+    expect(check?.detail).toContain('/mnt/ro');
+    expect(report.ok).toBe(false);
+    expect(report.status).toBe('fail');
+  });
+
+  it('reports runtime.persistence as a required fail surfacing the errno when the data dir is unwritable', async () => {
+    const run = commandRunner(happyFixtures());
+    const calls: Array<{ path: string; mode?: number }> = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_DIR: '/mnt/readonly/.kookr' },
+      commandRunner: run,
+      // Path-aware: dtach (X_OK) still resolves; only the data-dir W_OK probe rejects.
+      access: async (path: string, mode?: number) => {
+        calls.push({ path, mode });
+        if (path === '/mnt/readonly/.kookr') {
+          const err = new Error('read-only file system') as NodeJS.ErrnoException;
+          err.code = 'EROFS';
+          throw err;
+        }
+      },
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({
+      status: 'fail',
+      required: true,
+      category: 'runtime',
+    });
+    expect(check?.summary).toContain('EROFS');
+    expect(check?.detail).toContain('/mnt/readonly/.kookr');
+    expect(check?.detail).toContain('EROFS');
+    // Probed the resolved data dir with W_OK — parity with the server readiness check.
+    expect(calls).toContainEqual({ path: '/mnt/readonly/.kookr', mode: constants.W_OK });
+    // A required storage failure fails the whole report.
+    expect(report.ok).toBe(false);
+    expect(report.status).toBe('fail');
+  });
+
+  it('falls back to a generic errno label when the access rejection carries no code', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_DIR: '/mnt/readonly/.kookr' },
+      commandRunner: run,
+      access: async (path: string) => {
+        if (path === '/mnt/readonly/.kookr') throw new Error('boom');
+      },
+      ...hermeticOps,
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.persistence')).toMatchObject({
+      status: 'fail',
+      summary: expect.stringContaining('unwritable'),
+    });
+  });
+
+  it('resolves the default ~/.kookr data dir from HOME when KOOKR_DIR is unset', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.persistence');
+    expect(check).toMatchObject({ status: 'ok', required: true });
+    expect(check?.summary).toContain('/srv/tester-home/.kookr');
+  });
+
   it('accepts system dtach when the vendored binary is unavailable', async () => {
     const run = commandRunner(happyFixtures());
 
     const report = await buildDoctorJsonReport({
-      env: { ...opsOkEnv },
+      // Path-aware: only the vendored dtach probe rejects. The persistence
+      // W_OK probe (shared `access` dep) still resolves, so it stays green.
+      env: { ...opsOkEnv, KOOKR_DIR: '/tmp/kookr-doctor-writable' },
       commandRunner: run,
-      access: async () => {
-        throw new Error('missing vendored dtach');
+      access: async (path: string) => {
+        if (path.includes('dtach')) throw new Error('missing vendored dtach');
       },
       ...hermeticOps,
     });
