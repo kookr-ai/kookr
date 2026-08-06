@@ -33,10 +33,13 @@ import {
   formatQueueFeederLine,
   normalizeLeafPlan,
   queueFeederLedgerPath,
+  umbrellaRef,
   type CapacitySignal,
   type LeafSpec,
   type QueueFeederDecision,
+  type QueueFeederInput,
   type ReadyIssue,
+  type SkippedUmbrella,
   type UmbrellaCandidate,
 } from '../core/umbrella-decomposer.js';
 
@@ -347,21 +350,131 @@ function findExistingIssueByTitle(
 /**
  * File one leaf as a GitHub issue in the umbrella's repo, unless an issue with
  * the same title already exists (open or closed) — in which case we skip the
- * create and reuse the existing ref. Returns the issue ref (URL for a fresh
- * create, owner/repo#N for a reused one) and whether we created it.
+ * create and reuse the existing ref. `existing` is the pre-resolved existing
+ * ref (from the plan-time title pass, #2145) or null; when undefined we resolve
+ * it here (fail-open path). Returns the issue ref (URL for a fresh create,
+ * owner/repo#N for a reused one) and whether we created it.
  */
 function emitLeaf(
   runGh: (args: string[]) => string,
   repo: string,
   leaf: LeafSpec,
   umbrella: string,
+  existing: string | null | undefined,
 ): { ref: string; created: boolean } {
-  const existing = findExistingIssueByTitle(runGh, repo, leaf.title);
-  if (existing) return { ref: existing, created: false };
+  const resolved = existing === undefined ? findExistingIssueByTitle(runGh, repo, leaf.title) : existing;
+  if (resolved) return { ref: resolved, created: false };
   const body = buildLeafIssueBody(leaf, umbrella);
   const args = ['issue', 'create', '-R', repo, '--title', leaf.title, '--body', body];
   for (const label of leaf.labels ?? []) args.push('--label', label);
   return { ref: runGh(args).trim(), created: true };
+}
+
+/**
+ * Attach extra skip reasons (e.g. exhausted umbrellas) to a decision. An
+ * excluded umbrella may also appear in `decision.skipped` with a rank-based
+ * reason from the pure engine (when a lower-ranked umbrella won the re-eval,
+ * that reason is factually inverted); the exhaustion reason here is the
+ * accurate one, so we drop the engine's entry for the same ref before appending.
+ */
+function withExtraSkips(
+  decision: QueueFeederDecision,
+  extra: readonly SkippedUmbrella[],
+): QueueFeederDecision {
+  if (extra.length === 0) return decision;
+  const extraRefs = new Set(extra.map((s) => s.ref));
+  const deduped = decision.skipped.filter((s) => !extraRefs.has(s.ref));
+  return { ...decision, skipped: [...deduped, ...extra] };
+}
+
+interface TitleExhaustionResult {
+  decision: QueueFeederDecision;
+  /**
+   * For a shred decision, a `leaf title → existing ref (or null)` map covering
+   * every selected leaf, so the emit loop reuses it instead of re-querying gh.
+   * Null for non-shred outcomes (invent / secondary / skip) and for the
+   * fail-open path.
+   */
+  existingByTitle: Map<string, string | null> | null;
+}
+
+/**
+ * Plan-time curated-plan title-exhaustion guard (#2145).
+ *
+ * {@link evaluateQueueFeeder} is pure and cannot see GitHub, so it returns
+ * `action=shred` for a curated umbrella whose every leaf title has already been
+ * emitted and CLOSED. Trusting that decision would spawn implementers against
+ * completed work and never refill the belt. Here we refetch existing issue
+ * titles (open OR closed) for the selected umbrella; if EVERY leaf title
+ * already exists, we exclude that umbrella and re-evaluate so the decision
+ * advances to the next-ranked shreddable umbrella, `invent-product-wave` (a
+ * curated-but-exhausted product umbrella now routes to invent, refilling the
+ * belt — problem #2), or `skip-invent`.
+ *
+ * A partially-exhausted plan still shreds; the emit path files only the
+ * genuinely-new titles, reusing the map computed here so each leaf title is
+ * queried at most once per selected umbrella (keeps gh cost bounded).
+ *
+ * Failure posture: a gh *process* failure while verifying the selected
+ * umbrella's titles cannot be turned into an exhaustion verdict, so we return
+ * the current decision (prior exclusions already applied) with no reuse map —
+ * the emit path re-checks and fails closed (exit 4), and dry-run degrades to
+ * this un-verified shred plan. We deliberately do NOT restart from an
+ * un-excluded evaluation, which could re-select an already-excluded exhausted
+ * umbrella. A gh success with an unparseable payload fails open per-leaf inside
+ * {@link findExistingIssueByTitle}.
+ */
+function planWithTitleExhaustion(
+  input: QueueFeederInput,
+  runGh: (args: string[]) => string,
+): TitleExhaustionResult {
+  const excluded = new Set<string>();
+  const extraSkips: SkippedUmbrella[] = [];
+  const baseResolve =
+    input.resolveLeaves ?? ((c: UmbrellaCandidate) => curatedLeafPlan(umbrellaRef(c)));
+  const evalWith = (): QueueFeederDecision =>
+    evaluateQueueFeeder({
+      ...input,
+      resolveLeaves: (c) => (excluded.has(umbrellaRef(c)) ? undefined : baseResolve(c)),
+    });
+
+  // Each iteration excludes ≥1 umbrella, so the candidate count bounds the loop.
+  for (let guard = 0; guard <= input.candidates.length; guard++) {
+    const decision = evalWith();
+    const sel = decision.selected;
+    if (decision.action !== 'shred' || !sel || sel.needsAuthoring || sel.leaves.length === 0) {
+      return { decision: withExtraSkips(decision, extraSkips), existingByTitle: null };
+    }
+    const existingByTitle = new Map<string, string | null>();
+    let allExist = true;
+    try {
+      for (const leaf of sel.leaves) {
+        const existing = findExistingIssueByTitle(runGh, sel.repo, leaf.title);
+        existingByTitle.set(leaf.title, existing);
+        if (existing === null) allExist = false;
+      }
+    } catch {
+      // gh process failure verifying titles → cannot determine exhaustion for
+      // this umbrella. Return the current decision (prior exclusions kept) with
+      // no reuse map so emit re-checks and fails closed; never restart from an
+      // un-excluded eval (would risk re-selecting an excluded umbrella).
+      return { decision: withExtraSkips(decision, extraSkips), existingByTitle: null };
+    }
+    if (!allExist) {
+      // At least one genuinely-new title — shred stands; emit files only the new.
+      return { decision: withExtraSkips(decision, extraSkips), existingByTitle };
+    }
+    // Curated plan fully exhausted → exclude this umbrella and re-evaluate.
+    excluded.add(sel.ref);
+    extraSkips.push({
+      ref: sel.ref,
+      reason:
+        `curated leaf plan exhausted — all ${sel.leaves.length} leaf title(s) already exist ` +
+        `as open/closed issues; excluded from shred so the belt can refill (#2145)`,
+    });
+  }
+  // Loop guard tripped (unreachable in practice) — return the fully-excluded eval.
+  return { decision: withExtraSkips(evalWith(), extraSkips), existingByTitle: null };
 }
 
 function emit(
@@ -391,13 +504,20 @@ function runPlan(
     pendingQueueDepth: args.pending ?? snapshot.capacity.pendingQueueDepth,
   };
 
-  const decision: QueueFeederDecision = evaluateQueueFeeder({
+  const baseInput: QueueFeederInput = {
     capacity,
     candidates: snapshot.candidates,
     readyIssues: snapshot.readyIssues,
     openProductMetricIssues: snapshot.openProductMetricIssues,
     config: { freeSlotsThreshold: args.freeThreshold },
-  });
+  };
+
+  // Plan-time title-exhaustion guard (#2145): never return action=shred with a
+  // leaf set whose titles are all already-closed issues. On a gh failure the
+  // guard keeps prior exclusions and returns the current shred with no reuse
+  // map, so the emit gate fails closed (exit 4) and dry-run degrades to the
+  // un-verified plan (see planWithTitleExhaustion).
+  const { decision, existingByTitle } = planWithTitleExhaustion(baseInput, io.runGh);
 
   const emitted: string[] = [];
   // Leaves whose title already existed (open or closed) → skipped create,
@@ -422,7 +542,10 @@ function runPlan(
     // must show what this run actually created).
     try {
       for (const leaf of decision.selected.leaves) {
-        const res = emitLeaf(io.runGh, decision.selected.repo, leaf, decision.selected.ref);
+        // Reuse the plan-time title lookup (#2145) when present; undefined tells
+        // emitLeaf to resolve it itself (fail-open path when the guard threw).
+        const existing = existingByTitle ? existingByTitle.get(leaf.title) ?? null : undefined;
+        const res = emitLeaf(io.runGh, decision.selected.repo, leaf, decision.selected.ref, existing);
         emitted.push(res.ref);
         if (!res.created) skipped.push({ title: leaf.title, existing: res.ref });
       }

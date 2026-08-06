@@ -6,7 +6,7 @@ description: >
   ready issues when product leaves are exhausted (#2044). Optionally spawn
   implementers. Fills the idle_capacity gap left when reflection ideas already
   landed.
-version: 3
+version: 4
 schedule:
   defaultCron: "7,37 * * * *"
 parameters:
@@ -48,7 +48,7 @@ You fill **idle task slots** by turning open **product umbrellas** into shreddab
 - Always use `--idempotency-key` on spawns: `queue-feeder-<repo-slug>-<issue>-$(date -u +%Y%m%d%H)`.
 - If capacity free < freeThreshold or pendingQueueDepth > 0: log and exit (no emit).
 - `dryRun=true` → plan only, no issue create, no spawn.
-- **Do not re-file** a leaf title that already exists as an open **or closed** issue in the same repo (idempotent shred / invent).
+- **Do not re-file** a leaf title that already exists as an open **or closed** issue in the same repo (idempotent shred / invent). The CLI now enforces this at plan time (#2145): before returning `action=shred` it refetches existing titles (open **and** closed) for the selected umbrella and, when **every** curated leaf title already exists, excludes that umbrella and re-evaluates — advancing to the next-ranked umbrella, `invent-product-wave` (an exhausted **product** umbrella refills the belt), or `skip-invent`. A partially-exhausted plan still shreds and files only the genuinely-new titles.
 - When counting children for `openChildrenCount`, count **only OPEN** non-umbrella children whose body contains `Leaf of umbrella …#N` (or the queue-feeder backref). **Closed children must not be counted** (#2069) — they do not permanently block re-author. The CLI skips shred/invent under an umbrella only when `openChildrenCount > 0` (use those open leaves first).
 - **Never auto-claim** issues assigned to someone else. Secondary emit only considers unassigned ready issues.
 - Trust CLI `decision.action`: `shred` | `invent-product-wave` | `emit-secondary` | `skip-invent` | `not-triggered`. Do not free-form invent when the CLI says `skip-invent`. When `invent-product-wave`, author 1–`inventLeafCap` product-metric leaves under the selected umbrella only.
@@ -117,7 +117,7 @@ Read `decision.action` from the JSON envelope:
 | `decision.action` | What to do |
 |---|---|
 | `not-triggered` | Capacity gate closed — report and complete. |
-| `shred` | Primary path: leaf issues filed (if `--emit`) from the selected umbrella plan. Continue to Phase 4 for spawned implementers. |
+| `shred` | Primary path: leaf issues filed (if `--emit`) from the selected umbrella plan. On the happy path the plan contains ≥1 genuinely-new title — fully-exhausted curated plans are excluded upstream (#2145); a gh failure while verifying titles fails open to the un-verified plan and, under `--emit`, exits 4 before any implementer spawns. Continue to Phase 4 for spawned implementers. |
 | `invent-product-wave` | Product belt empty (`openProductMetricIssues=0`); selected product umbrella has no open children and no curated plan. **Author 1–`decision.inventLeafCap` (default 3) product-metric leaves** under that umbrella (#2069). Prefer over idea-scout secondary. Ledger `action=invent-product-wave` + umbrella ref + leaf titles. |
 | `emit-secondary` | Product leaves empty and invent not authorized; CLI selected `decision.secondaryEmitted` ready issues (source=`idea-scout`). **Do not invent.** Spawn implementers for those refs (Phase 4). Never re-assign assignees. |
 | `skip-invent` | No shreddable plan, no invent-product-wave, and no safe ready issues — report and complete. **Do not invent** leaves for harness/docs residuals. |
