@@ -116,4 +116,49 @@ describe('DndPill', () => {
 
     expect(container.querySelector('.dnd-pill-count')?.textContent).toBe('1');
   });
+
+  test('Escape closes the duration menu and returns focus to the caret', () => {
+    render();
+
+    const caret = container.querySelector<HTMLButtonElement>('.dnd-pill-caret');
+    expect(caret).not.toBeNull();
+
+    act(() => caret!.click());
+    expect(container.querySelector('.dnd-pill-menu')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    expect(container.querySelector('.dnd-pill-menu')).toBeNull();
+    expect(document.activeElement).toBe(caret);
+  });
+
+  test('a non-Escape key leaves the duration menu open', () => {
+    render();
+
+    const caret = container.querySelector<HTMLButtonElement>('.dnd-pill-caret');
+    act(() => caret!.click());
+    expect(container.querySelector('.dnd-pill-menu')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+
+    expect(container.querySelector('.dnd-pill-menu')).not.toBeNull();
+  });
+
+  test('outside click still dismisses the duration menu', () => {
+    render();
+
+    const caret = container.querySelector<HTMLButtonElement>('.dnd-pill-caret');
+    act(() => caret!.click());
+    expect(container.querySelector('.dnd-pill-menu')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    expect(container.querySelector('.dnd-pill-menu')).toBeNull();
+  });
 });
