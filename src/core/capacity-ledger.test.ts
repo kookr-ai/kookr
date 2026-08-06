@@ -178,10 +178,69 @@ describe('buildCapacityLedger', () => {
   test('an empty task list produces all-zero counts and free === maxActiveTasks', () => {
     const ledger = byClassOf([]);
     expect(ledger.byClass).toEqual({ working: 0, finishedAwaitingAck: 0, hungSuspect: 0, launching: 0 });
+    expect(ledger.finishedAwaitingAckByCause).toEqual({
+      awaiting_poll: 0,
+      ack_sweep_backlog: 0,
+      manual_review_gate: 0,
+      auto_close_disabled: 0,
+    });
     expect(ledger.active).toBe(0);
     expect(ledger.effectiveWorking).toBe(0);
     expect(ledger.phantomActive).toBe(0);
     expect(ledger.free).toBe(10);
+  });
+
+  test('finishedAwaitingAckByCause tallies each FAA task by root cause (issue #2142)', () => {
+    const tasks: Task[] = [
+      // Fresh signal (10s old) → normal poll latency.
+      task({
+        id: 'fresh',
+        status: 'inProgress',
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(NOW - 10_000).toISOString() },
+      }),
+      // Aged (2h) + opted into auto-close → the sweep is behind.
+      task({
+        id: 'backlog',
+        status: 'inProgress',
+        autoCloseOnSignal: true,
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(NOW - 2 * 60 * 60_000).toISOString() },
+      }),
+      // Aged (2h) + ask-first → waiting on a human by design.
+      task({
+        id: 'human',
+        status: 'inProgress',
+        deliveryAuthorization: 'ask-first',
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(NOW - 2 * 60 * 60_000).toISOString() },
+      }),
+      // Aged (2h) + no opt-in, no TTL → configuration gap.
+      task({
+        id: 'config',
+        status: 'inProgress',
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(NOW - 2 * 60 * 60_000).toISOString() },
+      }),
+      // FAA but un-ageable raisedAt (malformed) — still classifies (as awaiting_poll)
+      // so the sum invariant below holds; it must not silently vanish.
+      task({
+        id: 'malformed',
+        status: 'inProgress',
+        pendingSignal: { kind: 'completion_ready', raisedAt: 'not-a-date' },
+      }),
+      // Not FAA — must not be tallied.
+      task({ id: 'working', status: 'inProgress' }),
+    ];
+    const ledger = byClassOf(tasks);
+
+    expect(ledger.byClass.finishedAwaitingAck).toBe(5);
+    expect(ledger.finishedAwaitingAckByCause).toEqual({
+      awaiting_poll: 2, // fresh + un-ageable malformed
+      ack_sweep_backlog: 1,
+      manual_review_gate: 1,
+      auto_close_disabled: 1,
+    });
+    // The per-cause tally sums to the FAA class count — every FAA task classifies,
+    // including one with an un-ageable timestamp.
+    const total = Object.values(ledger.finishedAwaitingAckByCause).reduce((a, b) => a + b, 0);
+    expect(total).toBe(ledger.byClass.finishedAwaitingAck);
   });
 
   test('issue #1935: 7 hung / 6 working grid reports phantomActive and freeForGeneralSources from non-phantom', () => {

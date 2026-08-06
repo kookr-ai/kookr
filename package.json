@@ -32,6 +32,7 @@
     "fix:native-perms": "bash scripts/fix-native-perms.sh",
     "doctor": "bash scripts/doctor.sh",
     "check:portability": "bash scripts/check-portability.sh && bash scripts/check-shell-portability.sh",
+    "check:faa-gate": "node --import tsx scripts/check-faa-mitigation-gate.ts",
     "relay:start": "node --import tsx scripts/relay-lifecycle.ts start",
     "relay:status": "node --import tsx scripts/relay-lifecycle.ts status",
     "relay:logs": "node --import tsx scripts/relay-lifecycle.ts logs",

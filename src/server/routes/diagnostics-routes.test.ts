@@ -1142,6 +1142,7 @@ describe('diagnostics routes', () => {
             active: number;
             free: number;
             byClass: { working: number; finishedAwaitingAck: number; hungSuspect: number; launching: number };
+            finishedAwaitingAckByCause: Record<string, number>;
             pendingQueueDepth: number;
             oldestPendingAgeMs: number | null;
             oldestFinishedAwaitingAckAgeMs: number | null;
@@ -1153,6 +1154,14 @@ describe('diagnostics routes', () => {
           active: 4,
           free: 6,
           byClass: { working: 1, finishedAwaitingAck: 1, hungSuspect: 1, launching: 1 },
+          // The one FAA task's signal was raised 5 min ago — inside the 60-min
+          // stale window — so it classifies as normal poll latency (issue #2142).
+          finishedAwaitingAckByCause: {
+            awaiting_poll: 1,
+            ack_sweep_backlog: 0,
+            manual_review_gate: 0,
+            auto_close_disabled: 0,
+          },
           effectiveWorking: 2, // working + launching
           phantomActive: 2, // hungSuspect + finishedAwaitingAck
           pendingQueueDepth: 2,
@@ -1188,12 +1197,19 @@ describe('diagnostics routes', () => {
       const body = await res.json() as {
         capacity: {
           byClass: Record<string, number>;
+          finishedAwaitingAckByCause: Record<string, number>;
           pendingQueueDepth: number;
           oldestPendingAgeMs: number | null;
           oldestFinishedAwaitingAckAgeMs: number | null;
         };
       };
       expect(body.capacity.byClass).toEqual({ working: 0, finishedAwaitingAck: 0, hungSuspect: 0, launching: 0 });
+      expect(body.capacity.finishedAwaitingAckByCause).toEqual({
+        awaiting_poll: 0,
+        ack_sweep_backlog: 0,
+        manual_review_gate: 0,
+        auto_close_disabled: 0,
+      });
       expect(body.capacity.pendingQueueDepth).toBe(0);
       expect(body.capacity.oldestPendingAgeMs).toBeNull();
       expect(body.capacity.oldestFinishedAwaitingAckAgeMs).toBeNull();

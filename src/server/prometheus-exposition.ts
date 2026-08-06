@@ -21,6 +21,7 @@ import {
   TASK_CAPACITY_CLASSES,
   type CapacityLedger,
 } from '../core/capacity-ledger.js';
+import { FAA_ROOT_CAUSES } from '../core/faa-root-cause.js';
 import type { LessonYieldSnapshot } from '../core/lesson-decision.js';
 import type { GitHubStateFetchFailureSnapshotEntry } from '../adapters/github-fetcher.js';
 
@@ -440,6 +441,12 @@ const EMPTY_CAPACITY: CapacityLedger = {
     hungSuspect: 0,
     launching: 0,
   },
+  finishedAwaitingAckByCause: {
+    awaiting_poll: 0,
+    ack_sweep_backlog: 0,
+    manual_review_gate: 0,
+    auto_close_disabled: 0,
+  },
   effectiveWorking: 0,
   phantomActive: 0,
   pendingQueueDepth: 0,
@@ -475,6 +482,19 @@ function appendCapacityMetrics(
   );
   for (const capacityClass of TASK_CAPACITY_CLASSES) {
     lines.push(metricLine('kookr_capacity_by_class', { class: capacityClass }, snapshot.byClass[capacityClass]));
+  }
+  // FAA root-cause breakdown (issue #2142): classifies WHY each
+  // finishedAwaitingAck task's ack lags so a window of scraped data names the
+  // dominant cause — instead of another symptom-plumbing PR. Sums to the
+  // finishedAwaitingAck by_class gauge.
+  lines.push(
+    '# HELP kookr_capacity_finished_awaiting_ack_by_cause finishedAwaitingAck tasks by root cause (why the ack lags).',
+    '# TYPE kookr_capacity_finished_awaiting_ack_by_cause gauge',
+  );
+  for (const cause of FAA_ROOT_CAUSES) {
+    lines.push(
+      metricLine('kookr_capacity_finished_awaiting_ack_by_cause', { cause }, snapshot.finishedAwaitingAckByCause[cause]),
+    );
   }
   lines.push(
     '# HELP kookr_capacity_pending_queue_depth Tasks in status=pending waiting for a free concurrency slot.',

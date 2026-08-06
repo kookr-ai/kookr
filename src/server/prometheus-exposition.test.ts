@@ -485,6 +485,12 @@ describe('renderPrometheusExposition', () => {
           hungSuspect: 1,
           launching: 1,
         },
+        finishedAwaitingAckByCause: {
+          awaiting_poll: 0,
+          ack_sweep_backlog: 1,
+          manual_review_gate: 0,
+          auto_close_disabled: 0,
+        },
         effectiveWorking: 3,
         phantomActive: 2,
         pendingQueueDepth: 3,
@@ -504,6 +510,11 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 1');
     expect(output).toContain('kookr_capacity_by_class{class="hungSuspect"} 1');
     expect(output).toContain('kookr_capacity_by_class{class="launching"} 1');
+    expect(output).toContain('# TYPE kookr_capacity_finished_awaiting_ack_by_cause gauge');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="ack_sweep_backlog"} 1');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="awaiting_poll"} 0');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="manual_review_gate"} 0');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="auto_close_disabled"} 0');
     expect(output).toContain('kookr_capacity_pending_queue_depth 3');
     expect(output).toContain('kookr_capacity_oldest_pending_age_seconds 45');
     expect(output).toContain('kookr_capacity_oldest_finished_awaiting_ack_age_seconds 120');
@@ -521,6 +532,8 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 0');
     expect(output).toContain('kookr_capacity_by_class{class="hungSuspect"} 0');
     expect(output).toContain('kookr_capacity_by_class{class="launching"} 0');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="ack_sweep_backlog"} 0');
+    expect(output).toContain('kookr_capacity_finished_awaiting_ack_by_cause{cause="awaiting_poll"} 0');
     expect(output).toContain('kookr_capacity_pending_queue_depth 0');
     expect(output).toContain('kookr_capacity_oldest_pending_age_seconds -1');
     expect(output).toContain('kookr_capacity_oldest_finished_awaiting_ack_age_seconds -1');

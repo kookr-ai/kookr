@@ -1,4 +1,9 @@
 import type { Task } from './task-read-model.js';
+import {
+  type FaaRootCause,
+  classifyFaaRootCause,
+  emptyFaaRootCauseTally,
+} from './faa-root-cause.js';
 
 /**
  * Capacity-occupying classification for one task (issue #1526 Phase B / FM9).
@@ -49,6 +54,16 @@ export interface CapacityLedger {
   active: number;
   free: number;
   byClass: Record<TaskCapacityClass, number>;
+  /**
+   * Per-root-cause tally over the `byClass.finishedAwaitingAck` population
+   * (issue #2142): classifies WHY each FAA task's ack lags — normal poll
+   * latency, the auto-close sweep falling behind, a by-design human gate, or a
+   * configuration gap — so the chronic FAA churn can be attacked at its
+   * dominant cause instead of with yet another downstream mitigation. The
+   * counts here sum to `byClass.finishedAwaitingAck` (every FAA task
+   * classifies). Always present; all-zero when there are no FAA tasks.
+   */
+  finishedAwaitingAckByCause: Record<FaaRootCause, number>;
   /**
    * Productive occupancy (issue #1935): `working + launching`. Excludes
    * phantom-active classes (`hungSuspect` + `finishedAwaitingAck`) so
@@ -130,6 +145,17 @@ export interface BuildCapacityLedgerDeps {
   /** Per-task launch-reservation check — see {@link CapacityClassifyDeps.isLaunching}. */
   isLaunching: (task: Task) => boolean;
   /**
+   * Stale threshold for FAA root-cause classification (issue #2142). Defaults
+   * inside {@link classifyFaaRootCause} to the shared stale-completion window;
+   * callers that already resolve a custom threshold may thread it through.
+   */
+  faaStaleThresholdMs?: number;
+  /**
+   * TTL-escalation window for FAA root-cause classification (issue #2142).
+   * Mirrors the background sweep's `ttlMs`; `undefined` disables the TTL tier.
+   */
+  faaTtlMs?: number;
+  /**
    * Reserved self-maintenance slot count (issue #1564). When present and > 0,
    * the ledger reports the reservation so operators can verify the guarantee.
    * Clamped to `[0, maxActiveTasks]`. Absent ⇒ no reservation is reported.
@@ -153,6 +179,7 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     hungSuspect: 0,
     launching: 0,
   };
+  const finishedAwaitingAckByCause = emptyFaaRootCauseTally();
   let pendingQueueDepth = 0;
   let oldestPendingAt: number | undefined;
   let oldestFinishedAwaitingAckAt: number | undefined;
@@ -169,6 +196,12 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
         if (Number.isFinite(raisedAt) && (oldestFinishedAwaitingAckAt === undefined || raisedAt < oldestFinishedAwaitingAckAt)) {
           oldestFinishedAwaitingAckAt = raisedAt;
         }
+        const cause = classifyFaaRootCause(task, {
+          now: deps.now,
+          staleThresholdMs: deps.faaStaleThresholdMs,
+          ttlMs: deps.faaTtlMs,
+        });
+        if (cause) finishedAwaitingAckByCause[cause]++;
       }
     }
 
@@ -213,6 +246,7 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     active,
     free,
     byClass,
+    finishedAwaitingAckByCause,
     effectiveWorking,
     phantomActive,
     pendingQueueDepth,
