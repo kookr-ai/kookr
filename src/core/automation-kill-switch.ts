@@ -25,13 +25,14 @@ export interface SafeModeStatus {
 
 /**
  * Launch sources that count as autonomous actuation for the kill-switch.
- * Schedule fires are the only first-class autonomous spawn path today; other
- * sources (api/ui/cli/websocket/remote) are operator- or human-driven.
+ * Schedule fires and the idle-slot idea refinery (issue #2144) are the
+ * first-class autonomous spawn paths; other sources (api/ui/cli/websocket/
+ * remote) are operator- or human-driven and stay accepted in SAFE MODE.
  */
 export function isAutonomousLaunchSource(
   launchSource: TaskLaunchSource | undefined,
 ): boolean {
-  return launchSource === 'schedule';
+  return launchSource === 'schedule' || launchSource === 'idle-refinery';
 }
 
 /** Build the live SAFE MODE status from settings (or equivalent booleans). */

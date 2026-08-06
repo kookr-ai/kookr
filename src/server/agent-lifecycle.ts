@@ -784,13 +784,19 @@ export interface PromotionDeps {
  *   run under schedule supervision (coalescing, blocking-task staleness gate,
  *   dead-man alerting), so a wedged one is detected and recovered without a
  *   human ack.
+ * - idle-refinery launches (`metadata.launchSource === 'idle-refinery'`, issue
+ *   #2144) — the autonomous idle-slot refinery only files leaf issues and exits;
+ *   it must never park in `finishedAwaitingAck` and re-wedge the last slot it
+ *   was spawned into.
  *
  * Everything else (ask-first / no-autoclose tasks) parks in
  * `finishedAwaitingAck` until a human clicks — exactly the class that
  * re-wedged the cap in the 2026-07-24 incident (FM11).
  */
 function isSelfReleasingPending(task: Pick<Task, 'autoCloseOnSignal' | 'metadata'>): boolean {
-  return task.autoCloseOnSignal === true || task.metadata?.launchSource === 'schedule';
+  return task.autoCloseOnSignal === true
+    || task.metadata?.launchSource === 'schedule'
+    || task.metadata?.launchSource === 'idle-refinery';
 }
 
 /**

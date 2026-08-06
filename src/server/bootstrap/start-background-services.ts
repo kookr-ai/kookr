@@ -5,6 +5,7 @@ import type { GitHubScannerService } from '../../core/github-scanner-service.js'
 import { clearAllTimers, startLifecycleTimers, type TimerDeps, type TimerHandles } from '../lifecycle-timers.js';
 import { startLedgerWatcher } from '../ledger-watcher.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
+import type { IdleRefineryRunner } from '../idle-refinery-runner.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ResourceStatusService } from '../resource-status-service.js';
 import type { ResourceWatchdogService } from '../resource-watchdog-service.js';
@@ -22,6 +23,12 @@ export interface BackgroundServicesDeps {
   githubScanner: GitHubScannerService;
   githubPollingEnabled: boolean;
   scheduleRunner: ScheduleRunner;
+  /**
+   * Idle-slot idea refinery runner (issue #2144). Started after the server is
+   * listening (alongside the schedule runner) and stopped on shutdown. Optional
+   * for older wiring/tests that don't construct one.
+   */
+  idleRefineryRunner?: Pick<IdleRefineryRunner, 'start' | 'stop'>;
   timerDeps: TimerDeps;
   resourceStatusService?: ResourceStatusService;
   /** Host-pressure actuator (issue #1724). No-op when disabled via env. */
@@ -62,12 +69,14 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
     timerHandles,
     startAfterListen(): void {
       deps.scheduleRunner.start();
+      deps.idleRefineryRunner?.start();
       deps.findingEvidenceReviewSampler?.start();
       deps.scheduledWorktreeReclaimRunner?.start();
     },
     async stop(): Promise<void> {
       clearAllTimers(timerHandles);
       await deps.scheduleRunner.stop();
+      await deps.idleRefineryRunner?.stop();
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();
       deps.resourceWatchdogService?.stop();

@@ -210,6 +210,8 @@ import { createHookRuntime } from './bootstrap/create-hook-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
+import { IdleRefineryRunner } from './idle-refinery-runner.js';
+import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import {
@@ -1958,6 +1960,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
+
+  // Idle-slot idea refinery (issue #2144): when the harness is idle (free slots
+  // + empty pending queue) and no refinery task is already in flight, spawn ONE
+  // bounded umbrella-decomposition task to deepen vetted supply. Off by default
+  // (settings.idleRefineryEnabled) — a new autonomous auto-spawn path. Reuses
+  // the SAME watchdog-aware capacity ledger the health endpoint / 429 bodies use,
+  // and the same drain + SAFE-MODE gates as the schedule runner and launch path.
+  const idleRefineryRunner = new IdleRefineryRunner({
+    getConfig: () => ({
+      // Fail closed on a settings load error, same as the automation gate below.
+      enabled: currentSettings.idleRefineryEnabled && !settingsLoadError,
+      minFreeSlots: currentSettings.idleRefineryMinFreeSlots,
+      cooldownMs: currentSettings.idleRefineryCooldownMinutes * 60_000,
+    }),
+    getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
+    countActiveRefineryTasks: () =>
+      taskStore
+        .listTasks()
+        .filter((task) => !isTerminalStatus(task.status) && task.metadata?.launchSource === 'idle-refinery')
+        .length,
+    resolveLaunch: () => resolveUmbrellaDecomposeLaunch(serverCwd),
+    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+  });
+
   const persistenceHealth = new PersistenceHealthTracker();
   // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
   // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
@@ -2681,6 +2709,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner,
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
+    idleRefineryRunner,
     resourceStatusService,
     resourceWatchdogService,
     findingEvidenceReviewSampler,

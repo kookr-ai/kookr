@@ -182,6 +182,36 @@ describe('validateSettings', () => {
     expect(validateSettings({ postMergeCleanupBudgetMinutes: 'soon' }).postMergeCleanupBudgetMinutes).toBe(10);
   });
 
+  it('defaults the idle-slot refinery OFF with N=3 and a 120m cooldown (issue #2144)', () => {
+    const s = validateSettings({});
+    expect(s.idleRefineryEnabled).toBe(false);
+    expect(s.idleRefineryMinFreeSlots).toBe(3);
+    expect(s.idleRefineryCooldownMinutes).toBe(120);
+    expect(DEFAULT_SETTINGS.idleRefineryEnabled).toBe(false);
+  });
+
+  it('accepts idleRefineryEnabled only as a strict boolean', () => {
+    expect(validateSettings({ idleRefineryEnabled: true }).idleRefineryEnabled).toBe(true);
+    // Non-boolean keeps the OFF default (never truthy-coerced on).
+    expect(validateSettings({ idleRefineryEnabled: 'yes' }).idleRefineryEnabled).toBe(false);
+    expect(validateSettings({ idleRefineryEnabled: 1 }).idleRefineryEnabled).toBe(false);
+  });
+
+  it('clamps idleRefineryMinFreeSlots to 1..25 and rounds', () => {
+    expect(validateSettings({ idleRefineryMinFreeSlots: 5 }).idleRefineryMinFreeSlots).toBe(5);
+    expect(validateSettings({ idleRefineryMinFreeSlots: 0 }).idleRefineryMinFreeSlots).toBe(1);
+    expect(validateSettings({ idleRefineryMinFreeSlots: 999 }).idleRefineryMinFreeSlots).toBe(25);
+    expect(validateSettings({ idleRefineryMinFreeSlots: 3.7 }).idleRefineryMinFreeSlots).toBe(4);
+    expect(validateSettings({ idleRefineryMinFreeSlots: 'lots' }).idleRefineryMinFreeSlots).toBe(3);
+  });
+
+  it('clamps idleRefineryCooldownMinutes to 15..1440', () => {
+    expect(validateSettings({ idleRefineryCooldownMinutes: 60 }).idleRefineryCooldownMinutes).toBe(60);
+    expect(validateSettings({ idleRefineryCooldownMinutes: 1 }).idleRefineryCooldownMinutes).toBe(15);
+    expect(validateSettings({ idleRefineryCooldownMinutes: 99999 }).idleRefineryCooldownMinutes).toBe(1440);
+    expect(validateSettings({ idleRefineryCooldownMinutes: 'later' }).idleRefineryCooldownMinutes).toBe(120);
+  });
+
   it('defaults completionReadyTtlMinutes to 120', () => {
     expect(validateSettings({}).completionReadyTtlMinutes).toBe(120);
     expect(DEFAULT_SETTINGS.completionReadyTtlMinutes).toBe(120);
@@ -664,6 +694,9 @@ describe('loadSettings / saveSettings', () => {
       postMergeCleanupBudgetMinutes: 15,
       automationKillSwitch: false,
       safeModeSince: null,
+      idleRefineryEnabled: true,
+      idleRefineryMinFreeSlots: 4,
+      idleRefineryCooldownMinutes: 90,
       disallowAgentFallback: ['codex-cli'],
       agentFallbackAllowlist: ['claude-code'],
     };

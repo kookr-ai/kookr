@@ -11,6 +11,10 @@ describe('isAutonomousLaunchSource', () => {
     expect(isAutonomousLaunchSource('schedule')).toBe(true);
   });
 
+  it('treats idle-refinery as autonomous (issue #2144)', () => {
+    expect(isAutonomousLaunchSource('idle-refinery')).toBe(true);
+  });
+
   it('treats operator-driven sources as non-autonomous', () => {
     for (const source of ['api', 'ui', 'cli', 'websocket', 'remote-chat-telegram', 'remote-relay'] as const) {
       expect(isAutonomousLaunchSource(source)).toBe(false);
