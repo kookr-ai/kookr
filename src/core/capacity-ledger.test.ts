@@ -135,6 +135,34 @@ describe('buildCapacityLedger', () => {
     expect(ledger.pendingQueueDepth).toBe(2);
   });
 
+  test('faaStaleThresholdMs / faaTtlMs deps flow into FAA classification (issue #2142)', () => {
+    // A 45-min-old opted-in FAA task: with the default 60-min stale threshold it
+    // reads as awaiting_poll, but with the live 30-min auto-close delay wired in
+    // it is correctly ack_sweep_backlog (the sweep already considers it eligible).
+    const tasks: Task[] = [
+      task({
+        id: 'opted-in-45m',
+        status: 'inProgress',
+        autoCloseOnSignal: true,
+        pendingSignal: { kind: 'completion_ready', raisedAt: new Date(NOW - 45 * 60_000).toISOString() },
+      }),
+    ];
+    const deps = {
+      now: NOW,
+      maxActiveTasks: 10,
+      isHungSuspect: () => false,
+      isLaunching: () => false,
+    };
+
+    const withDefault = buildCapacityLedger(tasks, deps);
+    expect(withDefault.finishedAwaitingAckByCause.awaiting_poll).toBe(1);
+    expect(withDefault.finishedAwaitingAckByCause.ack_sweep_backlog).toBe(0);
+
+    const withLiveThreshold = buildCapacityLedger(tasks, { ...deps, faaStaleThresholdMs: 30 * 60_000 });
+    expect(withLiveThreshold.finishedAwaitingAckByCause.awaiting_poll).toBe(0);
+    expect(withLiveThreshold.finishedAwaitingAckByCause.ack_sweep_backlog).toBe(1);
+  });
+
   test('free never goes negative when active exceeds maxActiveTasks', () => {
     const tasks = [task({ id: 'w1' }), task({ id: 'w2' }), task({ id: 'w3' })];
     const ledger = buildCapacityLedger(tasks, {

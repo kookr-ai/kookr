@@ -27,23 +27,24 @@ import { FAA_ROOT_CAUSES } from '../src/core/faa-root-cause.js';
  * Path fragments that mark a file as part of the FAA / completion-ready
  * mitigation surface. A changed file whose repo-relative path contains any of
  * these (case-insensitive) puts the change in scope for the gate.
+ *
+ * These are deliberately SPECIFIC to the finishedAwaitingAck / completion-ready
+ * / hung-suspect taxonomy — NOT a blanket `reclaim`/`reaper` match, which would
+ * false-positive on unrelated surfaces like worktree reclamation, session
+ * reaping, or dtach attach reaping. Every fragment maps to a real FAA-mitigation
+ * file (completion-ready sweep/cleanup, the TTL sweeps + residual alerts, the
+ * capacity ledger, the hung-task reaper, the FAA classifier/pill).
  */
 export const FAA_MITIGATION_PATH_FRAGMENTS: readonly string[] = [
   'completion-ready',
   'completion-signal',
   'capacity-ledger',
   'hung-task-reaper',
+  'hung-suspect',
+  'finished-awaiting-ack',
   'ack-all-completion-ready',
   'faa-root-cause',
-];
-
-/**
- * Regexes that mark a file as FAA-mitigation by naming convention (reclaim /
- * reaper surfaces the fragment list above does not enumerate by exact name).
- */
-export const FAA_MITIGATION_PATH_PATTERNS: readonly RegExp[] = [
-  /reclaim/i,
-  /reaper/i,
+  'faa-residual',
 ];
 
 /** Keywords that put a change in scope even when no obvious file path matched. */
@@ -54,12 +55,33 @@ export const FAA_MITIGATION_KEYWORDS: readonly RegExp[] = [
 ];
 
 /**
- * Marker (with a required reason) that consciously bypasses the gate. Anchored
- * to the start of a line (after optional whitespace) so it must be a DELIBERATE
- * marker on its own line — a mid-sentence prose mention of the syntax (e.g. this
- * doc, or a PR body explaining the gate) does not accidentally trip it.
+ * Marker that consciously bypasses the gate. Anchored to the start of a line
+ * (after optional whitespace) so it must be a DELIBERATE marker on its own line
+ * — a mid-sentence prose mention of the syntax (e.g. this doc, or a PR body
+ * explaining the gate) does not accidentally trip it. The captured group is the
+ * reason, validated by {@link hasReasonedBypass} (a real justification, not a
+ * placeholder or punctuation).
  */
-export const FAA_GATE_BYPASS_RE = /^[ \t]*\[faa-gate-bypass:\s*\S[^\]]*\]/im;
+export const FAA_GATE_BYPASS_RE = /^[ \t]*\[faa-gate-bypass:\s*([^\]]*)\]/im;
+
+/**
+ * True when the text carries a bypass marker with a SUBSTANTIVE reason. The
+ * escape hatch cannot be satisfied by leaving the hint's template text in place:
+ * any `<...>` placeholder token is stripped out FIRST — even when wrapped in
+ * punctuation (`[faa-gate-bypass: (<why>)]`) — and the remainder must still carry
+ * a real alphanumeric word. So an empty, punctuation-only, or placeholder-only
+ * reason (`[faa-gate-bypass:]`, `[faa-gate-bypass: -]`, `[faa-gate-bypass: <why>]`,
+ * `[faa-gate-bypass: (<why>)]`) is rejected, while a genuine justification that
+ * happens to mention a `<token>` still passes on its real words.
+ */
+export function hasReasonedBypass(text: string): boolean {
+  const match = text.match(FAA_GATE_BYPASS_RE);
+  if (!match) return false;
+  const reason = (match[1] ?? '').trim();
+  // Strip <...> placeholder tokens before judging substance.
+  const substantive = reason.replace(/<[^>]*>/g, '').trim();
+  return /[A-Za-z0-9]/.test(substantive);
+}
 
 export interface FaaMitigationGateInput {
   /** Repo-relative paths of files changed in the range under evaluation. */
@@ -78,8 +100,7 @@ export type FaaMitigationGateResult =
 
 function isFaaMitigationFile(path: string): boolean {
   const lower = path.toLowerCase();
-  if (FAA_MITIGATION_PATH_FRAGMENTS.some((fragment) => lower.includes(fragment))) return true;
-  return FAA_MITIGATION_PATH_PATTERNS.some((re) => re.test(path));
+  return FAA_MITIGATION_PATH_FRAGMENTS.some((fragment) => lower.includes(fragment));
 }
 
 /** First FAA keyword found in `text`, or null. */
@@ -109,7 +130,7 @@ export function evaluateFaaMitigationGate(input: FaaMitigationGateInput): FaaMit
   const inScope = matchedFiles.length > 0 || matchedKeyword !== null;
   if (!inScope) return { inScope: false };
 
-  if (FAA_GATE_BYPASS_RE.test(input.citationText)) {
+  if (hasReasonedBypass(input.citationText)) {
     return { inScope: true, satisfied: true, reason: 'bypass' };
   }
   if (citesClassifiedCause(input.citationText)) {
