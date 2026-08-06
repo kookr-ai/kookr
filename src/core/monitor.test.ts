@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from './types.js';
-import { Monitor, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS } from './monitor.js';
+import { Monitor, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS, MONITOR_STOPPED_AGENTS_MAX } from './monitor.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import { getDetectionStats, resetDetectionStats } from './detection-stats.js';
@@ -892,6 +892,43 @@ describe('Monitor', () => {
 
     // Agent should NOT reappear in snapshot
     expect(monitor.getSnapshot()).toHaveLength(0);
+  });
+
+  test('stoppedAgents tombstone set is bounded at MONITOR_STOPPED_AGENTS_MAX', () => {
+    // Unregister more distinct agent ids than the cap. Because live agents use
+    // unique (non-reused) session ids, the only removal path (re-register) never
+    // fires here — without a bound the set would grow unbounded.
+    for (let i = 0; i < MONITOR_STOPPED_AGENTS_MAX + 100; i++) {
+      monitor.unregisterAgent(`agent-${i}`);
+    }
+
+    expect(monitor.getRetentionMetrics().stoppedAgents).toBe(MONITOR_STOPPED_AGENTS_MAX);
+  });
+
+  test('stoppedAgents evicts oldest-first (FIFO); recently-stopped agents stay suppressed', () => {
+    const overflow = 5;
+    const total = MONITOR_STOPPED_AGENTS_MAX + overflow;
+
+    // Stop `total` distinct agents in ascending order. The first `overflow` ids
+    // are the oldest, so FIFO eviction should drop exactly those.
+    for (let i = 0; i < total; i++) {
+      monitor.unregisterAgent(`agent-${i}`);
+    }
+
+    // Evicted tombstones no longer suppress: a late event resurrects the agent.
+    for (let i = 0; i < overflow; i++) {
+      monitor.processEvents(`agent-${i}`, [makeToolUse('s1', 'Read')]);
+    }
+    const resurrected = monitor.getSnapshot().map((s) => s.agentId).sort();
+    expect(resurrected).toEqual(
+      Array.from({ length: overflow }, (_, i) => `agent-${i}`).sort(),
+    );
+
+    // The most-recently-stopped agent is well within the retained window, so its
+    // late event is still suppressed (the tombstone's core contract is intact).
+    const newest = `agent-${total - 1}`;
+    monitor.processEvents(newest, [makeToolUse('s1', 'Read')]);
+    expect(monitor.getSnapshot().map((s) => s.agentId)).not.toContain(newest);
   });
 
   test('registerAgent clears stopped state so re-launch works', () => {
