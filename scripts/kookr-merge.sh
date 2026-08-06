@@ -164,25 +164,61 @@ fi
 command -v gh >/dev/null || { echo "kookr-merge: gh (GitHub CLI) is required" >&2; exit 1; }
 command -v jq >/dev/null || { echo "kookr-merge: jq is required" >&2; exit 1; }
 
+# Decide whether a zero-check PR is genuinely merge-eligible.
+#
+# `total == 0` alone is NOT "nothing to wait on": right after a PR opens the
+# statusCheckRollup can be empty while GitHub is still registering required
+# checks and computing mergeability. Returning success there would merge
+# prematurely on a branch-protected repo (the transient pre-registration
+# window called out in issue #2148).
+#
+# mergeStateStatus is authoritative — it is the only field that reflects branch
+# protection AND check registration. CLEAN means nothing is blocking; every
+# other value (BLOCKED, BEHIND, UNSTABLE, DIRTY, UNKNOWN) means "keep waiting".
+#
+# mergeable is only a Git-level conflict signal (MERGEABLE / CONFLICTING /
+# UNKNOWN); it flips to MERGEABLE within seconds of PR creation regardless of
+# checks or protection, so it must NOT override a non-CLEAN mergeStateStatus.
+# It is consulted only as a fallback when mergeStateStatus is absent — i.e. on
+# a gh old enough not to populate the field at all.
+zero_check_merge_eligible() {
+  local checks="$1" merge_state mergeable
+  merge_state="$(printf '%s' "$checks" | jq -r '(.mergeStateStatus // "") | ascii_upcase')"
+  if [[ -n "$merge_state" ]]; then
+    [[ "$merge_state" == "CLEAN" ]]
+    return
+  fi
+  mergeable="$(printf '%s' "$checks" | jq -r '(.mergeable // "") | ascii_upcase')"
+  [[ "$mergeable" == "MERGEABLE" ]]
+}
+
 watch_checks() {
   # Shared pre-flight for BOTH the --watch fast path and the poll loop.
   # A PR with no reported checks has statusCheckRollup=null (repos without CI)
-  # or []; treat that as pass immediately. Without this:
+  # or []; there is nothing to wait on. Without special-casing that:
   #   - poll path: jq iteration over null errors; empty [] never satisfies a
   #     "total != 0 && pending == 0" success condition and spins to timeout
-  #     (issue #1850)
+  #     (issues #1850, #2148)
   #   - `gh pr checks [--watch]` exits 1 with "no checks reported on the
   #     '<branch>' branch" — which used to surface as kookr-merge exit 3
-  #     (issue #2102), even when mergeStateStatus=CLEAN / mergeable=MERGEABLE
+  #     (issue #2102)
+  # But a zero-check PR is treated as an immediate success ONLY when GitHub
+  # confirms it with mergeStateStatus=CLEAN (or mergeable=MERGEABLE on older gh
+  # that omits mergeStateStatus). Otherwise checks may still be registering, so
+  # we fall through to the poll loop and wait for the merge state to settle
+  # rather than merging prematurely (issue #2148).
   local checks total
-  checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup)" || return 3
+  checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
   total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
-  if [[ "$total" == "0" ]]; then
-    echo "kookr-merge: no status checks reported — nothing to wait on"
+  if [[ "$total" == "0" ]] && zero_check_merge_eligible "$checks"; then
+    echo "kookr-merge: no status checks reported and merge state is clean — nothing to wait on"
     return 0
   fi
 
-  if gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
+  # With real checks present, prefer gh's built-in --watch when available.
+  # Zero-check-but-not-yet-clean PRs must NOT use --watch (it exits 1 on "no
+  # checks", issue #2102) — they fall through to the poll loop below.
+  if [[ "$total" != "0" ]] && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
     gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch
     return $?
   fi
@@ -191,20 +227,35 @@ watch_checks() {
   local interval="${KOOKR_MERGE_CHECK_INTERVAL_SECONDS:-15}"
   local start now elapsed failed pending
   start=$(date +%s)
-  echo "kookr-merge: gh pr checks --watch unavailable; polling statusCheckRollup"
+  echo "kookr-merge: polling statusCheckRollup + mergeStateStatus"
 
   while true; do
-    checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup)" || return 3
+    checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
     # `// []` keeps the jq iterations from erroring if the rollup becomes null mid-poll.
     total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
+
+    if [[ "$total" == "0" ]]; then
+      # No checks reported. Succeed only once GitHub confirms the PR is clean;
+      # a blank / non-CLEAN state means checks may still be registering (#2148),
+      # so keep polling until the merge state settles or we time out.
+      if zero_check_merge_eligible "$checks"; then
+        echo "kookr-merge: no status checks reported and merge state is clean — nothing to wait on"
+        return 0
+      fi
+      now=$(date +%s)
+      elapsed=$((now - start))
+      if (( elapsed >= timeout )); then
+        echo "kookr-merge: timed out after ${elapsed}s waiting for merge state to clear (no checks reported)" >&2
+        printf '%s\n' "$checks" | jq -r '"  mergeStateStatus=\(.mergeStateStatus // "?") mergeable=\(.mergeable // "?")"' >&2
+        return 3
+      fi
+      echo "kookr-merge: no checks yet and merge state not clean; sleeping ${interval}s"
+      sleep "$interval"
+      continue
+    fi
+
     failed="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL"))] | length')"
     pending="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status != "COMPLETED")] | length')"
-
-    # Defense in depth: rollup emptied between the pre-flight and this tick.
-    if [[ "$total" == "0" ]]; then
-      echo "kookr-merge: no status checks reported — nothing to wait on"
-      return 0
-    fi
 
     if [[ "$failed" != "0" ]]; then
       printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "  \(.name): \(.conclusion)"' >&2
