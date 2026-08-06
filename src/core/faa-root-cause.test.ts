@@ -83,6 +83,24 @@ describe('classifyFaaRootCause', () => {
     ).toBe('ack_sweep_backlog');
   });
 
+  test('TTL shorter than the stale threshold escalates BEFORE the threshold (not awaiting_poll)', () => {
+    // ask-first, ttl 5m < stale 60m, age 10m: the sweep already considers this
+    // TTL-eligible, so it must classify as ack_sweep_backlog, not awaiting_poll.
+    const ttlMs = 5 * 60_000;
+    const task = faaTask(10 * 60_000, { deliveryAuthorization: 'ask-first' });
+    expect(classifyFaaRootCause(task, { now: NOW, ttlMs })).toBe('ack_sweep_backlog');
+    // Same task with no TTL wired stays within poll cadence (age 10m < 60m).
+    expect(classifyFaaRootCause(task, { now: NOW })).toBe('awaiting_poll');
+  });
+
+  test('opted-in task ignores a short TTL for the awaiting_poll boundary (uses its own delay)', () => {
+    // autoCloseOnSignal uses the stale threshold alone — a short TTL must not
+    // pull its awaiting_poll boundary in (mirrors listStaleCompletionReadyTasks).
+    const ttlMs = 5 * 60_000;
+    const task = faaTask(10 * 60_000, { autoCloseOnSignal: true });
+    expect(classifyFaaRootCause(task, { now: NOW, ttlMs })).toBe('awaiting_poll'); // age 10m < 60m stale
+  });
+
   test('past threshold + ask-first delivery → manual_review_gate (by design)', () => {
     expect(
       classifyFaaRootCause(faaTask(2 * STALE, { deliveryAuthorization: 'ask-first' }), { now: NOW }),

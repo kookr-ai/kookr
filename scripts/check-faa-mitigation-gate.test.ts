@@ -36,17 +36,31 @@ describe('evaluateFaaMitigationGate', () => {
     expect(result).toEqual({ inScope: true, satisfied: true, reason: 'cause_cited' });
   });
 
-  test('in scope via reclaim/reaper naming pattern', () => {
+  test('in scope via a specific FAA/hung-suspect fragment', () => {
     const result = evaluateFaaMitigationGate({
-      changedFiles: ['src/server/hung-suspect-ttl-reclaim.ts'],
+      changedFiles: ['src/server/hung-suspect-ttl-sweep.ts'],
       citationText: 'chore: tweak reclaim counters',
     });
     expect(result).toEqual({
       inScope: true,
       satisfied: false,
-      matchedFiles: ['src/server/hung-suspect-ttl-reclaim.ts'],
+      matchedFiles: ['src/server/hung-suspect-ttl-sweep.ts'],
       matchedKeyword: null,
     });
+  });
+
+  test('unrelated reclaim/reaper surfaces are NOT in scope (no blanket reclaim/reaper match)', () => {
+    // These contain "reclaim"/"reaper" but are worktree/session/dtach cleanup,
+    // not FAA mitigations — the narrowed fragments must not false-positive.
+    for (const path of [
+      'src/server/scheduled-worktree-reclaim-runner.ts',
+      'src/server/use-cases/scheduled-worktree-reclaim.ts',
+      'src/server/session-reaper.ts',
+      'src/adapters/dtach-attach-reaper.ts',
+    ]) {
+      const result = evaluateFaaMitigationGate({ changedFiles: [path], citationText: 'chore: cleanup' });
+      expect(result, path).toEqual({ inScope: false });
+    }
   });
 
   test('in scope via keyword even when no obvious file matched', () => {
@@ -83,12 +97,30 @@ describe('evaluateFaaMitigationGate', () => {
     expect(result).toEqual({ inScope: true, satisfied: true, reason: 'bypass' });
   });
 
-  test('a bypass marker without a reason does NOT satisfy the gate', () => {
+  test('a real reason that happens to mention a <token> still satisfies the gate', () => {
     const result = evaluateFaaMitigationGate({
       changedFiles: ['src/core/capacity-ledger.ts'],
-      citationText: '[faa-gate-bypass:]',
+      citationText: '[faa-gate-bypass: renames the <legacy> field, no behavior change]',
     });
-    expect(result).toMatchObject({ inScope: true, satisfied: false });
+    expect(result).toEqual({ inScope: true, satisfied: true, reason: 'bypass' });
+  });
+
+  test('bypass markers without a SUBSTANTIVE reason do NOT satisfy the gate', () => {
+    for (const citationText of [
+      '[faa-gate-bypass:]', // empty
+      '[faa-gate-bypass: ]', // whitespace only
+      '[faa-gate-bypass: -]', // punctuation only
+      '[faa-gate-bypass:]]', // punctuation-ish leftover bracket, empty reason
+      '[faa-gate-bypass: <why>]', // the copy-paste placeholder
+      '[faa-gate-bypass: (<why>)]', // placeholder wrapped in punctuation
+      '[faa-gate-bypass: <reason here>]', // placeholder-only, multi-word
+    ]) {
+      const result = evaluateFaaMitigationGate({
+        changedFiles: ['src/core/capacity-ledger.ts'],
+        citationText,
+      });
+      expect(result, citationText).toMatchObject({ inScope: true, satisfied: false });
+    }
   });
 
   test('a mid-sentence prose mention of the bypass syntax does NOT trip the gate', () => {
@@ -96,7 +128,7 @@ describe('evaluateFaaMitigationGate', () => {
     // count as an actual bypass — the marker is only honored at line start.
     const result = evaluateFaaMitigationGate({
       changedFiles: ['src/core/capacity-ledger.ts'],
-      citationText: 'feat: tweak reclaim. Genuinely not a mitigation? Add a reasoned [faa-gate-bypass: <why>].',
+      citationText: 'feat: tweak sweep. Genuinely not a mitigation? Add a reasoned [faa-gate-bypass: <why>].',
     });
     expect(result).toMatchObject({ inScope: true, satisfied: false });
   });

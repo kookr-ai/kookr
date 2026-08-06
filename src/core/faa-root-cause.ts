@@ -103,7 +103,16 @@ export function classifyFaaRootCause(
 
   const ageMs = deps.now - raisedAtMs;
   const staleThresholdMs = deps.staleThresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS;
-  if (ageMs < staleThresholdMs) return 'awaiting_poll';
+  // The awaiting_poll boundary must match the sweep's OWN eligibility window, or
+  // health reports awaiting_poll for a task the sweep already considers
+  // actionable. Mirror listStaleCompletionReadyTasks' `applicableThresholdMs`
+  // (issue #1526 Phase A): opted-in tasks use the stale threshold alone; a
+  // not-opted-in task with a shorter TTL escalates at min(threshold, ttl) — so a
+  // 10-min ask-first task with a 5-min TTL is a stall, not poll latency.
+  const applicableThresholdMs = task.autoCloseOnSignal === true
+    ? staleThresholdMs
+    : (deps.ttlMs !== undefined ? Math.min(staleThresholdMs, deps.ttlMs) : staleThresholdMs);
+  if (ageMs < applicableThresholdMs) return 'awaiting_poll';
 
   const policy = classifyCompletionReadyClosePolicy(task, { ageMs, ttlMs: deps.ttlMs });
   if (policy.canAutoClose) return 'ack_sweep_backlog';
