@@ -85,7 +85,10 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
   if [[ "$args" == *"comments,labels,commits"* ]]; then
     cat "${viewJsonPath}"; exit 0
   fi
-  echo '{"statusCheckRollup":[]}'; exit 0
+  # Zero-check PR that GitHub confirms is mergeable. Since #2148 the script only
+  # short-circuits a zero-check merge when mergeStateStatus=CLEAN (or mergeable
+  # on old gh), so the stub must declare it or watch_checks polls to timeout.
+  echo '{"statusCheckRollup":[],"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE"}'; exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "checks" ]]; then
   if [[ "$args" == *"--help"* ]]; then echo "  --watch  Watch checks and exit"; exit 0; fi
@@ -251,7 +254,9 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
   if [[ "$args" == *"comments,labels,commits"* ]]; then
     cat "${viewJsonPath}"; exit 0
   fi
-  echo '{"statusCheckRollup":[]}'; exit 0
+  # Old gh omits mergeStateStatus, so the script falls back to mergeable. A
+  # mergeable zero-check PR must merge without polling to timeout (since #2148).
+  echo '{"statusCheckRollup":[],"mergeable":"MERGEABLE"}'; exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "checks" ]]; then
   if [[ "$args" == *"--help"* ]]; then echo "  --watch  Watch checks and exit"; exit 0; fi
@@ -443,7 +448,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
   });
 
   test('a null statusCheckRollup is treated as no checks and reaches the merge', () => {
-    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null }));
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null, mergeStateStatus: 'CLEAN' }));
     const res = run();
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('FAKE-GH-MERGED');
@@ -451,7 +456,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
   });
 
   test('an empty statusCheckRollup reaches the merge without polling to timeout', () => {
-    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [] }));
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [], mergeStateStatus: 'CLEAN' }));
     const res = run();
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('FAKE-GH-MERGED');
@@ -543,7 +548,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
   });
 
   test('null rollup short-circuits before gh pr checks --watch (which would exit 1)', () => {
-    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null }));
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null, mergeStateStatus: 'CLEAN' }));
     try {
       rmSync(checksCalledFile);
     } catch {
@@ -565,7 +570,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
   });
 
   test('empty rollup also short-circuits before a failing --watch path', () => {
-    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [] }));
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [], mergeStateStatus: 'CLEAN' }));
     try {
       rmSync(checksCalledFile);
     } catch {
