@@ -271,3 +271,219 @@ export function evaluateHungSuspectCapacityFinding(
     phantomActive: ledger.phantomActive,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Supply-aware capacity signal (issue #2143)
+//
+// The orchestration supervisor kept flagging "sideways-on-capacity-fill": idle
+// task slots with an empty queue while throughput sat at 300% of the PR/day
+// target. Utilization is a valid proxy only while the queue has work; at
+// `pendingQueueDepth == 0` with the vetted-idea stream exhausted, forcing
+// utilization higher would only manufacture low-value substrate plumbing. So
+// the idle-capacity finding must NOT warn on raw utilization — it keys on the
+// actual scarce resource: vetted-idea *runway* (backlog depth ÷ consumption
+// rate). Idle slots at/above target with an empty queue and healthy runway are
+// unused headroom (info), not a defect. Pure reporting logic — nothing here
+// touches scheduling or launch admission.
+// ---------------------------------------------------------------------------
+
+/** Vetted-idea supply operands for the runway metric (issue #2143). */
+export interface VettedIdeaSupply {
+  /**
+   * Vetted-idea backlog depth: count of vetted / safe-to-autofile stalled work
+   * waiting to be tasked (the numerator of the runway calculation).
+   */
+  backlogDepth: number;
+  /** Recent consumption rate, in vetted ideas consumed per day (the denominator). */
+  consumptionPerDay: number;
+}
+
+/**
+ * Default vetted-idea runway floor: below this many days of supply, the
+ * supervisor should trigger idea-supply work rather than chase utilization.
+ */
+export const DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS = 2;
+
+/**
+ * Days of vetted-idea runway = `backlogDepth ÷ consumptionPerDay` (issue #2143).
+ * Returns `null` when the operands are unavailable, negative, or consumption is
+ * non-positive — in the last case runway is effectively unbounded (never a
+ * shortfall), which the callers treat as "no runway signal" rather than 0.
+ */
+export function computeVettedIdeaRunwayDays(supply: VettedIdeaSupply | null | undefined): number | null {
+  if (!supply) return null;
+  const { backlogDepth, consumptionPerDay } = supply;
+  if (!Number.isFinite(backlogDepth) || backlogDepth < 0) return null;
+  if (!Number.isFinite(consumptionPerDay) || consumptionPerDay <= 0) return null;
+  return backlogDepth / consumptionPerDay;
+}
+
+/** First-class metric of the vetted-idea runway for the capacity read (issue #2143). */
+export interface VettedIdeaRunwayReport {
+  /** Days of runway, or null when unavailable/unbounded (see {@link computeVettedIdeaRunwayDays}). */
+  runwayDays: number | null;
+  /** Floor the runway is judged against. */
+  floorDays: number;
+  /** True when runway is known and below the floor — supply is running dry. */
+  shortfall: boolean;
+  backlogDepth: number;
+  consumptionPerDay: number;
+}
+
+/**
+ * Build the first-class vetted-idea runway report (issue #2143). Names the
+ * actual scarce resource — days of vetted-idea supply — so the supervisor can
+ * trigger idea-supply work when `shortfall` instead of chasing utilization.
+ * Returns null when the supply operands are unavailable. Pure.
+ */
+export function buildVettedIdeaRunwayReport(
+  supply: VettedIdeaSupply | null | undefined,
+  runwayFloorDays: number = DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS,
+): VettedIdeaRunwayReport | null {
+  if (!supply) return null;
+  const runwayDays = computeVettedIdeaRunwayDays(supply);
+  return {
+    runwayDays,
+    floorDays: runwayFloorDays,
+    shortfall: runwayDays !== null && runwayDays < runwayFloorDays,
+    backlogDepth: supply.backlogDepth,
+    consumptionPerDay: supply.consumptionPerDay,
+  };
+}
+
+/** First-class finding code for idle (under-driven) capacity (issue #2143). */
+export const IDLE_CAPACITY_FINDING_CODE = 'idle_capacity' as const;
+
+/**
+ * Severity of the idle-capacity finding. Reuses the `'info' | 'warning'` half of
+ * {@link import('../shared/contracts/anomalies.js').AnomalySeverity} that
+ * `operational-alert-rules` already uses on `/api/health` — the issue's "warn"
+ * maps to `'warning'`.
+ */
+export type CapacityFindingSeverity = 'info' | 'warning';
+
+/** Operator/supervisor-supplied inputs to the supply-aware capacity signal (issue #2143). */
+export interface IdleCapacitySignalInputs {
+  /** Recent PR/day throughput; null/undefined when unknown. */
+  prsPerDay?: number | null;
+  /** Configured PR/day target the throughput is judged against; null/undefined when unset. */
+  targetPrsPerDay?: number | null;
+  /** Vetted-idea supply operands for the runway metric. */
+  vettedIdea?: VettedIdeaSupply | null;
+  /** Runway floor in days (default {@link DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS}). */
+  runwayFloorDays?: number;
+}
+
+/**
+ * A first-class health finding: there are idle task slots (capacity to fill).
+ * Its `severity` names WHY, so the supervisor no longer has to re-derive intent
+ * from raw utilization (issue #2143).
+ */
+export interface IdleCapacityFinding {
+  code: typeof IDLE_CAPACITY_FINDING_CODE;
+  severity: CapacityFindingSeverity;
+  /** Idle general-source slots (`freeForGeneralSources ?? free`) that triggered the finding. */
+  idleSlots: number;
+  pendingQueueDepth: number;
+  prsPerDay: number | null;
+  targetPrsPerDay: number | null;
+  /** True when throughput is known and at/above target. */
+  atOrAboveThroughputTarget: boolean;
+  /** Days of vetted-idea runway, or null when unavailable. */
+  vettedIdeaRunwayDays: number | null;
+  runwayFloorDays: number;
+  /** True when runway is known and below the floor — the real scarce resource. */
+  runwayShortfall: boolean;
+  /** The actionable driver behind the severity. */
+  driver: 'queue_backlog_idle' | 'runway_shortfall' | 'headroom_unused';
+}
+
+/**
+ * Evaluate the idle-capacity finding against a ledger snapshot (issue #2143).
+ *
+ * Fires only when there are idle general-source slots (there is capacity to
+ * fill), else returns null so the health block is present only when there is
+ * something to observe. Severity keys on ACTIONABLE supply signals, NEVER on
+ * raw utilization: idle slots at/above the PR/day target with an empty queue
+ * and healthy vetted-idea runway are unused headroom, not a defect → `info`
+ * (this ends the recurring "sideways-on-capacity-fill" false-positive stream).
+ * It escalates to `warning` only when work is genuinely under-driven:
+ *   - `queue_backlog_idle` — queued work is stranded behind idle slots
+ *     (a real under-driving defect, independent of supply), or
+ *   - `runway_shortfall` — the vetted-idea stream is running dry (runway below
+ *     floor), the actual scarce resource the supervisor should act on.
+ * Pure.
+ */
+export function evaluateIdleCapacityFinding(
+  ledger: Pick<CapacityLedger, 'free' | 'freeForGeneralSources' | 'pendingQueueDepth'>,
+  inputs: IdleCapacitySignalInputs = {},
+): IdleCapacityFinding | null {
+  const idleSlots = ledger.freeForGeneralSources ?? ledger.free;
+  if (idleSlots <= 0) return null;
+
+  const prsPerDay = inputs.prsPerDay ?? null;
+  const targetPrsPerDay = inputs.targetPrsPerDay ?? null;
+  const runwayFloorDays = inputs.runwayFloorDays ?? DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS;
+  const vettedIdeaRunwayDays = computeVettedIdeaRunwayDays(inputs.vettedIdea);
+  const runwayShortfall = vettedIdeaRunwayDays !== null && vettedIdeaRunwayDays < runwayFloorDays;
+  const atOrAboveThroughputTarget =
+    prsPerDay !== null && targetPrsPerDay !== null && prsPerDay >= targetPrsPerDay;
+
+  let severity: CapacityFindingSeverity = 'info';
+  let driver: IdleCapacityFinding['driver'] = 'headroom_unused';
+  if (ledger.pendingQueueDepth > 0) {
+    // Queued work behind idle slots is genuine under-driving, independent of supply.
+    severity = 'warning';
+    driver = 'queue_backlog_idle';
+  } else if (runwayShortfall) {
+    // The actual scarce resource: vetted-idea supply is running dry.
+    severity = 'warning';
+    driver = 'runway_shortfall';
+  }
+
+  return {
+    code: IDLE_CAPACITY_FINDING_CODE,
+    severity,
+    idleSlots,
+    pendingQueueDepth: ledger.pendingQueueDepth,
+    prsPerDay,
+    targetPrsPerDay,
+    atOrAboveThroughputTarget,
+    vettedIdeaRunwayDays,
+    runwayFloorDays,
+    runwayShortfall,
+    driver,
+  };
+}
+
+function parseFiniteNonNegative(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
+/**
+ * Resolve the supply-aware capacity signal inputs from environment
+ * configuration (issue #2143). Every operand is operator/supervisor-supplied
+ * (there is no in-process global PR/day or vetted-idea data source), and every
+ * one is optional: absent or malformed values resolve to null so the finding
+ * degrades to pure idle-slot observability. Pure — reads only the passed `env`.
+ */
+export function resolveIdleCapacitySignalInputs(
+  env: Record<string, string | undefined>,
+): IdleCapacitySignalInputs {
+  const backlogDepth = parseFiniteNonNegative(env.KOOKR_VETTED_IDEA_BACKLOG);
+  const consumptionPerDay = parseFiniteNonNegative(env.KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY);
+  const runwayFloorDays = parseFiniteNonNegative(env.KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS);
+  const vettedIdea =
+    backlogDepth !== null && consumptionPerDay !== null ? { backlogDepth, consumptionPerDay } : null;
+  return {
+    prsPerDay: parseFiniteNonNegative(env.KOOKR_PRS_PER_DAY),
+    targetPrsPerDay: parseFiniteNonNegative(env.KOOKR_TARGET_PRS_PER_DAY),
+    vettedIdea,
+    ...(runwayFloorDays !== null ? { runwayFloorDays } : {}),
+  };
+}

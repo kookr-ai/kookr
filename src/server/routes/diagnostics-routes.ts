@@ -48,7 +48,13 @@ import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../s
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
 import { TIMER_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/timer-health.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
-import { buildCapacityLedger, evaluateHungSuspectCapacityFinding } from '../../core/capacity-ledger.js';
+import {
+  buildCapacityLedger,
+  buildVettedIdeaRunwayReport,
+  evaluateHungSuspectCapacityFinding,
+  evaluateIdleCapacityFinding,
+  resolveIdleCapacitySignalInputs,
+} from '../../core/capacity-ledger.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import {
@@ -467,6 +473,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // classify as purely healthy_throughput.
     const hungSuspectCapacityFinding = evaluateHungSuspectCapacityFinding(capacity);
 
+    // Issue #2143: supply-aware capacity signal. Idle slots with an empty queue
+    // at/above the PR/day target are unused headroom (info-level), not a defect —
+    // ending the recurring "sideways-on-capacity-fill" false-positive escalation.
+    // The capacity-fill escalation now keys on vetted-idea *runway* shortfall (the
+    // real scarce resource), not raw utilization. Inputs are operator/supervisor-
+    // supplied via env; absent ⇒ pure idle-slot observability. Cheap in-memory
+    // env read only — never a scan on this hot path.
+    const idleCapacitySignalInputs = resolveIdleCapacitySignalInputs(process.env);
+    const idleCapacityFinding = evaluateIdleCapacityFinding(capacity, idleCapacitySignalInputs);
+    const vettedIdeaRunway = buildVettedIdeaRunwayReport(
+      idleCapacitySignalInputs.vettedIdea,
+      idleCapacitySignalInputs.runwayFloorDays,
+    );
+
     // Issue #1989 / #2045: project hungSuspect TTL reclaim counters (including
     // skip-reason breakdown) onto /api/health. Cheap in-memory read only —
     // never a fresh reclaim scan on this path.
@@ -586,6 +606,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(staleProcesses ? { staleProcesses } : {}),
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
+      ...(idleCapacityFinding ? { idleCapacityFinding } : {}),
+      ...(vettedIdeaRunway ? { vettedIdeaRunway } : {}),
       ...(hungSuspectTtlReclaimBlock ? { hungSuspectTtlReclaim: hungSuspectTtlReclaimBlock } : {}),
       ...(finishedAwaitingAckReclaimBlock
         ? { finishedAwaitingAckTtlReclaim: finishedAwaitingAckReclaimBlock }
