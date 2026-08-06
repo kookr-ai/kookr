@@ -37,6 +37,12 @@ describe('SupervisorFeedbackDialog', () => {
     return submit;
   }
 
+  function sendTab(shiftKey = false): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event;
+  }
+
   test('FP mode allows submitting with empty reason and omits userReason in payload', async () => {
     const onSubmit = vi.fn();
     await act(async () => {
@@ -219,6 +225,96 @@ describe('SupervisorFeedbackDialog', () => {
     });
 
     expect(onClose).toHaveBeenCalled();
+  });
+
+  test('initial focus lands on the textarea', async () => {
+    await act(async () => {
+      root.render(React.createElement(SupervisorFeedbackDialog, {
+        mode: 'false_positive',
+        agentName: 'agent-focus',
+        onSubmit: vi.fn(),
+        onClose: vi.fn(),
+      }));
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  test('Tab from the last focusable wraps to the first, and Shift+Tab wraps back', async () => {
+    await act(async () => {
+      root.render(React.createElement(SupervisorFeedbackDialog, {
+        mode: 'false_positive',
+        agentName: 'agent-trap',
+        supervisorExplanation: 'context',
+        onSubmit: vi.fn(),
+        onClose: vi.fn(),
+      }));
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea')!;
+    // In FP mode the submit button is always enabled, so it is the last focusable.
+    const submit = findSubmitButton();
+    expect(submit.disabled).toBe(false);
+
+    submit.focus();
+    const forwardWrap = sendTab();
+    expect(document.activeElement).toBe(textarea);
+    expect(forwardWrap.defaultPrevented).toBe(true);
+
+    textarea.focus();
+    const backwardWrap = sendTab(true);
+    expect(document.activeElement).toBe(submit);
+    expect(backwardWrap.defaultPrevented).toBe(true);
+  });
+
+  test('pulls focus back inside when Tab starts outside the dialog', async () => {
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside';
+    document.body.appendChild(outside);
+
+    await act(async () => {
+      root.render(React.createElement(SupervisorFeedbackDialog, {
+        mode: 'false_positive',
+        agentName: 'agent-escape-focus',
+        onSubmit: vi.fn(),
+        onClose: vi.fn(),
+      }));
+    });
+
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    const escapedFocus = sendTab();
+    expect(container.querySelector('.supervisor-feedback-dialog')!.contains(document.activeElement)).toBe(true);
+    expect(escapedFocus.defaultPrevented).toBe(true);
+
+    outside.remove();
+  });
+
+  test('restores focus to the opener when the dialog is unmounted', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Open feedback';
+    document.body.appendChild(opener);
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    await act(async () => {
+      root.render(React.createElement(SupervisorFeedbackDialog, {
+        mode: 'false_positive',
+        agentName: 'agent-restore',
+        onSubmit: vi.fn(),
+        onClose: vi.fn(),
+      }));
+    });
+    expect(document.activeElement).toBe(container.querySelector('textarea'));
+
+    await act(async () => root.unmount());
+    expect(document.activeElement).toBe(opener);
+
+    // Re-arm the root so the shared afterEach unmount stays a no-op.
+    root = createRoot(container);
+    opener.remove();
   });
 
   test('FP mode renders supervisor explanation; FN mode does not', async () => {
