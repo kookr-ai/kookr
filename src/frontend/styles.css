@@ -1080,6 +1080,64 @@ kbd {
   background: rgba(251,146,60,0.12);
   color: #fb923c;
 }
+
+/* Hung-task reap grace warning (RFC rfc-reap-grace-warning.md). */
+.reap-warning-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 0;
+}
+.reap-warning-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(214,168,36,0.45);
+  border-left: 3px solid var(--warning, #d6a824);
+  border-radius: 6px;
+  background: rgba(214,168,36,0.10);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.reap-warning-icon {
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1.2;
+}
+.reap-warning-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.reap-warning-headline {
+  color: var(--text, inherit);
+}
+.reap-warning-detail {
+  margin-top: 2px;
+  color: var(--text-dim, #9aa0a6);
+}
+.reap-warning-keepalive {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 6px 12px;
+  border: 1px solid var(--warning, #d6a824);
+  border-radius: 5px;
+  background: var(--warning, #d6a824);
+  color: #1a1a1a;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.reap-warning-keepalive:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.reap-warning-keepalive:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--text-dim, #9aa0a6);
+}
 .btn-xs {
   background: none;
   border: 1px solid var(--border-dim);

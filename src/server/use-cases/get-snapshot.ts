@@ -1,5 +1,5 @@
 import type { Monitor } from '../../core/monitor.js';
-import type { AgentState } from '../../shared/contracts/agent-state.js';
+import type { AgentState, ReapWarningState } from '../../shared/contracts/agent-state.js';
 import type { BuildInfo } from '../../core/build-info.js';
 import { computeProjectSummaries } from '../../core/project-summary.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
@@ -240,6 +240,32 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
  * Use this for WebSocket snapshot/update broadcasts.
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
+/** Read-only projection source for a live reap warning (see {@link setReapWarningProvider}). */
+export interface ReapWarningProjectionSource {
+  view(taskId: string, nowMs: number): ReapWarningState | undefined;
+}
+
+/**
+ * Cross-cutting projection hook for the hung-task reap warning (RFC
+ * rfc-reap-grace-warning.md). Registered ONCE at server bootstrap, pointing at
+ * the single {@link ../core/reap-warning-coordinator.js ReapWarningCoordinator}.
+ *
+ * This is a read-only projection *pointer*, NOT a second state authority — the
+ * coordinator instance remains the sole owner of warning state (see its
+ * single-instance invariant). It lives at module scope, rather than being
+ * threaded through the ~30 `createSnapshotMessage` call sites, for correctness:
+ * `mergeActivityAgent` on the client is `{...incoming}`, so a single snapshot
+ * that omitted `reapWarning` would transiently clear the countdown banner.
+ * Every client snapshot must carry the field, so the projection must read from
+ * one guaranteed-present source rather than an optional per-call dep that some
+ * broadcast path could forget. Tests reset it via `setReapWarningProvider(null)`.
+ */
+let reapWarningProjectionSource: ReapWarningProjectionSource | null = null;
+
+export function setReapWarningProvider(source: ReapWarningProjectionSource | null): void {
+  reapWarningProjectionSource = source;
+}
+
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
   // Reuse a precomputed full-fleet base across per-scope builds in one broadcast
   // flush (#1398): the fleet projection is byte-identical for every scope, so
@@ -293,9 +319,16 @@ function computeFullClientSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] 
     const userInputDeliveries = deps.userInputDeliveryProvider
       ?.getSnapshot(agent.agentId)
       .map(projectUserInputDeliveryForClient);
+    // Hung-task reap warning (RFC rfc-reap-grace-warning.md): read the single
+    // registered coordinator so every client snapshot carries a live warning
+    // (avoids banner flicker — see setReapWarningProvider).
+    const reapWarning = agent.taskId && reapWarningProjectionSource
+      ? reapWarningProjectionSource.view(agent.taskId, nowMs)
+      : undefined;
     const projected = projectAgentFieldsForClient({
       ...agent,
       events: agent.events.map(projectEventForClient),
+      ...(reapWarning ? { reapWarning } : {}),
       ...(agent.findingEvidenceAudit
         ? { findingEvidenceAudit: projectFindingEvidenceAuditForClient(agent.findingEvidenceAudit) }
         : {}),

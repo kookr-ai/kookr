@@ -11,6 +11,10 @@ import {
   type AgentEffortMap,
 } from './agent-types.js';
 import {
+  DEFAULT_REAP_GRACE_SECONDS,
+  clampReapGraceSeconds,
+} from './reap-warning-coordinator.js';
+import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
@@ -139,6 +143,19 @@ export interface KookrSettings {
   hungTaskReapEnabled: boolean;
   /** Minutes of total silence (all liveness channels) before a task is reaped. */
   hungTaskReapMinutes: number;
+  /**
+   * Grace-period warning before a hung-task reap (RFC
+   * rfc-reap-grace-warning.md). When enabled, a reap-eligible task is first
+   * WARNED (a countdown surfaces in the dashboard with a "Keep it alive"
+   * button, and a task a live dashboard has open is auto-held) and only reaped
+   * once the countdown elapses. This is an INDEPENDENT kill switch: setting it
+   * false makes the reaper behave exactly as before (immediate reap), without
+   * disabling the reaper itself ({@link hungTaskReapEnabled}) — the rollback
+   * lever if the warned phase ever misbehaves.
+   */
+  hungTaskReapWarningEnabled: boolean;
+  /** Seconds of countdown between the warning and the reap (10–600). */
+  hungTaskReapGraceSeconds: number;
   /**
    * Hard ceiling (seconds) on a single adapter launch (issue #1526 Phase C /
    * #1528). `launchTaskCore` races `adapter.launch()` against this timeout;
@@ -338,6 +355,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   completionReadyTtlMinutes: 120,
   hungTaskReapEnabled: true,
   hungTaskReapMinutes: 180,
+  hungTaskReapWarningEnabled: true,
+  hungTaskReapGraceSeconds: DEFAULT_REAP_GRACE_SECONDS,
   launchTimeoutSeconds: 180,
   deadManScheduleMinutes: 120,
   scheduleFailureAlertThreshold: 3,
@@ -516,6 +535,15 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       MIN_HUNG_TASK_REAP_MIN,
       Math.min(MAX_HUNG_TASK_REAP_MIN, Math.round(raw.hungTaskReapMinutes)),
     );
+  }
+
+  const hungTaskReapWarningEnabled = typeof raw.hungTaskReapWarningEnabled === 'boolean'
+    ? raw.hungTaskReapWarningEnabled
+    : DEFAULT_SETTINGS.hungTaskReapWarningEnabled;
+
+  let hungTaskReapGraceSeconds = DEFAULT_SETTINGS.hungTaskReapGraceSeconds;
+  if (typeof raw.hungTaskReapGraceSeconds === 'number' && Number.isFinite(raw.hungTaskReapGraceSeconds)) {
+    hungTaskReapGraceSeconds = clampReapGraceSeconds(raw.hungTaskReapGraceSeconds);
   }
 
   let launchTimeoutSeconds = DEFAULT_SETTINGS.launchTimeoutSeconds;
@@ -760,6 +788,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       completionReadyTtlMinutes,
       hungTaskReapEnabled,
       hungTaskReapMinutes,
+      hungTaskReapWarningEnabled,
+      hungTaskReapGraceSeconds,
       launchTimeoutSeconds,
       deadManScheduleMinutes,
       scheduleFailureAlertThreshold,

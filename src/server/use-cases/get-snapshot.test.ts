@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { buildLocalSpeechCapabilities, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw } from './get-snapshot.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { buildLocalSpeechCapabilities, createSnapshotMessage, getProjectSummaries, getSnapshotAgentsForClient, getSnapshotAgentsRaw, setReapWarningProvider } from './get-snapshot.js';
+import { ReapWarningCoordinator } from '../../core/reap-warning-coordinator.js';
 import type { AgentEvent } from '../../core/types.js';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
@@ -928,5 +929,59 @@ describe('pending agent signal projection', () => {
       } as any,
     });
     expect(msg.agents.find((a) => a.agentId === 'a-1')?.pendingSignal).toEqual(signal);
+  });
+});
+
+describe('reap-warning snapshot projection (RFC rfc-reap-grace-warning.md)', () => {
+  // The projection source is module-level (single registered coordinator);
+  // always reset it so it never bleeds into other suites in this file.
+  afterEach(() => setReapWarningProvider(null));
+
+  function monitorFor(taskStore: TaskStore) {
+    return {
+      getSnapshot: () => [{ agentId: 'agent-1', events: [], anomaly: null, lastEventSeq: 0 }] as any,
+      getTaskSnapshot: () => taskStore.getAllTasks(),
+    } as any;
+  }
+
+  function warnedTaskStore() {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Stalled', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1', agentType: 'claude-code', cwd: '/repo', createdAt: new Date(),
+    });
+    return { taskStore, task };
+  }
+
+  it('projects reapWarning onto the client agent when the task is warned', () => {
+    const { taskStore, task } = warnedTaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({ taskId: task.id, agentId: 'agent-1', silentForMs: 3 * 3_600_000, now: 1_000_000, graceMs: 120_000, present: false });
+    setReapWarningProvider(coordinator);
+
+    const [agent] = getSnapshotAgentsForClient({ monitor: monitorFor(taskStore), now: () => new Date(1_000_030) });
+    expect(agent.reapWarning).toEqual({
+      remainingMs: 120_000 - 30,
+      silentForMs: 3 * 3_600_000,
+      keptAliveCount: 0,
+      vetoCapReached: false,
+      heldByPresence: false,
+    });
+  });
+
+  it('omits reapWarning when the task has no warning', () => {
+    const { taskStore } = warnedTaskStore();
+    setReapWarningProvider(new ReapWarningCoordinator()); // registered but empty
+    const [agent] = getSnapshotAgentsForClient({ monitor: monitorFor(taskStore) });
+    expect(agent.reapWarning).toBeUndefined();
+  });
+
+  it('omits reapWarning when no provider is registered (banner-flicker guard: absent, not stale)', () => {
+    const { taskStore, task } = warnedTaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({ taskId: task.id, agentId: 'agent-1', silentForMs: 1, now: 1_000_000, graceMs: 120_000, present: false });
+    setReapWarningProvider(null);
+    const [agent] = getSnapshotAgentsForClient({ monitor: monitorFor(taskStore) });
+    expect(agent.reapWarning).toBeUndefined();
   });
 });

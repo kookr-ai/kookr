@@ -7,6 +7,7 @@ import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { LifecycleHandler, type LifecycleHandlerDeps } from './lifecycle-handler.js';
 import { sharedTaskIdForShare } from '../../shared/contracts/contact-share.js';
+import { ReapWarningCoordinator, MAX_REAP_VETOES } from '../../core/reap-warning-coordinator.js';
 
 const mockCleanupTaskWorktrees = vi.fn(async () => undefined);
 // `inspectTaskWorktrees` must be stubbed too: the handler's catch-all would
@@ -339,5 +340,95 @@ describe('worktree:inspectCleanup', () => {
 
     expect(deps.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'alert' }));
     expect(mockInspectTaskWorktrees).not.toHaveBeenCalled();
+  });
+});
+
+describe('LifecycleHandler keepTaskAlive veto (RFC rfc-reap-grace-warning.md)', () => {
+  function warnedTask(coordinator: ReapWarningCoordinator, taskStore: TaskStore, now = 1_000_000) {
+    const task = taskStore.createTask('Stalled task', '/repo');
+    addSession(taskStore, task.id, 'kookr-veto');
+    coordinator.advance({
+      taskId: task.id,
+      agentId: 'kookr-veto',
+      silentForMs: 3 * 3_600_000,
+      now,
+      graceMs: 120_000,
+      present: false,
+    });
+    return task;
+  }
+
+  test('accepted veto extends the deadline, writes an audit row, and does not send an error alert', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'reap-veto-'));
+    const auditLogPath = join(dir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const coordinator = new ReapWarningCoordinator();
+      const task = warnedTask(coordinator, taskStore);
+      const before = coordinator.getWarning(task.id)!.deadlineAt;
+      const { deps } = makeDeps(taskStore, { reapWarningCoordinator: coordinator, auditLogPath, broadcastToAll: vi.fn() });
+      const handler = new LifecycleHandler(deps);
+
+      await handler.handle({ type: 'keepTaskAlive', taskId: task.id });
+
+      const w = coordinator.getWarning(task.id)!;
+      expect(w.keptAliveCount).toBe(1);
+      expect(w.deadlineAt).toBeGreaterThan(before);
+      expect(deps.send).not.toHaveBeenCalled(); // no error/info alert on success
+      expect(await readFile(auditLogPath, 'utf8')).toContain('task.hungTaskReapVetoed');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects with a "limit reached" warning alert once the veto cap is hit', async () => {
+    const taskStore = new TaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    const task = warnedTask(coordinator, taskStore);
+    for (let i = 0; i < MAX_REAP_VETOES; i++) coordinator.veto(task.id, 1_000_000 + i);
+    const { deps } = makeDeps(taskStore, { reapWarningCoordinator: coordinator });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'keepTaskAlive', taskId: task.id });
+
+    expect(deps.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      severity: 'warning',
+      summary: expect.stringContaining('limit reached'),
+    }));
+    expect(coordinator.getWarning(task.id)).toBeDefined(); // left to reap at its deadline
+  });
+
+  test('sends a "no pending termination" info alert when there is no warning to veto', async () => {
+    const taskStore = new TaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    const task = taskStore.createTask('Active task', '/repo');
+    addSession(taskStore, task.id, 'kookr-nowarn');
+    const { deps } = makeDeps(taskStore, { reapWarningCoordinator: coordinator });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'keepTaskAlive', taskId: task.id });
+
+    expect(deps.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      severity: 'info',
+      summary: 'No pending termination',
+    }));
+  });
+
+  test('sends a "no longer active" alert when the task is not inProgress', async () => {
+    const taskStore = new TaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    const task = warnedTask(coordinator, taskStore);
+    taskStore.terminateTask(task.id);
+    const { deps } = makeDeps(taskStore, { reapWarningCoordinator: coordinator });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'keepTaskAlive', taskId: task.id });
+
+    expect(deps.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      summary: 'Task is no longer active',
+    }));
   });
 });

@@ -819,6 +819,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     watcher: deps.hookWatcher?.getHealthSnapshot() ?? emptyHookWatcherHealthSnapshot(),
   }));
 
+  // Hung-task reap warnings (RFC rfc-reap-grace-warning.md): live warning state
+  // + cumulative counters so an operator can answer "why is task X warned / not
+  // warned right now" from a ground-truth read path.
+  app.get('/api/diagnostics/reap-warnings', (c) => c.json({
+    schemaVersion: 'reap-warnings-diagnostics-route.v1',
+    active: deps.reapWarningCoordinator?.snapshotState(Date.now()) ?? [],
+    metrics: deps.reapWarningCoordinator?.getMetrics() ?? null,
+  }));
+
   // Per-agent-type launch success/failure rates (issue #1808): process-local
   // counters so handshake flakiness is visible without log spelunking.
   app.get(LAUNCH_OUTCOMES_ROUTE, (c) => (

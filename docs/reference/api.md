@@ -558,6 +558,7 @@ instance (issue #1526 Phase B / FM12, FM16).
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
 | `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
+| `GET /api/diagnostics/reap-warnings` | Live hung-task reap-warning state (RFC rfc-reap-grace-warning.md): `active` lists each warned task with its `remainingMs`, `deadlineAt`, `keptAliveCount`, and `heldByPresence`; `metrics` exposes cumulative counters (raised / vetoed / expired-to-reap / cleared-by-reason). Ground-truth read path for "why is task X warned or not right now" |
 | `GET /api/diagnostics/timer-health` | Per-loop lifecycle-timer health (issue #1771): each `startLifecycleTimers` loop with `lastFiredAt`, `expectedIntervalMs`, and `overdue` (true when progress is older than two expected intervals). Covers tokenScan, watchdog, liveness, snoozeExpiry, save, and any enabled optional loops (quotaPoll, maintenancePrune, …). Cheap in-memory read; empty `loops` when the tracker is not wired |
 | `GET /api/diagnostics/hot-paths` | Top event-loop contributors over recent windows (issue #1781): labeled timings around known heavy functions (`snapshot_rebuild`, `task_save`, `vt_reconstruct`, `hook_parse`), ranked by `totalMs` burned per window (default last 5 and 15 min) with `count`, `meanMs`, `p95Ms`, and `maxMs`. Pure in-memory aggregation of a bounded ring — no filesystem scan, no env gate. The ring retains the most recent `capacity` timings across all labels (`retainedCount`/`capacity` in the payload expose saturation), so under sustained high load the per-window totals are a floor over retained samples, not an exhaustive sum. `?topK=N` trims the per-window list |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
@@ -1122,6 +1123,7 @@ delta sequence number.
 | `batchAbortTasks` | Idempotently abort multiple tasks at once, interrupting each live session; broadcasts a concise result summary. | `taskIds`, optional `reason` |
 | `reopenTask` | Reopen a terminal task. | `taskId` |
 | `dismissAgentSignal` | Dismiss a surfaced agent signal. | `taskId` |
+| `keepTaskAlive` | Veto a pending hung-task reap, extending its grace deadline. | `taskId` |
 | `deleteTask` | Delete a task. | `taskId` |
 | `renameTask` | Rename a task. | `taskId`, `name` |
 | `setTaskPriority` | Change a task's priority. | `taskId`, `priority` |

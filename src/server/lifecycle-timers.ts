@@ -45,6 +45,9 @@ import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
 import type { TimerHealthRecorder } from '../core/timer-health.js';
 import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
+import { DEFAULT_REAP_GRACE_SECONDS } from '../core/reap-warning-coordinator.js';
+import { appendAuditRow } from '../core/audit-log.js';
+import { nowISO } from '../core/interaction-log.js';
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
@@ -284,6 +287,22 @@ export interface TimerDeps {
   /** Live getter — hung-task reap silence threshold, in milliseconds. */
   getHungTaskReapMs?: () => number;
   /**
+   * Grace-period warning before a hung-task reap (RFC rfc-reap-grace-warning.md).
+   * When the coordinator is wired AND the warning phase is enabled, a
+   * reap-eligible task is warned (a countdown surfaces in the snapshot) and only
+   * reaped once the deadline passes; a maintenance pass clears warnings whose
+   * task recovered, and a bounded presence auto-hold protects a task a live
+   * dashboard currently has open. All four are optional so existing wirings and
+   * tests behave exactly as before (immediate reap).
+   */
+  reapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** Live getter — warned phase enabled flag. Independent kill switch; defaults to enabled when absent. */
+  getHungTaskReapWarningEnabled?: () => boolean;
+  /** Live getter — grace-period countdown, in milliseconds. */
+  getHungTaskReapGraceMs?: () => number;
+  /** Presence probe — true when a live dashboard connection currently has the task selected. */
+  isTaskSelectedByAnyConnection?: (taskId: string) => boolean;
+  /**
    * Orphan/terminal-task session reaper (issue #1720). Run on every liveness
    * tick, after `reconcile()` — reaps true orphan sessions and sessions whose
    * owning task already reached a terminal status but whose process tree is
@@ -509,8 +528,10 @@ export function runProgressBudgetBurnDiagnosticSample(
  * `agentId` just returned `stale_agent` — see the wiring in
  * `startLifecycleTimers`'s watchdog interval for why that gate is what makes
  * needs_input/permission_blocked tasks safe from reaping regardless of how
- * long they have been waiting. Returns true when a task was reaped (caller
- * should broadcast a snapshot).
+ * long they have been waiting. Returns true when the caller should broadcast a
+ * snapshot — i.e. a task was reaped, OR a grace-period warning was just raised
+ * (RFC rfc-reap-grace-warning.md); false while a warning's countdown is still
+ * running or nothing changed.
  */
 export async function maybeReapHungTask(
   agentId: string,
@@ -567,17 +588,76 @@ export async function maybeReapHungTask(
       holdForResume = true;
     }
     if (holdForResume) {
+      // A billing/quota pause is not a hang. Drop any reap warning raised
+      // before the pause was recognized so the dashboard banner disappears
+      // immediately, rather than freezing at 0:00 until the maintenance
+      // self-heal window elapses (correctness review). Signal a broadcast when
+      // a banner was actually cleared so the client updates promptly.
+      const clearedWarning = deps.reapWarningCoordinator?.clear(task.id, 'recovered');
+      if (clearedWarning) {
+        await appendReapWarningClearedAudit(deps.auditLogPath, task.id, 'recovered');
+      }
       console.warn(
         `[hung-task-reaper] skipping reap for task ${task.id} — provider_paused `
         + `(${pause.detail ?? 'billing/quota'}); holding slot until provider reset`,
       );
-      return false;
+      return clearedWarning !== undefined;
     }
     console.warn(
       `[hung-task-reaper] reaping provider_paused task ${task.id} — provider reset elapsed `
       + `(${pause.detail ?? 'billing/quota'}); freeing slot + lease for auto-resume`,
     );
     // fall through to the normal reap below
+  }
+
+  // Grace-period warning phase (RFC rfc-reap-grace-warning.md). Composed AFTER
+  // the provider-pause hold so a billing-paused task is never warned. When the
+  // coordinator is wired and the warned phase is enabled, warn first (a
+  // countdown surfaces in the snapshot) and only reap once the deadline passes;
+  // a task a live dashboard currently has open is auto-held (bounded). When the
+  // coordinator is absent or the phase is disabled, fall through to the
+  // unchanged immediate reap — the independent rollback lever.
+  let reapWarnedAt: number | undefined;
+  let reapKeptAliveCount: number | undefined;
+  const coordinator = deps.reapWarningCoordinator;
+  if (coordinator && (deps.getHungTaskReapWarningEnabled?.() ?? true)) {
+    const graceMs = deps.getHungTaskReapGraceMs?.() ?? DEFAULT_REAP_GRACE_SECONDS * 1000;
+    const present = deps.isTaskSelectedByAnyConnection?.(task.id) ?? false;
+    const advance = coordinator.advance({
+      taskId: task.id,
+      agentId,
+      silentForMs: verdict.silentForMs,
+      now: nowDate.getTime(),
+      graceMs,
+      present,
+    });
+    if (advance.action === 'warn') {
+      console.warn(
+        `[reap-warning] warned task ${task.id} — reap in ${Math.round(graceMs / 1000)}s `
+        + `unless kept alive (silent ${Math.round(verdict.silentForMs / 60_000)}m, present=${present})`,
+      );
+      await appendAuditRow(deps.auditLogPath, {
+        type: 'task.hungTaskReapWarned',
+        timestamp: nowISO(),
+        actor: 'system:hung-task-reaper',
+        taskId: task.id,
+        silentForMs: verdict.silentForMs,
+        graceMs,
+        present,
+      });
+      return true; // snapshot carries the new warning — caller broadcasts on `changed`
+    }
+    if (advance.action === 'wait') {
+      return false; // countdown still running
+    }
+    // advance.action === 'reap' → the warning was consumed; fall through to the
+    // real reap, carrying its linkage onto the terminal audit row.
+    reapWarnedAt = advance.warning.warnedAt;
+    reapKeptAliveCount = advance.warning.keptAliveCount;
+    console.warn(
+      `[reap-warning] grace elapsed for task ${task.id} `
+      + `(kept alive ${advance.warning.keptAliveCount}×) — reaping`,
+    );
   }
 
   console.warn(
@@ -594,6 +674,8 @@ export async function maybeReapHungTask(
       thresholdMs: thresholdMs ?? DEFAULT_HUNG_TASK_REAP_MS,
       ...liveness,
       paneContent,
+      ...(reapWarnedAt !== undefined ? { warnedAt: reapWarnedAt } : {}),
+      ...(reapKeptAliveCount !== undefined ? { keptAliveCount: reapKeptAliveCount } : {}),
     },
     {
       taskStore,
@@ -622,6 +704,131 @@ export async function maybeReapHungTask(
   return true;
 }
 
+
+/**
+ * Self-heal window (RFC rfc-reap-grace-warning.md): a warning left this long
+ * past its deadline without being reaped — because the watchdog stopped
+ * reporting `stale_agent`, so the gated reap path (A) never fired — is cleared
+ * so a countdown banner can never freeze at 0:00.
+ */
+export const REAP_WARNING_STUCK_CLEAR_MS = 60_000;
+
+/**
+ * Warning-maintenance pass (RFC rfc-reap-grace-warning.md), run once per
+ * watchdog tick AFTER the per-agent loop, over the coordinator's OWN warned
+ * task-ids — independent of which agents are tracked or `stale_agent` this
+ * tick. This is what makes the headline scenario correct: when the user submits
+ * a prompt, the pane changes → the task is no longer reap-eligible → the
+ * warning is cleared here (the gated path (A) is skipped because the agent went
+ * active). It also reclaims warnings for tasks that left `inProgress` off the
+ * tracked-agent path, applies the bounded presence auto-hold, and self-heals a
+ * warning stuck past its deadline. It NEVER reaps — reaping stays exclusively
+ * in the `stale_agent`-gated {@link maybeReapHungTask}.
+ *
+ * Returns true when a clear happened (caller should broadcast a snapshot).
+ * Presence extensions are intentionally silent — they ride the next periodic
+ * snapshot, and the client renders a "held while you're viewing" state rather
+ * than a ticking countdown, so no per-tick rebroadcast is needed.
+ */
+export async function runReapWarningMaintenance(
+  deps: Pick<TimerDeps,
+    'reapWarningCoordinator' | 'getHungTaskReapWarningEnabled' | 'getHungTaskReapMs'
+    | 'getHungTaskReapGraceMs' | 'isTaskSelectedByAnyConnection' | 'watchdog' | 'auditLogPath'>,
+  taskStore: TaskStore,
+  now: () => Date = () => new Date(),
+): Promise<boolean> {
+  const coordinator = deps.reapWarningCoordinator;
+  if (!coordinator) return false;
+  const warnedIds = coordinator.warnedTaskIds();
+  if (warnedIds.length === 0) return false;
+
+  // Disabled at runtime → drop all warnings so banners disappear and the reaper
+  // reverts to immediate. This pass owns the cleanup because the per-agent
+  // stale branch short-circuits before maybeReapHungTask when disabled.
+  if (!(deps.getHungTaskReapWarningEnabled?.() ?? true)) {
+    const cleared = coordinator.clearAll();
+    for (const id of cleared) {
+      await appendAuditRow(deps.auditLogPath, {
+        type: 'task.hungTaskReapWarningCleared',
+        timestamp: nowISO(),
+        actor: 'system:hung-task-reaper',
+        taskId: id,
+        reason: 'disabled',
+      });
+    }
+    if (cleared.length > 0) {
+      console.warn(`[reap-warning] warned phase disabled — cleared ${cleared.length} warning(s)`);
+    }
+    return cleared.length > 0;
+  }
+
+  const nowMs = now().getTime();
+  const thresholdMs = deps.getHungTaskReapMs?.();
+  const graceMs = deps.getHungTaskReapGraceMs?.() ?? DEFAULT_REAP_GRACE_SECONDS * 1000;
+  let changed = false;
+
+  for (const taskId of warnedIds) {
+    const task = taskStore.getTask(taskId);
+    if (!task || task.status !== 'inProgress') {
+      if (coordinator.clear(taskId, 'gone')) {
+        changed = true;
+        await appendReapWarningClearedAudit(deps.auditLogPath, taskId, 'gone');
+      }
+      continue;
+    }
+
+    const warning = coordinator.getWarning(taskId);
+    const state = warning ? deps.watchdog.getState(warning.agentId) : undefined;
+    const stillEligible = state
+      ? evaluateHungTaskReap(
+        task,
+        {
+          lastHookEventAt: state.lastEventAt,
+          lastPaneChangeAt: state.lastPaneChangeAt,
+          lastTokenActivityAt: state.lastTokenActivityAt,
+        },
+        { now: nowMs, thresholdMs },
+      ).eligible
+      : false; // no watchdog state → agent gone/untracked → treat as recovered
+
+    if (!stillEligible) {
+      if (coordinator.clear(taskId, 'recovered')) {
+        changed = true;
+        console.log(`[reap-warning] cleared task ${taskId} — recovered (no longer reap-eligible)`);
+        await appendReapWarningClearedAudit(deps.auditLogPath, taskId, 'recovered');
+      }
+      continue;
+    }
+
+    // Still eligible: bounded presence auto-hold, then self-heal a stuck banner.
+    const present = deps.isTaskSelectedByAnyConnection?.(taskId) ?? false;
+    coordinator.applyPresence(taskId, present, nowMs, graceMs);
+    const held = coordinator.getWarning(taskId);
+    if (held && nowMs > held.deadlineAt + REAP_WARNING_STUCK_CLEAR_MS) {
+      if (coordinator.clear(taskId, 'stale')) {
+        changed = true;
+        console.warn(`[reap-warning] cleared task ${taskId} — stuck past deadline with no reap (self-heal)`);
+        await appendReapWarningClearedAudit(deps.auditLogPath, taskId, 'stale');
+      }
+    }
+  }
+
+  return changed;
+}
+
+async function appendReapWarningClearedAudit(
+  auditLogPath: string | undefined,
+  taskId: string,
+  reason: 'recovered' | 'gone' | 'stale',
+): Promise<void> {
+  await appendAuditRow(auditLogPath, {
+    type: 'task.hungTaskReapWarningCleared',
+    timestamp: nowISO(),
+    actor: 'system:hung-task-reaper',
+    taskId,
+    reason,
+  });
+}
 
 /** Fixed cadence for the token-usage scan tick (issue #1771 timer-health). */
 export const TOKEN_SCAN_INTERVAL_MS = 5_000;
@@ -920,6 +1127,18 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         } catch (err) {
           console.error(`Watchdog error for ${agentId}:`, err);
         }
+      }
+
+      // Reap-warning maintenance (RFC rfc-reap-grace-warning.md): clear warnings
+      // whose task recovered, apply the bounded presence auto-hold, self-heal
+      // stuck warnings — over the coordinator's own keys, outside the per-agent
+      // stale gate so a prompt-submit recovery clears the banner.
+      try {
+        if (await runReapWarningMaintenance(deps, taskStore)) {
+          changed = true;
+        }
+      } catch (err) {
+        console.error('Error during reap-warning maintenance:', err);
       }
 
       try {

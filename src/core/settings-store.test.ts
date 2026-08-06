@@ -252,6 +252,22 @@ describe('validateSettings', () => {
     expect(validateSettings({ hungTaskReapMinutes: 999_999 }).hungTaskReapMinutes).toBe(10_080);
   });
 
+  it('defaults hungTaskReapWarningEnabled to true and hungTaskReapGraceSeconds to 120', () => {
+    expect(validateSettings({}).hungTaskReapWarningEnabled).toBe(true);
+    expect(validateSettings({}).hungTaskReapGraceSeconds).toBe(120);
+    expect(DEFAULT_SETTINGS.hungTaskReapWarningEnabled).toBe(true);
+    expect(DEFAULT_SETTINGS.hungTaskReapGraceSeconds).toBe(120);
+  });
+
+  it('accepts hungTaskReapWarningEnabled: false (independent kill switch)', () => {
+    expect(validateSettings({ hungTaskReapWarningEnabled: false }).hungTaskReapWarningEnabled).toBe(false);
+  });
+
+  it('clamps hungTaskReapGraceSeconds to the 10–600 range', () => {
+    expect(validateSettings({ hungTaskReapGraceSeconds: 1 }).hungTaskReapGraceSeconds).toBe(10);
+    expect(validateSettings({ hungTaskReapGraceSeconds: 99_999 }).hungTaskReapGraceSeconds).toBe(600);
+  });
+
   it('defaults launchTimeoutSeconds to 180 and clamps to the 30–900 range (issue #1526 Phase C / #1528)', () => {
     expect(validateSettings({}).launchTimeoutSeconds).toBe(180);
     expect(DEFAULT_SETTINGS.launchTimeoutSeconds).toBe(180);
@@ -679,6 +695,8 @@ describe('loadSettings / saveSettings', () => {
       completionReadyTtlMinutes: 90,
       hungTaskReapEnabled: false,
       hungTaskReapMinutes: 240,
+      hungTaskReapWarningEnabled: true,
+      hungTaskReapGraceSeconds: 120,
       launchTimeoutSeconds: 300,
       deadManScheduleMinutes: 240,
       scheduleFailureAlertThreshold: 5,

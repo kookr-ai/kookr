@@ -14,12 +14,15 @@ import {
   maybeReapHungTask,
   runBudgetCheck,
   runProgressBudgetBurnDiagnosticSample,
+  runReapWarningMaintenance,
+  REAP_WARNING_STUCK_CLEAR_MS,
   startLifecycleTimers,
   TOKEN_SCAN_INTERVAL_MS,
   WATCHDOG_INTERVAL_MS,
   SNOOZE_EXPIRY_INTERVAL_MS,
   type TimerDeps,
 } from './lifecycle-timers.js';
+import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import {
   AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
   autoCloseStaleCompletionReadyTasks,
@@ -2000,5 +2003,240 @@ describe('startLifecycleTimers timer-health stamps (issue #1771)', () => {
     } finally {
       clearAllTimers(handles);
     }
+  });
+});
+
+describe('reap-warning grace phase (RFC rfc-reap-grace-warning.md)', () => {
+  const REAP_THRESHOLD_MS = 3 * 60 * 60 * 1000;
+  const GRACE_MS = 120_000;
+  const NOW = Date.parse('2026-06-21T00:00:00.000Z');
+
+  function makeHungTask(taskStore: TaskStore, agentId: string): Task {
+    const task = taskStore.createTask({ prompt: 'Hung agent', cwd: '/tmp' });
+    taskStore.addSession(task.id, {
+      tmuxSession: agentId,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(NOW - 2 * REAP_THRESHOLD_MS),
+    });
+    return taskStore.getTask(task.id)!;
+  }
+
+  function makeSilentWatchdog(agentId: string, ageMs: number): Watchdog {
+    const watchdog = new Watchdog();
+    const lastActivityAt = NOW - ageMs;
+    watchdog.registerAgent(agentId, lastActivityAt, lastActivityAt);
+    return watchdog;
+  }
+
+  function timerDeps(coordinator: ReapWarningCoordinator, overrides: Partial<TimerDeps> = {}): TimerDeps {
+    return {
+      monitor: { getAgentEvents: vi.fn(() => []) } as any,
+      taskStore: {} as any,
+      queue: {} as any,
+      adapter: {} as any,
+      adapterRegistry: { get: vi.fn() } as any,
+      tokenTracker: {} as any,
+      watchdog: new Watchdog(),
+      hookWatcher: {} as any,
+      terminalBackend: {} as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll: vi.fn(),
+      reapWarningCoordinator: coordinator,
+      getHungTaskReapMs: () => REAP_THRESHOLD_MS,
+      getHungTaskReapGraceMs: () => GRACE_MS,
+      ...overrides,
+    };
+  }
+
+  function lifecycleDeps(taskStore: TaskStore) {
+    return {
+      adapter: { stop: vi.fn(async () => undefined) },
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn(() => []) },
+      taskStore,
+      queue: new AttentionQueue(),
+      hookWatcher: { stop: vi.fn() },
+      watchdog: { unregisterAgent: vi.fn() },
+    } as any;
+  }
+
+  test('warns instead of reaping on the first eligible tick', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+
+    const changed = await maybeReapHungTask(
+      agentId, 'frozen pane',
+      timerDeps(coordinator, { watchdog }),
+      taskStore, lifecycleDeps(taskStore),
+      () => new Date(NOW),
+    );
+
+    expect(changed).toBe(true); // a warning was raised → broadcast
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress'); // NOT reaped
+    expect(coordinator.getWarning(task.id)).toBeDefined();
+  });
+
+  test('reaps once the grace deadline passes', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-2';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, { watchdog });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+
+    const reaped = await maybeReapHungTask(
+      agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore),
+      () => new Date(NOW + GRACE_MS + 1),
+    );
+    expect(reaped).toBe(true);
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    expect(coordinator.getWarning(task.id)).toBeUndefined();
+  });
+
+  test('presence auto-hold prevents the reap at the deadline while the task is selected', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-3';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, {
+      watchdog,
+      isTaskSelectedByAnyConnection: (id) => id === task.id,
+    });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    const reaped = await maybeReapHungTask(
+      agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore),
+      () => new Date(NOW + GRACE_MS + 1),
+    );
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(coordinator.getWarning(task.id)?.heldByPresence).toBe(true);
+  });
+
+  test('warned phase disabled → immediate reap (independent kill switch)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-4';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+
+    const reaped = await maybeReapHungTask(
+      agentId, 'pane',
+      timerDeps(coordinator, { watchdog, getHungTaskReapWarningEnabled: () => false }),
+      taskStore, lifecycleDeps(taskStore),
+      () => new Date(NOW),
+    );
+    expect(reaped).toBe(true);
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    expect(coordinator.getWarning(task.id)).toBeUndefined();
+  });
+
+  test('maintenance clears a warning once the task recovers (no longer eligible)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-5';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, { watchdog });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    expect(coordinator.getWarning(task.id)).toBeDefined();
+
+    // User acts → a liveness channel advances → no longer reap-eligible.
+    watchdog.recordTokenActivity(agentId, NOW + 1_000);
+    const changed = await runReapWarningMaintenance(
+      { ...deps, watchdog }, taskStore, () => new Date(NOW + 2_000),
+    );
+    expect(changed).toBe(true);
+    expect(coordinator.getWarning(task.id)).toBeUndefined(); // recovered
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  test('maintenance clears a warning when its task left inProgress (gone)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-gone';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, { watchdog });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    expect(coordinator.getWarning(task.id)).toBeDefined();
+
+    // Task terminated by another path → no longer inProgress.
+    taskStore.terminateTask(task.id);
+    const changed = await runReapWarningMaintenance({ ...deps, watchdog }, taskStore, () => new Date(NOW + 1_000));
+    expect(changed).toBe(true);
+    expect(coordinator.getWarning(task.id)).toBeUndefined();
+  });
+
+  test('maintenance self-heals a warning stuck past its deadline with no reap (stale)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-stale';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, { watchdog });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    // Still eligible (silent) and still inProgress, but the reaper stopped
+    // firing; maintenance clears it once past deadline + the stuck window.
+    const past = NOW + GRACE_MS + REAP_WARNING_STUCK_CLEAR_MS + 1;
+    const changed = await runReapWarningMaintenance({ ...deps, watchdog }, taskStore, () => new Date(past));
+    expect(changed).toBe(true);
+    expect(coordinator.getWarning(task.id)).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress'); // never reaped by maintenance
+  });
+
+  test('maintenance applies the presence hold to a still-eligible warned task', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-present';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const deps = timerDeps(coordinator, {
+      watchdog,
+      isTaskSelectedByAnyConnection: (id) => id === task.id,
+    });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW));
+    const before = coordinator.getWarning(task.id)!.deadlineAt;
+    // A later maintenance tick while the task is selected pushes the deadline.
+    await runReapWarningMaintenance({ ...deps, watchdog }, taskStore, () => new Date(NOW + 5 * 60_000));
+    const held = coordinator.getWarning(task.id)!;
+    expect(held.heldByPresence).toBe(true);
+    expect(held.deadlineAt).toBeGreaterThan(before);
+  });
+
+  test('maintenance clears all warnings when the warned phase is disabled at runtime', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-6';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+
+    await maybeReapHungTask(
+      agentId, 'pane', timerDeps(coordinator, { watchdog }), taskStore,
+      lifecycleDeps(taskStore), () => new Date(NOW),
+    );
+    expect(coordinator.activeWarningCount()).toBe(1);
+
+    const changed = await runReapWarningMaintenance(
+      { reapWarningCoordinator: coordinator, watchdog, getHungTaskReapWarningEnabled: () => false },
+      taskStore, () => new Date(NOW),
+    );
+    expect(changed).toBe(true);
+    expect(coordinator.activeWarningCount()).toBe(0);
   });
 });

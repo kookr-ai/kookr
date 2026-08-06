@@ -36,6 +36,7 @@ import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
+import type { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { resolveLifecycleActor, type LifecycleAuditActor } from './actor-attribution.js';
 
@@ -137,6 +138,8 @@ export interface MessageRouterDeps {
   selectionController?: DashboardSelectionController;
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;
+  /** Shared reap-warning coordinator for the `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md). */
+  reapWarningCoordinator?: ReapWarningCoordinator;
 }
 
 export class MessageRouter {
@@ -217,6 +220,7 @@ export class MessageRouter {
       },
       getLifecycleDeps: () => this.lifecycleDeps,
       tryPromotePending: () => this.tryPromotePending(),
+      reapWarningCoordinator: this.deps.reapWarningCoordinator,
     });
     this.workspaceHandler = new WorkspaceHandler({
       send: this.deps.send,
@@ -464,6 +468,7 @@ export class MessageRouter {
       case 'batchAbortTasks':
       case 'reopenTask':
       case 'dismissAgentSignal':
+      case 'keepTaskAlive':
       case 'deleteTask':
       case 'renameTask':
       case 'setTaskPriority':

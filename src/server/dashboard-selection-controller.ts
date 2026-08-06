@@ -63,6 +63,21 @@ export class DashboardSelectionController {
     return state ? this.publicState(state) : null;
   }
 
+  /**
+   * True when any currently-connected dashboard has `taskId` selected — the
+   * server-side "an operator is present on this task" signal used by the
+   * hung-task reap presence auto-hold (RFC rfc-reap-grace-warning.md). Presence
+   * is inherently live: a disconnected client's state was removed by
+   * {@link unregisterConnection}, so this can never report a closed tab as
+   * present.
+   */
+  isTaskSelectedByAnyConnection(taskId: string): boolean {
+    for (const state of this.states.values()) {
+      if (state.selectedTaskId === taskId) return true;
+    }
+    return false;
+  }
+
   advanceIfSelectionStill(input: {
     connectionId: string;
     taskId: string;

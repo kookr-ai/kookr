@@ -97,8 +97,10 @@ import {
   computeSnapshotBaseAgents as computeSnapshotBaseAgentsFn,
   createSnapshotMessage,
   getSnapshotAgentsForClient,
+  setReapWarningProvider,
   type SnapshotMessageDeps,
 } from './use-cases/get-snapshot.js';
+import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import { SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS } from './use-cases/snapshot-projection.js';
 import { type AgentState, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS } from '../core/monitor.js';
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
@@ -527,6 +529,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getters for the hung-task reaper (issue #1526 Phase A / FM6).
   const getHungTaskReapEnabled = () => currentSettings.hungTaskReapEnabled;
   const getHungTaskReapMs = () => currentSettings.hungTaskReapMinutes * 60_000;
+  // Grace-period warning phase (RFC rfc-reap-grace-warning.md). One coordinator
+  // per server process (its single-instance invariant), shared by the watchdog
+  // tick, the veto handler, and the snapshot projection.
+  const reapWarningCoordinator = new ReapWarningCoordinator();
+  setReapWarningProvider(reapWarningCoordinator);
+  const getHungTaskReapWarningEnabled = () => currentSettings.hungTaskReapWarningEnabled;
+  const getHungTaskReapGraceMs = () => currentSettings.hungTaskReapGraceSeconds * 1000;
   // Live getter for the post-merge cleanup budget (issue #1560). Same
   // live-binding pattern — applies on the next liveness tick.
   const getPostMergeCleanupBudgetMs = () => currentSettings.postMergeCleanupBudgetMinutes * 60_000;
@@ -2147,6 +2156,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     environmentBlockerRegistry,
     pipelineStarvation,
     opsStatusWriter,
+    reapWarningCoordinator,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -2667,6 +2677,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     reflectWorktreesDir,
     hooksDir,
     selectionController,
+    reapWarningCoordinator,
     terminalInputCoordinator,
     userInputDeliveries,
     buildScopedSnapshot,
@@ -2797,6 +2808,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,
+      reapWarningCoordinator,
+      getHungTaskReapWarningEnabled,
+      getHungTaskReapGraceMs,
+      isTaskSelectedByAnyConnection: (taskId: string) => selectionController.isTaskSelectedByAnyConnection(taskId),
       sessionReaper,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,

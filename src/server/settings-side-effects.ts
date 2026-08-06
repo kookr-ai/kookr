@@ -121,6 +121,18 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.hungTaskReapMinutes}min)`,
     );
   }
+  if (prevSettings.hungTaskReapWarningEnabled !== newSettings.hungTaskReapWarningEnabled) {
+    console.log(
+      `[settings] hungTaskReapWarningEnabled → ${newSettings.hungTaskReapWarningEnabled} `
+      + `(was ${prevSettings.hungTaskReapWarningEnabled})`,
+    );
+  }
+  if (prevSettings.hungTaskReapGraceSeconds !== newSettings.hungTaskReapGraceSeconds) {
+    console.log(
+      `[settings] hungTaskReapGraceSeconds → ${newSettings.hungTaskReapGraceSeconds}s `
+      + `(was ${prevSettings.hungTaskReapGraceSeconds}s)`,
+    );
+  }
 
   // --- Phase-C capacity knobs (issue #1526 Phase C / #1862) ---
   // No reconfigure needed: launch, scheduler, pending-TTL, and burst budget

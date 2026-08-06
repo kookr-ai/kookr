@@ -614,6 +614,8 @@ export interface RouteDeps {
    * Sustain-sample tracker for disk-critical launch admission (issue #1992).
    */
   diskAdmissionTracker?: DataDirectoryDiskAdmissionTracker;
+  /** Shared reap-warning coordinator — surfaced read-only via /api/diagnostics/reap-warnings (RFC rfc-reap-grace-warning.md). */
+  reapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;
