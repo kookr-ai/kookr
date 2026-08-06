@@ -917,14 +917,41 @@ describe('startHttpAndWebSockets', () => {
       expect(register).not.toHaveBeenCalled();
     });
 
-    test('rejects a malformed percent-escape without crashing the upgrade listener', async () => {
+    test('rejects a malformed percent-escape and keeps serving later upgrades', async () => {
       const { port, register } = await startWithRegistrar();
       // A lone `%` makes `decodeURIComponent` throw a URIError; the guard must
-      // treat it as a rejection, not let it escape the `upgrade` listener.
+      // treat it as a rejection, not let it escape the `upgrade` listener (which
+      // would crash the process). Prove the listener survived by driving a valid
+      // upgrade on the same server afterwards.
       const status = await rawUpgradeStatus(port, '/ws/terminal/%');
+      expect(status).toBe(400);
+      const after = await rawUpgradeStatus(port, '/ws/terminal/kookr-still-alive');
+      expect(after).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects an empty session name pre-handshake (was a post-handshake 1008 close)', async () => {
+      // Before #2132 an empty name completed the handshake (101) and was closed
+      // 1008 by the connection handler; now the allow-list's {1,128} lower bound
+      // rejects it at the upgrade, before any bridge.
+      const { port, register } = await startWithRegistrar();
+      const status = await rawUpgradeStatus(port, '/ws/terminal/');
       expect(status).toBe(400);
       await new Promise((r) => setTimeout(r, 20));
       expect(register).not.toHaveBeenCalled();
+    });
+
+    test('enforces the 128-char length bound (128 admitted, 129 rejected)', async () => {
+      const { port, register } = await startWithRegistrar();
+      const ok = 'a'.repeat(128);
+      const tooLong = 'a'.repeat(129);
+      expect(await rawUpgradeStatus(port, `/ws/terminal/${tooLong}`)).toBe(400);
+      expect(await rawUpgradeStatus(port, `/ws/terminal/${ok}`)).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      // Only the 128-char name registered.
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][3]).toEqual({ sessionName: ok });
     });
 
     test('admits a legitimate allow-list session name (101) and registers it', async () => {
