@@ -39,6 +39,19 @@ export const WEBSOCKET_PER_MESSAGE_DEFLATE: PerMessageDeflatePolicy = {
 export const DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES = 1_000_000;
 export const TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES = 8_000_000;
 
+/**
+ * Session-id allow-list for the `/ws/terminal/:sessionName` upgrade (issue
+ * #2132). Mirrors the same `^[A-Za-z0-9_-]{1,128}$` charset every HTTP session
+ * route already enforces (`SAFE_ID_RE` in agent-routes, `SESSION_ID_RE` in
+ * diagnostics-routes). The decoded name flows straight into per-instance
+ * filesystem paths — `join(instanceDir, \`${id}.sock\`)` and
+ * `join(ringsDir, \`${id}.bin\`)` — so rejecting a non-matching (e.g.
+ * traversal-bearing `../../foo`) name pre-handshake keeps a malformed id from
+ * ever becoming a bridge or a path. Owner-trusted today; defense-in-depth for
+ * the deferred viewer-admission seam (`resolveTerminalActor`).
+ */
+export const SAFE_TERMINAL_SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 export interface HttpAndWebSocketsDeps {
   app: Hono;
   port: number;
@@ -268,7 +281,32 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
       // an uncaught throw in an `upgrade` listener would crash the process, and a
       // garbage cookie parsed by a future `resolveTerminalActor` must yield a 403,
       // not a DoS.
-      const sessionName = decodeURIComponent(path.replace('/ws/terminal/', ''));
+      // Validate the decoded session name against the shared allow-list BEFORE
+      // resolving the actor or handshaking (issue #2132). The name is joined
+      // straight into per-instance socket/ring filesystem paths, so a
+      // traversal-bearing (`..%2f..%2ffoo` → `../../foo`) or otherwise malformed
+      // id must never become a bridge or a path. `decodeURIComponent` can itself
+      // throw a URIError on a bad escape (e.g. a lone `%`); this branch runs in
+      // an `upgrade` listener where an uncaught throw would crash the process, so
+      // a decode failure is treated as a rejection, not an exception.
+      let sessionName: string;
+      try {
+        sessionName = decodeURIComponent(path.replace('/ws/terminal/', ''));
+      } catch {
+        sessionName = '';
+      }
+      if (!SAFE_TERMINAL_SESSION_ID_RE.test(sessionName)) {
+        console.warn(
+          JSON.stringify({
+            msg: 'terminal_upgrade_denied',
+            sessionName,
+            reason: 'invalid-session-name',
+          }),
+        );
+        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       let terminalActor: Actor = { kind: 'owner' };
       let denied = false;
       try {

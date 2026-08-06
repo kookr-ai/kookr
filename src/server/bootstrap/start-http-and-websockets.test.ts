@@ -831,4 +831,136 @@ describe('startHttpAndWebSockets', () => {
       expect(register).not.toHaveBeenCalled();
     });
   });
+
+  // Issue #2132: the `/ws/terminal/:sessionName` upgrade must validate the
+  // decoded session name against the shared `^[A-Za-z0-9_-]{1,128}$` allow-list
+  // BEFORE any handshake, so a traversal-bearing name (`..%2f..%2ffoo` →
+  // `../../foo`) never becomes a bridge or a per-instance filesystem path
+  // (`${id}.sock` / `${id}.bin`). The raw-socket helper sends the path verbatim
+  // (no client-side URL normalization) so the server-side decode + regex is what
+  // the assertion exercises.
+  describe('terminal session-name allow-list (#2132)', () => {
+    // Open a raw socket, send a WS upgrade for `path` verbatim, and resolve the
+    // numeric HTTP status of the (non-101) response — the pre-handshake reject.
+    function rawUpgradeStatus(port: number, path: string): Promise<number> {
+      return new Promise<number>((resolve, reject) => {
+        let settled = false;
+        const socket = createConnection({ host: '127.0.0.1', port }, () => {
+          const key = randomBytes(16).toString('base64');
+          socket.write(
+            [
+              `GET ${path} HTTP/1.1`,
+              `Host: 127.0.0.1:${port}`,
+              'Upgrade: websocket',
+              'Connection: Upgrade',
+              `Sec-WebSocket-Key: ${key}`,
+              'Sec-WebSocket-Version: 13',
+              '',
+              '',
+            ].join('\r\n'),
+          );
+        });
+        let response = '';
+        const done = (n: number) => {
+          if (settled) return;
+          settled = true;
+          socket.destroy();
+          resolve(n);
+        };
+        socket.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          reject(err);
+        });
+        socket.on('data', (chunk) => {
+          response += chunk.toString('latin1');
+          if (!response.includes('\r\n')) return;
+          const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
+          if (match) done(Number(match[1]));
+        });
+      });
+    }
+
+    async function startWithRegistrar(): Promise<{ port: number; register: ReturnType<typeof vi.fn> }> {
+      const register = vi.fn();
+      const registrar: SocketRegistrar = { register, unregister: vi.fn() };
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: { monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo' },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        onDashboardConnection: () => {},
+      });
+      return { port: portFor(runtime), register };
+    }
+
+    test('rejects a `..`-bearing terminal name pre-handshake with 400 and creates no bridge', async () => {
+      const { port, register } = await startWithRegistrar();
+      // `..%2f..%2ffoo` decodes to `../../foo` — a path-traversal primitive.
+      const status = await rawUpgradeStatus(port, '/ws/terminal/..%2f..%2ffoo');
+      expect(status).toBe(400);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).not.toHaveBeenCalled();
+      expect(runtime?.activeBridges.size).toBe(0);
+    });
+
+    test('rejects a name with a path separator pre-handshake', async () => {
+      const { port, register } = await startWithRegistrar();
+      const status = await rawUpgradeStatus(port, '/ws/terminal/foo%2Fbar');
+      expect(status).toBe(400);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).not.toHaveBeenCalled();
+    });
+
+    test('rejects a malformed percent-escape and keeps serving later upgrades', async () => {
+      const { port, register } = await startWithRegistrar();
+      // A lone `%` makes `decodeURIComponent` throw a URIError; the guard must
+      // treat it as a rejection, not let it escape the `upgrade` listener (which
+      // would crash the process). Prove the listener survived by driving a valid
+      // upgrade on the same server afterwards.
+      const status = await rawUpgradeStatus(port, '/ws/terminal/%');
+      expect(status).toBe(400);
+      const after = await rawUpgradeStatus(port, '/ws/terminal/kookr-still-alive');
+      expect(after).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects an empty session name pre-handshake (was a post-handshake 1008 close)', async () => {
+      // Before #2132 an empty name completed the handshake (101) and was closed
+      // 1008 by the connection handler; now the allow-list's {1,128} lower bound
+      // rejects it at the upgrade, before any bridge.
+      const { port, register } = await startWithRegistrar();
+      const status = await rawUpgradeStatus(port, '/ws/terminal/');
+      expect(status).toBe(400);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).not.toHaveBeenCalled();
+    });
+
+    test('enforces the 128-char length bound (128 admitted, 129 rejected)', async () => {
+      const { port, register } = await startWithRegistrar();
+      const ok = 'a'.repeat(128);
+      const tooLong = 'a'.repeat(129);
+      expect(await rawUpgradeStatus(port, `/ws/terminal/${tooLong}`)).toBe(400);
+      expect(await rawUpgradeStatus(port, `/ws/terminal/${ok}`)).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      // Only the 128-char name registered.
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][3]).toEqual({ sessionName: ok });
+    });
+
+    test('admits a legitimate allow-list session name (101) and registers it', async () => {
+      const { port, register } = await startWithRegistrar();
+      const status = await rawUpgradeStatus(port, '/ws/terminal/kookr-test-session_01');
+      expect(status).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][3]).toEqual({ sessionName: 'kookr-test-session_01' });
+    });
+  });
 });
