@@ -142,6 +142,21 @@ export const UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS = 60_000;
 const MAX_SUPPRESSED_COMPLETION_SIGNAL_IDS = 128;
 
 /**
+ * Upper bound on the {@link Monitor.stoppedAgents} tombstone set. An id is added
+ * on `unregisterAgent` and only removed if the *same* id later re-registers.
+ * Because live agents are keyed by unique (non-reused) session ids, the removal
+ * path effectively never fires, so without a cap the set grows for the lifetime
+ * of the process — steady, unbounded RSS growth on a busy multi-agent host.
+ *
+ * The set is bounded as a FIFO with oldest-first eviction, mirroring the
+ * `auth-throttle` `sources` map. The cap is generous so eviction only ever
+ * touches long-gone agents: a tombstone's whole job is to suppress a straggler
+ * event that arrives shortly after unregister, and 4096 recently-stopped agents
+ * covers any realistic late-event window.
+ */
+export const MONITOR_STOPPED_AGENTS_MAX = 4096;
+
+/**
  * Anomaly types (and watchdog verdict statuses) whose lifecycle is owned by
  * the watchdog tick path. Centralized so the actionable filter, the
  * non-actionable purge guard, and the suppressed-verdict purge guard all
@@ -823,7 +838,23 @@ export class Monitor {
     // affect any surviving agent's projection.
     this.suppressedCompletionSignalIds.delete(agentId);
     this.ttlEvictedSubagentEventCounts.delete(agentId);
+    this.addStoppedAgent(agentId);
+  }
+
+  /**
+   * Tombstone an agent id, keeping {@link stoppedAgents} bounded as a FIFO with
+   * oldest-first eviction (see {@link MONITOR_STOPPED_AGENTS_MAX}). Re-adding an
+   * id that is already present is a no-op for ordering (Set semantics), which is
+   * fine: agent ids are unique per launch, so this only matters for a repeated
+   * unregister of the same id and does not disturb the eviction window.
+   */
+  private addStoppedAgent(agentId: string): void {
     this.stoppedAgents.add(agentId);
+    while (this.stoppedAgents.size > MONITOR_STOPPED_AGENTS_MAX) {
+      const oldest = this.stoppedAgents.keys().next().value;
+      if (oldest === undefined) break;
+      this.stoppedAgents.delete(oldest);
+    }
   }
 
   private stabilizeEventAnomaly(
