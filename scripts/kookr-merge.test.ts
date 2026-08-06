@@ -174,22 +174,15 @@ describe('kookr-merge.sh zero-check eligibility (#2148)', () => {
     }
   });
 
-  it('falls back to mergeable=MERGEABLE when mergeStateStatus is absent (old gh)', () => {
+  it('refuses to fast-path a zero-check PR when mergeStateStatus is unavailable, even if mergeable=MERGEABLE', () => {
+    // Regression guard for the review finding: `mergeable` is only a Git-level
+    // conflict signal and flips to MERGEABLE within seconds regardless of check
+    // registration, so it must NOT authorize a zero-check merge. On a gh too
+    // old to report mergeStateStatus we keep waiting rather than merge on an
+    // unverifiable signal — strictly safer than re-opening the pre-registration
+    // premature-merge window (#2148).
     const dir = makeStubDir({
       checksResponses: ['{"statusCheckRollup":null,"mergeable":"MERGEABLE"}'],
-    });
-    try {
-      const { status, merged } = runMerge(dir);
-      expect(status).toBe(0);
-      expect(merged).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('does not merge when mergeStateStatus is absent and mergeable is CONFLICTING', () => {
-    const dir = makeStubDir({
-      checksResponses: ['{"statusCheckRollup":null,"mergeable":"CONFLICTING"}'],
     });
     try {
       const { status, merged } = runMerge(dir, {

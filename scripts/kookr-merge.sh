@@ -172,24 +172,24 @@ command -v jq >/dev/null || { echo "kookr-merge: jq is required" >&2; exit 1; }
 # prematurely on a branch-protected repo (the transient pre-registration
 # window called out in issue #2148).
 #
-# mergeStateStatus is authoritative — it is the only field that reflects branch
-# protection AND check registration. CLEAN means nothing is blocking; every
-# other value (BLOCKED, BEHIND, UNSTABLE, DIRTY, UNKNOWN) means "keep waiting".
+# mergeStateStatus is the ONLY safe signal: it is the only field that reflects
+# branch protection AND check registration. CLEAN means nothing is blocking;
+# every other value (BLOCKED, BEHIND, UNSTABLE, DIRTY, UNKNOWN) means "keep
+# waiting", including the pre-registration window.
 #
-# mergeable is only a Git-level conflict signal (MERGEABLE / CONFLICTING /
-# UNKNOWN); it flips to MERGEABLE within seconds of PR creation regardless of
-# checks or protection, so it must NOT override a non-CLEAN mergeStateStatus.
-# It is consulted only as a fallback when mergeStateStatus is absent — i.e. on
-# a gh old enough not to populate the field at all.
+# We deliberately do NOT fall back to `mergeable`: it is only a Git-level
+# conflict signal (MERGEABLE / CONFLICTING / UNKNOWN) that flips to MERGEABLE
+# within seconds of PR creation regardless of checks or branch protection, so
+# treating MERGEABLE as merge-readiness would re-open the exact premature-merge
+# window this gate is meant to close. When mergeStateStatus is absent (a gh too
+# old to report it — every gh that ships the field, incl. 2.x, is fine), we
+# simply refuse to fast-path the zero-check PR: the poll loop keeps waiting
+# until the state can be confirmed or the timeout fires. That is strictly safer
+# than merging on an unverifiable signal.
 zero_check_merge_eligible() {
-  local checks="$1" merge_state mergeable
+  local checks="$1" merge_state
   merge_state="$(printf '%s' "$checks" | jq -r '(.mergeStateStatus // "") | ascii_upcase')"
-  if [[ -n "$merge_state" ]]; then
-    [[ "$merge_state" == "CLEAN" ]]
-    return
-  fi
-  mergeable="$(printf '%s' "$checks" | jq -r '(.mergeable // "") | ascii_upcase')"
-  [[ "$mergeable" == "MERGEABLE" ]]
+  [[ "$merge_state" == "CLEAN" ]]
 }
 
 watch_checks() {
@@ -203,10 +203,9 @@ watch_checks() {
   #     '<branch>' branch" — which used to surface as kookr-merge exit 3
   #     (issue #2102)
   # But a zero-check PR is treated as an immediate success ONLY when GitHub
-  # confirms it with mergeStateStatus=CLEAN (or mergeable=MERGEABLE on older gh
-  # that omits mergeStateStatus). Otherwise checks may still be registering, so
-  # we fall through to the poll loop and wait for the merge state to settle
-  # rather than merging prematurely (issue #2148).
+  # confirms it with mergeStateStatus=CLEAN. Otherwise checks may still be
+  # registering, so we fall through to the poll loop and wait for the merge
+  # state to settle rather than merging prematurely (issue #2148).
   local checks total
   checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup,mergeStateStatus,mergeable)" || return 3
   total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
