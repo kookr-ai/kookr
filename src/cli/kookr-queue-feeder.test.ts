@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LUCY_1588_LEAF_PLAN } from '../core/umbrella-decomposer.js';
 import {
   QueueFeederUsageError,
   parseQueueFeederArgs,
@@ -80,11 +81,14 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
       readInput: () => SNAPSHOT,
       runGh: (a) => {
         ghCalls.push(a);
-        return '';
+        return ''; // no existing issue with any leaf title → nothing exhausted
       },
     });
     expect(code).toBe(0);
-    expect(ghCalls).toHaveLength(0); // dry-run — no gh issue create
+    // Dry-run performs the read-only plan-time title-exhaustion check (#2145)
+    // but never creates issues.
+    expect(ghCalls.every((a) => a[1] === 'list')).toBe(true);
+    expect(ghCalls.some((a) => a[1] === 'create')).toBe(false);
     const payload = JSON.parse(c.lines[0]!);
     expect(payload.decision.selected.ref).toBe('jeanibarz/lucy#1588');
     expect(payload.decision.selected.productMetricBlocking).toBe(true);
@@ -162,19 +166,34 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     expect(payload.record.dryRun).toBe(false);
   });
 
-  it('files ZERO new issues when every leaf title already exists closed (#2120)', async () => {
+  // A single product umbrella (#1588) whose curated plan is entirely closed.
+  const EXHAUSTED_SNAPSHOT = JSON.stringify({
+    capacity: { free: 5, pendingQueueDepth: 0 },
+    openProductMetricIssues: 0,
+    candidates: [
+      {
+        repo: 'jeanibarz/lucy',
+        number: 1588,
+        title: 'anchor truth — SEC acceptance anchors',
+        labels: ['sec-anchor'],
+        openChildrenCount: 0,
+      },
+    ],
+  });
+
+  it('does NOT shred closed titles when a curated plan is fully exhausted — routes to invent-product-wave (#2145)', async () => {
     const c = capture();
     const listCalls: string[][] = [];
     const createCalls: string[][] = [];
-    let existingNumber = 2099;
+    let existingNumber = 2069;
     const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
       ...c,
-      readInput: () => SNAPSHOT,
+      readInput: () => EXHAUSTED_SNAPSHOT,
       runGh: (a) => {
         if (a[1] === 'list') {
           listCalls.push(a);
-          // Pull the searched title out of the --search arg and echo it back as
-          // an already-landed CLOSED fixture so every leaf matches.
+          // Echo every searched title back as an already-landed CLOSED issue so
+          // the whole curated plan looks exhausted.
           const search = a[a.indexOf('--search') + 1]!;
           const title = JSON.parse(search.replace(/^in:title /, '')) as string;
           return JSON.stringify([{ number: existingNumber++, title }]);
@@ -184,21 +203,99 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
       },
     });
     expect(code).toBe(0);
-    expect(listCalls).toHaveLength(3); // every leaf checked
-    expect(createCalls).toHaveLength(0); // ...and none re-filed
+    expect(listCalls).toHaveLength(3); // every curated leaf title checked once
+    expect(createCalls).toHaveLength(0); // ...and NONE re-filed as closed titles
     const payload = JSON.parse(c.lines[0]!);
-    expect(payload.skipped).toHaveLength(3);
-    // Existing refs are reused in `emitted` so the ledger reflects reality.
-    expect(payload.emitted).toEqual([
-      'jeanibarz/lucy#2099',
-      'jeanibarz/lucy#2100',
-      'jeanibarz/lucy#2101',
-    ]);
-    // Ledger row notes the skips for agent audit.
+    // Exhausted curated umbrella is excluded from shred and re-routed to invent
+    // so the product belt can refill (#2145 problem #2), not returned as shred.
+    expect(payload.decision.action).toBe('invent-product-wave');
+    expect(payload.decision.selected.ref).toBe('jeanibarz/lucy#1588');
+    expect(payload.decision.selected.needsAuthoring).toBe(true);
+    expect(payload.decision.inventLeafCap).toBe(3);
+    expect(payload.emitted).toHaveLength(0);
+    // The exclusion reason is surfaced in the decision + ledger for agent audit.
+    const exhaustedSkip = payload.decision.skipped.find(
+      (s: { ref: string; reason: string }) => s.ref === 'jeanibarz/lucy#1588',
+    );
+    expect(exhaustedSkip?.reason).toMatch(/curated leaf plan exhausted/);
     expect(c.ledger).toHaveLength(1);
     const ledgerRow = JSON.parse(c.ledger[0]!.line);
-    expect(ledgerRow.skipped).toHaveLength(3);
-    expect(ledgerRow.emitError).toBeNull();
+    expect(ledgerRow.action).toBe('invent-product-wave');
+  });
+
+  it('advances to the next-ranked curated umbrella when the first is exhausted (#2145)', async () => {
+    const c = capture();
+    const createCalls: string[][] = [];
+    // #1588 fully closed, #1589 genuinely new — both product-metric & curated.
+    const snap = JSON.stringify({
+      capacity: { free: 5, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'anchor truth — SEC acceptance anchors',
+          labels: ['sec-anchor'],
+          openChildrenCount: 0,
+          productMetricBlocking: true,
+        },
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1589,
+          title: 'forward-corpus denominator',
+          labels: ['product-metric'],
+          openChildrenCount: 0,
+          productMetricBlocking: true,
+        },
+      ],
+    });
+    const closed = new Set(LUCY_1588_LEAF_PLAN.map((l) => l.title));
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      readInput: () => snap,
+      runGh: (a) => {
+        if (a[1] === 'list') {
+          const search = a[a.indexOf('--search') + 1]!;
+          const title = JSON.parse(search.replace(/^in:title /, '')) as string;
+          // Only #1588's leaf titles are already closed; #1589's are new.
+          return closed.has(title) ? JSON.stringify([{ number: 2070, title }]) : '[]';
+        }
+        createCalls.push(a);
+        return 'https://github.com/jeanibarz/lucy/issues/9001';
+      },
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    // #1588 exhausted → excluded; the feeder shreds the fresh #1589 instead.
+    expect(payload.decision.action).toBe('shred');
+    expect(payload.decision.selected.ref).toBe('jeanibarz/lucy#1589');
+    // #1589's fresh leaves are actually filed — so the negative check below bites.
+    expect(createCalls.length).toBeGreaterThan(0);
+    // No closed #1588 title is ever handed to gh issue create.
+    for (const call of createCalls) {
+      const filedTitle = call[call.indexOf('--title') + 1]!;
+      expect(closed.has(filedTitle)).toBe(false);
+    }
+    expect(payload.decision.skipped.some((s: { ref: string }) => s.ref === 'jeanibarz/lucy#1588')).toBe(
+      true,
+    );
+  });
+
+  it('dry-run degrades to the un-verified shred plan when the title check gh call fails (#2145)', async () => {
+    const c = capture();
+    // No --emit: a gh process failure while verifying titles must not crash the
+    // plan. The guard returns the current shred decision and exits 0.
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--json'], {
+      ...c,
+      readInput: () => SNAPSHOT,
+      runGh: () => {
+        throw new Error('gh: rate limited');
+      },
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.action).toBe('shred');
+    expect(payload.decision.selected.ref).toBe('jeanibarz/lucy#1588');
   });
 
   it('files only the NEW title in a mixed closed/new leaf plan (#2120)', async () => {
@@ -370,6 +467,7 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     const code = await runQueueFeederCli(['plan', '--input', '-', '--free-threshold', '2'], {
       ...c,
       readInput: () => snap,
+      runGh: () => '[]', // plan-time title check: no existing issues → shred stands
     });
     expect(code).toBe(0);
     expect(c.lines.join('\n')).toContain('jeanibarz/lucy#1588');
