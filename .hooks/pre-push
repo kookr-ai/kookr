@@ -396,6 +396,20 @@ else
   fi
 fi
 
+# --- FAA-mitigation gate (issue #2142) -------------------------------------
+# finishedAwaitingAck (FAA) is the harness's highest-churn capacity pattern: a
+# stack of downstream reclaim/reaper/counter mitigations while the anomaly keeps
+# firing. This gate fires ONLY when the diff touches an FAA-mitigation surface,
+# and then requires the change to cite a classified root cause (one of the
+# /api/health FAA categories) or a reasoned bypass — so we stop paving over the
+# symptom. The gate reads the PR body from KOOKR_PR_BODY when present.
+echo "Checking FAA-mitigation gate..."
+if ! pnpm check:faa-gate; then
+  echo ""
+  echo "Push rejected: FAA-mitigation change without a classified root cause (issue #2142)."
+  exit 1
+fi
+
 if [ -f .github/PULL_REQUEST_TEMPLATE.md ] || [ -f .github/pull_request_template.md ]; then
   echo ""
   echo "[pre-push] Opening a PR? Build the body from the PR template and work every marked checklist row:"
