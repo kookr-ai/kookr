@@ -293,6 +293,27 @@ export interface KookrSettings {
    * status digest line.
    */
   safeModeSince: string | null;
+  /**
+   * Idle-slot idea refinery master switch (issue #2144). When true, an idle
+   * harness (free slots + empty pending queue) auto-spawns one bounded
+   * umbrella-decomposition task that files sized leaf issues into the normal
+   * vetting path — raising vetted supply DEPTH, not scout cadence. Defaults OFF:
+   * a new autonomous auto-spawn behavior that warrants an explicit operator
+   * opt-in (issue #2144 autonomy note). Read via a live getter.
+   */
+  idleRefineryEnabled: boolean;
+  /**
+   * Threshold `N` (issue #2144): the refinery fires only when at least this
+   * many concurrency slots are free (with an empty pending queue). Clamped to
+   * 1..{@link MAX_ACTIVE_TASKS}. Read via a live getter.
+   */
+  idleRefineryMinFreeSlots: number;
+  /**
+   * Minimum gap (minutes) between two refinery spawns (issue #2144). Paces
+   * decomposition on a persistently idle node, independently of the per-source
+   * spawn budget and the single-flight guard. Read via a live getter.
+   */
+  idleRefineryCooldownMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -332,6 +353,9 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   postMergeCleanupBudgetMinutes: 10,
   automationKillSwitch: false,
   safeModeSince: null,
+  idleRefineryEnabled: false,
+  idleRefineryMinFreeSlots: 3,
+  idleRefineryCooldownMinutes: 120,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -405,6 +429,15 @@ const MIN_SPAWN_BURST_LIMIT = 5;
 const MAX_SPAWN_BURST_LIMIT = 500;
 const MIN_SPAWN_BURST_WINDOW_MIN = 1;
 const MAX_SPAWN_BURST_WINDOW_MIN = 120;
+// Idle-slot idea refinery bounds (issue #2144). Free-slot floor of 1 keeps the
+// trigger meaningful (never fires at 0 headroom); ceiling mirrors MAX_ACTIVE_TASKS
+// so `N` can never exceed a realistic concurrency cap. Cooldown floor of 15m
+// keeps a persistently idle node from decomposing umbrellas faster than they can
+// be vetted; ceiling of 1440 (24h) bounds how sparse the pacing can get.
+const MIN_IDLE_REFINERY_MIN_FREE_SLOTS = 1;
+const MAX_IDLE_REFINERY_MIN_FREE_SLOTS = MAX_ACTIVE_TASKS;
+const MIN_IDLE_REFINERY_COOLDOWN_MIN = 15;
+const MAX_IDLE_REFINERY_COOLDOWN_MIN = 1440;
 // Reserved self-maintenance slot bounds (issue #1564). Floor of 0 disables the
 // reservation; ceiling of 12 keeps a fat-fingered value from swallowing an
 // entire realistic `maxActiveTasks` (capped at 25) and starving general work.
@@ -616,6 +649,28 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  // Idle-slot idea refinery (issue #2144). Enabled is a strict boolean opt-in;
+  // any non-boolean keeps the OFF default. N and cooldown clamp to their ranges.
+  const idleRefineryEnabled = typeof raw.idleRefineryEnabled === 'boolean'
+    ? raw.idleRefineryEnabled
+    : DEFAULT_SETTINGS.idleRefineryEnabled;
+
+  let idleRefineryMinFreeSlots = DEFAULT_SETTINGS.idleRefineryMinFreeSlots;
+  if (typeof raw.idleRefineryMinFreeSlots === 'number' && Number.isFinite(raw.idleRefineryMinFreeSlots)) {
+    idleRefineryMinFreeSlots = Math.max(
+      MIN_IDLE_REFINERY_MIN_FREE_SLOTS,
+      Math.min(MAX_IDLE_REFINERY_MIN_FREE_SLOTS, Math.round(raw.idleRefineryMinFreeSlots)),
+    );
+  }
+
+  let idleRefineryCooldownMinutes = DEFAULT_SETTINGS.idleRefineryCooldownMinutes;
+  if (typeof raw.idleRefineryCooldownMinutes === 'number' && Number.isFinite(raw.idleRefineryCooldownMinutes)) {
+    idleRefineryCooldownMinutes = Math.max(
+      MIN_IDLE_REFINERY_COOLDOWN_MIN,
+      Math.min(MAX_IDLE_REFINERY_COOLDOWN_MIN, Math.round(raw.idleRefineryCooldownMinutes)),
+    );
+  }
+
   const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
     ? raw.cleanupWorktreeOnComplete
     : DEFAULT_SETTINGS.cleanupWorktreeOnComplete;
@@ -720,6 +775,9 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       postMergeCleanupBudgetMinutes,
       automationKillSwitch,
       safeModeSince,
+      idleRefineryEnabled,
+      idleRefineryMinFreeSlots,
+      idleRefineryCooldownMinutes,
     },
   };
 }

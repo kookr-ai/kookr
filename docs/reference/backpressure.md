@@ -91,7 +91,8 @@ unchanged).
 ## 3. Per-source spawn budget (`spawnBurstLimit` / `spawnBurstWindowMinutes`)
 
 Sliding-window rate limit on task **creation**, bucketed per launch source
-(`cli`, `api`, `ui`, `websocket`, `remote-chat-telegram`, `remote-relay`).
+(`cli`, `api`, `ui`, `websocket`, `remote-chat-telegram`, `remote-relay`,
+`idle-refinery`).
 When the Phase B `X-Kookr-Actor` header is present on `POST /api/tasks`, the
 bucket is actor-qualified (`api:actor:lucy-supervisor`), so an attributed
 supervisor burns its own budget instead of sharing — or exhausting — the
@@ -161,7 +162,10 @@ the pick prefers (stable-sort first — never skips) pendings that can
 - `autoCloseOnSignal: true` tasks (auto-complete after the completion-ready
   grace period), or
 - schedule-fired tasks (`metadata.launchSource === 'schedule'` — supervised
-  by schedule coalescing/staleness/dead-man recovery).
+  by schedule coalescing/staleness/dead-man recovery), or
+- idle-refinery tasks (`metadata.launchSource === 'idle-refinery'`, issue
+  #2144 — the refinery only files leaf issues and exits, so it must not park
+  in `finishedAwaitingAck` and re-wedge the slot it was spawned into).
 
 Ask-first / no-autoclose tasks park in `finishedAwaitingAck` until a human
 clicks — promoting one into the last slot is exactly how the incident's cap
