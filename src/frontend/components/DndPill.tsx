@@ -37,6 +37,7 @@ export function DndPill() {
   const [, setRemainingTick] = useState(0);
   const popoverRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const caretRef = useRef<HTMLButtonElement>(null);
 
   // Re-render every 30s while DND is on with a deadline so the "Xm left" label updates.
   useEffect(() => {
@@ -55,6 +56,20 @@ export function DndPill() {
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
+  }, [menuOpen]);
+
+  // Escape closes the menu and returns focus to the caret (mirrors FollowPill).
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setMenuOpen(false);
+        caretRef.current?.focus();
+      }
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
   }, [menuOpen]);
 
   const auto = dnd.source === 'quiet-hours';
@@ -112,6 +127,7 @@ export function DndPill() {
         )}
       </button>
       <button
+        ref={caretRef}
         className="dnd-pill-caret"
         onClick={() => setMenuOpen((v) => !v)}
         aria-label="Choose Do Not Disturb duration"
