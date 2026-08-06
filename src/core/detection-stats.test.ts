@@ -245,7 +245,11 @@ describe('detection-stats', () => {
       const stats = getDetectionStats();
       expect(stats.fires.needs_input).toBe(2);
       expect(bucketTotal(stats.checks)).toBe(0);
-      expect((stats as unknown as Record<string, unknown>).not_a_real_type).toBeUndefined();
+      // The unknown key was injected into the `fires` bucket; assert it did not
+      // leak into that bucket (hydrate only copies known AnomalyType keys), and
+      // that no other fires counter moved.
+      expect((stats.fires as unknown as Record<string, unknown>).not_a_real_type).toBeUndefined();
+      expect(bucketTotal(stats.fires)).toBe(2);
     });
 
     test('accepts a fully empty snapshot without touching any counter', () => {
