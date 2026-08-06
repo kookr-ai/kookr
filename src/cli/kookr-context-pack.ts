@@ -118,7 +118,7 @@ function requireStringArray(value: unknown, field: string): void {
   // and .map()s it, so a JSON string would render one entry per character.
   if (value === undefined) return;
   if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new Error(`spec.${field} must be an array of strings`);
+    throw new Error(`spec.${field} must be an array of strings (got ${JSON.stringify(value)})`);
   }
 }
 
@@ -127,11 +127,16 @@ function loadSpec(path: string): PackSpec {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== 'object' || parsed === null) throw new Error('spec must be a JSON object');
   const spec = parsed as PackSpec;
-  if (typeof spec.issueNumber !== 'number') throw new Error('spec.issueNumber must be a number');
-  if (typeof spec.issueTitle !== 'string') throw new Error('spec.issueTitle must be a string');
-  if (typeof spec.baseBranch !== 'string') throw new Error('spec.baseBranch must be a string');
-  if (typeof spec.baseCommit !== 'string') throw new Error('spec.baseCommit must be a string');
-  if (typeof spec.repoFullName !== 'string') throw new Error('spec.repoFullName must be a string');
+  if (typeof spec.issueNumber !== 'number')
+    throw new Error(`spec.issueNumber must be a number (got ${JSON.stringify(spec.issueNumber)})`);
+  if (typeof spec.issueTitle !== 'string')
+    throw new Error(`spec.issueTitle must be a string (got ${JSON.stringify(spec.issueTitle)})`);
+  if (typeof spec.baseBranch !== 'string')
+    throw new Error(`spec.baseBranch must be a string (got ${JSON.stringify(spec.baseBranch)})`);
+  if (typeof spec.baseCommit !== 'string')
+    throw new Error(`spec.baseCommit must be a string (got ${JSON.stringify(spec.baseCommit)})`);
+  if (typeof spec.repoFullName !== 'string')
+    throw new Error(`spec.repoFullName must be a string (got ${JSON.stringify(spec.repoFullName)})`);
   requireStringArray(spec.candidateFiles, 'candidateFiles');
   requireStringArray(spec.acceptanceCriteria, 'acceptanceCriteria');
   requireStringArray(spec.skills, 'skills');

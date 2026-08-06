@@ -280,7 +280,10 @@ describe('runContextPackCli', () => {
     const con = fakeConsole();
     const code = await runContextPackCli(baseArgs(spec, join(root, 'p.md')), { out: con.out, env: {} as NodeJS.ProcessEnv });
     expect(code).toBe(2);
-    expect(con.errors.join('\n')).toContain('candidateFiles must be an array');
+    const errs = con.errors.join('\n');
+    expect(errs).toContain('candidateFiles must be an array');
+    // The offending value is echoed back so the author sees what they supplied.
+    expect(errs).toContain(JSON.stringify('src/a.ts'));
   });
 
   it('rejects a malformed spec (missing baseBranch)', async () => {
@@ -288,7 +291,28 @@ describe('runContextPackCli', () => {
     const con = fakeConsole();
     const code = await runContextPackCli(baseArgs(spec, join(root, 'p.md')), { out: con.out, env: {} as NodeJS.ProcessEnv });
     expect(code).toBe(2);
-    expect(con.errors.join('\n')).toContain('baseBranch');
+    const errs = con.errors.join('\n');
+    expect(errs).toContain('baseBranch');
+    // A missing field reports `undefined` as the received value.
+    expect(errs).toContain('got undefined');
+  });
+
+  it('reports the received value for a scalar type mismatch', async () => {
+    // issueNumber authored as a string is the canonical guess-and-retry case.
+    const spec = await writeSpec({
+      issueNumber: '779',
+      issueTitle: 'T',
+      issueBody: 'b',
+      baseBranch: 'main',
+      baseCommit: 'sha',
+      repoFullName: 'o/r',
+    });
+    const con = fakeConsole();
+    const code = await runContextPackCli(baseArgs(spec, join(root, 'p.md')), { out: con.out, env: {} as NodeJS.ProcessEnv });
+    expect(code).toBe(2);
+    const errs = con.errors.join('\n');
+    expect(errs).toContain('spec.issueNumber must be a number');
+    expect(errs).toContain('got "779"');
   });
 
   it('prints help and returns 0 for --help', async () => {
