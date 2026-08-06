@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'vitest';
 import {
   buildCapacityLedger,
+  buildVettedIdeaRunwayReport,
   classifyTaskCapacity,
+  computeVettedIdeaRunwayDays,
   evaluateHungSuspectCapacityFinding,
+  evaluateIdleCapacityFinding,
   isReservedSlotLaunch,
+  resolveIdleCapacitySignalInputs,
+  DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS,
   HUNG_SUSPECT_CAPACITY_FINDING_CODE,
+  IDLE_CAPACITY_FINDING_CODE,
   type TaskCapacityClass,
 } from './capacity-ledger.js';
 import type { Task } from './task-read-model.js';
@@ -408,5 +414,248 @@ describe('isReservedSlotLaunch (issue #1564)', () => {
 
   test('blank actor id is ignored', () => {
     expect(isReservedSlotLaunch('api', '   ', ['kookr'])).toBe(false);
+  });
+});
+
+describe('computeVettedIdeaRunwayDays (issue #2143)', () => {
+  test('runway = backlog ÷ consumption', () => {
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: 12, consumptionPerDay: 4 })).toBe(3);
+  });
+
+  test('zero backlog with active consumption is 0 days of runway', () => {
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: 0, consumptionPerDay: 4 })).toBe(0);
+  });
+
+  test('null when supply is absent', () => {
+    expect(computeVettedIdeaRunwayDays(null)).toBeNull();
+    expect(computeVettedIdeaRunwayDays(undefined)).toBeNull();
+  });
+
+  test('null (unbounded, not a shortfall) when consumption is non-positive', () => {
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: 10, consumptionPerDay: 0 })).toBeNull();
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: 10, consumptionPerDay: -1 })).toBeNull();
+  });
+
+  test('null on non-finite / negative operands', () => {
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: -1, consumptionPerDay: 4 })).toBeNull();
+    expect(computeVettedIdeaRunwayDays({ backlogDepth: Number.NaN, consumptionPerDay: 4 })).toBeNull();
+  });
+});
+
+describe('buildVettedIdeaRunwayReport (issue #2143)', () => {
+  test('reports runway, floor, and shortfall together', () => {
+    expect(buildVettedIdeaRunwayReport({ backlogDepth: 1, consumptionPerDay: 4 }, 2)).toEqual({
+      runwayDays: 0.25,
+      floorDays: 2,
+      shortfall: true,
+      backlogDepth: 1,
+      consumptionPerDay: 4,
+    });
+  });
+
+  test('no shortfall when runway meets the floor; default floor applies', () => {
+    const report = buildVettedIdeaRunwayReport({ backlogDepth: 20, consumptionPerDay: 4 });
+    expect(report).toEqual({
+      runwayDays: 5,
+      floorDays: DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS,
+      shortfall: false,
+      backlogDepth: 20,
+      consumptionPerDay: 4,
+    });
+  });
+
+  test('no shortfall at exactly the floor (strict < boundary)', () => {
+    // 4 ÷ 2 = 2.0 days == floor ⇒ NOT a shortfall. Guards against `<` → `<=` drift.
+    expect(buildVettedIdeaRunwayReport({ backlogDepth: 4, consumptionPerDay: 2 }, 2)).toMatchObject({
+      runwayDays: 2,
+      shortfall: false,
+    });
+  });
+
+  test('null when supply operands are unavailable', () => {
+    expect(buildVettedIdeaRunwayReport(null)).toBeNull();
+  });
+
+  test('unbounded runway (no consumption) is reported as null runwayDays, no shortfall', () => {
+    const report = buildVettedIdeaRunwayReport({ backlogDepth: 10, consumptionPerDay: 0 }, 2);
+    expect(report).toMatchObject({ runwayDays: null, shortfall: false });
+  });
+});
+
+describe('evaluateIdleCapacityFinding (issue #2143)', () => {
+  const idleLedger = (over: Partial<{ free: number; freeForGeneralSources: number; pendingQueueDepth: number }> = {}) => ({
+    free: 7,
+    pendingQueueDepth: 0,
+    ...over,
+  });
+
+  test('returns null when there is no idle capacity to fill', () => {
+    expect(evaluateIdleCapacityFinding({ free: 0, pendingQueueDepth: 0 })).toBeNull();
+  });
+
+  test('a fully-reserved pool (freeForGeneralSources 0) has no idle capacity even when free > 0', () => {
+    // Nullish-coalescing, not truthiness: 0 general slots ⇒ null, never a fall back to `free`.
+    expect(
+      evaluateIdleCapacityFinding({ free: 7, freeForGeneralSources: 0, pendingQueueDepth: 0 }),
+    ).toBeNull();
+  });
+
+  // AC(1): info-level (not warn) when queue is empty AND prsPerDay >= target.
+  test('info (not warning) when queue empty and throughput at/above target', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      prsPerDay: 72,
+      targetPrsPerDay: 24,
+    });
+    expect(finding).not.toBeNull();
+    expect(finding!.code).toBe(IDLE_CAPACITY_FINDING_CODE);
+    expect(finding!.severity).toBe('info');
+    expect(finding!.driver).toBe('headroom_unused');
+    expect(finding!.atOrAboveThroughputTarget).toBe(true);
+    expect(finding!.idleSlots).toBe(7);
+  });
+
+  // The exact false-positive this issue fixes: 300% of target, empty queue,
+  // no runway signal → unused headroom, not a defect.
+  test('the "sideways-on-capacity-fill" scenario is info, not warning', () => {
+    const finding = evaluateIdleCapacityFinding(
+      { free: 16, freeForGeneralSources: 6, pendingQueueDepth: 0 },
+      { prsPerDay: 72, targetPrsPerDay: 24 },
+    );
+    expect(finding!.severity).toBe('info');
+    // Idle slots read from the general-source view when a reservation is configured.
+    expect(finding!.idleSlots).toBe(6);
+  });
+
+  // AC(3): escalation keys on runway shortfall, NOT raw utilization — warning
+  // even at 300% throughput when the vetted-idea stream is running dry.
+  test('warning on runway shortfall even when throughput is far above target', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      prsPerDay: 72,
+      targetPrsPerDay: 24,
+      vettedIdea: { backlogDepth: 1, consumptionPerDay: 4 }, // 0.25d < 2d floor
+    });
+    expect(finding!.severity).toBe('warning');
+    expect(finding!.driver).toBe('runway_shortfall');
+    expect(finding!.runwayShortfall).toBe(true);
+    expect(finding!.vettedIdeaRunwayDays).toBe(0.25);
+    expect(finding!.atOrAboveThroughputTarget).toBe(true);
+  });
+
+  // AC(3) directly: known throughput BELOW target, empty queue, healthy runway →
+  // still info. Utilization is not an escalation key.
+  test('known below-target throughput with empty queue and healthy runway stays info', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      prsPerDay: 5,
+      targetPrsPerDay: 24,
+      vettedIdea: { backlogDepth: 20, consumptionPerDay: 4 }, // 5d >= 2d floor
+    });
+    expect(finding!.severity).toBe('info');
+    expect(finding!.driver).toBe('headroom_unused');
+    expect(finding!.atOrAboveThroughputTarget).toBe(false);
+  });
+
+  test('runway exactly at the floor is not a shortfall (strict < boundary) → info', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      vettedIdea: { backlogDepth: 4, consumptionPerDay: 2 }, // 2.0d == default floor
+    });
+    expect(finding!.runwayShortfall).toBe(false);
+    expect(finding!.severity).toBe('info');
+  });
+
+  test('healthy runway at/above target stays info', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      prsPerDay: 72,
+      targetPrsPerDay: 24,
+      vettedIdea: { backlogDepth: 20, consumptionPerDay: 4 }, // 5d >= 2d floor
+    });
+    expect(finding!.severity).toBe('info');
+    expect(finding!.runwayShortfall).toBe(false);
+  });
+
+  // Genuine under-driving: queued work stranded behind idle slots warns
+  // regardless of supply/throughput.
+  test('warning when queued work is stranded behind idle slots', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger({ pendingQueueDepth: 3 }), {
+      prsPerDay: 72,
+      targetPrsPerDay: 24,
+    });
+    expect(finding!.severity).toBe('warning');
+    expect(finding!.driver).toBe('queue_backlog_idle');
+  });
+
+  test('queue backlog takes precedence over runway shortfall as the driver', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger({ pendingQueueDepth: 2 }), {
+      vettedIdea: { backlogDepth: 0, consumptionPerDay: 4 },
+    });
+    expect(finding!.severity).toBe('warning');
+    expect(finding!.driver).toBe('queue_backlog_idle');
+    expect(finding!.runwayShortfall).toBe(true);
+  });
+
+  test('reports the runway metric and defaults floor when only supply is given', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger(), {
+      vettedIdea: { backlogDepth: 6, consumptionPerDay: 2 },
+    });
+    expect(finding!.vettedIdeaRunwayDays).toBe(3);
+    expect(finding!.runwayFloorDays).toBe(DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS);
+    expect(finding!.runwayShortfall).toBe(false);
+    // No throughput inputs ⇒ not judged against target, and no queue ⇒ info.
+    expect(finding!.atOrAboveThroughputTarget).toBe(false);
+    expect(finding!.severity).toBe('info');
+  });
+
+  test('unknown throughput/supply with empty queue is info (pure headroom observability)', () => {
+    const finding = evaluateIdleCapacityFinding(idleLedger());
+    expect(finding!.severity).toBe('info');
+    expect(finding!.prsPerDay).toBeNull();
+    expect(finding!.targetPrsPerDay).toBeNull();
+    expect(finding!.vettedIdeaRunwayDays).toBeNull();
+  });
+});
+
+describe('resolveIdleCapacitySignalInputs (issue #2143)', () => {
+  test('parses all supply-aware operands from env', () => {
+    expect(
+      resolveIdleCapacitySignalInputs({
+        KOOKR_PRS_PER_DAY: '72',
+        KOOKR_TARGET_PRS_PER_DAY: '24',
+        KOOKR_VETTED_IDEA_BACKLOG: '8',
+        KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY: '4',
+        KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS: '3',
+      }),
+    ).toEqual({
+      prsPerDay: 72,
+      targetPrsPerDay: 24,
+      vettedIdea: { backlogDepth: 8, consumptionPerDay: 4 },
+      runwayFloorDays: 3,
+    });
+  });
+
+  test('absent env ⇒ null operands, no vettedIdea, no floor override', () => {
+    expect(resolveIdleCapacitySignalInputs({})).toEqual({
+      prsPerDay: null,
+      targetPrsPerDay: null,
+      vettedIdea: null,
+    });
+  });
+
+  test('vettedIdea requires BOTH backlog and consumption', () => {
+    expect(
+      resolveIdleCapacitySignalInputs({ KOOKR_VETTED_IDEA_BACKLOG: '8' }).vettedIdea,
+    ).toBeNull();
+    expect(
+      resolveIdleCapacitySignalInputs({ KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY: '4' }).vettedIdea,
+    ).toBeNull();
+  });
+
+  test('malformed / negative values are treated as absent', () => {
+    const inputs = resolveIdleCapacitySignalInputs({
+      KOOKR_PRS_PER_DAY: 'abc',
+      KOOKR_TARGET_PRS_PER_DAY: '-5',
+      KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS: '   ',
+    });
+    expect(inputs.prsPerDay).toBeNull();
+    expect(inputs.targetPrsPerDay).toBeNull();
+    expect(inputs.runwayFloorDays).toBeUndefined();
   });
 });

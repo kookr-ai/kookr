@@ -1257,6 +1257,124 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — supply-aware capacity signal (issue #2143)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health idleCapacityFinding + vettedIdeaRunway (issue #2143)', () => {
+    const SUPPLY_ENV_KEYS = [
+      'KOOKR_PRS_PER_DAY',
+      'KOOKR_TARGET_PRS_PER_DAY',
+      'KOOKR_VETTED_IDEA_BACKLOG',
+      'KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY',
+      'KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS',
+    ] as const;
+    let savedEnv: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      savedEnv = {};
+      for (const k of SUPPLY_ENV_KEYS) {
+        savedEnv[k] = process.env[k];
+        delete process.env[k];
+      }
+    });
+    afterEach(() => {
+      for (const k of SUPPLY_ENV_KEYS) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    });
+
+    async function health(): Promise<Record<string, unknown>> {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaxActiveTasks: () => 10,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, unknown>;
+    }
+
+    test('idle slots at/above target with an empty queue are info, not warning (ends false-positive streak)', async () => {
+      process.env.KOOKR_PRS_PER_DAY = '72';
+      process.env.KOOKR_TARGET_PRS_PER_DAY = '24';
+      const body = await health();
+      expect(body.idleCapacityFinding).toMatchObject({
+        code: 'idle_capacity',
+        severity: 'info',
+        driver: 'headroom_unused',
+        atOrAboveThroughputTarget: true,
+        idleSlots: 10,
+      });
+    });
+
+    test('reports vettedIdeaRunway and warns on runway shortfall even at 300% throughput', async () => {
+      process.env.KOOKR_PRS_PER_DAY = '72';
+      process.env.KOOKR_TARGET_PRS_PER_DAY = '24';
+      process.env.KOOKR_VETTED_IDEA_BACKLOG = '1';
+      process.env.KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY = '4';
+      const body = await health();
+      expect(body.vettedIdeaRunway).toEqual({
+        runwayDays: 0.25,
+        floorDays: 2,
+        shortfall: true,
+        backlogDepth: 1,
+        consumptionPerDay: 4,
+      });
+      expect(body.idleCapacityFinding).toMatchObject({
+        severity: 'warning',
+        driver: 'runway_shortfall',
+        runwayShortfall: true,
+        vettedIdeaRunwayDays: 0.25,
+      });
+    });
+
+    test('omits the runway block when supply operands are not configured', async () => {
+      const body = await health();
+      expect(body).not.toHaveProperty('vettedIdeaRunway');
+      // The finding still surfaces the idle slots as pure info-level observability.
+      expect(body.idleCapacityFinding).toMatchObject({ severity: 'info', vettedIdeaRunwayDays: null });
+    });
+
+    test('warns via queue_backlog_idle when a pending task is stranded behind idle slots (HTTP path)', async () => {
+      const taskStore = new TaskStore();
+      const queued = taskStore.createTask('Queued behind idle slots', '/repo');
+      taskStore.pendTask(queued.id);
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaxActiveTasks: () => 10,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        capacity: { pendingQueueDepth: number };
+        idleCapacityFinding: { severity: string; driver: string };
+      };
+      expect(body.capacity.pendingQueueDepth).toBe(1);
+      expect(body.idleCapacityFinding).toMatchObject({
+        severity: 'warning',
+        driver: 'queue_backlog_idle',
+      });
+    });
+
+    test('honors the KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS override end-to-end', async () => {
+      // 5 days of runway would be healthy under the default floor of 2, but a
+      // floor override of 7 makes it a shortfall — proving the floor threads
+      // from env → resolve → report/finding through the real HTTP path.
+      process.env.KOOKR_VETTED_IDEA_BACKLOG = '20';
+      process.env.KOOKR_VETTED_IDEA_CONSUMPTION_PER_DAY = '4';
+      process.env.KOOKR_VETTED_IDEA_RUNWAY_FLOOR_DAYS = '7';
+      const body = await health();
+      expect(body.vettedIdeaRunway).toMatchObject({ runwayDays: 5, floorDays: 7, shortfall: true });
+      expect(body.idleCapacityFinding).toMatchObject({
+        severity: 'warning',
+        driver: 'runway_shortfall',
+        runwayFloorDays: 7,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — finishedAwaitingAckTtlReclaim skip breakdown (issue #2084)
   // ---------------------------------------------------------------------------
   describe('GET /api/health finishedAwaitingAckTtlReclaim skip block (issue #2084)', () => {
