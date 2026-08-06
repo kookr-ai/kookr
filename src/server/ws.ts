@@ -127,6 +127,8 @@ export interface MessageRouterDeps {
   feedbackDir?: string;
   /** Where anytime task snapshot reflection bundles are written. */
   taskSnapshotDir?: string;
+  /** Where hung-task reap reports are written. */
+  reportsDir?: string;
   /** Where ephemeral reflect worktrees are created. */
   reflectWorktreesDir?: string;
   /** Where hook JSONL files live. */
@@ -206,6 +208,7 @@ export class MessageRouter {
       deletionAuditActor: () => this.deletionAuditActor(),
       feedbackDir: this.deps.feedbackDir,
       taskSnapshotDir: this.deps.taskSnapshotDir,
+      reportsDir: this.deps.reportsDir,
       reflectWorktreesDir: this.deps.reflectWorktreesDir,
       hooksDir: this.deps.hooksDir,
       readInteractionLogSnapshot: async () => {

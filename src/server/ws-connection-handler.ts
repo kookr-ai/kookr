@@ -162,6 +162,8 @@ export interface WsConnectionDeps {
   feedbackDir?: string;
   /** Where anytime task snapshot reflection bundles are written. */
   taskSnapshotDir?: string;
+  /** Where hung-task reap reports are written. */
+  reportsDir?: string;
   /** Where task-reflection worktrees are created. */
   reflectWorktreesDir?: string;
   /** Where hook JSONLs live. */
@@ -265,6 +267,7 @@ export function handleWsConnection(
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,
     feedbackDir: deps.feedbackDir,
     taskSnapshotDir: deps.taskSnapshotDir,
+    reportsDir: deps.reportsDir,
     reflectWorktreesDir: deps.reflectWorktreesDir,
     hooksDir: deps.hooksDir,
     connectionId,
