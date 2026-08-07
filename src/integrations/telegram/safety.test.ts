@@ -48,9 +48,14 @@ describe('acquireLockOrFail', () => {
 
   it('takes over a stale lock (pid not alive)', async () => {
     const path = join(tmp, 'lock');
-    // Plant a stale lock with a pid that very likely does not exist.
+    // Plant a stale lock with a pid that is guaranteed dead: a child we
+    // spawned and already reaped. A hardcoded pid (999_999 historically) goes
+    // live once the kernel's pid counter sweeps past it on a busy host.
+    const { spawnSync } = await import('node:child_process');
+    const deadPid = spawnSync('true').pid;
+    expect(deadPid).toBeGreaterThan(0);
     const fs = await import('node:fs/promises');
-    await fs.writeFile(path, JSON.stringify({ pid: 999_999, startedAt: '2020-01-01' }));
+    await fs.writeFile(path, JSON.stringify({ pid: deadPid, startedAt: '2020-01-01' }));
     const a = await acquireLockOrFail(path);
     await a.release();
   });

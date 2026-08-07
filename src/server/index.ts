@@ -2645,6 +2645,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   if (!process.env.VITEST) {
     launchServiceDeps.planQuotaBindingCache = new PlanQuotaBindingCache();
     launchServiceDeps.getLiveQuotaHeadroom = () => quotaAdapter.getLiveHeadroom();
+    // Operator-tunable admission threshold (issue #2185); 0 disables the gate.
+    launchServiceDeps.getQuotaHeadroomThreshold = () =>
+      currentSettings.quotaHeadroomThreshold;
   }
 
   const wsConnectionDeps: WsConnectionDeps = {

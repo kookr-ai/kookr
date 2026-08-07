@@ -41,6 +41,7 @@ import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '..
 import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
 import {
   evaluateQuotaHeadroomAdmission,
+  QUOTA_NO_HEADROOM_UTILIZATION,
   type QuotaHeadroomSample,
 } from '../core/quota-headroom-admission.js';
 import type { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
@@ -231,6 +232,13 @@ export interface LaunchServiceDeps {
    * Absent ⇒ no cache (every launch re-polls when the getter is wired).
    */
   planQuotaBindingCache?: PlanQuotaBindingCache;
+  /**
+   * Live utilization threshold (0–100) for the plan-quota admission gate
+   * (issue #2185). Non-positive disables the gate entirely — including the
+   * {@link planQuotaBindingCache} short-circuit — so claude-code launches are
+   * always admitted. Absent ⇒ {@link QUOTA_NO_HEADROOM_UTILIZATION}.
+   */
+  getQuotaHeadroomThreshold?: () => number;
   /**
    * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
    * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
@@ -1315,20 +1323,32 @@ async function launchTaskCore(
   //    unavailable for this launch) before hard-rejecting. Rotation still
   //    requires a preflight-registered alternate — we never silently burn a
   //    second paid provider without an adapter present.
-  if ((deps.getLiveQuotaHeadroom || deps.planQuotaBindingCache) && agentType === 'claude-code') {
+  // Operator-tunable threshold (issue #2185): non-positive disables the whole
+  // gate — cached binding-window decisions included — so a run-down window can
+  // still be spent on explicitly chosen claude-code work.
+  const quotaHeadroomThreshold =
+    deps.getQuotaHeadroomThreshold?.() ?? QUOTA_NO_HEADROOM_UTILIZATION;
+  if (
+    quotaHeadroomThreshold > 0 &&
+    (deps.getLiveQuotaHeadroom || deps.planQuotaBindingCache) &&
+    agentType === 'claude-code'
+  ) {
     const cache = deps.planQuotaBindingCache;
     const cached = cache?.get() ?? null;
-    let decision = cached
+    // Re-check the cached exhaustion against the *current* threshold: raising
+    // the threshold mid-window must not keep denying off a stale, stricter
+    // decision.
+    let decision = cached && cached.maxUtilization >= quotaHeadroomThreshold
       ? {
           admit: false as const,
           maxUtilization: cached.maxUtilization,
-          threshold: cached.threshold,
+          threshold: quotaHeadroomThreshold,
           resetsAt: cached.resetsAt,
         }
       : null;
     if (!decision && deps.getLiveQuotaHeadroom) {
       const sample = await deps.getLiveQuotaHeadroom();
-      const live = evaluateQuotaHeadroomAdmission(sample);
+      const live = evaluateQuotaHeadroomAdmission(sample, quotaHeadroomThreshold);
       if (!live.admit) {
         cache?.markExhausted(live);
         decision = {

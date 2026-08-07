@@ -29,6 +29,7 @@ import {
   type ReplySnippet,
 } from '../shared/contracts/reply-snippets.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
+import { QUOTA_NO_HEADROOM_UTILIZATION } from './quota-headroom-admission.js';
 
 export type { QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
 export { isWithinQuietHours } from '../shared/contracts/quiet-hours.js';
@@ -67,6 +68,14 @@ export interface KookrSettings {
    * Explicit pins are not filtered by this list.
    */
   agentFallbackAllowlist: AgentType[];
+  /**
+   * Utilization percentage (0–100) at/above which the plan-quota admission
+   * gate treats the Anthropic window as exhausted and denies (then rotates)
+   * claude-code launches (issue #2185). `0` disables the gate entirely so
+   * explicit and default claude-code launches are always admitted regardless
+   * of window utilization. Default {@link QUOTA_NO_HEADROOM_UTILIZATION}.
+   */
+  quotaHeadroomThreshold: number;
   /**
    * Rotation cursor for the `round-robin` default agent. Holds the index of
    * the *next* launch in the rotation; advanced and persisted on every
@@ -378,6 +387,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   // Issue #2001: do not silently cascade onto codex-cli under load/quota.
   disallowAgentFallback: ['codex-cli'],
   agentFallbackAllowlist: [],
+  quotaHeadroomThreshold: QUOTA_NO_HEADROOM_UTILIZATION,
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
@@ -538,6 +548,11 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   let errorThreshold = DEFAULT_SETTINGS.repeatedErrorThreshold;
   if (typeof raw.repeatedErrorThreshold === 'number' && Number.isFinite(raw.repeatedErrorThreshold)) {
     errorThreshold = Math.max(MIN_ERROR_THRESHOLD, Math.min(MAX_ERROR_THRESHOLD, Math.round(raw.repeatedErrorThreshold)));
+  }
+
+  let quotaHeadroomThreshold = DEFAULT_SETTINGS.quotaHeadroomThreshold;
+  if (typeof raw.quotaHeadroomThreshold === 'number' && Number.isFinite(raw.quotaHeadroomThreshold)) {
+    quotaHeadroomThreshold = Math.max(0, Math.min(100, Math.round(raw.quotaHeadroomThreshold)));
   }
 
   let maxTasks = DEFAULT_SETTINGS.maxActiveTasks;
@@ -836,6 +851,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       defaultAgentType,
       disallowAgentFallback,
       agentFallbackAllowlist,
+      quotaHeadroomThreshold,
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
