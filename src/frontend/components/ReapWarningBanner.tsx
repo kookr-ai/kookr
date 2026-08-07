@@ -53,23 +53,43 @@ function ReapWarningBanner({
   }, []);
 
   const remainingMs = Math.max(0, deadline - now);
+  // issue #2170: the FAA ack-path reaper reuses this banner for a FINISHED task
+  // being closed to free its slot. Nothing is lost (the work is done, only the
+  // ack is missing), so the copy is "finished, closing" rather than "hung,
+  // terminating"; `silentForMs` carries the unacknowledged age in minutes.
+  const isFaa = warning.kind === 'finished_awaiting_ack';
   const hours = Math.round(warning.silentForMs / 3_600_000);
+  const waitingMin = Math.max(1, Math.round(warning.silentForMs / 60_000));
+  const actionVerb = isFaa ? 'closed' : 'terminated';
 
   return (
     <div className="reap-warning-banner" role="alert">
       <span className="reap-warning-icon" aria-hidden="true">⚠️</span>
       <div className="reap-warning-body">
         <div className="reap-warning-headline">
-          <strong>“{label}” looks hung</strong>
-          {hours >= 1 ? ` — no activity for ${hours}h.` : ' — no recent activity.'}
+          {isFaa ? (
+            <>
+              <strong>“{label}” finished</strong>
+              {` — waiting to be acknowledged for ${waitingMin}m.`}
+            </>
+          ) : (
+            <>
+              <strong>“{label}” looks hung</strong>
+              {hours >= 1 ? ` — no activity for ${hours}h.` : ' — no recent activity.'}
+            </>
+          )}
         </div>
         <div className="reap-warning-detail">
           {warning.heldByPresence ? (
-            <>Termination is paused while you have this task open. <strong>Send it a message</strong> to keep working on it.</>
+            isFaa ? (
+              <>Auto-close is paused while you have this task open. Acknowledge or reopen it to keep it around.</>
+            ) : (
+              <>Termination is paused while you have this task open. <strong>Send it a message</strong> to keep working on it.</>
+            )
           ) : warning.vetoCapReached ? (
-            <>Will be terminated in <strong>{formatCountdown(remainingMs)}</strong> to free the slot. It has been kept alive {warning.keptAliveCount}× already — <strong>type a message and send it</strong> to keep working on this task.</>
+            <>Will be {actionVerb} in <strong>{formatCountdown(remainingMs)}</strong> to free the slot. It has been kept alive {warning.keptAliveCount}× already — {isFaa ? <><strong>acknowledge it</strong> to keep it</> : <><strong>type a message and send it</strong> to keep working on this task</>}.</>
           ) : (
-            <>Will be terminated in <strong>{formatCountdown(remainingMs)}</strong> to free the slot.
+            <>Will be {actionVerb} in <strong>{formatCountdown(remainingMs)}</strong> to free the slot.
               {warning.keptAliveCount > 0 ? ` (kept alive ${warning.keptAliveCount}×)` : ''}</>
           )}
         </div>

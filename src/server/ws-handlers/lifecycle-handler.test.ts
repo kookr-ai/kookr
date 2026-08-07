@@ -431,4 +431,39 @@ describe('LifecycleHandler keepTaskAlive veto (RFC rfc-reap-grace-warning.md)', 
       summary: 'Task is no longer active',
     }));
   });
+
+  // issue #2170: the same "Keep it alive" button vetoes the FAA ack-path
+  // reaper's coordinator when that is the one holding the warning.
+  test('routes the veto to the FAA ack-path coordinator and tags the audit row', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'faa-veto-'));
+    const auditLogPath = join(dir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const hungCoordinator = new ReapWarningCoordinator();
+      const faaCoordinator = new ReapWarningCoordinator();
+      // Only the FAA coordinator has a warning for this task.
+      const task = warnedTask(faaCoordinator, taskStore);
+      const before = faaCoordinator.getWarning(task.id)!.deadlineAt;
+      const { deps } = makeDeps(taskStore, {
+        reapWarningCoordinator: hungCoordinator,
+        faaAckReapWarningCoordinator: faaCoordinator,
+        auditLogPath,
+        broadcastToAll: vi.fn(),
+      });
+      const handler = new LifecycleHandler(deps);
+
+      await handler.handle({ type: 'keepTaskAlive', taskId: task.id });
+
+      const w = faaCoordinator.getWarning(task.id)!;
+      expect(w.keptAliveCount).toBe(1);
+      expect(w.deadlineAt).toBeGreaterThan(before);
+      expect(hungCoordinator.getWarning(task.id)).toBeUndefined();
+      expect(deps.send).not.toHaveBeenCalled();
+      const audit = await readFile(auditLogPath, 'utf8');
+      expect(audit).toContain('task.finishedAwaitingAckReapVetoed');
+      expect(audit).not.toContain('task.hungTaskReapVetoed');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

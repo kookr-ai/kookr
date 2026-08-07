@@ -325,6 +325,30 @@ describe('validateSettings', () => {
     expect(validateSettings({ finishedAwaitingAckTtlMinutes: 'forever' }).finishedAwaitingAckTtlMinutes).toBe(15);
   });
 
+  it('defaults the FAA ack-path reaper knobs and clamps them (issue #2170)', () => {
+    // Kill switch defaults on; a boolean is taken verbatim, non-booleans fall back.
+    expect(DEFAULT_SETTINGS.finishedAwaitingAckAckReaperEnabled).toBe(true);
+    expect(validateSettings({}).finishedAwaitingAckAckReaperEnabled).toBe(true);
+    expect(validateSettings({ finishedAwaitingAckAckReaperEnabled: false }).finishedAwaitingAckAckReaperEnabled).toBe(false);
+    expect(validateSettings({ finishedAwaitingAckAckReaperEnabled: 'nope' }).finishedAwaitingAckAckReaperEnabled).toBe(true);
+
+    // Deadline defaults to 5m, clamps to [1, 15] so it can only ever be
+    // tighter than the 15m strict TTL it front-runs.
+    expect(DEFAULT_SETTINGS.finishedAwaitingAckAckReapMinutes).toBe(5);
+    expect(validateSettings({}).finishedAwaitingAckAckReapMinutes).toBe(5);
+    expect(validateSettings({ finishedAwaitingAckAckReapMinutes: 3 }).finishedAwaitingAckAckReapMinutes).toBe(3);
+    expect(validateSettings({ finishedAwaitingAckAckReapMinutes: 0 }).finishedAwaitingAckAckReapMinutes).toBe(1);
+    expect(validateSettings({ finishedAwaitingAckAckReapMinutes: 99 }).finishedAwaitingAckAckReapMinutes).toBe(15);
+    expect(validateSettings({ finishedAwaitingAckAckReapMinutes: 'soon' }).finishedAwaitingAckAckReapMinutes).toBe(5);
+
+    // Grace defaults to 60s, clamped by the shared [10, 600] reap-grace range.
+    expect(DEFAULT_SETTINGS.finishedAwaitingAckAckReapGraceSeconds).toBe(60);
+    expect(validateSettings({}).finishedAwaitingAckAckReapGraceSeconds).toBe(60);
+    expect(validateSettings({ finishedAwaitingAckAckReapGraceSeconds: 30 }).finishedAwaitingAckAckReapGraceSeconds).toBe(30);
+    expect(validateSettings({ finishedAwaitingAckAckReapGraceSeconds: 1 }).finishedAwaitingAckAckReapGraceSeconds).toBe(10);
+    expect(validateSettings({ finishedAwaitingAckAckReapGraceSeconds: 5_000 }).finishedAwaitingAckAckReapGraceSeconds).toBe(600);
+  });
+
   it('defaults hungSuspectTtlMinutes to 25 and clamps to the 10-60 range, hard-capped at 60 (issue #1935)', () => {
     expect(validateSettings({}).hungSuspectTtlMinutes).toBe(25);
     expect(DEFAULT_SETTINGS.hungSuspectTtlMinutes).toBe(25);
@@ -703,6 +727,9 @@ describe('loadSettings / saveSettings', () => {
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,
       finishedAwaitingAckTtlMinutes: 20,
+      finishedAwaitingAckAckReaperEnabled: false,
+      finishedAwaitingAckAckReapMinutes: 3,
+      finishedAwaitingAckAckReapGraceSeconds: 45,
       hungSuspectTtlMinutes: 30,
       firstHookDeadlineSeconds: 240,
       spawnBurstLimit: 60,

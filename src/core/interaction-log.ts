@@ -35,12 +35,14 @@ export type InteractionEvent =
       /**
        * `finished_awaiting_ack_ttl` — force-completed by the finishedAwaitingAck TTL reclaim (issue #1884).
        * `finished_awaiting_ack_auto_complete` — meta/playbook FAA auto-complete (issue #2070).
+       * `finished_awaiting_ack_ack_reap` — bounded-deadline ack-path reaper (issue #2170).
        */
       reason:
         | 'user_marked'
         | 'user_acked_terminated'
         | 'finished_awaiting_ack_ttl'
-        | 'finished_awaiting_ack_auto_complete';
+        | 'finished_awaiting_ack_auto_complete'
+        | 'finished_awaiting_ack_ack_reap';
       durationMs: number;
       timestamp: string;
     }

@@ -145,6 +145,8 @@ export interface MessageRouterDeps {
   userInputDeliveries?: UserInputDeliveryService;
   /** Shared reap-warning coordinator for the `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md). */
   reapWarningCoordinator?: ReapWarningCoordinator;
+  /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
+  faaAckReapWarningCoordinator?: ReapWarningCoordinator;
 }
 
 export class MessageRouter {
@@ -229,6 +231,7 @@ export class MessageRouter {
       getLifecycleDeps: () => this.lifecycleDeps,
       tryPromotePending: () => this.tryPromotePending(),
       reapWarningCoordinator: this.deps.reapWarningCoordinator,
+      faaAckReapWarningCoordinator: this.deps.faaAckReapWarningCoordinator,
     });
     this.workspaceHandler = new WorkspaceHandler({
       send: this.deps.send,

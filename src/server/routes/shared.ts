@@ -616,6 +616,13 @@ export interface RouteDeps {
   diskAdmissionTracker?: DataDirectoryDiskAdmissionTracker;
   /** Shared reap-warning coordinator — surfaced read-only via /api/diagnostics/reap-warnings (RFC rfc-reap-grace-warning.md). */
   reapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** FAA ack-path reap coordinator — surfaced read-only via /api/diagnostics/reap-warnings (issue #2170). */
+  faaAckReapWarningCoordinator?: import('../../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** FAA ack-path reaper counters — surfaced read-only via /api/diagnostics/reap-warnings (issue #2170). */
+  faaAckReaperMetrics?: Pick<
+    import('../finished-awaiting-ack-ack-reaper.js').FinishedAwaitingAckAckReaperMetrics,
+    'getSnapshot'
+  >;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;
