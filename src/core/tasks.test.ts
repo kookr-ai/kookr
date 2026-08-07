@@ -181,6 +181,24 @@ describe('TaskStore', () => {
       expect(store.listTasks().find((t) => t.id === created.id)).not.toBe(view.find((t) => t.id === created.id));
     });
 
+    test('viewLiveTasks and countTasks isolate hot paths from terminal history', () => {
+      const live = store.createTask('Live', '/cwd');
+      store.startTask(live.id);
+      const done = store.createTask('Done', '/cwd');
+      store.startTask(done.id);
+      store.completeTask(done.id);
+      const cancelled = store.createTask('Cancelled', '/cwd');
+      store.cancelTask(cancelled.id);
+      const open = store.createTask('Open still live', '/cwd');
+
+      expect(store.viewLiveTasks().map((t) => t.id).sort()).toEqual([live.id, open.id].sort());
+      expect(store.viewLiveTasks().every((t) => !['completed', 'cancelled', 'terminated'].includes(t.status))).toBe(true);
+      expect(store.countTasks()).toBe(4);
+      expect(store.countTasks({ liveOnly: true })).toBe(2);
+      expect(store.countTasks({ status: 'completed' })).toBe(1);
+      expect(store.viewLiveTasks().some((t) => t.id === done.id || t.id === cancelled.id)).toBe(false);
+    });
+
     test('listTasksForSnapshot filters aged terminal tasks BEFORE cloning (issue #1749 follow-up)', () => {
       const fresh = store.createTask('Fresh active', '/cwd');
       const agedDone = store.createTask('Aged done', '/cwd');

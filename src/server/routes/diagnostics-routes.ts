@@ -256,6 +256,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const kookrDir = deps.kookrDir;
     if (!kookrDir) return Promise.reject(new Error('kookrDir unavailable'));
     const scan = computeLessonYield(
+      // Cold/background path: cloning is fine here (not on the 1–5s timer /
+      // terminal I/O path). Some scan helpers assume detached records.
       taskStore.listTasks(),
       hooksDirFromKookrDir(kookrDir),
       { days, signal: AbortSignal.timeout(LESSON_YIELD_SCAN_TIMEOUT_MS) },
@@ -348,7 +350,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         grantStoreWritable: deps.viewerShare.grantStore.isWritable(),
       };
     }
-    const tasks = taskStore.listTasks();
+    // viewTasks (no clone): capacity/diagnostics only read fields. Cloning the
+    // full store on every /api/health poll was a hot-path tax linear in
+    // completed-task history and starved terminal input under load.
+    const tasks = taskStore.viewTasks();
     const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
     const attentionQueueSampledAtMs = Date.now();
     // Capacity ledger (issue #1526 Phase B / FM9): during the 2026-07-24
@@ -843,7 +848,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   }));
 
   app.get('/api/diagnostics/launch-dependencies', (c) => (
-    c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
+    c.json(buildLaunchDependencyDiagnostics(taskStore.viewTasks()))
   ));
 
   app.get('/api/diagnostics/session-health', (c) => {

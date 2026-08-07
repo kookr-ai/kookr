@@ -666,9 +666,45 @@ export class TaskStore {
    * `structuredClone` in {@link listTasks} costs ~58 MB of heap churn and
    * ~110 ms of blocked event loop per call at 800 tasks, which turned
    * hook-event bursts into heap-limit OOMs.
+   *
+   * **Hot-path rule:** timers, WS fan-out, and terminal-adjacent code must
+   * prefer {@link viewLiveTasks} / {@link countTasks} so historical completed
+   * records never tax the event loop. Use this full view only when cold
+   * paths (persistence, analytics, operator dumps) truly need every record.
    */
   viewTasks(): readonly Task[] {
     return Array.from(this.tasks.values());
+  }
+
+  /**
+   * Non-cloning view of **non-terminal** tasks only (`open` / `pending` /
+   * `inProgress`). Hot paths (liveness residual counts, capacity, watchdog
+   * pruning of active Ralph loops, session health) MUST use this so an
+   * unbounded pile of completed tasks cannot slow terminal input or
+   * WebSocket heartbeats. Returns live store objects — read-only contract
+   * same as {@link viewTasks}.
+   */
+  viewLiveTasks(): readonly Task[] {
+    const out: Task[] = [];
+    for (const task of this.tasks.values()) {
+      if (!isTerminalStatus(task.status)) out.push(task);
+    }
+    return out;
+  }
+
+  /**
+   * O(n) count without allocating task arrays or cloning. Optional status
+   * filter. Use for health `agents` gauges and capacity ledgers that only
+   * need cardinality.
+   */
+  countTasks(filter?: { status?: TaskStatus; liveOnly?: boolean }): number {
+    let n = 0;
+    for (const task of this.tasks.values()) {
+      if (filter?.status !== undefined && task.status !== filter.status) continue;
+      if (filter?.liveOnly && isTerminalStatus(task.status)) continue;
+      n += 1;
+    }
+    return n;
   }
 
   /**

@@ -2738,6 +2738,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
+      // Coalesced + load-shed path: timer ticks must never force full snapshots.
+      requestSnapshotBroadcast,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       // issue #1896: when the reaper detects a provider_paused task, register

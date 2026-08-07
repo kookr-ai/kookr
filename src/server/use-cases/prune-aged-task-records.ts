@@ -39,13 +39,22 @@ import { isAgedTerminalTask, taskSnapshotRecencyMs } from './snapshot-projection
  * see the follow-up noted on issue #1526).
  */
 
-/** Terminal tasks whose last activity is older than this many days are pruned. */
-export const DEFAULT_TASK_RECORD_MAX_AGE_DAYS = 7;
+/**
+ * Terminal tasks whose last activity is older than this many days are pruned
+ * from the hot in-memory store (and next SQLite flush deletes the rows).
+ *
+ * Kept short on purpose: completed/cancelled history must not accumulate into
+ * a multi-hundred-task hot map that tax every timer tick. Operators still
+ * recover older records from daily/predelete JSON snapshots via
+ * `loadHistoricalTasks`. Override with the opts.maxAgeDays dial or wire a
+ * higher value if a deployment needs longer hot retention.
+ */
+export const DEFAULT_TASK_RECORD_MAX_AGE_DAYS = 1;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface PruneAgedTaskRecordsDeps {
-  taskStore: Pick<TaskStore, 'listTasks' | 'getTask' | 'deleteTask'>;
+  taskStore: Pick<TaskStore, 'viewTasks' | 'listTasks' | 'getTask' | 'deleteTask' | 'countTasks'>;
   monitor: Pick<Monitor, 'unregisterAgent'>;
   /**
    * Snapshot `tasks.json` before deleting (wired to the same predelete
@@ -123,10 +132,17 @@ export async function pruneAgedTaskRecords(
   }
   const cutoffMs = now() - maxAgeDays * MS_PER_DAY;
 
-  const tasks = deps.taskStore.listTasks();
+  // Non-cloning view: prune only needs status/age/parent-child topology, and
+  // listTasks() clone thrash was the same force-multiplier as clearCompleted.
+  const tasks = typeof deps.taskStore.viewTasks === 'function'
+    ? deps.taskStore.viewTasks()
+    : deps.taskStore.listTasks();
   const toPrune = selectPrunableTasks(tasks, cutoffMs);
+  const remainingBefore = typeof deps.taskStore.countTasks === 'function'
+    ? deps.taskStore.countTasks()
+    : tasks.length;
   if (toPrune.length === 0) {
-    return { outcome: 'pruned', prunedTaskIds: [], remainingTasks: tasks.length, maxAgeDays };
+    return { outcome: 'pruned', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
   }
 
   if (deps.takePredeleteSnapshot) {
@@ -137,7 +153,7 @@ export async function pruneAgedTaskRecords(
         '[task-record-prune] predelete snapshot failed, aborting prune to prevent unrecoverable data loss:',
         err,
       );
-      return { outcome: 'snapshot_failed', prunedTaskIds: [], remainingTasks: tasks.length, maxAgeDays };
+      return { outcome: 'snapshot_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
     }
   }
 
@@ -157,7 +173,9 @@ export async function pruneAgedTaskRecords(
     }
   }
 
-  const remainingTasks = deps.taskStore.listTasks().length;
+  const remainingTasks = typeof deps.taskStore.countTasks === 'function'
+    ? deps.taskStore.countTasks()
+    : deps.taskStore.listTasks().length;
   await writePruneAudit(deps.auditLogPath, { maxAgeDays, prunedTaskIds, remainingTasks, now });
   return { outcome: 'pruned', prunedTaskIds, remainingTasks, maxAgeDays };
 }

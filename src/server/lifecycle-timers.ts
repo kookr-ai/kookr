@@ -124,6 +124,14 @@ export interface TimerDeps {
   saveIntervalMs: number;
   livenessIntervalMs: number;
   broadcastToAll: (msg: ServerMessage) => void;
+  /**
+   * Coalesced + load-shed-aware snapshot request (from wireEventPipeline).
+   * Prefer this over `broadcastToAll(createSnapshotMessage(...))` on timer
+   * ticks so token/watchdog/liveness changes never force a full multi-MB
+   * snapshot rebuild under event-loop pressure. Falls back to direct
+   * broadcast when absent (tests / minimal wirings).
+   */
+  requestSnapshotBroadcast?: () => void;
   /** Optional shadow detector registry — runs shadow strategies alongside real detection. */
   shadowRegistry?: ShadowDetectorRegistry;
   /** Agent lifecycle deps — needed for pending task promotion. */
@@ -857,6 +865,25 @@ export function shouldSkipNonCriticalLifecycleTick(
   return true;
 }
 
+/**
+ * Prefer the event-pipeline coalesced snapshot path so timer ticks never force
+ * a full multi-MB createSnapshotMessage under load. Falls back to a direct
+ * broadcast for minimal wirings/tests that omit requestSnapshotBroadcast.
+ */
+function broadcastDashboardSnapshot(deps: TimerDeps): void {
+  if (deps.requestSnapshotBroadcast) {
+    deps.requestSnapshotBroadcast();
+    return;
+  }
+  deps.broadcastToAll(createSnapshotMessage({
+    monitor: deps.monitor,
+    serverCwd: deps.serverCwd,
+    activityMetaProvider: deps.activityMetaProvider,
+    relationTaskStore: deps.taskStore,
+    userInputDeliveryProvider: deps.userInputDeliveries,
+  }));
+}
+
 export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   const {
     monitor, taskStore, queue, adapter, tokenTracker, watchdog,
@@ -951,13 +978,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
       if (changed) {
-        broadcastToAll(createSnapshotMessage({
-          monitor,
-          serverCwd,
-          activityMetaProvider: deps.activityMetaProvider,
-          relationTaskStore: taskStore,
-          userInputDeliveryProvider: deps.userInputDeliveries,
-        }));
+        broadcastDashboardSnapshot(deps);
       }
     } catch (err) {
       console.error('Error scanning token usage:', err);
@@ -1150,13 +1171,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
 
       if (changed) {
-        broadcastToAll(createSnapshotMessage({
-          monitor,
-          serverCwd,
-          activityMetaProvider: deps.activityMetaProvider,
-          relationTaskStore: taskStore,
-          userInputDeliveryProvider: deps.userInputDeliveries,
-        }));
+        broadcastDashboardSnapshot(deps);
       }
     } finally {
       watchdogTickRunning = false;
@@ -1211,7 +1226,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       // paused loops so a resume continues the same streak. Cheap: one pass
       // over tasks per liveness tick, only when the watchdog is enabled.
       if (deps.loopDeliveryWatchdog) {
-        pruneLoopDeliveryWatchdog(taskStore.getAllTasks(), deps.loopDeliveryWatchdog);
+        // viewTasks (no clone): watchdog only needs id + ralphLoop.status.
+        pruneLoopDeliveryWatchdog(taskStore.viewTasks(), deps.loopDeliveryWatchdog);
       }
 
       // Orphan/terminal-task session reaper (issue #1720) — runs after every
@@ -1345,7 +1361,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         let residualFaa = 0;
         let oldestRaisedAtMs: number | undefined;
         const nowMs = Date.now();
-        for (const task of taskStore.listTasks()) {
+        // Live-only: residual FAA is never about terminal history.
+        for (const task of taskStore.viewLiveTasks()) {
           if (task.status !== 'inProgress') continue;
           if (task.pendingSignal?.kind !== 'completion_ready') continue;
           if (closedIds.has(task.id)) continue;
@@ -1440,7 +1457,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         // for them (filled during reclaim before terminate/purge).
         const reclaimedIds = new Set(hungSuspectTtlResult.reclaimedTaskIds);
         let residualHungSuspect = 0;
-        for (const task of taskStore.listTasks()) {
+        // Live-only: hungSuspect residual is inProgress-only capacity math.
+        for (const task of taskStore.viewLiveTasks()) {
           if (task.status !== 'inProgress') continue;
           if (task.pendingSignal?.kind === 'completion_ready') continue;
           if (reclaimedIds.has(task.id)) continue;
@@ -1608,13 +1626,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             bypassAllPermissions: deps.bypassAllPermissions,
           });
         }
-        broadcastToAll(createSnapshotMessage({
-          monitor,
-          serverCwd,
-          activityMetaProvider: deps.activityMetaProvider,
-          relationTaskStore: taskStore,
-          userInputDeliveryProvider: deps.userInputDeliveries,
-        }));
+        broadcastDashboardSnapshot(deps);
       }
     } catch (err) {
       console.error('Error during liveness check:', err);
@@ -1628,13 +1640,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     timerHealth?.recordFire('snoozeExpiry', SNOOZE_EXPIRY_INTERVAL_MS);
     try {
       if (restoreExpiredSnoozes(queue, taskStore)) {
-        broadcastToAll(createSnapshotMessage({
-          monitor,
-          serverCwd,
-          activityMetaProvider: deps.activityMetaProvider,
-          relationTaskStore: taskStore,
-          userInputDeliveryProvider: deps.userInputDeliveries,
-        }));
+        broadcastDashboardSnapshot(deps);
       }
     } catch (err) {
       console.error('Error expiring snoozes:', err);
