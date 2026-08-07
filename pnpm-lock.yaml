@@ -6,6 +6,11 @@ settings:
 
 packageExtensionsChecksum: sha256-bRXRBbE/riR7Z6GY0YfvEY5ulaK9kXxElcx446SWIG8=
 
+patchedDependencies:
+  node-pty@1.1.0:
+    hash: 65917ba0f1d1ca53261fb8aa435dcee8d4c3aaca60ce5425c2faccaaa2fa88db
+    path: patches/node-pty@1.1.0.patch
+
 importers:
 
   .:
@@ -51,7 +56,7 @@ importers:
         version: 4.12.34
       node-pty:
         specifier: ^1.1.0
-        version: 1.1.0
+        version: 1.1.0(patch_hash=65917ba0f1d1ca53261fb8aa435dcee8d4c3aaca60ce5425c2faccaaa2fa88db)
       react:
         specifier: ^19.2.8
         version: 19.2.8
@@ -2282,7 +2287,7 @@ snapshots:
       undici: 6.28.0
       which: 6.0.1
 
-  node-pty@1.1.0:
+  node-pty@1.1.0(patch_hash=65917ba0f1d1ca53261fb8aa435dcee8d4c3aaca60ce5425c2faccaaa2fa88db):
     dependencies:
       node-addon-api: 7.1.1
       node-gyp: 12.3.0

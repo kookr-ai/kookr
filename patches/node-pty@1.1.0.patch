@@ -1,0 +1,68 @@
+diff --git a/src/unix/pty.cc b/src/unix/pty.cc
+index 7b4b9e1..937bb51 100644
+--- a/src/unix/pty.cc
++++ b/src/unix/pty.cc
+@@ -228,6 +228,9 @@ Napi::Value PtyGetProc(const Napi::CallbackInfo& info);
+ static int
+ pty_nonblock(int);
+ 
++static int
++pty_cloexec(int);
++
+ #if defined(__APPLE__)
+ static char *
+ pty_getproc(int);
+@@ -375,6 +378,9 @@ Napi::Value PtyFork(const Napi::CallbackInfo& info) {
+   if (pty_nonblock(master) == -1) {
+     throw Napi::Error::New(napiEnv, "Could not set master fd to nonblocking.");
+   }
++  if (pty_cloexec(master) == -1) {
++    throw Napi::Error::New(napiEnv, "Could not set master fd to close-on-exec.");
++  }
+ #else
+   int argc = argv_.Length();
+   int argl = argc + 2;
+@@ -445,6 +451,9 @@ Napi::Value PtyFork(const Napi::CallbackInfo& info) {
+       if (pty_nonblock(master) == -1) {
+         throw Napi::Error::New(napiEnv, "Could not set master fd to nonblocking.");
+       }
++      if (pty_cloexec(master) == -1) {
++        throw Napi::Error::New(napiEnv, "Could not set master fd to close-on-exec.");
++      }
+   }
+ #endif
+ 
+@@ -487,6 +496,9 @@ Napi::Value PtyOpen(const Napi::CallbackInfo& info) {
+   if (pty_nonblock(master) == -1) {
+     throw Napi::Error::New(env, "Could not set master fd to nonblocking.");
+   }
++  if (pty_cloexec(master) == -1) {
++    throw Napi::Error::New(env, "Could not set master fd to close-on-exec.");
++  }
+ 
+   if (pty_nonblock(slave) == -1) {
+     throw Napi::Error::New(env, "Could not set slave fd to nonblocking.");
+@@ -586,6 +598,23 @@ pty_nonblock(int fd) {
+   return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+ }
+ 
++/**
++ * Close-on-exec FD.
++ *
++ * The pty master fd is retained by the host process to read/write the
++ * terminal. Without FD_CLOEXEC it is inherited by every unrelated child the
++ * host spawns afterwards (e.g. a detached multiplexer such as dtach), which
++ * pins the pty open long after its own session ends and prevents the kernel
++ * from reclaiming it. Marking the master close-on-exec is transparent to the
++ * host's own use of the fd and stops the leak at the source.
++ */
++static int
++pty_cloexec(int fd) {
++  int flags = fcntl(fd, F_GETFD, 0);
++  if (flags == -1) return -1;
++  return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
++}
++
+ /**
+  * pty_getproc
+  * Taken from tmux.

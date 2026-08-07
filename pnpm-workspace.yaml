@@ -20,3 +20,12 @@ packageExtensions:
   node-pty@1.1.0:
     dependencies:
       node-gyp: ^12.3.0
+
+# Patch node-pty 1.1.0 to set FD_CLOEXEC on the pty master fd. Without it the
+# master leaks into every unrelated child the server spawns afterwards (each
+# detached dtach master, and thus each agent), pinning the pty open long after
+# its session ends and blocking kernel reclamation — an unbounded pty/fd/memory
+# leak that degrades terminal-input latency over time. See issue #2164 and
+# patches/node-pty@1.1.0.patch. Applied on `pnpm install` (rebuilds native).
+patchedDependencies:
+  node-pty@1.1.0: patches/node-pty@1.1.0.patch
