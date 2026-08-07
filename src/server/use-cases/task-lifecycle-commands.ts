@@ -38,6 +38,13 @@ export interface TaskLifecycleCommandDeps {
   broadcastToAll?: (msg: ServerMessage) => void;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   takePredeleteSnapshot?: () => Promise<void>;
+  /**
+   * Optional full dashboard snapshot after a bulk clear. Without this the UI
+   * keeps showing deleted finished agents until the next timer tick, which
+   * looks like a hang when clearCompleted also blocked the event loop for
+   * many seconds. Wired by the WS router to `createSnapshotMessage`.
+   */
+  broadcastSnapshot?: () => void;
   getLifecycleDeps: () => RuntimeLifecycleDeps;
   tryPromotePending?: () => Promise<void>;
   feedbackDir?: string;
@@ -377,7 +384,10 @@ export class TaskLifecycleCommands {
       });
       return { outcome: 'cleared', deletedTaskIds: [] };
     }
-    const toClear = this.deps.taskStore.listTasks().filter((task) => {
+    // viewTasks: no structuredClone of the whole store just to filter finished
+    // records. With hundreds of completed tasks, listTasks() alone was ~50ms+
+    // of event-loop block before the predelete export even started.
+    const toClear = this.deps.taskStore.viewTasks().filter((task) => {
       if (projectId && task.projectId !== projectId) return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
@@ -416,13 +426,26 @@ export class TaskLifecycleCommands {
       }
     }
 
+    // Snapshot only needs ids + status filter; capture reflect sources before
+    // we start mutating the store.
     const inFlightReflectSourceIds = this.inFlightReflectSourceIds();
     const deletedTaskIds: string[] = [];
-    for (const task of toClear) {
-      if (!this.deps.taskStore.getTask(task.id)) continue;
+    // Yield every batch so WebSocket ping/pong and other clients stay alive
+    // while sweeping hundreds of finished tasks (otherwise the dashboard
+    // connection dies mid-clear and the operator sees a disconnect).
+    const CLEAR_BATCH_SIZE = 25;
+    for (let i = 0; i < toClear.length; i++) {
+      if (i > 0 && i % CLEAR_BATCH_SIZE === 0) {
+        await yieldToEventLoop();
+      }
+      const task = toClear[i]!;
       const shouldGcFeedbackBundle = !inFlightReflectSourceIds.has(task.id);
-      this.deleteFinishedTaskRecord(task, { gcFeedbackBundle: shouldGcFeedbackBundle });
-      deletedTaskIds.push(task.id);
+      try {
+        this.deleteFinishedTaskRecord(task, { gcFeedbackBundle: shouldGcFeedbackBundle });
+        deletedTaskIds.push(task.id);
+      } catch {
+        // Concurrent delete/race: task already gone — skip.
+      }
     }
 
     await this.writeTaskDeletionAudit({
@@ -435,6 +458,18 @@ export class TaskLifecycleCommands {
       outcome: 'cleared',
     });
     this.broadcastClearCompleted(deletedTaskIds.length, projectId);
+    // Push a full snapshot so the SPA drops finished agents immediately
+    // instead of waiting for the next 1–5s timer broadcast.
+    if (deletedTaskIds.length > 0) {
+      try {
+        this.deps.broadcastSnapshot?.();
+      } catch (err) {
+        console.warn(
+          '[clearCompleted] post-clear snapshot broadcast failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
     return { outcome: 'cleared', deletedTaskIds };
   }
 
@@ -698,7 +733,7 @@ export class TaskLifecycleCommands {
 
   private inFlightReflectSourceIds(): Set<string> {
     const ids = new Set<string>();
-    for (const task of this.deps.taskStore.listTasks()) {
+    for (const task of this.deps.taskStore.viewTasks()) {
       if (task.reflectMeta?.sourceTaskId && !isTerminalStatusForReflect(task.status)) {
         ids.add(task.reflectMeta.sourceTaskId);
       }
@@ -851,6 +886,11 @@ export class TaskLifecycleCommands {
 
 function isActiveRalphLoop(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+}
+
+/** Let pending I/O and WebSocket heartbeats run during long bulk sweeps. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 function dedupeTaskIds(taskIds: readonly string[]): string[] {

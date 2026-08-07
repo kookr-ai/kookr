@@ -471,7 +471,11 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
 
   if (mode === 'json' || !opts.sqliteStore) {
     await saveTasksWithSnapshotPolicy(
-      opts.taskStore.getAllTasks(),
+      // JSON.stringify is synchronous on the event loop; live refs from viewTasks
+      // are safe for the duration of the serialize (no concurrent mutation).
+      // Avoid getAllTasks() structuredClone thrash on multi-MB stores (clearCompleted
+      // predelete path was cloning ~20–30MB twice before any delete ran).
+      Array.from(opts.taskStore.viewTasks()),
       opts.tasksFile,
       policy,
       opts.taskStore.getLifetimeSpendUsd(),
@@ -489,11 +493,14 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
   }
 
   const dirty = opts.taskStore.drainDirtyState();
+  // Index live tasks once for the dirty flush. Prefer live refs over getTask()
+  // clones — better-sqlite flush JSON.stringifies synchronously before return.
+  const liveById = dirty.dirtyTaskIds.length > 0
+    ? new Map(opts.taskStore.viewTasks().map((task) => [task.id, task]))
+    : null;
   const dirtyTasks: Task[] = [];
   for (const id of dirty.dirtyTaskIds) {
-    // Use non-cloning view path for the live object, then clone for serialization
-    // safety if the caller mutates mid-write. getTask clones.
-    const task = opts.taskStore.getTask(id);
+    const task = liveById?.get(id);
     if (task) dirtyTasks.push(task);
   }
 
@@ -556,8 +563,10 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
   // once-per-day; only write the JSON export when today's file is absent (or
   // when policy is predelete, which is rare and intentional).
   if (policy === 'predelete') {
+    // Recovery export only: do not require a second full-store structuredClone.
+    // SQLite remains the primary durable store; this JSON file is tooling recovery.
     await saveTasksWithSnapshotPolicy(
-      opts.taskStore.getAllTasks(),
+      Array.from(opts.taskStore.viewTasks()),
       opts.tasksFile,
       'predelete',
       opts.taskStore.getLifetimeSpendUsd(),
@@ -570,7 +579,7 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
     const dailyPath = dailyFileName(opts.tasksFile, today);
     if (!existsSync(dailyPath)) {
       await saveTasksWithSnapshotPolicy(
-        opts.taskStore.getAllTasks(),
+        Array.from(opts.taskStore.viewTasks()),
         opts.tasksFile,
         'daily',
         opts.taskStore.getLifetimeSpendUsd(),
