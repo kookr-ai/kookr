@@ -163,4 +163,16 @@ describe('TaskTailStore', () => {
     expect(raw.schemaVersion).toBe('task-tail.v1');
     expect(raw.text).toBe('hi');
   });
+
+  test('save writes compact JSON without pretty-print indentation (issue #2176)', async () => {
+    await store.save({ taskId: 't', sessionId: 's', text: 'hi' });
+    const raw = readFileSync(join(dir, 't.json'), 'utf8');
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(raw).not.toMatch(/\n {2}"/);
+    // Schema fields still present and parseable.
+    expect(raw).toContain('"schemaVersion":"task-tail.v1"');
+    const parsed = JSON.parse(raw);
+    expect(parsed.text).toBe('hi');
+    expect(parsed.taskId).toBe('t');
+  });
 });

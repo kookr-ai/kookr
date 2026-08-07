@@ -143,7 +143,9 @@ function assertSafeId(id: string, label: string): void {
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = join(dirname(filePath), `.tmp-${randomUUID()}`);
-  const body = JSON.stringify(value, null, 2);
+  // Compact JSON: tails are machine-only (up to ~256 KiB) and always JSON.parse'd;
+  // pretty-print wastes CPU/disk on every completion write (issue #2176).
+  const body = JSON.stringify(value);
   await writeFile(tmp, body, { encoding: 'utf8', mode: 0o600 });
   await rename(tmp, filePath);
 }
