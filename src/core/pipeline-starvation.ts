@@ -16,8 +16,66 @@ import { homedir } from 'node:os';
 import { projectIdFromRepoSpecifier } from './project-identity.js';
 import { isTerminalStatus } from './task-status.js';
 
-/** Max one starvation-triggered scout per repo per this window. */
+/**
+ * Baseline starvation-triggered scout cooldown (issue #1715). One scout per
+ * repo per this window at the shallow end of a drought; the effective window
+ * shrinks as the drought deepens — see {@link effectiveStarvationScoutCooldownMs}.
+ */
 export const STARVATION_SCOUT_DEDUP_MS = 4 * 60 * 60 * 1000; // 4h
+
+/**
+ * Hard floor for the adaptive starvation-scout cooldown (issue #2171). The
+ * cooldown never shrinks below this, so the worst case is bounded (at most one
+ * extra scout per repo per floor). Kept ≥ {@link SCOUT_ANTI_THRASH_MS} so the
+ * belt-empty residual bypass floor never outlasts the cooldown floor.
+ */
+export const STARVATION_SCOUT_COOLDOWN_FLOOR_MS = 30 * 60 * 1000; // 30m
+
+/**
+ * Consecutive product blocked-empty events per cooldown halving (issue #2171).
+ * The cooldown halves once per this many consecutive empties: baseline at 0–1,
+ * ½ at 2–3, ¼ at 4–5, … down to the floor.
+ */
+export const STARVATION_SCOUT_COOLDOWN_HALVING_STEP = 2;
+
+/**
+ * Adaptive starvation-scout cooldown (issue #2171).
+ *
+ * The fixed 4h cooldown outlasted the drought: the idea belt emptied faster
+ * than a 4h cooldown could refill it, so `consecutiveBlockedEmpty` climbed to
+ * 6/8 while every refill attempt was skipped with "already spawned within last
+ * 4h" — the cooldown defeated the very trigger it exists to serve. Shrink the
+ * cooldown as the drought deepens: halve per
+ * {@link STARVATION_SCOUT_COOLDOWN_HALVING_STEP} consecutive blocked-empty
+ * events, with a hard {@link STARVATION_SCOUT_COOLDOWN_FLOOR_MS} floor so the
+ * blast radius stays bounded.
+ *
+ * With the defaults (baseline 4h, step 2, floor 30m):
+ *   consecutive 0–1 → 4h, 2–3 → 2h, 4–5 → 1h, 6–7 → 30m, 8+ → 30m (floor).
+ */
+export function effectiveStarvationScoutCooldownMs(
+  consecutiveBlockedEmpty: number,
+  opts?: { baselineMs?: number; floorMs?: number; halvingStep?: number },
+): number {
+  const baseline = opts?.baselineMs ?? STARVATION_SCOUT_DEDUP_MS;
+  const floor = opts?.floorMs ?? STARVATION_SCOUT_COOLDOWN_FLOOR_MS;
+  const step = opts?.halvingStep ?? STARVATION_SCOUT_COOLDOWN_HALVING_STEP;
+  const consec =
+    Number.isFinite(consecutiveBlockedEmpty) && consecutiveBlockedEmpty > 0
+      ? Math.floor(consecutiveBlockedEmpty)
+      : 0;
+  // A non-positive step disables shrinking — never below the floor.
+  if (step <= 0) return Math.max(baseline, floor);
+  const halvings = Math.floor(consec / step);
+  const shrunk = baseline / 2 ** halvings;
+  return Math.max(floor, shrunk);
+}
+
+/** Human label for a cooldown window used in spawn-skip reasons ("4h", "30m"). */
+function formatCooldownLabel(ms: number): string {
+  if (ms > 0 && ms % 3_600_000 === 0) return `${ms / 3_600_000}h`;
+  return `${Math.round(ms / 60_000)}m`;
+}
 
 /**
  * "Successful ideation" lookback: if a scout completed for the repo inside
@@ -276,6 +334,13 @@ export interface PipelineStarvationDecision {
    * (fail). Omitted when capacity is not idle-empty (not applicable).
    */
   starvationRefillPostcondition?: 'pass' | 'fail';
+  /**
+   * Effective starvation-scout cooldown applied this tick (issue #2171),
+   * derived from {@link consecutiveBlockedEmpty}. Surfaced for audit/health so
+   * an operator can see the cooldown adapting instead of a static 4h. Present
+   * for every applicable, non-replay blocked-empty.
+   */
+  effectiveScoutCooldownMs?: number;
 }
 
 /**
@@ -559,7 +624,9 @@ export function isScoutDedupBeltEmptyBypass(
  *   - no successful ideation (with published issues) in the last 4h
  *     **unless** capacity is idle+empty-queue (issue #2043 — empty-queue
  *     ideation is not a refill), AND
- *   - no starvation-triggered scout in the last 4h
+ *   - no starvation-triggered scout inside the **adaptive** cooldown window
+ *     (issue #2171 — {@link effectiveStarvationScoutCooldownMs}: baseline 4h,
+ *     halving as consecutiveBlockedEmpty grows, floored)
  *     **unless** capacity is still idle+empty after the anti-thrash floor
  *     (issues #2068 / #2071 — scout-spawned is not belt-refilled).
  *
@@ -642,10 +709,18 @@ export function evaluatePipelineStarvationRefill(
 
   const starvationClass = classifyStarvationLight(outcome);
 
+  // Adaptive scout cooldown (issue #2171): shrinks with the drought depth so a
+  // fixed 4h window cannot outlast an emptying belt. Computed here so it is
+  // available to the gate below and surfaced on the decision for audit/health.
+  const effectiveScoutCooldownMs = effectiveStarvationScoutCooldownMs(consecutiveBlockedEmpty);
+
   // --- spawn decision ---
   let spawnScout = true;
   let spawnSkipReason: string | undefined;
   let followOnAction: StarvationFollowOnAction = 'idea_scout';
+  // True only when the belt-empty residual bypass (#2068/#2071) actually fired,
+  // i.e. we spawned despite still being inside the effective cooldown window.
+  let beltEmptyBypassApplied = false;
 
   const recentIdeation =
     ctx.recentSuccessfulIdeationAtMs !== null
@@ -670,13 +745,15 @@ export function evaluatePipelineStarvationRefill(
     // PR4: kick implement instead of re-scouting when supply already exists.
     followOnAction = 'batch_kick_only';
   } else {
-    // Nominal 4h starvation-scout dedup, with belt-empty residual bypass
-    // (#2068 / #2071): when free slots sit idle and the queue is empty after
-    // the anti-thrash floor, scout-spawned ≠ belt-refilled — allow re-scout.
+    // Adaptive starvation-scout dedup (#2171): the cooldown shrinks as
+    // consecutiveBlockedEmpty grows, so a deepening drought is refilled sooner
+    // instead of being blocked by a static 4h window. Belt-empty residual
+    // bypass (#2068 / #2071) still lets an idle+empty belt re-scout even inside
+    // the (now shorter) cooldown once the anti-thrash floor elapses.
     const lastScoutMs = ctx.prior?.lastStarvationScoutAt
       ? Date.parse(ctx.prior.lastStarvationScoutAt)
       : NaN;
-    if (Number.isFinite(lastScoutMs) && nowMs - lastScoutMs < STARVATION_SCOUT_DEDUP_MS) {
+    if (Number.isFinite(lastScoutMs) && nowMs - lastScoutMs < effectiveScoutCooldownMs) {
       const beltEmptyBypass = isScoutDedupBeltEmptyBypass(ctx.capacity, {
         nowMs,
         lastStarvationScoutAtMs: lastScoutMs,
@@ -684,10 +761,14 @@ export function evaluatePipelineStarvationRefill(
       });
       if (beltEmptyBypass) {
         // Keep spawnScout=true; mark bypass for audit/health.
+        beltEmptyBypassApplied = true;
         followOnAction = 'idea_scout';
       } else {
         spawnScout = false;
-        spawnSkipReason = `starvation-triggered scout already spawned within last ${Math.round(STARVATION_SCOUT_DEDUP_MS / 3_600_000)}h`;
+        spawnSkipReason =
+          `starvation-triggered scout already spawned within last `
+          + `${formatCooldownLabel(effectiveScoutCooldownMs)} `
+          + `(adaptive cooldown, consecutiveBlockedEmpty=${consecutiveBlockedEmpty})`;
         followOnAction = 'none';
       }
     }
@@ -717,15 +798,11 @@ export function evaluatePipelineStarvationRefill(
   }
 
   const beltEmptyCapacity = isIdeationSuccessEmptyQueue(ctx.capacity);
-  const scoutDedupBypassedForBeltEmpty =
-    spawnScout
-    && beltEmptyCapacity
-    && Boolean(
-      ctx.prior?.lastStarvationScoutAt
-      && Number.isFinite(Date.parse(ctx.prior.lastStarvationScoutAt))
-      && nowMs - Date.parse(ctx.prior.lastStarvationScoutAt) < STARVATION_SCOUT_DEDUP_MS,
-    );
-  // Cooldown residual while belt empty: skipped for 4h/anti-thrash (not other reasons).
+  // The residual bypass counter tracks only the case where we spawned *despite*
+  // still being inside the (adaptive) cooldown — a normal spawn after the
+  // cooldown elapsed is not a bypass, even with the belt empty (#2171).
+  const scoutDedupBypassedForBeltEmpty = spawnScout && beltEmptyBypassApplied;
+  // Cooldown residual while belt empty: skipped for cooldown/anti-thrash (not other reasons).
   const scoutCooldownSkipWhileBeltEmpty =
     !spawnScout
     && beltEmptyCapacity
@@ -749,6 +826,7 @@ export function evaluatePipelineStarvationRefill(
     emptyClass,
     starvationClass,
     followOnAction: spawnScout ? 'idea_scout' : followOnAction,
+    effectiveScoutCooldownMs,
     ...(ideationSuccessEmptyQueue ? { ideationSuccessEmptyQueue: true } : {}),
     ...(scoutDedupBypassedForBeltEmpty ? { scoutDedupBypassedForBeltEmpty: true } : {}),
     ...(scoutCooldownSkipWhileBeltEmpty ? { scoutCooldownSkipWhileBeltEmpty: true } : {}),

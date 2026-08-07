@@ -70,6 +70,7 @@ export function registerPipelineStarvationRoutes(
         emitStarvationAlert: result.decision.emitStarvationAlert,
         alertSkipReason: result.decision.alertSkipReason ?? null,
         consecutiveBlockedEmpty: result.decision.consecutiveBlockedEmpty,
+        effectiveScoutCooldownMs: result.decision.effectiveScoutCooldownMs ?? null,
         spawnedScoutTaskId: result.spawnedScoutTaskId ?? null,
         scoutQueued: result.scoutQueued ?? null,
         alertEmitted: result.alertEmitted,

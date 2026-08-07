@@ -734,9 +734,18 @@ Called by `parallel-issue-batch` after it writes a machine-readable
    (`~/.kookr/playbook-state/pipeline-starvation/<repo-slug>.json`).
 2. Spawns at most one on-demand `repository-idea-scout` for the repo when no
    successful ideation ran in the last 4h, no scout is already in flight, and
-   no starvation-triggered scout was spawned in the last 4h **unless** a
-   belt-empty residual bypass applies (below). Spawns are stamped in
-   `audit.jsonl` with `provenance: "starvation-trigger"`.
+   no starvation-triggered scout was spawned inside the **adaptive** scout
+   cooldown **unless** a belt-empty residual bypass applies (below). Spawns are
+   stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+   **Adaptive scout cooldown (issue #2171):** the starvation-scout cooldown is
+   no longer a fixed 4h. It halves once per two consecutive product
+   `blocked-empty` events and is floored at 30m — `4h` at
+   `consecutiveBlockedEmpty` 0–1, `2h` at 2–3, `1h` at 4–5, `30m` at 6+. This
+   stops a fixed 4h window from outlasting a drought (the belt emptied faster
+   than a 4h cooldown could refill it). The effective window is surfaced on the
+   decision audit as `effectiveScoutCooldownMs`, in the spawn-skip reason
+   (`… already spawned within last 30m (adaptive cooldown, consecutiveBlockedEmpty=6)`),
+   and under `/api/health` → `pipelineStarvation.repos[*].effectiveScoutCooldownMs`.
    **Empty-queue ideation override (issue #2043):** when a recent ideation
    *did* publish issues but capacity still shows `free ≥ 3` and
    `pendingQueueDepth == 0`, the 4h "successful ideation" suppress is **not**
@@ -745,7 +754,8 @@ Called by `parallel-issue-batch` after it writes a machine-readable
    include `free` / `pendingQueueDepth` inputs. When the queue still has work
    or free slots are busy, the 4h ideation suppress still prevents thrash-scouting.
    **Belt-empty residual scout-dedup bypass (issues #2068 / #2071):** when a
-   starvation scout already fired inside the 4h window but capacity still shows
+   starvation scout already fired inside the (adaptive) cooldown window but
+   capacity still shows
    `free ≥ 3` and `pendingQueueDepth == 0`, and at least two consecutive product
    `blocked-empty` events have accumulated, re-scout is allowed once the 25m
    anti-thrash floor since `lastStarvationScoutAt` has elapsed
@@ -778,7 +788,7 @@ Body:
 }
 ```
 
-Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarvationAlert, alertSkipReason, consecutiveBlockedEmpty, spawnedScoutTaskId, scoutQueued, alertEmitted, summary, state }`. Replaying the same `runKey` is a no-op (`spawnScout`/`alert` stay false). `400` on invalid JSON/outcome/`agentType`; `500` on handler failure.
+Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarvationAlert, alertSkipReason, consecutiveBlockedEmpty, effectiveScoutCooldownMs, spawnedScoutTaskId, scoutQueued, alertEmitted, summary, state }`. Replaying the same `runKey` is a no-op (`spawnScout`/`alert` stay false). `400` on invalid JSON/outcome/`agentType`; `500` on handler failure.
 
 ## Reflection And Telemetry
 

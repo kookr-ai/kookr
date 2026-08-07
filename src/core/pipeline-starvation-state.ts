@@ -9,6 +9,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   defaultPipelineStarvationStateDir,
+  effectiveStarvationScoutCooldownMs,
   emptyPipelineStarvationState,
   PIPELINE_STARVATION_STATE_SCHEMA,
   pipelineStarvationStatePath,
@@ -32,6 +33,12 @@ export interface PipelineStarvationHealthRepo {
    * (issue #2068). 0 when never observed.
    */
   scoutCooldownSkipsWhileBeltEmpty: number;
+  /**
+   * Effective adaptive scout cooldown (ms) at the current
+   * `consecutiveBlockedEmpty` depth (issue #2171). Lets an operator read the
+   * cooldown shrinking as the drought deepens without recomputing it.
+   */
+  effectiveScoutCooldownMs: number;
   updatedAt: string;
 }
 
@@ -67,6 +74,7 @@ export async function listPipelineStarvationHealth(
       out[parsed.repo] = {
         repo: parsed.repo,
         consecutiveBlockedEmpty: blocked.length,
+        effectiveScoutCooldownMs: effectiveStarvationScoutCooldownMs(blocked.length),
         lastBlockedEmptyAt: blocked.length > 0 ? blocked[blocked.length - 1]! : null,
         lastSpawnSkipReason: typeof parsed.lastSpawnSkipReason === 'string'
           ? parsed.lastSpawnSkipReason
