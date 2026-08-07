@@ -130,6 +130,11 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     description: 'positive integer milliseconds',
   },
   {
+    variable: 'KOOKR_QUOTA_FETCH_TIMEOUT_MS',
+    validate: isPositiveInteger,
+    description: 'positive integer milliseconds',
+  },
+  {
     variable: 'KOOKR_ALERT_CPU_PERCENT',
     validate: isNonNegativeNumber,
     description: 'non-negative number',
