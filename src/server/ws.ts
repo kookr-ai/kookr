@@ -112,6 +112,11 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /**
+   * Full dashboard snapshot builder (typically `() => createSnapshotMessage(...)`).
+   * Used after clearCompleted so the SPA refreshes without waiting for timers.
+   */
+  buildSnapshotMessage?: () => ServerMessage;
   /** Append-only audit.jsonl path for destructive task lifecycle actions. */
   auditLogPath?: string;
   /** Project config persistence for `setProjectConfig` messages. */
@@ -207,6 +212,9 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      broadcastSnapshot: this.deps.buildSnapshotMessage && this.deps.broadcastToAll
+        ? () => this.deps.broadcastToAll!(this.deps.buildSnapshotMessage!())
+        : undefined,
       auditLogPath: this.deps.auditLogPath,
       deletionAuditActor: () => this.deletionAuditActor(),
       feedbackDir: this.deps.feedbackDir,

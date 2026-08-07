@@ -152,6 +152,11 @@ export interface WsConnectionDeps {
   serverProjectId?: string;
   /** Wired by createKookrServer so ws.ts can trigger a predelete snapshot. */
   takePredeleteSnapshot?: () => Promise<void>;
+  /**
+   * Build an owner-scope dashboard snapshot after bulk lifecycle mutations
+   * (clearCompleted). Optional in tests.
+   */
+  buildSnapshotMessage?: () => ServerMessage;
   /** Append-only audit.jsonl path for destructive task lifecycle actions. */
   auditLogPath?: string;
   /** Persistent store for user-flagged supervisor FP/FN cases (offline analysis). */
@@ -263,6 +268,7 @@ export function handleWsConnection(
     leaseService: deps.leaseService,
     serverProjectId: deps.serverProjectId,
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
+    buildSnapshotMessage: deps.buildSnapshotMessage,
     auditLogPath: deps.auditLogPath,
     projectConfigStore,
     broadcastProjectSummaries,

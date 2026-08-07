@@ -283,7 +283,8 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     const active = taskStore.createTask('Still running', '/repo');
     addSession(taskStore, active.id, 'kookr-active');
     const takePredeleteSnapshot = vi.fn(async () => undefined);
-    const { deps, stop } = makeDeps(taskStore, { takePredeleteSnapshot });
+    const broadcastSnapshot = vi.fn();
+    const { deps, stop } = makeDeps(taskStore, { takePredeleteSnapshot, broadcastSnapshot });
 
     const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
 
@@ -292,10 +293,32 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
       deletedTaskIds: expect.arrayContaining([completed.id, cancelled.id]),
     });
     expect(takePredeleteSnapshot).toHaveBeenCalledOnce();
+    expect(broadcastSnapshot).toHaveBeenCalledOnce();
     expect(taskStore.getTask(completed.id)).toBeUndefined();
     expect(taskStore.getTask(cancelled.id)).toBeUndefined();
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('yields between large clear batches without skipping finished tasks', async () => {
+    const taskStore = new TaskStore();
+    const finishedIds: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      const t = taskStore.createTask(`Done ${i}`, '/repo');
+      taskStore.startTask(t.id);
+      taskStore.completeTask(t.id);
+      finishedIds.push(t.id);
+    }
+    const takePredeleteSnapshot = vi.fn(async () => undefined);
+    const { deps } = makeDeps(taskStore, { takePredeleteSnapshot });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result.outcome).toBe('cleared');
+    expect((result as { deletedTaskIds: string[] }).deletedTaskIds).toHaveLength(60);
+    for (const id of finishedIds) {
+      expect(taskStore.getTask(id)).toBeUndefined();
+    }
   });
 
   test('deletes finished tasks only within the requested project scope', async () => {

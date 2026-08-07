@@ -2392,8 +2392,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Letting the delete proceed without a snapshot recreates the exact
     // silent-data-loss pipeline this RFC set out to prevent.
     //
-    // Under SQLite (#1755) this force-flushes every row and still materializes
-    // a JSON predelete snapshot for recovery tooling.
+    // Under SQLite (#1755): flush any pending dirty rows (not a full re-upsert
+    // of every historical task — that was cloning + rewriting hundreds of
+    // multi-KB completed records and blocking the event loop long enough to
+    // drop the dashboard WebSocket), then materialize a JSON predelete export
+    // from viewTasks for recovery tooling.
     const snoozes = serializeSnoozed(queue, taskStore);
     const suppressionState = suppressionTracker?.export();
     try {
@@ -2404,7 +2407,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         snoozes,
         suppressionState,
         sqliteStore: taskSqliteStore,
-        forceFull: true,
+        forceFull: false,
       });
       persistenceHealth.recordSuccess('task_state');
     } catch (err) {
@@ -2668,6 +2671,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     leaseService,
     serverProjectId,
     takePredeleteSnapshot,
+    buildSnapshotMessage: () => createSnapshotMessage({
+      monitor,
+      serverCwd,
+      activityMetaProvider: hookIngestion,
+      coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+      relationTaskStore: taskStore,
+    }),
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     supervisorFeedbackCaseStore,
     feedbackDir: join(kookrDir, 'feedback'),

@@ -50,6 +50,8 @@ export interface LifecycleHandlerDeps {
   broadcastToAll?: (msg: ServerMessage) => void;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Full dashboard snapshot after bulk clear so the SPA drops finished agents. */
+  broadcastSnapshot?: () => void;
   auditLogPath?: string;
   deletionAuditActor?: () => TaskDeletionAuditActor;
   /**
@@ -137,6 +139,7 @@ export class LifecycleHandler {
       broadcastToAll: deps.broadcastToAll,
       activityMetaProvider: deps.activityMetaProvider,
       takePredeleteSnapshot: deps.takePredeleteSnapshot,
+      broadcastSnapshot: deps.broadcastSnapshot,
       auditLogPath: deps.auditLogPath,
       feedbackDir: deps.feedbackDir,
       taskSnapshotDir: deps.taskSnapshotDir,
