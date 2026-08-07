@@ -713,7 +713,7 @@ kookr status --json
 pnpm status
 ```
 
-The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts.
+The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts. It also surfaces health-derived operator lines when present: `SAFE MODE`, `CI-blind debt`, and — when the issue belt is starved — one `Pipeline starvation: <repo> blockedEmpty=<n>` line per elevated repo (mirroring `/api/health` → `pipelineStarvation`), with a slim summary under `details.pipelineStarvation` in `--json`.
 
 Options:
 
