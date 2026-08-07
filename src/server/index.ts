@@ -586,12 +586,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const sessionHealthTracker = new SessionHealthTracker();
   const restartEpoch = Number.isFinite(Date.parse(serverStartedAt)) ? Date.parse(serverStartedAt) : Date.now();
   const sessionHealthService = new SessionHealthService({
-    listSessions: () => taskStore.getAllTasks().flatMap((task) => task.sessions.map((session) => ({
-      sessionId: session.tmuxSession,
-      taskStatus: task.status,
-      ...(session.lastTurnState ? { turnState: session.lastTurnState } : {}),
-      ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
-    }))),
+    // Live-only, non-cloning session list (issue: terminal input lag when
+    // hundreds of completed tasks made getAllTasks()+fleet projection thrash
+    // the event loop every 250ms). Historical sessions are not actionable for
+    // health classification; dump via listSessionHealthRefs({ includeTerminalTasks: true }).
+    listSessions: () => taskStore.listSessionHealthRefs(),
     getTurnState: (sessionId) => monitor.getLiveTurnState(sessionId),
     getWatchdogState: (sessionId) => watchdog.getState(sessionId),
     getBackendDiagnostics: (sessionId) => terminalBackend.getSessionDiagnostics?.(sessionId),

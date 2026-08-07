@@ -208,6 +208,62 @@ describe('TaskStore', () => {
         .toEqual(store.getAllTasks().map((t) => t.id).sort());
     });
 
+    test('listSessionHealthRefs is live-only by default and does not clone tasks', () => {
+      const live = store.createTask('Live work', '/cwd');
+      store.startTask(live.id);
+      store.addSession(live.id, {
+        tmuxSession: 'kookr-live',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+        lastTurnState: 'running',
+        transcriptPath: '/tmp/live.jsonl',
+      });
+
+      const done = store.createTask('Done work', '/cwd');
+      store.startTask(done.id);
+      store.addSession(done.id, {
+        tmuxSession: 'kookr-done',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+        lastTurnState: 'completed_turn',
+        transcriptPath: '/tmp/done.jsonl',
+      });
+      store.completeTask(done.id);
+
+      const cancelled = store.createTask('Cancelled work', '/cwd');
+      store.addSession(cancelled.id, {
+        tmuxSession: 'kookr-cancelled',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+      store.cancelTask(cancelled.id);
+
+      const liveRefs = store.listSessionHealthRefs();
+      expect(liveRefs).toEqual([{
+        sessionId: 'kookr-live',
+        taskStatus: 'inProgress',
+        turnState: 'running',
+        transcriptPath: '/tmp/live.jsonl',
+      }]);
+
+      const allRefs = store.listSessionHealthRefs({ includeTerminalTasks: true });
+      expect(allRefs.map((r) => r.sessionId).sort()).toEqual([
+        'kookr-cancelled',
+        'kookr-done',
+        'kookr-live',
+      ]);
+
+      // Mutating a returned ref must not touch the store (plain value objects).
+      liveRefs[0]!.sessionId = 'mutated';
+      expect(store.listSessionHealthRefs()[0]!.sessionId).toBe('kookr-live');
+    });
+
     test('listTasks returns snapshots instead of stored mutable records', () => {
       const created = store.createTask('Task 1', '/cwd');
       store.addSession(created.id, {
