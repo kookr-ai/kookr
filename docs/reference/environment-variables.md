@@ -82,8 +82,14 @@ uncomment only the values you need.
 ### Read-Only Shared View
 
 The [Read-Only Shared View](shared-view-setup.md) (hand a collaborator a scoped,
-read-only dashboard link over a private network) has **no dedicated environment
-variables** — it reuses the bind/auth/transport knobs above:
+read-only dashboard link over a private network) has one storage-retention knob
+of its own (below) and otherwise reuses the bind/auth/transport knobs above:
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_SHARE_GRANT_RETENTION_MS` | `2592000000` (30 days) | Non-negative integer (milliseconds), `0` prunes immediately | Retention window applied to the viewer share-grant store (`share-grants.json`). A revoked or expired grant is compacted out of the store once its terminal timestamp is older than this window; pruning runs on load and rewrites the file only when something is removed. Active grants and terminal grants still inside the window are never touched, so this is storage compaction, not an authorization change. Blank, non-numeric, or negative values use the default. |
+
+The bind/auth/transport knobs it reuses:
 
 - **Bind + activation:** `KOOKR_HOST` non-loopback turns on the API-token gate,
   which also activates the owner share routes (`/api/share/viewers`); on a
