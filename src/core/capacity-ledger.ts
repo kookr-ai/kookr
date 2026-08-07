@@ -78,6 +78,22 @@ export interface CapacityLedger {
    * Always present; 0 when every active task is productive.
    */
   phantomActive: number;
+  /**
+   * Nominal utilization headline: `active / maxActiveTasks * 100` (0 when
+   * `maxActiveTasks <= 0`). This is the figure that read "93.8% utilized
+   * (15/16 active)" while 7–9 of 16 slots were phantom-held doing no work
+   * (issue #2169). Kept for continuity, but always paired with
+   * {@link effectiveUtilizationPct} so no consumer reads it in isolation.
+   */
+  utilizationPct: number;
+  /**
+   * Truthful utilization: `effectiveWorking / maxActiveTasks * 100` (0 when
+   * `maxActiveTasks <= 0`). Counts only productively-occupied slots, so the
+   * 15/16-nominal fleet with 8 working reads 50%, not 93.8% (issue #2169).
+   * Velocity / throughput verdicts and the supply-aware idle signal MUST key
+   * on this, never on {@link utilizationPct}.
+   */
+  effectiveUtilizationPct: number;
   pendingQueueDepth: number;
   oldestPendingAgeMs: number | null;
   oldestFinishedAwaitingAckAgeMs: number | null;
@@ -222,6 +238,14 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
   const active = effectiveWorking + phantomActive;
   const free = Math.max(0, deps.maxActiveTasks - active);
 
+  // Utilization headlines (issue #2169). Nominal counts every occupied slot
+  // (phantoms included) — the figure that masked 44–56% phantom hold behind a
+  // "93.8% utilized" verdict. Effective counts only productive slots so
+  // consumers can key throughput verdicts on real work, not held-but-idle slots.
+  const utilizationPct = deps.maxActiveTasks > 0 ? (active / deps.maxActiveTasks) * 100 : 0;
+  const effectiveUtilizationPct =
+    deps.maxActiveTasks > 0 ? (effectiveWorking / deps.maxActiveTasks) * 100 : 0;
+
   // Reserved self-maintenance capacity (issue #1564). Reported only when a
   // reservation is configured, keeping the block additive-optional.
   // freeForGeneralSources uses non-phantom occupancy (issue #1935) so a
@@ -249,6 +273,8 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     finishedAwaitingAckByCause,
     effectiveWorking,
     phantomActive,
+    utilizationPct,
+    effectiveUtilizationPct,
     pendingQueueDepth,
     oldestPendingAgeMs: oldestPendingAt !== undefined ? deps.now - oldestPendingAt : null,
     oldestFinishedAwaitingAckAgeMs: oldestFinishedAwaitingAckAt !== undefined ? deps.now - oldestFinishedAwaitingAckAt : null,
@@ -303,6 +329,88 @@ export function evaluateHungSuspectCapacityFinding(
     ratio,
     effectiveWorking: ledger.effectiveWorking,
     phantomActive: ledger.phantomActive,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Effective-utilization throughput verdict (issue #2169)
+//
+// The external workflow-velocity probe read the NOMINAL `active` count and
+// reported "capacity 93.8% utilized (15/16 active) — healthy_throughput" while
+// 7–9 of 16 slots were phantom-held (finishedAwaitingAck + hungSuspect) doing
+// no work. Real productive utilization was 37–50%. That did not merely
+// mislead: it fed the #2143 supply-aware idle signal a "fleet is full" picture
+// that suppressed the very idea-supply pressure a half-empty fleet needed —
+// the masking loop the issue calls out.
+//
+// The fix is a first-class verdict keyed on EFFECTIVE occupancy: the fleet is
+// `healthy_throughput` only when it has no idle *productive* slots; any
+// effective headroom reads `idle_capacity`. Both utilization figures ride
+// along so no downstream consumer has to re-derive (and mis-derive) the
+// number. Pure — nothing here touches scheduling or launch admission.
+// ---------------------------------------------------------------------------
+
+export type CapacityThroughputVerdictCode = 'healthy_throughput' | 'idle_capacity';
+
+/**
+ * Effective-utilization throughput verdict (issue #2169). Always returned (it
+ * is a headline, not a fires-only-on-defect finding), so a probe can read one
+ * stable field instead of recomputing utilization from `active`.
+ */
+export interface CapacityThroughputVerdict {
+  /**
+   * `healthy_throughput` only when there are no idle *productive* slots;
+   * otherwise `idle_capacity`. Keyed on {@link idleEffectiveSlots}, never on
+   * nominal `active` — so 15/16 nominal with 8 working reads `idle_capacity`.
+   */
+  verdict: CapacityThroughputVerdictCode;
+  /** Truthful headline: `effectiveWorking / maxActiveTasks * 100`. The verdict keys on this. */
+  effectiveUtilizationPct: number;
+  /** Nominal figure: `active / maxActiveTasks * 100`. Reported for continuity, never the key. */
+  utilizationPct: number;
+  effectiveWorking: number;
+  phantomActive: number;
+  active: number;
+  maxActiveTasks: number;
+  /**
+   * Idle *productive* slots the verdict keys on:
+   * `freeForGeneralSources ?? max(0, maxActiveTasks - effectiveWorking)`.
+   * Uses the reservation-aware general-source view when present (issue #1564),
+   * else the pure effective-free count — never nominal `free`, which would
+   * hide phantom-held slots.
+   */
+  idleEffectiveSlots: number;
+}
+
+/**
+ * Evaluate the effective-utilization throughput verdict against a ledger
+ * snapshot (issue #2169). Pure. Keys strictly on effective (productive)
+ * occupancy so a nominally-full fleet held open by phantoms never reads
+ * `healthy_throughput`.
+ */
+export function evaluateCapacityThroughputVerdict(
+  ledger: Pick<
+    CapacityLedger,
+    | 'maxActiveTasks'
+    | 'active'
+    | 'effectiveWorking'
+    | 'phantomActive'
+    | 'utilizationPct'
+    | 'effectiveUtilizationPct'
+    | 'freeForGeneralSources'
+  >,
+): CapacityThroughputVerdict {
+  const idleEffectiveSlots =
+    ledger.freeForGeneralSources ?? Math.max(0, ledger.maxActiveTasks - ledger.effectiveWorking);
+  return {
+    verdict: idleEffectiveSlots > 0 ? 'idle_capacity' : 'healthy_throughput',
+    effectiveUtilizationPct: ledger.effectiveUtilizationPct,
+    utilizationPct: ledger.utilizationPct,
+    effectiveWorking: ledger.effectiveWorking,
+    phantomActive: ledger.phantomActive,
+    active: ledger.active,
+    maxActiveTasks: ledger.maxActiveTasks,
+    idleEffectiveSlots,
   };
 }
 
@@ -430,6 +538,15 @@ export interface IdleCapacityFinding {
   runwayShortfall: boolean;
   /** The actionable driver behind the severity. */
   driver: 'queue_backlog_idle' | 'runway_shortfall' | 'headroom_unused';
+  /**
+   * Truthful utilization at finding time: `effectiveWorking / max * 100`
+   * (issue #2169), or null when the ledger did not carry it. Paired with
+   * {@link utilizationPct} so the supply-aware signal reports effective — not
+   * the nominal figure that masked phantom-held slots.
+   */
+  effectiveUtilizationPct: number | null;
+  /** Nominal utilization: `active / max * 100`, or null when unavailable. Never read in isolation. */
+  utilizationPct: number | null;
 }
 
 /**
@@ -449,10 +566,22 @@ export interface IdleCapacityFinding {
  * Pure.
  */
 export function evaluateIdleCapacityFinding(
-  ledger: Pick<CapacityLedger, 'free' | 'freeForGeneralSources' | 'pendingQueueDepth'>,
+  ledger: Pick<CapacityLedger, 'free' | 'freeForGeneralSources' | 'pendingQueueDepth'> &
+    Partial<
+      Pick<CapacityLedger, 'maxActiveTasks' | 'effectiveWorking' | 'effectiveUtilizationPct' | 'utilizationPct'>
+    >,
   inputs: IdleCapacitySignalInputs = {},
 ): IdleCapacityFinding | null {
-  const idleSlots = ledger.freeForGeneralSources ?? ledger.free;
+  // Idle slots key on EFFECTIVE occupancy (issue #2169): prefer the
+  // reservation-aware general-source view (already phantom-excluded, #1935),
+  // else the pure effective-free count, and only fall back to nominal `free`
+  // when the ledger carries neither (older/partial callers). Nominal `free`
+  // hides phantom-held slots — the masking this issue removes.
+  const idleSlots =
+    ledger.freeForGeneralSources ??
+    (ledger.maxActiveTasks !== undefined && ledger.effectiveWorking !== undefined
+      ? Math.max(0, ledger.maxActiveTasks - ledger.effectiveWorking)
+      : ledger.free);
   if (idleSlots <= 0) return null;
 
   const prsPerDay = inputs.prsPerDay ?? null;
@@ -487,6 +616,8 @@ export function evaluateIdleCapacityFinding(
     runwayFloorDays,
     runwayShortfall,
     driver,
+    effectiveUtilizationPct: ledger.effectiveUtilizationPct ?? null,
+    utilizationPct: ledger.utilizationPct ?? null,
   };
 }
 

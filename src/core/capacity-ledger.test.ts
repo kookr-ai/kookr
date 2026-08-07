@@ -4,6 +4,7 @@ import {
   buildVettedIdeaRunwayReport,
   classifyTaskCapacity,
   computeVettedIdeaRunwayDays,
+  evaluateCapacityThroughputVerdict,
   evaluateHungSuspectCapacityFinding,
   evaluateIdleCapacityFinding,
   isReservedSlotLaunch,
@@ -685,5 +686,167 @@ describe('resolveIdleCapacitySignalInputs (issue #2143)', () => {
     expect(inputs.prsPerDay).toBeNull();
     expect(inputs.targetPrsPerDay).toBeNull();
     expect(inputs.runwayFloorDays).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective vs nominal utilization (issue #2169)
+//
+// The two production samples from the issue, taken ~1 min apart on 2026-08-07,
+// both read "capacity 93.8% utilized (15/16 active) — healthy_throughput" from
+// the NOMINAL active count while real productive utilization was 37–50%.
+// ---------------------------------------------------------------------------
+describe('effective vs nominal utilization (issue #2169)', () => {
+  const MAX = 16;
+
+  /**
+   * Build a ledger for a phantom-heavy sample: `working` productive tasks,
+   * `faa` finished-awaiting-ack, `hung` hung-suspect — all inProgress, so
+   * `active = working + faa + hung`. No launching, no reservation, so the
+   * effective-free fallback (not `freeForGeneralSources`) is what's exercised.
+   */
+  function sampleLedger({ working, faa, hung }: { working: number; faa: number; hung: number }) {
+    const tasks: Task[] = [];
+    for (let i = 0; i < working; i++) tasks.push(task({ id: `w${i}`, status: 'inProgress' }));
+    for (let i = 0; i < faa; i++)
+      tasks.push(
+        task({
+          id: `a${i}`,
+          status: 'inProgress',
+          pendingSignal: { kind: 'completion_ready', raisedAt: '2026-07-24T11:00:00.000Z' },
+        }),
+      );
+    const hungIds = new Set<string>();
+    for (let i = 0; i < hung; i++) {
+      const id = `h${i}`;
+      hungIds.add(id);
+      tasks.push(task({ id, status: 'inProgress' }));
+    }
+    return buildCapacityLedger(tasks, {
+      now: NOW,
+      maxActiveTasks: MAX,
+      isHungSuspect: (t) => hungIds.has(t.id),
+      isLaunching: () => false,
+    });
+  }
+
+  // Sample A (09:29Z): 15/16 active, 8 working, 2 FAA, 5 hung.
+  const sampleA = sampleLedger({ working: 8, faa: 2, hung: 5 });
+  // Sample B (09:30Z): 15/16 active, 6 working, 5 FAA, 4 hung.
+  const sampleB = sampleLedger({ working: 6, faa: 5, hung: 4 });
+
+  test('the ledger surfaces effectiveUtilizationPct alongside the nominal figure', () => {
+    expect(sampleA.active).toBe(15);
+    expect(sampleA.effectiveWorking).toBe(8);
+    expect(sampleA.phantomActive).toBe(7);
+    // Nominal masks phantom hold at 93.8%; effective tells the truth at 50%.
+    // 15/16 is a power-of-two fraction, so 93.75 is exactly representable.
+    expect(sampleA.utilizationPct).toBe(93.75);
+    expect(sampleA.effectiveUtilizationPct).toBe(50);
+
+    expect(sampleB.active).toBe(15);
+    expect(sampleB.effectiveWorking).toBe(6);
+    expect(sampleB.phantomActive).toBe(9);
+    expect(sampleB.utilizationPct).toBe(93.75);
+    expect(sampleB.effectiveUtilizationPct).toBe(37.5);
+  });
+
+  test('the throughput verdict keys on effective utilization — samples A & B do NOT read healthy', () => {
+    const verdictA = evaluateCapacityThroughputVerdict(sampleA);
+    expect(verdictA.verdict).toBe('idle_capacity');
+    expect(verdictA.effectiveUtilizationPct).toBe(50);
+    expect(verdictA.utilizationPct).toBe(93.75);
+    expect(verdictA.idleEffectiveSlots).toBe(8); // 16 - 8 working
+
+    const verdictB = evaluateCapacityThroughputVerdict(sampleB);
+    expect(verdictB.verdict).toBe('idle_capacity');
+    expect(verdictB.effectiveUtilizationPct).toBe(37.5);
+    expect(verdictB.idleEffectiveSlots).toBe(10); // 16 - 6 working
+  });
+
+  test('a genuinely full productive fleet reads healthy_throughput', () => {
+    const full = sampleLedger({ working: 16, faa: 0, hung: 0 });
+    expect(full.effectiveUtilizationPct).toBe(100);
+    expect(evaluateCapacityThroughputVerdict(full).verdict).toBe('healthy_throughput');
+    expect(evaluateCapacityThroughputVerdict(full).idleEffectiveSlots).toBe(0);
+  });
+
+  // The sharpest form of the AC: a NOMINALLY-FULL fleet (active === max, so
+  // nominal free is 0) held open entirely by phantoms. Naive nominal-free
+  // keying would flip the verdict to healthy_throughput; effective keying must
+  // not. 8 working + 8 phantom = 16 active of 16.
+  test('a nominally-full fleet held open by phantoms still reads idle_capacity', () => {
+    const phantomFull = sampleLedger({ working: 8, faa: 4, hung: 4 });
+    expect(phantomFull.active).toBe(16);
+    expect(phantomFull.free).toBe(0); // nominal free is zero — the trap
+    expect(phantomFull.effectiveUtilizationPct).toBe(50);
+    const verdict = evaluateCapacityThroughputVerdict(phantomFull);
+    expect(verdict.verdict).toBe('idle_capacity');
+    expect(verdict.idleEffectiveSlots).toBe(8); // 16 - 8 working, not nominal free (0)
+  });
+
+  test('the supply-aware idle signal consumes effective (not nominal) idle slots and carries effective utilization', () => {
+    // Nominal free is only 1 (16 - 15 active), but the idle signal keys on
+    // effective occupancy: 8 productive slots are idle behind phantom hold.
+    const finding = evaluateIdleCapacityFinding(sampleA, { prsPerDay: 72, targetPrsPerDay: 24 });
+    expect(finding).not.toBeNull();
+    expect(finding!.idleSlots).toBe(8); // effective, not nominal free (1)
+    expect(finding!.effectiveUtilizationPct).toBe(50);
+    expect(finding!.utilizationPct).toBeCloseTo(93.75, 5);
+
+    const findingB = evaluateIdleCapacityFinding(sampleB);
+    expect(findingB!.idleSlots).toBe(10);
+    expect(findingB!.effectiveUtilizationPct).toBe(37.5);
+  });
+
+  test('a reservation-aware ledger keeps freeForGeneralSources as the idle-slot source', () => {
+    // freeForGeneralSources already excludes phantoms (issue #1935); the verdict
+    // and idle signal must use it verbatim rather than recomputing.
+    const tasks: Task[] = [];
+    for (let i = 0; i < 8; i++) tasks.push(task({ id: `w${i}`, status: 'inProgress' }));
+    for (let i = 0; i < 5; i++) {
+      tasks.push(task({ id: `h${i}`, status: 'inProgress' }));
+    }
+    const hungIds = new Set(['h0', 'h1', 'h2', 'h3', 'h4']);
+    const ledger = buildCapacityLedger(tasks, {
+      now: NOW,
+      maxActiveTasks: MAX,
+      isHungSuspect: (t) => hungIds.has(t.id),
+      isLaunching: () => false,
+      reservedActiveSlots: 2,
+      reservedSlotSources: ['kookr'],
+    });
+    // 16 - 2 reserved - 8 working = 6 general-source slots.
+    expect(ledger.freeForGeneralSources).toBe(6);
+    expect(evaluateCapacityThroughputVerdict(ledger).idleEffectiveSlots).toBe(6);
+    expect(evaluateIdleCapacityFinding(ledger)!.idleSlots).toBe(6);
+  });
+
+  test('a fully-reserved pool (freeForGeneralSources 0) reads healthy_throughput even with productive headroom', () => {
+    // Mirrors the #1935 general-source view and the idle-finding null case:
+    // when the whole pool is reserved, general sources see no idle slots, so
+    // the verdict keys on freeForGeneralSources (0), not pure effective free.
+    const verdict = evaluateCapacityThroughputVerdict({
+      maxActiveTasks: 16,
+      active: 4,
+      effectiveWorking: 4,
+      phantomActive: 0,
+      utilizationPct: 25,
+      effectiveUtilizationPct: 25,
+      freeForGeneralSources: 0,
+    });
+    expect(verdict.idleEffectiveSlots).toBe(0);
+    expect(verdict.verdict).toBe('healthy_throughput');
+  });
+
+  test('utilization is 0 (not NaN) when maxActiveTasks is 0', () => {
+    const ledger = buildCapacityLedger([], {
+      now: NOW,
+      maxActiveTasks: 0,
+      isHungSuspect: () => false,
+      isLaunching: () => false,
+    });
+    expect(ledger.utilizationPct).toBe(0);
+    expect(ledger.effectiveUtilizationPct).toBe(0);
   });
 });

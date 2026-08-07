@@ -449,6 +449,8 @@ const EMPTY_CAPACITY: CapacityLedger = {
   },
   effectiveWorking: 0,
   phantomActive: 0,
+  utilizationPct: 0,
+  effectiveUtilizationPct: 0,
   pendingQueueDepth: 0,
   oldestPendingAgeMs: null,
   oldestFinishedAwaitingAckAgeMs: null,
