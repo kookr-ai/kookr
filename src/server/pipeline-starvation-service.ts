@@ -219,6 +219,8 @@ export class PipelineStarvationService {
       scoutDedupBypassedForBeltEmpty: decision.scoutDedupBypassedForBeltEmpty === true,
       scoutCooldownSkipWhileBeltEmpty: decision.scoutCooldownSkipWhileBeltEmpty === true,
       starvationRefillPostcondition: decision.starvationRefillPostcondition ?? null,
+      // Issue #2171: adaptive scout cooldown applied this tick.
+      effectiveScoutCooldownMs: decision.effectiveScoutCooldownMs ?? null,
     };
 
     const batchKickEnabled = isPipelineBatchKickEnabled();

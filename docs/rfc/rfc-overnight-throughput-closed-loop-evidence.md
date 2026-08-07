@@ -144,7 +144,7 @@ Completed `blocked-empty` batch runs count as healthy schedule executions — so
 
 ### Code (exists)
 
-- `src/core/pipeline-starvation.ts` — pure `evaluatePipelineStarvationRefill`; 4h scout dedup; 4h successful-ideation lookback; alert on 2nd empty in 12h.
+- `src/core/pipeline-starvation.ts` — pure `evaluatePipelineStarvationRefill`; adaptive scout dedup (baseline 4h, halving per 2 consecutive blocked-empty to a 30m floor — #2171); 4h successful-ideation lookback; alert on 2nd empty in 12h.
 - `src/server/pipeline-starvation-service.ts` — `POST` handle consumer; spawns idea-scout with **`workloadSize: 'full-day'`** hardcoded; audits **spawn** and **alert** only (not skips).
 - `src/core/pipeline-starvation-ideation.ts` — success = state.md DONE marker + mtime within lookback (**content-blind** to issue-created).
 - Playbook contract: every `blocked-empty` should `POST /api/pipeline-starvation/handle`.

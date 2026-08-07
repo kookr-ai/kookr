@@ -351,7 +351,7 @@ Rejected; overnight it was the flakiest schedule.
 
 | Risk | Mitigation |
 |---|---|
-| Double scout (#1715 + scheduled + kick) | Shared dedup keys; audit; max 1 starvation scout / 4h remains unless eligible-failure reopens |
+| Double scout (#1715 + scheduled + kick) | Shared dedup keys; audit; max 1 starvation scout per adaptive cooldown (4h baseline → 30m floor, #2171) remains unless eligible-failure reopens |
 | Batch kick stampede | Concurrent guard + per-repo kick cooldown + capacity gate |
 | Eligible heuristic wrong | Prefer issue-created count; tune with fixtures; fail open to scout rather than permanent suppress |
 | Launch subclass brittle | Tests with exact overnight strings; typed errors preferred |

@@ -4,6 +4,7 @@ import {
   BATCH_OUTCOME_SCHEMA_VERSION,
   classifyStarvationLight,
   clearKickBatchPending,
+  effectiveStarvationScoutCooldownMs,
   EMPTY_IDEATION_FREE_SLOTS_THRESHOLD,
   evaluatePipelineStarvationRefill,
   isBatchKickInCooldown,
@@ -21,6 +22,8 @@ import {
   resolveBatchEmptyClass,
   SCOUT_ANTI_THRASH_MS,
   STARVATION_ALERT_WINDOW_MS,
+  STARVATION_SCOUT_COOLDOWN_FLOOR_MS,
+  STARVATION_SCOUT_COOLDOWN_HALVING_STEP,
   STARVATION_SCOUT_DEDUP_MS,
   starvationScoutIdempotencyKey,
   summarizeDisqualifiers,
@@ -86,7 +89,7 @@ describe('pipeline-starvation pure decision (#1715)', () => {
   });
 
   test('second consecutive blocked-empty within 12h emits starvation alert', () => {
-    const firstAt = new Date(NOW - 3 * 60 * 60 * 1000).toISOString(); // 3h ago
+    const firstAt = new Date(NOW - 60 * 60 * 1000).toISOString(); // 1h ago
     const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'run-2' }), {
       nowMs: NOW,
       recentSuccessfulIdeationAtMs: null,
@@ -100,9 +103,11 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     });
     expect(decision.consecutiveBlockedEmpty).toBe(2);
     expect(decision.emitStarvationAlert).toBe(true);
-    // Scout still deduped within 4h of the first starvation spawn.
+    // Scout still deduped: at consecutive=2 the adaptive cooldown is 2h (#2171)
+    // and the prior scout fired only 1h ago, so it stays inside the window.
     expect(decision.spawnScout).toBe(false);
     expect(decision.spawnSkipReason).toMatch(/already spawned/i);
+    expect(decision.effectiveScoutCooldownMs).toBe(2 * 60 * 60 * 1000);
   });
 
   test('first of two does not alert — only the second does (AC)', () => {
@@ -127,7 +132,9 @@ describe('pipeline-starvation pure decision (#1715)', () => {
       prior: afterFirst,
     });
     expect(second.emitStarvationAlert).toBe(true);
-    expect(second.spawnScout).toBe(false); // still inside 4h dedup
+    // Still deduped: at consecutive=2 the adaptive cooldown is 2h (#2171) and the
+    // prior scout fired 60s ago, so it stays well inside the window.
+    expect(second.spawnScout).toBe(false);
   });
 
   test('does not re-alert for third empty inside the same episode', () => {
@@ -403,6 +410,122 @@ describe('pipeline-starvation pure decision (#1715)', () => {
         lastStarvationScoutAtMs: NOW - 60 * 60 * 1000,
         consecutiveBlockedEmpty: 2,
       })).toBe(true);
+    });
+  });
+
+  describe('adaptive starvation-scout cooldown (#2171)', () => {
+    const HOUR = 60 * 60 * 1000;
+
+    test('effectiveStarvationScoutCooldownMs halves per 2 consecutive, floored', () => {
+      expect(effectiveStarvationScoutCooldownMs(0)).toBe(4 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(1)).toBe(4 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(2)).toBe(2 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(3)).toBe(2 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(4)).toBe(HOUR);
+      expect(effectiveStarvationScoutCooldownMs(5)).toBe(HOUR);
+      // consecutive 6/8 are the exact drought depths reported in #2171.
+      expect(effectiveStarvationScoutCooldownMs(6)).toBe(STARVATION_SCOUT_COOLDOWN_FLOOR_MS);
+      expect(effectiveStarvationScoutCooldownMs(8)).toBe(STARVATION_SCOUT_COOLDOWN_FLOOR_MS);
+      // Never below the floor, no matter how deep the drought.
+      expect(effectiveStarvationScoutCooldownMs(50)).toBe(STARVATION_SCOUT_COOLDOWN_FLOOR_MS);
+    });
+
+    test('cooldown floor stays at or above the belt-empty anti-thrash floor', () => {
+      // Invariant (#2171): if the cooldown floor ever dropped below the
+      // anti-thrash floor, the belt-empty residual bypass would lose its live
+      // "inside cooldown AND past anti-thrash" band and silently go dead. Pin it.
+      expect(STARVATION_SCOUT_COOLDOWN_FLOOR_MS).toBeGreaterThanOrEqual(SCOUT_ANTI_THRASH_MS);
+    });
+
+    test('the halving step drives the ladder width', () => {
+      // The cooldown holds baseline across STARVATION_SCOUT_COOLDOWN_HALVING_STEP
+      // consecutive events, then halves — so a wider step means a wider plateau.
+      const step = STARVATION_SCOUT_COOLDOWN_HALVING_STEP;
+      expect(step).toBeGreaterThan(0);
+      expect(effectiveStarvationScoutCooldownMs(step - 1)).toBe(4 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(step)).toBe(2 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(2 * step)).toBe(HOUR);
+      // A wider step keeps the baseline for longer before the first halving.
+      expect(effectiveStarvationScoutCooldownMs(step, { halvingStep: step + 2 }))
+        .toBe(4 * HOUR);
+    });
+
+    test('effectiveStarvationScoutCooldownMs is defensive on bad input and honors opts', () => {
+      expect(effectiveStarvationScoutCooldownMs(-3)).toBe(4 * HOUR);
+      expect(effectiveStarvationScoutCooldownMs(Number.NaN)).toBe(4 * HOUR);
+      // A disabled halving step never shrinks below baseline.
+      expect(effectiveStarvationScoutCooldownMs(10, { halvingStep: 0 })).toBe(4 * HOUR);
+      // Custom baseline/floor.
+      expect(effectiveStarvationScoutCooldownMs(2, { baselineMs: HOUR, floorMs: 10 * 60_000 }))
+        .toBe(30 * 60_000);
+      expect(effectiveStarvationScoutCooldownMs(6, { baselineMs: HOUR, floorMs: 20 * 60_000 }))
+        .toBe(20 * 60_000);
+    });
+
+    /** Build a prior with `n` in-window blocked-empty events (so current → n+1). */
+    function priorWithEmpties(n: number, extra: Partial<PipelineStarvationRepoState> = {}) {
+      const times: string[] = [];
+      const keys: string[] = [];
+      for (let i = 0; i < n; i++) {
+        times.push(new Date(NOW - (i + 1) * 20 * 60 * 1000).toISOString()); // 20m apart, all <12h
+        keys.push(`e${i + 1}`);
+      }
+      return prior({ blockedEmptyAt: times, handledRunKeys: keys, ...extra });
+    }
+
+    test('deep drought shrinks the window so a stale scout no longer blocks refill', () => {
+      // consecutive=6 → 30m cooldown. A scout 90m ago would have blocked under
+      // the old fixed 4h gate; now the belt is refilled without any capacity
+      // snapshot (pure cadence fix, independent of the #2068 belt-empty bypass).
+      const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'deep-6' }), {
+        nowMs: NOW,
+        recentSuccessfulIdeationAtMs: null,
+        scoutInFlight: false,
+        prior: priorWithEmpties(5, {
+          lastStarvationScoutAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
+          lastStarvationScoutTaskId: 'stale-scout',
+        }),
+      });
+      expect(decision.consecutiveBlockedEmpty).toBe(6);
+      expect(decision.effectiveScoutCooldownMs).toBe(STARVATION_SCOUT_COOLDOWN_FLOOR_MS);
+      expect(decision.spawnScout).toBe(true);
+      expect(decision.spawnSkipReason).toBeUndefined();
+      // Not a belt-empty bypass — the (shrunk) cooldown simply elapsed.
+      expect(decision.scoutDedupBypassedForBeltEmpty).toBeUndefined();
+    });
+
+    test('shrunk window still holds inside the floor and reports the adaptive reason', () => {
+      // consecutive=6 → 30m cooldown; a scout 20m ago is still inside it.
+      const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'floor-hold' }), {
+        nowMs: NOW,
+        recentSuccessfulIdeationAtMs: null,
+        scoutInFlight: false,
+        prior: priorWithEmpties(5, {
+          lastStarvationScoutAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
+          lastStarvationScoutTaskId: 'fresh-scout',
+        }),
+      });
+      expect(decision.consecutiveBlockedEmpty).toBe(6);
+      expect(decision.effectiveScoutCooldownMs).toBe(STARVATION_SCOUT_COOLDOWN_FLOOR_MS);
+      expect(decision.spawnScout).toBe(false);
+      expect(decision.spawnSkipReason).toMatch(/already spawned within last 30m/i);
+      expect(decision.spawnSkipReason).toMatch(/consecutiveBlockedEmpty=6/);
+    });
+
+    test('mid-drought (consecutive=2) shrinks the gate from 4h to 2h', () => {
+      // Scout 150m ago: blocked under old 4h, allowed now (2h window elapsed).
+      const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'mid-2' }), {
+        nowMs: NOW,
+        recentSuccessfulIdeationAtMs: null,
+        scoutInFlight: false,
+        prior: priorWithEmpties(1, {
+          lastStarvationScoutAt: new Date(NOW - 150 * 60 * 1000).toISOString(),
+          lastStarvationScoutTaskId: 'scout-2h-ago',
+        }),
+      });
+      expect(decision.consecutiveBlockedEmpty).toBe(2);
+      expect(decision.effectiveScoutCooldownMs).toBe(2 * HOUR);
+      expect(decision.spawnScout).toBe(true);
     });
   });
 

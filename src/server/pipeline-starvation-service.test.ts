@@ -131,7 +131,10 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(first.spawnedScoutTaskId).toBeTruthy();
     expect(first.alertEmitted).toBe(false);
 
-    clock = NOW + 3 * 60 * 60 * 1000; // +3h still inside 4h scout dedup and 12h alert window
+    // +3h: inside the 12h alert window; the second scout is deduped by the
+    // in-flight scout guard (the first spawn's task is still non-terminal),
+    // not by the adaptive cooldown, which at consecutive=2 is only 2h (#2171).
+    clock = NOW + 3 * 60 * 60 * 1000;
     const second = await service.handleBatchOutcome({
       outcome: outcome({ runKey: 'run-2', generatedAt: new Date(clock).toISOString() }),
       localPath: checkout,
