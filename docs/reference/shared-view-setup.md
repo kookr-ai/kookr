@@ -216,6 +216,7 @@ points:
 | `KOOKR_ALLOW_NON_LOOPBACK` | `true` auto-generates an API token (printed at startup) instead of refusing to start. |
 | `KOOKR_ALLOW_WEAK_API_TOKEN` | `true` temporarily accepts an operator-provided token shorter than 24 characters on a non-loopback bind. |
 | `KOOKR_TRUSTED_TUNNEL` | `true` permits a non-`Secure` session cookie over plain HTTP on a non-loopback bind. Trusted, not validated — never on a public bind. |
+| `KOOKR_SHARE_GRANT_RETENTION_MS` | Retention window (ms) before revoked/expired viewer grants are compacted out of `share-grants.json`. Default `2592000000` (30 days); `0` prunes immediately. |
 | `KOOKR_PORT` | HTTP/WebSocket port (default `4800`). |
 
 Full details: [Environment Variables](environment-variables.md). Related:

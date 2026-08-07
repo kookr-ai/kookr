@@ -87,6 +87,33 @@ export interface CreatedGrant {
 const SHARE_GRANTS_FILE = 'share-grants.json';
 const SCHEMA_VERSION = 1;
 
+/**
+ * Default retention window (ms) after a grant reaches a terminal state
+ * (revoked or expired) before {@link ViewerGrantStore.pruneExpired} may drop
+ * it from the store. Deliberately conservative — 30 days keeps a short audit
+ * trail of recently-terminated grants (grant ids, labels, scopes) before they
+ * are compacted away. Override with `KOOKR_SHARE_GRANT_RETENTION_MS`.
+ */
+export const DEFAULT_GRANT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Parse `KOOKR_SHARE_GRANT_RETENTION_MS` from process.env. Returns the default
+ * when the var is unset, blank, or unparseable. A value of `0` is honoured
+ * (prune as soon as a grant becomes terminal); negative values fall back to
+ * the default rather than the surprising "prune everything in the future"
+ * behaviour a negative cutoff would produce.
+ */
+export function readGrantRetentionMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  defaultMs = DEFAULT_GRANT_RETENTION_MS,
+): number {
+  const raw = env.KOOKR_SHARE_GRANT_RETENTION_MS;
+  if (raw == null || raw.trim() === '') return defaultMs;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return defaultMs;
+  return parsed;
+}
+
 interface ShareGrantsFile {
   schemaVersion: number;
   grants: ViewerGrant[];
@@ -136,6 +163,34 @@ function isValidGrant(value: unknown): value is ViewerGrant {
     && (g.expiresAt === undefined || isIsoTimestamp(g.expiresAt))
     && (g.revokedAt === undefined || isIsoTimestamp(g.revokedAt))
   );
+}
+
+/**
+ * The ms timestamp at which a grant entered a terminal (non-resolving) state,
+ * or `null` if the grant is still active. A revoked grant is terminal at
+ * `revokedAt`; an already-past `expiresAt` is terminal at that instant (a
+ * future `expiresAt` is still active). A grant that is both revoked and past
+ * expiry uses the *later* of the two stamps, so retention always measures from
+ * whichever terminal event happened last — pruning never drops early.
+ *
+ * An unparseable `expiresAt` is deliberately NOT treated as terminal here: it
+ * yields no stamp, so the grant is kept rather than pruned (conservative
+ * retention). This is a different axis from {@link ViewerGrantStore.resolve},
+ * where an unparseable `expiresAt` fails closed to *deny access* — both err on
+ * the safe side. In practice {@link ViewerGrantStore.load} has already dropped
+ * such records via {@link isValidGrant}, so post-load stamps parse cleanly.
+ */
+function grantTerminalAtMs(grant: ViewerGrant, nowMs: number): number | null {
+  const stamps: number[] = [];
+  if (grant.revokedAt) {
+    const ms = Date.parse(grant.revokedAt);
+    if (!Number.isNaN(ms)) stamps.push(ms);
+  }
+  if (grant.expiresAt) {
+    const ms = Date.parse(grant.expiresAt);
+    if (!Number.isNaN(ms) && ms <= nowMs) stamps.push(ms);
+  }
+  return stamps.length === 0 ? null : Math.max(...stamps);
 }
 
 /**
@@ -221,6 +276,50 @@ export class ViewerGrantStore {
       }
     }
     this.grants = valid;
+    // Compact terminal (revoked/expired) grants older than the retention window
+    // so neither the in-memory array nor the on-disk file grows without bound as
+    // viewers churn. Best-effort: a persist failure here must not block startup —
+    // the (uncompacted) grants are already loaded and fully serve resolution, and
+    // the failed write is reflected in `lastWriteOk` for the health signal.
+    try {
+      await this.pruneExpired();
+    } catch (err) {
+      console.warn(
+        `[viewer-grants] Prune-on-load failed to persist compaction: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Drop grants whose terminal state (revoked or expired) became terminal more
+   * than `retentionMs` ago. Active grants — and terminal grants still inside the
+   * retention window — are always kept, so this is pure storage compaction, not
+   * an authorization-semantics change: a grant this method removes would already
+   * have failed to {@link resolve} (revoked/expired) before removal.
+   *
+   * Persists the compacted set atomically via the same write lock as
+   * create/revoke, and only when something is actually removed (a store with
+   * nothing to prune performs no write). Returns the number of grants pruned.
+   *
+   * A negative `retentionMs` is clamped to `0` (prune everything already
+   * terminal) rather than treated as a future cutoff that would drop *fresh*
+   * terminal grants — this keeps the direct-call contract as safe as the
+   * env-derived default, which already rejects negatives.
+   */
+  async pruneExpired(retentionMs: number = readGrantRetentionMsFromEnv()): Promise<number> {
+    const cutoffMs = Date.now() - Math.max(0, retentionMs);
+    const isPrunable = (grant: ViewerGrant): boolean => {
+      const terminalMs = grantTerminalAtMs(grant, Date.now());
+      return terminalMs !== null && terminalMs < cutoffMs;
+    };
+    if (!this.grants.some(isPrunable)) return 0;
+    let removed = 0;
+    await this.commit((current) => {
+      const kept = current.filter((grant) => !isPrunable(grant));
+      removed = current.length - kept.length;
+      return kept;
+    });
+    return removed;
   }
 
   /**
