@@ -64,6 +64,30 @@ describe('private-network shared task update poller', () => {
     expect(setIntervalImpl).not.toHaveBeenCalled();
   });
 
+  it('never reaches fetch for a rejected cloud-metadata or link-local peer URL (issue #2182)', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const setIntervalImpl = vi.fn() as unknown as typeof setInterval;
+    for (const peerBaseUrl of ['http://169.254.169.254/', 'http://metadata.google.internal/']) {
+      const poller = startPrivateNetworkSharedTaskUpdatePoller({
+        config: enabledConfig(peerBaseUrl),
+        env: {
+          KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+          KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+          KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+          KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+        },
+        contactShare: new ContactShareReadModel(),
+        fetchImpl,
+        setIntervalImpl,
+      });
+
+      expect(poller.status).toBe('disabled');
+      await expect(poller.pollOnce()).resolves.toBe(0);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(setIntervalImpl).not.toHaveBeenCalled();
+  });
+
   it('stays disabled without local device signing credentials', async () => {
     const setIntervalImpl = vi.fn() as unknown as typeof setInterval;
     const poller = startPrivateNetworkSharedTaskUpdatePoller({
