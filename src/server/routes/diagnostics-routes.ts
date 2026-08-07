@@ -827,11 +827,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   // Hung-task reap warnings (RFC rfc-reap-grace-warning.md): live warning state
   // + cumulative counters so an operator can answer "why is task X warned / not
   // warned right now" from a ground-truth read path.
-  app.get('/api/diagnostics/reap-warnings', (c) => c.json({
-    schemaVersion: 'reap-warnings-diagnostics-route.v1',
-    active: deps.reapWarningCoordinator?.snapshotState(Date.now()) ?? [],
-    metrics: deps.reapWarningCoordinator?.getMetrics() ?? null,
-  }));
+  app.get('/api/diagnostics/reap-warnings', (c) => {
+    const nowMs = Date.now();
+    return c.json({
+      schemaVersion: 'reap-warnings-diagnostics-route.v2',
+      active: deps.reapWarningCoordinator?.snapshotState(nowMs) ?? [],
+      metrics: deps.reapWarningCoordinator?.getMetrics() ?? null,
+      // issue #2170: the FAA ack-path reaper's own grace/veto coordinator +
+      // close counters, so an operator can answer "why is finished task X
+      // warned / being reaped" from the same read path.
+      faaAckReaper: {
+        active: deps.faaAckReapWarningCoordinator?.snapshotState(nowMs) ?? [],
+        warningMetrics: deps.faaAckReapWarningCoordinator?.getMetrics() ?? null,
+        reaperMetrics: deps.faaAckReaperMetrics?.getSnapshot() ?? null,
+      },
+    });
+  });
 
   // Per-agent-type launch success/failure rates (issue #1808): process-local
   // counters so handshake flakiness is visible without log spelunking.

@@ -72,6 +72,11 @@ import {
   type FinishedAwaitingAckTtlReclaimMetrics,
 } from './finished-awaiting-ack-ttl-sweep.js';
 import {
+  reapAwaitingPollFinishedAwaitingAckTasks,
+  runFinishedAwaitingAckReapMaintenance,
+  type FinishedAwaitingAckAckReaperMetrics,
+} from './finished-awaiting-ack-ack-reaper.js';
+import {
   reclaimAgedHungSuspectTasks,
   type HungSuspectTtlReclaimMetrics,
 } from './hung-suspect-ttl-sweep.js';
@@ -308,6 +313,23 @@ export interface TimerDeps {
   getHungTaskReapWarningEnabled?: () => boolean;
   /** Live getter — grace-period countdown, in milliseconds. */
   getHungTaskReapGraceMs?: () => number;
+  /**
+   * finishedAwaitingAck ack-path reaper (issue #2170). Bounds the
+   * `awaiting_poll` FAA dwell: a finished task unacknowledged past
+   * {@link getFinishedAwaitingAckAckReapMs} is force-completed after a
+   * grace-period + operator-veto phase (parity with #2163), via its OWN
+   * coordinator instance (separate from the hung reaper's). All optional so
+   * existing wirings/tests skip the fast path and keep the strict TTL backstop.
+   */
+  faaAckReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
+  /** Live getter — ack-path reaper enabled flag (kill switch). Defaults to enabled when absent. */
+  getFinishedAwaitingAckAckReaperEnabled?: () => boolean;
+  /** Live getter — ack-path hard reap deadline, in milliseconds. */
+  getFinishedAwaitingAckAckReapMs?: () => number;
+  /** Live getter — ack-path grace-period countdown, in milliseconds. */
+  getFinishedAwaitingAckAckReapGraceMs?: () => number;
+  /** Optional counters for the ack-path reaper, exposed via `GET /api/diagnostics/reap-warnings` (issue #2170). */
+  finishedAwaitingAckAckReaperMetrics?: FinishedAwaitingAckAckReaperMetrics;
   /** Presence probe — true when a live dashboard connection currently has the task selected. */
   isTaskSelectedByAnyConnection?: (taskId: string) => boolean;
   /**
@@ -1162,6 +1184,28 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         console.error('Error during reap-warning maintenance:', err);
       }
 
+      // FAA ack-path reap-warning maintenance (issue #2170): mirror the hung
+      // maintenance for the ack-reaper's own coordinator — clear a warning the
+      // moment its task is acked / no longer finishedAwaitingAck, apply the
+      // presence hold, self-heal a stuck countdown. Never closes here.
+      if (deps.faaAckReapWarningCoordinator) {
+        try {
+          const faaMaintChanged = await runFinishedAwaitingAckReapMaintenance(
+            {
+              coordinator: deps.faaAckReapWarningCoordinator,
+              auditLogPath: deps.auditLogPath,
+              isTaskSelectedByAnyConnection: deps.isTaskSelectedByAnyConnection,
+              getEnabled: deps.getFinishedAwaitingAckAckReaperEnabled,
+              getGraceMs: deps.getFinishedAwaitingAckAckReapGraceMs,
+            },
+            taskStore,
+          );
+          if (faaMaintChanged) changed = true;
+        } catch (err) {
+          console.error('Error during FAA ack-reap maintenance:', err);
+        }
+      }
+
       try {
         if (await deps.userInputDeliveries?.sweepUnsubmittedDeliveries()) {
           changed = true;
@@ -1315,6 +1359,54 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         },
         { ttlMs: deps.getPendingTaskTtlMs?.() },
       );
+
+      // finishedAwaitingAck ack-path reaper (issue #2170): bound the
+      // `awaiting_poll` FAA dwell BEFORE the slower strict TTL reclaim. A
+      // finished task unacknowledged past the short ack-reap deadline is warned
+      // (grace countdown rides the snapshot; operator can "Keep it alive") and
+      // force-completed once the grace elapses — same open-PR / live-turn /
+      // interactive-pane fail-safes as the strict path. Runs first so it
+      // front-runs the strict reclaim for the population that never reaches it.
+      if (deps.faaAckReapWarningCoordinator) {
+        try {
+          // A reap force-completes via completeTask (which broadcasts on its
+          // own); a new warning rides the next periodic snapshot the liveness
+          // loop already emits — same cadence the strict TTL sweep relies on —
+          // so no explicit change flag is threaded here.
+          await reapAwaitingPollFinishedAwaitingAckTasks({
+            taskStore,
+            coordinator: deps.faaAckReapWarningCoordinator,
+            lifecycleDeps: {
+              ...lifecycleDeps,
+              ...(deps.agentLifecycleDeps?.interactionLog
+                ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+                : {}),
+            },
+            auditLogPath: deps.auditLogPath,
+            broadcastToAll: deps.broadcastToAll,
+            isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+            isTaskSelectedByAnyConnection: deps.isTaskSelectedByAnyConnection,
+            getEnabled: deps.getFinishedAwaitingAckAckReaperEnabled,
+            getDeadlineMs: deps.getFinishedAwaitingAckAckReapMs,
+            getGraceMs: deps.getFinishedAwaitingAckAckReapGraceMs,
+            metrics: deps.finishedAwaitingAckAckReaperMetrics,
+            ...(deps.taskTailStore
+              ? {
+                  getTaskPaneText: async (taskId: string) => {
+                    try {
+                      const record = await deps.taskTailStore!.getByTaskId(taskId);
+                      return record?.text;
+                    } catch {
+                      return undefined;
+                    }
+                  },
+                }
+              : {}),
+          });
+        } catch (err) {
+          console.error('Error during FAA ack-path reap:', err);
+        }
+      }
 
       // finishedAwaitingAck TTL reclaim (issue #1884) + meta auto-complete
       // (issue #2070): force-complete aged completion_ready tasks. Strict path

@@ -164,9 +164,24 @@ export interface AgentState {
 
 /** Client-facing projection of a live reap warning (see {@link AgentState.reapWarning}). */
 export interface ReapWarningState {
+  /**
+   * Which reaper raised the warning (issue #2170):
+   *  - `'hung_task'` (default when absent) — the 3h hung-task reaper (#2163):
+   *    the task looks silent/hung and its session may be reaped.
+   *  - `'finished_awaiting_ack'` — the FAA ack-path reaper (#2170): the task
+   *    already FINISHED and raised `completion_ready`; it is being force-closed
+   *    to free its slot. No work is lost — only the ack is missing.
+   * The two never coexist for one task (hung and finishedAwaitingAck are
+   * mutually exclusive capacity classes), so a single field carries either.
+   */
+  kind?: 'hung_task' | 'finished_awaiting_ack';
   /** Milliseconds until the reap deadline, at snapshot-build time. */
   remainingMs: number;
-  /** Total-silence duration captured when the warning was first raised. */
+  /**
+   * For `'hung_task'`, the total-silence duration captured when the warning was
+   * raised. For `'finished_awaiting_ack'`, how long the task has waited
+   * unacknowledged (age of the `completion_ready` signal at warn time).
+   */
   silentForMs: number;
   /** How many times the user has extended this warning via the veto. */
   keptAliveCount: number;

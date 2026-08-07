@@ -82,4 +82,65 @@ describe('ReapWarningBanners', () => {
     act(() => root.render(<ReapWarningBanners agents={[agent]} send={vi.fn()} />));
     expect(container.querySelector('.reap-warning-banner')!.textContent).toContain('paused while you have this task open');
   });
+
+  // issue #2170: the FAA ack-path reaper reuses this banner with kind:
+  // 'finished_awaiting_ack'; copy must say "finished / waiting to be
+  // acknowledged / closed", never "hung / terminated".
+  test('renders finished-awaiting-ack copy (not hung/terminate) for the ack-path reaper', () => {
+    const agent = agentWithWarning({
+      reapWarning: {
+        kind: 'finished_awaiting_ack',
+        remainingMs: 45_000,
+        silentForMs: 6 * 60_000,
+        keptAliveCount: 0,
+        vetoCapReached: false,
+        heldByPresence: false,
+      },
+    });
+    act(() => root.render(<ReapWarningBanners agents={[agent]} send={vi.fn()} />));
+    const banner = container.querySelector('.reap-warning-banner')!;
+    expect(banner.textContent).toContain('finished');
+    expect(banner.textContent).toContain('waiting to be acknowledged for 6m');
+    expect(banner.textContent).toContain('Will be closed in');
+    expect(banner.textContent).toContain('0:45');
+    expect(banner.textContent).not.toContain('looks hung');
+    expect(banner.textContent).not.toContain('terminated');
+    // The same Keep-alive button drives the shared keepTaskAlive veto.
+    expect(container.querySelector('.reap-warning-keepalive')).not.toBeNull();
+  });
+
+  test('finished-awaiting-ack veto-cap copy says "acknowledge it", not "type a message"', () => {
+    const agent = agentWithWarning({
+      reapWarning: {
+        kind: 'finished_awaiting_ack',
+        remainingMs: 20_000,
+        silentForMs: 8 * 60_000,
+        keptAliveCount: 3,
+        vetoCapReached: true,
+        heldByPresence: false,
+      },
+    });
+    act(() => root.render(<ReapWarningBanners agents={[agent]} send={vi.fn()} />));
+    const text = container.querySelector('.reap-warning-banner')!.textContent!;
+    expect(text).toContain('acknowledge it');
+    expect(text).toContain('Will be closed in');
+    expect(text).not.toContain('type a message and send it');
+    const button = container.querySelector('.reap-warning-keepalive') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  test('finished-awaiting-ack presence-held copy mentions auto-close, not termination', () => {
+    const agent = agentWithWarning({
+      reapWarning: {
+        kind: 'finished_awaiting_ack',
+        remainingMs: 60_000,
+        silentForMs: 5 * 60_000,
+        keptAliveCount: 0,
+        vetoCapReached: false,
+        heldByPresence: true,
+      },
+    });
+    act(() => root.render(<ReapWarningBanners agents={[agent]} send={vi.fn()} />));
+    expect(container.querySelector('.reap-warning-banner')!.textContent).toContain('Auto-close is paused while you have this task open');
+  });
 });

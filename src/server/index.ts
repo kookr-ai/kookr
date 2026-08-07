@@ -43,6 +43,7 @@ import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
+import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
 import { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
 import {
@@ -533,9 +534,30 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // per server process (its single-instance invariant), shared by the watchdog
   // tick, the veto handler, and the snapshot projection.
   const reapWarningCoordinator = new ReapWarningCoordinator();
-  setReapWarningProvider(reapWarningCoordinator);
+  // FAA ack-path reaper (issue #2170): a SEPARATE grace/veto coordinator for
+  // the finishedAwaitingAck close path, so the two populations never share a
+  // warning. A task is either hung OR finishedAwaitingAck (mutually exclusive
+  // capacity classes), so one snapshot `reapWarning` field carries either — the
+  // projection below stamps `kind` from whichever coordinator holds it.
+  const faaAckReapWarningCoordinator = new ReapWarningCoordinator();
+  const faaAckReaperMetrics = new FinishedAwaitingAckAckReaperMetrics();
+  setReapWarningProvider({
+    view(taskId: string, nowMs: number) {
+      const hung = reapWarningCoordinator.view(taskId, nowMs);
+      if (hung) return { ...hung, kind: 'hung_task' as const };
+      const faa = faaAckReapWarningCoordinator.view(taskId, nowMs);
+      if (faa) return { ...faa, kind: 'finished_awaiting_ack' as const };
+      return undefined;
+    },
+  });
   const getHungTaskReapWarningEnabled = () => currentSettings.hungTaskReapWarningEnabled;
   const getHungTaskReapGraceMs = () => currentSettings.hungTaskReapGraceSeconds * 1000;
+  const getFinishedAwaitingAckAckReaperEnabled = () =>
+    currentSettings.finishedAwaitingAckAckReaperEnabled;
+  const getFinishedAwaitingAckAckReapMs = () =>
+    currentSettings.finishedAwaitingAckAckReapMinutes * 60_000;
+  const getFinishedAwaitingAckAckReapGraceMs = () =>
+    currentSettings.finishedAwaitingAckAckReapGraceSeconds * 1000;
   // Live getter for the post-merge cleanup budget (issue #1560). Same
   // live-binding pattern — applies on the next liveness tick.
   const getPostMergeCleanupBudgetMs = () => currentSettings.postMergeCleanupBudgetMinutes * 60_000;
@@ -2156,6 +2178,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     pipelineStarvation,
     opsStatusWriter,
     reapWarningCoordinator,
+    faaAckReapWarningCoordinator,
+    faaAckReaperMetrics,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -2687,6 +2711,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hooksDir,
     selectionController,
     reapWarningCoordinator,
+    faaAckReapWarningCoordinator,
     terminalInputCoordinator,
     userInputDeliveries,
     buildScopedSnapshot,
@@ -2822,6 +2847,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       reapWarningCoordinator,
       getHungTaskReapWarningEnabled,
       getHungTaskReapGraceMs,
+      // issue #2170: FAA ack-path reaper (bounded-deadline close + grace/veto)
+      faaAckReapWarningCoordinator,
+      getFinishedAwaitingAckAckReaperEnabled,
+      getFinishedAwaitingAckAckReapMs,
+      getFinishedAwaitingAckAckReapGraceMs,
+      finishedAwaitingAckAckReaperMetrics: faaAckReaperMetrics,
       isTaskSelectedByAnyConnection: (taskId: string) => selectionController.isTaskSelectedByAnyConnection(taskId),
       sessionReaper,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,

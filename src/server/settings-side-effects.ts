@@ -168,6 +168,26 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.finishedAwaitingAckTtlMinutes}min)`,
     );
   }
+  // issue #2170: ack-path reaper knobs read via live getters on the next
+  // liveness tick — no reconfigure needed, logged for postmortem visibility.
+  if (prevSettings.finishedAwaitingAckAckReaperEnabled !== newSettings.finishedAwaitingAckAckReaperEnabled) {
+    console.log(
+      `[settings] finishedAwaitingAckAckReaperEnabled → ${newSettings.finishedAwaitingAckAckReaperEnabled} `
+      + `(was ${prevSettings.finishedAwaitingAckAckReaperEnabled})`,
+    );
+  }
+  if (prevSettings.finishedAwaitingAckAckReapMinutes !== newSettings.finishedAwaitingAckAckReapMinutes) {
+    console.log(
+      `[settings] finishedAwaitingAckAckReapMinutes → ${newSettings.finishedAwaitingAckAckReapMinutes}min `
+      + `(was ${prevSettings.finishedAwaitingAckAckReapMinutes}min)`,
+    );
+  }
+  if (prevSettings.finishedAwaitingAckAckReapGraceSeconds !== newSettings.finishedAwaitingAckAckReapGraceSeconds) {
+    console.log(
+      `[settings] finishedAwaitingAckAckReapGraceSeconds → ${newSettings.finishedAwaitingAckAckReapGraceSeconds}s `
+      + `(was ${prevSettings.finishedAwaitingAckAckReapGraceSeconds}s)`,
+    );
+  }
   if (prevSettings.hungSuspectTtlMinutes !== newSettings.hungSuspectTtlMinutes) {
     console.log(
       `[settings] hungSuspectTtlMinutes → ${newSettings.hungSuspectTtlMinutes}min `

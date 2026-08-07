@@ -15,6 +15,11 @@ import {
   clampReapGraceSeconds,
 } from './reap-warning-coordinator.js';
 import {
+  DEFAULT_FAA_ACK_REAP_DEADLINE_MS,
+  DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
+  clampFaaAckReapDeadlineMinutes,
+} from './finished-awaiting-ack-reaper.js';
+import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
@@ -221,6 +226,34 @@ export interface KookrSettings {
    */
   finishedAwaitingAckTtlMinutes: number;
   /**
+   * finishedAwaitingAck ack-path reaper kill switch (issue #2170). When true
+   * (default), a finished task whose `completion_ready` signal has sat
+   * unacknowledged past {@link finishedAwaitingAckAckReapMinutes} is
+   * force-completed after a grace-period + operator-veto phase (parity with the
+   * hung-task reaper #2163), bounding the `awaiting_poll` dwell that the slower
+   * strict TTL reclaim (#1884) leaves squatting a slot. When false, that fast
+   * path is off and only the strict TTL reclaim runs — the independent rollback
+   * lever, same shape as {@link hungTaskReapWarningEnabled}.
+   */
+  finishedAwaitingAckAckReaperEnabled: boolean;
+  /**
+   * finishedAwaitingAck ack-path reap deadline (minutes), issue #2170. Hard
+   * bound after which an unacknowledged finished task is force-closed (post
+   * grace). Default 5m; clamped to [1, 15] on read so it can only ever be
+   * *tighter* than the strict TTL reclaim it front-runs, never restore the
+   * chronic hold. The open-PR / live-turn / interactive-pane fail-safes apply
+   * exactly as they do to the strict path.
+   */
+  finishedAwaitingAckAckReapMinutes: number;
+  /**
+   * finishedAwaitingAck ack-path grace window (seconds), issue #2170. How long
+   * the warned countdown runs before the close, giving a present operator time
+   * to veto ("Keep it alive") or take the task over. Default 60s; clamped by
+   * {@link clampReapGraceSeconds} to the same [10, 600] range as the hung
+   * reaper grace.
+   */
+  finishedAwaitingAckAckReapGraceSeconds: number;
+  /**
    * hungSuspect TTL (minutes), issue #1935. A task whose `hungSuspect` capacity
    * class (status `inProgress`, no `completion_ready`, watchdog reports hung)
    * has been all-channels-silent longer than this is terminated on the
@@ -363,6 +396,9 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
   finishedAwaitingAckTtlMinutes: 15,
+  finishedAwaitingAckAckReaperEnabled: true,
+  finishedAwaitingAckAckReapMinutes: DEFAULT_FAA_ACK_REAP_DEADLINE_MS / 60_000,
+  finishedAwaitingAckAckReapGraceSeconds: DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
   hungSuspectTtlMinutes: 25,
   firstHookDeadlineSeconds: 180,
   spawnBurstLimit: 30,
@@ -593,6 +629,28 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       Math.min(MAX_FINISHED_AWAITING_ACK_TTL_MIN, Math.round(raw.finishedAwaitingAckTtlMinutes)),
     );
   }
+  const finishedAwaitingAckAckReaperEnabled =
+    typeof raw.finishedAwaitingAckAckReaperEnabled === 'boolean'
+      ? raw.finishedAwaitingAckAckReaperEnabled
+      : DEFAULT_SETTINGS.finishedAwaitingAckAckReaperEnabled;
+  let finishedAwaitingAckAckReapMinutes = DEFAULT_SETTINGS.finishedAwaitingAckAckReapMinutes;
+  if (
+    typeof raw.finishedAwaitingAckAckReapMinutes === 'number'
+    && Number.isFinite(raw.finishedAwaitingAckAckReapMinutes)
+  ) {
+    finishedAwaitingAckAckReapMinutes = clampFaaAckReapDeadlineMinutes(
+      raw.finishedAwaitingAckAckReapMinutes,
+    );
+  }
+  let finishedAwaitingAckAckReapGraceSeconds = DEFAULT_SETTINGS.finishedAwaitingAckAckReapGraceSeconds;
+  if (
+    typeof raw.finishedAwaitingAckAckReapGraceSeconds === 'number'
+    && Number.isFinite(raw.finishedAwaitingAckAckReapGraceSeconds)
+  ) {
+    finishedAwaitingAckAckReapGraceSeconds = clampReapGraceSeconds(
+      raw.finishedAwaitingAckAckReapGraceSeconds,
+    );
+  }
   let hungSuspectTtlMinutes = DEFAULT_SETTINGS.hungSuspectTtlMinutes;
   if (typeof raw.hungSuspectTtlMinutes === 'number' && Number.isFinite(raw.hungSuspectTtlMinutes)) {
     hungSuspectTtlMinutes = Math.max(
@@ -796,6 +854,9 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       maxPendingTasks,
       pendingTaskTtlMinutes,
       finishedAwaitingAckTtlMinutes,
+      finishedAwaitingAckAckReaperEnabled,
+      finishedAwaitingAckAckReapMinutes,
+      finishedAwaitingAckAckReapGraceSeconds,
       hungSuspectTtlMinutes,
       firstHookDeadlineSeconds,
       spawnBurstLimit,
