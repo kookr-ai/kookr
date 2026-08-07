@@ -1147,7 +1147,26 @@ describe('diagnostics routes', () => {
             oldestPendingAgeMs: number | null;
             oldestFinishedAwaitingAckAgeMs: number | null;
           };
+          capacityThroughputVerdict: {
+            verdict: string;
+            effectiveUtilizationPct: number;
+            utilizationPct: number;
+            idleEffectiveSlots: number;
+          };
         };
+
+        // Issue #2169: the verdict keys on effective (productive) occupancy, so a
+        // fleet at 40% nominal / 20% effective reads idle_capacity, not healthy.
+        expect(body.capacityThroughputVerdict).toEqual({
+          verdict: 'idle_capacity',
+          effectiveUtilizationPct: 20, // working 2 / max 10
+          utilizationPct: 40, // active 4 / max 10
+          effectiveWorking: 2,
+          phantomActive: 2,
+          active: 4,
+          maxActiveTasks: 10,
+          idleEffectiveSlots: 8, // 10 - 2 working
+        });
 
         expect(body.capacity).toEqual({
           maxActiveTasks: 10,
@@ -1164,6 +1183,8 @@ describe('diagnostics routes', () => {
           },
           effectiveWorking: 2, // working + launching
           phantomActive: 2, // hungSuspect + finishedAwaitingAck
+          utilizationPct: 40, // nominal: active 4 / max 10 (issue #2169)
+          effectiveUtilizationPct: 20, // effective: working 2 / max 10 (issue #2169)
           pendingQueueDepth: 2,
           oldestPendingAgeMs: 90_000,
           oldestFinishedAwaitingAckAgeMs: 5 * 60_000,

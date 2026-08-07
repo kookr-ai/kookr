@@ -51,6 +51,7 @@ import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js'
 import {
   buildCapacityLedger,
   buildVettedIdeaRunwayReport,
+  evaluateCapacityThroughputVerdict,
   evaluateHungSuspectCapacityFinding,
   evaluateIdleCapacityFinding,
   resolveIdleCapacitySignalInputs,
@@ -484,6 +485,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // classify as purely healthy_throughput.
     const hungSuspectCapacityFinding = evaluateHungSuspectCapacityFinding(capacity);
 
+    // Issue #2169: effective-utilization throughput verdict. The velocity probe
+    // read nominal `active` (93.8%) and called it healthy_throughput while ~half
+    // the slots were phantom-held. The verdict keys on effectiveWorking so the
+    // probe / reflection / #2143 idle signal read productive utilization, not
+    // the masked nominal figure. Always present (a headline, not a defect gate).
+    const capacityThroughputVerdict = evaluateCapacityThroughputVerdict(capacity);
+
     // Issue #2143: supply-aware capacity signal. Idle slots with an empty queue
     // at/above the PR/day target are unused headroom (info-level), not a defect —
     // ending the recurring "sideways-on-capacity-fill" false-positive escalation.
@@ -596,6 +604,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
       },
       capacity,
+      capacityThroughputVerdict,
       ...(safeModeBlock ? { safeMode: safeModeBlock } : {}),
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       // camelCase + snake_case: dashboard/status CLI use camelCase; daily
