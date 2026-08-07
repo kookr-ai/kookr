@@ -436,6 +436,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'batchAbortTasks', taskIds: ['task-1', 'task-2'], reason: 'mass shutdown' }),
   clientMessageCase({ type: 'reopenTask', taskId: 'task-1' }),
   clientMessageCase({ type: 'dismissAgentSignal', taskId: 'task-1' }),
+  clientMessageCase({ type: 'keepTaskAlive', taskId: 'task-1' }),
   clientMessageCase({ type: 'deleteTask', taskId: 'task-1' }),
   clientMessageCase({ type: 'renameTask', taskId: 'task-1', name: 'New task name' }),
   clientMessageCase({ type: 'setTaskPriority', taskId: 'task-1', priority: 'high' }),

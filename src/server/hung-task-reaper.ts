@@ -22,6 +22,10 @@ export interface HungTaskReapEvidence {
   lastTokenActivityAt: number;
   /** Raw pane content captured at reap time; the report keeps only the last ~50 lines. */
   paneContent: string;
+  /** When a grace-period warning preceded this reap (RFC rfc-reap-grace-warning.md), its warn time — for audit linkage. */
+  warnedAt?: number;
+  /** How many times the user extended the warning before it reaped. */
+  keptAliveCount?: number;
 }
 
 export interface HungTaskReaperDeps {
@@ -173,6 +177,8 @@ export async function reapHungTask(
       lastPaneChangeAt: evidence.lastPaneChangeAt,
       lastTokenActivityAt: evidence.lastTokenActivityAt,
     },
+    ...(evidence.warnedAt !== undefined ? { warnedAt: evidence.warnedAt } : {}),
+    ...(evidence.keptAliveCount !== undefined ? { keptAliveCount: evidence.keptAliveCount } : {}),
     ...(reportPath ? { reportPath } : {}),
   });
 

@@ -553,6 +553,8 @@ export type ClientMessage =
   | { type: 'batchAbortTasks'; taskIds: string[]; reason?: string }
   | { type: 'reopenTask'; taskId: string }
   | { type: 'dismissAgentSignal'; taskId: string }
+  /** Veto a pending hung-task reap: extend its grace deadline (RFC rfc-reap-grace-warning.md). */
+  | { type: 'keepTaskAlive'; taskId: string }
   | { type: 'deleteTask'; taskId: string }
   | { type: 'renameTask'; taskId: string; name: string }
   | { type: 'setTaskPriority'; taskId: string; priority: TaskPriorityUpdate }
@@ -667,6 +669,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'batchAbortTasks',
   'reopenTask',
   'dismissAgentSignal',
+  'keepTaskAlive',
   'deleteTask',
   'renameTask',
   'setTaskPriority',

@@ -12,7 +12,12 @@ import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
 } from '../agent-lifecycle.js';
 import { nowISO } from '../../core/interaction-log.js';
+import { appendAuditRow } from '../../core/audit-log.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
+import {
+  MAX_REAP_VETOES,
+  type ReapWarningCoordinator,
+} from '../../core/reap-warning-coordinator.js';
 import { handleLaunchResult } from './launch-result.js';
 import {
   TaskLifecycleCommands,
@@ -56,6 +61,8 @@ export interface LifecycleHandlerDeps {
   getLifecycleDeps: () => LifecycleDeps;
   /** Promote pending tasks if concurrency slots have opened. */
   tryPromotePending: () => Promise<void>;
+  /** Shared reap-warning coordinator for the `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md). */
+  reapWarningCoordinator?: ReapWarningCoordinator;
   /** Where feedback bundles are written. Typically `<kookrDir>/feedback`. Optional — feedback is fail-open. */
   feedbackDir?: string;
   /** Where anytime task snapshot bundles are written. Typically `<kookrDir>/task-snapshots`. */
@@ -80,6 +87,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'batchAbortTasks'
     | 'reopenTask'
     | 'dismissAgentSignal'
+    | 'keepTaskAlive'
     | 'renameTask'
     | 'setTaskPriority'
     | 'deleteTask'
@@ -303,6 +311,10 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
 
+      case 'keepTaskAlive':
+        await this.handleKeepTaskAlive(msg.taskId);
+        return { duplicate: false };
+
       case 'deleteTask':
         assertCommandSucceeded(await this.commands.deleteTask(msg.taskId, {
           actor: this.deps.deletionAuditActor?.(),
@@ -350,6 +362,68 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
     }
+  }
+
+  /**
+   * `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md): the user asked to keep
+   * a warned task alive. Extends the reap deadline via the shared coordinator
+   * and pushes an immediate update so the countdown reflects the reprieve. A
+   * too-late click (`no_warning`) or a click past the veto cap (`cap_reached`)
+   * gets distinct, scoped feedback rather than silently doing nothing.
+   */
+  private async handleKeepTaskAlive(taskId: string): Promise<void> {
+    const coordinator = this.deps.reapWarningCoordinator;
+    if (!coordinator) return;
+
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task || task.status !== 'inProgress') {
+      this.deps.send({
+        type: 'alert',
+        agentId: '',
+        summary: 'Task is no longer active',
+        details: 'It already finished or was terminated, so there is nothing to keep alive.',
+        severity: 'info',
+      });
+      return;
+    }
+
+    const result = coordinator.veto(taskId, Date.now());
+    if (result.accepted) {
+      console.log(
+        `[reap-warning] task ${taskId} kept alive by user (extension #${result.warning.keptAliveCount})`,
+      );
+      await appendAuditRow(this.deps.auditLogPath, {
+        type: 'task.hungTaskReapVetoed',
+        timestamp: nowISO(),
+        actor: 'user',
+        taskId,
+        keptAliveCount: result.warning.keptAliveCount,
+      });
+      this.broadcastTaskUpdate(taskId);
+      return;
+    }
+
+    if (result.reason === 'cap_reached') {
+      this.deps.send({
+        type: 'alert',
+        agentId: '',
+        summary: 'Keep-alive limit reached',
+        details:
+          `This task has already been kept alive ${MAX_REAP_VETOES} times without resuming work. `
+          + 'Send it a message to take over, or it will be terminated to free the slot.',
+        severity: 'warning',
+      });
+      return;
+    }
+
+    // no_warning — the warning already cleared (the task recovered) or was reaped.
+    this.deps.send({
+      type: 'alert',
+      agentId: '',
+      summary: 'No pending termination',
+      details: 'This task is no longer scheduled for termination.',
+      severity: 'info',
+    });
   }
 
   /**

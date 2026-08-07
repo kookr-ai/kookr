@@ -61,6 +61,8 @@ interface ServerSettings {
   completionReadyTtlMinutes: number;
   hungTaskReapEnabled: boolean;
   hungTaskReapMinutes: number;
+  hungTaskReapWarningEnabled: boolean;
+  hungTaskReapGraceSeconds: number;
   /** Global automation kill-switch (issue #1710). */
   automationKillSwitch?: boolean;
   /** ISO timestamp when SAFE MODE began; null while disengaged. */
@@ -1278,6 +1280,49 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           step={15}
                         />
                         <span className="settings-unit">min</span>
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Warn before reaping</span>
+                        <span className="settings-desc">
+                          Before terminating a hung task, show a countdown with a “Keep it alive”
+                          button and auto-hold it while you have the task open, so you get a chance
+                          to take manual control. Turn off to reap immediately (the previous
+                          behavior). Repeatedly keeping a task alive without working on it delays,
+                          but never prevents, reclaiming its slot.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`settings-toggle ${settings.hungTaskReapWarningEnabled ? 'active' : ''}`}
+                        onClick={() => handleToggle('hungTaskReapWarningEnabled')}
+                        aria-label="Toggle warn before reaping"
+                        aria-pressed={settings.hungTaskReapWarningEnabled}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Reap warning countdown</span>
+                        <span className="settings-desc">
+                          Seconds between the warning and the reap. Range: 10–600 seconds.
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          type="number"
+                          className="settings-number"
+                          aria-label="Reap warning countdown"
+                          value={settings.hungTaskReapGraceSeconds}
+                          onChange={(e) => handleNumberChange('hungTaskReapGraceSeconds', e.target.value, 10, 600)}
+                          min={10}
+                          max={600}
+                          step={10}
+                          disabled={!settings.hungTaskReapWarningEnabled}
+                        />
+                        <span className="settings-unit">sec</span>
                       </div>
                     </div>
                     <div className="settings-row">

@@ -149,6 +149,29 @@ export interface AgentState {
    * stuck. Companion to `GET /api/health`'s `capacity.byClass` aggregate.
    */
   stuckReason?: TaskStuckReason;
+  /**
+   * Live hung-task reap warning (RFC rfc-reap-grace-warning.md). Present only
+   * while a reap-eligible task is inside its grace-period countdown. The
+   * dashboard renders a countdown banner with a "Keep it alive" veto from this;
+   * carrying it in the snapshot (rather than a one-shot message) means a
+   * reconnecting or late-joining client rehydrates the banner. `remainingMs` is
+   * computed server-side (deadline − now) so the client never mixes two clocks.
+   */
+  reapWarning?: ReapWarningState;
   /** Cross-signal terminal/session health, projected when the session is live. */
   sessionHealth?: SessionHealthSnapshot;
+}
+
+/** Client-facing projection of a live reap warning (see {@link AgentState.reapWarning}). */
+export interface ReapWarningState {
+  /** Milliseconds until the reap deadline, at snapshot-build time. */
+  remainingMs: number;
+  /** Total-silence duration captured when the warning was first raised. */
+  silentForMs: number;
+  /** How many times the user has extended this warning via the veto. */
+  keptAliveCount: number;
+  /** True once the veto cap is reached — the button disables and the reap proceeds. */
+  vetoCapReached: boolean;
+  /** True while the deadline is being auto-held because a live dashboard has the task open. */
+  heldByPresence: boolean;
 }

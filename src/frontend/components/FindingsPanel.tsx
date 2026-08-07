@@ -10,6 +10,7 @@ import {
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track } from '../telemetry.js';
 import { formatCompactDateTime } from '../presentation.js';
+import { ReapWarningBanners } from './ReapWarningBanner.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import type { SchedulePrefill } from './SchedulesDialog.js';
 import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
@@ -270,6 +271,7 @@ export function FindingsPanel({
           </span>
         </span>
       </div>
+      <ReapWarningBanners agents={[...findings, ...healthy]} send={send} />
       <div className="findings-scroll-area" ref={scrollAreaRef}>
         {findings.length === 0 && totalAgents === 0 && (
           <div className="findings-empty">
