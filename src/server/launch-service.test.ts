@@ -2739,6 +2739,86 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(getter).toHaveBeenCalledTimes(1);
     });
 
+    it('admits claude-code untouched when the gate is disabled (threshold 0, issue #2185)', async () => {
+      const { PlanQuotaBindingCache } = await import('../core/plan-quota-binding-cache.js');
+      const store = new TaskStore();
+      const cache = new PlanQuotaBindingCache();
+      // Cache already bound from a prior deny — a disabled gate must skip it too.
+      cache.markExhausted({
+        admit: false,
+        maxUtilization: 100,
+        threshold: 90,
+        resetsAt: '2099-01-01T00:00:00.000Z',
+      });
+      const sample = {
+        fiveHour: { utilization: 100, resetsAt: '2099-01-01T00:00:00.000Z' },
+        sevenDay: null,
+      };
+      const deps = quotaDeps(store, sample, {
+        planQuotaBindingCache: cache,
+        getQuotaHeadroomThreshold: () => 0,
+      });
+      const result = await launchTask(deps, {
+        prompt: 'gate disabled — spend the window',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      expect(result.queued).toBe(false);
+      expect(result.task.agentType).toBe('claude-code');
+      expect(store.getTask(result.task.id)?.agentType).toBe('claude-code');
+      // Disabled gate never polls and never rotates.
+      expect(deps.getLiveQuotaHeadroom).not.toHaveBeenCalled();
+      expect(result.agentSubstitutionChain ?? []).toEqual([]);
+    });
+
+    it('raised threshold overrides a stale stricter binding-cache decision (issue #2185)', async () => {
+      const { PlanQuotaBindingCache } = await import('../core/plan-quota-binding-cache.js');
+      const store = new TaskStore();
+      const cache = new PlanQuotaBindingCache();
+      cache.markExhausted({
+        admit: false,
+        maxUtilization: 92,
+        threshold: 90,
+        resetsAt: '2099-01-01T00:00:00.000Z',
+      });
+      const sample = {
+        fiveHour: { utilization: 92, resetsAt: '2099-01-01T00:00:00.000Z' },
+        sevenDay: null,
+      };
+      const deps = quotaDeps(store, sample, {
+        planQuotaBindingCache: cache,
+        getQuotaHeadroomThreshold: () => 95,
+      });
+      const result = await launchTask(deps, {
+        prompt: 'threshold raised mid-window',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      // Cached 92% < new threshold 95 ⇒ cache miss; live 92% < 95 ⇒ admit.
+      expect(result.task.agentType).toBe('claude-code');
+      expect(deps.getLiveQuotaHeadroom).toHaveBeenCalledTimes(1);
+    });
+
+    it('rotates at a lowered custom threshold (issue #2185)', async () => {
+      const store = new TaskStore();
+      const sample = {
+        fiveHour: { utilization: 60, resetsAt: '2099-01-01T00:00:00.000Z' },
+        sevenDay: null,
+      };
+      const deps = quotaDeps(store, sample, {
+        getQuotaHeadroomThreshold: () => 50,
+      });
+      const result = await launchTask(deps, {
+        prompt: 'strict operator threshold',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      });
+      expect(result.admission).toBe('rotated');
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(result.threshold).toBe(50);
+      expect(result.maxUtilization).toBe(60);
+    });
+
     it('idempotency-key replay after plan-quota rotation does not double-create (issue #1936)', async () => {
       const { PlanQuotaBindingCache } = await import('../core/plan-quota-binding-cache.js');
       const store = new TaskStore();

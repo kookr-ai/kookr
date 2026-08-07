@@ -77,6 +77,18 @@ describe('validateSettings', () => {
     expect(validateSettings({ watchdogStaleThresholdSec: 45.7 }).watchdogStaleThresholdSec).toBe(46);
   });
 
+  it('defaults quotaHeadroomThreshold to 90 (issue #2185)', () => {
+    expect(validateSettings({}).quotaHeadroomThreshold).toBe(90);
+    expect(validateSettings({ quotaHeadroomThreshold: 'off' }).quotaHeadroomThreshold).toBe(90);
+  });
+
+  it('accepts 0 (gate disabled) and clamps quotaHeadroomThreshold to [0, 100]', () => {
+    expect(validateSettings({ quotaHeadroomThreshold: 0 }).quotaHeadroomThreshold).toBe(0);
+    expect(validateSettings({ quotaHeadroomThreshold: -5 }).quotaHeadroomThreshold).toBe(0);
+    expect(validateSettings({ quotaHeadroomThreshold: 250 }).quotaHeadroomThreshold).toBe(100);
+    expect(validateSettings({ quotaHeadroomThreshold: 95.4 }).quotaHeadroomThreshold).toBe(95);
+  });
+
   it('clamps repeatedErrorThreshold below minimum to 2', () => {
     expect(validateSettings({ repeatedErrorThreshold: 0 }).repeatedErrorThreshold).toBe(2);
   });
@@ -744,6 +756,7 @@ describe('loadSettings / saveSettings', () => {
       idleRefineryCooldownMinutes: 90,
       disallowAgentFallback: ['codex-cli'],
       agentFallbackAllowlist: ['claude-code'],
+      quotaHeadroomThreshold: 85,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
