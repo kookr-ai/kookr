@@ -238,6 +238,13 @@ stateDiagram-v2
 
 The `alert` message carries the supervisor's **explanation** of what's wrong with an agent. The `suggestion` message provides AI-generated response predictions and quick-action buttons when an agent needs input. The `playbooks` message returns discovered playbook templates for a given CWD. The `projectSummaries` message broadcasts per-project aggregated state (PRs, agents, contribution limits). The `contributionWarning` message alerts when a project approaches or exceeds its contribution rate limit. The `quotaStatus` and `circuitBreakerStatus` messages expose infrastructure health; the `workspaceView` family drives the contribution workspace UI.
 
+**Outbound snapshot size guard:** Full-state push frames (`snapshot` and `coordinator.snapshot`) pass through a serialized-byte size policy before send (`src/server/snapshot-payload-size-policy.ts`, wired via `snapshotPayloadSizePolicy` on the realtime broadcaster). Production defaults come from `DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS` in `src/server/bootstrap/create-realtime-services.ts`:
+
+- **Warn at 2 MiB** — frame is still delivered; server logs `[websocket] outbound snapshot payload exceeds warning threshold`.
+- **Drop at 8 MiB** — frame is not sent (`shouldSendSerializedSnapshotFrame` returns `false`); server logs `[websocket] outbound snapshot payload exceeds hard cap; dropping frame`. Clients retain their last good snapshot and can appear blank or stale.
+
+These thresholds are compile-time constants today (not env-tunable). They are distinct from per-socket `bufferedAmount` backpressure and event-loop load-shed (`wsBackpressureNotice`, issue #1725), which protect fan-out saturation rather than a single oversized JSON payload. Operator symptoms and log search strings: [Troubleshooting — Dashboard looks blank or stale under a large fleet](troubleshooting.md#dashboard-looks-blank-or-stale-under-a-large-fleet).
+
 ### Backend ↔ Coding Agents: Managed Terminal Sessions + Structured Data
 
 Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.md)). The adapter layer reads structured data through three channels: **hooks** (real-time event callbacks for anomaly detection), **transcript JSONL** (session history plus token/cost and freshness tracking), and **`backend.captureBytes`** (ring-buffer snapshot for the GUI). Input is delivered as byte-level writes to the session via `backend.write` / `backend.writeSequence`.

@@ -75,6 +75,37 @@ http://localhost:5173
 
 The backend runs on `4801` in dev mode, but the browser app is served by Vite on `5173`.
 
+## Dashboard Looks Blank Or Stale Under A Large Fleet
+
+**Symptom:** The WebSocket stays connected, but the dashboard stops refreshing or looks empty/stale when many agents or tasks are live. It can look like a reconnect bug even though the socket is healthy.
+
+**Cause:** Outbound `snapshot` and `coordinator.snapshot` frames are guarded by a hard size policy. Defaults (source of truth — not env-tunable today):
+
+| Threshold | Default | Behavior |
+| --- | --- | --- |
+| Warn | 2 MiB (`2 * 1024 * 1024`) | Frame is still sent; server logs a warning |
+| Drop | 8 MiB (`8 * 1024 * 1024`) | Frame is **not** sent; client keeps its last good snapshot |
+
+Constants live in `src/server/bootstrap/create-realtime-services.ts` as `SNAPSHOT_PAYLOAD_WARN_BYTES` / `SNAPSHOT_PAYLOAD_MAX_BYTES` (exported as `DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS`). Drop/warn logic is in `src/server/snapshot-payload-size-policy.ts` (`shouldSendSerializedSnapshotFrame`).
+
+**Log strings to search** (server stderr / process logs):
+
+```text
+[websocket] outbound snapshot payload exceeds warning threshold
+[websocket] outbound snapshot payload exceeds hard cap; dropping frame
+```
+
+A drop log includes `payloadType`, `scopeKey`, `bytes`, `maxBytes`, and `warnBytes`.
+
+**Mitigation:**
+
+1. Reduce concurrent live agents (finish or stop idle sessions).
+2. Clear finished / terminated tasks the dashboard still includes in the fleet snapshot.
+3. Prefer project-scoped views when you only need a subset of the fleet (smaller scoped snapshots).
+4. Confirm the drop log before chasing reconnect or Vite proxy issues — a dropped frame leaves the client on its last received snapshot with no separate UI banner for this guard.
+
+Related but different: per-socket `bufferedAmount` backpressure and event-loop load-shed (`wsBackpressureNotice`) — see [Architecture](architecture.md#backend--frontend-websocket) and the `KOOKR_WS_*` vars in [Environment Variables](reference/environment-variables.md). Those protect fan-out saturation; the size policy protects a single oversized JSON frame.
+
 ## Send A Bug Report
 
 Use the bug-report button in the dashboard top bar. Kookr shows the complete JSON payload before download; attach that JSON file when reporting the issue.
