@@ -1,11 +1,75 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
+import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 
 interface Props {
   send: (msg: ClientMessage) => void;
   /** Number of known projects — shown in the confirmation dialog. */
   projectCount: number;
+}
+
+interface SweepConfirmDialogProps {
+  projectCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+/**
+ * Confirm surface for the global worktree sweep. Mounted only while open so
+ * Escape-to-close and the focus trap attach for the dialog lifetime only —
+ * same pattern as ConfirmDialog.
+ */
+function SweepConfirmDialog({ projectCount, onCancel, onConfirm }: SweepConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  useEscapeToClose(onCancel);
+  useDialogFocus({ dialogRef, initialFocusRef: cancelButtonRef });
+
+  return (
+    <div
+      ref={dialogRef}
+      className="sweep-confirm-backdrop"
+      data-testid="sweep-confirm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sweep-confirm-title"
+    >
+      <div className="sweep-confirm-dialog">
+        <h3 className="sweep-confirm-title" id="sweep-confirm-title">
+          Sweep merged worktrees
+        </h3>
+        <p>
+          Kookr will visit <strong>{projectCount}</strong> known project(s) and remove worktrees
+          whose branches are fully merged into their baseline or have no unique patches after a
+          squash merge. Dirty, generated-only, stale, or busy worktrees are reported but skipped.
+        </p>
+        <p className="sweep-confirm-hint">
+          Deleted branches remain recoverable via <code>git reflog</code> in each repo for ~30 days.
+        </p>
+        <div className="sweep-confirm-actions">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            className="sweep-confirm-cancel"
+            onClick={onCancel}
+            data-testid="sweep-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="sweep-confirm-go"
+            onClick={onConfirm}
+            data-testid="sweep-confirm-go"
+          >
+            Sweep
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -55,42 +119,11 @@ export function SweepButton({ send, projectCount }: Props) {
       </button>
 
       {confirming && (
-        <div
-          className="sweep-confirm-backdrop"
-          data-testid="sweep-confirm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="sweep-confirm-dialog">
-            <h3 className="sweep-confirm-title">Sweep merged worktrees</h3>
-            <p>
-              Kookr will visit <strong>{projectCount}</strong> known project(s) and remove worktrees
-              whose branches are fully merged into their baseline or have no unique patches after a
-              squash merge. Dirty, generated-only, stale, or busy worktrees are reported but skipped.
-            </p>
-            <p className="sweep-confirm-hint">
-              Deleted branches remain recoverable via <code>git reflog</code> in each repo for ~30 days.
-            </p>
-            <div className="sweep-confirm-actions">
-              <button
-                type="button"
-                className="sweep-confirm-cancel"
-                onClick={() => setConfirming(false)}
-                data-testid="sweep-cancel"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="sweep-confirm-go"
-                onClick={triggerSweep}
-                data-testid="sweep-confirm-go"
-              >
-                Sweep
-              </button>
-            </div>
-          </div>
-        </div>
+        <SweepConfirmDialog
+          projectCount={projectCount}
+          onCancel={() => setConfirming(false)}
+          onConfirm={triggerSweep}
+        />
       )}
     </>
   );
