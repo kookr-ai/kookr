@@ -21,6 +21,22 @@ const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 const USAGE_API = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
 
+// Bound each usage fetch so a hung request cannot silently stall the poll loop.
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Resolve the per-request usage-fetch timeout, overridable via
+ * `KOOKR_QUOTA_FETCH_TIMEOUT_MS`. Falls back to the default on absent or
+ * invalid (non-positive, non-integer) values, matching the `isPositiveInteger`
+ * config-preflight constraint and the documented "positive integer ms" contract.
+ */
+export function readQuotaFetchTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.KOOKR_QUOTA_FETCH_TIMEOUT_MS?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_FETCH_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_FETCH_TIMEOUT_MS;
+}
+
 /**
  * QuotaAdapter polls the Anthropic OAuth usage endpoint for quota utilization.
  * Read-only credential access — never attempts token refresh.
@@ -36,10 +52,35 @@ export class QuotaAdapter {
   private lastError: string | null = null;
   private credentialsMtimeMs: number | null = null;
   private lastAttemptedToken: string | null = null;
+  private fetchTimeoutMs: number;
 
-  constructor(intervalMs = 120_000) {
+  constructor(intervalMs = 120_000, fetchTimeoutMs = readQuotaFetchTimeoutMs()) {
     this.baseIntervalMs = intervalMs;
     this.currentIntervalMs = intervalMs;
+    this.fetchTimeoutMs = fetchTimeoutMs;
+  }
+
+  /**
+   * Fetch the usage endpoint with a bounded deadline. On timeout the
+   * AbortController aborts the request, so `fetch` rejects with an AbortError
+   * that the caller's catch routes into the normal failure/backoff path — the
+   * poll always settles instead of hanging forever.
+   */
+  private async fetchUsage(token: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    try {
+      return await fetch(USAGE_API, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'anthropic-beta': BETA_HEADER,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Get the latest quota snapshot (may be null if never polled or all polls failed). */
@@ -113,13 +154,7 @@ export class QuotaAdapter {
 
     try {
       this.lastAttemptedToken = token;
-      const response = await fetch(USAGE_API, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'anthropic-beta': BETA_HEADER,
-          'Content-Type': 'application/json',
-        },
-      });
+      const response = await this.fetchUsage(token);
 
       if (response.status === 401) {
         // Token expired — try re-reading (Claude Code may have refreshed it)
@@ -127,13 +162,7 @@ export class QuotaAdapter {
         if (refreshedToken && refreshedToken !== token) {
           // Token was refreshed, retry once
           this.lastAttemptedToken = refreshedToken;
-          const retryResponse = await fetch(USAGE_API, {
-            headers: {
-              'Authorization': `Bearer ${refreshedToken}`,
-              'anthropic-beta': BETA_HEADER,
-              'Content-Type': 'application/json',
-            },
-          });
+          const retryResponse = await this.fetchUsage(refreshedToken);
           if (retryResponse.status === 401) {
             return this.handleAuthFailure('OAuth token expired and re-read failed');
           }

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { QuotaAdapter } from './quota-adapter.js';
+import { QuotaAdapter, readQuotaFetchTimeoutMs } from './quota-adapter.js';
 
 // Mock fetch and fs
 vi.mock('node:fs/promises', () => ({
@@ -373,6 +373,86 @@ describe('QuotaAdapter', () => {
     expect(changed).toBe(false);
     expect(adapter.getState()).toBe('backoff');
     expect(adapter.getLastError()).toContain('503');
+  });
+
+  test('poll passes an AbortSignal to fetch', async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({
+      claudeAiOauth: { accessToken: 'test-token' },
+    }));
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00Z' } }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await adapter.poll();
+
+    expect(mockFetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }));
+  });
+
+  test('a fetch that never resolves aborts within the deadline and settles as a failure', async () => {
+    vi.useFakeTimers();
+    try {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'test-token' },
+      }));
+
+      // Never resolve on its own — only settle when the abort signal fires.
+      const mockFetch = vi.fn((_url: string, opts: { signal: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }),
+      );
+      vi.stubGlobal('fetch', mockFetch);
+
+      const timedAdapter = new QuotaAdapter(120_000, 1_000);
+      const pollPromise = timedAdapter.poll();
+
+      // Before the deadline the poll is still pending.
+      let settled = false;
+      void pollPromise.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).toBe(false);
+
+      // Once the deadline elapses the request aborts and the poll settles.
+      await vi.advanceTimersByTimeAsync(1);
+      const changed = await pollPromise;
+
+      expect(changed).toBe(false);
+      expect(timedAdapter.getState()).toBe('backoff');
+      expect(timedAdapter.getLastError()).toContain('Network error');
+      // Backoff still advanced, so the pollQuota re-arm can proceed.
+      expect(timedAdapter.getCurrentIntervalMs()).toBe(240_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('readQuotaFetchTimeoutMs', () => {
+    test('defaults to 30s when unset', () => {
+      expect(readQuotaFetchTimeoutMs({})).toBe(30_000);
+    });
+
+    test('honors a valid override (trimmed)', () => {
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: ' 5000 ' })).toBe(5_000);
+    });
+
+    test('falls back on invalid, non-positive, or non-integer values', () => {
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: 'abc' })).toBe(30_000);
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: '0' })).toBe(30_000);
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: '-1' })).toBe(30_000);
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: '' })).toBe(30_000);
+      // Non-integer values are rejected to match the documented positive-integer contract.
+      expect(readQuotaFetchTimeoutMs({ KOOKR_QUOTA_FETCH_TIMEOUT_MS: '5000.5' })).toBe(30_000);
+    });
   });
 
   describe('getLiveHeadroom (issue #1894)', () => {
