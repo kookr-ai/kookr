@@ -51,7 +51,12 @@ const FINDING_CAUSALITY_SEVERITY_ORDER: Record<Anomaly['severity'], number> = {
  * filters) and `GET /api/tasks/:id`. Debug/raw snapshot surfaces
  * (`getSnapshotAgentsRaw`, `/api/snapshot`) are NOT affected.
  */
-export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS = 7;
+/**
+ * WS snapshot synthetic terminal entries older than this are excluded (payload
+ * diet). Aligned with hot-store prune default so the dashboard never carries
+ * terminal tasks the server is about to drop from memory.
+ */
+export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS = 1;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
