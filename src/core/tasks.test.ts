@@ -208,6 +208,94 @@ describe('TaskStore', () => {
         .toEqual(store.getAllTasks().map((t) => t.id).sort());
     });
 
+    test('listSessionHealthRefs is live-only by default and returns plain value objects', () => {
+      const live = store.createTask('Live work', '/cwd');
+      store.startTask(live.id);
+      store.addSession(live.id, {
+        tmuxSession: 'kookr-live',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+        lastTurnState: 'running',
+        transcriptPath: '/tmp/live.jsonl',
+      });
+      // Multi-session live task: every session is projected.
+      store.addSession(live.id, {
+        tmuxSession: 'kookr-live-b',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+
+      // Live task with zero sessions contributes nothing.
+      store.startTask(store.createTask('Bare live', '/cwd').id);
+
+      const done = store.createTask('Done work', '/cwd');
+      store.startTask(done.id);
+      store.addSession(done.id, {
+        tmuxSession: 'kookr-done',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+        lastTurnState: 'completed_turn',
+        transcriptPath: '/tmp/done.jsonl',
+      });
+      store.completeTask(done.id);
+
+      const cancelled = store.createTask('Cancelled work', '/cwd');
+      store.addSession(cancelled.id, {
+        tmuxSession: 'kookr-cancelled',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+      store.cancelTask(cancelled.id);
+
+      const terminated = store.createTask('Terminated work', '/cwd');
+      store.startTask(terminated.id);
+      store.addSession(terminated.id, {
+        tmuxSession: 'kookr-terminated',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+        lastStatus: 'running',
+      });
+      store.terminateTask(terminated.id);
+
+      const liveRefs = store.listSessionHealthRefs();
+      expect(liveRefs.map((r) => r.sessionId).sort()).toEqual([
+        'kookr-live',
+        'kookr-live-b',
+      ]);
+      expect(liveRefs.find((r) => r.sessionId === 'kookr-live')).toEqual({
+        sessionId: 'kookr-live',
+        taskStatus: 'inProgress',
+        turnState: 'running',
+        transcriptPath: '/tmp/live.jsonl',
+      });
+
+      const allRefs = store.listSessionHealthRefs({ includeTerminalTasks: true });
+      expect(allRefs.map((r) => r.sessionId).sort()).toEqual([
+        'kookr-cancelled',
+        'kookr-done',
+        'kookr-live',
+        'kookr-live-b',
+        'kookr-terminated',
+      ]);
+      expect(allRefs.find((r) => r.sessionId === 'kookr-terminated')?.taskStatus).toBe('terminated');
+      expect(allRefs.find((r) => r.sessionId === 'kookr-done')?.taskStatus).toBe('completed');
+      expect(allRefs.find((r) => r.sessionId === 'kookr-cancelled')?.taskStatus).toBe('cancelled');
+
+      // Mutating a returned ref must not touch the store (plain value objects).
+      const first = liveRefs.find((r) => r.sessionId === 'kookr-live')!;
+      first.sessionId = 'mutated';
+      expect(store.listSessionHealthRefs().map((r) => r.sessionId)).toContain('kookr-live');
+    });
+
     test('listTasks returns snapshots instead of stored mutable records', () => {
       const created = store.createTask('Task 1', '/cwd');
       store.addSession(created.id, {

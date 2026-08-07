@@ -26,7 +26,7 @@ import type {
   Task,
   TaskCompletionFeedback,
 } from './task-read-model.js';
-import { isTerminalStatus, type TaskStatus, type TerminationCause } from './task-status.js';
+import { isTerminalStatus, type TaskStatus, type TerminationCause, type TurnState } from './task-status.js';
 import {
   DETERMINISTIC_RELATION_CONFIDENCE,
   taskRelationKey,
@@ -1255,6 +1255,49 @@ export class TaskStore {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Lightweight session refs for fleet health projection (SessionHealthService).
+   *
+   * Walks the live task map without `structuredClone`. By default skips
+   * terminal tasks (`completed` / `terminated` / `cancelled`) — health is only
+   * actionable for live work, and projecting every historical session on a
+   * fleet cache tick (250ms) was blocking the event loop for tens of seconds
+   * of cumulative work once hundreds of completed tasks accumulated (terminal
+   * input lag, health timeouts). Each ref is a plain value object safe to
+   * retain; it does not alias mutable store state.
+   *
+   * Pass `{ includeTerminalTasks: true }` for diagnostic dumps that need the
+   * full historical set.
+   */
+  listSessionHealthRefs(opts?: {
+    includeTerminalTasks?: boolean;
+  }): Array<{
+    sessionId: string;
+    taskStatus: TaskStatus;
+    turnState?: TurnState;
+    transcriptPath?: string;
+  }> {
+    const includeTerminal = opts?.includeTerminalTasks === true;
+    const out: Array<{
+      sessionId: string;
+      taskStatus: TaskStatus;
+      turnState?: TurnState;
+      transcriptPath?: string;
+    }> = [];
+    for (const task of this.tasks.values()) {
+      if (!includeTerminal && isTerminalStatus(task.status)) continue;
+      for (const session of task.sessions) {
+        out.push({
+          sessionId: session.tmuxSession,
+          taskStatus: task.status,
+          ...(session.lastTurnState ? { turnState: session.lastTurnState } : {}),
+          ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
+        });
+      }
+    }
+    return out;
   }
 
   /** Get all tasks as an array (for serialization) */
