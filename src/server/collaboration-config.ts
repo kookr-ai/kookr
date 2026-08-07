@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import {
   PRIVATE_NETWORK_PROFILE_SCHEMA_VERSION,
   type CollaborationFeatureFlags,
@@ -100,6 +102,116 @@ function isLoopbackHost(host: string): boolean {
     || normalized === '[::1]';
 }
 
+/**
+ * Cloud instance-metadata hostnames that must never be reachable from the
+ * signed collaboration update poller. Mirrors the always-blocked host class
+ * used by the sibling egress guards (webhook / speech / relay push).
+ */
+const CLOUD_METADATA_HOSTNAMES = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+]);
+
+export type CollaborationPeerUrlValidation =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+function normalizePeerHostname(hostname: string): string {
+  const lower = hostname.toLowerCase().replace(/\.+$/, '');
+  return lower.startsWith('[') && lower.endsWith(']') ? lower.slice(1, -1) : lower;
+}
+
+/** IPv4 link-local (169.254.0.0/16) — covers the 169.254.169.254 metadata IP. */
+function isLinkLocalIPv4(address: string): boolean {
+  const octets = address.split('.').map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+  const [a, b] = octets as [number, number, number, number];
+  return a === 169 && b === 254;
+}
+
+/** IPv6 link-local (fe80::/10), plus IPv4-mapped link-local (::ffff:169.254.x.x). */
+function isLinkLocalIPv6(address: string): boolean {
+  const bytes = ipv6ToBytes(address);
+  if (!bytes) return false;
+  const isIPv4Mapped = bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (isIPv4Mapped) {
+    return isLinkLocalIPv4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+  }
+  return bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80;
+}
+
+function ipv6ToBytes(address: string): number[] | null {
+  const halves = address.split('::');
+  if (halves.length > 2) return null;
+
+  const left = parseIPv6Groups(halves[0] ?? '');
+  const right = parseIPv6Groups(halves[1] ?? '');
+  if (!left || !right) return null;
+
+  const missing = 8 - left.length - right.length;
+  if (halves.length === 1 && missing !== 0) return null;
+  if (halves.length === 2 && missing < 1) return null;
+
+  const groups = [...left, ...Array.from({ length: missing }, () => 0), ...right];
+  if (groups.length !== 8) return null;
+
+  return groups.flatMap((group) => [group >> 8, group & 0xff]);
+}
+
+function parseIPv6Groups(value: string): number[] | null {
+  if (value === '') return [];
+  const groups = value.split(':').map((group) => {
+    if (!/^[0-9a-f]{1,4}$/i.test(group)) return Number.NaN;
+    return Number.parseInt(group, 16);
+  });
+  return groups.every((group) => Number.isInteger(group) && group >= 0 && group <= 0xffff) ? groups : null;
+}
+
+/**
+ * Validate the collaboration peer base URL before it can reach a server-side
+ * `fetch` in the update poller. Private-LAN peers are intentional for
+ * collaboration and remain allowed; only http(s) is accepted, embedded
+ * credentials are rejected, and always-blocked host classes (cloud
+ * instance-metadata hostnames, link-local addresses) are rejected — the same
+ * class the webhook / speech / relay egress guards reject.
+ *
+ * Like those sibling guards this inspects the literal hostname/IP, not the
+ * resolved address, so NAT64-embedded metadata (`64:ff9b::a9fe:a9fe`) shares
+ * the siblings' known gap; deeper resolve-time SSRF hardening is out of scope
+ * for this leaf (see issue #2182).
+ */
+export function validateCollaborationPeerBaseUrl(rawUrl: string): CollaborationPeerUrlValidation {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: 'peer-url-invalid' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: 'peer-url-protocol-not-http' };
+  }
+  if (url.username || url.password) {
+    return { ok: false, reason: 'peer-url-has-credentials' };
+  }
+  const hostname = normalizePeerHostname(url.hostname);
+  if (!hostname) return { ok: false, reason: 'peer-url-missing-host' };
+  if (CLOUD_METADATA_HOSTNAMES.has(hostname)) {
+    return { ok: false, reason: 'peer-url-cloud-metadata-host' };
+  }
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4 && isLinkLocalIPv4(hostname)) {
+    return { ok: false, reason: 'peer-url-link-local-host' };
+  }
+  if (ipVersion === 6 && isLinkLocalIPv6(hostname)) {
+    return { ok: false, reason: 'peer-url-link-local-host' };
+  }
+  return { ok: true };
+}
+
 function readCollaborationFeatureFlags(env: CollaborationConfigEnv): CollaborationFeatureFlags {
   return {
     profiles: envFlag(env, 'KOOKR_COLLABORATION_PROFILES'),
@@ -163,6 +275,26 @@ export function readPrivateNetworkCollaborationConfig(
 
   const peerBaseUrl = optionalString(env.KOOKR_COLLABORATION_PEER_BASE_URL);
   const timestamp = now().toISOString();
+
+  if (peerBaseUrl) {
+    const peerValidation = validateCollaborationPeerBaseUrl(peerBaseUrl);
+    if (!peerValidation.ok) {
+      // The peer URL feeds a server-side fetch from the signed update poller.
+      // A rejected host class (cloud metadata / link-local) must not produce a
+      // profile, so the poller never starts and never reaches fetch. The
+      // inbound listener is independent of the peer URL and keeps running.
+      return {
+        featureFlags,
+        host,
+        port,
+        url,
+        profile: null,
+        health: { state: 'disabled', reason: `collaboration-peer-url-rejected:${peerValidation.reason}` },
+        shouldStartListener: true,
+      };
+    }
+  }
+
   const profile: PrivateNetworkConnectionProfile | null = peerBaseUrl
     ? {
         schemaVersion: PRIVATE_NETWORK_PROFILE_SCHEMA_VERSION,

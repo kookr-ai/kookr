@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_COLLABORATION_LISTENER_PORT,
   readPrivateNetworkCollaborationConfig,
+  validateCollaborationPeerBaseUrl,
 } from './collaboration-config.js';
+
+const PRIVATE_NETWORK_FLAGS = {
+  KOOKR_COLLABORATION_PROFILES: '1',
+  KOOKR_COLLABORATION_LISTENER: '1',
+  KOOKR_COLLABORATION_PRIVATE_NETWORK: '1',
+} as const;
 
 describe('private-network collaboration config', () => {
   it('keeps the collaboration listener disabled until the phase flags are enabled', () => {
@@ -110,5 +117,129 @@ describe('private-network collaboration config', () => {
       expectedPeerFingerprint: 'peer-fingerprint',
     });
     expect(config.health).toEqual({ state: 'ok', checkedAt: '2026-05-21T00:00:00.000Z' });
+  });
+
+  it('rejects a cloud-metadata peer base URL so the update poller never fetches it', () => {
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        ...PRIVATE_NETWORK_FLAGS,
+        KOOKR_COLLABORATION_PEER_BASE_URL: 'http://metadata.google.internal/',
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now: () => new Date('2026-05-21T00:00:00.000Z'),
+    });
+
+    expect(config.profile).toBeNull();
+    expect(config.health).toEqual({
+      state: 'disabled',
+      reason: 'collaboration-peer-url-rejected:peer-url-cloud-metadata-host',
+    });
+    // The listener is independent of the peer URL and keeps running.
+    expect(config.shouldStartListener).toBe(true);
+  });
+
+  it('rejects the 169.254.169.254 link-local metadata address', () => {
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        ...PRIVATE_NETWORK_FLAGS,
+        KOOKR_COLLABORATION_PEER_BASE_URL: 'http://169.254.169.254/',
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now: () => new Date('2026-05-21T00:00:00.000Z'),
+    });
+
+    expect(config.profile).toBeNull();
+    expect(config.health).toEqual({
+      state: 'disabled',
+      reason: 'collaboration-peer-url-rejected:peer-url-link-local-host',
+    });
+    // The listener is independent of the peer URL and keeps running.
+    expect(config.shouldStartListener).toBe(true);
+  });
+
+  it('still builds a profile for a private-LAN peer', () => {
+    const config = readPrivateNetworkCollaborationConfig({
+      env: {
+        ...PRIVATE_NETWORK_FLAGS,
+        KOOKR_COLLABORATION_PEER_BASE_URL: 'https://192.168.1.42:4902',
+      },
+      dashboardHost: '127.0.0.1',
+      dashboardPort: 4801,
+      now: () => new Date('2026-05-21T00:00:00.000Z'),
+    });
+
+    expect(config.shouldStartListener).toBe(true);
+    expect(config.profile).toMatchObject({ peerBaseUrl: 'https://192.168.1.42:4902' });
+    expect(config.health).toEqual({ state: 'ok', checkedAt: '2026-05-21T00:00:00.000Z' });
+  });
+});
+
+describe('validateCollaborationPeerBaseUrl', () => {
+  it('rejects cloud instance-metadata hostnames', () => {
+    expect(validateCollaborationPeerBaseUrl('http://metadata.google.internal/')).toEqual({
+      ok: false,
+      reason: 'peer-url-cloud-metadata-host',
+    });
+    expect(validateCollaborationPeerBaseUrl('http://metadata/')).toEqual({
+      ok: false,
+      reason: 'peer-url-cloud-metadata-host',
+    });
+    // Same host class the sibling webhook / speech / relay egress guards reject.
+    expect(validateCollaborationPeerBaseUrl('http://metadata.goog/')).toEqual({
+      ok: false,
+      reason: 'peer-url-cloud-metadata-host',
+    });
+    expect(validateCollaborationPeerBaseUrl('http://instance-data/')).toEqual({
+      ok: false,
+      reason: 'peer-url-cloud-metadata-host',
+    });
+    // Trailing-dot FQDN must not slip past the hostname normalization.
+    expect(validateCollaborationPeerBaseUrl('http://metadata.google.internal./')).toEqual({
+      ok: false,
+      reason: 'peer-url-cloud-metadata-host',
+    });
+  });
+
+  it('rejects IPv4 and IPv6 link-local addresses', () => {
+    expect(validateCollaborationPeerBaseUrl('http://169.254.169.254/')).toEqual({
+      ok: false,
+      reason: 'peer-url-link-local-host',
+    });
+    expect(validateCollaborationPeerBaseUrl('http://[fe80::1]/')).toEqual({
+      ok: false,
+      reason: 'peer-url-link-local-host',
+    });
+    expect(validateCollaborationPeerBaseUrl('http://[::ffff:169.254.169.254]/')).toEqual({
+      ok: false,
+      reason: 'peer-url-link-local-host',
+    });
+  });
+
+  it('rejects non-http(s) protocols and unparseable URLs', () => {
+    expect(validateCollaborationPeerBaseUrl('file:///etc/passwd')).toEqual({
+      ok: false,
+      reason: 'peer-url-protocol-not-http',
+    });
+    expect(validateCollaborationPeerBaseUrl('not a url')).toEqual({
+      ok: false,
+      reason: 'peer-url-invalid',
+    });
+  });
+
+  it('rejects peer URLs that embed credentials', () => {
+    expect(validateCollaborationPeerBaseUrl('https://user:pass@peer.example.test/')).toEqual({
+      ok: false,
+      reason: 'peer-url-has-credentials',
+    });
+  });
+
+  it('allows loopback, private-LAN, and public peers', () => {
+    expect(validateCollaborationPeerBaseUrl('http://127.0.0.1:4902')).toEqual({ ok: true });
+    expect(validateCollaborationPeerBaseUrl('https://10.0.0.5:4902')).toEqual({ ok: true });
+    expect(validateCollaborationPeerBaseUrl('https://192.168.1.42:4902')).toEqual({ ok: true });
+    expect(validateCollaborationPeerBaseUrl('https://172.16.9.9:4902')).toEqual({ ok: true });
+    expect(validateCollaborationPeerBaseUrl('https://peer.example.test:4902')).toEqual({ ok: true });
   });
 });

@@ -3064,6 +3064,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     env: process.env,
     contactShare,
   });
+  {
+    const collaborationHealth = collaborationListener.config.health;
+    if (collaborationHealth.state === 'disabled'
+      && collaborationHealth.reason.startsWith('collaboration-peer-url-rejected:')) {
+      console.warn(
+        `[collaboration] peer base URL rejected (${collaborationHealth.reason}); `
+        + 'shared-task update poller not started',
+      );
+    }
+  }
   if (collaborationListener.status === 'disabled') {
     const health = collaborationListener.config.health;
     const detail = health.state === 'disabled'
