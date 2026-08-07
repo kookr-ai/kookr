@@ -34,10 +34,31 @@ export interface AgentLike {
   } | null;
 }
 
+export interface PipelineStarvationHealthRepoLike {
+  repo?: string;
+  consecutiveBlockedEmpty?: number;
+  effectiveScoutCooldownMs?: number;
+}
+
 export interface HealthLike {
   status?: string;
   serverStartedAt?: string;
   build?: { version?: string };
+  pipelineStarvation?: {
+    schemaVersion?: string;
+    repos?: Record<string, PipelineStarvationHealthRepoLike>;
+  };
+}
+
+export interface PipelineStarvationSummaryRow {
+  repo: string;
+  consecutiveBlockedEmpty: number;
+  effectiveScoutCooldownMs: number;
+}
+
+export interface PipelineStarvationSummary {
+  elevated: number;
+  repos: PipelineStarvationSummaryRow[];
 }
 
 export interface RenderReportArgs {
@@ -65,6 +86,9 @@ export function isActiveFinding(agent: AgentLike): boolean;
 export function summarize(agents: AgentLike[]): Summary;
 export function hasFindingsAtOrAbove(summary: Summary, failOn: FailOnSeverity): boolean;
 export function highestKnownSeverity(summary: Summary): Severity | null;
+export function summarizePipelineStarvation(
+  health: HealthLike,
+): PipelineStarvationSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

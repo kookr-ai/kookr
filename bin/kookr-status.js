@@ -140,6 +140,32 @@ function highestKnownSeverity(summary) {
   return SEVERITIES.find((severity) => summary.severityCounts[severity] > 0) ?? null;
 }
 
+// Pipeline starvation projection (issue #2183). /api/health publishes
+// `pipelineStarvation.repos` (schema pipeline-starvation.v1) with per-repo
+// `consecutiveBlockedEmpty` (belt-empty droughts cycling starvation scouts) and
+// the effective adaptive scout cooldown. Surface only ELEVATED repos
+// (consecutiveBlockedEmpty > 0) so steady state stays quiet; return null (a
+// no-op for both text and --json) when the block is absent or all repos idle.
+function summarizePipelineStarvation(health) {
+  const repos = health?.pipelineStarvation?.repos;
+  if (!repos || typeof repos !== 'object') return null;
+  const rows = [];
+  for (const key of Object.keys(repos).sort()) {
+    const row = repos[key];
+    if (!row || typeof row !== 'object') continue;
+    const consecutive = Number(row.consecutiveBlockedEmpty);
+    if (!Number.isFinite(consecutive) || consecutive <= 0) continue;
+    const cooldown = Number(row.effectiveScoutCooldownMs);
+    rows.push({
+      repo: typeof row.repo === 'string' && row.repo.length > 0 ? row.repo : key,
+      consecutiveBlockedEmpty: Math.floor(consecutive),
+      effectiveScoutCooldownMs: Number.isFinite(cooldown) && cooldown > 0 ? Math.floor(cooldown) : 0,
+    });
+  }
+  if (rows.length === 0) return null;
+  return { elevated: rows.length, repos: rows };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -190,6 +216,22 @@ function renderReport({ port, health, agents }) {
         `  verifyFailed=${debt.verifyFailedCount ?? 0}` +
         oldest,
     );
+  }
+
+  // Pipeline starvation (issue #2183) — the issue belt is empty and starvation
+  // scouts are cycling. One line per elevated repo so daily digests and quick
+  // operator checks catch the on-demand idea-scout refill condition; the cooldown
+  // segment is shown only when non-zero.
+  const starvation = summarizePipelineStarvation(health);
+  if (starvation) {
+    for (const r of starvation.repos) {
+      const cooldown = r.effectiveScoutCooldownMs > 0
+        ? `  cooldown=${formatUptime(r.effectiveScoutCooldownMs)}`
+        : '';
+      lines.push(
+        `Pipeline starvation: ${r.repo} blockedEmpty=${r.consecutiveBlockedEmpty}${cooldown}`,
+      );
+    }
   }
 
   if (findings.length > 0) {
@@ -382,6 +424,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     : { failOn: args.failOn, highestSeverity: highestKnownSeverity(summary) };
 
   if (args.json) {
+    // Computed only on the --json path; the text path derives the same slim
+    // summary inside renderReport, so computing it here too would be wasted work.
+    const starvationSummary = summarizePipelineStarvation(health);
     return exitJson({
       out,
       exit,
@@ -396,6 +441,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         health,
         agents,
         summary,
+        ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
         ...gateDetails,
       },
     });
@@ -437,6 +483,7 @@ export {
   summarize,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
+  summarizePipelineStarvation,
   renderReport,
   resolvePort,
   parsePortEnv,

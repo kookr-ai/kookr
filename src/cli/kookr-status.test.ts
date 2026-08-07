@@ -8,6 +8,7 @@ import {
   summarize,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
+  summarizePipelineStarvation,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -423,6 +424,74 @@ describe('kookr-status renderReport', () => {
     expect(out).toContain('SAFE MODE since 2026-08-01T12:00:00.000Z');
   });
 
+  it('surfaces elevated pipelineStarvation repos from /api/health (issue #2183)', () => {
+    const health = {
+      ...baseHealth,
+      pipelineStarvation: {
+        schemaVersion: 'pipeline-starvation.v1',
+        repos: {
+          'kookr-ai/kookr': {
+            repo: 'kookr-ai/kookr',
+            consecutiveBlockedEmpty: 3,
+            effectiveScoutCooldownMs: 3_600_000,
+          },
+          // Idle repo — must not appear.
+          'jeanibarz/lucy': {
+            repo: 'jeanibarz/lucy',
+            consecutiveBlockedEmpty: 0,
+            effectiveScoutCooldownMs: 0,
+          },
+        },
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Pipeline starvation: kookr-ai/kookr blockedEmpty=3  cooldown=1h 0m');
+    expect(out).not.toContain('jeanibarz/lucy');
+  });
+
+  it('renders one line per elevated repo in sorted order (issue #2183)', () => {
+    const health = {
+      ...baseHealth,
+      pipelineStarvation: {
+        schemaVersion: 'pipeline-starvation.v1',
+        repos: {
+          'z/repo': { repo: 'z/repo', consecutiveBlockedEmpty: 1, effectiveScoutCooldownMs: 0 },
+          'a/repo': { repo: 'a/repo', consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1_800_000 },
+        },
+      },
+    };
+    const lines = renderReport({ port: 4800, health, agents: [] }).split('\n');
+    const starvationLines = lines.filter((l) => l.startsWith('Pipeline starvation:'));
+    expect(starvationLines).toEqual([
+      'Pipeline starvation: a/repo blockedEmpty=2  cooldown=30m 0s',
+      'Pipeline starvation: z/repo blockedEmpty=1',
+    ]);
+  });
+
+  it('omits the cooldown segment when effectiveScoutCooldownMs is zero (issue #2183)', () => {
+    const health = {
+      ...baseHealth,
+      pipelineStarvation: {
+        schemaVersion: 'pipeline-starvation.v1',
+        repos: {
+          'kookr-ai/kookr': {
+            repo: 'kookr-ai/kookr',
+            consecutiveBlockedEmpty: 1,
+            effectiveScoutCooldownMs: 0,
+          },
+        },
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Pipeline starvation: kookr-ai/kookr blockedEmpty=1');
+    expect(out).not.toContain('cooldown=');
+  });
+
+  it('is a no-op when pipelineStarvation is absent (issue #2183)', () => {
+    const out = renderReport({ port: 4800, health: baseHealth, agents: [] });
+    expect(out).not.toContain('Pipeline starvation:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -491,6 +560,65 @@ describe('kookr-status renderReport', () => {
   });
 });
 
+describe('kookr-status summarizePipelineStarvation (issue #2183)', () => {
+  it('returns null when pipelineStarvation is absent', () => {
+    expect(summarizePipelineStarvation({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when the repos map is empty', () => {
+    expect(
+      summarizePipelineStarvation({
+        pipelineStarvation: { schemaVersion: 'pipeline-starvation.v1', repos: {} },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when every repo is at steady state (consecutiveBlockedEmpty <= 0)', () => {
+    expect(
+      summarizePipelineStarvation({
+        pipelineStarvation: {
+          repos: {
+            'kookr-ai/kookr': { repo: 'kookr-ai/kookr', consecutiveBlockedEmpty: 0 },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps only elevated repos and sorts them deterministically', () => {
+    const summary = summarizePipelineStarvation({
+      pipelineStarvation: {
+        repos: {
+          'z/repo': { repo: 'z/repo', consecutiveBlockedEmpty: 1, effectiveScoutCooldownMs: 0 },
+          'a/repo': { repo: 'a/repo', consecutiveBlockedEmpty: 4, effectiveScoutCooldownMs: 1_800_000 },
+          'idle/repo': { repo: 'idle/repo', consecutiveBlockedEmpty: 0 },
+        },
+      },
+    });
+    expect(summary).toEqual({
+      elevated: 2,
+      repos: [
+        { repo: 'a/repo', consecutiveBlockedEmpty: 4, effectiveScoutCooldownMs: 1_800_000 },
+        { repo: 'z/repo', consecutiveBlockedEmpty: 1, effectiveScoutCooldownMs: 0 },
+      ],
+    });
+  });
+
+  it('falls back to the map key when a row has no repo field and floors fractional cooldowns', () => {
+    const summary = summarizePipelineStarvation({
+      pipelineStarvation: {
+        repos: {
+          'kookr-ai/kookr': { consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1234.9 },
+        },
+      },
+    });
+    expect(summary).toEqual({
+      elevated: 1,
+      repos: [{ repo: 'kookr-ai/kookr', consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1234 }],
+    });
+  });
+});
+
 describe('kookr-status main (integration-style)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
@@ -514,11 +642,12 @@ describe('kookr-status main (integration-style)', () => {
     };
   }
 
-  function mockSuccessfulFetch(snapshotBody: unknown[]) {
+  function mockSuccessfulFetch(snapshotBody: unknown[], healthExtra: Record<string, unknown> = {}) {
     const healthBody = {
       status: 'ok',
       serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
       build: { version: 'dev' },
+      ...healthExtra,
     };
     globalThis.fetch = vi.fn(async (url: string | URL) => {
       const href = typeof url === 'string' ? url : url.href;
@@ -660,6 +789,37 @@ describe('kookr-status main (integration-style)', () => {
     });
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
+    // No pipelineStarvation block on /api/health → no slim summary (no-op).
+    expect(envelope.details.pipelineStarvation).toBeUndefined();
+  });
+
+  it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
+    mockSuccessfulFetch([], {
+      pipelineStarvation: {
+        schemaVersion: 'pipeline-starvation.v1',
+        repos: {
+          'kookr-ai/kookr': {
+            repo: 'kookr-ai/kookr',
+            consecutiveBlockedEmpty: 2,
+            effectiveScoutCooldownMs: 1_800_000,
+            // Extra fields on the raw health row must NOT leak into the slim summary.
+            lastSpawnSkipReason: 'cooldown',
+          },
+          'idle/repo': { repo: 'idle/repo', consecutiveBlockedEmpty: 0 },
+        },
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.pipelineStarvation).toEqual({
+      elevated: 1,
+      repos: [
+        { repo: 'kookr-ai/kookr', consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1_800_000 },
+      ],
+    });
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {
