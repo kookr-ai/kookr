@@ -302,4 +302,86 @@ describe('CostComparisonPanel', () => {
     await flush();
     expect(fetchSpy.mock.calls.some(c => (c[0] as string).includes('agent=codex-cli'))).toBe(true);
   });
+
+  function sendTab(shiftKey = false): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event;
+  }
+
+  function focusablesInDialog(el: HTMLElement): HTMLElement[] {
+    const dialog = el.querySelector<HTMLElement>('[role="dialog"]');
+    if (!dialog) return [];
+    const selector = [
+      'button:not([disabled])',
+      '[href]',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[contenteditable="true"]',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(', ');
+    return Array.from(dialog.querySelectorAll<HTMLElement>(selector));
+  }
+
+  test('initial focus lands on the close button', async () => {
+    mockFetchSequential([{ body: makeResponse() }]);
+    const el = mount();
+    await flush();
+    const close = el.querySelector<HTMLButtonElement>('button[aria-label="Close cost comparison"]');
+    expect(close).toBeTruthy();
+    expect(document.activeElement).toBe(close);
+  });
+
+  test('Escape still closes the panel', async () => {
+    mockFetchSequential([{ body: makeResponse() }]);
+    mount();
+    await flush();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test('Tab from the last focusable wraps to the first, and Shift+Tab wraps back', async () => {
+    mockFetchSequential([{ body: makeResponse() }]);
+    const el = mount();
+    await flush();
+
+    const focusables = focusablesInDialog(el);
+    expect(focusables.length).toBeGreaterThanOrEqual(2);
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+
+    last.focus();
+    const forwardWrap = sendTab();
+    expect(document.activeElement).toBe(first);
+    expect(forwardWrap.defaultPrevented).toBe(true);
+
+    first.focus();
+    const backwardWrap = sendTab(true);
+    expect(document.activeElement).toBe(last);
+    expect(backwardWrap.defaultPrevented).toBe(true);
+  });
+
+  test('pulls focus back inside when Tab starts outside the dialog', async () => {
+    const outside = document.createElement('button');
+    outside.type = 'button';
+    outside.textContent = 'Outside';
+    document.body.appendChild(outside);
+
+    mockFetchSequential([{ body: makeResponse() }]);
+    const el = mount();
+    await flush();
+
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    const escapedFocus = sendTab();
+    const dialog = el.querySelector('[role="dialog"]')!;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(escapedFocus.defaultPrevented).toBe(true);
+
+    outside.remove();
+  });
 });
