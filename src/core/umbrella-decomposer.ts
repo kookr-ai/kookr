@@ -1136,124 +1136,112 @@ export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1590 "headline metrics in tested code". Core children #1513 / #1540 /
- * #1966 / #1967 / #1999 / host-circuits #1548 shipped; residual acceptance gaps
- * remain: threshold alerts on anchorCoverage/sessionHitRate, first-class
- * search-backend + tier degraded signals in the control room, per-tier block
- * attribution during armed windows, and a durable weekly acquisition scoreboard.
- * Authored by the queue-feeder (2026-08-02) after needsAuthoring blocked emit.
- * Live GitHub leaves: filed this run; openChildrenCount / title idempotency
- * prevents re-emit once those exist.
+ * lucy#1590 "headline metrics in tested code". Wave-1 residual leaves
+ * (#2090–#2093 alerts / control-room health / per-tier attribution / weekly
+ * acquisition scoreboard) and follow-ons (#2445 backfill, #2464–#2466 cron +
+ * control-room threshold surface) shipped and are title-exhausted. Invent
+ * wave 2 (queue-feeder 2026-08-11, invent-product-wave #2069) covers the still-
+ * open acceptance residual: flagship SEC race quality (beforeShare) is silent
+ * in alerts and status, and there is no durable weekly triad trend for
+ * anchorCoverage / sessionHitRate / beforeShare. Live GitHub leaves #2510–#2512.
+ * Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1590_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(metrics): alert when anchorCoverage or sessionHitRate drops below threshold',
+      'feat(metrics): alert when secLead beforeShare is chronically below threshold',
     goal:
-      'Post a durable operator warning via the existing safeSend chokepoint when ' +
-      'detection-rollup anchorCoverage or earnings-date sessionHitRate falls below ' +
-      'configured thresholds, so low product-metric health is not only visible in ' +
-      'status text but actively alerted.',
+      'Extend product-metric alerts so a chronically zero (or below-threshold) ' +
+      'secLead beforeShare with a measurable anchored sample posts a durable operator ' +
+      'warning via the existing safeSend / product-metric-alerts path. Live prod rollup ' +
+      'shows beforeCount=0 / afterShare=1 on n≈31 — Lucy never beat SEC on the measured ' +
+      'set — but only anchorCoverage and sessionHitRate are thresholded today, so the ' +
+      'flagship "beat SEC EDGAR" failure mode stays silent.',
     acceptanceCriteria: [
-      'When the latest detection-rollup row has anchorCoverage below a documented ' +
-        'threshold (default or config), Lucy emits one warning path through safeSend ' +
-        '(or the shared alert helper it uses) with the measured value and denominator.',
-      'When buildEarningsDateReliabilityMetrics (or the acquire-status path that wraps it) ' +
-        'reports sessionHitRate below a documented threshold with a measurable sample, ' +
-        'the same alert path fires (session hits / measurable n in the message).',
-      'Unit/fixture tests cover: (a) below threshold → alert; (b) at/above threshold → ' +
-        'no alert; (c) null/unmeasurable rate → no false alert.',
+      'evaluateProductMetricAlerts (or a sibling pure evaluator in product-metric-alerts.js) ' +
+        'emits a beforeShare alert when beforeShare is below a documented threshold ' +
+        '(default e.g. 0.05–0.10) AND the anchored sample size is above a documented floor ' +
+        '(so tiny n cannot false-alert); null/unmeasurable beforeShare or n-below-floor → no alert.',
+      'The product-metric-alerts CLI and the shared alert path used by the nightly/safeSend ' +
+        'chokepoint surface kind, beforeShare rate, beforeCount/afterCount (or before/total), ' +
+        'threshold, and sample n — same shape discipline as anchorCoverage alerts.',
+      'Unit tests: (a) beforeShare=0 with n≥floor → alert; (b) beforeShare above threshold → no alert; ' +
+        '(c) n below floor → no alert; (d) null beforeShare → no false alert.',
     ],
     fileHints: [
-      'src/message-footer.js / safeSend path',
-      'scripts/detection-report.mjs or rollup consumer',
-      'src/earnings-date/metrics.js',
-      'src/acquisition/status.js',
+      'src/product-metric-alerts.js',
+      'scripts/product-metric-alerts.mjs',
+      'scripts/detection-report.mjs (computeSecLead shape)',
+      'test/product-metric-alerts.test.js',
     ],
     testHints: [
-      'unit test: inject rollup row + reliability metrics fixture; assert alert fired/not',
+      'unit: inject secLead fixture with beforeShare=0, anchored n=20 → alert kind beforeShare',
+      'unit: beforeShare=0.4 or n=2 → no alert',
     ],
     labels: ['product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(metrics): control-room first-class search-backend and tier degraded health',
+      'feat(metrics): surface secLead beforeShare and median lead with denominator in status',
     goal:
-      'Surface search-backend health and acquisition-tier health as first-class ' +
-      'degraded signals in the control room (and keep `!bot acquire sources` / ' +
-      'status consistent) so operators see retrieval degradation without grepping logs.',
+      'Make the control-room / !bot status product-metrics surface show the flagship ' +
+      'SEC race quality — beforeShare, median lead seconds, and the anchored denominator ' +
+      '("anchored subset, n=K of N") — not only coverage and sessionHitRate. Umbrella ' +
+      '#1590 acceptance still requires the lead to be labeled with its denominator so ' +
+      'operators can judge race quality without running detection:report by hand.',
     acceptanceCriteria: [
-      'Control-room snapshot exposes search-backend health (healthy/configured counts ' +
-        'or equivalent from retrieval-health / searchBackendHealthSnapshot) and ' +
-        'per-tier degraded/blocked status for the current or last armed window.',
-      'Control-room UI renders those signals as explicit degraded badges/rows (not only ' +
-        'buried in free-text status), distinct from the host-circuits strip.',
-      '`!bot acquire sources` (or acquire status) remains consistent with the same ' +
-        'underlying health helpers — no second counting implementation.',
-      'Unit or control-room fixture test: unhealthy backend / blocked tier appears in ' +
-        'snapshot + render path.',
+      'productMetricHealthSnapshot (or status projection used by control-room and !bot status) ' +
+        'includes secLead fields: beforeShare (or beforeCount/total), medianLeadSec when ' +
+        'anchored>0, and denominator labels anchored/total from the latest detection-rollup ' +
+        'secLead row under LUCY_DATA_DIR.',
+      'When anchored=0 (zero-anchor day), the surface shows an explicit data-gap / no-lead ' +
+        'phrase and must not render a fabricated median lead (parity with detection-report ' +
+        'zero-anchor contract).',
+      'Unit/fixture tests: (a) secLead with beforeShare=0 and n>0 → fields visible with ' +
+        'denominator; (b) zero-anchor total>0 anchored=0 → gap phrase, no median; ' +
+        '(c) missing rollup → missing/degraded, not a crash.',
     ],
     fileHints: [
-      'src/retrieval-health.js',
-      'src/control-room-snapshot-compose.js',
-      'src/control-room/',
+      'src/product-metric-alerts.js (productMetricHealthSnapshot / format helpers)',
       'src/acquisition/status.js',
+      'src/index.js (status / readiness subsystem)',
+      'src/control-room-snapshot-compose.js',
+      'scripts/detection-report.mjs (formatSecLead / zero-anchor contract)',
     ],
     testHints: [
-      'unit test: compose snapshot with unhealthy search backend; assert field + panel render',
+      'unit: health snapshot includes beforeShare + anchored/total from fixture rollup row',
+      'unit: zero-anchor fixture never exposes a numeric median lead',
     ],
     labels: ['product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(metrics): per-tier block attribution in control room during armed windows',
+      'feat(metrics): durable weekly trend of anchorCoverage sessionHitRate beforeShare',
     goal:
-      'Extend the #1548 host-circuits control-room surface so an operator can answer ' +
-      '"why didn\'t the issuer tier win for ticker X" from the control room alone — ' +
-      'per-tier failureCode / block attribution while windows are armed.',
+      'Persist a tested weekly product-metric trend series (anchorCoverage, sessionHitRate, ' +
+      'beforeShare with denominators) so longitudinal proof that acquisition/data-quality ' +
+      'work moved the #1590 headline metrics exists in code and durable data — not operator ' +
+      'memory or one-off CLI output. Complements the weekly acquisition scoreboard ' +
+      '(#2093) which is tier/failureCode focused rather than the SEC-lead/reliability triad.',
     acceptanceCriteria: [
-      'During an armed window (or from job.lastRun / scoreboard state), control-room ' +
-        'shows per-tier attempts/ok/blocked and top failureCode counts (reuse ' +
-        'src/acquisition/scoreboard.js — no parallel aggregation).',
-      'At least one issuer-tier (or IR) block path is attributed with failureCode so ' +
-        'the operator sees *which* tier failed and *why*, not only host-level circuits.',
-      'Unit/fixture test: scoreboard with IR blocked by a known failureCode → control-room ' +
-        'payload/render includes that tier + code.',
+      'A pure aggregator (plus optional CLI/script) reads detection-rollup.jsonl and ' +
+        'earnings-date reliability inputs (or their rollup/history) and emits one weekly row ' +
+        'with: week start, anchorCoverage (anchored/total), sessionHitRate when measurable, ' +
+        'beforeShare when measurable, and sample denominators — durable JSON/JSONL under data/ ' +
+        'or a documented path under LUCY_DATA_DIR.',
+      'Unit tests with fixture rollup/history rows: known week windows → expected rates and ' +
+        'denominators; empty/missing input degrades cleanly (no fabricated rates).',
+      'Document how to run the aggregator (npm script or scripts/*.mjs) so the nightly/cron ' +
+        'path can schedule it later without re-deriving the contract in prose.',
     ],
     fileHints: [
-      'src/acquisition/scoreboard.js',
-      'src/control-room-snapshot-compose.js',
-      'src/control-room/host-circuits-panel.js (or sibling panel)',
-      'src/scheduler.js job.lastRun scoreboard',
+      'src/product-metric-alerts.js or new src/product-metric-trend.js',
+      'scripts/detection-report.mjs / data/detection-rollup.jsonl consumers',
+      'scripts/acquisition-weekly-scoreboard.mjs (pattern reuse, not a second tier board)',
+      'data/ or LUCY_DATA_DIR product-metric-trend.jsonl',
     ],
     testHints: [
-      'unit test: scoreboard fixture → snapshot field; optional panel render assertion',
-    ],
-    labels: ['product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title: 'feat(metrics): weekly acquisition scoreboard from detections.jsonl',
-    goal:
-      'Add a tested pure aggregator that builds a weekly acquisition scoreboard ' +
-      '(per-tier win rate, first-seen latency distribution, failureCode histogram) ' +
-      'from detections.jsonl so longitudinal tier performance is measurable in code, ' +
-      'not operator memory.',
-    acceptanceCriteria: [
-      'A pure function (and optional CLI/script) reads detections.jsonl (or event-latency ' +
-        'spans) and emits per-tier win rate, first-seen latency summary, and failureCode ' +
-        'histogram for a configurable week window.',
-      'Unit tests cover a fixture JSONL: known per-tier wins/blocks → expected rates and ' +
-        'histogram buckets; empty input degrades cleanly.',
-      'Output is durable (JSON/JSONL under data/ or printed via npm script) so daily-report ' +
-        'or control-room can consume it later without recomputing in prose.',
-    ],
-    fileHints: [
-      'src/acquisition/scoreboard.js (reuse fold helpers where possible)',
-      'scripts/ or src/ acquisition weekly scoreboard module',
-      'data/detections.jsonl schema consumers',
-    ],
-    testHints: [
-      'unit test: synthetic detections fixture → weekly scoreboard totals match hand counts',
+      'unit: synthetic multi-week rollup fixture → weekly trend rows match hand-computed rates',
     ],
     labels: ['product-metric', 'enhancement'],
   }),
