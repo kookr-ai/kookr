@@ -1026,111 +1026,113 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Original children (#1515,
- * #1524, #1522, #1541, #1584) shipped; residual acceptance gaps remain:
- * pre-window zero-healthy search backends, arm-time EDGAR-only flags, a
- * measurable EDGAR-only armed-ticker counter, and RFC-012 epic body sync.
- * Authored by the queue-feeder (2026-08-02) after needsAuthoring blocked emit.
- * Live GitHub leaves: #2082–#2085. Once those exist, the feeder skips re-emit
- * via openChildrenCount / title idempotency.
+ * lucy#1587 "acquisition redundancy & failover". Wave-1 residual leaves
+ * (#2082–#2085 readiness / EDGAR-only / epic sync) and follow-ons (#2351–#2354,
+ * #2422–#2424 newswire gate / interval backoff / tier-health) shipped and are
+ * title-exhausted. Invent wave 2 (queue-feeder 2026-08-11, invent-product-wave
+ * #2069) covers still-open acquisition-redundancy residuals under RFC-012:
+ * automated already-published recapture on no_source terminal misses, multi-tier
+ * possible_gate_miss rescue (issuer+newswire, not only SEC), and a weekly
+ * search-backend failover hit-rate metric. Live GitHub leaves #2518–#2520.
+ * Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): schedule-readiness flags zero-healthy search backends before window',
+      'feat(acquisition): automatic already-published recapture when window ends with no_source',
     goal:
-      'Wire runtime zero-healthy web-search backend state into schedule readiness so the ' +
-      'operator sees a degraded/action signal before an armed earnings window opens — not ' +
-      'only after a live fan-out fails mid-watch.',
+      'When an armed earnings window closes as missClass=no_source, automatically run a ' +
+      'bounded already-published recapture pass (reuse the acquire detect/pull path from ' +
+      '#2504/#2505) so reports that published slightly late or were missed mid-window are ' +
+      'still captured without waiting for an operator to paste a URL — the flagship ' +
+      'acquisition-redundancy gap under umbrella #1587 / RFC-012.',
     acceptanceCriteria: [
-      '`schedule-readiness` (or the pre-window readiness path it shares) reports a warning ' +
-        'or action when retrieval-health reports healthyCount === 0 with configuredCount > 0, ' +
-        'distinct from the existing "no search backend is configured" config-only check.',
-      'Unit/fixture test covers both: (a) backends configured but all unhealthy → readiness ' +
-        'flags it; (b) backends configured and ≥1 healthy → no false positive.',
-      'Signal is visible via the existing `!bot schedule readiness` (or control-room readiness) ' +
-        'surface without requiring a live publish window.',
+      'On terminal total-miss classification with missClass=no_source (and not operator-aborted), ' +
+        'Lucy schedules or runs one bounded already-published detect/recapture attempt for that ' +
+        'ticker+date within a documented grace window, reusing existing acquire detect/pull ' +
+        'helpers rather than a second acquisition stack.',
+      'Successful recapture is stamped as recovery/recapture (not live window success) and is ' +
+        'visible in outcomes or the acquisition miss surface so scorecards can separate live-hit ' +
+        'from recapture-hit; failed recapture leaves the original no_source classification intact.',
+      'Unit/fixture tests cover: (a) no_source terminal → recapture invoked once; (b) non-no_source ' +
+        'miss (e.g. possible_gate_miss / verification_reject) does not take this path; (c) recapture ' +
+        'success stamps recovery mode; (d) double-fire guard so a second terminal event does not ' +
+        'spawn a second recapture for the same job identity.',
     ],
     fileHints: [
-      'src/schedule-readiness.js',
+      'src/scheduler-active-window-poll.js',
+      'src/acquisition-commands.js',
+      'src/acquisition/anomaly.js',
+      'src/scheduler-pending-verdict-recovery.js',
+    ],
+    testHints: [
+      'unit: terminal no_source job fixture → recapture scheduled once with ticker+date',
+      'unit: missClass=possible_gate_miss → recapture path not invoked',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): possible_gate_miss rescue across issuer and newswire tiers',
+    goal:
+      'Extend the possible_gate_miss rescue / operator-visible candidate path beyond SEC ' +
+      'so issuer and newswire tiers that found a document but failed the release-text gate ' +
+      'surface recoverable candidates (URLs + failure codes) the same way SEC does — ' +
+      'closing the multi-tier verification false-negative hole in RFC-012 Phase 2 under ' +
+      'umbrella #1587.',
+    acceptanceCriteria: [
+      'When issuer or newswire tier fetch succeeds but classic release-text / identity gate ' +
+        'rejects, the miss path records missClass=possible_gate_miss (or a documented ' +
+        'tier-qualified equivalent) with the candidate URL(s), not a silent no_source that ' +
+        'hides that a document was found.',
+      'Total-miss / anomaly alerts for those tiers include the candidate release URL(s) for ' +
+        '!bot acquire pull recovery (same shape discipline as #2506 for verification_reject), ' +
+        'without requiring an operator to dig logs.',
+      'Unit tests: (a) issuer page fetched + gate reject → possible_gate_miss + URL present; ' +
+        '(b) newswire host hit + gate reject → same; (c) true empty/no-document path remains ' +
+        'no_source without false gate-miss labeling.',
+    ],
+    fileHints: [
+      'src/acquisition/tiers/issuer.js',
+      'src/acquisition/tiers/newswire.js',
+      'src/acquisition/scoreboard.js',
+      'src/scheduler-active-window-poll.js',
+      'src/acquisition/anomaly.js',
+    ],
+    testHints: [
+      'unit: synthetic issuer HTML without earnings lexicon → possible_gate_miss + url',
+      'unit: empty issuer listing → no_source, not gate_miss',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title: 'feat(acquisition): weekly search-backend failover hit-rate metric',
+    goal:
+      'Publish a tested weekly (or rollup) metric for per-search-backend success and ' +
+      'failover share during armed windows so acquisition redundancy is measurable beyond ' +
+      'zero-healthy readiness — operators can see whether Brave/Perplexity/etc. actually ' +
+      'carried hits or the chain silently collapsed to SEC-only.',
+    acceptanceCriteria: [
+      'A pure aggregator over retrieval-health / provider-outcome records (or armed-window ' +
+        'tierOutcomes) computes per-backend attempt count, success count, and success share ' +
+        'for a documented window (e.g. last 7d), plus an overall multi-backend vs ' +
+        'single-backend-or-none summary.',
+      'The weekly acquisition scoreboard or detection weekly report path surfaces those ' +
+        'numbers (JSONL and/or status/control-room text) without requiring a live Discord scrape.',
+      'Unit tests with fixture provider-outcome rows: (a) two backends with mixed success → ' +
+        'correct per-backend rates; (b) zero attempts → null/unmeasurable not zero; ' +
+        '(c) single-backend-only week flagged distinctly from multi-backend healthy week.',
+    ],
+    fileHints: [
       'src/retrieval-health.js',
-      'src/scheduler-commands.js',
+      'src/acquisition/scoreboard.js',
+      'scripts/detection-report.mjs',
+      'src/weekly-denominator-report.js or weekly acquisition scoreboard path',
     ],
     testHints: [
-      'unit test: inject a zero-healthy retrieval-health snapshot into readiness evaluation; assert problem code + severity',
+      'unit: fixture outcomes → per-backend successShare matches hand count',
+      'unit: empty window → unmeasurable, no divide-by-zero',
     ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): flag EDGAR-only tickers at arm/readiness time (0 non-SEC channels)',
-    goal:
-      'Surface EDGAR-only risk at arm / schedule-readiness time using the existing ' +
-      'knownNonSecChannels helper, so a ticker with zero known non-SEC channels is flagged ' +
-      'before the window opens (not only on `!bot acquire status`).',
-    acceptanceCriteria: [
-      'When arming a watch or evaluating schedule readiness for an armed ticker, a ticker ' +
-        'whose knownNonSecChannels(...).edgarOnly === true is flagged (warning or action) ' +
-        'with a remediation hint (`!bot acquire status TICKER` or seed IR/feed/wire).',
-      'The flag reuses knownNonSecChannels from src/acquisition/status.js — no second ' +
-        'counting implementation.',
-      'Unit test: synthetic registry entry with no IR/feed/wire → flagged; entry with ' +
-        'IR+feed → not EDGAR-only flagged.',
-    ],
-    fileHints: [
-      'src/acquisition/status.js',
-      'src/schedule-readiness.js',
-      'arming path (scheduler-commands / watchlist / control-room)',
-    ],
-    testHints: [
-      'unit test: readiness/arm evaluation with edgarOnly fixture; assert problem includes channel count or EDGAR-only label',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'chore(acquisition): sync RFC-012 epic #1157 Phase-0 checkboxes to closed children',
-    goal:
-      'Bring the open RFC-012 epic body in line with reality: Phase-0 children #1158–#1163 ' +
-      'are already closed, but the epic checkboxes still show unchecked — update the epic so ' +
-      'the umbrella trail no longer looks unfinished.',
-    acceptanceCriteria: [
-      'jeanibarz/lucy#1157 body Phase-0 checkboxes for #1158–#1163 are marked done (or ' +
-        'replaced with closed/merged notes) matching each child\'s current GitHub state.',
-      'Any Phase-1+ residual still open is left unchecked and remains discoverable; no false ' +
-        '"all done" if later phases remain.',
-      'No product code change required; PR may be docs-only or a direct issue-body update ' +
-        'with a short note on the epic.',
-    ],
-    fileHints: [
-      'GitHub issue jeanibarz/lucy#1157 body',
-      'optional: rfc/RFC-012-robust-report-acquisition.md status section',
-    ],
-    testHints: [
-      'manual: gh issue view 1157 shows Phase-0 items checked; remaining open work still listed',
-    ],
-    labels: ['acquisition', 'documentation'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): armed-ticker EDGAR-only count as measurable redundancy metric',
-    goal:
-      'Add a durable, testable acquisition-redundancy metric (or readiness counter) for ' +
-      '"armed tickers with 0 known non-SEC channels" so failover health is measurable ' +
-      'day-over-day rather than only as a one-off status line.',
-    acceptanceCriteria: [
-      'A counter/metric (or daily-report field) reports how many currently-armed tickers ' +
-        'are EDGAR-only (knownNonSecChannels.edgarOnly).',
-      'Unit test computes the counter from a fixture set of armed tickers + issuer registry entries.',
-      'Metric appears on an existing operator surface (acquire status summary, daily report, ' +
-        'or control-room readiness) so umbrella #1587 acceptance is measurable in aggregate.',
-    ],
-    fileHints: [
-      'src/acquisition/status.js',
-      'daily-report / metrics emitter if present',
-      'control-room readiness surfaces',
-    ],
-    testHints: ['unit test: N armed tickers, K edgar-only → counter equals K'],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
 ]);

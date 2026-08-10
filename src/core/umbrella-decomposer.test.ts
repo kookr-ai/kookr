@@ -775,18 +775,25 @@ describe('lucy#1588 canonical decomposition (AC5) + idempotency (AC2)', () => {
 });
 
 describe('lucy#1587 acquisition failover curated plan', () => {
-  it('has a vetted 4-leaf residual plan registered, each leaf well-formed', () => {
+  it('has a vetted 3-leaf invent-wave residual plan registered, each leaf well-formed', () => {
     const plan = curatedLeafPlan('jeanibarz/lucy#1587');
     expect(plan).toBe(LUCY_1587_LEAF_PLAN);
-    expect(plan).toHaveLength(4);
+    expect(plan).toHaveLength(3);
     const normalized = normalizeLeafPlan(plan);
     expect(normalized.ok).toBe(true);
-    expect(normalized.leaves).toHaveLength(4);
+    expect(normalized.leaves).toHaveLength(3);
     for (const leaf of plan!) {
       expect(validateLeafSpec(leaf)).toEqual([]);
       expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+      expect(leaf.labels).toContain('acquisition');
+      expect(leaf.labels).toContain('product-metric');
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
+    expect(plan!.map((l) => l.title)).toEqual([
+      'feat(acquisition): automatic already-published recapture when window ends with no_source',
+      'feat(acquisition): possible_gate_miss rescue across issuer and newswire tiers',
+      'feat(acquisition): weekly search-backend failover hit-rate metric',
+    ]);
   });
 
   it('emits lucy#1587 leaves when it has no open children yet', () => {
@@ -803,7 +810,7 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     });
     expect(decision.selected?.ref).toBe('jeanibarz/lucy#1587');
     expect(decision.selected?.productMetricBlocking).toBe(true);
-    expect(decision.leafCount).toBe(4);
+    expect(decision.leafCount).toBe(3);
     expect(decision.selected?.needsAuthoring).toBe(false);
   });
 
@@ -815,13 +822,13 @@ describe('lucy#1587 acquisition failover curated plan', () => {
           repo: 'jeanibarz/lucy',
           number: 1587,
           title: 'Umbrella: acquisition redundancy & failover',
-          openChildrenCount: 4, // #2082–#2085
+          openChildrenCount: 3, // invent-wave #2518–#2520
         }),
       ],
     });
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1587');
-    expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
+    expect(decision.skipped[0]!.reason).toMatch(/already has 3 open child/);
   });
 });
 
