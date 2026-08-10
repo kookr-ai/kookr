@@ -312,7 +312,7 @@ lets scheduled monitors spool transition and liveness signals too.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_DISCORD_WEBHOOK_URL` | unset | Discord incoming-webhook URL | Enables Discord delivery of operator signals. Operator-supplied local config; do not commit shared secrets. |
+| `KOOKR_DISCORD_WEBHOOK_URL` | unset | Public HTTP or HTTPS Discord incoming-webhook URL | Enables Discord delivery of operator signals. Same host safety policy as `KOOKR_WEBHOOK_URL`: rejected (Discord channel disabled, warning logged) when the host is localhost, private/CGNAT/link-local, a cloud-metadata hostname, or the URL embeds credentials. Lab LAN mocks can opt in with `KOOKR_WEBHOOK_ALLOW_PRIVATE` (metadata/link-local still blocked). Operator-supplied local config; do not commit shared secrets. |
 | `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` | unset | Numeric Telegram chat ID | Enables Telegram delivery of operator signals to this chat (reuses `KOOKR_TELEGRAM_BOT_TOKEN`). Independent of the inbound remote-chat allowlist. |
 | `KOOKR_SIGNAL_DELIVERY_DRY_RUN` | unset | `1` to enable | Formats and logs each batch but never POSTs. Entries are still marked delivered so the log does not loop. |
 | `KOOKR_SIGNAL_DELIVERY_POLL_MS` | `15000` | Positive integer (ms) | Poll cadence for tailing the operator-signal outbox. |
