@@ -103,6 +103,11 @@ export type ScheduleExecutionReasonCode =
   | 'agent_substituted'
   /** Parked fire — no substitute for unavailable pin (issue #1895). Mirrors `core/schedule`. */
   | 'provider_paused'
+  /**
+   * Grok session/OIDC auth expired/missing with no non-Grok substitute
+   * (issue #2194). Mirrors `core/schedule`.
+   */
+  | 'auth_expired'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

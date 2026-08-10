@@ -385,6 +385,132 @@ Do the test thing.
     });
   });
 
+  describe('Grok auth availability gate (issue #2194)', () => {
+    it('substitutes away from grok-build when Grok session auth is unusable and a non-Grok agent is healthy', async () => {
+      const schedule = store.create({
+        name: 'Default grok, auth expired',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        // no pin — inherits defaultAgentType
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const refresh = vi.fn(async () => {});
+      const runner = createRunner({
+        getDefaultAgentType: () => 'grok-build',
+        getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+        isGrokAuthUsable: () => false,
+        refreshGrokAuthAvailability: refresh,
+        getAgentFallbackPolicy: () => ({ disallow: ['codex-cli'] }),
+      });
+      await runner.tick();
+
+      expect(refresh).toHaveBeenCalled();
+      expect(launched).toHaveLength(1);
+      expect(launched[0]!.agentType).toBe('claude-code');
+      expect(launched[0]!.agentType).not.toBe('grok-build');
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'running',
+        reasonCode: 'agent_substituted',
+      });
+    });
+
+    it('still dispatches a schedule already resolved to a non-Grok agent when Grok auth is expired', async () => {
+      const schedule = store.create({
+        name: 'Pinned claude',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'claude-code',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+        isGrokAuthUsable: () => false,
+        refreshGrokAuthAvailability: async () => {},
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(1);
+      expect(launched[0]!.agentType).toBe('claude-code');
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'running',
+        reasonCode: 'none',
+      });
+      // Regression pin: Grok session expiry must never re-couple a healthy
+      // non-Grok fire to a dispatch_failed thrash.
+      expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('dispatch_failed');
+    });
+
+    it('records dispatch_failed / auth_expired when Grok-only and session auth is unusable', async () => {
+      const schedule = store.create({
+        name: 'Grok only',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'grok-build',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['grok-build'],
+        isGrokAuthUsable: () => false,
+        refreshGrokAuthAvailability: async () => {},
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(0);
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'dispatch_failed',
+        reasonCode: 'auth_expired',
+      });
+      expect(store.get(schedule.id)!.latestExecution?.message).toMatch(/grok login/i);
+    });
+
+    it('classifies a late GrokAuthPreflightError from the launcher as auth_expired', async () => {
+      const schedule = store.create({
+        name: 'Late auth fail',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'grok-build',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const err = Object.assign(
+        new Error(
+          'Grok authentication expired or is too close to expiry at 2026-08-08T13:11:01.000Z. Run `grok login --device-code`',
+        ),
+        { code: 'grok_auth_preflight', name: 'GrokAuthPreflightError' },
+      );
+      const runner = createRunner({
+        // Gate thinks auth is ok (stale) so resolve lets grok through; launcher
+        // then refuses — must still land as auth_expired, not generic launch_error.
+        getAvailableAgentTypes: () => ['grok-build'],
+        isGrokAuthUsable: () => true,
+        launcher: async () => {
+          throw err;
+        },
+      });
+      await runner.tick();
+
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'dispatch_failed',
+        reasonCode: 'auth_expired',
+      });
+    });
+  });
+
   it('skips disabled schedules', async () => {
     const schedule = store.create({
       name: 'Disabled',

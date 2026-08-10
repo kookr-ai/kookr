@@ -76,6 +76,10 @@ import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { LaunchOutcomeMetrics } from '../core/launch-outcome-metrics.js';
 import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
+import {
+  GrokAuthAvailabilityCache,
+  defaultGrokAuthPath,
+} from '../adapters/grok-auth-availability.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -1531,6 +1535,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // instead of selecting it and relying on the fire() wall-clock cap (#1708).
   const agentBootLatency = new AgentBootLatencyMonitor();
 
+  // Grok session/OIDC readiness for schedule + RR selection (issue #2194).
+  // Binary registration alone must not treat grok-build as launchable when
+  // the shared ~/.grok/auth.json is expired — otherwise every schedule that
+  // defaults to or pins grok fails closed even when claude-code is healthy.
+  const grokAuthAvailability = new GrokAuthAvailabilityCache({
+    resolveAuthPath: () => defaultGrokAuthPath(),
+  });
+
   // Provider-pool health tracker (#1897, WS1.5 of #1699). Created before the
   // schedule runtime so WS1.3 (#1895) can feed substitution events into the
   // same counter the operational-alert evaluator thresholds on.
@@ -1546,6 +1558,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     roundRobinCursor,
     getDeprioritizedAgentTypes: (available) => agentBootLatency.deprioritizedTypes(available),
+    // Issue #2194: decouple Grok session freshness from non-Grok launch selection.
+    isGrokAuthUsable: () => grokAuthAvailability.isUsable(),
+    refreshGrokAuthAvailability: async () => {
+      await grokAuthAvailability.ensureFresh();
+    },
     // Issue #2001: never silently cascade onto disallowed fallbacks (default: codex-cli).
     getAgentFallbackPolicy: () => ({
       disallow: currentSettings.disallowAgentFallback,

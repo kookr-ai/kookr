@@ -258,6 +258,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // issue #1896: auto-resume provider-paused issues on the runner's tick.
     ...(deps.resetScheduler ? { resetScheduler: deps.resetScheduler } : {}),
     // issue #1895 / #1699 WS1.3: schedule-level pinned-agent fallback.
+    // issue #2194: Grok auth usability is applied inside resolveScheduleAgent
+    // (filterLaunchableAgentTypes) so registered-but-auth-expired grok-build
+    // is not treated as launchable when a non-Grok substitute exists.
     getAvailableAgentTypes: () => deps.launchServiceDeps.adapterRegistry.getTypes(),
     // Unpinned schedules inherit the live server default at fire time.
     ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
@@ -267,6 +270,13 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // Issue #2001: same fallback policy as launch-service plan-quota rotation.
     ...(deps.launchServiceDeps.getAgentFallbackPolicy
       ? { getAgentFallbackPolicy: deps.launchServiceDeps.getAgentFallbackPolicy }
+      : {}),
+    // Issue #2194: share the launch-service Grok auth gate with the schedule runner.
+    ...(deps.launchServiceDeps.isGrokAuthUsable
+      ? { isGrokAuthUsable: deps.launchServiceDeps.isGrokAuthUsable }
+      : {}),
+    ...(deps.launchServiceDeps.refreshGrokAuthAvailability
+      ? { refreshGrokAuthAvailability: deps.launchServiceDeps.refreshGrokAuthAvailability }
       : {}),
     ...(deps.recordAgentSubstitution
       ? { recordAgentSubstitution: deps.recordAgentSubstitution }

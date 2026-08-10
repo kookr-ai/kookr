@@ -19,6 +19,7 @@ import {
   type PinnedAgentResolution,
 } from '../core/agent-types.js';
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
+import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
@@ -195,6 +196,9 @@ export interface ScheduleRunnerDeps {
    * available one (or parks via `provider_paused`) instead of dispatching into
    * a known-missing adapter and recording `dispatch_failed`. Absent means the
    * historical pass-through (back-compat for older wiring/tests).
+   *
+   * Issue #2194: this list is further filtered by {@link isGrokAuthUsable} so
+   * a registered-but-auth-expired `grok-build` is not treated as launchable.
    */
   getAvailableAgentTypes?: () => readonly AgentType[];
   /**
@@ -209,6 +213,20 @@ export interface ScheduleRunnerDeps {
    * silent landing. Absent ⇒ no filter (back-compat).
    */
   getAgentFallbackPolicy?: () => AgentFallbackPolicy;
+  /**
+   * Grok session/OIDC usability for schedule agent resolution (issue #2194).
+   * When this returns `false`, `grok-build` is stripped from the launchable
+   * set so non-Grok backends (or healthy substitutes) still fire. Absent ⇒
+   * no auth filter (back-compat). Never consults API-key auth.
+   */
+  isGrokAuthUsable?: () => boolean;
+  /**
+   * Optional pre-fire refresh of the Grok auth usability cache (issue #2194).
+   * Awaited once per `fire()` so a re-login is visible within a schedule tick
+   * without reading auth.json on every synchronous getter call. Absent ⇒
+   * resolution uses the last cached (or fail-open) verdict only.
+   */
+  refreshGrokAuthAvailability?: () => Promise<void>;
   /**
    * Live `settings.defaultAgentType` getter. Used when a schedule has no
    * agentType pin so availability substitution and launch use the same default
@@ -715,6 +733,11 @@ export class ScheduleRunner {
       return { error: 'SAFE MODE — automation kill-switch engaged' };
     }
 
+    // issue #2194: refresh Grok session-auth cache before agent resolution so
+    // a re-login is visible within one tick and expired auth does not keep
+    // selecting grok-build when a healthy non-Grok backend is registered.
+    await this.refreshGrokAuthGate();
+
     // Always-running (Ralph) loop arming (issue #1899 / #1699 WS2.1): a
     // schedule with a loop config routes through launchLoopedPlaybook, gated
     // behind the WS0.5 relaunch arbiter so concurrent actuators cannot arm
@@ -726,6 +749,8 @@ export class ScheduleRunner {
     // issue #1895 / #1699 WS1.3: pinned-agent availability. Round-robin is
     // resolved inside launchTask; a concrete pin must not pass through to a
     // missing/paused adapter and surface as dispatch_failed.
+    // issue #2194: Grok auth expiry is treated as "not launchable" here so
+    // substitution can pick a non-Grok backend instead of fail-closing.
     const agentResolution = this.resolveScheduleAgent(schedule);
     if (agentResolution?.kind === 'unavailable') {
       return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
@@ -975,10 +1000,31 @@ export class ScheduleRunner {
   }
 
   /**
+   * Refresh the Grok auth usability cache when wired (issue #2194). Never
+   * throws — a probe fault must not fail a schedule fire that would otherwise
+   * launch on a non-Grok backend.
+   */
+  private async refreshGrokAuthGate(): Promise<void> {
+    if (!this.deps.refreshGrokAuthAvailability) return;
+    try {
+      await this.deps.refreshGrokAuthAvailability();
+    } catch (err) {
+      console.warn(
+        '[schedule] Grok auth availability refresh failed (continuing with last known verdict):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Resolve a concrete pinned schedule agent against the registered adapter
    * set (issue #1895 / #1699 WS1.3). Returns `null` when availability is not
    * wired (back-compat) or the schedule uses the round-robin sentinel (resolved
    * inside launchTask).
+   *
+   * Issue #2194: when Grok session auth is unusable, `grok-build` is stripped
+   * from the launchable set so substitution can land on a healthy non-Grok
+   * backend instead of dispatching into a known auth failure.
    */
   private resolveScheduleAgent(schedule: Schedule): PinnedAgentResolution | null {
     if (!this.deps.getAvailableAgentTypes) return null;
@@ -987,7 +1033,10 @@ export class ScheduleRunner {
     const selection = resolveScheduleAgentSelection(schedule, this.deps.getDefaultAgentType);
     if (selection === ROUND_ROBIN_AGENT_TYPE) return null;
     if (!isAgentType(selection)) return null;
-    const available = this.deps.getAvailableAgentTypes();
+    const registered = this.deps.getAvailableAgentTypes();
+    const available = filterLaunchableAgentTypes(registered, {
+      grokAuthUsable: this.deps.isGrokAuthUsable?.() ?? true,
+    });
     const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
     const policy = this.deps.getAgentFallbackPolicy?.();
     return resolvePinnedAgentFallback(selection, available, deprioritized, policy);
@@ -997,12 +1046,32 @@ export class ScheduleRunner {
    * Park a fire whose pinned agent is unavailable and has no substitute
    * (issue #1895). Uses the WS0 `provider_paused` reason so the operator sees
    * an explicit pause rather than a `dispatch_failed` launch error.
+   *
+   * Issue #2194: when the pin/default is `grok-build` and Grok session auth is
+   * known unusable, record `dispatch_failed` / `auth_expired` instead — a
+   * distinct, operator-actionable class (run `grok login`) rather than a
+   * generic provider pause or thrashing `launch_error`.
    */
   private async parkUnavailableAgent(
     schedule: Schedule,
     receipt: { id: string },
     from: AgentType,
   ): Promise<{ error: string }> {
+    if (from === 'grok-build' && this.deps.isGrokAuthUsable && !this.deps.isGrokAuthUsable()) {
+      const message =
+        'Grok authentication expired or unusable and no non-Grok substitute is launchable — '
+        + 'run `grok login --device-code` (or `grok login --oauth`) and retry. '
+        + '(reasonCode: auth_expired)';
+      console.warn(`[schedule] Auth-expired park for "${schedule.name}": ${message}`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'dispatch_failed',
+        'auth_expired',
+        message,
+      );
+      return { error: message };
+    }
     const message =
       `Pinned agent ${from} is unavailable and no substitute is registered — `
       + 'fire parked (provider_paused)';
@@ -1201,7 +1270,28 @@ function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').Sched
   // Defense-in-depth: if a fire reaches the launcher while SAFE MODE is on
   // (the pre-fire gate above should have short-circuited), map to safe_mode.
   if (err instanceof Error && err.name === 'AutomationKillSwitchError') return 'safe_mode' as const;
+  // issue #2194: Grok session/OIDC preflight refusal is a distinct auth class,
+  // not a generic launcher thrash — readable from GET /api/schedules ledger.
+  if (isGrokAuthPreflightError(err)) return 'auth_expired' as const;
   return 'launch_error' as const;
+}
+
+/**
+ * Detect the GrokBuildAdapter auth preflight refusal without a hard import
+ * cycle (schedule-runner ↔ adapters). Matches the structured `code` field and
+ * the well-known message prefix as defense in depth.
+ */
+function isGrokAuthPreflightError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === 'grok_auth_preflight') return true;
+  if (err instanceof Error) {
+    return (
+      err.name === 'GrokAuthPreflightError'
+      || /Grok authentication (expired|unavailable)/i.test(err.message)
+    );
+  }
+  return false;
 }
 
 function computeNextRunFor(schedule: Schedule): Date | null {
