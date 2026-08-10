@@ -144,8 +144,14 @@ export class PostRecoveryService {
       void this.tick();
     }, period);
     this.interval.unref?.();
-    // Immediate recovery pass after listen (do not wait a full period).
-    void this.tick();
+    // Deferred first pass (not sync-on-listen): lets startup recovery finish
+    // and avoids competing with boot hooks under test load. Still well inside
+    // one schedule tick after daemon start.
+    const firstDelayMs = Math.min(5_000, period);
+    const first = setTimeout(() => {
+      void this.tick();
+    }, firstDelayMs);
+    first.unref?.();
   }
 
   async stop(): Promise<void> {
