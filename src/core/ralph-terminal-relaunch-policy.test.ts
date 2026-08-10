@@ -29,6 +29,7 @@ describe('classifyTerminalExit', () => {
     // Failure modes owned elsewhere → stop.
     kookr_crash: 'stop',
     session_dead: 'stop',
+    first_hook_miss: 'stop',
     predicate_error: 'stop',
     // Non-terminal-in-practice / forward-compat → stop.
     predicate_timeout: 'stop',

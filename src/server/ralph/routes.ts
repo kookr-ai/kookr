@@ -9,7 +9,7 @@ import {
 import { nowISO } from '../../core/interaction-log.js';
 import { normalizeAgentType } from '../../core/agent-types.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
-import { resolveStallConfig } from '../../shared/contracts/ralph.js';
+import { resolveRalphCostSignal, resolveStallConfig } from '../../shared/contracts/ralph.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
 import { launchTask, DrainModeError } from '../launch-service.js';
 import {
@@ -73,6 +73,12 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
         taskId: task.id,
         ralphLoop: task.ralphLoop,
         effectiveStallConfig: resolveStallConfig(task.ralphLoop.stallConfig),
+        // issue #2193 gap 3: surface whether costCapUsd can actually fire.
+        costSignal: resolveRalphCostSignal({
+          costCapUsd: task.ralphLoop.costCapUsd,
+          cumulativeCostUsd: model.summary.cumulativeCostUsd,
+          totalIterations: model.summary.totalIterations,
+        }),
         ...model,
       });
     } catch (err) {
@@ -118,9 +124,19 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
     if (!task.ralphLoop) return c.json({ error: 'task has no Ralph loop attached' }, 404);
 
+    // Attach response does not read the iteration log; approximate costSignal
+    // from loop state alone (issue #2193 gap 3). Prefer iterations endpoint
+    // for the log-backed cumulative value.
+    const observedCost = task.ralphLoop.lastCumulativeCostUsd;
+    const costSignal = resolveRalphCostSignal({
+      costCapUsd: task.ralphLoop.costCapUsd,
+      cumulativeCostUsd: observedCost === undefined ? null : observedCost,
+      totalIterations: task.ralphLoop.cumulativeIterations,
+    });
     return c.json({
       ralphLoop: task.ralphLoop,
       effectiveStallConfig: resolveStallConfig(task.ralphLoop.stallConfig),
+      costSignal,
     });
   });
 

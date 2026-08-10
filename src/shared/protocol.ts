@@ -174,7 +174,9 @@ export type {
   RalphLoopReadModel,
   RalphStallConfig,
   BurnedOutTarget,
+  RalphCostSignal,
 } from './contracts/ralph.js';
+export { resolveRalphCostSignal, resolveStallConfig } from './contracts/ralph.js';
 export type {
   RalphIterationExitReason,
   RalphIterationDiffStats,

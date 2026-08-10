@@ -108,6 +108,16 @@ describe('RalphLoopService', () => {
     expect(source).not.toContain('reconcileRalphLoops');
   });
 
+  test('liveness tick wires orphan-loop recovery (issue #2193)', () => {
+    const timers = readFileSync(new URL('./lifecycle-timers.ts', import.meta.url), 'utf8');
+    const index = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(timers).toContain('reconcileOrphanedLoops');
+    expect(timers).toContain('ralphLoopService');
+    // Bootstrap must pass the live service into TimerDeps (optional chaining
+    // alone is not enough — without the wire, the sweep is a permanent no-op).
+    expect(index).toMatch(/timerDeps:\s*\{[\s\S]*ralphLoopService/);
+  });
+
   test('looped playbook launch delegates failed transition ownership to the service', () => {
     const source = readFileSync(new URL('./use-cases/looped-playbook-launch.ts', import.meta.url), 'utf8');
     expect(source).toContain('ralphLoopService.markLoopFailed');

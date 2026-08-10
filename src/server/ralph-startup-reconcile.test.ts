@@ -5,7 +5,12 @@ import { Monitor } from '../core/monitor.js';
 import { TokenTracker } from '../core/token-tracker.js';
 import { TaskStore, type RalphLoopState } from '../core/tasks.js';
 import type { RalphIterationRecord } from '../core/ralph-iteration-log.js';
-import { RalphLoopService, type ReconcileRalphLoopsOptions } from './ralph-loop-service.js';
+import {
+  exitReasonForOrphanedLoop,
+  RalphLoopService,
+  type ReconcileOrphanedRalphLoopsOptions,
+  type ReconcileRalphLoopsOptions,
+} from './ralph-loop-service.js';
 
 const baseLoop = (overrides: Partial<RalphLoopState> = {}): RalphLoopState => ({
   prompt: 'continue',
@@ -349,5 +354,139 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     expect(aliveB.ralphLoop?.status).toBe('running');
     expect(dead.ralphLoop?.status).toBe('failed');
     expect(paused.ralphLoop?.status).toBe('paused');
+  });
+});
+
+function reconcileOrphanedLoops(
+  store: TaskStore,
+  opts: ReconcileOrphanedRalphLoopsOptions = {},
+) {
+  const service = new RalphLoopService({
+    taskStore: store,
+    monitor: new Monitor(store, new AttentionQueue()),
+    serverCwd: '/repo',
+    interactionLog: undefined,
+    ralphCycler: undefined,
+    terminalBackend: new FakeTerminalBackend(),
+    tokenTracker: new TokenTracker(),
+    launchFreshTaskSession: vi.fn(async () => 'unused-session'),
+    completeTask: vi.fn(async () => undefined),
+    broadcastToAll: () => {
+      /* no-op */
+    },
+  });
+  return service.reconcileOrphanedLoops(opts);
+}
+
+describe('RalphLoopService.reconcileOrphanedLoops (issue #2193)', () => {
+  let store: TaskStore;
+  let recorder: Recorder;
+  const NOW = 1_700_000_999_000;
+  const now = () => NOW;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    recorder = buildRecorder();
+  });
+
+  it('fails a running loop when the task is terminal after first-hook-miss', async () => {
+    const task = createTaskForMutation(store, 'first-hook-orphan', '/cwd');
+    task.ralphLoop = baseLoop({ currentIteration: 2 });
+    store.terminateTask(task.id, { reason: 'timeout' });
+    store.setDisposition(task.id, {
+      reason: 'first_hook_miss',
+      at: new Date(NOW).toISOString(),
+      source: 'first-hook-miss',
+      outcome: 'terminated',
+      detail: 'no SessionStart',
+    });
+
+    const summary = await reconcileOrphanedLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      now,
+    });
+
+    expect(task.ralphLoop?.status).toBe('failed');
+    expect(recorder.appended).toHaveLength(1);
+    expect(recorder.appended[0].record).toMatchObject({
+      iterationNumber: 2,
+      endedAt: NOW,
+      exitReason: 'first_hook_miss',
+      cumulativeCostUsd: null,
+    });
+    expect(summary).toMatchObject({ examined: 1, preserved: 0, failed: 1 });
+    expect(summary.perTask[0]).toMatchObject({
+      taskId: task.id,
+      outcome: 'failed',
+      exitReason: 'first_hook_miss',
+    });
+  });
+
+  it('leaves running loops alone when the task is still active', async () => {
+    const task = createTaskForMutation(store, 'still-running', '/cwd');
+    task.ralphLoop = baseLoop();
+    // inProgress by default after create+session; ensure not terminal.
+    store.addSession(task.id, {
+      tmuxSession: 'live-1',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    const summary = await reconcileOrphanedLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      now,
+    });
+
+    expect(task.ralphLoop?.status).toBe('running');
+    expect(recorder.appended).toHaveLength(0);
+    expect(summary).toMatchObject({ examined: 0, failed: 0 });
+  });
+
+  it('leaves already-terminal loops alone', async () => {
+    const task = createTaskForMutation(store, 'already-failed', '/cwd');
+    task.ralphLoop = baseLoop({ status: 'failed' });
+    store.terminateTask(task.id, { reason: 'timeout' });
+
+    const summary = await reconcileOrphanedLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      now,
+    });
+
+    expect(task.ralphLoop?.status).toBe('failed');
+    expect(recorder.appended).toHaveLength(0);
+    expect(summary.examined).toBe(0);
+  });
+
+  it('maps hung_reap disposition to session_dead exit reason', async () => {
+    const task = createTaskForMutation(store, 'hung', '/cwd');
+    task.ralphLoop = baseLoop({ currentIteration: 4 });
+    store.terminateTask(task.id, { reason: 'timeout' });
+    store.setDisposition(task.id, {
+      reason: 'hung_reap',
+      at: new Date(NOW).toISOString(),
+      source: 'hung-task-reaper',
+      outcome: 'terminated',
+    });
+
+    const summary = await reconcileOrphanedLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      now,
+    });
+
+    expect(task.ralphLoop?.status).toBe('failed');
+    expect(recorder.appended[0].record.exitReason).toBe('session_dead');
+    expect(summary.failed).toBe(1);
+  });
+
+  it('exitReasonForOrphanedLoop prefers first_hook_miss disposition', () => {
+    const task = createTaskForMutation(store, 'map', '/cwd');
+    task.disposition = {
+      reason: 'first_hook_miss',
+      at: new Date().toISOString(),
+      source: 'first-hook-miss',
+      outcome: 'terminated',
+    };
+    expect(exitReasonForOrphanedLoop(task)).toBe('first_hook_miss');
   });
 });

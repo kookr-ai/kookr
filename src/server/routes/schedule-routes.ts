@@ -1,6 +1,12 @@
 import type { Hono } from "hono";
 import { normalizeAgentSelection } from "../../core/agent-types.js";
-import type { CreateScheduleInput, UpdateScheduleDefinitionInput } from "../../core/schedule.js";
+import {
+  normalizeScheduleLoopConfig,
+  ScheduleValidationError,
+  type CreateScheduleInput,
+  type ScheduleLoopConfig,
+  type UpdateScheduleDefinitionInput,
+} from "../../core/schedule.js";
 import type { PlaybookScope } from "../../core/playbook.js";
 import type { RouteDeps } from "./shared.js";
 
@@ -9,6 +15,25 @@ function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
     return (err as { fieldErrors?: Record<string, string> }).fieldErrors;
   }
   return undefined;
+}
+
+/**
+ * Coerce a PATCH/POST `loop` body field (issue #2193 gap 2). Objects normalize
+ * via {@link normalizeScheduleLoopConfig} (empty `{}` is meaningful). Anything
+ * else — string, number, array — rejects with a fieldError so callers never
+ * get a silent drop.
+ */
+function parseScheduleLoopField(raw: unknown, fieldName: string): ScheduleLoopConfig {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ScheduleValidationError("Invalid schedule definition", {
+      [fieldName]:
+        fieldName === "loop"
+          ? "Must be an object (use {} to arm loop-on-fire) or null to clear"
+          : "Must be an object (use {} to arm loop-on-fire)",
+    });
+  }
+  // Presence alone arms a loop; malformed nested fields are dropped by normalize.
+  return normalizeScheduleLoopConfig(raw) ?? {};
 }
 
 type ScheduleRunErrorCode = "capacity" | "draining" | "previous_run_active" | "validation";
@@ -97,7 +122,12 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       if (typeof body.effort === "string") patch.effort = body.effort;
       if (typeof body.model === "string") patch.model = body.model;
       if (typeof body.playbook === "object" && body.playbook !== null && !Array.isArray(body.playbook)) {
-        const playbook = body.playbook as { path?: unknown; parameters?: unknown; scope?: unknown };
+        const playbook = body.playbook as {
+          path?: unknown;
+          parameters?: unknown;
+          scope?: unknown;
+          loop?: unknown;
+        };
         if (typeof playbook.path === "string") {
           patch.playbook = {
             path: playbook.path,
@@ -108,8 +138,21 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
             // pinned tier. Merge-carry against the existing scope happens in
             // ScheduleStore.updateDefinition.
             ...(typeof playbook.scope === "string" ? { scope: playbook.scope as PlaybookScope } : {}),
+            // Nested loop is accepted for create/update convenience (#1899 /
+            // #2193) and normalized onto Schedule.loop in updateDefinition.
+            ...(playbook.loop !== undefined
+              ? { loop: parseScheduleLoopField(playbook.loop, "playbook.loop") }
+              : {}),
           };
         }
+      }
+      // Top-level loop: set to arm loop-on-fire, null to clear, omit to leave
+      // unchanged. Malformed values reject with fieldErrors (issue #2193 gap 2)
+      // rather than silently dropping the field.
+      if ("loop" in body) {
+        patch.loop = body.loop === null
+          ? null
+          : parseScheduleLoopField(body.loop, "loop");
       }
 
       return c.json(await deps.scheduleService.updateDefinition(id, patch));

@@ -2875,6 +2875,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       finishedAwaitingAckAckReaperMetrics: faaAckReaperMetrics,
       isTaskSelectedByAnyConnection: (taskId: string) => selectionController.isTaskSelectedByAnyConnection(taskId),
       sessionReaper,
+      ralphLoopService,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,
