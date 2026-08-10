@@ -104,8 +104,24 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
     const id = c.req.param("id");
     try {
       const body = await c.req.json() as Record<string, unknown>;
-      if (typeof body.enabled === "boolean" && Object.keys(body).length === 1) {
-        return c.json(await deps.scheduleService.setEnabled(id, body.enabled));
+      // enabled-only (or enabled + operatorHold) — issue #2196 hold marker for
+      // critical-schedule re-arm. Keep this short-path so UI toggles stay cheap.
+      if (typeof body.enabled === "boolean") {
+        const keys = Object.keys(body);
+        const onlyEnabled = keys.length === 1;
+        const enabledPlusHold =
+          keys.length === 2
+          && Object.prototype.hasOwnProperty.call(body, "operatorHold")
+          && typeof body.operatorHold === "boolean";
+        if (onlyEnabled || enabledPlusHold) {
+          return c.json(
+            await deps.scheduleService.setEnabled(
+              id,
+              body.enabled,
+              enabledPlusHold ? { operatorHold: body.operatorHold as boolean } : undefined,
+            ),
+          );
+        }
       }
 
       const patch: UpdateScheduleDefinitionInput = {};

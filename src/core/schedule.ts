@@ -8,6 +8,7 @@ import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
+import { isCriticalAllowlistedSchedule } from './critical-schedule-rearm.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -341,6 +342,14 @@ export interface Schedule {
   id: string;
   name: string;
   enabled: boolean;
+  /**
+   * Explicit operator hold (issue #2196). When true, critical-schedule recovery
+   * re-arm will not re-enable this schedule after outages/restarts. Set when an
+   * operator intentionally parks an allowlisted schedule; cleared when the
+   * operator re-enables it. Absent/false means disabled schedules on the
+   * critical allowlist may be re-armed on the recovery path.
+   */
+  operatorHold?: boolean;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;
@@ -766,14 +775,43 @@ export class ScheduleStore {
     return updated;
   }
 
-  setEnabled(id: string, enabled: boolean): Schedule {
+  /**
+   * Toggle enabled (issue #2196 hold semantics).
+   *
+   * - Re-enable: clears {@link Schedule.operatorHold} (operator unparks).
+   * - Disable with `operatorHold: true`: park against recovery re-arm.
+   * - Disable with `operatorHold: false`: leave re-armable (test/ops escape).
+   * - Disable with hold omitted: for **critical allowlisted** schedules, set
+   *   hold automatically so UI Pause / CLI disable do not thrash with the
+   *   60s recovery re-arm loop; for other schedules, preserve existing hold.
+   *   Legacy critical schedules already disabled without a hold remain
+   *   re-armable until recovery re-enables them once.
+   */
+  setEnabled(
+    id: string,
+    enabled: boolean,
+    opts?: { operatorHold?: boolean },
+  ): Schedule {
     const existing = this.schedules.get(id);
     if (!existing) throw new ScheduleValidationError(`Schedule not found: ${id}`);
-    const updated = {
+    const updated: Schedule = {
       ...existing,
       enabled,
       updatedAt: new Date().toISOString(),
     };
+    if (enabled) {
+      // Manual enable clears any hold — the operator is unparking.
+      delete updated.operatorHold;
+    } else if (opts?.operatorHold === true) {
+      updated.operatorHold = true;
+    } else if (opts?.operatorHold === false) {
+      delete updated.operatorHold;
+    } else if (isCriticalAllowlistedSchedule(existing)) {
+      // Hold omitted: park critical schedules on intentional disable so UI
+      // Pause / CLI disable do not fight recovery re-arm every tick.
+      // Non-critical schedules: leave any existing hold state alone.
+      updated.operatorHold = true;
+    }
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
     this.bumpRevision();
@@ -845,6 +883,8 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     id: String(candidate.id),
     name: typeof candidate.name === 'string' ? candidate.name : 'Unnamed schedule',
     enabled: candidate.enabled ?? true,
+    // Durable operator hold (issue #2196) — only rehydrate explicit true.
+    ...(candidate.operatorHold === true ? { operatorHold: true } : {}),
     cron: String(candidate.cron),
     ...normalizeTriggerState(candidate),
     playbook: {

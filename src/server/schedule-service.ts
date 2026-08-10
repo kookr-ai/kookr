@@ -344,12 +344,12 @@ export class ScheduleService {
     return this.store.getWithComputed(id)!;
   }
 
-  async setEnabled(id: string, enabled: boolean) {
+  async setEnabled(id: string, enabled: boolean, opts?: { operatorHold?: boolean }) {
     const schedule = this.requireSchedule(id);
     if (enabled && isTriggerLimitExhausted(schedule)) {
       throw new ScheduleValidationError('Schedule trigger limit has been exhausted', { maxTriggers: 'Increase or clear the trigger limit before resuming' });
     }
-    this.store.setEnabled(id, enabled);
+    this.store.setEnabled(id, enabled, opts);
     await this.store.persist();
     this.broadcastSchedules();
     return this.store.getWithComputed(id)!;
