@@ -194,6 +194,13 @@ export type ScheduleExecutionReasonCode =
    * parked rather than dispatched into a known-missing agent.
    */
   | 'provider_paused'
+  /**
+   * Grok session/OIDC auth is expired or missing, and no non-Grok substitute
+   * could launch (issue #2194). Distinct from generic `launch_error` so the
+   * ledger/GET /api/schedules surface a readable auth failure instead of a
+   * thrashing `dispatch_failed` noise class. Never an API-key path.
+   */
+  | 'auth_expired'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
 

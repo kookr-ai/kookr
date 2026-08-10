@@ -16,6 +16,7 @@ import {
   modelsForAgent,
 } from '../core/agent-types.js';
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
+import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
@@ -94,6 +95,18 @@ export interface LaunchServiceDeps {
    * the monitor: the rotation then applies no deprioritization.
    */
   getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /**
+   * Grok session/OIDC usability for launch-time agent selection (issue #2194).
+   * When `false`, round-robin and plan-quota rotation exclude `grok-build` so
+   * a healthy non-Grok backend is preferred over a known-auth-failed slot.
+   * Absent ⇒ no auth filter (back-compat). Never consults API-key auth.
+   */
+  isGrokAuthUsable?: () => boolean;
+  /**
+   * Optional refresh of the Grok auth usability cache before agent selection
+   * (issue #2194). Best-effort; a probe fault must not fail the launch.
+   */
+  refreshGrokAuthAvailability?: () => Promise<void>;
   /**
    * Automatic fallback policy (issue #2001). Applied when plan-quota admission
    * rotates off claude-code and when schedule WS1.3 substitutes a pin. Absent
@@ -1157,22 +1170,39 @@ async function launchTaskCore(
   // over the configured default; either may be the `round-robin` sentinel,
   // which is resolved to a concrete agent *here* — before dedup and task
   // creation — so the task record always stores a concrete agent type.
+  // issue #2194: refresh Grok session-auth cache before selection so RR and
+  // plan-quota rotation do not keep landing on an auth-expired grok-build.
+  if (deps.refreshGrokAuthAvailability) {
+    try {
+      await deps.refreshGrokAuthAvailability();
+    } catch (err) {
+      console.warn(
+        '[launch] Grok auth availability refresh failed (continuing with last known verdict):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
   const requestedAgent: AgentSelection =
     opts.agentType ??
     deps.getDefaultAgentType?.() ??
     adapterRegistry.getDefaultType() ??
     DEFAULT_AGENT_TYPE;
   const isRoundRobin = requestedAgent === ROUND_ROBIN_AGENT_TYPE;
+  // Registered ∩ Grok-auth-launchable (issue #2194): an expired session must
+  // not consume a round-robin slot when a healthy non-Grok backend remains.
+  const launchableTypes = filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
+    grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
+  });
   // `peek` (not advance): the rotation cursor must only move once a task is
   // actually committed, so a deduplicated or rejected launch does not consume
   // a rotation slot. The matching `advance()` calls fire after `createTask`.
   let agentType: AgentType = isRoundRobin
     ? resolveRoundRobinAgent(
         deps.roundRobinCursor?.peek() ?? 0,
-        adapterRegistry.getTypes(),
+        launchableTypes,
         // Boot-reliability failover precondition (#1898): skip agents whose
         // recent boot latency is unhealthy while a healthier one is registered.
-        deps.getDeprioritizedAgentTypes?.(adapterRegistry.getTypes()) ?? [],
+        deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
       )
     : requestedAgent;
   // Per-task effort/model pins may be dropped if plan-quota rotation (#1936)
@@ -1365,7 +1395,11 @@ async function launchTaskCore(
       // `substituted` is reachable with the exclude filter (pin never stays
       // "available"). Walk remaining candidates if a substitute fails the R19
       // remote-chat trust boundary so we never rotate onto a forbidden agent.
-      const available = adapterRegistry.getTypes().filter((t) => t !== 'claude-code');
+      // issue #2194: also strip auth-expired grok-build from rotation candidates.
+      const available = filterLaunchableAgentTypes(
+        adapterRegistry.getTypes().filter((t) => t !== 'claude-code'),
+        { grokAuthUsable: deps.isGrokAuthUsable?.() ?? true },
+      );
       const deprioritized = deps.getDeprioritizedAgentTypes?.(available) ?? [];
       const fallbackPolicy = deps.getAgentFallbackPolicy?.();
       let toAgent: AgentType | null = null;

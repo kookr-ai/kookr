@@ -183,6 +183,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'agent substituted';
     case 'provider_paused':
       return 'provider paused';
+    case 'auth_expired':
+      return 'Grok auth expired';
     case 'reconciled_after_restart':
       return 'reconciled after restart';
     case 'unknown_after_restart':
