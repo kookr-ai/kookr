@@ -826,13 +826,13 @@ describe('lucy#1587 acquisition failover curated plan', () => {
 });
 
 describe('lucy#1590 headline metrics residual curated plan', () => {
-  it('has a vetted 4-leaf residual plan registered, each leaf well-formed', () => {
+  it('has a vetted 3-leaf invent-wave residual plan registered, each leaf well-formed', () => {
     const plan = curatedLeafPlan('jeanibarz/lucy#1590');
     expect(plan).toBe(LUCY_1590_LEAF_PLAN);
-    expect(plan).toHaveLength(4);
+    expect(plan).toHaveLength(3);
     const normalized = normalizeLeafPlan(plan);
     expect(normalized.ok).toBe(true);
-    expect(normalized.leaves).toHaveLength(4);
+    expect(normalized.leaves).toHaveLength(3);
     for (const leaf of plan!) {
       expect(validateLeafSpec(leaf)).toEqual([]);
       expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
@@ -855,7 +855,7 @@ describe('lucy#1590 headline metrics residual curated plan', () => {
     });
     expect(decision.selected?.ref).toBe('jeanibarz/lucy#1590');
     expect(decision.selected?.productMetricBlocking).toBe(true);
-    expect(decision.leafCount).toBe(4);
+    expect(decision.leafCount).toBe(3);
     expect(decision.selected?.needsAuthoring).toBe(false);
   });
 
@@ -868,13 +868,13 @@ describe('lucy#1590 headline metrics residual curated plan', () => {
           number: 1590,
           title:
             'Umbrella: headline metrics in tested code — detection-lead rollup, wired reliability metrics, degraded-health surfaces',
-          openChildrenCount: 4,
+          openChildrenCount: 3,
         }),
       ],
     });
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1590');
-    expect(decision.skipped[0]!.reason).toMatch(/already has 4 open child/);
+    expect(decision.skipped[0]!.reason).toMatch(/already has 3 open child/);
   });
 });
 
