@@ -442,11 +442,14 @@ export interface ScheduleStatusSnapshot {
    * unconfigured or has never run. `attempts`/`successes` are cumulative;
    * `escalated` is true while the current starvation episode has exhausted the
    * self-heal cap and is standing on a durable alert.
+   * `class: 'auth_expired'` (issue #2195) is set while a pure Grok session-auth
+   * episode is in flight — self-heal thrash is skipped for that class.
    */
   deadManSelfHeal?: {
     attempts: number;
     successes: number;
     escalated: boolean;
+    class?: 'auth_expired';
   };
 }
 

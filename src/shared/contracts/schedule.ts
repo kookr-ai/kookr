@@ -224,6 +224,17 @@ export interface ScheduleStatusSnapshot {
   schedulerHealthy: boolean;
   loadError?: string;
   lastError?: string;
+  /**
+   * Dead-man bounded self-heal counters (issue #1903). Absent when self-heal
+   * has never acted. `class: 'auth_expired'` (issue #2195) marks a pure Grok
+   * session-auth episode (no self-heal thrash; one escalate).
+   */
+  deadManSelfHeal?: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+    class?: 'auth_expired';
+  };
 }
 
 export interface ScheduleListResponse {

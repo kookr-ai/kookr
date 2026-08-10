@@ -50,6 +50,14 @@ import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
  * loop, never an infinite restart loop. Attempt/success counters are exposed
  * via {@link ScheduleDeadManSwitch.stats}. With no `selfHeal` wired the switch
  * is alert-only exactly as before (back-compat).
+ *
+ * Auth-expiry class (issue #2195): when consecutive failures (or the window
+ * starvation set) are purely Grok session/OIDC expiry (`reasonCode:
+ * auth_expired` or a matching preflight message), re-firing cannot restore
+ * launches. The switch classifies the episode as `auth_expired`, skips
+ * self-heal thrash entirely, and escalates ONCE with the recovery command
+ * (`grok login --device-code` / OIDC — never API keys). A durable operator
+ * artifact rides the same operational-alert bridge as capacity starvation.
  */
 export const DEAD_MAN_CONSECUTIVE_FAILURES = 3;
 
@@ -77,6 +85,51 @@ const HEALTHY_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'completed',
   'cancelled',
 ]);
+
+/**
+ * Operational-alert key for a pure Grok session-auth starvation episode
+ * (issue #2195). Distinct from `schedule:dead_man` so capacity thrash and
+ * auth-login recovery do not share the same standing alert.
+ */
+export const AUTH_EXPIRED_OPERATIONAL_KEY = 'schedule:auth_expired';
+
+/**
+ * Starvation root-cause class carried on a verdict / episode (issue #2195).
+ * Absent means the historical capacity/dispatch starvation path.
+ */
+export type ScheduleStarvationClass = 'auth_expired';
+
+/**
+ * True when a ledger entry is a classified Grok session/OIDC expiry failure
+ * (issue #2195). Matches `reasonCode: auth_expired` first, then well-known
+ * preflight message patterns as defense in depth for rows written before the
+ * reason code existed or when only the message was persisted.
+ *
+ * Never treats API-key / `XAI_API_KEY` paths as a recovery hint — the
+ * remediation string is always session login.
+ */
+export function isAuthExpiredLedgerEntry(
+  entry: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'message'>,
+): boolean {
+  // Only dispatch failures can be the auth-expiry thrash class. A completed
+  // fire must never count as auth starvation even if a stale reasonCode leaks.
+  if (entry.outcome !== 'dispatch_failed') return false;
+  if (entry.reasonCode === 'auth_expired') return true;
+  return isGrokAuthExpiryMessage(entry.message);
+}
+
+/**
+ * Classify free-form launch/dispatch error text as Grok session expiry.
+ * Shared shape with the schedule-runner's late-preflight mapper (#2194).
+ */
+export function isGrokAuthExpiryMessage(message: string | undefined): boolean {
+  if (!message) return false;
+  return (
+    /Grok authentication (expired|unavailable)/i.test(message)
+    || /grok login --device-code/i.test(message)
+    || /reasonCode:\s*auth_expired/i.test(message)
+  );
+}
 
 /**
  * Deliberate, operator/actuator-driven suppressions — NOT starvation. Excluded
@@ -136,12 +189,18 @@ interface StarvationVerdict {
   reason?: string;
   /** Ids of the enabled schedules the verdict deems starving — the self-heal re-fire targets. */
   scheduleIds?: string[];
+  /**
+   * Present when every starving schedule's failure tail (or the window set) is
+   * pure Grok session expiry — self-heal must not thrash (issue #2195).
+   */
+  class?: ScheduleStarvationClass;
 }
 
 /**
  * Observable self-heal counters (issue #1903). Cumulative totals are for
  * operator observability (surfaced on the schedule status snapshot / health);
  * `episodeAttempts` and `escalated` describe the in-flight episode.
+ * `class` is set while an auth-expiry episode is active (issue #2195).
  */
 export interface ScheduleDeadManStats {
   /** Cumulative self-heal kicks attempted across all episodes. */
@@ -154,6 +213,13 @@ export interface ScheduleDeadManStats {
   escalated: boolean;
   /** True while a starvation episode is in flight. */
   firing: boolean;
+  /**
+   * Root-cause class for the in-flight episode (issue #2195). Present only
+   * while `firing` and the episode was classified as Grok session expiry —
+   * surfaces on schedule status / health so operators see `auth_expired`
+   * instead of anonymous consecutiveFailures thrash.
+   */
+  class?: ScheduleStarvationClass;
 }
 
 export class ScheduleDeadManSwitch {
@@ -164,6 +230,8 @@ export class ScheduleDeadManSwitch {
   private escalated = false;
   /** Reason captured on the starving edge, reused for the escalation alert. */
   private episodeReason = '';
+  /** Auth vs capacity class for the in-flight episode (issue #2195). */
+  private episodeClass: ScheduleStarvationClass | undefined;
   /** Cumulative self-heal counters, exposed via {@link stats}. */
   private totalAttempts = 0;
   private totalSuccesses = 0;
@@ -178,6 +246,9 @@ export class ScheduleDeadManSwitch {
    * (fired on the healthy→starving edge, recovered on the way back) and, when a
    * self-heal action is wired, kicks the runner up to the per-episode cap before
    * escalating to a standing durable alert (issue #1903).
+   *
+   * Auth-expiry episodes (issue #2195) skip self-heal and escalate once on the
+   * edge with a session-login recovery command.
    */
   check(schedules: Schedule[]): void {
     const nowMs = (this.deps.now?.() ?? new Date()).getTime();
@@ -186,12 +257,29 @@ export class ScheduleDeadManSwitch {
 
     if (verdict.starving) {
       if (!this.firing) {
-        // healthy → starving edge: open the episode and raise the warning once.
+        // healthy → starving edge: open the episode.
         this.firing = true;
         this.episodeAttempts = 0;
         this.escalated = false;
+        this.episodeClass = verdict.class;
         this.episodeReason = verdict.reason ?? 'scheduled executions are starving';
+
+        if (this.episodeClass === 'auth_expired') {
+          // Re-firing cannot fix OIDC — escalate once immediately, no thrash.
+          this.escalated = true;
+          console.error(
+            `[schedule-dead-man] auth_expired starvation classified; skipping self-heal thrash: ${this.episodeReason}`,
+          );
+          this.emit(buildAuthExpiredEscalationAlert(this.episodeReason));
+          return;
+        }
+
         this.emit(buildScheduleStarvationAlert(this.episodeReason, windowMs));
+      }
+      // Capacity path only: auth episodes returned above and never self-heal.
+      if (this.episodeClass === 'auth_expired') {
+        // Still-starving auth episode: already escalated once; stay quiet.
+        return;
       }
       // Attempt a bounded self-heal on the edge tick AND every still-starving
       // tick thereafter, escalating once the cap is exhausted.
@@ -206,14 +294,20 @@ export class ScheduleDeadManSwitch {
       // counter agree.
       const healedBySelfHeal = this.episodeAttempts > 0 && !this.escalated;
       const attempts = this.episodeAttempts;
+      const recoveredAuthClass = this.episodeClass === 'auth_expired';
       this.firing = false;
       this.episodeAttempts = 0;
       this.escalated = false;
+      this.episodeClass = undefined;
       if (healedBySelfHeal) {
         this.totalSuccesses += 1;
         console.log(`[schedule-dead-man] starvation cleared after ${attempts} self-heal attempt(s)`);
       }
-      this.emit(buildScheduleStarvationRecoveryAlert(healedBySelfHeal ? attempts : 0));
+      if (recoveredAuthClass) {
+        this.emit(buildAuthExpiredRecoveryAlert());
+      } else {
+        this.emit(buildScheduleStarvationRecoveryAlert(healedBySelfHeal ? attempts : 0));
+      }
     }
   }
 
@@ -225,6 +319,7 @@ export class ScheduleDeadManSwitch {
       episodeAttempts: this.episodeAttempts,
       escalated: this.escalated,
       firing: this.firing,
+      ...(this.firing && this.episodeClass ? { class: this.episodeClass } : {}),
     };
   }
 
@@ -233,6 +328,7 @@ export class ScheduleDeadManSwitch {
    * re-fire while under the cap, then escalates ONCE to a standing durable alert
    * and stops. Called once per dead-man tick, so attempts are spaced one tick
    * apart. No-op when no self-heal action is wired (alert-only back-compat).
+   * Never called for auth_expired episodes (issue #2195).
    */
   private maybeSelfHeal(windowMs: number, scheduleIds: string[]): void {
     if (!this.deps.selfHeal) return;
@@ -298,6 +394,11 @@ export class ScheduleDeadManSwitch {
 
 /**
  * Pure starvation evaluator — exported for direct unit testing.
+ *
+ * When every consecutive-failure tail (condition a) or every non-healthy
+ * windowed entry (condition b) is a pure Grok session-auth failure, the
+ * verdict carries `class: 'auth_expired'` so the switch can skip self-heal
+ * thrash (issue #2195). Mixed capacity+auth tails stay on the capacity path.
  */
 export function evaluateScheduleStarvation(
   schedules: Schedule[],
@@ -312,22 +413,49 @@ export function evaluateScheduleStarvation(
   // one encountered while the rest stay starved (matches condition (b), which
   // already accumulates all windowed ids).
   const consecutiveFailureIds: string[] = [];
+  const consecutiveAuthIds: string[] = [];
   let firstConsecutiveReason: string | undefined;
+  let firstAuthReason: string | undefined;
   for (const schedule of enabled) {
     const relevant = schedule.executionLedger.filter(
       (entry) => !DELIBERATE_SUPPRESSION_OUTCOMES.has(entry.outcome),
     );
     if (relevant.length < DEAD_MAN_CONSECUTIVE_FAILURES) continue;
     const tail = relevant.slice(-DEAD_MAN_CONSECUTIVE_FAILURES);
-    if (tail.every((entry) => STARVATION_OUTCOMES.has(entry.outcome))) {
-      consecutiveFailureIds.push(schedule.id);
-      if (firstConsecutiveReason === undefined) {
-        const outcomes = tail.map((entry) => entry.outcome).join(', ');
-        firstConsecutiveReason = `schedule "${schedule.name}" — last ${DEAD_MAN_CONSECUTIVE_FAILURES} outcomes were capacity/dispatch failures (${outcomes})`;
+    if (!tail.every((entry) => STARVATION_OUTCOMES.has(entry.outcome))) continue;
+
+    consecutiveFailureIds.push(schedule.id);
+    if (firstConsecutiveReason === undefined) {
+      const outcomes = tail.map((entry) => entry.outcome).join(', ');
+      firstConsecutiveReason = `schedule "${schedule.name}" — last ${DEAD_MAN_CONSECUTIVE_FAILURES} outcomes were capacity/dispatch failures (${outcomes})`;
+    }
+
+    if (tail.every((entry) => isAuthExpiredLedgerEntry(entry))) {
+      consecutiveAuthIds.push(schedule.id);
+      if (firstAuthReason === undefined) {
+        firstAuthReason =
+          `schedule "${schedule.name}" — last ${DEAD_MAN_CONSECUTIVE_FAILURES} outcomes are Grok session auth expiry (auth_expired)`;
       }
     }
   }
   if (consecutiveFailureIds.length > 0) {
+    // Pure auth episode only when EVERY starving schedule is auth-classified
+    // (mixed capacity+auth still needs self-heal for the capacity side).
+    const pureAuth =
+      consecutiveAuthIds.length === consecutiveFailureIds.length
+      && consecutiveAuthIds.length > 0;
+    if (pureAuth) {
+      const more = consecutiveAuthIds.length - 1;
+      return {
+        starving: true,
+        class: 'auth_expired',
+        reason:
+          more > 0
+            ? `${firstAuthReason} (+${more} other schedule(s) also auth-expired)`
+            : (firstAuthReason as string),
+        scheduleIds: consecutiveAuthIds,
+      };
+    }
     const more = consecutiveFailureIds.length - 1;
     return {
       starving: true,
@@ -354,9 +482,13 @@ export function evaluateScheduleStarvation(
     }
   }
   if (windowed.length > 0 && !windowed.some((entry) => HEALTHY_OUTCOMES.has(entry.outcome))) {
+    const pureAuth = windowed.every((entry) => isAuthExpiredLedgerEntry(entry));
     return {
       starving: true,
-      reason: `${windowed.length} scheduled fire(s) were due in the last ${Math.round(windowMs / 60_000)}m and none was dispatched or completed`,
+      ...(pureAuth ? { class: 'auth_expired' as const } : {}),
+      reason: pureAuth
+        ? `${windowed.length} scheduled fire(s) in the last ${Math.round(windowMs / 60_000)}m all failed with Grok session auth expiry (auth_expired)`
+        : `${windowed.length} scheduled fire(s) were due in the last ${Math.round(windowMs / 60_000)}m and none was dispatched or completed`,
       scheduleIds: [...windowedScheduleIds],
     };
   }
@@ -430,6 +562,52 @@ function buildScheduleStarvationRecoveryAlert(selfHealAttempts: number): Extract
     operationalAlert: {
       key: 'schedule:dead_man',
       metric: 'schedule_starvation',
+      state: 'recovered',
+    },
+  };
+}
+
+/**
+ * Single critical escalate for a pure Grok session-auth starvation episode
+ * (issue #2195). One alert per episode — no self-heal thrash, no per-schedule
+ * spam. Session/OIDC recovery only (never API keys).
+ */
+function buildAuthExpiredEscalationAlert(
+  reason: string,
+): Extract<ServerMessage, { type: 'alert' }> {
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Grok session auth expired — scheduled launches blocked until re-login: ${reason}`,
+    details:
+      `Dead-man classified root cause as auth_expired (issue #2195): ${reason}. ` +
+      'Bounded self-heal re-fires cannot restore OIDC and have been skipped for this episode. ' +
+      'Recovery: run `grok login --device-code` (or `grok login --oauth`) on the Kookr host, ' +
+      'then confirm a schedule fire succeeds (or wait for the next healthy launch). ' +
+      'Do NOT set XAI_API_KEY — session/OIDC path only. ' +
+      'This alert is raised once per auth-expiry episode and clears when scheduled executions flow again.',
+    severity: 'critical',
+    operationalAlert: {
+      key: AUTH_EXPIRED_OPERATIONAL_KEY,
+      metric: 'auth_expired',
+      state: 'fired',
+    },
+  };
+}
+
+function buildAuthExpiredRecoveryAlert(): Extract<ServerMessage, { type: 'alert' }> {
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: 'Recovered: Grok session auth expiry no longer blocking scheduled launches',
+    details:
+      'Auth-expired dead-man class cleared (issue #2195): a scheduled execution was ' +
+      'dispatched/completed and no enabled schedule shows a consecutive auth_expired tail. ' +
+      'Normal dead-man self-heal behavior resumes for capacity starvation.',
+    severity: 'info',
+    operationalAlert: {
+      key: AUTH_EXPIRED_OPERATIONAL_KEY,
+      metric: 'auth_expired',
       state: 'recovered',
     },
   };

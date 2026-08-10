@@ -404,7 +404,10 @@ export class ScheduleRunner {
           if (
             deadManStats.attempts > 0 ||
             deadManStats.successes > 0 ||
-            deadManStats.escalated
+            deadManStats.escalated ||
+            // issue #2195: auth class escalates with 0 self-heal attempts —
+            // still surface so health shows `auth_expired` without thrash.
+            deadManStats.class === 'auth_expired'
           ) {
             this.selfHealStatsSurfaced = true;
           }
