@@ -10,6 +10,7 @@ import type {
   UnboundCodexAggregate,
 } from '../../shared/contracts/cost-comparison.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { getCostComparison } from '../api/index.js';
 
 /**
@@ -48,15 +49,12 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   useEscapeToClose(onClose);
-
-  // Auto-focus the close button on mount so keyboard users land somewhere inside
-  // the dialog (otherwise focus stays on the trigger button behind the overlay).
-  useEffect(() => {
-    closeBtnRef.current?.focus();
-  }, []);
+  // Focus the close button on open and trap Tab inside the aria-modal dialog.
+  useDialogFocus({ dialogRef, initialFocusRef: closeBtnRef });
 
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -96,10 +94,12 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
 
   return (
     <div
+      ref={dialogRef}
       className="cost-comparison-overlay"
       role="dialog"
       aria-modal="true"
       aria-labelledby="cost-cmp-title"
+      tabIndex={-1}
     >
       <div className="cost-comparison-panel">
         <header className="cost-comparison-header">
