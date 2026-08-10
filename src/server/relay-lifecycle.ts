@@ -49,6 +49,14 @@ interface RelayStateFile {
 }
 
 const STATE_VERSION = 'relay-lifecycle-state.v1';
+
+/**
+ * Per-request abort timeout for relay control-plane / lifecycle HTTP probes.
+ * Long enough for slow-but-reachable relays; short enough that a hung half-open
+ * connection cannot wedge pairing, validation, rotation, or doctor summaries (#2190).
+ */
+export const RELAY_HTTP_TIMEOUT_MS = 5_000;
+
 const RELAY_ENV_HASH_KEYS = [
   'KOOKR_RELAY_ACCOUNT_ID',
   'KOOKR_RELAY_ACCOUNT_TOKEN',
@@ -250,6 +258,7 @@ export async function diagnoseRelayNode(opts: RelayLifecycleOptions = {}): Promi
   try {
     const res = await fetch(new URL('/relay/node/status', credentials.relayUrl), {
       headers: { authorization: `Bearer ${credentials.relayToken}` },
+      signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
     });
     if (res.status === 401 || res.status === 403) {
       return {
@@ -571,8 +580,14 @@ async function fetchRelayPolicySummary(opts: RelayLifecycleOptions): Promise<Rel
   const headers: Record<string, string> | undefined = adminToken ? { authorization: `Bearer ${adminToken}` } : undefined;
   try {
     const [nodesRes, invitationsRes] = await Promise.all([
-      fetch(new URL('/relay/admin/nodes', config.relayUrl), { headers }),
-      fetch(new URL('/relay/admin/invitations', config.relayUrl), { headers }),
+      fetch(new URL('/relay/admin/nodes', config.relayUrl), {
+        headers,
+        signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
+      }),
+      fetch(new URL('/relay/admin/invitations', config.relayUrl), {
+        headers,
+        signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
+      }),
     ]);
     if (nodesRes.status === 401 || invitationsRes.status === 401) return { status: 'unauthorized' };
     if (!nodesRes.ok || !invitationsRes.ok) return { status: 'unavailable' };

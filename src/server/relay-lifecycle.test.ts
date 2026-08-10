@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import {
@@ -13,6 +13,7 @@ import {
   diagnoseRelayEnv,
   diagnoseRelayNode,
   diagnoseRelayProcess,
+  RELAY_HTTP_TIMEOUT_MS,
   startRelay,
   stopRelay,
 } from './relay-lifecycle.js';
@@ -20,6 +21,33 @@ import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 
 const cleanupDirs: string[] = [];
 let relay: RelayServerHandle | null = null;
+
+/** Hang until the request AbortSignal fires (proves lifecycle fetches pass a timeout). */
+function hungFetch(_url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) {
+      reject(new Error('expected AbortSignal on relay lifecycle fetch'));
+      return;
+    }
+    const abort = (): void => {
+      reject(new DOMException('The operation was aborted.', 'TimeoutError'));
+    };
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+/** Collapse the production 5s budget so timeout-path tests stay fast. */
+function speedUpRelayHttpTimeout(): void {
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => (
+    realTimeout(ms === RELAY_HTTP_TIMEOUT_MS ? 30 : ms)
+  ));
+}
 
 async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
@@ -70,6 +98,7 @@ async function waitForRelayAdmin(relayUrl: string, token: string): Promise<void>
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (relay) {
     await relay.close();
     relay = null;
@@ -303,6 +332,60 @@ describe('relay lifecycle diagnostics', () => {
       relayUrl,
       message: 'Relay rejected the configured node token; re-pair this node.',
     }));
+  });
+
+  it('aborts a hung node-status probe as unreachable after the request timeout', async () => {
+    speedUpRelayHttpTimeout();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hungFetch as typeof fetch);
+    const cwd = await tempDir('kookr-relay-node-timeout-');
+
+    const diagnosis = await diagnoseRelayNode({
+      cwd,
+      kookrDir: join(cwd, '.kookr'),
+      env: {
+        KOOKR_RELAY_URL: 'http://relay.timeout.test',
+        KOOKR_RELAY_TOKEN: 'tok',
+        KOOKR_RELAY_NODE_ID: 'node-1',
+      },
+    });
+
+    expect(diagnosis).toEqual(expect.objectContaining({
+      state: 'unreachable',
+      relayUrl: 'http://relay.timeout.test',
+      message: 'Relay URL is unreachable from this process.',
+    }));
+    expect(fetchSpy).toHaveBeenCalled();
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(RELAY_HTTP_TIMEOUT_MS);
+  });
+
+  it('aborts hung doctor policy fetches as unavailable after the request timeout', async () => {
+    speedUpRelayHttpTimeout();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hungFetch as typeof fetch);
+    const cwd = await tempDir('kookr-relay-policy-timeout-');
+    const kookrDir = join(cwd, '.kookr');
+    const port = await freePort();
+
+    const report = await buildRelayDoctorReport({
+      cwd,
+      kookrDir,
+      env: {
+        KOOKR_DIR: kookrDir,
+        KOOKR_RELAY_BIND_HOST: '127.0.0.1',
+        KOOKR_RELAY_PORT: String(port),
+        KOOKR_RELAY_ADMIN_TOKEN: 'admin-secret',
+      },
+      now: () => new Date('2026-05-17T10:00:00.000Z'),
+    });
+
+    expect(report.policy).toEqual({ status: 'unavailable' });
+    // Policy summary fires two parallel fetches (nodes + invitations).
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of fetchSpy.mock.calls) {
+      const init = call[1] as RequestInit | undefined;
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
   });
 
   it('detects relay env changes that require relay restart', async () => {

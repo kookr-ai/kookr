@@ -24,7 +24,7 @@ import type {
 } from '../shared/contracts/relay-connection.js';
 import type { HostedRelayNodeCredentialResponse, HostedRelayStatus } from '../shared/contracts/hosted-relay.js';
 import { hostedRelayStatusFromEnv } from './hosted-relay-config.js';
-import { diagnoseRelayEnv } from './relay-lifecycle.js';
+import { diagnoseRelayEnv, RELAY_HTTP_TIMEOUT_MS } from './relay-lifecycle.js';
 
 export interface RelayRuntimeHandle {
   readonly nodeStatus: RemoteNodeStatus;
@@ -161,6 +161,7 @@ async function validateNodeCredentials(credentials: RelayConnectionCredentials):
     const statusUrl = new URL('/relay/node/status', credentials.relayUrl);
     const res = await fetch(statusUrl, {
       headers: { authorization: `Bearer ${credentials.relayToken}` },
+      signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
     });
     if (res.status === 401 || res.status === 403) {
       return errorView('authFailed', 'Relay rejected the node token.');
@@ -228,6 +229,7 @@ async function requestNodePairing(input: RelayConnectionPairRequest): Promise<Re
       body: JSON.stringify({
         ...(parsed.displayName ? { displayName: parsed.displayName } : {}),
       }),
+      signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
     });
   } catch {
     throw new RelayAdminOperationError('relay-unreachable', 'Relay could not be reached.', 502);
@@ -284,6 +286,7 @@ async function requestHostedNodePairing(
       body: JSON.stringify({
         ...(displayName ? { displayName } : {}),
       }),
+      signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
     });
   } catch {
     throw new RelayAdminOperationError('relay-unreachable', 'Hosted relay could not be reached.', 502);
@@ -340,6 +343,7 @@ async function requestNodeTokenRotation(
     ), {
       method: 'POST',
       headers: { authorization: `Bearer ${relayAdminToken}` },
+      signal: AbortSignal.timeout(RELAY_HTTP_TIMEOUT_MS),
     });
   } catch {
     throw new RelayAdminOperationError('relay-unreachable', 'Relay could not be reached.', 502);
