@@ -218,6 +218,8 @@ import { createOssServices, createOssSourceWatchers } from './bootstrap/create-o
 import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { IdleRefineryRunner } from './idle-refinery-runner.js';
+import { PostRecoveryService } from './post-recovery-service.js';
+import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
@@ -2033,6 +2035,33 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
   });
 
+  // Post-recovery critical-schedule re-arm + supply-aware queue-fill kick
+  // (issue #2196). Always on (gated by allowlist + once-per-UTC-day + capacity);
+  // re-enables residual L3 schedules after outages and kicks one idea-scout per
+  // product batch repo when free≥N and the queue is empty.
+  const postRecoveryService = new PostRecoveryService({
+    listSchedules: () => scheduleStore.list(),
+    setEnabled: (id, enabled) => scheduleService.setEnabled(id, enabled),
+    taskStore,
+    getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
+    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    isDispatchHealthy: () => {
+      // Unhealthy only when Grok session auth is unusable AND no non-Grok agent
+      // is launchable — same auth_expired posture as schedule fires (#2194).
+      // Never treats API-key paths as a recovery lever.
+      const grokUsable = launchServiceDeps.isGrokAuthUsable?.() ?? true;
+      if (grokUsable) return true;
+      const launchable = filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
+        grokAuthUsable: false,
+      });
+      return launchable.length > 0;
+    },
+    isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    kookrDir,
+    log: (line) => console.log(line),
+  });
+
   const persistenceHealth = new PersistenceHealthTracker();
   // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
   // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
@@ -2775,6 +2804,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
     idleRefineryRunner,
+    postRecoveryService,
     resourceStatusService,
     resourceWatchdogService,
     findingEvidenceReviewSampler,

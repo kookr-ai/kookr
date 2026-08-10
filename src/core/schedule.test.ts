@@ -464,6 +464,27 @@ describe('ScheduleStore', () => {
     expect(updated.enabled).toBe(false);
   });
 
+  it('operatorHold parks a disable and clears on re-enable (issue #2196)', () => {
+    const schedule = store.create({
+      name: 'Critical residual',
+      cron: '0 0 * * *',
+      playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      cwd: '/tmp',
+    });
+
+    const held = store.setEnabled(schedule.id, false, { operatorHold: true });
+    expect(held.enabled).toBe(false);
+    expect(held.operatorHold).toBe(true);
+
+    const plainDisable = store.setEnabled(schedule.id, false);
+    // Plain disable preserves existing hold.
+    expect(plainDisable.operatorHold).toBe(true);
+
+    const unpark = store.setEnabled(schedule.id, true);
+    expect(unpark.enabled).toBe(true);
+    expect(unpark.operatorHold).toBeUndefined();
+  });
+
   it('replaces a schedule with runtime execution state', () => {
     const schedule = store.create({
       name: 'Runtime',

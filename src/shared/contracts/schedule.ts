@@ -169,6 +169,11 @@ export interface Schedule {
   id: string;
   name: string;
   enabled: boolean;
+  /**
+   * Explicit operator hold (issue #2196). When true, critical-schedule recovery
+   * re-arm will not re-enable this schedule. Mirrors `core/schedule`.
+   */
+  operatorHold?: boolean;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;
