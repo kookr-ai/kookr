@@ -713,7 +713,7 @@ kookr status --json
 pnpm status
 ```
 
-The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts. It also surfaces health-derived operator lines when present: `SAFE MODE`, `CI-blind debt`, and — when the issue belt is starved — one `Pipeline starvation: <repo> blockedEmpty=<n>` line per elevated repo (mirroring `/api/health` → `pipelineStarvation`), with a slim summary under `details.pipelineStarvation` in `--json`.
+The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts. It also surfaces health-derived operator lines when present: `SAFE MODE`, `CI-blind debt`, — when the issue belt is starved — one `Pipeline starvation: <repo> blockedEmpty=<n>` line per elevated repo (mirroring `/api/health` → `pipelineStarvation`), and — when host-wide process leaks are elevated — one `Stale processes: dtach=<n> rss=<human>` line (and/or `relayServer=…`) mirroring `/api/health` → `staleProcesses` (issue #2209). Slim summaries land under `details.pipelineStarvation` / `details.staleProcesses` in `--json` only when elevated; zero/absent gauges stay quiet.
 
 Options:
 

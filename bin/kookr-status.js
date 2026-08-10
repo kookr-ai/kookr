@@ -166,6 +166,42 @@ function summarizePipelineStarvation(health) {
   return { elevated: rows.length, repos: rows };
 }
 
+// Humanized RSS for stale-process operator lines (issue #2209). Binary units so
+// multi-GB dtach leaks stay readable; sub-KB values floor to whole bytes.
+function formatRss(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${Math.floor(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// Stale-process projection (issue #2209). /api/health publishes
+// `staleProcesses.{dtach,relayServer}.{count,rssBytes}` for host-wide leak
+// visibility. Surface only elevated classes (count > 0) so steady state stays
+// quiet; return null (a no-op for both text and --json) when the block is
+// absent or all counts are zero. Visibility only — never reaps.
+function summarizeStaleProcesses(health) {
+  const block = health?.staleProcesses;
+  if (!block || typeof block !== 'object') return null;
+  /** @param {unknown} row */
+  function elevatedClass(row) {
+    if (!row || typeof row !== 'object') return null;
+    const count = Number(/** @type {{ count?: unknown }} */ (row).count);
+    if (!Number.isFinite(count) || count <= 0) return null;
+    const rssRaw = Number(/** @type {{ rssBytes?: unknown }} */ (row).rssBytes);
+    const rssBytes = Number.isFinite(rssRaw) && rssRaw > 0 ? Math.floor(rssRaw) : 0;
+    return { count: Math.floor(count), rssBytes };
+  }
+  const dtach = elevatedClass(block.dtach);
+  const relayServer = elevatedClass(block.relayServer);
+  if (!dtach && !relayServer) return null;
+  return {
+    ...(dtach ? { dtach } : {}),
+    ...(relayServer ? { relayServer } : {}),
+  };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -232,6 +268,23 @@ function renderReport({ port, health, agents }) {
         `Pipeline starvation: ${r.repo} blockedEmpty=${r.consecutiveBlockedEmpty}${cooldown}`,
       );
     }
+  }
+
+  // Stale processes (issue #2209) — host-wide dtach / relay-server leaks already
+  // on /api/health. One quiet-by-default line so operators with dozens of
+  // leaked masters do not need to curl health to notice.
+  const stale = summarizeStaleProcesses(health);
+  if (stale) {
+    const parts = [];
+    if (stale.dtach) {
+      parts.push(`dtach=${stale.dtach.count} rss=${formatRss(stale.dtach.rssBytes)}`);
+    }
+    if (stale.relayServer) {
+      parts.push(
+        `relayServer=${stale.relayServer.count} rss=${formatRss(stale.relayServer.rssBytes)}`,
+      );
+    }
+    lines.push(`Stale processes: ${parts.join('  ')}`);
   }
 
   if (findings.length > 0) {
@@ -427,6 +480,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     // Computed only on the --json path; the text path derives the same slim
     // summary inside renderReport, so computing it here too would be wasted work.
     const starvationSummary = summarizePipelineStarvation(health);
+    const staleSummary = summarizeStaleProcesses(health);
     return exitJson({
       out,
       exit,
@@ -442,6 +496,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         agents,
         summary,
         ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
+        ...(staleSummary ? { staleProcesses: staleSummary } : {}),
         ...gateDetails,
       },
     });
@@ -479,11 +534,13 @@ export {
   apiAuthHeaders,
   formatUptime,
   formatCost,
+  formatRss,
   isActiveFinding,
   summarize,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
   summarizePipelineStarvation,
+  summarizeStaleProcesses,
   renderReport,
   resolvePort,
   parsePortEnv,

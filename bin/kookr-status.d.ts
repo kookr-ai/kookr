@@ -40,6 +40,11 @@ export interface PipelineStarvationHealthRepoLike {
   effectiveScoutCooldownMs?: number;
 }
 
+export interface StaleProcessClassHealthLike {
+  count?: number;
+  rssBytes?: number;
+}
+
 export interface HealthLike {
   status?: string;
   serverStartedAt?: string;
@@ -47,6 +52,10 @@ export interface HealthLike {
   pipelineStarvation?: {
     schemaVersion?: string;
     repos?: Record<string, PipelineStarvationHealthRepoLike>;
+  };
+  staleProcesses?: {
+    dtach?: StaleProcessClassHealthLike;
+    relayServer?: StaleProcessClassHealthLike;
   };
 }
 
@@ -59,6 +68,16 @@ export interface PipelineStarvationSummaryRow {
 export interface PipelineStarvationSummary {
   elevated: number;
   repos: PipelineStarvationSummaryRow[];
+}
+
+export interface StaleProcessClassSummary {
+  count: number;
+  rssBytes: number;
+}
+
+export interface StaleProcessesSummary {
+  dtach?: StaleProcessClassSummary;
+  relayServer?: StaleProcessClassSummary;
 }
 
 export interface RenderReportArgs {
@@ -82,6 +101,7 @@ export interface MainDeps {
 
 export function formatUptime(ms: number): string;
 export function formatCost(usd: number): string;
+export function formatRss(bytes: number): string;
 export function isActiveFinding(agent: AgentLike): boolean;
 export function summarize(agents: AgentLike[]): Summary;
 export function hasFindingsAtOrAbove(summary: Summary, failOn: FailOnSeverity): boolean;
@@ -89,6 +109,9 @@ export function highestKnownSeverity(summary: Summary): Severity | null;
 export function summarizePipelineStarvation(
   health: HealthLike,
 ): PipelineStarvationSummary | null;
+export function summarizeStaleProcesses(
+  health: HealthLike,
+): StaleProcessesSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;
