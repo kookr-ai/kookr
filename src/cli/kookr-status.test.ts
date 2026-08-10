@@ -4,11 +4,13 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   formatUptime,
   formatCost,
+  formatRss,
   isActiveFinding,
   summarize,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
   summarizePipelineStarvation,
+  summarizeStaleProcesses,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -492,6 +494,47 @@ describe('kookr-status renderReport', () => {
     expect(out).not.toContain('Pipeline starvation:');
   });
 
+  it('surfaces elevated staleProcesses.dtach with humanized RSS (issue #2209)', () => {
+    const health = {
+      ...baseHealth,
+      staleProcesses: {
+        dtach: { count: 27, rssBytes: 1_288_490_188 },
+        relayServer: { count: 0, rssBytes: 0 },
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Stale processes: dtach=27 rss=1.2 GB');
+    expect(out).not.toContain('relayServer=');
+  });
+
+  it('includes both elevated classes on one line (issue #2209)', () => {
+    const health = {
+      ...baseHealth,
+      staleProcesses: {
+        dtach: { count: 3, rssBytes: 10 * 1024 * 1024 },
+        relayServer: { count: 2, rssBytes: 512 * 1024 },
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Stale processes: dtach=3 rss=10.0 MB  relayServer=2 rss=512.0 KB',
+    );
+  });
+
+  it('is a no-op when staleProcesses counts are zero or absent (issue #2209)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Stale processes:');
+    const zeroed = {
+      ...baseHealth,
+      staleProcesses: {
+        dtach: { count: 0, rssBytes: 0 },
+        relayServer: { count: 0, rssBytes: 0 },
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Stale processes:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -615,6 +658,63 @@ describe('kookr-status summarizePipelineStarvation (issue #2183)', () => {
     expect(summary).toEqual({
       elevated: 1,
       repos: [{ repo: 'kookr-ai/kookr', consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1234 }],
+    });
+  });
+});
+
+describe('kookr-status formatRss (issue #2209)', () => {
+  it('formats binary units across scales', () => {
+    expect(formatRss(0)).toBe('0 B');
+    expect(formatRss(500)).toBe('500 B');
+    expect(formatRss(1536)).toBe('1.5 KB');
+    expect(formatRss(10 * 1024 * 1024)).toBe('10.0 MB');
+    expect(formatRss(1_288_490_188)).toBe('1.2 GB');
+  });
+
+  it('defends against non-finite / negative input', () => {
+    expect(formatRss(Number.NaN)).toBe('0 B');
+    expect(formatRss(-1)).toBe('0 B');
+  });
+});
+
+describe('kookr-status summarizeStaleProcesses (issue #2209)', () => {
+  it('returns null when staleProcesses is absent', () => {
+    expect(summarizeStaleProcesses({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when all counts are zero', () => {
+    expect(
+      summarizeStaleProcesses({
+        staleProcesses: {
+          dtach: { count: 0, rssBytes: 0 },
+          relayServer: { count: 0, rssBytes: 0 },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps only elevated classes and floors fractional values', () => {
+    expect(
+      summarizeStaleProcesses({
+        staleProcesses: {
+          dtach: { count: 27.9, rssBytes: 1_288_490_188.7 },
+          relayServer: { count: 0, rssBytes: 999 },
+        },
+      }),
+    ).toEqual({
+      dtach: { count: 27, rssBytes: 1_288_490_188 },
+    });
+  });
+
+  it('includes relayServer when elevated without inventing a dtach row', () => {
+    expect(
+      summarizeStaleProcesses({
+        staleProcesses: {
+          relayServer: { count: 5, rssBytes: 1024 },
+        },
+      }),
+    ).toEqual({
+      relayServer: { count: 5, rssBytes: 1024 },
     });
   });
 });
@@ -789,8 +889,9 @@ describe('kookr-status main (integration-style)', () => {
     });
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
-    // No pipelineStarvation block on /api/health → no slim summary (no-op).
+    // No pipelineStarvation / staleProcesses block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
+    expect(envelope.details.staleProcesses).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -820,6 +921,37 @@ describe('kookr-status main (integration-style)', () => {
         { repo: 'kookr-ai/kookr', consecutiveBlockedEmpty: 2, effectiveScoutCooldownMs: 1_800_000 },
       ],
     });
+  });
+
+  it('includes a slim staleProcesses summary in --json when elevated (issue #2209)', async () => {
+    mockSuccessfulFetch([], {
+      staleProcesses: {
+        dtach: { count: 27, rssBytes: 1_288_490_188 },
+        relayServer: { count: 0, rssBytes: 0 },
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.staleProcesses).toEqual({
+      dtach: { count: 27, rssBytes: 1_288_490_188 },
+    });
+  });
+
+  it('omits details.staleProcesses in --json when counts are zero (issue #2209)', async () => {
+    mockSuccessfulFetch([], {
+      staleProcesses: {
+        dtach: { count: 0, rssBytes: 0 },
+        relayServer: { count: 0, rssBytes: 0 },
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.staleProcesses).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {
