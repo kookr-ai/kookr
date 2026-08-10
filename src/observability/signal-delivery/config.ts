@@ -5,8 +5,13 @@
  * configured. Discord needs just a webhook URL; Telegram reuses the existing
  * `KOOKR_TELEGRAM_BOT_TOKEN` plus a dedicated alert chat id so operator alerts
  * do not depend on the inbound remote-chat allowlist.
+ *
+ * Discord webhook URLs use the same host policy as findings webhooks (#2063):
+ * public http(s) only by default; cloud metadata and link-local are always
+ * rejected. Lab LAN receivers can opt in with KOOKR_WEBHOOK_ALLOW_PRIVATE.
  */
 
+import { validateWebhookUrl } from '../../integrations/webhook/index.js';
 import type { DiscordChannelConfig, TelegramChannelConfig } from './channels.js';
 
 /** Default poll cadence: signals are time-sensitive but batched to ≤1 msg/min. */
@@ -29,17 +34,31 @@ export interface SignalDeliveryConfig {
 /**
  * Read delivery config from the environment. Returns null when no channel is
  * configured (the service then never starts). Logs a warning when a channel is
- * partially configured (e.g. Telegram token without a chat id).
+ * partially configured (e.g. Telegram token without a chat id) or when the
+ * Discord webhook URL fails the findings-webhook host safety policy (#2207).
  */
 export function readSignalDeliveryConfigFromEnv(
   env: NodeJS.ProcessEnv,
   logger: Pick<Console, 'warn'> = console,
 ): SignalDeliveryConfig | null {
-  const discordUrl = env.KOOKR_DISCORD_WEBHOOK_URL?.trim();
+  const rawDiscordUrl = env.KOOKR_DISCORD_WEBHOOK_URL?.trim();
   const telegramToken = env.KOOKR_TELEGRAM_BOT_TOKEN?.trim();
   const telegramChatId = env.KOOKR_SIGNAL_TELEGRAM_CHAT_ID?.trim();
 
-  const discord: DiscordChannelConfig | undefined = discordUrl ? { webhookUrl: discordUrl } : undefined;
+  let discord: DiscordChannelConfig | undefined;
+  if (rawDiscordUrl) {
+    // Same allow-private opt-in as findings webhook (KOOKR_WEBHOOK_ALLOW_PRIVATE).
+    // Metadata / link-local stay blocked even when private-LAN is allowed.
+    const allowPrivate = isTruthyEnvFlag(env.KOOKR_WEBHOOK_ALLOW_PRIVATE);
+    const validation = validateWebhookUrl(rawDiscordUrl, { allowPrivate });
+    if (validation.ok) {
+      discord = { webhookUrl: validation.url };
+    } else {
+      logger.warn(
+        `[signal-delivery] ignoring invalid KOOKR_DISCORD_WEBHOOK_URL (${validation.reason}); Discord delivery disabled`,
+      );
+    }
+  }
 
   let telegram: TelegramChannelConfig | undefined;
   if (telegramChatId) {
@@ -65,6 +84,12 @@ export function readSignalDeliveryConfigFromEnv(
     ),
     bootDelayMs: DEFAULT_DELIVERY_BOOT_DELAY_MS,
   };
+}
+
+function isTruthyEnvFlag(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {

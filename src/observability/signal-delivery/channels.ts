@@ -3,7 +3,7 @@
  *
  * Two outbound targets, each a single JSON POST behind an injectable `fetch`
  * so tests can assert exact call counts without touching the network:
- *  - **Discord** — an incoming-webhook URL (`KOOKR_DISCORD_WEBHOOK_URL`); body
+ *  - **Discord** — a host-validated incoming-webhook URL (`KOOKR_DISCORD_WEBHOOK_URL`); body
  *    is `{ content }`.
  *  - **Telegram** — the Bot API `sendMessage` for a fixed alert chat id, reusing
  *    the existing `KOOKR_TELEGRAM_BOT_TOKEN`.
