@@ -108,6 +108,12 @@ export class PostRecoveryService {
   private interval: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   private stopped = false;
+  /**
+   * Critical-schedule re-arm runs once per process lifetime (boot recovery).
+   * Continuous re-arm every tick would thrash intentional Pause and spam audit.
+   * Queue-fill kicks still run every tick (UTC-day gated).
+   */
+  private criticalRearmDone = false;
   private readonly deps: PostRecoveryServiceDeps;
 
   constructor(deps: PostRecoveryServiceDeps) {
@@ -170,7 +176,11 @@ export class PostRecoveryService {
         return empty;
       }
 
-      const rearm = await this.rearmCriticalSchedules();
+      let rearm: RearmResult = { rearmed: [], skipped: [] };
+      if (!this.criticalRearmDone) {
+        rearm = await this.rearmCriticalSchedules();
+        this.criticalRearmDone = true;
+      }
       const kicks = await this.runQueueFillKicks();
       return { rearm, kicks };
     } catch (err) {
@@ -246,13 +256,16 @@ export class PostRecoveryService {
     const results: QueueFillKickResult[] = [];
     const nowMs = this.now();
     const minFree = this.deps.minFreeSlots ?? POST_RECOVERY_MIN_FREE_SLOTS;
+    // Local free budget so multi-repo product fleets cannot over-spawn in one
+    // tick against a frozen ledger snapshot (W1).
+    let freeBudget = effectiveFree;
 
     for (const candidate of candidates) {
       const priorKick = await loadKickState(candidate.repo, this.kickStateDir());
       const scoutInFlight = isIdeaScoutInFlightForRepo(candidate.repo, tasks);
       const batchInFlight = isParallelIssueBatchInFlightForRepo(candidate.repo, tasks);
       const decision = decidePostRecoveryQueueFill({
-        free: effectiveFree,
+        free: freeBudget,
         pendingQueueDepth: ledger.pendingQueueDepth,
         dispatchHealthy,
         scoutOrBatchInFlight: scoutInFlight || batchInFlight,
@@ -298,7 +311,7 @@ export class PostRecoveryService {
           utcDay: decision.utcDay,
           scoutTaskId,
           queued: launch.queued === true,
-          free: effectiveFree,
+          free: freeBudget,
           pendingQueueDepth: ledger.pendingQueueDepth,
           at: new Date(nowMs).toISOString(),
         });
@@ -307,6 +320,9 @@ export class PostRecoveryService {
           `[post-recovery] queue-fill kick for ${candidate.repo} → scout ${scoutTaskId}`
           + `${launch.queued ? ' (queued)' : ''}`,
         );
+
+        // One successful kick consumes a free slot from this tick's budget.
+        freeBudget = Math.max(0, freeBudget - 1);
 
         results.push({
           repo: candidate.repo,

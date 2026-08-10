@@ -8,6 +8,7 @@ import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
+import { isCriticalAllowlistedSchedule } from './critical-schedule-rearm.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -775,10 +776,16 @@ export class ScheduleStore {
   }
 
   /**
-   * Toggle enabled. When re-enabling, clears {@link Schedule.operatorHold} so a
-   * manual enable unparks critical schedules. When disabling, pass
-   * `operatorHold: true` to park against recovery re-arm (issue #2196); omit or
-   * false leaves the schedule re-armable after outages.
+   * Toggle enabled (issue #2196 hold semantics).
+   *
+   * - Re-enable: clears {@link Schedule.operatorHold} (operator unparks).
+   * - Disable with `operatorHold: true`: park against recovery re-arm.
+   * - Disable with `operatorHold: false`: leave re-armable (test/ops escape).
+   * - Disable with hold omitted: for **critical allowlisted** schedules, set
+   *   hold automatically so UI Pause / CLI disable do not thrash with the
+   *   60s recovery re-arm loop; for other schedules, preserve existing hold.
+   *   Legacy critical schedules already disabled without a hold remain
+   *   re-armable until recovery re-enables them once.
    */
   setEnabled(
     id: string,
@@ -799,8 +806,12 @@ export class ScheduleStore {
       updated.operatorHold = true;
     } else if (opts?.operatorHold === false) {
       delete updated.operatorHold;
+    } else if (isCriticalAllowlistedSchedule(existing)) {
+      // Hold omitted: park critical schedules on intentional disable so UI
+      // Pause / CLI disable do not fight recovery re-arm every tick.
+      // Non-critical schedules: leave any existing hold state alone.
+      updated.operatorHold = true;
     }
-    // else: plain disable preserves whatever hold state already existed
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
     this.bumpRevision();

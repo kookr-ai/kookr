@@ -472,17 +472,29 @@ describe('ScheduleStore', () => {
       cwd: '/tmp',
     });
 
-    const held = store.setEnabled(schedule.id, false, { operatorHold: true });
-    expect(held.enabled).toBe(false);
-    expect(held.operatorHold).toBe(true);
-
-    const plainDisable = store.setEnabled(schedule.id, false);
-    // Plain disable preserves existing hold.
-    expect(plainDisable.operatorHold).toBe(true);
+    // Intentional disable of a critical schedule auto-parks (UI Pause / CLI).
+    const plainCriticalDisable = store.setEnabled(schedule.id, false);
+    expect(plainCriticalDisable.enabled).toBe(false);
+    expect(plainCriticalDisable.operatorHold).toBe(true);
 
     const unpark = store.setEnabled(schedule.id, true);
     expect(unpark.enabled).toBe(true);
     expect(unpark.operatorHold).toBeUndefined();
+
+    // Explicit hold:false leaves re-armable (ops/test escape hatch).
+    const rearmable = store.setEnabled(schedule.id, false, { operatorHold: false });
+    expect(rearmable.enabled).toBe(false);
+    expect(rearmable.operatorHold).toBeUndefined();
+
+    // Non-critical plain disable does not invent a hold.
+    const other = store.create({
+      name: 'Nightly idea scout',
+      cron: '0 0 * * *',
+      playbook: { path: 'repository-idea-scout.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    const otherDisabled = store.setEnabled(other.id, false);
+    expect(otherDisabled.operatorHold).toBeUndefined();
   });
 
   it('replaces a schedule with runtime execution state', () => {

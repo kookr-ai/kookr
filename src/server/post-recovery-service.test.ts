@@ -5,6 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
 import type { Schedule } from '../core/schedule.js';
 import type { Task, TaskStore } from '../core/tasks.js';
+
+vi.mock('./use-cases/playbook-launch.js', () => ({
+  preparePlaybookLaunchWithMetadata: vi.fn(async () => ({
+    launchOpts: {
+      prompt: 'idea scout mock',
+      cwd: '/tmp/lucy',
+      playbookId: 'repository-idea-scout.md',
+    },
+  })),
+}));
+
 import {
   collectProductBatchRepos,
   PostRecoveryService,
@@ -297,6 +308,116 @@ describe('PostRecoveryService', () => {
       now: () => nowMs,
     });
     expect((await busy.runQueueFillKicks())[0]?.reason).toBe('scout_or_batch_in_flight');
+    expect(launcher).not.toHaveBeenCalled();
+  });
+
+  it('happy-path kick: launches scout once, persists UTC day, second tick is idempotent', async () => {
+    const launcher = vi.fn(async (opts) => {
+      expect(opts.idempotencyKey).toBe('post-recovery-queue-fill:jeanibarz-lucy:2026-08-10');
+      expect(opts.playbookId).toBe('repository-idea-scout.md');
+      return {
+        task: { id: 'scout-happy', status: 'running' } as Task,
+        queued: false,
+      };
+    });
+    const schedules = [
+      schedule({
+        id: 'batch',
+        name: 'Lucy batch',
+        enabled: true,
+        playbook: {
+          path: 'parallel-issue-batch.md',
+          parameters: {
+            repoFullName: 'jeanibarz/lucy',
+            localPath: '/home/jean/git/lucy',
+          },
+        },
+      }),
+    ];
+    const kickDir = join(tempDir, 'kick-happy');
+    const starvationDir = join(tempDir, 'starvation-happy');
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled: vi.fn(),
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger({ free: 7, freeForGeneralSources: 7, pendingQueueDepth: 0 }),
+      launcher,
+      isDispatchHealthy: () => true,
+      kookrDir: tempDir,
+      kickStateDir: kickDir,
+      starvationStateDir: starvationDir,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    const first = await service.runQueueFillKicks();
+    expect(first).toEqual([
+      {
+        repo: 'jeanibarz/lucy',
+        kicked: true,
+        scoutTaskId: 'scout-happy',
+        utcDay: '2026-08-10',
+      },
+    ]);
+    expect(launcher).toHaveBeenCalledOnce();
+
+    const stateRaw = await readFile(join(kickDir, 'jeanibarz-lucy.json'), 'utf-8');
+    const state = JSON.parse(stateRaw) as { lastKickUtcDay: string; lastKickScoutTaskId: string };
+    expect(state.lastKickUtcDay).toBe('2026-08-10');
+    expect(state.lastKickScoutTaskId).toBe('scout-happy');
+
+    const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('post_recovery_queue_fill_kick');
+    expect(audit).toContain('scout-happy');
+
+    const second = await service.runQueueFillKicks();
+    expect(second[0]).toMatchObject({
+      repo: 'jeanibarz/lucy',
+      kicked: false,
+      reason: 'already_kicked_utc_day',
+      utcDay: '2026-08-10',
+    });
+    expect(launcher).toHaveBeenCalledOnce(); // still one
+  });
+
+  it('skips when parallel-issue-batch is already in flight for the repo', async () => {
+    const launcher = vi.fn();
+    const batchInFlight = {
+      id: 'batch-1',
+      status: 'running',
+      playbookId: 'parallel-issue-batch.md',
+      projectId: 'github.com/jeanibarz/lucy',
+      playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+      name: 'Parallel issue batch: jeanibarz/lucy',
+      prompt: 'batch',
+    } as unknown as Task;
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'batch',
+          name: 'Lucy batch',
+          enabled: true,
+          playbook: {
+            path: 'parallel-issue-batch.md',
+            parameters: { repoFullName: 'jeanibarz/lucy', localPath: '/tmp/lucy' },
+          },
+        }),
+      ],
+      setEnabled: vi.fn(),
+      taskStore: makeTaskStore([batchInFlight]),
+      getCapacityLedger: () => makeLedger(),
+      launcher,
+      isDispatchHealthy: () => true,
+      kookrDir: tempDir,
+      kickStateDir: join(tempDir, 'kick-batch-flight'),
+      now: () => nowMs,
+    });
+    const kicks = await service.runQueueFillKicks();
+    expect(kicks[0]).toMatchObject({
+      kicked: false,
+      reason: 'scout_or_batch_in_flight',
+      repo: 'jeanibarz/lucy',
+    });
     expect(launcher).not.toHaveBeenCalled();
   });
 

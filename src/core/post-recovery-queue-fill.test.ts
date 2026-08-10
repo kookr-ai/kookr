@@ -39,12 +39,15 @@ describe('decidePostRecoveryQueueFill', () => {
   });
 
   it(`uses free-slot floor of ${POST_RECOVERY_MIN_FREE_SLOTS}`, () => {
-    expect(
-      decidePostRecoveryQueueFill(base({ free: POST_RECOVERY_MIN_FREE_SLOTS - 1 })).kick,
-    ).toBe(false);
-    expect(
-      decidePostRecoveryQueueFill(base({ free: POST_RECOVERY_MIN_FREE_SLOTS })).kick,
-    ).toBe(true);
+    expect(decidePostRecoveryQueueFill(base({ free: POST_RECOVERY_MIN_FREE_SLOTS - 1 }))).toEqual({
+      kick: false,
+      reason: 'insufficient_free_slots',
+      utcDay: '2026-08-10',
+    });
+    expect(decidePostRecoveryQueueFill(base({ free: POST_RECOVERY_MIN_FREE_SLOTS }))).toEqual({
+      kick: true,
+      utcDay: '2026-08-10',
+    });
   });
 
   it('skips when pending queue is non-empty', () => {
