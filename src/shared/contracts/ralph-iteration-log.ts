@@ -32,6 +32,12 @@ export type RalphIterationExitReason =
   /** User replaced the loop with a fresh one via the UI conflict dialog. */
   | 'replaced_by_user'
   /**
+   * First-hook miss reaper terminated the iteration session before any agent
+   * hook arrived (issue #2193). Distinct from {@link kookr_crash} (process
+   * restart) and {@link session_dead} (runtime death after ack).
+   */
+  | 'first_hook_miss'
+  /**
    * Forward-compat fallback for exit reasons emitted by a newer Kookr that
    * this reader doesn't recognize. `parseIterationRecord` maps unknown
    * strings to this value so rows are not silently dropped.

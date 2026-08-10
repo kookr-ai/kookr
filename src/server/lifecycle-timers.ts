@@ -339,6 +339,13 @@ export interface TimerDeps {
    * still resident. Absent only in tests that don't care about this sweep.
    */
   sessionReaper?: Pick<import('./session-reaper.js').SessionReaperService, 'runSweep'>;
+  /**
+   * Ralph orphan-loop recovery (issue #2193). Closes loops stuck at
+   * `status:"running"` after their owning task reached a terminal status
+   * (e.g. first-hook miss) without a Stop event. Absent only in tests that
+   * don't care about this sweep.
+   */
+  ralphLoopService?: Pick<import('./ralph-loop-service.js').RalphLoopService, 'reconcileOrphanedLoops'>;
   /** Optional suppression tracker for snooze storm auto-suppress. */
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
@@ -1284,6 +1291,28 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       } catch (err) {
         console.warn('[session-reaper] periodic sweep failed:', err instanceof Error ? err.message : err);
       }
+
+      // Ralph orphan-loop recovery (issue #2193): a terminal task whose
+      // ralphLoop is still `running` (first-hook miss, hung reap, etc.) never
+      // gets a Stop event, so stop-driven relaunch cannot close it. Same
+      // contract as startup recovery, without requiring a server restart.
+      // Fail-open: never block the liveness tick.
+      let orphanLoopsFailed = 0;
+      try {
+        const orphanSummary = await deps.ralphLoopService?.reconcileOrphanedLoops();
+        if (orphanSummary && orphanSummary.failed > 0) {
+          orphanLoopsFailed = orphanSummary.failed;
+          console.warn(
+            `[ralph-orphan-recovery] closed ${orphanSummary.failed} orphaned loop(s) `
+            + `(examined ${orphanSummary.examined})`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          '[ralph-orphan-recovery] periodic sweep failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
       // Issue #1667: shared provider-pause check for auto-close + delivered
       // sweeps. Reads recent agent events for the task's live session.
       const isTaskProviderPaused = (task: Task): boolean => {
@@ -1705,6 +1734,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0
         || hungSuspectTtlResult.reclaimedTaskIds.length > 0
         || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
+        || orphanLoopsFailed > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).

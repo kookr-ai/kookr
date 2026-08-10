@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { BurnedOutTarget, RalphIterationLogReadModel, RalphIterationRecord, RalphLoopState, RalphStallConfig } from '../../shared/protocol.js';
+import type {
+  BurnedOutTarget,
+  RalphCostSignal,
+  RalphIterationLogReadModel,
+  RalphIterationRecord,
+  RalphLoopState,
+  RalphStallConfig,
+} from '../../shared/protocol.js';
 import { formatCost } from '../presentation.js';
 import { updateRalphBurnedTargets, updateRalphLoopPrompt } from '../ralph-loop-api.js';
 import { getRalphLoopIterations } from '../api/index.js';
@@ -9,6 +16,12 @@ type RalphLoopPanelData = RalphIterationLogReadModel & {
   ralphLoop?: RalphLoopState;
   /** Defaults-merged stall config (always present alongside ralphLoop). */
   effectiveStallConfig?: RalphStallConfig;
+  /**
+   * Whether observed USD cost is trustworthy for `costCapUsd` (issue #2193).
+   * `unavailable` means the cost cap is a paper guardrail (subscription auth
+   * reports $0) — iteration cap is the only hard ceiling.
+   */
+  costSignal?: RalphCostSignal;
 };
 
 type RalphLoopPanelState =
@@ -70,7 +83,7 @@ export function RalphLoopPanel({ taskId }: Props) {
     return <div className="ralph-panel ralph-panel-state error">{state.error}</div>;
   }
 
-  const { iterations, summary, ralphLoop, effectiveStallConfig } = state.data;
+  const { iterations, summary, ralphLoop, effectiveStallConfig, costSignal } = state.data;
   const exportBase = `/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/iterations/export`;
   const promptCanSave = promptDirty && !promptSaving && promptDraft.trim().length > 0;
   const promptId = `ralph-prompt-${taskId}`;
@@ -82,6 +95,10 @@ export function RalphLoopPanel({ taskId }: Props) {
   const lastVerdictWarningReason = ralphLoop?.lastVerdictWarningReason;
   const iterationCostWarningCount = ralphLoop?.iterationCostWarningCount ?? 0;
   const needsHuman = ralphLoop?.needsHuman;
+  const paperCostCapUsd =
+    costSignal === 'unavailable' && ralphLoop?.costCapUsd !== undefined
+      ? ralphLoop.costCapUsd
+      : undefined;
 
   const updatePrompt = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -198,6 +215,15 @@ export function RalphLoopPanel({ taskId }: Props) {
         <SummaryItem label="Avg iter" value={formatMs(summary.averageIterationDurationMs)} />
         <SummaryItem label="ETA" value={formatMs(summary.etaMs)} />
       </div>
+
+      {paperCostCapUsd !== undefined && (
+        <div className="ralph-warning" role="status">
+          Cost signal unavailable — configured cost cap
+          {' '}(${paperCostCapUsd}) is not enforced without observed USD spend
+          (common on subscription auth where cost reports as $0).
+          Iteration cap is the only hard ceiling.
+        </div>
+      )}
 
       {(burnedTargets.length > 0 || effectiveStallConfig || verdictWarningCount > 0) && (
         <div className="ralph-stall-section">
@@ -350,6 +376,7 @@ function exitTone(exitReason: string): 'ok' | 'warn' | 'stop' | 'neutral' {
     case 'predicate_error':
     case 'kookr_crash':
     case 'session_dead':
+    case 'first_hook_miss':
     case 'cost_cap':
     case 'iteration_cost_cap':
       return 'warn';

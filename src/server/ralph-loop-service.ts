@@ -31,6 +31,7 @@ import type {
 } from '../core/loop-delivery-watchdog.js';
 import {
   claimRalphLoopOwner,
+  isTerminalStatus,
   type RalphLoopState,
   type RalphLoopStatus,
   type SessionInfo,
@@ -138,6 +139,8 @@ export interface RalphReconcileSummary {
     taskId: string;
     outcome: 'preserved' | 'failed';
     iterationNumber: number;
+    /** Exit reason written on fail; absent when preserved. */
+    exitReason?: RalphIterationExitReason;
   }>;
 }
 
@@ -158,6 +161,13 @@ export interface ReconcileRalphLoopsOptions {
     task: Task,
     backend: TerminalBackend,
   ) => Promise<SessionInfo | null>;
+}
+
+export interface ReconcileOrphanedRalphLoopsOptions {
+  /** Test seam: replaces the JSONL writer. */
+  appendIterationRecord?: typeof appendIterationRecord;
+  /** Test seam: clock for the `endedAt` field on the terminal record. */
+  now?: () => number;
 }
 
 /** Per-probe timeout for `probeStartupLiveness` (ms). Hardcoded; not configurable. */
@@ -746,7 +756,81 @@ export class RalphLoopService {
         taskId: task.id,
         outcome: 'failed',
         iterationNumber: loop.currentIteration,
+        exitReason: 'kookr_crash',
       });
+    }
+
+    return summary;
+  }
+
+  /**
+   * In-process recovery for Ralph loops orphaned as `running` after their
+   * owning task reached a terminal status (issue #2193 gap 1).
+   *
+   * `reconcileStartupLoops` only runs at boot. When the first-hook-miss reaper
+   * (or any other path) terminates a task mid-iteration without touching
+   * `ralphLoop`, the loop stays `status:"running"` forever — Stop never fires,
+   * and bare (unscheduled) loops have no self-heal. This sweep mirrors the
+   * startup contract on every liveness tick: write a terminal iteration record
+   * and set `ralphLoop.status = 'failed'`.
+   */
+  async reconcileOrphanedLoops(
+    opts: ReconcileOrphanedRalphLoopsOptions = {},
+  ): Promise<RalphReconcileSummary> {
+    const writeRecord = opts.appendIterationRecord ?? appendIterationRecord;
+    const now = (opts.now ?? Date.now)();
+    const summary: RalphReconcileSummary = {
+      examined: 0,
+      preserved: 0,
+      failed: 0,
+      perTask: [],
+    };
+
+    // viewTasks (no clone): eligibility only needs id/status/ralphLoop.status.
+    // Mutations go through runRalphMutation for a live ref.
+    for (const taskSnapshot of this.deps.taskStore.viewTasks()) {
+      if (!isTerminalStatus(taskSnapshot.status)) continue;
+      if (!taskSnapshot.ralphLoop || taskSnapshot.ralphLoop.status !== 'running') continue;
+      const task = this.deps.taskStore.runRalphMutation(taskSnapshot.id, (t) => t);
+      if (!task) continue;
+      const loop = task.ralphLoop;
+      if (!loop || loop.status !== 'running') continue;
+
+      summary.examined++;
+
+      const exitReason = exitReasonForOrphanedLoop(task);
+      const startedAt = loop.lastIterationStartedAt > 0 ? loop.lastIterationStartedAt : now;
+      const record: RalphIterationRecord = {
+        iterationNumber: loop.currentIteration,
+        startedAt,
+        endedAt: now,
+        exitReason,
+        cumulativeCostUsd: null,
+        gitBaselineRef: null,
+        diffStats: null,
+      };
+      try {
+        await writeRecord(task.cwd, record);
+      } catch (err) {
+        console.warn(
+          `[ralph-orphan-recovery] iteration log append failed for task ${task.id}:`,
+          err,
+        );
+      }
+
+      loop.status = 'failed';
+      task.updatedAt = new Date(now);
+      summary.failed++;
+      summary.perTask.push({
+        taskId: task.id,
+        outcome: 'failed',
+        iterationNumber: loop.currentIteration,
+        exitReason,
+      });
+      console.warn(
+        `[ralph-orphan-recovery] closed orphaned loop on task ${task.id} `
+        + `(exitReason=${exitReason}, iteration=${loop.currentIteration})`,
+      );
     }
 
     return summary;
@@ -1358,6 +1442,20 @@ function hasLiveRalphOwner(task: Task): boolean {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Map a terminal task's disposition onto a Ralph iteration exit reason for
+ * orphan-loop recovery (issue #2193). Prefer the disposition that reaped the
+ * session; fall back to `session_dead` when the task is terminal for any other
+ * reason with the loop still marked running.
+ */
+export function exitReasonForOrphanedLoop(task: Task): RalphIterationExitReason {
+  // Prefer the disposition that reaped the session. Everything else that left
+  // a terminal task with a still-running loop maps to session_dead (hung reap,
+  // hungSuspect TTL, provider_paused TTL, missing disposition, etc.).
+  if (task.disposition?.reason === 'first_hook_miss') return 'first_hook_miss';
+  return 'session_dead';
 }
 
 function missingLoop(): RalphLoopServiceResult<never> {

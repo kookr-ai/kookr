@@ -50,6 +50,7 @@ const EXIT_REASONS: ReadonlySet<RalphIterationExitReason> = new Set([
   'all_targets_stalled',
   'iteration_cost_cap',
   'replaced_by_user',
+  'first_hook_miss',
   'unknown',
 ]);
 

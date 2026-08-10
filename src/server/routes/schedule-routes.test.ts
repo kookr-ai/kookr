@@ -292,6 +292,71 @@ Do not schedule.
       });
       expect(store.get(schedule.id)?.playbook.path).toBe('daily.md');
     });
+
+    // issue #2193 gap 2: loop must not be silently dropped by the PATCH allowlist.
+    test('persists top-level loop: {} so fire routes through launchLoopedPlaybook', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      expect(store.get(schedule.id)?.loop).toBeUndefined();
+
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loop: {} }),
+        },
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.loop).toEqual({});
+      expect(store.get(schedule.id)?.loop).toEqual({});
+    });
+
+    test('persists loop fields and clears loop on null', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+
+      const arm = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loop: { iterationCap: 8, costCapUsd: 2.5 } }),
+        },
+      );
+      expect(arm.status).toBe(200);
+      expect((await arm.json()).loop).toEqual({ iterationCap: 8, costCapUsd: 2.5 });
+
+      const clear = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loop: null }),
+        },
+      );
+      expect(clear.status).toBe(200);
+      expect((await clear.json()).loop).toBeUndefined();
+      expect(store.get(schedule.id)?.loop).toBeUndefined();
+    });
+
+    test('rejects malformed loop with fieldErrors instead of silently dropping', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loop: 'yes' }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid schedule definition');
+      expect(body.fieldErrors?.loop).toMatch(/object/i);
+      expect(store.get(schedule.id)?.loop).toBeUndefined();
+    });
   });
 
   // ---------------------------------------------------------------------------

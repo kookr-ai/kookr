@@ -64,6 +64,14 @@ export interface BurnedOutTarget {
   lastAttemptedIteration: number;
 }
 
+/**
+ * Whether observed USD cost is trustworthy enough for a `costCapUsd` to fire
+ * (issue #2193 gap 3). Subscription sessions report `costUsd: 0`, so the cost
+ * cap is a paper guardrail — operators should treat the iteration cap as the
+ * only hard ceiling when this is `unavailable`.
+ */
+export type RalphCostSignal = 'available' | 'unavailable';
+
 export interface RalphLoopState {
   prompt: string;
   iterationCap: number;
@@ -131,4 +139,29 @@ export function resolveStallConfig(cfg: RalphStallConfig | undefined): RalphStal
     ...DEFAULT_STALL_CONFIG,
     ...(cfg ?? {}),
   };
+}
+
+/**
+ * Resolve whether a loop's cost signal is usable for `costCapUsd` enforcement
+ * (issue #2193 gap 3).
+ *
+ * - `null` cumulative cost ⇒ source unavailable.
+ * - known `$0` after at least one finished iteration with a configured cost
+ *   cap ⇒ subscription-style paper reporting (cap can never fire).
+ * - otherwise ⇒ available.
+ */
+export function resolveRalphCostSignal(input: {
+  costCapUsd?: number;
+  cumulativeCostUsd: number | null;
+  totalIterations: number;
+}): RalphCostSignal {
+  if (input.cumulativeCostUsd === null) return 'unavailable';
+  if (
+    input.costCapUsd !== undefined
+    && input.totalIterations > 0
+    && input.cumulativeCostUsd === 0
+  ) {
+    return 'unavailable';
+  }
+  return 'available';
 }
