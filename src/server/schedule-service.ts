@@ -199,7 +199,12 @@ export class ScheduleService {
   private lastError?: string;
   private catchUpMode: 'auto' | 'manual' | 'off' = 'manual';
   private catchUpEnabled = false;
-  private deadManSelfHeal?: { attempts: number; successes: number; escalated: boolean };
+  private deadManSelfHeal?: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+    class?: 'auth_expired';
+  };
 
   constructor(deps: ScheduleServiceDeps) {
     this.store = deps.store;
@@ -285,11 +290,17 @@ export class ScheduleService {
    * `deadMan.check()`; a plain setter (no broadcast) since the surrounding
    * `recordTickCompleted()` already broadcasts the fresh snapshot.
    */
-  setDeadManSelfHealStats(stats: { attempts: number; successes: number; escalated: boolean }): void {
+  setDeadManSelfHealStats(stats: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+    class?: 'auth_expired';
+  }): void {
     this.deadManSelfHeal = {
       attempts: stats.attempts,
       successes: stats.successes,
       escalated: stats.escalated,
+      ...(stats.class ? { class: stats.class } : {}),
     };
   }
 

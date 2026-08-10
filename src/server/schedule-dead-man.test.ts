@@ -11,11 +11,14 @@ import {
   writeOperatorSignal,
 } from '../observability/signal-delivery/index.js';
 import {
+  AUTH_EXPIRED_OPERATIONAL_KEY,
   DEAD_MAN_CONSECUTIVE_FAILURES,
   DEAD_MAN_SELF_HEAL_MAX_ATTEMPTS,
   DEFAULT_DEAD_MAN_SCHEDULE_MS,
   ScheduleDeadManSwitch,
   evaluateScheduleStarvation,
+  isAuthExpiredLedgerEntry,
+  isGrokAuthExpiryMessage,
 } from './schedule-dead-man.js';
 
 const NOW = Date.parse('2026-07-25T12:00:00.000Z');
@@ -25,6 +28,7 @@ function entry(
   outcome: ScheduleExecutionOutcome,
   evaluatedAtMs: number,
   scheduleId = 'sched-1',
+  extras: Partial<Pick<ScheduleExecutionLedgerEntry, 'reasonCode' | 'message'>> = {},
 ): ScheduleExecutionLedgerEntry {
   entrySeq += 1;
   return {
@@ -35,7 +39,19 @@ function entry(
     evaluatedAt: new Date(evaluatedAtMs).toISOString(),
     completedAt: new Date(evaluatedAtMs).toISOString(),
     outcome,
+    ...extras,
   };
+}
+
+function authExpiredEntry(
+  evaluatedAtMs: number,
+  scheduleId = 'sched-1',
+): ScheduleExecutionLedgerEntry {
+  return entry('dispatch_failed', evaluatedAtMs, scheduleId, {
+    reasonCode: 'auth_expired',
+    message:
+      'Grok authentication expired or unusable — run `grok login --device-code` (reasonCode: auth_expired)',
+  });
 }
 
 function schedule(overrides: Partial<Schedule> = {}): Schedule {
@@ -531,6 +547,231 @@ describe('ScheduleDeadManSwitch bounded self-heal (issue #1903)', () => {
     }).not.toThrow();
     expect(selfHeal).toHaveBeenCalledTimes(2);
     expect(deadMan.stats().escalated).toBe(true); // still escalates despite throwing kicks
+  });
+});
+
+describe('auth_expired classifier (issue #2195)', () => {
+  it('maps reasonCode auth_expired and well-known Grok preflight messages', () => {
+    expect(isAuthExpiredLedgerEntry({
+      outcome: 'dispatch_failed',
+      reasonCode: 'auth_expired',
+    })).toBe(true);
+    expect(isAuthExpiredLedgerEntry({
+      outcome: 'dispatch_failed',
+      message: 'Grok authentication expired; run `grok login --device-code`',
+    })).toBe(true);
+    expect(isAuthExpiredLedgerEntry({
+      outcome: 'dispatch_failed',
+      message: 'Grok authentication unavailable: no credential file was found',
+    })).toBe(true);
+    expect(isAuthExpiredLedgerEntry({
+      outcome: 'dispatch_failed',
+      message: 'Launcher crashed (reasonCode: auth_expired)',
+    })).toBe(true);
+    // Capacity / generic failures stay off the class.
+    expect(isAuthExpiredLedgerEntry({ outcome: 'dispatch_failed', reasonCode: 'launch_error' })).toBe(false);
+    expect(isAuthExpiredLedgerEntry({ outcome: 'queued_capacity' })).toBe(false);
+    expect(isAuthExpiredLedgerEntry({ outcome: 'completed', reasonCode: 'auth_expired' })).toBe(false);
+  });
+
+  it('never treats API-key paths as the recovery signal', () => {
+    // Classifier is about failure recognition only; remediation copy is session login.
+    expect(isGrokAuthExpiryMessage('export XAI_API_KEY=…')).toBe(false);
+    expect(isGrokAuthExpiryMessage('Grok authentication expired. Run `grok login --device-code`.')).toBe(true);
+  });
+
+  it('evaluateScheduleStarvation tags pure auth consecutive tails as class auth_expired', () => {
+    const sched = schedule({
+      executionLedger: [
+        authExpiredEntry(NOW - 3 * 3_600_000),
+        authExpiredEntry(NOW - 2 * 3_600_000),
+        authExpiredEntry(NOW - 1 * 3_600_000),
+      ],
+    });
+    const verdict = evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS);
+    expect(verdict).toMatchObject({
+      starving: true,
+      class: 'auth_expired',
+      scheduleIds: ['sched-1'],
+    });
+    expect(verdict.reason).toContain('auth_expired');
+  });
+
+  it('message-only Grok preflight rows still classify (defense in depth)', () => {
+    const sched = schedule({
+      executionLedger: [
+        entry('dispatch_failed', NOW - 3 * 3_600_000, 'sched-1', {
+          message: 'Grok authentication unavailable: expired session',
+        }),
+        entry('dispatch_failed', NOW - 2 * 3_600_000, 'sched-1', {
+          message: 'Grok authentication expired at 2026-08-08',
+        }),
+        entry('dispatch_failed', NOW - 1 * 3_600_000, 'sched-1', {
+          message: 'run `grok login --device-code` and retry',
+        }),
+      ],
+    });
+    expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).class).toBe(
+      'auth_expired',
+    );
+  });
+
+  it('mixed capacity + auth tails stay on the capacity path (no pure auth class)', () => {
+    const sched = schedule({
+      executionLedger: [
+        entry('queued_capacity', NOW - 3 * 3_600_000),
+        authExpiredEntry(NOW - 2 * 3_600_000),
+        entry('dispatch_failed', NOW - 1 * 3_600_000, 'sched-1', { reasonCode: 'launch_error' }),
+      ],
+    });
+    const verdict = evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS);
+    expect(verdict.starving).toBe(true);
+    expect(verdict.class).toBeUndefined();
+  });
+
+  it('mixed schedules (one auth, one capacity) stay on the capacity path', () => {
+    const auth = schedule({
+      id: 'sched-auth',
+      name: 'Auth only',
+      executionLedger: [
+        authExpiredEntry(NOW - 3 * 3_600_000, 'sched-auth'),
+        authExpiredEntry(NOW - 2 * 3_600_000, 'sched-auth'),
+        authExpiredEntry(NOW - 1 * 3_600_000, 'sched-auth'),
+      ],
+    });
+    const capacity = schedule({
+      id: 'sched-cap',
+      name: 'Capacity',
+      executionLedger: [
+        entry('dispatch_failed', NOW - 3 * 3_600_000, 'sched-cap'),
+        entry('queued_capacity', NOW - 2 * 3_600_000, 'sched-cap'),
+        entry('skipped_coalesced', NOW - 1 * 3_600_000, 'sched-cap'),
+      ],
+    });
+    const verdict = evaluateScheduleStarvation([auth, capacity], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS);
+    expect(verdict.starving).toBe(true);
+    expect(verdict.class).toBeUndefined();
+    expect(verdict.scheduleIds).toEqual(expect.arrayContaining(['sched-auth', 'sched-cap']));
+  });
+});
+
+describe('ScheduleDeadManSwitch auth_expired no-thrash (issue #2195)', () => {
+  const AUTH_TAIL = () => [
+    authExpiredEntry(NOW - 3 * 3_600_000),
+    authExpiredEntry(NOW - 2 * 3_600_000),
+    authExpiredEntry(NOW - 1 * 3_600_000),
+  ];
+
+  function makeSwitch(opts: { withSelfHeal?: boolean } = {}) {
+    const broadcast = vi.fn();
+    const selfHeal = vi.fn();
+    const recordTransition = vi.fn();
+    const deadMan = new ScheduleDeadManSwitch({
+      broadcast,
+      recordTransition,
+      getDeadManMs: () => DEFAULT_DEAD_MAN_SCHEDULE_MS,
+      now: () => new Date(NOW),
+      ...(opts.withSelfHeal === false ? {} : { selfHeal }),
+    });
+    return { broadcast, selfHeal, recordTransition, deadMan };
+  }
+
+  it('escalates once with auth recovery command and never self-heals', () => {
+    const { broadcast, selfHeal, recordTransition, deadMan } = makeSwitch();
+    const starving = schedule({ executionLedger: AUTH_TAIL() });
+
+    for (let i = 0; i < 5; i += 1) deadMan.check([starving]);
+
+    expect(selfHeal).not.toHaveBeenCalled();
+    const alerts = alertsOf(broadcast);
+    expect(alerts).toHaveLength(1); // single escalate per episode
+    expect(alerts[0]).toMatchObject({
+      severity: 'critical',
+      operationalAlert: {
+        key: AUTH_EXPIRED_OPERATIONAL_KEY,
+        metric: 'auth_expired',
+        state: 'fired',
+      },
+    });
+    expect(alerts[0].details).toContain('grok login --device-code');
+    expect(alerts[0].details).toMatch(/Do NOT set XAI_API_KEY|session\/OIDC/i);
+    expect(alerts[0].details).not.toMatch(/XAI_API_KEY\s*=/);
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    expect(deadMan.stats()).toMatchObject({
+      attempts: 0,
+      successes: 0,
+      escalated: true,
+      firing: true,
+      class: 'auth_expired',
+    });
+  });
+
+  it('clears auth class and emits recovery on healthy launch (no self-heal success credit)', () => {
+    const { broadcast, selfHeal, deadMan } = makeSwitch();
+    deadMan.check([schedule({ executionLedger: AUTH_TAIL() })]);
+    expect(deadMan.stats().class).toBe('auth_expired');
+
+    deadMan.check([
+      schedule({
+        executionLedger: [...AUTH_TAIL(), entry('completed', NOW - 5 * 60_000)],
+      }),
+    ]);
+
+    expect(selfHeal).not.toHaveBeenCalled();
+    expect(deadMan.stats()).toMatchObject({
+      attempts: 0,
+      successes: 0,
+      escalated: false,
+      firing: false,
+    });
+    expect(deadMan.stats().class).toBeUndefined();
+    const recovery = alertsOf(broadcast).find((a) => a.operationalAlert?.state === 'recovered');
+    expect(recovery).toMatchObject({
+      severity: 'info',
+      operationalAlert: { key: AUTH_EXPIRED_OPERATIONAL_KEY, metric: 'auth_expired' },
+    });
+  });
+
+  it('a new auth episode after recovery escalates again (one per episode)', () => {
+    const { broadcast, deadMan } = makeSwitch();
+    deadMan.check([schedule({ executionLedger: AUTH_TAIL() })]);
+    deadMan.check([
+      schedule({ executionLedger: [...AUTH_TAIL(), entry('completed', NOW - 10 * 60_000)] }),
+    ]);
+    expect(alertsOf(broadcast)).toHaveLength(2); // fire + recover
+
+    // New pure-auth tail after recovery.
+    deadMan.check([
+      schedule({
+        executionLedger: [
+          ...AUTH_TAIL(),
+          entry('completed', NOW - 10 * 60_000),
+          authExpiredEntry(NOW - 9 * 60_000),
+          authExpiredEntry(NOW - 8 * 60_000),
+          authExpiredEntry(NOW - 7 * 60_000),
+        ],
+      }),
+    ]);
+    const fires = alertsOf(broadcast).filter(
+      (a) => a.operationalAlert?.key === AUTH_EXPIRED_OPERATIONAL_KEY
+        && a.operationalAlert?.state === 'fired',
+    );
+    expect(fires).toHaveLength(2);
+    expect(deadMan.stats()).toMatchObject({ class: 'auth_expired', escalated: true, attempts: 0 });
+  });
+
+  it('capacity starvation still self-heals when the class is not pure auth', () => {
+    const { selfHeal, deadMan } = makeSwitch();
+    const capacity = schedule({
+      executionLedger: [
+        entry('dispatch_failed', NOW - 3 * 3_600_000),
+        entry('dispatch_failed', NOW - 2 * 3_600_000),
+        entry('dispatch_failed', NOW - 1 * 3_600_000),
+      ],
+    });
+    deadMan.check([capacity]);
+    expect(selfHeal).toHaveBeenCalledTimes(1);
+    expect(deadMan.stats().class).toBeUndefined();
   });
 });
 
