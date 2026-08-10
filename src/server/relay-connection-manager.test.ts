@@ -1,17 +1,46 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import { createRelayConnectionManager, type RelayRuntimeHandle } from './relay-connection-manager.js';
 import { relayConnectionCredentialsPath } from './relay-connection-store.js';
+import { RELAY_HTTP_TIMEOUT_MS } from './relay-lifecycle.js';
 import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 import type { RemoteNodeStatus } from '../remote/node-client.js';
 
 let relay: RelayServerHandle | null = null;
 
+/** Hang until the request AbortSignal fires (proves control-plane fetches pass a timeout). */
+function hungFetch(_url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) {
+      reject(new Error('expected AbortSignal on relay control-plane fetch'));
+      return;
+    }
+    const abort = (): void => {
+      reject(new DOMException('The operation was aborted.', 'TimeoutError'));
+    };
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+/** Collapse the production 5s budget so timeout-path tests stay fast. */
+function speedUpRelayHttpTimeout(): void {
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => (
+    realTimeout(ms === RELAY_HTTP_TIMEOUT_MS ? 30 : ms)
+  ));
+}
+
 afterEach(async () => {
+  vi.restoreAllMocks();
   await relay?.close();
   relay = null;
 });
@@ -472,5 +501,64 @@ describe('RelayConnectionManager', () => {
       connectionState: 'error',
       lastError: { code: 'credential-load-failed' },
     });
+  });
+
+  it('aborts hung pairing as relay-unreachable after the request timeout', async () => {
+    speedUpRelayHttpTimeout();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hungFetch as typeof fetch);
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-pair-timeout-'));
+    let starts = 0;
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      startRuntime: async () => {
+        starts += 1;
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    await expect(manager.pair({
+      relayUrl: 'http://relay.timeout.test',
+      relayAdminToken: 'admin-secret',
+    })).rejects.toMatchObject({
+      code: 'relay-unreachable',
+      status: 502,
+    });
+    expect(starts).toBe(0);
+    expect(fetchSpy).toHaveBeenCalled();
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(RELAY_HTTP_TIMEOUT_MS);
+  });
+
+  it('aborts hung credential validation without starting a runtime', async () => {
+    speedUpRelayHttpTimeout();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hungFetch as typeof fetch);
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-relay-manager-validate-timeout-'));
+    let starts = 0;
+    const manager = createRelayConnectionManager({
+      kookrDir: dir,
+      env: {},
+      startRuntime: async () => {
+        starts += 1;
+        return fakeRuntime(() => undefined);
+      },
+    });
+
+    const status = await manager.connect({
+      relayUrl: 'http://relay.timeout.test',
+      nodeId: 'node-1',
+      relayToken: 'tok',
+    });
+
+    expect(starts).toBe(0);
+    expect(status).toMatchObject({
+      configured: true,
+      connectionState: 'error',
+      lastError: { code: 'error' },
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 });
