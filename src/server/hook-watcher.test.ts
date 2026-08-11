@@ -379,6 +379,38 @@ describe('HookFileWatcher', () => {
     expect(stats!.fileBytes).toBeGreaterThan(0);
   });
 
+  // ---------------------------------------------------------------------------
+  // Compact checkpoint serialize (issue #2298)
+  // ---------------------------------------------------------------------------
+  test('writeReplayCheckpoint emits compact JSON smaller than pretty form (issue #2298)', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-compact.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-checkpoint-compact');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-compact', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const raw = readFileSync(checkpointPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { sessions: Record<string, unknown> };
+    expect(parsed.sessions['kookr-checkpoint-compact']).toBeDefined();
+
+    // Compact form: single-line body (optional trailing newline only).
+    expect(raw.trimEnd()).not.toMatch(/\n\s+/);
+    const compactBytes = Buffer.byteLength(raw, 'utf-8');
+    const prettyBytes = Buffer.byteLength(`${JSON.stringify(parsed, null, 2)}\n`, 'utf-8');
+    expect(compactBytes).toBeLessThan(prettyBytes);
+    expect(raw).toBe(`${JSON.stringify(parsed)}\n`);
+  });
+
   test('startup replay malformed records stay quiet but later live malformed records alert once', async () => {
     const hookFile = join(tempDir, 'kookr-startup-replay.jsonl');
     writeFileSync(hookFile, '{"old":true}\n');
