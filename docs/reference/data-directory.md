@@ -57,8 +57,11 @@ as internal unless this table says they are safe to remove.
 | `task-snapshots/` | task snapshot bundles | Snapshot artifacts captured for diagnostics and feedback. | Keep unless intentionally discarding diagnostics. |
 | `finding-evidence-reviews.jsonl` | finding review diagnostics | Manual/background finding-evidence review outcomes. | Keep if using finding review diagnostics. |
 | `finding-evidence-review-queue.json` | finding review sampler | Background sampler queue and retry ledger. | Keep if using finding review diagnostics. |
+| `finding-evidence-review-hmac-key` | finding review diagnostics | Durable HMAC key for review input hashes. | Keep if using finding-evidence review; treat as secret (`0o600`). |
 | `supervisor-feedback-cases.jsonl` | feedback diagnostics | Captured false-positive and missed-finding cases. | Keep for detector improvement. |
 | `private-network-node-id` | private-network sharing | Stable local node id for read-only sharing. | Keep if using shared views. |
+| `share-grants.json` | viewer grant store | Hashed viewer share grants for read-only shared views. | Keep; copy with backups. Compacted by `KOOKR_SHARE_GRANT_RETENTION_MS` (see [environment-variables.md](environment-variables.md)). |
+| `collaboration-identities.json` | private-network collaboration | Contact/pairing identity and accepted-auth nonces. | Keep if using private-network collaboration. |
 | `collaboration-audit.jsonl` | collaboration/sharing | Collaboration and viewer-share audit events. | Keep for share audit history. |
 | `relay-connection.json` and `node-id` | hosted/self-hosted relay pairing | Relay credentials and node id. | Keep; losing these requires re-pairing. |
 | `relay.sqlite*`, `relay.state.json`, `relay.pid`, `relay.log` | local relay lifecycle | Local relay durable state, process metadata, and logs. | See `session-sharing.md` for relay-specific reset/restore. |
