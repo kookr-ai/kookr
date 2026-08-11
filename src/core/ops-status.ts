@@ -351,7 +351,9 @@ export class OpsStatusWriter {
     const snapshot = buildOpsStatusSnapshot(fields, lastEdges, edge.at);
 
     try {
-      await this.writeFileAtomically(this.filePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+      // Compact JSON: edge-triggered critical writes serialize on the event loop;
+      // the card is machine-read via `kookr status` / files, not hand-edited (#2253).
+      await this.writeFileAtomically(this.filePath, `${JSON.stringify(snapshot)}\n`);
       this.lastEdges = lastEdges;
       this.lastWritten = snapshot;
       return snapshot;
