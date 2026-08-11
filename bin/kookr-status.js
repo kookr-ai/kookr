@@ -416,6 +416,127 @@ function summarizeNonCriticalTimerPause(health) {
   };
 }
 
+// Hung-suspect TTL reclaim residual projection (issue #2229). /api/health
+// already publishes hungSuspectTtlReclaim (issue #1989 / #2045) with process-
+// lifetime skip-reason breakdown (and #2228 open-PR confirmed/unknown split).
+// Unattended hosts and Lucy/Discord digests only saw residual via curling
+// health. Surface a quiet-by-default slim residual when reclaimedTotal===0 AND
+// (skips, candidates, or hungSuspect capacity residual) are elevated. Does not
+// weaken open-PR fail-safes — visibility only. Null when absent, reclaim is
+// progressing, or gauges are all zero.
+function nonNegIntFloor(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+function summarizeHungSuspectTtlReclaim(health) {
+  const block = health?.hungSuspectTtlReclaim;
+  if (!block || typeof block !== 'object') return null;
+
+  const reclaimedTotal = nonNegIntFloor(
+    /** @type {{ reclaimedTotal?: unknown }} */ (block).reclaimedTotal,
+  );
+  // Reclaim is progressing — stay quiet. The residual class is only interesting
+  // when the process has never freed a hungSuspect slot (reclaimedTotal=0).
+  if (reclaimedTotal > 0) return null;
+
+  const reclaimAttempted = nonNegIntFloor(
+    /** @type {{ reclaimAttempted?: unknown }} */ (block).reclaimAttempted,
+  );
+  const skippedNoLiveness = nonNegIntFloor(
+    /** @type {{ skippedNoLiveness?: unknown }} */ (block).skippedNoLiveness,
+  );
+  const skippedOpenPrFailsafe = nonNegIntFloor(
+    /** @type {{ skippedOpenPrFailsafe?: unknown }} */ (block).skippedOpenPrFailsafe,
+  );
+  const skippedOpenPrConfirmed = nonNegIntFloor(
+    /** @type {{ skippedOpenPrConfirmed?: unknown }} */ (block).skippedOpenPrConfirmed,
+  );
+  const skippedOpenPrUnknown = nonNegIntFloor(
+    /** @type {{ skippedOpenPrUnknown?: unknown }} */ (block).skippedOpenPrUnknown,
+  );
+  const skippedUnderTtl = nonNegIntFloor(
+    /** @type {{ skippedUnderTtl?: unknown }} */ (block).skippedUnderTtl,
+  );
+  const skippedExemptAnomaly = nonNegIntFloor(
+    /** @type {{ skippedExemptAnomaly?: unknown }} */ (block).skippedExemptAnomaly,
+  );
+  const skippedProviderPaused = nonNegIntFloor(
+    /** @type {{ skippedProviderPaused?: unknown }} */ (block).skippedProviderPaused,
+  );
+  const lastCandidatesConsidered = nonNegIntFloor(
+    /** @type {{ lastCandidatesConsidered?: unknown }} */ (block).lastCandidatesConsidered,
+  );
+
+  let hungSuspect;
+  const byClass = health?.capacity?.byClass;
+  if (byClass && typeof byClass === 'object') {
+    const hs = Number(/** @type {{ hungSuspect?: unknown }} */ (byClass).hungSuspect);
+    if (Number.isFinite(hs) && hs >= 0) hungSuspect = Math.floor(hs);
+  }
+
+  /** @type {Record<string, number> | undefined} */
+  let residualClasses;
+  const lastOutcomes = /** @type {{ lastOutcomes?: unknown }} */ (block).lastOutcomes;
+  if (Array.isArray(lastOutcomes) && lastOutcomes.length > 0) {
+    /** @type {Record<string, number>} */
+    const counts = {};
+    for (const entry of lastOutcomes) {
+      if (!entry || typeof entry !== 'object') continue;
+      const outcome = /** @type {{ outcome?: unknown }} */ (entry).outcome;
+      if (typeof outcome !== 'string' || outcome.length === 0) continue;
+      counts[outcome] = (counts[outcome] ?? 0) + 1;
+    }
+    if (Object.keys(counts).length > 0) residualClasses = counts;
+  }
+
+  const skipsElevated =
+    skippedNoLiveness
+    + skippedOpenPrFailsafe
+    + skippedOpenPrConfirmed
+    + skippedOpenPrUnknown
+    + skippedUnderTtl
+    + skippedExemptAnomaly
+    + skippedProviderPaused
+    > 0;
+  const candidatesElevated = lastCandidatesConsidered > 0 || reclaimAttempted > 0;
+  const residualElevated =
+    (typeof hungSuspect === 'number' && hungSuspect > 0)
+    || (residualClasses !== undefined && Object.keys(residualClasses).length > 0);
+  if (!skipsElevated && !candidatesElevated && !residualElevated) return null;
+
+  /** @type {{
+   *   reclaimedTotal: number,
+   *   reclaimAttempted: number,
+   *   skippedNoLiveness: number,
+   *   skippedOpenPrFailsafe: number,
+   *   skippedOpenPrConfirmed: number,
+   *   skippedOpenPrUnknown: number,
+   *   skippedUnderTtl: number,
+   *   skippedExemptAnomaly: number,
+   *   skippedProviderPaused: number,
+   *   lastCandidatesConsidered: number,
+   *   hungSuspect?: number,
+   *   residualClasses?: Record<string, number>,
+   * }} */
+  const summary = {
+    reclaimedTotal,
+    reclaimAttempted,
+    skippedNoLiveness,
+    skippedOpenPrFailsafe,
+    skippedOpenPrConfirmed,
+    skippedOpenPrUnknown,
+    skippedUnderTtl,
+    skippedExemptAnomaly,
+    skippedProviderPaused,
+    lastCandidatesConsidered,
+  };
+  if (typeof hungSuspect === 'number') summary.hungSuspect = hungSuspect;
+  if (residualClasses) summary.residualClasses = residualClasses;
+  return summary;
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -576,6 +697,38 @@ function renderReport({ port, health, agents }) {
         `  p95=${p95}` +
         `  threshold=${timerPause.thresholdMs}ms` +
         `  pausedTicks=${timerPause.pausedTicksTotal}`,
+    );
+  }
+
+  // Hung-suspect TTL reclaim residual (issue #2229) — quiet-by-default when
+  // reclaimedTotal=0 and skips/candidates/residual are elevated. Prints the
+  // skip breakdown + residual class counts so unattended operators do not
+  // need to curl /api/health. Does not weaken open-PR fail-safes.
+  const hungReclaim = summarizeHungSuspectTtlReclaim(health);
+  if (hungReclaim) {
+    const hungSuspectPart =
+      typeof hungReclaim.hungSuspect === 'number'
+        ? ` hungSuspect=${hungReclaim.hungSuspect}`
+        : '';
+    const residualPart = hungReclaim.residualClasses
+      ? `  residual=${Object.keys(hungReclaim.residualClasses)
+        .sort()
+        .map((k) => `${k}=${hungReclaim.residualClasses[k]}`)
+        .join(',')}`
+      : '';
+    lines.push(
+      `Hung-suspect reclaim: reclaimedTotal=${hungReclaim.reclaimedTotal}` +
+        hungSuspectPart +
+        `  reclaimAttempted=${hungReclaim.reclaimAttempted}` +
+        `  candidates=${hungReclaim.lastCandidatesConsidered}` +
+        `  skips openPr=${hungReclaim.skippedOpenPrFailsafe}` +
+        ` openPrConfirmed=${hungReclaim.skippedOpenPrConfirmed}` +
+        ` openPrUnknown=${hungReclaim.skippedOpenPrUnknown}` +
+        ` underTtl=${hungReclaim.skippedUnderTtl}` +
+        ` providerPaused=${hungReclaim.skippedProviderPaused}` +
+        ` noLiveness=${hungReclaim.skippedNoLiveness}` +
+        ` exemptAnomaly=${hungReclaim.skippedExemptAnomaly}` +
+        residualPart,
     );
   }
 
@@ -778,6 +931,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const capacitySummary = summarizeCapacity(health);
     const providerPausedSummary = summarizeProviderPausedOccupancy(health);
     const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
+    const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     return exitJson({
       out,
       exit,
@@ -804,6 +958,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           : {}),
         ...(nonCriticalTimerPauseSummary
           ? { nonCriticalTimerPause: nonCriticalTimerPauseSummary }
+          : {}),
+        ...(hungReclaimSummary
+          ? { hungSuspectTtlReclaim: hungReclaimSummary }
           : {}),
         ...gateDetails,
       },
@@ -855,6 +1012,7 @@ export {
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
+  summarizeHungSuspectTtlReclaim,
   renderReport,
   resolvePort,
   parsePortEnv,

@@ -97,6 +97,24 @@ export interface HealthLike {
     lastEventLoopDelayP95Ms?: number | null;
     pausedTicksTotal?: number;
   };
+  /** Process-lifetime hungSuspect TTL reclaim gauges (issue #1989 / #2229). */
+  hungSuspectTtlReclaim?: {
+    reclaimedTotal?: number;
+    reclaimAttempted?: number;
+    reclaimSucceeded?: number;
+    skippedNoLiveness?: number;
+    skippedOpenPrFailsafe?: number;
+    /** Split of open-PR failsafe (issue #2228): confirmed hold. */
+    skippedOpenPrConfirmed?: number;
+    /** Split of open-PR failsafe (issue #2228): unknown/unwired hold. */
+    skippedOpenPrUnknown?: number;
+    skippedUnderTtl?: number;
+    skippedExemptAnomaly?: number;
+    skippedProviderPaused?: number;
+    lastCandidatesConsidered?: number;
+    lastOutcomes?: ReadonlyArray<{ taskId?: string; outcome?: string }>;
+    lastAttemptedTaskIds?: ReadonlyArray<string>;
+  };
 }
 
 export interface FirstHookMissSummary {
@@ -163,6 +181,27 @@ export interface NonCriticalTimerPauseSummary {
   pausedTicksTotal: number;
 }
 
+/** Slim hungSuspect TTL reclaim residual (issue #2229). Elevated only. */
+export interface HungSuspectTtlReclaimSummary {
+  reclaimedTotal: number;
+  reclaimAttempted: number;
+  skippedNoLiveness: number;
+  skippedOpenPrFailsafe: number;
+  skippedOpenPrConfirmed: number;
+  skippedOpenPrUnknown: number;
+  skippedUnderTtl: number;
+  skippedExemptAnomaly: number;
+  skippedProviderPaused: number;
+  lastCandidatesConsidered: number;
+  /** capacity.byClass.hungSuspect when present on the same health payload. */
+  hungSuspect?: number;
+  /**
+   * Last-pass residual class counts derived from lastOutcomes (outcome → n).
+   * Omitted when lastOutcomes is empty/absent so --json stays quiet.
+   */
+  residualClasses?: Record<string, number>;
+}
+
 export interface RenderReportArgs {
   port: number;
   health: HealthLike;
@@ -211,6 +250,9 @@ export function summarizeProviderPausedOccupancy(
 export function summarizeNonCriticalTimerPause(
   health: HealthLike,
 ): NonCriticalTimerPauseSummary | null;
+export function summarizeHungSuspectTtlReclaim(
+  health: HealthLike,
+): HungSuspectTtlReclaimSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;
