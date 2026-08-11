@@ -1026,121 +1026,132 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Waves 1–4 residual leaves
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–5 residual leaves
  * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553, #2609–#2611,
- * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS) shipped
- * and are title-exhausted. Invent wave 5 (queue-feeder 2026-08-11,
- * invent-product-wave #2069) covers RFC-012 §5.8 Phase-3 measure-first slices
- * under the acquisition-redundancy umbrella: eventDetected+contentStatus
- * decoupling, late content capture upgrade without a second total-miss, and
- * multi-source identity corroboration stamps. Live GitHub leaves #2669–#2671.
- * Title idempotency prevents re-emit once those exist.
+ * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS;
+ * invent wave 5 #2669–#2671 eventDetected/contentStatus, late content-upgrade,
+ * identityCorroboration stamp) shipped and are title-exhausted. Invent wave 6
+ * (queue-feeder 2026-08-11, invent-product-wave #2069) continues RFC-012 §5.8
+ * Phase-3 structural north star under the acquisition-redundancy umbrella:
+ * multi-source content selection (beyond identity stamps), auto-upgrade of a
+ * delivered total-miss notice into a corrected brief on late capture, and
+ * product-metric loudness for the new event_seen_no_content miss class.
+ * Title idempotency prevents re-emit once live leaves exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): stamp eventDetected + contentStatus on detection rows (detection/retrieval decouple)',
+      'feat(acquisition): prefer multi-source corroborated content when selecting delivered report body',
     goal:
-      'Split the detection ledger so "an earnings event was observed" is stamped ' +
-      'separately from "we fetched usable report content" — the RFC-012 §5.8 / ' +
-      'umbrella #1587 Phase-3 measure-first slice. Wire/issuer/newswire signals that ' +
-      'confirm a release without a retained document must not collapse into the same ' +
-      'no_source bucket as pure silence.',
+      'Close the content-selection half of RFC-012 §5.8 corroboration-first capture ' +
+      'under umbrella #1587: when ≥2 independent tiers return usable report content ' +
+      'for the same ticker+date, prefer the multi-source / identity-corroborated body ' +
+      '(and its source provenance) over a single-source-only winner — wave 5 #2671 only ' +
+      'stamped identityCorroborated; delivery still races first-winner without reconciling ' +
+      'bodies.',
     acceptanceCriteria: [
-      'Detection rows (and/or the shared write path used by active-window poll + ' +
-        'no-source recapture) can stamp eventDetected=true with contentStatus in ' +
-        '{pending, fetched, failed} (or equivalent enum) when a tier observes release ' +
-        'evidence but content is not yet retained.',
-      'Scorecard / weekly product fold can count event-seen-no-content separately ' +
-        'from pure no_source (no silent merge into a single miss class); pure silence ' +
-        '(no event signal) remains no_source / existing class.',
-      'Unit/fixture tests cover: (a) wire/issuer hit with empty body → eventDetected + ' +
-        'contentStatus pending/failed; (b) full content hit → eventDetected + ' +
-        'contentStatus fetched; (c) pure miss with no tier signal → no false ' +
-        'eventDetected; (d) scorecard/fold separates the two miss shapes.',
-    ],
-    fileHints: [
-      'src/scheduled-detection-persistence.js',
-      'src/scheduler-active-window-poll.js',
-      'src/detections.js',
-      'src/detection-scorecard.js',
-      'src/acquisition/anomaly.js',
-    ],
-    testHints: [
-      'unit: release-signal without body → eventDetected stamped',
-      'unit: full content hit → contentStatus fetched',
-      'unit: pure silence → no eventDetected',
-      'unit: scorecard splits event-seen-no-content vs no_source',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): late content capture upgrades eventDetected rows without second total-miss',
-    goal:
-      'When content (SEC 8-K, issuer PDF, wire full text) lands after an eventDetected ' +
-      'stamp inside the armed/re-check window, treat it as an ordinary capture upgrade ' +
-      'of the pending row — not a fresh total-miss cycle — so late EDGAR filings stop ' +
-      'inflating miss rate (RFC-012 §5.8 ordinary-capture half under umbrella #1587).',
-    acceptanceCriteria: [
-      'Given an open/recent detection row with eventDetected and contentStatus ' +
-        'pending/failed for the same ticker+date (or job identity), a later successful ' +
-        'content fetch updates that row (or links a superseding capture) to ' +
-        'contentStatus=fetched and does not emit a second ACQUISITION_TOTAL_MISS for ' +
-        'the same identity.',
-      'If no prior eventDetected row exists, late content still records a normal hit ' +
-        "(no regression of today's already-published recapture path).",
-      'Unit/fixture tests cover: (a) eventDetected pending → late SEC/content hit ' +
-        'upgrades without second total-miss; (b) no prior event row → ordinary ' +
-        'hit/recapture path unchanged; (c) identity mismatch does not upgrade the ' +
-        'wrong row.',
-    ],
-    fileHints: [
-      'src/scheduler-active-window-poll.js',
-      'src/scheduler-no-source-recapture.js',
-      'src/scheduled-detection-persistence.js',
-      'src/acquisition/anomaly.js',
-      'src/detections.js',
-    ],
-    testHints: [
-      'unit: pending eventDetected + late content → upgrade, no second miss',
-      'unit: no prior event → ordinary hit path',
-      'unit: wrong identity does not upgrade',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): multi-source identity corroboration stamp before high-confidence delivery',
-    goal:
-      'When ≥2 independent acquisition surfaces agree on release identity (ticker + ' +
-      'event date, and optionally headline/EPS trigger), stamp identityCorroborated=true ' +
-      'on the detection/delivery path and keep single-source hits explicitly unverified ' +
-      '— first PR of RFC-012 §5.8 corroboration-first content capture under umbrella ' +
-      '#1587 (measure + gate stamp, not full multi-source merge).',
-    acceptanceCriteria: [
-      'On a successful multi-tier race (or sequential hit within the same window), when ' +
-        '≥2 of {issuer, newswire/wire, SEC/EDGAR} contribute matching identity evidence, ' +
-        'the retained detection row stamps identityCorroborated=true (or equivalent) ' +
-        'with a small sources[] evidence list.',
-      'Single-source hits remain deliverable but stamp identityCorroborated=false / ' +
-        'absent so operators and scorecard can separate corroborated vs single-source ' +
-        'confidence; no silent upgrade of single-source to corroborated.',
-      'Unit/fixture tests cover: (a) wire+SEC same ticker/date → identityCorroborated ' +
-        'true; (b) issuer-only hit → false/absent; (c) conflicting identity across ' +
-        'sources does not stamp corroborated true.',
+      'When the tier race (or sequential same-window hits) retains content from ≥2 of ' +
+        '{issuer, newswire/wire, SEC/EDGAR} for the same identity, the delivered/retained ' +
+        'report body is chosen by an explicit multi-source preference rule (documented ' +
+        'in code) that prefers corroborated multi-source content over a lone single-source ' +
+        'first-finisher when both are present.',
+      'Single-source-only hits remain deliverable unchanged (no regression of today\'s ' +
+        'first-winner path when only one tier has a body); identityCorroborated stamps ' +
+        'from #2671 stay authoritative for scorecard.',
+      'Unit/fixture tests cover: (a) wire body first + later SEC body same identity → ' +
+        'retained/delivered body follows multi-source preference (not silent first-winner ' +
+        'lock); (b) single-source only → first-winner path unchanged; (c) conflicting ' +
+        'identity across sources does not silently merge bodies into one "corroborated" ' +
+        'delivery.',
     ],
     fileHints: [
       'src/acquisition/acquire.js',
-      'src/scheduled-detection-persistence.js',
-      'src/detection-scorecard.js',
-      'src/earnings-source.js',
+      'src/acquisition/identity-corroboration.js',
       'src/acquisition/tiers/',
+      'src/earnings-source.js',
+      'src/scheduled-detection-persistence.js',
     ],
     testHints: [
-      'unit: two-source match → identityCorroborated true',
-      'unit: single-source → false/absent',
-      'unit: identity conflict → not corroborated',
+      'unit: two-source bodies → multi-source preference selects retained body',
+      'unit: single-source only → first-winner unchanged',
+      'unit: identity conflict → no silent multi-source merge',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): auto-upgrade delivered total-miss notice into corrected brief on late content capture',
+    goal:
+      'Finish the delivery half of RFC-012 §5.8 auto-re-resolve under umbrella #1587: ' +
+      'when a confirmed-date total-miss (or eventDetected+contentStatus pending/failed) ' +
+      'already produced an operator-facing miss notice, a later ordinary content capture ' +
+      'for the same identity must auto-upgrade into a corrected brief (or explicit ' +
+      'correction notice) instead of only updating the ledger while the Discord/operator ' +
+      'surface stays on the miss — #2553 re-resolves fetch; #2670 upgrades rows; delivery ' +
+      'still does not correct the already-sent miss.',
+    acceptanceCriteria: [
+      'Given a delivered/recorded total-miss (or event-seen-no-content) notice for ' +
+        'ticker+date and a later content-upgrade / successful content fetch for the same ' +
+        'identity inside the armed/re-check window, the pipeline emits a corrected brief ' +
+        '(or a linked correction notice) referencing the prior miss — not a silent ' +
+        'ledger-only upgrade.',
+      'Idempotent: a second late fetch for the same identity does not double-send ' +
+        'correction briefs; identities without a prior miss notice still use the ordinary ' +
+        'first-hit delivery path.',
+      'Unit/fixture tests cover: (a) miss notice + late content → one correction/brief; ' +
+        '(b) second late fetch → no second correction; (c) no prior miss → ordinary hit ' +
+        'delivery unchanged.',
+    ],
+    fileHints: [
+      'src/acquisition/event-content-status.js',
+      'src/scheduler-discord-delivery.js',
+      'src/scheduler-active-window-poll.js',
+      'src/scheduler-no-source-recapture.js',
+      'src/acquisition/anomaly.js',
+    ],
+    testHints: [
+      'unit: prior miss + late content → correction/brief once',
+      'unit: second late fetch → no double correction',
+      'unit: no prior miss → ordinary hit path',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): alert and control-room badge when event_seen_no_content rate exceeds threshold',
+    goal:
+      'Make the new RFC-012 §5.8 miss class loud under umbrella #1587: after wave 5 ' +
+      '#2669 projected event_seen_no_content in the scorecard, operators still have no ' +
+      'thresholded alert or control-room badge when event-seen-but-no-content dominates ' +
+      'misses — pure silence (no_source) and event-seen-no-content stay easy to conflate ' +
+      'in day-to-day ops.',
+    acceptanceCriteria: [
+      'product-metric alerts (or a sibling pure evaluator) emit a durable ' +
+        'event_seen_no_content alert when that cause\'s share of product watch-outcome ' +
+        'misses is above a documented threshold AND the miss sample size is above a ' +
+        'documented floor; pure no_source (eventDetected=false) does not trigger it.',
+      'Control-room acquisition/retrieval health (or product-metric badge strip) surfaces ' +
+        'event_seen_no_content rate or count with denominator when measurable, and an ' +
+        'explicit data-gap / hidden state when n is below the floor — no fabricated rate.',
+      'Unit/fixture tests cover: (a) high event_seen_no_content share + n≥floor → alert; ' +
+        '(b) share below threshold or n below floor → no alert; (c) pure no_source-heavy ' +
+        'fixture without eventDetected → no false event_seen_no_content alert; ' +
+        '(d) control-room projection shows rate+denominator or gap, never a crash on ' +
+        'missing fold.',
+    ],
+    fileHints: [
+      'src/product-metric-alerts.js',
+      'src/detection-scorecard.js',
+      'src/detection-event-content.js',
+      'src/control-room-snapshot-compose.js',
+      'src/control-room/retrieval-health-panel.js',
+      'src/acquisition/weekly-scoreboard.js',
+    ],
+    testHints: [
+      'unit: high event_seen_no_content share → alert',
+      'unit: low share or low n → no alert',
+      'unit: pure no_source without eventDetected → no false alert',
+      'unit: control-room projection degrades cleanly on missing fold',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
