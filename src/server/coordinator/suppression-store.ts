@@ -39,14 +39,15 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
 
   isSuppressed(detectorId: CoordinatorDetectorId, agentType: AgentType, now = new Date(), taskId?: string): boolean {
     assertAgentType(agentType);
-    const state = this.read();
+    const state = this.readAndPrune(now);
     const keys = [
       ...(taskId ? [taskAcknowledgementKey(detectorId, agentType, taskId)] : []),
       suppressionKey(detectorId, agentType),
     ];
     return keys.some((key) => {
       const entry = state.suppressions.find((candidate) => candidate.key === key);
-      return entry ? new Date(entry.suppressedUntil).getTime() > now.getTime() : false;
+      // Active entries only remain after prune; mirror isActive for clarity.
+      return entry ? isActive(entry, now) : false;
     });
   }
 
@@ -54,7 +55,8 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
     assertAgentType(agentType);
     const state = this.read();
     const key = suppressionKey(detectorId, agentType);
-    const existing = state.suppressions.find((entry) => entry.key === key);
+    const active = pruneExpired(state.suppressions, now);
+    const existing = active.find((entry) => entry.key === key);
     const dismissalCount = (existing?.dismissalCount ?? 0) + 1;
     const durationMs = dismissalCount >= 3 ? 30 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
     const next: CoordinatorSuppressionEntry = {
@@ -66,11 +68,13 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
       suppressedUntil: new Date(now.getTime() + durationMs).toISOString(),
     };
 
-    state.suppressions = [
-      ...state.suppressions.filter((entry) => entry.key !== key),
-      next,
-    ].sort((left, right) => left.key.localeCompare(right.key));
-    this.write(state);
+    this.write({
+      version: state.version,
+      suppressions: [
+        ...active.filter((entry) => entry.key !== key),
+        next,
+      ].sort((left, right) => left.key.localeCompare(right.key)),
+    });
 
     if (dismissalCount === 3) {
       appendFileSync(this.feedbackPath, `${JSON.stringify({
@@ -90,6 +94,7 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
     assertAgentType(agentType);
     const state = this.read();
     const key = taskAcknowledgementKey(detectorId, agentType, taskId);
+    const active = pruneExpired(state.suppressions, now);
     const next: CoordinatorSuppressionEntry = {
       key,
       detectorId,
@@ -99,12 +104,30 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
       lastDismissedAt: now.toISOString(),
       suppressedUntil: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     };
-    state.suppressions = [
-      ...state.suppressions.filter((entry) => entry.key !== key),
-      next,
-    ].sort((left, right) => left.key.localeCompare(right.key));
-    this.write(state);
+    this.write({
+      version: state.version,
+      suppressions: [
+        ...active.filter((entry) => entry.key !== key),
+        next,
+      ].sort((left, right) => left.key.localeCompare(right.key)),
+    });
     return next;
+  }
+
+  /**
+   * Load the store, drop expired entries, and persist the compacted array when
+   * anything was removed. Matches {@link isSuppressed} clock semantics so an
+   * entry is kept iff `suppressedUntil > now`.
+   */
+  private readAndPrune(now: Date): CoordinatorSuppressionFile {
+    const state = this.read();
+    const suppressions = pruneExpired(state.suppressions, now);
+    if (suppressions.length !== state.suppressions.length) {
+      const next: CoordinatorSuppressionFile = { version: state.version, suppressions };
+      this.write(next);
+      return next;
+    }
+    return { version: state.version, suppressions };
   }
 
   private read(): CoordinatorSuppressionFile {
@@ -133,6 +156,16 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
     mkdirSync(dirname(this.filePath), { recursive: true });
     writeFileSync(this.filePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   }
+}
+
+/** True when `suppressedUntil` is strictly after `now` (same clock rule as isSuppressed). */
+function isActive(entry: CoordinatorSuppressionEntry, now: Date): boolean {
+  return new Date(entry.suppressedUntil).getTime() > now.getTime();
+}
+
+/** Drop entries whose suppression window has ended (`suppressedUntil <= now`). */
+function pruneExpired(entries: CoordinatorSuppressionEntry[], now: Date): CoordinatorSuppressionEntry[] {
+  return entries.filter((entry) => isActive(entry, now));
 }
 
 export function suppressionKey(detectorId: CoordinatorDetectorId, agentType: AgentType): string {
