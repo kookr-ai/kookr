@@ -49,6 +49,26 @@ describe('ViewerGrantStore', () => {
     expect(onDisk).toContain(expectedHash);
   });
 
+  test('persists share-grants.json with owner-only mode 0o600', async () => {
+    await store.load();
+    await store.create({ label: 'phone', scope: { kind: 'all' } });
+
+    const grantsPath = join(tempDir, 'share-grants.json');
+    const modeAfterCreate = statSync(grantsPath).mode & 0o777;
+    expect(modeAfterCreate).toBe(0o600);
+
+    // Re-write after a world-readable seed must still land at 0o600 (rename
+    // preserves the temp file’s mode rather than the prior destination mode).
+    chmodSync(grantsPath, 0o644);
+    expect(statSync(grantsPath).mode & 0o777).toBe(0o644);
+
+    const listed = store.list();
+    expect(listed).toHaveLength(1);
+    await store.revoke(listed[0]!.id);
+
+    expect(statSync(grantsPath).mode & 0o777).toBe(0o600);
+  });
+
   test('resolve matches a valid token by hash', async () => {
     await store.load();
     const { grant, token } = await store.create({

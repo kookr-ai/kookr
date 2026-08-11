@@ -8,17 +8,33 @@ export interface ReadJsonFileOptions {
   warn?: (message: string, cause: unknown) => void;
 }
 
+export interface AtomicWriteFileOptions {
+  /**
+   * File mode applied when the temp file is created. The rename preserves that
+   * mode on the destination, so secret stores can force owner-only (`0o600`)
+   * rather than the platform default (`0o666` masked by umask, typically
+   * `0o644`). Omit to keep the previous default for non-secret callers.
+   */
+  mode?: number;
+}
+
 /**
  * Atomically write `data` to `filePath` using write-to-temp + fsync + rename.
  * The fsync ensures data is durable on disk before the rename, preventing
  * data loss on power failure or kernel crash.
  *
  * The temp file is created in the same directory as `filePath` with a random
- * suffix so concurrent writers don't collide.
+ * suffix so concurrent writers don't collide. When `options.mode` is set, it is
+ * applied at open time so the final renamed file carries that mode (subject to
+ * umask on create).
  */
-export async function atomicWriteFile(filePath: string, data: string): Promise<void> {
+export async function atomicWriteFile(
+  filePath: string,
+  data: string,
+  options?: AtomicWriteFileOptions,
+): Promise<void> {
   const tempPath = join(dirname(filePath), `.tmp-${randomUUID()}`);
-  const fh = await open(tempPath, 'w');
+  const fh = await open(tempPath, 'w', options?.mode);
   try {
     await fh.writeFile(data, 'utf-8');
     await fh.sync();
