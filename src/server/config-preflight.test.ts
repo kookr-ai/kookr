@@ -358,6 +358,44 @@ describe('runConfigPreflight', () => {
     expect(result.issues.filter((issue) => issue.variable === 'KOOKR_RELAY_URL')).toEqual([]);
   });
 
+  it('fails on blocked KOOKR_TELEGRAM_API_URL values (#2219)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_TELEGRAM_API_URL: 'http://169.254.169.254/',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        severity: 'fatal',
+        variable: 'KOOKR_TELEGRAM_API_URL',
+        message: expect.stringContaining('metadata/link-local blocked'),
+      }),
+    ]);
+  });
+
+  it('accepts loopback and private-LAN KOOKR_TELEGRAM_API_URL values (#2219)', async () => {
+    const result = await runConfigPreflight(
+      {
+        PATH: '/tools/bin',
+        KOOKR_TELEGRAM_API_URL: 'http://127.0.0.1:18080',
+      } as NodeJS.ProcessEnv,
+      {
+        cwd: '/repo',
+        access: makeAccess(['/tools/bin/claude', '/tools/bin/codex']),
+        stat: makeStat(['/tools/bin/claude', '/tools/bin/codex']),
+      },
+    );
+
+    expect(result.issues.filter((issue) => issue.variable === 'KOOKR_TELEGRAM_API_URL')).toEqual([]);
+  });
+
   it('accepts loopback and private-LAN speech service URLs (#2057)', async () => {
     const result = await runConfigPreflight(
       {
