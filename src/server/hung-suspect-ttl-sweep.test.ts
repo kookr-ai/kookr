@@ -326,12 +326,14 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       skippedUnderTtl: 1,
       skippedNoLiveness: 1,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       skippedExemptAnomaly: 0,
       lastCandidatesConsidered: 4,
       lastAttemptedTaskIds: ['needs'],
     });
     expect(snap.lastOutcomes.find((o) => o.taskId === 'pr')?.outcome).toBe(
-      'skipped_open_pr_failsafe',
+      'skipped_open_pr_confirmed',
     );
     expect(snap.lastOutcomes.find((o) => o.taskId === 'needs')?.outcome).toBe('selected');
     expect(result.selection?.skips.skipped_under_ttl).toBe(1);
@@ -391,9 +393,67 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     expect(metrics.getSnapshot().lastOutcomes).toEqual([
       expect.objectContaining({
         taskId: 'stranded-pr',
-        outcome: 'skipped_open_pr_failsafe',
+        outcome: 'skipped_open_pr_confirmed',
       }),
     ]);
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
+      skippedOpenPrFailsafe: 1,
+    });
+  });
+
+  it('issue #2228: unknown open-PR hold increments unknown only on metrics (no attempt)', async () => {
+    const task = makeHungTask({ id: 'unknown-pr' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+
+    const result = await reclaimAgedHungSuspectTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().reclaimAttempted).toBe(0);
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrConfirmed: 0,
+      skippedOpenPrUnknown: 1,
+      skippedOpenPrFailsafe: 1,
+      lastOutcomes: [
+        expect.objectContaining({
+          taskId: 'unknown-pr',
+          outcome: 'skipped_open_pr_unknown',
+        }),
+      ],
+    });
+  });
+
+  it('issue #2228: metrics aggregate open-PR failsafe = confirmed + unknown', () => {
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    metrics.recordSelection({
+      candidatesConsidered: 3,
+      skips: {
+        skipped_no_liveness: 0,
+        skipped_open_pr_confirmed: 1,
+        skipped_open_pr_unknown: 2,
+        skipped_under_ttl: 0,
+        skipped_exempt_anomaly: 0,
+        skipped_provider_paused: 0,
+      },
+    });
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedOpenPrConfirmed).toBe(1);
+    expect(snap.skippedOpenPrUnknown).toBe(2);
+    expect(snap.skippedOpenPrFailsafe).toBe(3);
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {

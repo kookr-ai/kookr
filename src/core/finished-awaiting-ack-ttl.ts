@@ -92,17 +92,27 @@ export interface ExpiredFinishedAwaitingAckEntry {
  * - `skipped_bad_raised_at` — missing/unparseable `pendingSignal.raisedAt`
  *   (cannot compute age; fail-safe leave alone).
  * - `skipped_under_ttl` — completion_ready younger than the TTL.
- * - `skipped_open_pr_failsafe` — open/unknown PR hold (`isHoldingOpenPr !== false`).
+ * - `skipped_open_pr_confirmed` — confirmed-open PR hold (`isHoldingOpenPr === true`).
+ * - `skipped_open_pr_unknown` — unknown/unwired PR hold (`isHoldingOpenPr` is
+ *   `undefined` or the predicate is omitted). Distinct from confirmed so GitHub
+ *   state-fetch lag is not reported as a stranded PR (issue #2228).
+ *   Aggregate `skippedOpenPrFailsafe` on health/metrics = confirmed + unknown.
  *   Dominant residual after #1884/#2070 when unfetched PR refs keep implementers
  *   (and non-allowlisted tasks) exempt from both strict and meta reclaim.
  */
 export type FinishedAwaitingAckReclaimSkipReason =
   | 'skipped_bad_raised_at'
   | 'skipped_under_ttl'
-  | 'skipped_open_pr_failsafe';
+  | 'skipped_open_pr_confirmed'
+  | 'skipped_open_pr_unknown';
 
 export const FINISHED_AWAITING_ACK_RECLAIM_SKIP_REASONS: readonly FinishedAwaitingAckReclaimSkipReason[] =
-  ['skipped_bad_raised_at', 'skipped_under_ttl', 'skipped_open_pr_failsafe'] as const;
+  [
+    'skipped_bad_raised_at',
+    'skipped_under_ttl',
+    'skipped_open_pr_confirmed',
+    'skipped_open_pr_unknown',
+  ] as const;
 
 export type FinishedAwaitingAckReclaimSkipCounts = Record<
   FinishedAwaitingAckReclaimSkipReason,
@@ -113,8 +123,19 @@ export function emptyFinishedAwaitingAckReclaimSkipCounts(): FinishedAwaitingAck
   return {
     skipped_bad_raised_at: 0,
     skipped_under_ttl: 0,
-    skipped_open_pr_failsafe: 0,
+    skipped_open_pr_confirmed: 0,
+    skipped_open_pr_unknown: 0,
   };
+}
+
+/** Aggregate open-PR fail-safe skips (confirmed + unknown) for health/metrics compat. */
+export function finishedAwaitingAckOpenPrFailsafeSkipTotal(
+  skips: Pick<
+    FinishedAwaitingAckReclaimSkipCounts,
+    'skipped_open_pr_confirmed' | 'skipped_open_pr_unknown'
+  >,
+): number {
+  return skips.skipped_open_pr_confirmed + skips.skipped_open_pr_unknown;
 }
 
 /**
@@ -182,7 +203,8 @@ export interface ListExpiredFinishedAwaitingAckTasksOpts {
  *   counts as a candidate — matches `classifyTaskCapacity` exactly;
  * - missing / unparseable `raisedAt` → `skipped_bad_raised_at`;
  * - age under TTL → `skipped_under_ttl`;
- * - open-PR fail-safe (true or unknown / unwired) → `skipped_open_pr_failsafe`;
+ * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
+ *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected.
  *
  * Invariant: `candidatesConsidered === expired.length + sum(skips.*)`.
@@ -221,13 +243,24 @@ export function selectExpiredFinishedAwaitingAckTasks(
 
     // Fail-safe: only a definite `false` clears the task for reclaim. `true`
     // and `undefined` (including "no predicate wired") both exempt it.
-    if (opts.isHoldingOpenPr?.(task) !== false) {
-      skips.skipped_open_pr_failsafe += 1;
-      outcomes.push({
-        taskId: task.id,
-        outcome: 'skipped_open_pr_failsafe',
-        ageMs,
-      });
+    // Issue #2228: split confirmed-open vs unknown (state-fetch lag / unwired).
+    const openPrHold = opts.isHoldingOpenPr?.(task);
+    if (openPrHold !== false) {
+      if (openPrHold === true) {
+        skips.skipped_open_pr_confirmed += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_confirmed',
+          ageMs,
+        });
+      } else {
+        skips.skipped_open_pr_unknown += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_unknown',
+          ageMs,
+        });
+      }
       continue;
     }
 

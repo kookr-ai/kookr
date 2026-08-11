@@ -124,7 +124,7 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
     expect(sel.skips.skipped_under_ttl).toBe(0);
   });
 
-  it('open-PR fail-safe skips even past TTL (no strand)', () => {
+  it('issue #2228: confirmed open-PR increments confirmed only (fail-safe still holds)', () => {
     const task = pausedTask();
     const sel = selectExpiredProviderPausedTasks([task], {
       now: NOW,
@@ -134,11 +134,12 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
       isHoldingOpenPr: () => true,
     });
     expect(sel.expired).toEqual([]);
-    expect(sel.skips.skipped_open_pr_failsafe).toBe(1);
-    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_failsafe');
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(0);
+    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_confirmed');
   });
 
-  it('unknown open-PR is fail-safe skip (undefined treated as hold)', () => {
+  it('issue #2228: unknown open-PR increments unknown only (undefined treated as hold)', () => {
     const task = pausedTask();
     const sel = selectExpiredProviderPausedTasks([task], {
       now: NOW,
@@ -148,10 +149,12 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
       isHoldingOpenPr: () => undefined,
     });
     expect(sel.expired).toEqual([]);
-    expect(sel.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(1);
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_unknown');
   });
 
-  it('omitted isHoldingOpenPr is fail-safe skip for every candidate', () => {
+  it('issue #2228: omitted isHoldingOpenPr is unknown fail-safe skip for every candidate', () => {
     const task = pausedTask();
     const sel = selectExpiredProviderPausedTasks([task], {
       now: NOW,
@@ -161,7 +164,9 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
       // isHoldingOpenPr omitted
     });
     expect(sel.expired).toEqual([]);
-    expect(sel.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(1);
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_unknown');
   });
 
   it('missing pause start skips (never invent pause-since-epoch)', () => {

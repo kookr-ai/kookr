@@ -345,7 +345,7 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     expect(sel.skips.skipped_no_liveness).toBe(1);
   });
 
-  it('counts skipped_open_pr_failsafe for true and unknown PR holds', () => {
+  it('issue #2228: splits open-PR fail-safe into confirmed vs unknown (tri-state)', () => {
     const stranded = hungTask({ id: 'stranded' });
     const unknown = hungTask({ id: 'unknown' });
     const unwired = hungTask({ id: 'unwired' });
@@ -357,7 +357,9 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       getLiveness: () => silentFor(TTL_MS + 60_000),
       isHoldingOpenPr: () => true,
     });
-    expect(holdTrue.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(holdTrue.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(holdTrue.skips.skipped_open_pr_unknown).toBe(0);
+    expect(holdTrue.outcomes[0]?.outcome).toBe('skipped_open_pr_confirmed');
 
     const holdUnknown = selectExpiredHungSuspectTasks([unknown], {
       now: NOW,
@@ -366,7 +368,9 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       getLiveness: () => silentFor(TTL_MS + 60_000),
       isHoldingOpenPr: () => undefined,
     });
-    expect(holdUnknown.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(holdUnknown.skips.skipped_open_pr_unknown).toBe(1);
+    expect(holdUnknown.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(holdUnknown.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
 
     const noPredicate = selectExpiredHungSuspectTasks([unwired], {
       now: NOW,
@@ -374,7 +378,9 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
       isHungSuspect: alwaysHung,
       getLiveness: () => silentFor(TTL_MS + 60_000),
     });
-    expect(noPredicate.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(noPredicate.skips.skipped_open_pr_unknown).toBe(1);
+    expect(noPredicate.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(noPredicate.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
   });
 
   it('issue #2072: past-TTL needs_input/permission_blocked select (not skipped_exempt_anomaly)', () => {
@@ -455,14 +461,15 @@ describe('selectExpiredHungSuspectTasks skip-reason breakdown (issue #2045)', ()
     expect(sel.expired.map((e) => e.task.id).sort()).toEqual(['needs', 'reclaim']);
     expect(sel.skips).toEqual({
       skipped_no_liveness: 1,
-      skipped_open_pr_failsafe: 1,
+      skipped_open_pr_confirmed: 1,
+      skipped_open_pr_unknown: 0,
       skipped_under_ttl: 1,
       skipped_exempt_anomaly: 0,
       skipped_provider_paused: 1,
     });
     // Task-id outcomes cover every candidate (issue #2072 audit).
     expect(sel.outcomes).toHaveLength(6);
-    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_failsafe');
+    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_confirmed');
     expect(sel.outcomes.find((o) => o.taskId === 'paused')?.outcome).toBe('skipped_provider_paused');
     expect(sel.outcomes.find((o) => o.taskId === 'needs')?.outcome).toBe('selected');
   });

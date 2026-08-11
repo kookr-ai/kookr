@@ -100,6 +100,8 @@ export interface PrometheusExpositionSnapshot {
     reclaimSucceeded?: number;
     skippedBadRaisedAt?: number;
     skippedOpenPrFailsafe?: number;
+    skippedOpenPrConfirmed?: number;
+    skippedOpenPrUnknown?: number;
     skippedUnderTtl?: number;
     autoCompletedTotal?: number;
     autoCompleteDeferredTotal?: number;
@@ -116,6 +118,8 @@ export interface PrometheusExpositionSnapshot {
     reclaimSucceeded?: number;
     skippedNoLiveness?: number;
     skippedOpenPrFailsafe?: number;
+    skippedOpenPrConfirmed?: number;
+    skippedOpenPrUnknown?: number;
     skippedUnderTtl?: number;
     skippedExemptAnomaly?: number;
     skippedProviderPaused?: number;
@@ -132,6 +136,8 @@ export interface PrometheusExpositionSnapshot {
     reclaimSucceeded?: number;
     skippedUnderTtl?: number;
     skippedOpenPrFailsafe?: number;
+    skippedOpenPrConfirmed?: number;
+    skippedOpenPrUnknown?: number;
     skippedNoPauseStart?: number;
     skippedAwaitingProviderReset?: number;
   };
@@ -558,6 +564,8 @@ function appendFinishedAwaitingAckReclaimMetrics(
         reclaimSucceeded?: number;
         skippedBadRaisedAt?: number;
         skippedOpenPrFailsafe?: number;
+        skippedOpenPrConfirmed?: number;
+        skippedOpenPrUnknown?: number;
         skippedUnderTtl?: number;
         autoCompletedTotal?: number;
         autoCompleteDeferredTotal?: number;
@@ -585,7 +593,7 @@ function appendFinishedAwaitingAckReclaimMetrics(
       {},
       snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
     ),
-    '# HELP kookr_finished_awaiting_ack_ttl_reclaim_skipped_total FinishedAwaitingAck TTL reclaim skips by reason (cumulative since process start; issue #2084).',
+    '# HELP kookr_finished_awaiting_ack_ttl_reclaim_skipped_total FinishedAwaitingAck TTL reclaim skips by reason (cumulative since process start; issue #2084 / #2228).',
     '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_skipped_total counter',
     metricLine(
       'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
@@ -596,6 +604,16 @@ function appendFinishedAwaitingAckReclaimMetrics(
       'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
       { reason: 'open_pr_failsafe' },
       snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_confirmed' },
+      snapshot.skippedOpenPrConfirmed ?? 0,
+    ),
+    metricLine(
+      'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_unknown' },
+      snapshot.skippedOpenPrUnknown ?? 0,
     ),
     metricLine(
       'kookr_finished_awaiting_ack_ttl_reclaim_skipped_total',
@@ -650,6 +668,8 @@ function appendHungSuspectReclaimMetrics(
         reclaimSucceeded?: number;
         skippedNoLiveness?: number;
         skippedOpenPrFailsafe?: number;
+        skippedOpenPrConfirmed?: number;
+        skippedOpenPrUnknown?: number;
         skippedUnderTtl?: number;
         skippedExemptAnomaly?: number;
         skippedProviderPaused?: number;
@@ -672,7 +692,7 @@ function appendHungSuspectReclaimMetrics(
       {},
       snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
     ),
-    '# HELP kookr_hung_suspect_ttl_reclaim_skipped_total HungSuspect TTL reclaim skips by reason (cumulative since process start).',
+    '# HELP kookr_hung_suspect_ttl_reclaim_skipped_total HungSuspect TTL reclaim skips by reason (cumulative since process start; issue #2228 splits open_pr).',
     '# TYPE kookr_hung_suspect_ttl_reclaim_skipped_total counter',
     metricLine(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
@@ -683,6 +703,16 @@ function appendHungSuspectReclaimMetrics(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
       { reason: 'open_pr_failsafe' },
       snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_confirmed' },
+      snapshot.skippedOpenPrConfirmed ?? 0,
+    ),
+    metricLine(
+      'kookr_hung_suspect_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_unknown' },
+      snapshot.skippedOpenPrUnknown ?? 0,
     ),
     metricLine(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
@@ -717,6 +747,8 @@ function appendProviderPausedOccupancyMetrics(
         reclaimSucceeded?: number;
         skippedUnderTtl?: number;
         skippedOpenPrFailsafe?: number;
+        skippedOpenPrConfirmed?: number;
+        skippedOpenPrUnknown?: number;
         skippedNoPauseStart?: number;
         skippedAwaitingProviderReset?: number;
       }
@@ -750,7 +782,7 @@ function appendProviderPausedOccupancyMetrics(
       {},
       snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
     ),
-    '# HELP kookr_provider_paused_ttl_reclaim_skipped_total Provider_paused hard-TTL reclaim skips by reason (cumulative since process start).',
+    '# HELP kookr_provider_paused_ttl_reclaim_skipped_total Provider_paused hard-TTL reclaim skips by reason (cumulative since process start; issue #2228 splits open_pr).',
     '# TYPE kookr_provider_paused_ttl_reclaim_skipped_total counter',
     metricLine(
       'kookr_provider_paused_ttl_reclaim_skipped_total',
@@ -761,6 +793,16 @@ function appendProviderPausedOccupancyMetrics(
       'kookr_provider_paused_ttl_reclaim_skipped_total',
       { reason: 'open_pr_failsafe' },
       snapshot.skippedOpenPrFailsafe ?? 0,
+    ),
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_confirmed' },
+      snapshot.skippedOpenPrConfirmed ?? 0,
+    ),
+    metricLine(
+      'kookr_provider_paused_ttl_reclaim_skipped_total',
+      { reason: 'open_pr_unknown' },
+      snapshot.skippedOpenPrUnknown ?? 0,
     ),
     metricLine(
       'kookr_provider_paused_ttl_reclaim_skipped_total',

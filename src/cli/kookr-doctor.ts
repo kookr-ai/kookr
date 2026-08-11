@@ -659,6 +659,9 @@ async function checkHungSuspectReclaim(
  * Last-pass open_pr fail-safe dominates when it is the plurality among
  * `lastOutcomes` (ties for first still count — residual is still held by the
  * fail-safe). Empty last pass → not dominated (cannot attribute residual yet).
+ *
+ * Issue #2228: confirmed + unknown outcomes both count as open_pr fail-safe
+ * (legacy `skipped_open_pr_failsafe` kept for older health snapshots).
  */
 export function isOpenPrFailsafeDominatedLastPass(
   lastOutcomes: ReadonlyArray<{ outcome: string }>,
@@ -668,7 +671,7 @@ export function isOpenPrFailsafeDominatedLastPass(
   if (openPr === 0) return false;
   const otherCounts = new Map<string, number>();
   for (const entry of lastOutcomes) {
-    if (entry.outcome === 'skipped_open_pr_failsafe') continue;
+    if (isOpenPrFailsafeOutcome(entry.outcome)) continue;
     otherCounts.set(entry.outcome, (otherCounts.get(entry.outcome) ?? 0) + 1);
   }
   const maxOther = otherCounts.size === 0
@@ -677,12 +680,20 @@ export function isOpenPrFailsafeDominatedLastPass(
   return openPr >= maxOther;
 }
 
+function isOpenPrFailsafeOutcome(outcome: string): boolean {
+  return (
+    outcome === 'skipped_open_pr_failsafe'
+    || outcome === 'skipped_open_pr_confirmed'
+    || outcome === 'skipped_open_pr_unknown'
+  );
+}
+
 function countLastPassOpenPrFailsafes(
   lastOutcomes: ReadonlyArray<{ outcome: string }>,
 ): number {
   let n = 0;
   for (const entry of lastOutcomes) {
-    if (entry.outcome === 'skipped_open_pr_failsafe') n += 1;
+    if (isOpenPrFailsafeOutcome(entry.outcome)) n += 1;
   }
   return n;
 }

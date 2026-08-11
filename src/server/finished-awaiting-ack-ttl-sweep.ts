@@ -5,6 +5,7 @@ import {
   selectExpiredFinishedAwaitingAckTasks,
   listMetaFinishedAwaitingAckAutoCompleteTasks,
   emptyFinishedAwaitingAckReclaimSkipCounts,
+  finishedAwaitingAckOpenPrFailsafeSkipTotal,
   taskHasLiveTurn,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   type FinishedAwaitingAckReclaimCandidateOutcome,
@@ -39,7 +40,16 @@ export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   reclaimSucceeded: number;
   /** Skip-reason breakdown for finishedAwaitingAck candidates not selected (issue #2084). */
   skippedBadRaisedAt: number;
+  /**
+   * Aggregate open-PR fail-safe skips (`confirmed + unknown`) for scraper
+   * compat. Prefer {@link skippedOpenPrConfirmed} / {@link skippedOpenPrUnknown}
+   * when attributing residual (issue #2228).
+   */
   skippedOpenPrFailsafe: number;
+  /** Confirmed-open PR hold (`isHoldingOpenPr === true`) — issue #2228. */
+  skippedOpenPrConfirmed: number;
+  /** Unknown/unwired PR hold (GitHub state lag or predicate omitted) — issue #2228. */
+  skippedOpenPrUnknown: number;
   skippedUnderTtl: number;
   /** Last selection pass: how many finishedAwaitingAck candidates were considered. */
   lastCandidatesConsidered: number;
@@ -101,7 +111,8 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
   }): void {
     this.lastCandidatesConsidered = selection.candidatesConsidered;
     this.skips.skipped_bad_raised_at += selection.skips.skipped_bad_raised_at;
-    this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
+    this.skips.skipped_open_pr_confirmed += selection.skips.skipped_open_pr_confirmed;
+    this.skips.skipped_open_pr_unknown += selection.skips.skipped_open_pr_unknown;
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
@@ -129,7 +140,9 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
       reclaimAttempted: this.reclaimAttempted,
       reclaimSucceeded: this.reclaimedTotal,
       skippedBadRaisedAt: this.skips.skipped_bad_raised_at,
-      skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
+      skippedOpenPrFailsafe: finishedAwaitingAckOpenPrFailsafeSkipTotal(this.skips),
+      skippedOpenPrConfirmed: this.skips.skipped_open_pr_confirmed,
+      skippedOpenPrUnknown: this.skips.skipped_open_pr_unknown,
       skippedUnderTtl: this.skips.skipped_under_ttl,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),

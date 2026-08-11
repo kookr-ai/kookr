@@ -66,17 +66,24 @@ export interface ExpiredHungSuspectEntry {
  * `skipped_exempt_anomaly` is retained for API/metrics stability (issue #2045)
  * but is no longer produced by the selector after #2072 — past-TTL silence
  * supersedes human-gated anomalies. Historical health docs may still mention it.
+ *
+ * Issue #2228: open-PR fail-safe is split into confirmed vs unknown so GitHub
+ * state-fetch lag is not lumped with real stranded PRs. The aggregate
+ * `skipped_open_pr_failsafe` remains on health/metrics snapshots only
+ * (`confirmed + unknown`) for scraper/compat; it is not a selection outcome.
  */
 export type HungSuspectReclaimSkipReason =
   | 'skipped_no_liveness'
-  | 'skipped_open_pr_failsafe'
+  | 'skipped_open_pr_confirmed'
+  | 'skipped_open_pr_unknown'
   | 'skipped_under_ttl'
   | 'skipped_exempt_anomaly'
   | 'skipped_provider_paused';
 
 export const HUNG_SUSPECT_RECLAIM_SKIP_REASONS: readonly HungSuspectReclaimSkipReason[] = [
   'skipped_no_liveness',
-  'skipped_open_pr_failsafe',
+  'skipped_open_pr_confirmed',
+  'skipped_open_pr_unknown',
   'skipped_under_ttl',
   'skipped_exempt_anomaly',
   'skipped_provider_paused',
@@ -87,11 +94,19 @@ export type HungSuspectReclaimSkipCounts = Record<HungSuspectReclaimSkipReason, 
 export function emptyHungSuspectReclaimSkipCounts(): HungSuspectReclaimSkipCounts {
   return {
     skipped_no_liveness: 0,
-    skipped_open_pr_failsafe: 0,
+    skipped_open_pr_confirmed: 0,
+    skipped_open_pr_unknown: 0,
     skipped_under_ttl: 0,
     skipped_exempt_anomaly: 0,
     skipped_provider_paused: 0,
   };
+}
+
+/** Aggregate open-PR fail-safe skips (confirmed + unknown) for health/metrics compat. */
+export function openPrFailsafeSkipTotal(
+  skips: Pick<HungSuspectReclaimSkipCounts, 'skipped_open_pr_confirmed' | 'skipped_open_pr_unknown'>,
+): number {
+  return skips.skipped_open_pr_confirmed + skips.skipped_open_pr_unknown;
 }
 
 /**
@@ -190,7 +205,8 @@ export interface ListExpiredHungSuspectTasksOpts {
  * - provider pause → `skipped_provider_paused`;
  * - missing / all-zero liveness → `skipped_no_liveness`;
  * - silence under TTL → `skipped_under_ttl`;
- * - open-PR fail-safe (true or unknown) → `skipped_open_pr_failsafe`;
+ * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
+ *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (including long-silent needs_input / permission_blocked
  *   past TTL — issue #2072; disposition stays needs-human).
  */
@@ -248,13 +264,24 @@ export function selectExpiredHungSuspectTasks(
 
     // Fail-safe: only a definite `false` clears the task for reclaim.
     // Not widened by #2072 — open/unknown PR holds still skip.
-    if (opts.isHoldingOpenPr?.(task) !== false) {
-      skips.skipped_open_pr_failsafe += 1;
-      outcomes.push({
-        taskId: task.id,
-        outcome: 'skipped_open_pr_failsafe',
-        silentForMs,
-      });
+    // Issue #2228: split confirmed-open vs unknown (state-fetch lag / unwired).
+    const openPrHold = opts.isHoldingOpenPr?.(task);
+    if (openPrHold !== false) {
+      if (openPrHold === true) {
+        skips.skipped_open_pr_confirmed += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_confirmed',
+          silentForMs,
+        });
+      } else {
+        skips.skipped_open_pr_unknown += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_unknown',
+          silentForMs,
+        });
+      }
       continue;
     }
 

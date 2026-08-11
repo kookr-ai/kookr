@@ -155,11 +155,65 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       reclaimedTotal: 0,
       reclaimAttempted: 0,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       lastCandidatesConsidered: 1,
       lastAttemptedTaskIds: [],
     });
-    expect(result.selection?.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(result.selection?.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(result.selection?.skips.skipped_open_pr_unknown).toBe(0);
     await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
+  });
+
+  it('issue #2228: unknown open-PR hold increments unknown only on metrics (no reclaim)', async () => {
+    const task = makeFaaTask({ id: 'unknown-pr' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot()).toMatchObject({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedOpenPrConfirmed: 0,
+      skippedOpenPrUnknown: 1,
+      skippedOpenPrFailsafe: 1,
+      lastOutcomes: [
+        expect.objectContaining({
+          taskId: 'unknown-pr',
+          outcome: 'skipped_open_pr_unknown',
+        }),
+      ],
+    });
+  });
+
+  it('issue #2228: metrics aggregate open-PR failsafe = confirmed + unknown', () => {
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+    metrics.recordSelection({
+      candidatesConsidered: 3,
+      skips: {
+        skipped_bad_raised_at: 0,
+        skipped_under_ttl: 0,
+        skipped_open_pr_confirmed: 1,
+        skipped_open_pr_unknown: 2,
+      },
+    });
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedOpenPrConfirmed).toBe(1);
+    expect(snap.skippedOpenPrUnknown).toBe(2);
+    expect(snap.skippedOpenPrFailsafe).toBe(3);
   });
 
   it('accumulates mixed skip-reason counters across a single pass (issue #2084)', async () => {
@@ -198,6 +252,8 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       reclaimAttempted: 1,
       skippedUnderTtl: 1,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       skippedBadRaisedAt: 1,
       lastCandidatesConsidered: 4,
       lastAttemptedTaskIds: ['reclaim'],

@@ -6,6 +6,7 @@ import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_HUNG_SUSPECT_TTL_MS,
   emptyHungSuspectReclaimSkipCounts,
+  openPrFailsafeSkipTotal,
   selectExpiredHungSuspectTasks,
   type HungSuspectReclaimCandidateOutcome,
   type HungSuspectReclaimSkipCounts,
@@ -35,7 +36,16 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
   reclaimSucceeded: number;
   /** Skip-reason breakdown for hungSuspect candidates not selected (issue #2045). */
   skippedNoLiveness: number;
+  /**
+   * Aggregate open-PR fail-safe skips (`confirmed + unknown`) for scraper
+   * compat. Prefer {@link skippedOpenPrConfirmed} / {@link skippedOpenPrUnknown}
+   * when attributing residual (issue #2228).
+   */
   skippedOpenPrFailsafe: number;
+  /** Confirmed-open PR hold (`isHoldingOpenPr === true`) — issue #2228. */
+  skippedOpenPrConfirmed: number;
+  /** Unknown/unwired PR hold (GitHub state lag or predicate omitted) — issue #2228. */
+  skippedOpenPrUnknown: number;
   skippedUnderTtl: number;
   /**
    * Legacy #2045 counter. After #2072 the selector no longer permanent-skips
@@ -87,7 +97,8 @@ export class HungSuspectTtlReclaimMetrics {
   }): void {
     this.lastCandidatesConsidered = selection.candidatesConsidered;
     this.skips.skipped_no_liveness += selection.skips.skipped_no_liveness;
-    this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
+    this.skips.skipped_open_pr_confirmed += selection.skips.skipped_open_pr_confirmed;
+    this.skips.skipped_open_pr_unknown += selection.skips.skipped_open_pr_unknown;
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
     this.skips.skipped_exempt_anomaly += selection.skips.skipped_exempt_anomaly;
     this.skips.skipped_provider_paused += selection.skips.skipped_provider_paused;
@@ -105,7 +116,9 @@ export class HungSuspectTtlReclaimMetrics {
       reclaimAttempted: this.reclaimAttempted,
       reclaimSucceeded: this.reclaimedTotal,
       skippedNoLiveness: this.skips.skipped_no_liveness,
-      skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
+      skippedOpenPrFailsafe: openPrFailsafeSkipTotal(this.skips),
+      skippedOpenPrConfirmed: this.skips.skipped_open_pr_confirmed,
+      skippedOpenPrUnknown: this.skips.skipped_open_pr_unknown,
       skippedUnderTtl: this.skips.skipped_under_ttl,
       skippedExemptAnomaly: this.skips.skipped_exempt_anomaly,
       skippedProviderPaused: this.skips.skipped_provider_paused,

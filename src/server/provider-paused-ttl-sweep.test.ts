@@ -205,7 +205,64 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
 
     expect(result.reclaimedTaskIds).toEqual([]);
     expect(taskStore.terminateTask).not.toHaveBeenCalled();
-    expect(metrics.getSnapshot().skippedOpenPrFailsafe).toBe(1);
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
+    });
+  });
+
+  it('issue #2228: unknown open-PR hold increments unknown only on metrics (no reclaim)', async () => {
+    const task = makePausedTask({ id: 'unknown-pr' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 0,
+      skippedOpenPrUnknown: 1,
+      lastOutcomes: [
+        expect.objectContaining({
+          taskId: 'unknown-pr',
+          outcome: 'skipped_open_pr_unknown',
+        }),
+      ],
+    });
+  });
+
+  it('issue #2228: metrics aggregate open-PR failsafe = confirmed + unknown', () => {
+    const metrics = new ProviderPausedOccupancyMetrics();
+    metrics.recordSelection({
+      candidatesConsidered: 3,
+      skips: {
+        skipped_under_ttl: 0,
+        skipped_open_pr_confirmed: 1,
+        skipped_open_pr_unknown: 2,
+        skipped_no_pause_start: 0,
+        skipped_awaiting_provider_reset: 0,
+      },
+    });
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedOpenPrConfirmed).toBe(1);
+    expect(snap.skippedOpenPrUnknown).toBe(2);
+    expect(snap.skippedOpenPrFailsafe).toBe(3);
   });
 
   it('never force-completes as delivered — disposition is always terminated/needs-human', () => {
