@@ -35,6 +35,7 @@ import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-t
 import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
 import { OpenPrFailsafeReasonMetrics } from '../../core/open-pr-hold.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
+import { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -1216,6 +1217,94 @@ describe('diagnostics routes', () => {
       expect(body.hookReplayCheckpoints).toEqual({
         sessionCount: 0,
         fileBytes: 0,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — ossAttempts block (issue #2332)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health ossAttempts block (issue #2332)', () => {
+    test('omits ossAttempts when the store is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { ossAttempts?: unknown };
+      expect(body.ossAttempts).toBeUndefined();
+    });
+
+    test('returns zeros for an empty store without embedding attempts', async () => {
+      const kookrDir = join(tempDir, 'oss-health-empty');
+      mkdirSync(kookrDir, { recursive: true });
+      const store = new OssAttemptStore(kookrDir);
+      await store.load();
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        ossAttemptStore: store,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        ossAttempts?: {
+          openCount: number;
+          totalCount: number;
+          lastRefreshAt: string | null;
+          issueCheckErrorCount: number;
+          attempts?: unknown;
+        };
+      };
+      expect(body.ossAttempts).toEqual({
+        openCount: 0,
+        totalCount: 0,
+        lastRefreshAt: null,
+        issueCheckErrorCount: 0,
+      });
+      expect(body.ossAttempts).not.toHaveProperty('attempts');
+    });
+
+    test('projects open/total counts, lastRefreshAt, and issue-check errors', async () => {
+      const kookrDir = join(tempDir, 'oss-health-counts');
+      mkdirSync(kookrDir, { recursive: true });
+      const store = new OssAttemptStore(kookrDir);
+      await store.load();
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 1,
+        prUrl: 'https://github.com/grafana/grafana/pull/1',
+        prTitle: 'Open',
+        source: 'posttool_hook',
+        state: 'pr_open',
+      });
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 2,
+        prUrl: 'https://github.com/grafana/grafana/pull/2',
+        prTitle: 'Merged',
+        source: 'posttool_hook',
+        state: 'merged',
+      });
+      store.setLastRefreshAt('2026-08-12T12:00:00.000Z');
+      store.setLastRefreshIssueCheckErrors([
+        { repo: 'grafana/grafana', prNumber: 1, message: 'timeout' },
+      ]);
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        ossAttemptStore: store,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { ossAttempts?: Record<string, unknown> };
+      expect(body.ossAttempts).toEqual({
+        openCount: 1,
+        totalCount: 2,
+        lastRefreshAt: '2026-08-12T12:00:00.000Z',
+        issueCheckErrorCount: 1,
       });
     });
   });
