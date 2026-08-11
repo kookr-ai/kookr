@@ -83,6 +83,38 @@ describe('evaluateTaskOpenPrHold (issue #2225)', () => {
     expect(evaluation.reason).toBe('bot_or_foreign_open');
   });
 
+  it('bot open PR whose head matches task branch still holds as delivery', () => {
+    const evaluation = evaluateTaskOpenPrHold({
+      prs: [
+        pr({
+          number: 8,
+          isOpen: true,
+          author: 'dependabot[bot]',
+          headBranch: 'fix/issue-2225-phantom-reclaim',
+        }),
+      ],
+      taskBranch: 'fix/issue-2225-phantom-reclaim',
+    });
+    expect(evaluation.isHolding).toBe(true);
+    expect(evaluation.reason).toBe('delivery_open');
+  });
+
+  it('agent-authored open PR with mismatched head is foreign (evaluate path)', () => {
+    const evaluation = evaluateTaskOpenPrHold({
+      prs: [
+        pr({
+          number: 9,
+          isOpen: true,
+          author: 'jean',
+          headBranch: 'other-branch',
+        }),
+      ],
+      taskBranch: 'fix/mine',
+    });
+    expect(evaluation.isHolding).toBe(false);
+    expect(evaluation.reason).toBe('bot_or_foreign_open');
+  });
+
   it('holds on confirmed agent-authored delivery open PR', () => {
     const evaluation = evaluateTaskOpenPrHold({
       prs: [

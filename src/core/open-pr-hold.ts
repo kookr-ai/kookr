@@ -268,7 +268,7 @@ export function emptyOpenPrFailsafeByReason(): OpenPrFailsafeByReason {
 /**
  * Process-lifetime counters for open-PR fail-safe skip *reasons* (issue #2225).
  * Record only when reclaim is blocked (`isHolding !== false`). Sample task ids
- * / PR linkage rotate as a capped ring of first-seen ids per reason.
+ * / PR linkage keep the first {@link MAX_OPEN_PR_FAILSAFE_SAMPLES} seen per reason.
  */
 export class OpenPrFailsafeReasonMetrics {
   private readonly buckets = emptyOpenPrFailsafeByReason();

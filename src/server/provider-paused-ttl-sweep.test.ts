@@ -225,6 +225,40 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(snap.softTtlMs).toBe(soft);
   });
 
+  it('issue #2225: past soft TTL without capacity gate still waits for hard TTL', async () => {
+    const soft = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+    const task = makePausedTask({ id: 'hard-only' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (soft + 5 * 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        softTtlMs: soft,
+        capacityAllowsEarlyReclaim: false,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedUnderTtl).toBe(1);
+    expect(snap.capacityEarlyReclaim).toBe(false);
+    expect(snap.effectiveTtlMs).toBe(TTL_MS);
+  });
+
   it('open-PR fail-safe: past TTL but holding open PR is not terminated', async () => {
     const task = makePausedTask();
     const taskStore = makeMockTaskStore([task]);
