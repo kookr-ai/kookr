@@ -1,4 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 import type { CoordinatorDetectorId } from '../../shared/contracts/coordinator.js';
@@ -152,9 +164,66 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
     }
   }
 
+  /**
+   * Persist suppressions via temp + fsync + rename so a crash mid-write cannot
+   * leave a truncated live file that read() would treat as empty (#2297).
+   * Sync API matches call sites (suppress / acknowledgeTask / prune-on-read).
+   */
   private write(state: CoordinatorSuppressionFile): void {
-    mkdirSync(dirname(this.filePath), { recursive: true });
-    writeFileSync(this.filePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    atomicWriteTextFileSync(this.filePath, `${JSON.stringify(state, null, 2)}\n`);
+  }
+}
+
+/** Sync fs ops used by {@link atomicWriteTextFileSync}; injectable for unit tests. */
+export interface AtomicWriteTextFileSyncFs {
+  mkdirSync: typeof mkdirSync;
+  openSync: typeof openSync;
+  writeFileSync: typeof writeFileSync;
+  fsyncSync: typeof fsyncSync;
+  closeSync: typeof closeSync;
+  renameSync: typeof renameSync;
+  unlinkSync: typeof unlinkSync;
+}
+
+const defaultAtomicWriteFs: AtomicWriteTextFileSyncFs = {
+  mkdirSync,
+  openSync,
+  writeFileSync,
+  fsyncSync,
+  closeSync,
+  renameSync,
+  unlinkSync,
+};
+
+/**
+ * Atomically write `data` to `filePath` (temp + fsync + rename).
+ * Never opens the final path for streaming partial content — the live file is
+ * replaced only via rename after the temp payload is fully written and fsynced.
+ * Exported so unit tests can inject a fake fs without ESM spy limitations.
+ */
+export function atomicWriteTextFileSync(
+  filePath: string,
+  data: string,
+  fs: AtomicWriteTextFileSyncFs = defaultAtomicWriteFs,
+): void {
+  fs.mkdirSync(dirname(filePath), { recursive: true });
+  const tempPath = join(dirname(filePath), `.tmp-${randomUUID()}`);
+  try {
+    const fd = fs.openSync(tempPath, 'w');
+    try {
+      fs.writeFileSync(fd, data, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best-effort cleanup when the publish path fails before rename.
+    }
+    throw err;
   }
 }
 
