@@ -1026,132 +1026,115 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Waves 1–5 residual leaves
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–6 residual leaves
  * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553, #2609–#2611,
  * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS;
  * invent wave 5 #2669–#2671 eventDetected/contentStatus, late content-upgrade,
- * identityCorroboration stamp) shipped and are title-exhausted. Invent wave 6
- * (queue-feeder 2026-08-11, invent-product-wave #2069) continues RFC-012 §5.8
- * Phase-3 structural north star under the acquisition-redundancy umbrella:
- * multi-source content selection (beyond identity stamps), auto-upgrade of a
- * delivered total-miss notice into a corrected brief on late capture, and
- * product-metric loudness for the new event_seen_no_content miss class.
+ * identityCorroboration stamp; invent wave 6 #2682–#2684 multi-source body
+ * preference, total-miss→corrected brief, event_seen_no_content alert) shipped
+ * and are title-exhausted. Invent wave 7 (queue-feeder 2026-08-11/12,
+ * invent-product-wave #2069) continues acquisition hit-rate residual under the
+ * same umbrella: mid-window host-cooling re-arm, SEC early-promote when free
+ * non-SEC channels are dead, and already-published recapture prefers issuer IR
+ * over EDGAR when both resolve. Live GitHub leaves #2701–#2703.
  * Title idempotency prevents re-emit once live leaves exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): prefer multi-source corroborated content when selecting delivered report body',
+      'feat(acquisition): mid-window host-cooling expiry re-arms cooled issuer hosts for open windows',
     goal:
-      'Close the content-selection half of RFC-012 §5.8 corroboration-first capture ' +
-      'under umbrella #1587: when ≥2 independent tiers return usable report content ' +
-      'for the same ticker+date, prefer the multi-source / identity-corroborated body ' +
-      '(and its source provenance) over a single-source-only winner — wave 5 #2671 only ' +
-      'stamped identityCorroborated; delivery still races first-winner without reconciling ' +
-      'bodies.',
+      'Close a residual hit-rate hole under umbrella #1587: when an issuer (or newswire) host ' +
+      'enters host_cooling_down early in an armed window and the cooldown expires while the ' +
+      'window is still open with no usable content, the pipeline must re-arm that host and ' +
+      'retry fetch instead of staying cooled until the next calendar window — cooled hosts ' +
+      'that recover mid-window are free acquisition capacity we currently leave idle.',
     acceptanceCriteria: [
-      'When the tier race (or sequential same-window hits) retains content from ≥2 of ' +
-        '{issuer, newswire/wire, SEC/EDGAR} for the same identity, the delivered/retained ' +
-        'report body is chosen by an explicit multi-source preference rule (documented ' +
-        'in code) that prefers corroborated multi-source content over a lone single-source ' +
-        'first-finisher when both are present.',
-      'Single-source-only hits remain deliverable unchanged (no regression of today\'s ' +
-        'first-winner path when only one tier has a body); identityCorroborated stamps ' +
-        'from #2671 stay authoritative for scorecard.',
-      'Unit/fixture tests cover: (a) wire body first + later SEC body same identity → ' +
-        'retained/delivered body follows multi-source preference (not silent first-winner ' +
-        'lock); (b) single-source only → first-winner path unchanged; (c) conflicting ' +
-        'identity across sources does not silently merge bodies into one "corroborated" ' +
-        'delivery.',
+      'Given an armed window with no usable retained content and a host whose cooling expires ' +
+        'before window end, the acquisition loop schedules at least one post-expiry retry ' +
+        'against that host (or its tier) without requiring a new arming event.',
+      'Hosts still inside their cooling window are not re-probed (no cooldown-bypass storm); ' +
+        'tickers that already have usable content do not trigger wasteful re-fetches solely ' +
+        'because cooling expired.',
+      'Unit/fixture tests cover: (a) cooling expires mid-window + still no content → retry ' +
+        'fires; (b) still-cooling → no retry; (c) content already retained → no forced ' +
+        're-fetch on cooling expiry.',
+    ],
+    fileHints: [
+      'src/acquisition/',
+      'src/acquisition/host-cooling.js',
+      'src/scheduler-active-window-poll.js',
+      'src/acquisition/tiers/',
+    ],
+    testHints: [
+      'unit: mid-window cooling expiry + no content → host re-armed/retry',
+      'unit: still cooling → no retry',
+      'unit: content already retained → no forced re-fetch',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): SEC/EDGAR early-promote when all free non-SEC channels are cooled or tier_blocked',
+    goal:
+      'Under umbrella #1587, when every free non-SEC channel (issuer/newswire/search) is ' +
+      'host_cooling_down or tier_blocked for an armed ticker, do not burn the full remaining ' +
+      'window waiting for those channels — early-promote the SEC/EDGAR tier (or equivalent ' +
+      'last-resort path) so already-published and live filings still have a chance inside ' +
+      'the decision latency budget.',
+    acceptanceCriteria: [
+      'When readiness/runtime health shows zero healthy free non-SEC channels for an armed ' +
+        'ticker and SEC/EDGAR is available, the pipeline promotes SEC/EDGAR (or starts it ' +
+        'without waiting for the normal late-fallback delay) while the window is still open.',
+      'When ≥1 free non-SEC channel is healthy, existing race/fallback ordering is unchanged ' +
+        '(no premature EDGAR-only path that starves issuer/newswire).',
+      'Unit/fixture tests cover: (a) all free non-SEC cooled/blocked + SEC healthy → early ' +
+        'promote; (b) one free non-SEC healthy → no early promote; (c) SEC also unavailable ' +
+        '→ no crash, ordinary miss/degraded path.',
     ],
     fileHints: [
       'src/acquisition/acquire.js',
-      'src/acquisition/identity-corroboration.js',
+      'src/acquisition/tiers/',
+      'src/acquisition/schedule-readiness.js',
+      'src/scheduler-active-window-poll.js',
+    ],
+    testHints: [
+      'unit: all non-SEC cooled + SEC ok → early promote',
+      'unit: one non-SEC healthy → no early promote',
+      'unit: SEC unavailable → clean degraded path',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): already-published recapture prefers issuer IR over EDGAR when both resolve',
+    goal:
+      'Raise retained-report quality under umbrella #1587 for the already-published ' +
+      'recapture path (#2518): when both an issuer IR report URL and an EDGAR filing resolve ' +
+      'for the same ticker+date identity, prefer the issuer IR body (richer tables / ' +
+      'operator-facing HTML) over EDGAR-only content so backtest and forward retained bars ' +
+      'are not locked to the thinner SEC copy when a free issuer surface is available.',
+    acceptanceCriteria: [
+      'On already-published / no_source recapture (or equivalent post-window content capture), ' +
+        'if issuer IR and EDGAR both return usable content for the same identity, the ' +
+        'retained/delivered body prefers issuer IR per an explicit documented preference rule.',
+      'EDGAR-only successes remain deliverable when issuer IR is missing or unusable; ' +
+        'identity conflicts do not silently merge bodies.',
+      'Unit/fixture tests cover: (a) both resolve → issuer preferred; (b) issuer missing → ' +
+        'EDGAR retained; (c) live first-hit race outside recapture path is not regressed ' +
+        'into always-issuer-only.',
+    ],
+    fileHints: [
+      'src/scheduler-no-source-recapture.js',
+      'src/acquisition/acquire.js',
+      'src/acquisition/tiers/issuer.js',
       'src/acquisition/tiers/',
       'src/earnings-source.js',
-      'src/scheduled-detection-persistence.js',
     ],
     testHints: [
-      'unit: two-source bodies → multi-source preference selects retained body',
-      'unit: single-source only → first-winner unchanged',
-      'unit: identity conflict → no silent multi-source merge',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): auto-upgrade delivered total-miss notice into corrected brief on late content capture',
-    goal:
-      'Finish the delivery half of RFC-012 §5.8 auto-re-resolve under umbrella #1587: ' +
-      'when a confirmed-date total-miss (or eventDetected+contentStatus pending/failed) ' +
-      'already produced an operator-facing miss notice, a later ordinary content capture ' +
-      'for the same identity must auto-upgrade into a corrected brief (or explicit ' +
-      'correction notice) instead of only updating the ledger while the Discord/operator ' +
-      'surface stays on the miss — #2553 re-resolves fetch; #2670 upgrades rows; delivery ' +
-      'still does not correct the already-sent miss.',
-    acceptanceCriteria: [
-      'Given a delivered/recorded total-miss (or event-seen-no-content) notice for ' +
-        'ticker+date and a later content-upgrade / successful content fetch for the same ' +
-        'identity inside the armed/re-check window, the pipeline emits a corrected brief ' +
-        '(or a linked correction notice) referencing the prior miss — not a silent ' +
-        'ledger-only upgrade.',
-      'Idempotent: a second late fetch for the same identity does not double-send ' +
-        'correction briefs; identities without a prior miss notice still use the ordinary ' +
-        'first-hit delivery path.',
-      'Unit/fixture tests cover: (a) miss notice + late content → one correction/brief; ' +
-        '(b) second late fetch → no second correction; (c) no prior miss → ordinary hit ' +
-        'delivery unchanged.',
-    ],
-    fileHints: [
-      'src/acquisition/event-content-status.js',
-      'src/scheduler-discord-delivery.js',
-      'src/scheduler-active-window-poll.js',
-      'src/scheduler-no-source-recapture.js',
-      'src/acquisition/anomaly.js',
-    ],
-    testHints: [
-      'unit: prior miss + late content → correction/brief once',
-      'unit: second late fetch → no double correction',
-      'unit: no prior miss → ordinary hit path',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(metrics): alert and control-room badge when event_seen_no_content rate exceeds threshold',
-    goal:
-      'Make the new RFC-012 §5.8 miss class loud under umbrella #1587: after wave 5 ' +
-      '#2669 projected event_seen_no_content in the scorecard, operators still have no ' +
-      'thresholded alert or control-room badge when event-seen-but-no-content dominates ' +
-      'misses — pure silence (no_source) and event-seen-no-content stay easy to conflate ' +
-      'in day-to-day ops.',
-    acceptanceCriteria: [
-      'product-metric alerts (or a sibling pure evaluator) emit a durable ' +
-        'event_seen_no_content alert when that cause\'s share of product watch-outcome ' +
-        'misses is above a documented threshold AND the miss sample size is above a ' +
-        'documented floor; pure no_source (eventDetected=false) does not trigger it.',
-      'Control-room acquisition/retrieval health (or product-metric badge strip) surfaces ' +
-        'event_seen_no_content rate or count with denominator when measurable, and an ' +
-        'explicit data-gap / hidden state when n is below the floor — no fabricated rate.',
-      'Unit/fixture tests cover: (a) high event_seen_no_content share + n≥floor → alert; ' +
-        '(b) share below threshold or n below floor → no alert; (c) pure no_source-heavy ' +
-        'fixture without eventDetected → no false event_seen_no_content alert; ' +
-        '(d) control-room projection shows rate+denominator or gap, never a crash on ' +
-        'missing fold.',
-    ],
-    fileHints: [
-      'src/product-metric-alerts.js',
-      'src/detection-scorecard.js',
-      'src/detection-event-content.js',
-      'src/control-room-snapshot-compose.js',
-      'src/control-room/retrieval-health-panel.js',
-      'src/acquisition/weekly-scoreboard.js',
-    ],
-    testHints: [
-      'unit: high event_seen_no_content share → alert',
-      'unit: low share or low n → no alert',
-      'unit: pure no_source without eventDetected → no false alert',
-      'unit: control-room projection degrades cleanly on missing fold',
+      'unit: issuer+EDGAR recapture → issuer preferred',
+      'unit: EDGAR-only → retained',
+      'unit: live first-hit path unchanged when not in recapture mode',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
