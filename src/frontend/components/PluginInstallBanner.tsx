@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   TOOLKIT_MARKETPLACE_SLUG,
   pluginInstallCommands,
@@ -6,6 +6,8 @@ import {
   type PluginVersionStatus,
 } from '../../shared/contracts/plugin-version.js';
 import { getDeployStatus, installToolkitPlugin } from '../api/index.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
+import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
 export const PLUGIN_INSTALL_DISMISS_KEY = 'kookr-plugin-install-banner-dismissed';
 
@@ -15,6 +17,116 @@ function readDismissed(): boolean {
   } catch {
     return false;
   }
+}
+
+interface PluginInstallConfirmDialogProps {
+  plugin: PluginVersionStatus;
+  installing: boolean;
+  error: string | null;
+  errorCommands: { slash: string[]; cli: string[] } | null;
+  commands: { slash: string[]; cli: string[] };
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+/**
+ * Confirm surface for guided plugin install. Mounted only while open so the
+ * Tab trap and Escape-to-close attach for the dialog lifetime only — same
+ * pattern as ConfirmDialog / SweepConfirmDialog.
+ */
+function PluginInstallConfirmDialog({
+  plugin,
+  installing,
+  error,
+  errorCommands,
+  commands,
+  onClose,
+  onConfirm,
+}: PluginInstallConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  useEscapeToClose(onClose);
+  useDialogFocus({ dialogRef, initialFocusRef: cancelButtonRef });
+
+  return (
+    <div
+      className="dialog-overlay"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plugin-install-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="dialog-header">
+          <h3 id="plugin-install-dialog-title">Install kookr-toolkit plugin?</h3>
+          <button
+            className="dialog-close"
+            onClick={onClose}
+            disabled={installing}
+            aria-label="Close install dialog"
+          >
+            &times;
+          </button>
+        </div>
+
+        <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+          This will modify your Claude Code configuration:
+        </p>
+        <ul className="toolkit-does">
+          <li>Add marketplace <code>{TOOLKIT_MARKETPLACE_SLUG}</code></li>
+          <li>Install <code>{plugin.pluginId}</code>{plugin.availableVersion ? ` (v${plugin.availableVersion})` : ''}</li>
+        </ul>
+
+        <div className="toolkit-safety">
+          <span>🛡</span>
+          <span>
+            Safe by default. Kookr snapshots <code>~/.claude/plugins</code> before installing
+            and rolls it back automatically if the install fails.
+          </span>
+        </div>
+
+        {error && (
+          <div style={{ marginTop: 12, color: 'var(--red)', fontSize: 12 }}>
+            <strong>Install failed:</strong> {error}
+            {(errorCommands ?? commands) && (
+              <div style={{ marginTop: 8 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Run manually in Claude Code:</span>
+                <ul className="toolkit-does" style={{ marginTop: 4 }}>
+                  {(errorCommands?.slash ?? commands.slash).map((cmd) => (
+                    <li key={cmd}><code>{cmd}</code></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="dialog-actions">
+          <button
+            ref={cancelButtonRef}
+            className="btn-secondary"
+            onClick={onClose}
+            disabled={installing}
+          >
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            onClick={onConfirm}
+            disabled={installing}
+          >
+            {installing ? 'Installing…' : 'Back up & install'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -142,81 +254,15 @@ export function PluginInstallBanner() {
       </div>
 
       {showDialog && (
-        <div
-          className="dialog-overlay"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) closeDialog();
-          }}
-        >
-          <div
-            className="dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="plugin-install-dialog-title"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="dialog-header">
-              <h3 id="plugin-install-dialog-title">Install kookr-toolkit plugin?</h3>
-              <button
-                className="dialog-close"
-                onClick={closeDialog}
-                disabled={installing}
-                aria-label="Close install dialog"
-              >
-                &times;
-              </button>
-            </div>
-
-            <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
-              This will modify your Claude Code configuration:
-            </p>
-            <ul className="toolkit-does">
-              <li>Add marketplace <code>{TOOLKIT_MARKETPLACE_SLUG}</code></li>
-              <li>Install <code>{plugin.pluginId}</code>{plugin.availableVersion ? ` (v${plugin.availableVersion})` : ''}</li>
-            </ul>
-
-            <div className="toolkit-safety">
-              <span>🛡</span>
-              <span>
-                Safe by default. Kookr snapshots <code>~/.claude/plugins</code> before installing
-                and rolls it back automatically if the install fails.
-              </span>
-            </div>
-
-            {error && (
-              <div style={{ marginTop: 12, color: 'var(--red)', fontSize: 12 }}>
-                <strong>Install failed:</strong> {error}
-                {(errorCommands ?? commands) && (
-                  <div style={{ marginTop: 8 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Run manually in Claude Code:</span>
-                    <ul className="toolkit-does" style={{ marginTop: 4 }}>
-                      {(errorCommands?.slash ?? commands.slash).map((cmd) => (
-                        <li key={cmd}><code>{cmd}</code></li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="dialog-actions">
-              <button
-                className="btn-secondary"
-                onClick={closeDialog}
-                disabled={installing}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn-primary"
-                onClick={confirmInstall}
-                disabled={installing}
-              >
-                {installing ? 'Installing…' : 'Back up & install'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <PluginInstallConfirmDialog
+          plugin={plugin}
+          installing={installing}
+          error={error}
+          errorCommands={errorCommands}
+          commands={commands}
+          onClose={closeDialog}
+          onConfirm={confirmInstall}
+        />
       )}
     </div>
   );

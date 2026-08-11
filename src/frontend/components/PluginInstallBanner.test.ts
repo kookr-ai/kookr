@@ -253,3 +253,146 @@ describe('PluginInstallBanner', () => {
     expect(dialogText).toContain('/plugin marketplace add kookr-ai/kookr');
   });
 });
+
+function sendTab(shiftKey = false): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key: 'Tab',
+    shiftKey,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
+function focusablesInDialog(el: HTMLElement): HTMLElement[] {
+  const dialog = el.querySelector<HTMLElement>('[role="dialog"]');
+  if (!dialog) return [];
+  const selector = [
+    'button:not([disabled])',
+    '[href]',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[contenteditable="true"]',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(', ');
+  return Array.from(dialog.querySelectorAll<HTMLElement>(selector));
+}
+
+async function openInstallDialog(root: Root, container: HTMLElement): Promise<void> {
+  mockDeployStatus({
+    pluginId: 'kookr-toolkit@kookr',
+    installedVersion: null,
+    availableVersion: '0.7.4',
+    stale: false,
+  });
+  await mountAndFlush(root);
+  const installBtn = container.querySelector('.btn-install') as HTMLButtonElement | null;
+  expect(installBtn).not.toBeNull();
+  await act(async () => {
+    installBtn?.click();
+  });
+  expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+}
+
+describe('PluginInstallBanner dialog focus management', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    window.localStorage.clear();
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  test('initial focus lands on Cancel', async () => {
+    await openInstallDialog(root, container);
+
+    const cancel = Array.from(container.querySelectorAll<HTMLButtonElement>('.dialog button'))
+      .find((b) => b.textContent?.trim() === 'Cancel');
+    expect(cancel).not.toBeUndefined();
+    expect(document.activeElement).toBe(cancel);
+  });
+
+  test('Tab from last focusable cycles to first; Shift+Tab from first cycles to last', async () => {
+    await openInstallDialog(root, container);
+
+    const focusables = focusablesInDialog(container);
+    // Close (header) + Cancel + Back up & install
+    expect(focusables.length).toBeGreaterThanOrEqual(2);
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+
+    last.focus();
+    const forwardWrap = sendTab();
+    expect(document.activeElement).toBe(first);
+    expect(forwardWrap.defaultPrevented).toBe(true);
+
+    first.focus();
+    const backwardWrap = sendTab(true);
+    expect(document.activeElement).toBe(last);
+    expect(backwardWrap.defaultPrevented).toBe(true);
+  });
+
+  test('pulls focus back inside when Tab starts outside the dialog', async () => {
+    await openInstallDialog(root, container);
+
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    const escapedFocus = sendTab();
+    const first = focusablesInDialog(container)[0];
+    expect(document.activeElement).toBe(first);
+    expect(escapedFocus.defaultPrevented).toBe(true);
+  });
+
+  test('restores focus to the Install opener when closed', async () => {
+    mockDeployStatus({
+      pluginId: 'kookr-toolkit@kookr',
+      installedVersion: null,
+      availableVersion: '0.7.4',
+      stale: false,
+    });
+    await mountAndFlush(root);
+
+    const installBtn = container.querySelector('.btn-install') as HTMLButtonElement | null;
+    expect(installBtn).not.toBeNull();
+    installBtn!.focus();
+    await act(async () => {
+      installBtn!.click();
+    });
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.activeElement).not.toBe(installBtn);
+
+    const cancel = Array.from(container.querySelectorAll<HTMLButtonElement>('.dialog button'))
+      .find((b) => b.textContent?.trim() === 'Cancel');
+    await act(async () => {
+      cancel?.click();
+    });
+
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(installBtn);
+  });
+
+  test('Escape closes the dialog', async () => {
+    await openInstallDialog(root, container);
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
