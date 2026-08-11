@@ -10,6 +10,7 @@ import {
   describeSwitchCause,
   describeTickReason,
 } from '../store/slices/auto-advance-slice.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 
 function timeAgo(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -24,6 +25,77 @@ function timeAgo(ms: number): string {
 interface Props {
   /** Resolved platform/user binding map; defaults match OverviewEmptyState. */
   shortcutBindings?: ShortcutBindingMap;
+}
+
+interface AutoAdvanceDetailsDialogProps {
+  enabled: boolean;
+  reasonLabel: string;
+  lastSwitchLabel: string;
+  errorLabel: string | null;
+  onToggle: () => void;
+  onClose: () => void;
+}
+
+/**
+ * Mounted-only details panel so useDialogFocus's mount effect runs when the
+ * dialog opens (initial focus + Tab trap + restore on unmount).
+ */
+function AutoAdvanceDetailsDialog({
+  enabled,
+  reasonLabel,
+  lastSwitchLabel,
+  errorLabel,
+  onToggle,
+  onClose,
+}: AutoAdvanceDetailsDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const actionButtonRef = useRef<HTMLButtonElement>(null);
+  useDialogFocus({ dialogRef, initialFocusRef: actionButtonRef });
+
+  return (
+    // Disclosure panel of static info + one action. Not a menu — its
+    // children are info rows, not menuitems. Use role="dialog" so screen
+    // readers expose the rows in reading order, not in menu-navigation mode.
+    <div
+      ref={dialogRef}
+      className="follow-pill-menu"
+      role="dialog"
+      aria-label="Auto-Advance details"
+    >
+      <div className="follow-pill-menu-row">
+        <span className="follow-pill-menu-label">Status</span>
+        <span className="follow-pill-menu-value">
+          {enabled ? 'On' : 'Off'}
+        </span>
+      </div>
+      {enabled && (
+        <div className="follow-pill-menu-row">
+          <span className="follow-pill-menu-label">Why no switch?</span>
+          <span className="follow-pill-menu-value">{reasonLabel}</span>
+        </div>
+      )}
+      <div className="follow-pill-menu-row">
+        <span className="follow-pill-menu-label">Last switch</span>
+        <span className="follow-pill-menu-value">{lastSwitchLabel}</span>
+      </div>
+      {errorLabel && (
+        <div className="follow-pill-menu-row follow-pill-menu-error">
+          <span className="follow-pill-menu-value">{errorLabel}</span>
+        </div>
+      )}
+      <button
+        ref={actionButtonRef}
+        type="button"
+        className="follow-pill-menu-item"
+        onClick={() => {
+          onToggle();
+          onClose();
+        }}
+      >
+        {enabled ? 'Turn off Auto-Advance' : 'Turn on Auto-Advance'}
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -43,7 +115,6 @@ export function FollowPill({
   const [menuOpen, setMenuOpen] = useState(false);
   const [, setTick] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const caretRef = useRef<HTMLButtonElement>(null);
 
   // Re-render every 15 s while a popover is open so "Ns ago" stays fresh.
   useEffect(() => {
@@ -64,14 +135,13 @@ export function FollowPill({
     return () => document.removeEventListener('mousedown', handleClick);
   }, [menuOpen]);
 
-  // Escape closes the popover and returns focus to the caret (dialog pattern).
+  // Escape closes the popover; useDialogFocus restores focus to the caret.
   useEffect(() => {
     if (!menuOpen) return;
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setMenuOpen(false);
-        caretRef.current?.focus();
       }
     }
     document.addEventListener('keydown', handleKey);
@@ -108,7 +178,6 @@ export function FollowPill({
         <span className="follow-pill-label">FOLLOW</span>
       </button>
       <button
-        ref={caretRef}
         type="button"
         className="follow-pill-caret"
         onClick={() => setMenuOpen((v) => !v)}
@@ -120,42 +189,14 @@ export function FollowPill({
         <span aria-hidden="true">{'▾'}</span>
       </button>
       {menuOpen && (
-        // Disclosure panel of static info + one action. Not a menu — its
-        // children are info rows, not menuitems. Use role="dialog" so screen
-        // readers expose the rows in reading order, not in menu-navigation mode.
-        <div className="follow-pill-menu" role="dialog" aria-label="Auto-Advance details">
-          <div className="follow-pill-menu-row">
-            <span className="follow-pill-menu-label">Status</span>
-            <span className="follow-pill-menu-value">
-              {enabled ? 'On' : 'Off'}
-            </span>
-          </div>
-          {enabled && (
-            <div className="follow-pill-menu-row">
-              <span className="follow-pill-menu-label">Why no switch?</span>
-              <span className="follow-pill-menu-value">{reasonLabel}</span>
-            </div>
-          )}
-          <div className="follow-pill-menu-row">
-            <span className="follow-pill-menu-label">Last switch</span>
-            <span className="follow-pill-menu-value">{lastSwitchLabel}</span>
-          </div>
-          {errorLabel && (
-            <div className="follow-pill-menu-row follow-pill-menu-error">
-              <span className="follow-pill-menu-value">{errorLabel}</span>
-            </div>
-          )}
-          <button
-            type="button"
-            className="follow-pill-menu-item"
-            onClick={() => {
-              toggle();
-              setMenuOpen(false);
-            }}
-          >
-            {enabled ? 'Turn off Auto-Advance' : 'Turn on Auto-Advance'}
-          </button>
-        </div>
+        <AutoAdvanceDetailsDialog
+          enabled={enabled}
+          reasonLabel={reasonLabel}
+          lastSwitchLabel={lastSwitchLabel}
+          errorLabel={errorLabel}
+          onToggle={toggle}
+          onClose={() => setMenuOpen(false)}
+        />
       )}
     </div>
   );
