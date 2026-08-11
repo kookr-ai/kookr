@@ -55,6 +55,27 @@ interface CommandRunner {
 type ResourceWatchdogEnabledProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | null>;
 
 /**
+ * Live probe of hungSuspect residual + hungSuspectTtlReclaim from /api/health
+ * (issue #2231). null = unreachable / unknown / block absent — doctor stays green.
+ */
+export interface HungSuspectReclaimProbeSnapshot {
+  hungSuspectCount: number;
+  reclaimedTotal: number;
+  reclaimAttempted: number;
+  skippedOpenPrFailsafe: number;
+  skippedUnderTtl: number;
+  skippedNoLiveness: number;
+  skippedProviderPaused: number;
+  lastCandidatesConsidered: number;
+  /** Last reclaim pass outcomes (`outcome` strings from hung-suspect-ttl). */
+  lastOutcomes: Array<{ outcome: string }>;
+}
+
+type HungSuspectReclaimProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<HungSuspectReclaimProbeSnapshot | null>;
+
+/**
  * Live probe of maintenancePrune.lastFiredAt from /api/diagnostics/timer-health
  * (issue #2080). Outer null = unreachable / unknown; inner lastFiredAt null =
  * loop registered but never fired yet.
@@ -91,6 +112,12 @@ interface RunDoctorDeps {
    */
   probeResourceWatchdogEnabled?: ResourceWatchdogEnabledProbe;
   /**
+   * Optional override for the live /api/health hungSuspectTtlReclaim probe
+   * (issue #2231). Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or
+   * KOOKR_PORT is set.
+   */
+  probeHungSuspectReclaim?: HungSuspectReclaimProbe;
+  /**
    * Optional override for the live timer-health maintenancePrune probe.
    * Defaults to a short-timeout fetch of GET /api/diagnostics/timer-health when
    * KOOKR_API_BASE_URL or KOOKR_PORT points at a server.
@@ -126,6 +153,7 @@ Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
+ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 `;
@@ -225,6 +253,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(...await checkKbLaunchDependency(run));
   checks.push(...await checkAgentBinaries(env, run));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
+  checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 
@@ -525,6 +554,140 @@ async function checkResourceWatchdog(
 }
 
 /**
+ * Advisory ops check (issue #2231): surface residual hungSuspect capacity held
+ * behind open-PR fail-safe when the TTL reclaim has never reclaimed a slot.
+ * Operator offline recovery runs doctor first; without this, failsafe-dominated
+ * residual only shows up via manual `/api/health` spelunking.
+ *
+ * WARN only when all hold:
+ * - capacity.byClass.hungSuspect > 0
+ * - hungSuspectTtlReclaim.reclaimedTotal === 0
+ * - last reclaim pass is open_pr_failsafe-dominated (plurality of lastOutcomes)
+ *
+ * Probe null / unreachable → OK (hermetic offline). Never a required fail.
+ */
+async function checkHungSuspectReclaim(
+  env: NodeJS.ProcessEnv,
+  probe: HungSuspectReclaimProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHungSuspectReclaim;
+  let snap: HungSuspectReclaimProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'ops.hung-reclaim',
+      'Hung-suspect reclaim',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or health unreachable)',
+      false,
+    );
+  }
+
+  const openPrLastPass = countLastPassOpenPrFailsafes(snap.lastOutcomes);
+  const lastPassTotal = snap.lastOutcomes.length;
+  const failsafeDominated = isOpenPrFailsafeDominatedLastPass(snap.lastOutcomes);
+
+  if (
+    snap.hungSuspectCount > 0
+    && snap.reclaimedTotal === 0
+    && failsafeDominated
+  ) {
+    return {
+      id: 'ops.hung-reclaim',
+      label: 'Hung-suspect reclaim',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        `hungSuspect residual blocked by open_pr failsafe: ` +
+        `hungSuspect=${snap.hungSuspectCount} reclaimedTotal=0 ` +
+        `openPrSkips=${openPrLastPass}/${lastPassTotal} last pass`,
+      detail:
+        `GET /api/health capacity.byClass.hungSuspect=${snap.hungSuspectCount} ` +
+        `hungSuspectTtlReclaim.reclaimedTotal=0 reclaimAttempted=${snap.reclaimAttempted} ` +
+        `skippedOpenPrFailsafe=${snap.skippedOpenPrFailsafe} (lifetime) ` +
+        `lastCandidatesConsidered=${snap.lastCandidatesConsidered}. ` +
+        `Open-PR fail-safe intentionally holds reclaim; verify tasks still hold open/unknown PRs.`,
+      recommendedAction:
+        'Inspect GET /api/health hungSuspectTtlReclaim.lastOutcomes and capacity.byClass.hungSuspect. ' +
+        'Confirm residual tasks still hold open PRs (fail-safe treats unknown like a hold). ' +
+        'Complete, merge, or cancel stranded work so slots free — do not weaken open-PR fail-safes. ' +
+        'See docs/reference/offline-recovery-card.md §3.',
+    };
+  }
+
+  if (snap.hungSuspectCount === 0) {
+    return okCheck(
+      'ops.hung-reclaim',
+      'Hung-suspect reclaim',
+      'ops',
+      `no hungSuspect residual (reclaimedTotal=${snap.reclaimedTotal})`,
+      false,
+    );
+  }
+
+  if (snap.reclaimedTotal > 0) {
+    return okCheck(
+      'ops.hung-reclaim',
+      'Hung-suspect reclaim',
+      'ops',
+      `reclaim progressing: hungSuspect=${snap.hungSuspectCount} reclaimedTotal=${snap.reclaimedTotal}`,
+      false,
+    );
+  }
+
+  // Residual exists and reclaimedTotal=0, but last pass is not open_pr-dominated
+  // (e.g. under-TTL after restart, provider pause, or empty last pass).
+  const dominantHint = lastPassTotal === 0
+    ? 'no last-pass outcomes yet'
+    : `last pass not open_pr-dominated (openPrSkips=${openPrLastPass}/${lastPassTotal})`;
+  return okCheck(
+    'ops.hung-reclaim',
+    'Hung-suspect reclaim',
+    'ops',
+    `hungSuspect=${snap.hungSuspectCount} reclaimedTotal=0 (${dominantHint})`,
+    false,
+  );
+}
+
+/**
+ * Last-pass open_pr fail-safe dominates when it is the plurality among
+ * `lastOutcomes` (ties for first still count — residual is still held by the
+ * fail-safe). Empty last pass → not dominated (cannot attribute residual yet).
+ */
+export function isOpenPrFailsafeDominatedLastPass(
+  lastOutcomes: ReadonlyArray<{ outcome: string }>,
+): boolean {
+  if (lastOutcomes.length === 0) return false;
+  const openPr = countLastPassOpenPrFailsafes(lastOutcomes);
+  if (openPr === 0) return false;
+  const otherCounts = new Map<string, number>();
+  for (const entry of lastOutcomes) {
+    if (entry.outcome === 'skipped_open_pr_failsafe') continue;
+    otherCounts.set(entry.outcome, (otherCounts.get(entry.outcome) ?? 0) + 1);
+  }
+  const maxOther = otherCounts.size === 0
+    ? 0
+    : Math.max(...otherCounts.values());
+  return openPr >= maxOther;
+}
+
+function countLastPassOpenPrFailsafes(
+  lastOutcomes: ReadonlyArray<{ outcome: string }>,
+): number {
+  let n = 0;
+  for (const entry of lastOutcomes) {
+    if (entry.outcome === 'skipped_open_pr_failsafe') n += 1;
+  }
+  return n;
+}
+
+/**
  * Advisory ops check (issue #2080): surface that the scheduled maintenance prune
  * is off by default (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` unset/0). Disk/log
  * growth under unattended multi-day runs is a host-class failure operators
@@ -681,6 +844,106 @@ async function defaultProbeResourceWatchdogEnabled(env: NodeJS.ProcessEnv): Prom
   } catch {
     return null;
   }
+}
+
+/**
+ * Best-effort live probe of hungSuspect residual + TTL reclaim counters from
+ * GET /api/health (issue #2231). Same base-URL gate as resourceWatchdog —
+ * hermetic offline doctor stays green without scanning default ports.
+ */
+async function defaultProbeHungSuspectReclaim(
+  env: NodeJS.ProcessEnv,
+): Promise<HungSuspectReclaimProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseHungSuspectReclaimHealthBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/** Parse capacity.byClass.hungSuspect + hungSuspectTtlReclaim from /api/health JSON. */
+export function parseHungSuspectReclaimHealthBody(
+  body: unknown,
+): HungSuspectReclaimProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as {
+    capacity?: { byClass?: { hungSuspect?: unknown } };
+    hungSuspectTtlReclaim?: {
+      reclaimedTotal?: unknown;
+      reclaimAttempted?: unknown;
+      skippedOpenPrFailsafe?: unknown;
+      skippedUnderTtl?: unknown;
+      skippedNoLiveness?: unknown;
+      skippedProviderPaused?: unknown;
+      lastCandidatesConsidered?: unknown;
+      lastOutcomes?: unknown;
+    };
+  };
+
+  const reclaim = root.hungSuspectTtlReclaim;
+  if (!reclaim || typeof reclaim !== 'object') return null;
+
+  const hungSuspectRaw = root.capacity?.byClass?.hungSuspect;
+  const hungSuspectCount = typeof hungSuspectRaw === 'number' && Number.isFinite(hungSuspectRaw)
+    ? Math.max(0, Math.floor(hungSuspectRaw))
+    : 0;
+
+  const reclaimedTotal = nonNegInt(reclaim.reclaimedTotal);
+  const reclaimAttempted = nonNegInt(reclaim.reclaimAttempted);
+  const skippedOpenPrFailsafe = nonNegInt(reclaim.skippedOpenPrFailsafe);
+  const skippedUnderTtl = nonNegInt(reclaim.skippedUnderTtl);
+  const skippedNoLiveness = nonNegInt(reclaim.skippedNoLiveness);
+  const skippedProviderPaused = nonNegInt(reclaim.skippedProviderPaused);
+  const lastCandidatesConsidered = nonNegInt(reclaim.lastCandidatesConsidered);
+
+  if (
+    reclaimedTotal === null
+    || reclaimAttempted === null
+    || skippedOpenPrFailsafe === null
+  ) {
+    return null;
+  }
+
+  const lastOutcomes: Array<{ outcome: string }> = [];
+  if (Array.isArray(reclaim.lastOutcomes)) {
+    for (const entry of reclaim.lastOutcomes) {
+      if (!entry || typeof entry !== 'object') continue;
+      const outcome = (entry as { outcome?: unknown }).outcome;
+      if (typeof outcome === 'string' && outcome.length > 0) {
+        lastOutcomes.push({ outcome });
+      }
+    }
+  }
+
+  return {
+    hungSuspectCount,
+    reclaimedTotal,
+    reclaimAttempted,
+    skippedOpenPrFailsafe,
+    skippedUnderTtl: skippedUnderTtl ?? 0,
+    skippedNoLiveness: skippedNoLiveness ?? 0,
+    skippedProviderPaused: skippedProviderPaused ?? 0,
+    lastCandidatesConsidered: lastCandidatesConsidered ?? 0,
+    lastOutcomes,
+  };
+}
+
+function nonNegInt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.floor(value));
 }
 
 /**

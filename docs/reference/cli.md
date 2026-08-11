@@ -732,7 +732,7 @@ Exit behavior:
 
 ## `kookr doctor`
 
-Run launch preflight checks covering runtime tools, the `runtime.persistence` data-dir writability check (`access(KOOKR_DIR or ~/.kookr, W_OK)`, parity with the server's critical `/api/ready` persistence probe), `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `github.scanner-backoff` check (live `GET /api/github/status` `stateFetchBackoffMs` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server), the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak), and the advisory `ops.maintenance-prune` check (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` / optional timer-health `lastFiredAt`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
+Run launch preflight checks covering runtime tools, the `runtime.persistence` data-dir writability check (`access(KOOKR_DIR or ~/.kookr, W_OK)`, parity with the server's critical `/api/ready` persistence probe), `gh` auth, the `kb` launch dependency, agent binary resolution, the advisory `github.scanner-backoff` check (live `GET /api/github/status` `stateFetchBackoffMs` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server), the advisory `ops.resource-watchdog` check (`KOOKR_RESOURCE_WATCHDOG` / live `resourceWatchdog.enabled`), the advisory `ops.hung-reclaim` check (live `GET /api/health` `capacity.byClass.hungSuspect` + `hungSuspectTtlReclaim` when residual is open_pr_failsafe-dominated), the advisory `ops.prod-smoke-tick` check (durable `{dataDir}/prod-smoke-tick-alert.json` consecutive-failure streak), and the advisory `ops.maintenance-prune` check (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` / optional timer-health `lastFiredAt`). Default output is a human-readable table of each check (status, summary, recommended actions). Pass `--json` for the machine-readable report used by scripts and CI. Pass `--strict` to exit non-zero when any advisory WARN is present.
 
 This is complementary to `pnpm doctor` (`scripts/doctor.sh`), which covers env/build preflight (ports, docker, node-pty). The two check sets are not identical — `kookr doctor` is the launch-dependency path (see [Related Commands](#related-commands)).
 
@@ -792,6 +792,7 @@ Stable `checks[].id` values on a healthy machine:
 | `agent.codex` | agent | yes if `KOOKR_CODEX_BIN` set; else advisory | Codex CLI binary (`KOOKR_CODEX_BIN` or `codex`) |
 | `agent.codex-plugin-dir` | agent | no | Codex advertises `--plugin-dir` (only emitted when `agent.codex` is `ok`) |
 | `ops.resource-watchdog` | ops | no | Host-pressure auto-investigation enabled (`KOOKR_RESOURCE_WATCHDOG`, or live `GET /api/health` `resourceWatchdog.enabled` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server). Advisory warn when disabled (default). |
+| `ops.hung-reclaim` | ops | no | Live `GET /api/health` hungSuspect residual + `hungSuspectTtlReclaim` when `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server. Advisory warn only when `capacity.byClass.hungSuspect` > 0, `reclaimedTotal` = 0, and the last reclaim pass is open_pr_failsafe-dominated (plurality of `lastOutcomes`). OK when reclaim is healthy, residual is under-TTL / not failsafe-dominated, or the probe is skipped (hermetic offline). Does not weaken open-PR fail-safes. |
 | `ops.prod-smoke-tick` | ops | no | Hourly prod smoke tick alert artifact (`{KOOKR_DIR or ~/.kookr}/prod-smoke-tick-alert.json`). Advisory warn when `status=alert`, summarizing `consecutiveFailures` and `failingChecks`. No warn when the artifact is missing or `status=ok`. |
 | `ops.maintenance-prune` | ops | no | Scheduled data-dir prune enabled (`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` > 0). Advisory warn when unset/0 (default). When enabled and `KOOKR_API_BASE_URL` / `KOOKR_PORT` points at a server, optional `GET /api/diagnostics/timer-health` `maintenancePrune.lastFiredAt` enriches the OK summary. |
 
@@ -1277,7 +1278,7 @@ pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
 pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/build preflight
-kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + github.scanner-backoff + ops.resource-watchdog + ops.prod-smoke-tick + ops.maintenance-prune)
+kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + github.scanner-backoff + ops.resource-watchdog + ops.hung-reclaim + ops.prod-smoke-tick + ops.maintenance-prune)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
 ```
