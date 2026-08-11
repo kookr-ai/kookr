@@ -5,6 +5,7 @@ import {
   getFeaturedShortcuts,
   type ShortcutDisplay,
 } from '../../shared/contracts/shortcut-bindings.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { close, getSnapshot, subscribe } from '../store/onboarding-store.js';
 import { OnboardingLayoutDiagram } from './OnboardingLayoutDiagram.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
@@ -141,44 +142,48 @@ function ShortcutCheatsheetRow({ shortcut }: { shortcut: ShortcutDisplay }) {
   );
 }
 
+/**
+ * Shell that only mounts the dialog while the tour is open so useDialogFocus
+ * can install the Tab trap, initial focus, and focus-restore lifecycle against
+ * a real dialog DOM (matches ConfirmDialog / SnoozeDialog pattern).
+ */
 export function OnboardingTour() {
   const open = useSyncExternalStore(subscribe, getSnapshot, () => false);
+  if (!open) return null;
+  return <OnboardingTourDialog />;
+}
+
+function OnboardingTourDialog() {
+  // Fresh mount on each open resets to card 0 (replays start at the welcome step).
   const [index, setIndex] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const primaryButtonRef = useRef<HTMLButtonElement>(null);
 
   const handleClose = useCallback(() => { close(); }, []);
 
-  // Reset to first card when the modal closes so a replay starts at card 1.
-  useEffect(() => {
-    if (!open) setIndex(0);
-  }, [open]);
+  useDialogFocus({ dialogRef, initialFocusRef: primaryButtonRef });
 
   // Sync body class with the active card's targetClass. useLayoutEffect to
   // ensure the class is applied before paint and removed before the modal's
   // DOM is unmounted (no frame-flash with an outline ring on a naked UI).
   useLayoutEffect(() => {
-    if (!open) {
-      removeAllTourClasses();
-      return;
-    }
     const target = ONBOARDING_CARDS[index]?.targetClass;
     setTourClass(target ?? null);
     return () => { removeAllTourClasses(); };
-  }, [open, index]);
+  }, [index]);
 
-  // Autofocus the primary advance button on open + each slide change.
+  // Autofocus the primary advance button on each slide change. Open-time
+  // focus is owned by useDialogFocus via initialFocusRef.
   useEffect(() => {
-    if (open) primaryButtonRef.current?.focus();
-  }, [open, index]);
+    primaryButtonRef.current?.focus();
+  }, [index]);
 
-  // Single capture-phase keydown listener bound only while open. Capture
-  // phase + stopPropagation matches the convention used by useEscapeToClose
-  // (the project's standard dialog hook) and pre-empts App.tsx's bubble-phase
-  // global Escape and `?` handlers. Enter is deliberately NOT handled — the
-  // focused primary button absorbs it via implicit click activation, which
-  // keeps card advance to a single dispatch.
+  // Single capture-phase keydown listener. Capture phase + stopPropagation
+  // matches useEscapeToClose and pre-empts App.tsx's bubble-phase global
+  // Escape and `?` handlers. Enter is deliberately NOT handled — the focused
+  // primary button absorbs it via implicit click activation. Tab is owned by
+  // useDialogFocus (sibling capture listener; keys do not collide).
   useEffect(() => {
-    if (!open) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -205,9 +210,7 @@ export function OnboardingTour() {
     }
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, handleClose]);
-
-  if (!open) return null;
+  }, [handleClose]);
 
   const card = ONBOARDING_CARDS[index];
   const isLast = index === ONBOARDING_CARDS.length - 1;
@@ -215,6 +218,7 @@ export function OnboardingTour() {
 
   return (
     <div
+      ref={dialogRef}
       className="dialog-overlay onboarding-overlay"
       data-testid="onboarding-overlay"
       onClick={(e) => {
