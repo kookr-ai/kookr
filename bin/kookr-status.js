@@ -482,6 +482,52 @@ function summarizeSnapshotShed(health) {
   };
 }
 
+// Lesson-authoring yield projection (issue #2305 / #1538). /api/health already
+// publishes lessonYield (yieldRate, decided, completedInWindow, buckets) once
+// the 24h cache is warm; cold cache omits the block. Always-on compact gauge
+// whenever decided + completedInWindow are present so operators see yield from
+// `kookr status` without curling health. Null when absent or non-numeric.
+// Visibility only — does not change the completion gate.
+function summarizeLessonYield(health) {
+  const block = health?.lessonYield;
+  if (!block || typeof block !== 'object') return null;
+
+  const decidedRaw = Number(/** @type {{ decided?: unknown }} */ (block).decided);
+  const completedRaw = Number(
+    /** @type {{ completedInWindow?: unknown }} */ (block).completedInWindow,
+  );
+  if (!Number.isFinite(decidedRaw) || decidedRaw < 0) return null;
+  if (!Number.isFinite(completedRaw) || completedRaw < 0) return null;
+  const decided = Math.floor(decidedRaw);
+  const completedInWindow = Math.floor(completedRaw);
+
+  const yieldRaw = Number(/** @type {{ yieldRate?: unknown }} */ (block).yieldRate);
+  let yieldRate = Number.isFinite(yieldRaw) && yieldRaw >= 0 ? yieldRaw : null;
+  if (yieldRate === null) {
+    // Health always publishes yieldRate; fall back to the documented definition
+    // when a partial fixture omits it so --json still has a finite number.
+    yieldRate = completedInWindow === 0 ? 0 : decided / completedInWindow;
+  }
+
+  const bucketsRaw =
+    /** @type {{ buckets?: { wroteLesson?: unknown; explicitSkip?: unknown; searchOnly?: unknown; noKbActivity?: unknown } }} */ (
+      block
+    ).buckets;
+  const b = bucketsRaw && typeof bucketsRaw === 'object' ? bucketsRaw : {};
+
+  return {
+    yieldRate,
+    decided,
+    completedInWindow,
+    buckets: {
+      wroteLesson: nonNegIntFloor(b.wroteLesson),
+      explicitSkip: nonNegIntFloor(b.explicitSkip),
+      searchOnly: nonNegIntFloor(b.searchOnly),
+      noKbActivity: nonNegIntFloor(b.noKbActivity),
+    },
+  };
+}
+
 // Hung-suspect TTL reclaim residual projection (issue #2229). /api/health
 // already publishes hungSuspectTtlReclaim (issue #1989 / #2045) with process-
 // lifetime skip-reason breakdown (and #2228 open-PR confirmed/unknown split).
@@ -717,6 +763,23 @@ function renderReport({ port, health, agents }) {
   const firstHookMiss = summarizeFirstHookMiss(health);
   if (firstHookMiss) {
     lines.push(`First-hook miss: total=${firstHookMiss.firstHookMissTotal}`);
+  }
+
+  // Lesson yield (issue #2305 / #1538) — always-on compact gauge when
+  // /api/health publishes the warm 24h cache block. Completion-gated lessons
+  // are a live control-plane concern; operators should see yield without
+  // curling health or /api/diagnostics/lesson-yield.
+  const lessonYield = summarizeLessonYield(health);
+  if (lessonYield) {
+    const b = lessonYield.buckets;
+    lines.push(
+      `Lesson yield: rate=${formatUtilPct(lessonYield.yieldRate)}` +
+        `  decided=${lessonYield.decided}/${lessonYield.completedInWindow}` +
+        `  wrote=${b.wroteLesson}` +
+        `  skip=${b.explicitSkip}` +
+        `  searchOnly=${b.searchOnly}` +
+        `  noKb=${b.noKbActivity}`,
+    );
   }
 
   // Capacity (issue #2234) — phantom / high-util pressure from the ledger
@@ -1033,6 +1096,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
     const snapshotShedSummary = summarizeSnapshotShed(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
+    const lessonYieldSummary = summarizeLessonYield(health);
     return exitJson({
       out,
       exit,
@@ -1056,6 +1120,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(firstHookMissSummary
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
+        ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
           ? { providerPausedOccupancy: providerPausedSummary }
@@ -1120,6 +1185,7 @@ export {
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
+  summarizeLessonYield,
   renderReport,
   resolvePort,
   parsePortEnv,
