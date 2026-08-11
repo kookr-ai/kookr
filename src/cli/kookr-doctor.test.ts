@@ -7,7 +7,10 @@ import {
   buildDoctorJsonReport,
   formatDoctorReport,
   GITHUB_SCANNER_BACKOFF_WARN_MS,
+  isOpenPrFailsafeDominatedLastPass,
+  parseHungSuspectReclaimHealthBody,
   runDoctorCli,
+  type HungSuspectReclaimProbeSnapshot,
 } from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
 import type { GithubStatusSnapshot } from './kookr-github.js';
@@ -28,6 +31,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.codex',
   'agent.codex-plugin-dir',
   'ops.resource-watchdog',
+  'ops.hung-reclaim',
   'ops.prod-smoke-tick',
   'ops.maintenance-prune',
 ] as const;
@@ -41,10 +45,28 @@ const opsOkEnv = {
 /** Hermetic seams so unit tests never touch the host ~/.kookr or live HTTP. */
 const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
+  probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
 };
+
+function hungReclaimSnap(
+  partial: Partial<HungSuspectReclaimProbeSnapshot> = {},
+): HungSuspectReclaimProbeSnapshot {
+  return {
+    hungSuspectCount: 0,
+    reclaimedTotal: 0,
+    reclaimAttempted: 0,
+    skippedOpenPrFailsafe: 0,
+    skippedUnderTtl: 0,
+    skippedNoLiveness: 0,
+    skippedProviderPaused: 0,
+    lastCandidatesConsidered: 0,
+    lastOutcomes: [],
+    ...partial,
+  };
+}
 
 function githubStatusSnap(partial: Partial<GithubStatusSnapshot> = {}): GithubStatusSnapshot {
   return {
@@ -118,6 +140,7 @@ describe('kookr doctor --json', () => {
       'agent.codex',
       'agent.codex-plugin-dir',
       'ops.resource-watchdog',
+      'ops.hung-reclaim',
       'ops.prod-smoke-tick',
       'ops.maintenance-prune',
     ]));
@@ -127,6 +150,11 @@ describe('kookr doctor --json', () => {
         .every((c) => c.status === 'ok'),
     ).toBe(true);
     expect(report.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -304,6 +332,172 @@ describe('kookr doctor --json', () => {
     });
   });
 
+  it('WARNs on ops.hung-reclaim when residual + reclaimedTotal=0 + open_pr last-pass dominance (issue #2231)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHungSuspectReclaim: async () => hungReclaimSnap({
+        hungSuspectCount: 4,
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        skippedOpenPrFailsafe: 12,
+        skippedUnderTtl: 1,
+        lastCandidatesConsidered: 4,
+        lastOutcomes: [
+          { outcome: 'skipped_open_pr_failsafe' },
+          { outcome: 'skipped_open_pr_failsafe' },
+          { outcome: 'skipped_open_pr_failsafe' },
+          { outcome: 'skipped_open_pr_failsafe' },
+        ],
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.hung-reclaim');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('hungSuspect=4'),
+    });
+    expect(check?.summary).toContain('reclaimedTotal=0');
+    expect(check?.summary).toContain('openPrSkips=4/4');
+    expect(check?.detail).toContain('skippedOpenPrFailsafe=12');
+    expect(check?.recommendedAction).toContain('offline-recovery-card');
+  });
+
+  it('keeps ops.hung-reclaim green when reclaim is healthy or not failsafe-dominated (issue #2231)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const zeroResidual = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHungSuspectReclaim: async () => hungReclaimSnap({
+        hungSuspectCount: 0,
+        reclaimedTotal: 3,
+        lastOutcomes: [],
+      }),
+    });
+    expect(zeroResidual.status).toBe('ok');
+    expect(zeroResidual.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('no hungSuspect residual'),
+    });
+
+    const progressing = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHungSuspectReclaim: async () => hungReclaimSnap({
+        hungSuspectCount: 2,
+        reclaimedTotal: 5,
+        lastOutcomes: [
+          { outcome: 'skipped_open_pr_failsafe' },
+          { outcome: 'skipped_open_pr_failsafe' },
+        ],
+      }),
+    });
+    expect(progressing.status).toBe('ok');
+    expect(progressing.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('reclaim progressing'),
+    });
+
+    const underTtlDominated = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHungSuspectReclaim: async () => hungReclaimSnap({
+        hungSuspectCount: 3,
+        reclaimedTotal: 0,
+        lastCandidatesConsidered: 3,
+        lastOutcomes: [
+          { outcome: 'skipped_under_ttl' },
+          { outcome: 'skipped_under_ttl' },
+          { outcome: 'skipped_open_pr_failsafe' },
+        ],
+      }),
+    });
+    expect(underTtlDominated.status).toBe('ok');
+    expect(underTtlDominated.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('not open_pr-dominated'),
+    });
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHungSuspectReclaim: async () => null,
+    });
+    expect(offline.status).toBe('ok');
+    expect(offline.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('parses hungSuspectTtlReclaim health body and last-pass dominance helper (issue #2231)', () => {
+    expect(isOpenPrFailsafeDominatedLastPass([])).toBe(false);
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_under_ttl' },
+      { outcome: 'skipped_under_ttl' },
+      { outcome: 'skipped_open_pr_failsafe' },
+    ])).toBe(false);
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_open_pr_failsafe' },
+      { outcome: 'skipped_open_pr_failsafe' },
+      { outcome: 'skipped_under_ttl' },
+    ])).toBe(true);
+    // Tie for plurality still counts as failsafe-dominated residual.
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_open_pr_failsafe' },
+      { outcome: 'skipped_under_ttl' },
+    ])).toBe(true);
+
+    const parsed = parseHungSuspectReclaimHealthBody({
+      capacity: { byClass: { hungSuspect: 4, working: 1 } },
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        skippedOpenPrFailsafe: 8,
+        skippedUnderTtl: 2,
+        skippedNoLiveness: 0,
+        skippedProviderPaused: 0,
+        lastCandidatesConsidered: 4,
+        lastOutcomes: [
+          { taskId: 'a', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_000_000 },
+          { taskId: 'b', outcome: 'skipped_open_pr_failsafe' },
+          { taskId: 'c', outcome: 'skipped_under_ttl' },
+          { outcome: 123 },
+        ],
+      },
+    });
+    expect(parsed).toMatchObject({
+      hungSuspectCount: 4,
+      reclaimedTotal: 0,
+      skippedOpenPrFailsafe: 8,
+      lastCandidatesConsidered: 4,
+      lastOutcomes: [
+        { outcome: 'skipped_open_pr_failsafe' },
+        { outcome: 'skipped_open_pr_failsafe' },
+        { outcome: 'skipped_under_ttl' },
+      ],
+    });
+    expect(parseHungSuspectReclaimHealthBody({})).toBeNull();
+    expect(parseHungSuspectReclaimHealthBody({ hungSuspectTtlReclaim: { reclaimedTotal: 'x' } })).toBeNull();
+  });
+
   it('WARNs on ops.maintenance-prune when interval is 0/unset (issue #2080)', async () => {
     const run = commandRunner(happyFixtures());
 
@@ -479,6 +673,7 @@ describe('kookr doctor --json', () => {
       commandRunner: run,
       access: async () => {},
       probeResourceWatchdogEnabled: async () => null,
+      probeHungSuspectReclaim: async () => null,
       probeMaintenancePruneTimer: async () => null,
       probeGithubScannerStatus: async () => null,
       // intentionally no readProdSmokeTickAlert — exercises default disk path
