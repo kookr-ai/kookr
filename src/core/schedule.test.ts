@@ -638,6 +638,54 @@ describe('ScheduleStore', () => {
     expect(reloaded.list()[0].exhaustedAt).toBe('2026-01-01T00:05:00.000Z');
   });
 
+  it('writes schedules.json compactly (no pretty indentation) (#2217)', async () => {
+    store.create({
+      name: 'Compact Write',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    await store.persist();
+
+    const content = await readFile(join(dir, 'schedules.json'), 'utf-8');
+    const parsed = JSON.parse(content) as Array<{ name: string }>;
+    // Couple compact format to a real persist result (not empty/wrong payload).
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe('Compact Write');
+    // Canonical compact form: re-stringify of parse equals on-disk bytes.
+    expect(content).toBe(JSON.stringify(parsed));
+  });
+
+  it('loads legacy pretty-printed schedules.json (#2217)', async () => {
+    const pretty = JSON.stringify(
+      [
+        {
+          id: 'legacy-pretty-1',
+          name: 'Legacy Pretty',
+          cron: '0 0 * * *',
+          playbook: { path: 'legacy.md', parameters: {} },
+          cwd: '/tmp',
+          enabled: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          executionLedger: [],
+        },
+      ],
+      null,
+      2,
+    );
+    // Sanity: fixture is actually pretty-printed (multi-space indent).
+    expect(pretty).toMatch(/\n {2}/);
+    await writeFile(join(dir, 'schedules.json'), pretty, 'utf-8');
+
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.getLoadError()).toBeUndefined();
+    expect(reloaded.list()).toHaveLength(1);
+    expect(reloaded.list()[0].name).toBe('Legacy Pretty');
+    expect(reloaded.list()[0].id).toBe('legacy-pretty-1');
+  });
+
   it('re-arms the persist chain after a failed write while surfacing the failure', async () => {
     const blockedDir = join(dir, 'blocked');
     await writeFile(blockedDir, 'not a directory', 'utf-8');

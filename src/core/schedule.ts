@@ -854,7 +854,9 @@ export class ScheduleStore {
   }
 
   private async writeSchedules(): Promise<void> {
-    const data = JSON.stringify(this.list(), null, 2);
+    // Compact JSON — persist is on a hot path (every replace/update chains here).
+    // Load still accepts pretty-printed legacy files via JSON.parse (#2217).
+    const data = JSON.stringify(this.list());
     const tmpPath = join(dirname(this.filePath), `.schedules-${randomUUID()}.tmp`);
     await mkdir(dirname(this.filePath), { recursive: true });
     const fh = await open(tmpPath, 'w');
