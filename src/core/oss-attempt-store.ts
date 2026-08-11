@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { readFile, access, writeFile } from 'node:fs/promises';
-import { join, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, join, isAbsolute, resolve } from 'node:path';
 import type {
   AttemptState,
   ContributionAttempt,
@@ -238,9 +238,28 @@ export class OssAttemptStore {
     return this.ownNamespaces;
   }
 
-  /** Watch the append-only contribution ledger without exposing its path. */
+  /**
+   * Watch the contribution ledger without exposing its path.
+   *
+   * Watches the parent directory (filtered to the ledger basename and its
+   * rotated `.N` generations) so a size-rotation rename of the active file
+   * still delivers change events for subsequent appends. A bare
+   * `watch(ledgerPath)` follows the pre-rename inode on Linux and goes
+   * silent after the first rotation.
+   */
   watchLedger(onChange: () => void): FSWatcher {
-    return watch(this.ledgerPath, onChange);
+    const ledgerDir = dirname(this.ledgerPath);
+    const ledgerBase = basename(this.ledgerPath);
+    return watch(ledgerDir, (_eventType, filename) => {
+      if (filename == null) {
+        onChange();
+        return;
+      }
+      const name = filename.toString();
+      if (name === ledgerBase || name.startsWith(`${ledgerBase}.`)) {
+        onChange();
+      }
+    });
   }
 
   /** Append one contribution-ledger entry without exposing the ledger path. */

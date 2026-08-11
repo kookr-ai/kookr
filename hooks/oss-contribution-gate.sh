@@ -187,10 +187,26 @@ trap 'release_lock' EXIT
 # --- Count today's PRs for this repo ---
 TODAY=$(date -u +%Y-%m-%d)
 
-# Count pr_created entries, subtract slot_reset entries
+# Count pr_created entries, subtract slot_reset entries.
+# Include rotated generations (contribution-ledger.jsonl.N) so a size-rotation
+# of the active file (issue #2331 / OssAttemptStore.appendLedgerEntry) cannot
+# fail-open the daily rate limit by hiding today's rows under .1/.2.
+# Default keep matches KOOKR_CONTRIBUTION_LEDGER_ROTATE_KEEP (2).
+LEDGER_ROTATE_KEEP="${KOOKR_CONTRIBUTION_LEDGER_ROTATE_KEEP:-2}"
+case "$LEDGER_ROTATE_KEEP" in
+  ''|*[!0-9]*) LEDGER_ROTATE_KEEP=2 ;;
+esac
+
 CREATED_COUNT=0
 RESET_COUNT=0
-if [ -f "$LEDGER_FILE" ]; then
+ledger_sources=("$LEDGER_FILE")
+gen=1
+while [ "$gen" -le "$LEDGER_ROTATE_KEEP" ]; do
+  ledger_sources+=("$LEDGER_FILE.$gen")
+  gen=$((gen + 1))
+done
+for ledger_src in "${ledger_sources[@]}"; do
+  [ -f "$ledger_src" ] || continue
   # Read line by line, skip malformed lines
   while IFS= read -r line; do
     line_date=$(echo "$line" | jq -r '.timestamp // empty' 2>/dev/null | cut -c1-10) || continue
@@ -204,8 +220,8 @@ if [ -f "$LEDGER_FILE" ]; then
         RESET_COUNT=$((RESET_COUNT + 1))
       fi
     fi
-  done < "$LEDGER_FILE"
-fi
+  done < "$ledger_src"
+done
 
 EFFECTIVE_COUNT=$((CREATED_COUNT - RESET_COUNT))
 if [ "$EFFECTIVE_COUNT" -lt 0 ]; then
