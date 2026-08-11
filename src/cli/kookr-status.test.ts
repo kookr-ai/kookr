@@ -16,6 +16,7 @@ import {
   summarizeCapacity,
   formatUtilPct,
   summarizeProviderPausedOccupancy,
+  summarizeNonCriticalTimerPause,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -737,6 +738,57 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Provider-paused occupancy:');
   });
 
+  it('surfaces elevated nonCriticalTimerPause with p95 and residual ticks (issue #2230)', () => {
+    const health = {
+      ...baseHealth,
+      nonCriticalTimerPause: {
+        schemaVersion: 'non-critical-timer-pause.v1',
+        paused: true,
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 2400.7,
+        pausedTicksTotal: 16,
+        // Extra health fields must not appear in the human line.
+        unused: true,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Non-critical timer pause: paused=true  p95=2400ms  threshold=1500ms  pausedTicks=16',
+    );
+  });
+
+  it('surfaces residual pausedTicksTotal even when currently not paused (issue #2230)', () => {
+    const health = {
+      ...baseHealth,
+      nonCriticalTimerPause: {
+        paused: false,
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 54.5,
+        pausedTicksTotal: 19,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Non-critical timer pause: paused=false  p95=54ms  threshold=1500ms  pausedTicks=19',
+    );
+  });
+
+  it('is a no-op when nonCriticalTimerPause is healthy or absent (issue #2230)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Non-critical timer pause:');
+    const healthy = {
+      ...baseHealth,
+      nonCriticalTimerPause: {
+        paused: false,
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 54,
+        pausedTicksTotal: 0,
+      },
+    };
+    expect(renderReport({ port: 4800, health: healthy, agents: [] }))
+      .not.toContain('Non-critical timer pause:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -1020,6 +1072,101 @@ describe('kookr-status summarizeProviderPausedOccupancy (issue #2236)', () => {
       oldestPauseAgeMs: null,
       reclaimAttempted: 0,
       reclaimedTotal: 0,
+    });
+  });
+});
+
+describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
+  it('returns null when nonCriticalTimerPause is absent', () => {
+    expect(summarizeNonCriticalTimerPause({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when healthy (not paused, zero ticks, p95 at or below threshold)', () => {
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: false,
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 54,
+          pausedTicksTotal: 0,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: false,
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 1500,
+          pausedTicksTotal: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns a slim summary when paused, residual ticks, or p95 elevated', () => {
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: true,
+          thresholdMs: 1500.9,
+          lastEventLoopDelayP95Ms: 2400.7,
+          pausedTicksTotal: 16.2,
+          schemaVersion: 'non-critical-timer-pause.v1',
+        },
+      }),
+    ).toEqual({
+      paused: true,
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 2400,
+      pausedTicksTotal: 16,
+    });
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: false,
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 54,
+          pausedTicksTotal: 3,
+        },
+      }),
+    ).toEqual({
+      paused: false,
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 54,
+      pausedTicksTotal: 3,
+    });
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: false,
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 1800,
+          pausedTicksTotal: 0,
+        },
+      }),
+    ).toEqual({
+      paused: false,
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 1800,
+      pausedTicksTotal: 0,
+    });
+  });
+
+  it('preserves null p95 and defaults missing ticks to 0', () => {
+    expect(
+      summarizeNonCriticalTimerPause({
+        nonCriticalTimerPause: {
+          paused: true,
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: null,
+        },
+      }),
+    ).toEqual({
+      paused: true,
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: null,
+      pausedTicksTotal: 0,
     });
   });
 });
@@ -1415,12 +1562,14 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
-    // / providerPausedOccupancy block on /api/health → no slim summary (no-op).
+    // / providerPausedOccupancy / nonCriticalTimerPause block on /api/health →
+    // no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
     expect(envelope.details.providerPausedOccupancy).toBeUndefined();
+    expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -1652,6 +1801,47 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.providerPausedOccupancy).toBeUndefined();
+  });
+
+  it('includes a slim nonCriticalTimerPause summary in --json when elevated (issue #2230)', async () => {
+    mockSuccessfulFetch([], {
+      nonCriticalTimerPause: {
+        schemaVersion: 'non-critical-timer-pause.v1',
+        paused: true,
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 2400.7,
+        pausedTicksTotal: 16,
+        // Extra health fields must NOT leak into the slim summary.
+        unused: true,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.nonCriticalTimerPause).toEqual({
+      paused: true,
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 2400,
+      pausedTicksTotal: 16,
+    });
+  });
+
+  it('omits details.nonCriticalTimerPause in --json when healthy (issue #2230)', async () => {
+    mockSuccessfulFetch([], {
+      nonCriticalTimerPause: {
+        paused: false,
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 54,
+        pausedTicksTotal: 0,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {
