@@ -57,6 +57,11 @@ export interface HealthLike {
     dtach?: StaleProcessClassHealthLike;
     relayServer?: StaleProcessClassHealthLike;
   };
+  payloadDiet?: {
+    trackedTasks?: number;
+    terminalTasks?: number;
+    lastSnapshotBytes?: number | null;
+  };
 }
 
 export interface PipelineStarvationSummaryRow {
@@ -78,6 +83,12 @@ export interface StaleProcessClassSummary {
 export interface StaleProcessesSummary {
   dtach?: StaleProcessClassSummary;
   relayServer?: StaleProcessClassSummary;
+}
+
+export interface PayloadDietSummary {
+  trackedTasks: number;
+  terminalTasks: number;
+  lastSnapshotBytes: number | null;
 }
 
 export interface RenderReportArgs {
@@ -112,6 +123,9 @@ export function summarizePipelineStarvation(
 export function summarizeStaleProcesses(
   health: HealthLike,
 ): StaleProcessesSummary | null;
+export function summarizePayloadDiet(
+  health: HealthLike,
+): PayloadDietSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

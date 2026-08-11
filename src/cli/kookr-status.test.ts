@@ -11,6 +11,7 @@ import {
   highestKnownSeverity,
   summarizePipelineStarvation,
   summarizeStaleProcesses,
+  summarizePayloadDiet,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -535,6 +536,50 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Stale processes:');
   });
 
+  it('always surfaces payloadDiet as a compact gauge when present (issue #2220)', () => {
+    const health = {
+      ...baseHealth,
+      payloadDiet: {
+        trackedTasks: 40,
+        terminalTasks: 30,
+        lastSnapshotBytes: 123_456,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Payload diet: tracked=40  terminal=30  snapshot=120.6 KB');
+  });
+
+  it('renders snapshot=none when lastSnapshotBytes is null (issue #2220)', () => {
+    const health = {
+      ...baseHealth,
+      payloadDiet: {
+        trackedTasks: 12,
+        terminalTasks: 3,
+        lastSnapshotBytes: null,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Payload diet: tracked=12  terminal=3  snapshot=none');
+  });
+
+  it('keeps the always-on zero gauge (unlike elevated-only staleProcesses) (issue #2220)', () => {
+    const health = {
+      ...baseHealth,
+      payloadDiet: {
+        trackedTasks: 0,
+        terminalTasks: 0,
+        lastSnapshotBytes: null,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] }))
+      .toContain('Payload diet: tracked=0  terminal=0  snapshot=none');
+  });
+
+  it('is a no-op when payloadDiet is absent (issue #2220)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Payload diet:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -719,6 +764,52 @@ describe('kookr-status summarizeStaleProcesses (issue #2209)', () => {
   });
 });
 
+describe('kookr-status summarizePayloadDiet (issue #2220)', () => {
+  it('returns null when payloadDiet is absent', () => {
+    expect(summarizePayloadDiet({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when required counters are non-numeric', () => {
+    expect(
+      summarizePayloadDiet({
+        payloadDiet: { trackedTasks: 'x' as unknown as number, terminalTasks: 1 },
+      }),
+    ).toBeNull();
+  });
+
+  it('always returns the slim gauge including zero counters', () => {
+    expect(
+      summarizePayloadDiet({
+        payloadDiet: {
+          trackedTasks: 0,
+          terminalTasks: 0,
+          lastSnapshotBytes: null,
+        },
+      }),
+    ).toEqual({
+      trackedTasks: 0,
+      terminalTasks: 0,
+      lastSnapshotBytes: null,
+    });
+  });
+
+  it('floors fractional counters and snapshot bytes', () => {
+    expect(
+      summarizePayloadDiet({
+        payloadDiet: {
+          trackedTasks: 40.9,
+          terminalTasks: 30.1,
+          lastSnapshotBytes: 123_456.7,
+        },
+      }),
+    ).toEqual({
+      trackedTasks: 40,
+      terminalTasks: 30,
+      lastSnapshotBytes: 123_456,
+    });
+  });
+});
+
 describe('kookr-status main (integration-style)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
@@ -889,9 +980,10 @@ describe('kookr-status main (integration-style)', () => {
     });
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
-    // No pipelineStarvation / staleProcesses block on /api/health → no slim summary (no-op).
+    // No pipelineStarvation / staleProcesses / payloadDiet block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
+    expect(envelope.details.payloadDiet).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -952,6 +1044,45 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.staleProcesses).toBeUndefined();
+  });
+
+  it('includes details.payloadDiet in --json when present, including zeros (issue #2220)', async () => {
+    mockSuccessfulFetch([], {
+      payloadDiet: {
+        trackedTasks: 40,
+        terminalTasks: 30,
+        lastSnapshotBytes: 123_456,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.payloadDiet).toEqual({
+      trackedTasks: 40,
+      terminalTasks: 30,
+      lastSnapshotBytes: 123_456,
+    });
+  });
+
+  it('includes details.payloadDiet with null snapshot bytes (issue #2220)', async () => {
+    mockSuccessfulFetch([], {
+      payloadDiet: {
+        trackedTasks: 0,
+        terminalTasks: 0,
+        lastSnapshotBytes: null,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.payloadDiet).toEqual({
+      trackedTasks: 0,
+      terminalTasks: 0,
+      lastSnapshotBytes: null,
+    });
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {

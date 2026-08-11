@@ -420,6 +420,14 @@ export interface RouteDeps {
    */
   sessionReaper?: Pick<import('../session-reaper.js').SessionReaperService, 'getHealthSnapshot'>;
   /**
+   * Payload-diet gauges (issue #2220 / #1526 Phase C). `/api/health` reads
+   * only the slim `getPayloadDietStats()` snapshot — tracked/terminal task
+   * counts plus last snapshot broadcast bytes. Must be a non-cloning store
+   * walk (`viewTasks` / `countTasks`); never `listTasks()` on this path
+   * (issue #1749). Absent in partial test harnesses ⇒ health omits the block.
+   */
+  getPayloadDietStats?: () => import('../maintenance-prune-schedule.js').PayloadDietStats;
+  /**
    * Non-critical timer pause gate (issue #1785). `/api/health` and `/metrics`
    * read only `getSnapshot()` — in-memory pause counter + last sample; never
    * a fresh event-loop measurement on the request path.

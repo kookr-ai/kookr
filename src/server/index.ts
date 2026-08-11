@@ -828,8 +828,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Payload-diet observability (issue #1526 Phase C / C2): remember the size
   // of the most recent `all`-scope snapshot broadcast so the boot / maintenance
-  // stats line can report it alongside the tracked-record count.
+  // stats line can report it alongside the tracked-record count. Defined before
+  // createRoutes so GET /api/health can project the same gauges (issue #2220).
+  // Non-cloning `viewTasks()` only — listTasks() clones every record and must
+  // not run on the health hot path (issue #1749; health already documents this).
   let lastSnapshotPayloadBytes: number | null = null;
+  const getPayloadDietStats = (): PayloadDietStats => {
+    const tasks = taskStore.viewTasks();
+    let terminalTasks = 0;
+    for (const task of tasks) {
+      if (isTerminalStatus(task.status)) terminalTasks += 1;
+    }
+    return {
+      trackedTasks: tasks.length,
+      terminalTasks,
+      lastSnapshotBytes: lastSnapshotPayloadBytes,
+    };
+  };
 
   // Dashboard WS fan-out death-spiral guards (issue #1725). Read here (before
   // `createRealtimeServices`) so both the load-shed gate and the per-client
@@ -2333,6 +2348,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalInputRttMetrics,
     sessionReaper,
+    getPayloadDietStats,
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
@@ -2484,17 +2500,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       persistenceHealth.recordFailure('task_state', err);
       throw err;
     }
-  };
-
-  // Payload-diet stats line (issue #1526 Phase C / C2): logged once at boot
-  // and after every scheduled maintenance sweep.
-  const getPayloadDietStats = (): PayloadDietStats => {
-    const tasks = taskStore.listTasks();
-    return {
-      trackedTasks: tasks.length,
-      terminalTasks: tasks.filter((task) => isTerminalStatus(task.status)).length,
-      lastSnapshotBytes: lastSnapshotPayloadBytes,
-    };
   };
 
   const operationalAlertConfig = resetOperationalAlertConfig();

@@ -202,6 +202,31 @@ function summarizeStaleProcesses(health) {
   };
 }
 
+// Payload-diet projection (issue #2220). /api/health publishes
+// `payloadDiet.{trackedTasks,terminalTasks,lastSnapshotBytes}` from the same
+// getter already logged at boot/prune. Always-on compact gauge (like capacity)
+// whenever the block is present — operators need steady-state pressure, not
+// only spikes. Return null when the block is absent (older server / partial
+// health fixture).
+function summarizePayloadDiet(health) {
+  const block = health?.payloadDiet;
+  if (!block || typeof block !== 'object') return null;
+  const trackedRaw = Number(/** @type {{ trackedTasks?: unknown }} */ (block).trackedTasks);
+  const terminalRaw = Number(/** @type {{ terminalTasks?: unknown }} */ (block).terminalTasks);
+  if (!Number.isFinite(trackedRaw) || !Number.isFinite(terminalRaw)) return null;
+  const snapRaw = /** @type {{ lastSnapshotBytes?: unknown }} */ (block).lastSnapshotBytes;
+  let lastSnapshotBytes = null;
+  if (snapRaw !== null && snapRaw !== undefined) {
+    const n = Number(snapRaw);
+    if (Number.isFinite(n) && n >= 0) lastSnapshotBytes = Math.floor(n);
+  }
+  return {
+    trackedTasks: Math.floor(trackedRaw),
+    terminalTasks: Math.floor(terminalRaw),
+    lastSnapshotBytes,
+  };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -285,6 +310,19 @@ function renderReport({ port, health, agents }) {
       );
     }
     lines.push(`Stale processes: ${parts.join('  ')}`);
+  }
+
+  // Payload diet (issue #2220) — always-on compact gauge when /api/health
+  // publishes the block. Matches the boot log line shape so digests and
+  // `kookr status` share one mental model for in-memory task-record pressure.
+  const diet = summarizePayloadDiet(health);
+  if (diet) {
+    const snapshot = diet.lastSnapshotBytes === null
+      ? 'none'
+      : formatRss(diet.lastSnapshotBytes);
+    lines.push(
+      `Payload diet: tracked=${diet.trackedTasks}  terminal=${diet.terminalTasks}  snapshot=${snapshot}`,
+    );
   }
 
   if (findings.length > 0) {
@@ -481,6 +519,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     // summary inside renderReport, so computing it here too would be wasted work.
     const starvationSummary = summarizePipelineStarvation(health);
     const staleSummary = summarizeStaleProcesses(health);
+    const payloadDietSummary = summarizePayloadDiet(health);
     return exitJson({
       out,
       exit,
@@ -497,6 +536,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         summary,
         ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
         ...(staleSummary ? { staleProcesses: staleSummary } : {}),
+        ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
         ...gateDetails,
       },
     });
@@ -541,6 +581,7 @@ export {
   highestKnownSeverity,
   summarizePipelineStarvation,
   summarizeStaleProcesses,
+  summarizePayloadDiet,
   renderReport,
   resolvePort,
   parsePortEnv,

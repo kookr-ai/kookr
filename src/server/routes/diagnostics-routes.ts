@@ -624,6 +624,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(staleProcesses ? { staleProcesses } : {}),
+      // Payload-diet gauges (issue #2220): tracked/terminal task pressure + last
+      // snapshot bytes. Same numbers already logged at boot/prune; health makes
+      // them glanceable for operators and `kookr status` without grepping logs.
+      ...(deps.getPayloadDietStats ? { payloadDiet: deps.getPayloadDietStats() } : {}),
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
       ...(idleCapacityFinding ? { idleCapacityFinding } : {}),
