@@ -339,6 +339,43 @@ function summarizeCapacity(health) {
   return summary;
 }
 
+// Provider-paused occupancy projection (issue #2236). /api/health already
+// publishes the full providerPausedOccupancy block (issue #2079). Surface a
+// quiet-by-default slim warning when count > 0 so unattended hosts and
+// remote operators see quota-pause pressure without curling health. Null
+// when absent or count is zero (steady state). Does not weaken open-PR
+// fail-safes — visibility only.
+function summarizeProviderPausedOccupancy(health) {
+  const block = health?.providerPausedOccupancy;
+  if (!block || typeof block !== 'object') return null;
+  const countRaw = Number(/** @type {{ count?: unknown }} */ (block).count);
+  if (!Number.isFinite(countRaw) || countRaw <= 0) return null;
+  const ageRaw = /** @type {{ oldestPauseAgeMs?: unknown }} */ (block).oldestPauseAgeMs;
+  let oldestPauseAgeMs = null;
+  if (ageRaw !== null && ageRaw !== undefined) {
+    const n = Number(ageRaw);
+    if (Number.isFinite(n) && n >= 0) oldestPauseAgeMs = Math.floor(n);
+  }
+  const reclaimAttemptedRaw = Number(
+    /** @type {{ reclaimAttempted?: unknown }} */ (block).reclaimAttempted,
+  );
+  const reclaimedTotalRaw = Number(
+    /** @type {{ reclaimedTotal?: unknown }} */ (block).reclaimedTotal,
+  );
+  return {
+    count: Math.floor(countRaw),
+    oldestPauseAgeMs,
+    reclaimAttempted:
+      Number.isFinite(reclaimAttemptedRaw) && reclaimAttemptedRaw >= 0
+        ? Math.floor(reclaimAttemptedRaw)
+        : 0,
+    reclaimedTotal:
+      Number.isFinite(reclaimedTotalRaw) && reclaimedTotalRaw >= 0
+        ? Math.floor(reclaimedTotalRaw)
+        : 0,
+  };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -465,6 +502,23 @@ function renderReport({ port, health, agents }) {
         + `  effectiveWorking=${capacity.effectiveWorking}`
         + ` phantom=${capacity.phantomActive}`
         + `  ${byClassParts}`,
+    );
+  }
+
+  // Provider-paused occupancy (issue #2236) — quiet-by-default warning when
+  // /api/health reports count > 0. Shows count, oldest pause age, and hard-TTL
+  // reclaim counters so quota stalls are visible without health spelunking.
+  const providerPaused = summarizeProviderPausedOccupancy(health);
+  if (providerPaused) {
+    const oldest =
+      providerPaused.oldestPauseAgeMs === null
+        ? 'unknown'
+        : formatUptime(providerPaused.oldestPauseAgeMs);
+    lines.push(
+      `Provider-paused occupancy: count=${providerPaused.count}` +
+        `  oldest=${oldest}` +
+        `  reclaimAttempted=${providerPaused.reclaimAttempted}` +
+        `  reclaimedTotal=${providerPaused.reclaimedTotal}`,
     );
   }
 
@@ -665,6 +719,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const payloadDietSummary = summarizePayloadDiet(health);
     const firstHookMissSummary = summarizeFirstHookMiss(health);
     const capacitySummary = summarizeCapacity(health);
+    const providerPausedSummary = summarizeProviderPausedOccupancy(health);
     return exitJson({
       out,
       exit,
@@ -686,6 +741,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
+        ...(providerPausedSummary
+          ? { providerPausedOccupancy: providerPausedSummary }
+          : {}),
         ...gateDetails,
       },
     });
@@ -734,6 +792,7 @@ export {
   summarizeFirstHookMiss,
   summarizeCapacity,
   formatUtilPct,
+  summarizeProviderPausedOccupancy,
   renderReport,
   resolvePort,
   parsePortEnv,
