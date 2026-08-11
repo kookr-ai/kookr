@@ -81,6 +81,14 @@ export interface HealthLike {
     terminalTasks?: number;
     lastSnapshotBytes?: number | null;
   };
+  /**
+   * Hook replay-checkpoint gauges (issue #2281). Null when checkpoints are
+   * disabled on the server; object with sessionCount/fileBytes otherwise.
+   */
+  hookReplayCheckpoints?: {
+    sessionCount?: number;
+    fileBytes?: number;
+  } | null;
   /** Process-lifetime first-hook miss reaps (issue #2036 / #2235). */
   firstHookMissTotal?: number;
   capacity?: CapacityHealthLike;
@@ -170,6 +178,11 @@ export interface PayloadDietSummary {
   lastSnapshotBytes: number | null;
 }
 
+export interface HookReplayCheckpointsSummary {
+  sessionCount: number;
+  fileBytes: number;
+}
+
 export interface ProviderPausedOccupancySummary {
   count: number;
   oldestPauseAgeMs: number | null;
@@ -246,6 +259,9 @@ export function summarizeStaleProcesses(
 export function summarizePayloadDiet(
   health: HealthLike,
 ): PayloadDietSummary | null;
+export function summarizeHookReplayCheckpoints(
+  health: HealthLike,
+): HookReplayCheckpointsSummary | null;
 export function summarizeFirstHookMiss(
   health: HealthLike,
 ): FirstHookMissSummary | null;

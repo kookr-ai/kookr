@@ -12,6 +12,7 @@ import {
   summarizePipelineStarvation,
   summarizeStaleProcesses,
   summarizePayloadDiet,
+  summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
   summarizeCapacity,
   formatUtilPct,
@@ -586,6 +587,35 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Payload diet:');
   });
 
+  it('surfaces elevated hookReplayCheckpoints with humanized file size (issue #2281)', () => {
+    const health = {
+      ...baseHealth,
+      hookReplayCheckpoints: {
+        sessionCount: 5364,
+        fileBytes: 19_900_000,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Hook replay checkpoints: sessions=5364  file=19.0 MB');
+  });
+
+  it('is a no-op when hookReplayCheckpoints is zero or absent (issue #2281)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Hook replay checkpoints:');
+    const zeroed = {
+      ...baseHealth,
+      hookReplayCheckpoints: { sessionCount: 0, fileBytes: 0 },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Hook replay checkpoints:');
+  });
+
+  it('is a no-op when hookReplayCheckpoints is null (disabled) (issue #2281)', () => {
+    const health = { ...baseHealth, hookReplayCheckpoints: null };
+    expect(renderReport({ port: 4800, health, agents: [] }))
+      .not.toContain('Hook replay checkpoints:');
+  });
+
   it('surfaces capacity when phantomActive > 0 (issue #2234)', () => {
     // Live residual shape: util=93.75 while effective=56.25 with phantomActive=6.
     const health = {
@@ -1097,6 +1127,58 @@ describe('kookr-status summarizePayloadDiet (issue #2220)', () => {
       trackedTasks: 40,
       terminalTasks: 30,
       lastSnapshotBytes: 123_456,
+    });
+  });
+});
+
+describe('kookr-status summarizeHookReplayCheckpoints (issue #2281)', () => {
+  it('returns null when hookReplayCheckpoints is absent', () => {
+    expect(summarizeHookReplayCheckpoints({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when hookReplayCheckpoints is null (disabled)', () => {
+    expect(summarizeHookReplayCheckpoints({
+      status: 'ok',
+      hookReplayCheckpoints: null,
+    })).toBeNull();
+  });
+
+  it('returns null when counters are non-numeric', () => {
+    expect(
+      summarizeHookReplayCheckpoints({
+        hookReplayCheckpoints: {
+          sessionCount: 'x' as unknown as number,
+          fileBytes: 1,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zero counters (for --json)', () => {
+    expect(
+      summarizeHookReplayCheckpoints({
+        hookReplayCheckpoints: {
+          sessionCount: 0,
+          fileBytes: 0,
+        },
+      }),
+    ).toEqual({
+      sessionCount: 0,
+      fileBytes: 0,
+    });
+  });
+
+  it('floors fractional counters', () => {
+    expect(
+      summarizeHookReplayCheckpoints({
+        hookReplayCheckpoints: {
+          sessionCount: 12.9,
+          fileBytes: 4096.7,
+        },
+      }),
+    ).toEqual({
+      sessionCount: 12,
+      fileBytes: 4096,
     });
   });
 });
@@ -1898,6 +1980,47 @@ describe('kookr-status main (integration-style)', () => {
       terminalTasks: 0,
       lastSnapshotBytes: null,
     });
+  });
+
+  it('includes details.hookReplayCheckpoints in --json when present, including zeros (issue #2281)', async () => {
+    mockSuccessfulFetch([], {
+      hookReplayCheckpoints: {
+        sessionCount: 5364,
+        fileBytes: 19_900_000,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.hookReplayCheckpoints).toEqual({
+      sessionCount: 5364,
+      fileBytes: 19_900_000,
+    });
+  });
+
+  it('includes details.hookReplayCheckpoints zeros in --json (issue #2281)', async () => {
+    mockSuccessfulFetch([], {
+      hookReplayCheckpoints: { sessionCount: 0, fileBytes: 0 },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.hookReplayCheckpoints).toEqual({
+      sessionCount: 0,
+      fileBytes: 0,
+    });
+  });
+
+  it('omits details.hookReplayCheckpoints in --json when null/disabled (issue #2281)', async () => {
+    mockSuccessfulFetch([], { hookReplayCheckpoints: null });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.hookReplayCheckpoints).toBeUndefined();
   });
 
   it('includes details.firstHookMissTotal in --json when elevated (issue #2235)', async () => {

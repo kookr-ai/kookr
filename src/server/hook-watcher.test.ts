@@ -336,6 +336,49 @@ describe('HookFileWatcher', () => {
     expect(watcher.getOffset('kookr-checkpoint-invalid')).toBe(`${event1}\n`.length);
   });
 
+  // ---------------------------------------------------------------------------
+  // getReplayCheckpointStats (issue #2281)
+  // ---------------------------------------------------------------------------
+  test('getReplayCheckpointStats returns null when checkpoints are disabled', () => {
+    // Default constructor leaves replayCheckpointPath unset.
+    expect(watcher.getReplayCheckpointStats()).toBeNull();
+  });
+
+  test('getReplayCheckpointStats reports zero fileBytes when the checkpoint file is missing', () => {
+    const checkpointPath = join(tempDir, 'missing-hook-replay-checkpoints.json');
+    expect(existsSync(checkpointPath)).toBe(false);
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    expect(watcher.getReplayCheckpointStats()).toEqual({
+      sessionCount: 0,
+      fileBytes: 0,
+    });
+  });
+
+  test('getReplayCheckpointStats uses in-memory session count and stat size (issue #2281)', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-stats.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-checkpoint-stats');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-stats', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const stats = watcher.getReplayCheckpointStats();
+    expect(stats).not.toBeNull();
+    expect(stats!.sessionCount).toBe(1);
+    expect(stats!.fileBytes).toBe(statSync(checkpointPath).size);
+    expect(stats!.fileBytes).toBeGreaterThan(0);
+  });
+
   test('startup replay malformed records stay quiet but later live malformed records alert once', async () => {
     const hookFile = join(tempDir, 'kookr-startup-replay.jsonl');
     writeFileSync(hookFile, '{"old":true}\n');

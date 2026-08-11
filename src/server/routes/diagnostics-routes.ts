@@ -642,6 +642,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // snapshot bytes. Same numbers already logged at boot/prune; health makes
       // them glanceable for operators and `kookr status` without grepping logs.
       ...(deps.getPayloadDietStats ? { payloadDiet: deps.getPayloadDietStats() } : {}),
+      // Hook replay-checkpoint gauges (issue #2281): session count + on-disk
+      // file size. Cheap in-memory + stat; never a full JSON parse of the
+      // multi-MB checkpoint store. Null when checkpoints are disabled.
+      ...(deps.getHookReplayCheckpointStats
+        ? { hookReplayCheckpoints: deps.getHookReplayCheckpointStats() }
+        : {}),
       ...(relayOrphanFinding ? { relayOrphanFinding } : {}),
       ...(hungSuspectCapacityFinding ? { hungSuspectCapacityFinding } : {}),
       ...(idleCapacityFinding ? { idleCapacityFinding } : {}),

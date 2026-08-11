@@ -230,6 +230,25 @@ function summarizePayloadDiet(health) {
   };
 }
 
+// Hook replay-checkpoint projection (issue #2281). /api/health publishes
+// `hookReplayCheckpoints.{sessionCount,fileBytes}` (or null when disabled).
+// Surface whenever the block is a non-null object with finite counters so
+// --json mirrors health; human render is elevated-only (non-zero sessions or
+// bytes). Return null when absent, null-on-health (disabled), or non-numeric.
+function summarizeHookReplayCheckpoints(health) {
+  const block = health?.hookReplayCheckpoints;
+  if (block === null || block === undefined) return null;
+  if (typeof block !== 'object') return null;
+  const sessionsRaw = Number(/** @type {{ sessionCount?: unknown }} */ (block).sessionCount);
+  const bytesRaw = Number(/** @type {{ fileBytes?: unknown }} */ (block).fileBytes);
+  if (!Number.isFinite(sessionsRaw) || !Number.isFinite(bytesRaw)) return null;
+  if (sessionsRaw < 0 || bytesRaw < 0) return null;
+  return {
+    sessionCount: Math.floor(sessionsRaw),
+    fileBytes: Math.floor(bytesRaw),
+  };
+}
+
 // First-hook miss projection (issue #2235). /api/health publishes scalar
 // `firstHookMissTotal` (process-lifetime reaps for launches that never emitted
 // SessionStart / any agent hook — see issue #2036). Surface only when total > 0
@@ -650,6 +669,16 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Hook replay checkpoints (issue #2281) — elevated-only so a fresh node with
+  // an empty/missing checkpoint file stays quiet; operators notice growth
+  // without grepping disk. Zero gauges still flow through --json via details.
+  const checkpoints = summarizeHookReplayCheckpoints(health);
+  if (checkpoints && (checkpoints.sessionCount > 0 || checkpoints.fileBytes > 0)) {
+    lines.push(
+      `Hook replay checkpoints: sessions=${checkpoints.sessionCount}  file=${formatRss(checkpoints.fileBytes)}`,
+    );
+  }
+
   // First-hook miss (issue #2235) — process-lifetime launch-ack failures already
   // on /api/health. Quiet-by-default so operators only see the line when the
   // reaper has reclaimed sessions that never emitted SessionStart.
@@ -949,6 +978,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const starvationSummary = summarizePipelineStarvation(health);
     const staleSummary = summarizeStaleProcesses(health);
     const payloadDietSummary = summarizePayloadDiet(health);
+    const hookReplayCheckpointsSummary = summarizeHookReplayCheckpoints(health);
     const firstHookMissSummary = summarizeFirstHookMiss(health);
     const capacitySummary = summarizeCapacity(health);
     const providerPausedSummary = summarizeProviderPausedOccupancy(health);
@@ -971,6 +1001,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
         ...(staleSummary ? { staleProcesses: staleSummary } : {}),
         ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
+        ...(hookReplayCheckpointsSummary
+          ? { hookReplayCheckpoints: hookReplayCheckpointsSummary }
+          : {}),
         ...(firstHookMissSummary
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
@@ -1029,6 +1062,7 @@ export {
   summarizePipelineStarvation,
   summarizeStaleProcesses,
   summarizePayloadDiet,
+  summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
   summarizeCapacity,
   formatUtilPct,
