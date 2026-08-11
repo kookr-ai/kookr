@@ -296,7 +296,10 @@ export class IdempotencyLedger {
         entries[key] = { taskId: entry.taskId, createdAt: new Date(entry.createdAtMs).toISOString() };
       }
       const file: IdempotencyLedgerFile = { schemaVersion: SCHEMA_VERSION, entries };
-      await atomicWriteFile(this.filePath, JSON.stringify(file, null, 2));
+      // Compact JSON: finalize/clear rewrite the full finalized map; pretty-print
+      // inflates bytes/CPU under spawn retries with no parse benefit (issue #2266).
+      // Load still accepts legacy pretty-printed files via JSON.parse.
+      await atomicWriteFile(this.filePath, JSON.stringify(file));
     } finally {
       release();
     }
