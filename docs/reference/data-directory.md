@@ -41,6 +41,8 @@ as internal unless this table says they are safe to remove.
 | `activity/*.jsonl` and `activity/*.jsonl.1` | activity ledger | Durable parsed hook ledger used for diagnostics and activity views. | Size-rotated per session; `kookr maintenance prune` can remove aged completed-task or orphan ledgers (same terminal/orphan-and-aged rules as hook logs). |
 | `playbook-state/<playbook>/<runKey>/` | playbook runner | Durable per-run state for playbook executions (scout runs, batch runs, …). | `kookr maintenance prune` can remove aged run directories; keeps the newest K per playbook (`--playbook-keep-last`) and never removes a run whose key matches an active task. |
 | `sessions/*/interactions.jsonl` | interaction log | User inputs, finding actions, task lifecycle actions, and other operator interaction events. | Preserved by maintenance prune. |
+| `sessions/*/telemetry.jsonl` | session telemetry (`src/core/telemetry.ts`) | Append-only local UI/session telemetry events (clicks, launches, attach latency, websocket reconnects, …) written once a session is materialized. Same directory as the interaction log. Aggregated by `GET /api/telemetry/report` — see [api.md](api.md). | Preserved by maintenance prune. Not size-rotated today; grows with dashboard use. Safe to delete for a dead session if you do not need the session diagnostics report. |
+| `achievements.json` | achievement watcher (`src/server/achievement-watcher.ts`) | Durable unlocks, counters, and streak state for the achievements catalog. Written atomically as pretty JSON; corrupt files are quarantined (`achievements.json.quarantined-<ISO>.json`) rather than overwritten. See [F13: Achievements](../features.md#f13-achievements). | Keep if you care about unlock history. Not touched by `kookr maintenance prune`. Safe to delete (or reset via the dashboard) to clear progress; the watcher recreates defaults. |
 | `settings.json` | settings API | Dashboard settings saved through the Settings dialog/API. | Keep; copy with backups. |
 | `settings/` | server bootstrap | Settings-related runtime directory threaded to the HTTP/WebSocket bootstrap layer. | Internal; keep. |
 | `schedules.json` | scheduler | Persisted scheduled tasks and trigger counters. | Keep if schedules matter. |
@@ -74,12 +76,13 @@ as internal unless this table says they are safe to remove.
 
 ### Unbounded growth (operator note)
 
-Two files currently grow without automatic compaction or prune coverage:
+Files currently grow without automatic compaction or prune coverage:
 
 - **`hook-replay-checkpoints.json`** — one entry per watched hook session, never removed. On long-lived production-style nodes this can reach tens of megabytes and thousands of session keys. Deleting it (with Kookr stopped) only forces a full hook replay on the next start; it does not drop hook logs.
 - **`workspace-attempts.json`** — full-array rewrite of every attempt record. Size tracks lifetime cleanup/preflight volume (often hundreds of KB after ~1k attempts). No CLI/env retention knob today; keep for audit unless you intentionally discard workspace cleanup history.
+- **`sessions/*/telemetry.jsonl`** — append-only per-session UI/session telemetry (no size rotation). Grows with dashboard use; not removed by `kookr maintenance prune`. Safe to delete for dead sessions if you do not need `GET /api/telemetry/report` history for them.
 
-Neither path is controlled by an environment variable. Related surfaces: hook log rotation uses `KOOKR_HOOK_MAX_BYTES` / `KOOKR_HOOK_ROTATE_KEEP` ([environment-variables.md](environment-variables.md)); aged hook logs (not checkpoints) can be removed with `kookr maintenance prune` ([cli.md](cli.md)).
+These paths are not controlled by an environment variable. Related surfaces: hook log rotation uses `KOOKR_HOOK_MAX_BYTES` / `KOOKR_HOOK_ROTATE_KEEP` ([environment-variables.md](environment-variables.md)); aged hook logs (not checkpoints) can be removed with `kookr maintenance prune` ([cli.md](cli.md)).
 
 Dtach sockets, manifests, and terminal scrollback rings do not live in the data
 directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with
@@ -87,6 +90,15 @@ directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with
 runtime crash-recovery state for surviving dtach masters, not long-term backup
 state. If Kookr is stopped cleanly and the dtach masters are gone, restoring the
 data directory alone restores task records but not live terminal processes.
+
+Ralph iteration audit logs also live outside the data directory: each Ralph loop
+writes append-only `ralph-iterations.jsonl` under the **task workspace**
+(`<task-cwd>/ralph-iterations.jsonl`, via `src/core/ralph-iteration-log.ts` —
+issue #440). Maintenance prune deliberately preserves this store because it is
+not under the data dir; back it up with the workspace (or accept losing loop
+history) if you archive a worktree.
+See [Ralph Loop Stopped Or Shows "Replace With New"](../troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new)
+and `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
 
 The `.kookr-protected` file is also outside the data directory: it belongs at a
 git worktree root and prevents managed task cleanup from removing that worktree.
