@@ -1,8 +1,45 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readJsonFile } from './persistence-utils.js';
+import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
+
+describe('atomicWriteFile', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-atomic-write-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('applies optional mode so secret callers can force 0o600', async () => {
+    const filePath = join(tempDir, 'secret.json');
+    await atomicWriteFile(filePath, '{"ok":true}', { mode: 0o600 });
+    expect(statSync(filePath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+  });
+
+  test('default path keeps non-secret world-readable-by-umask behavior', async () => {
+    const filePath = join(tempDir, 'public.json');
+    await atomicWriteFile(filePath, '{"ok":true}');
+    // Default open mode is 0o666 masked by umask; with a typical 0o022 umask
+    // the result is 0o644. Assert we did *not* force owner-only.
+    const mode = statSync(filePath).mode & 0o777;
+    expect(mode).not.toBe(0o600);
+    expect(mode & 0o400).toBe(0o400); // owner-readable at minimum
+  });
+});
 
 describe('readJsonFile', () => {
   let tempDir: string;

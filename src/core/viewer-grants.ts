@@ -410,7 +410,11 @@ export class ViewerGrantStore {
       const next = mutate(this.grants);
       const snapshot: ShareGrantsFile = { schemaVersion: SCHEMA_VERSION, grants: next };
       try {
-        await atomicWriteFile(this.filePath, JSON.stringify(snapshot, null, 2));
+        // Token hashes are auth material — match sibling secret stores
+        // (relay credentials, finding-evidence HMAC key) with owner-only mode.
+        await atomicWriteFile(this.filePath, JSON.stringify(snapshot, null, 2), {
+          mode: 0o600,
+        });
       } catch (err) {
         // Record the failure for the health signal, then rethrow so the caller
         // still sees the rejection (no fail-open: memory stays at the prior
