@@ -62,6 +62,12 @@ export interface HealthLike {
     terminalTasks?: number;
     lastSnapshotBytes?: number | null;
   };
+  /** Process-lifetime first-hook miss reaps (issue #2036 / #2235). */
+  firstHookMissTotal?: number;
+}
+
+export interface FirstHookMissSummary {
+  firstHookMissTotal: number;
 }
 
 export interface PipelineStarvationSummaryRow {
@@ -126,6 +132,9 @@ export function summarizeStaleProcesses(
 export function summarizePayloadDiet(
   health: HealthLike,
 ): PayloadDietSummary | null;
+export function summarizeFirstHookMiss(
+  health: HealthLike,
+): FirstHookMissSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

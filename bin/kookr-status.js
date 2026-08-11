@@ -227,6 +227,19 @@ function summarizePayloadDiet(health) {
   };
 }
 
+// First-hook miss projection (issue #2235). /api/health publishes scalar
+// `firstHookMissTotal` (process-lifetime reaps for launches that never emitted
+// SessionStart / any agent hook — see issue #2036). Surface only when total > 0
+// so steady state stays quiet; return null (no-op for text and --json) when
+// the field is absent, non-numeric, or zero.
+function summarizeFirstHookMiss(health) {
+  const raw = health?.firstHookMissTotal;
+  if (raw === undefined || raw === null) return null;
+  const total = Number(raw);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { firstHookMissTotal: Math.floor(total) };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -323,6 +336,14 @@ function renderReport({ port, health, agents }) {
     lines.push(
       `Payload diet: tracked=${diet.trackedTasks}  terminal=${diet.terminalTasks}  snapshot=${snapshot}`,
     );
+  }
+
+  // First-hook miss (issue #2235) — process-lifetime launch-ack failures already
+  // on /api/health. Quiet-by-default so operators only see the line when the
+  // reaper has reclaimed sessions that never emitted SessionStart.
+  const firstHookMiss = summarizeFirstHookMiss(health);
+  if (firstHookMiss) {
+    lines.push(`First-hook miss: total=${firstHookMiss.firstHookMissTotal}`);
   }
 
   if (findings.length > 0) {
@@ -520,6 +541,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const starvationSummary = summarizePipelineStarvation(health);
     const staleSummary = summarizeStaleProcesses(health);
     const payloadDietSummary = summarizePayloadDiet(health);
+    const firstHookMissSummary = summarizeFirstHookMiss(health);
     return exitJson({
       out,
       exit,
@@ -537,6 +559,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
         ...(staleSummary ? { staleProcesses: staleSummary } : {}),
         ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
+        ...(firstHookMissSummary
+          ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
+          : {}),
         ...gateDetails,
       },
     });
@@ -582,6 +607,7 @@ export {
   summarizePipelineStarvation,
   summarizeStaleProcesses,
   summarizePayloadDiet,
+  summarizeFirstHookMiss,
   renderReport,
   resolvePort,
   parsePortEnv,

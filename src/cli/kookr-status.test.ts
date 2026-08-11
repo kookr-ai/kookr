@@ -12,6 +12,7 @@ import {
   summarizePipelineStarvation,
   summarizeStaleProcesses,
   summarizePayloadDiet,
+  summarizeFirstHookMiss,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -580,6 +581,23 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Payload diet:');
   });
 
+  it('surfaces firstHookMissTotal when elevated (issue #2235)', () => {
+    const health = {
+      ...baseHealth,
+      firstHookMissTotal: 4,
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('First-hook miss: total=4');
+  });
+
+  it('is a no-op when firstHookMissTotal is zero or absent (issue #2235)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('First-hook miss:');
+    const zeroed = { ...baseHealth, firstHookMissTotal: 0 };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('First-hook miss:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -810,6 +828,28 @@ describe('kookr-status summarizePayloadDiet (issue #2220)', () => {
   });
 });
 
+describe('kookr-status summarizeFirstHookMiss (issue #2235)', () => {
+  it('returns null when firstHookMissTotal is absent', () => {
+    expect(summarizeFirstHookMiss({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when firstHookMissTotal is zero', () => {
+    expect(summarizeFirstHookMiss({ firstHookMissTotal: 0 })).toBeNull();
+  });
+
+  it('returns null when firstHookMissTotal is non-numeric', () => {
+    expect(
+      summarizeFirstHookMiss({ firstHookMissTotal: 'x' as unknown as number }),
+    ).toBeNull();
+  });
+
+  it('returns the elevated total and floors fractional values', () => {
+    expect(summarizeFirstHookMiss({ firstHookMissTotal: 4.9 })).toEqual({
+      firstHookMissTotal: 4,
+    });
+  });
+});
+
 describe('kookr-status main (integration-style)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
@@ -980,10 +1020,12 @@ describe('kookr-status main (integration-style)', () => {
     });
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
-    // No pipelineStarvation / staleProcesses / payloadDiet block on /api/health → no slim summary (no-op).
+    // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
+    // block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
+    expect(envelope.details.firstHookMissTotal).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -1083,6 +1125,25 @@ describe('kookr-status main (integration-style)', () => {
       terminalTasks: 0,
       lastSnapshotBytes: null,
     });
+  });
+
+  it('includes details.firstHookMissTotal in --json when elevated (issue #2235)', async () => {
+    mockSuccessfulFetch([], { firstHookMissTotal: 4 });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.firstHookMissTotal).toBe(4);
+  });
+
+  it('omits details.firstHookMissTotal in --json when zero (issue #2235)', async () => {
+    mockSuccessfulFetch([], { firstHookMissTotal: 0 });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.firstHookMissTotal).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {
