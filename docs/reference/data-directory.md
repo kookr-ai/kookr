@@ -55,6 +55,7 @@ as internal unless this table says they are safe to remove.
 | `effort-split.jsonl` | `kookr effort-split` / daily report | One row per UTC day of lucy vs kookr output share (non-merge commits, PRs merged, lines changed) vs the 80/20 target. Sourced from `gh`, not the contribution ledger. Same-day re-run overwrites. | Keep for week-over-week trends. |
 | `detection-stats.json` | detector telemetry | Aggregate anomaly detector counters. | Keep for detector quality telemetry. |
 | `audit.jsonl` | server routes | Operator and task lifecycle audit events. | Keep for diagnostics. |
+| `issue-claims-audit.jsonl` | issue-claim registry (`src/server/issue-claims-audit-log.ts`) | Append-only claim/release decision audit (`granted`, `reentrant`, `denied`, `released`, `dead_reclaim`, `orphan_reclaim`, `force`, `release_failed`, `exhausted`) written only when `KOOKR_ISSUE_CLAIMS` is on. Single-author sink from `IssueClaimRegistry` — operational metadata only (repo, issue number, task/session ids, decision reason); not credentials. See [Issue-ownership claims](../architecture.md#issue-ownership-claims-kookr_issue_claims), [API Issue Claims](api.md#issue-claims), [CLI `kookr issue`](cli.md), and [environment-variables.md](environment-variables.md) (`KOOKR_ISSUE_CLAIMS`). | Keep for claim/release diagnostics. Not touched by `kookr maintenance prune`. No automatic rotation/compaction today — optional manual prune or delete of aged history if operators do not need it (live claim authority is in-memory + `tasks.json` projection, not this file). |
 | `operational-alerts.jsonl` | schedule runtime / operational-alert sink | Append-only durable trace of operational-alert fire/recovery transitions (schedule dead-man plus every resource-tick operational alert: cpu/memory/disk/RSS/circuit-breaker/persistence/provider-health), so a fire→clear that occurs while no dashboard client is connected still leaves an on-disk record (issues #1709, #1897). | Keep for incident reconstruction. |
 | `ops-status.json` | ops-status writer (issues #1995, #2032) | Edge-triggered last-known-good ops card (ready degrade, dead-man fire, pipeline starvation fire, SAFE MODE engage, prod smoke tick fire/clear): sha, hungSuspect count, data-dir free space, safeMode, recent critical edges. Smoke fire detail is the failingChecks list only (no secrets). Written atomically; best-effort on disk-full. | Keep for post-hoc diagnosis when Discord/pages are down. |
 | `feedback/` | feedback bundle writer | Feedback artifacts generated from task feedback flows. | Keep unless intentionally discarding feedback history. |
@@ -81,8 +82,9 @@ Files currently grow without automatic compaction or prune coverage:
 - **`hook-replay-checkpoints.json`** — one entry per watched hook session, never removed. On long-lived production-style nodes this can reach tens of megabytes and thousands of session keys. Deleting it (with Kookr stopped) only forces a full hook replay on the next start; it does not drop hook logs.
 - **`workspace-attempts.json`** — full-array rewrite of every attempt record. Size tracks lifetime cleanup/preflight volume (often hundreds of KB after ~1k attempts). No CLI/env retention knob today; keep for audit unless you intentionally discard workspace cleanup history.
 - **`sessions/*/telemetry.jsonl`** — append-only per-session UI/session telemetry (no size rotation). Grows with dashboard use; not removed by `kookr maintenance prune`. Safe to delete for dead sessions if you do not need `GET /api/telemetry/report` history for them.
+- **`issue-claims-audit.jsonl`** — append-only claim/release decisions when `KOOKR_ISSUE_CLAIMS` is enabled (no size rotation). Growth tracks claim volume; not removed by `kookr maintenance prune`. Safe to truncate or delete if you do not need claim history — does not hold credentials or the live owner map.
 
-These paths are not controlled by an environment variable. Related surfaces: hook log rotation uses `KOOKR_HOOK_MAX_BYTES` / `KOOKR_HOOK_ROTATE_KEEP` ([environment-variables.md](environment-variables.md)); aged hook logs (not checkpoints) can be removed with `kookr maintenance prune` ([cli.md](cli.md)).
+These paths are not controlled by an environment variable (the claims audit is gated by `KOOKR_ISSUE_CLAIMS`, which only controls whether rows are written). Related surfaces: hook log rotation uses `KOOKR_HOOK_MAX_BYTES` / `KOOKR_HOOK_ROTATE_KEEP` ([environment-variables.md](environment-variables.md)); aged hook logs (not checkpoints) can be removed with `kookr maintenance prune` ([cli.md](cli.md)).
 
 Dtach sockets, manifests, and terminal scrollback rings do not live in the data
 directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with
@@ -152,9 +154,10 @@ A live/in-progress session's activity ledger and an active task's playbook run
 are never eligible regardless of age. It deliberately preserves `tasks.json`,
 snapshot files, dtach runtime state, interaction logs, contribution history
 (`contribution-ledger.jsonl`, `oss-attempts.json`, `workspace-attempts.json`),
-hook replay checkpoints (`hook-replay-checkpoints.json`), and ambiguous audit
-stores. When `tasks.json` is unreadable, session-keyed and playbook pruning is
-skipped entirely and only `server.log.N` generations prune.
+hook replay checkpoints (`hook-replay-checkpoints.json`), issue-claims audit
+(`issue-claims-audit.jsonl`), and ambiguous audit stores. When `tasks.json` is
+unreadable, session-keyed and playbook pruning is skipped entirely and only
+`server.log.N` generations prune.
 
 The prune can also run automatically on a server-side timer — set
 `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` (off by default); see
@@ -239,6 +242,7 @@ Prefer `kookr maintenance prune` over hand deletion. If you must clean by hand:
 
 ## Related References
 
-- [CLI Reference](cli.md) for `kookr maintenance prune`
-- [Environment Variables](environment-variables.md) for `KOOKR_PORT`
+- [CLI Reference](cli.md) for `kookr maintenance prune` and `kookr issue` claim/release
+- [Environment Variables](environment-variables.md) for `KOOKR_PORT` and `KOOKR_ISSUE_CLAIMS`
+- [Architecture: Issue-ownership claims](../architecture.md#issue-ownership-claims-kookr_issue_claims)
 - [Session Sharing](session-sharing.md) for relay-specific SQLite reset/restore

@@ -186,10 +186,11 @@ describe('verifyDocumentedCommands', () => {
     expect(content).toContain('tasks.json.predelete.YYYYMMDDTHHMMSS');
     expect(content).toContain('KOOKR_DATA_DIR');
     // Inventory coverage for durable writers that operators must back up/restore
-    // (issue #2293). Extensions match production paths (.jsonl where append-only).
+    // (issues #2293, #2312). Extensions match production paths (.jsonl where append-only).
     expect(content).toContain('achievements.json');
     expect(content).toContain('sessions/*/telemetry.jsonl');
     expect(content).toContain('ralph-iterations.jsonl');
+    expect(content).toContain('issue-claims-audit.jsonl');
 
     const commands = extractDocumentedCommands(file, content);
     expect(commands.map((command) => command.text)).toEqual(expect.arrayContaining([
