@@ -1066,6 +1066,91 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — payloadDiet block (issue #2220)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health payloadDiet block (issue #2220)', () => {
+    test('omits payloadDiet when getPayloadDietStats is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { payloadDiet?: unknown };
+      expect(body.payloadDiet).toBeUndefined();
+    });
+
+    test('projects trackedTasks / terminalTasks / lastSnapshotBytes from the getter', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getPayloadDietStats: () => ({
+          trackedTasks: 40,
+          terminalTasks: 30,
+          lastSnapshotBytes: 123_456,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        payloadDiet: {
+          trackedTasks: number;
+          terminalTasks: number;
+          lastSnapshotBytes: number | null;
+        };
+      };
+      expect(body.payloadDiet).toEqual({
+        trackedTasks: 40,
+        terminalTasks: 30,
+        lastSnapshotBytes: 123_456,
+      });
+    });
+
+    test('preserves null lastSnapshotBytes (no broadcast yet)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getPayloadDietStats: () => ({
+          trackedTasks: 12,
+          terminalTasks: 3,
+          lastSnapshotBytes: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        payloadDiet: { lastSnapshotBytes: number | null };
+      };
+      expect(body.payloadDiet.lastSnapshotBytes).toBeNull();
+    });
+
+    test('projects zero gauges when the store is empty (always-on, not elevated-only)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getPayloadDietStats: () => ({
+          trackedTasks: 0,
+          terminalTasks: 0,
+          lastSnapshotBytes: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        payloadDiet: {
+          trackedTasks: number;
+          terminalTasks: number;
+          lastSnapshotBytes: number | null;
+        };
+      };
+      expect(body.payloadDiet).toEqual({
+        trackedTasks: 0,
+        terminalTasks: 0,
+        lastSnapshotBytes: null,
+      });
+    });
+  });
+
   // GET /api/health — capacity block (issue #1526 Phase B / FM9)
   // ---------------------------------------------------------------------------
   describe('GET /api/health capacity block', () => {
