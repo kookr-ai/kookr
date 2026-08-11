@@ -829,6 +829,19 @@ describe('loadSettings / saveSettings', () => {
     expect(files).toEqual(['settings.json']);
     expect(files).not.toContain('settings.json.tmp');
   });
+
+  it('round-trips after concurrent saves (unique temp names + fsync path)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    const a = { ...DEFAULT_SETTINGS, maxActiveTasks: 7 };
+    const b = { ...DEFAULT_SETTINGS, maxActiveTasks: 11 };
+    await Promise.all([saveSettings(filePath, a), saveSettings(filePath, b)]);
+    const result = await loadSettings(filePath);
+    expect([7, 11]).toContain(result.settings.maxActiveTasks);
+    expect(result.loadedFromDefaults).toBe(false);
+    const content = await readFile(filePath, 'utf-8');
+    expect(() => JSON.parse(content)).not.toThrow();
+    expect(content.endsWith('\n')).toBe(true);
+  });
 });
 
 describe('agentEffort validation (#681)', () => {
