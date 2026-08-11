@@ -1026,110 +1026,121 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Waves 1–3 residual leaves
- * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553) shipped and
- * are title-exhausted. Invent wave 4 (queue-feeder 2026-08-11, invent-product-
- * wave #2069) covers still-open RFC-012 residuals under the acquisition-
- * redundancy umbrella: resolutionStatus-gated auto-arm for phantom single-
- * source estimates (§5.4), append-only detections.jsonl rotation instead of
- * in-place prune rewrite (§5.1), and confirmed-date total-miss quiet-hours
- * bypass (§5.7). Live GitHub leaves #2609–#2611. Title idempotency prevents
- * re-emit once those exist.
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–4 residual leaves
+ * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553, #2609–#2611,
+ * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS) shipped
+ * and are title-exhausted. Invent wave 5 (queue-feeder 2026-08-11,
+ * invent-product-wave #2069) covers RFC-012 §5.8 Phase-3 measure-first slices
+ * under the acquisition-redundancy umbrella: eventDetected+contentStatus
+ * decoupling, late content capture upgrade without a second total-miss, and
+ * multi-source identity corroboration stamps. Live GitHub leaves #2669–#2671.
+ * Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): gate auto-arm on resolutionStatus for single_source_estimate (phantom-date policy)',
+      'feat(acquisition): stamp eventDetected + contentStatus on detection rows (detection/retrieval decouple)',
     goal:
-      'Gate auto-arm of uncorroborated earnings dates on resolutionStatus so a bare ' +
-      'single_source_estimate (and equivalent low-trust statuses) routes to ' +
-      'propose-and-confirm instead of silently arming a phantom window — the RFC-012 ' +
-      '§5.4 residual under umbrella #1587 / RVSN-class phantom-date policy.',
+      'Split the detection ledger so "an earnings event was observed" is stamped ' +
+      'separately from "we fetched usable report content" — the RFC-012 §5.8 / ' +
+      'umbrella #1587 Phase-3 measure-first slice. Wire/issuer/newswire signals that ' +
+      'confirm a release without a retained document must not collapse into the same ' +
+      'no_source bucket as pure silence.',
     acceptanceCriteria: [
-      'shouldAutoArmWithoutReview (or the shared auto-arm gate used by ' +
-        'rearmWatchlistEntries and watchlist arm paths) refuses auto-arm when ' +
-        'resolutionStatus is single_source_estimate / pattern_estimated / equivalent ' +
-        'low-trust statuses, even when source/confidence would previously allow arming.',
-      'Official/confirmed resolution statuses (e.g. official_confirmed, high-trust ' +
-        'third-party confirmed) still auto-arm without review; conflict/unknown ' +
-        'statuses remain non-auto-arm.',
-      'Unit/fixture tests cover: (a) single_source_estimate → no auto-arm, ' +
-        'enqueue/review path; (b) official_confirmed → auto-arm; (c) ' +
-        'rearmWatchlistEntries does not arm a single_source_estimate watchlist entry.',
+      'Detection rows (and/or the shared write path used by active-window poll + ' +
+        'no-source recapture) can stamp eventDetected=true with contentStatus in ' +
+        '{pending, fetched, failed} (or equivalent enum) when a tier observes release ' +
+        'evidence but content is not yet retained.',
+      'Scorecard / weekly product fold can count event-seen-no-content separately ' +
+        'from pure no_source (no silent merge into a single miss class); pure silence ' +
+        '(no event signal) remains no_source / existing class.',
+      'Unit/fixture tests cover: (a) wire/issuer hit with empty body → eventDetected + ' +
+        'contentStatus pending/failed; (b) full content hit → eventDetected + ' +
+        'contentStatus fetched; (c) pure miss with no tier signal → no false ' +
+        'eventDetected; (d) scorecard/fold separates the two miss shapes.',
     ],
     fileHints: [
-      'src/earnings-date/policy.js',
-      'src/scheduler-maintenance.js (rearmWatchlistEntries)',
-      'src/watchlist-commands.js',
-      'src/earnings-date/contracts.js',
+      'src/scheduled-detection-persistence.js',
+      'src/scheduler-active-window-poll.js',
+      'src/detections.js',
+      'src/detection-scorecard.js',
+      'src/acquisition/anomaly.js',
     ],
     testHints: [
-      'unit: single_source_estimate fixture → shouldAutoArmWithoutReview false',
-      'unit: official_confirmed fixture → true',
-      'unit: rearm path skips low-trust resolutionStatus',
+      'unit: release-signal without body → eventDetected stamped',
+      'unit: full content hit → contentStatus fetched',
+      'unit: pure silence → no eventDetected',
+      'unit: scorecard splits event-seen-no-content vs no_source',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): append-only detections.jsonl rotation (no in-place prune rewrite)',
+      'feat(acquisition): late content capture upgrades eventDetected rows without second total-miss',
     goal:
-      'Replace in-place detections.jsonl prune rewrite with append-only rotation to a ' +
-      'dated archive so the forensic miss trail RFC-012 was built from is never ' +
-      'silently truncated mid-file — Phase 2 residual under umbrella #1587 / RFC-012 §5.1.',
+      'When content (SEC 8-K, issuer PDF, wire full text) lands after an eventDetected ' +
+      'stamp inside the armed/re-check window, treat it as an ordinary capture upgrade ' +
+      'of the pending row — not a fresh total-miss cycle — so late EDGAR filings stop ' +
+      'inflating miss rate (RFC-012 §5.8 ordinary-capture half under umbrella #1587).',
     acceptanceCriteria: [
-      'When the detections ledger exceeds its row cap, older rows are moved to a dated ' +
-        'archive file (or equivalent append-only rotated artifact under the data root) ' +
-        'before the live ledger retains only the newest window — no silent mid-file ' +
-        'rewrite that destroys older rows without an archive copy.',
-      'Append hot path remains append-only and concurrent-safe with rotation (existing ' +
-        'flush/lock contract preserved or strengthened); rotation is throttled like ' +
-        "today's prune so maintenance can call it freely.",
-      'Unit/fixture tests cover: (a) over-cap ledger → archive contains dropped prefix ' +
-        'rows and live file keeps newest N; (b) under-cap → no rotation; (c) concurrent ' +
-        'append during rotation does not lose a row (lock/race fixture).',
+      'Given an open/recent detection row with eventDetected and contentStatus ' +
+        'pending/failed for the same ticker+date (or job identity), a later successful ' +
+        'content fetch updates that row (or links a superseding capture) to ' +
+        'contentStatus=fetched and does not emit a second ACQUISITION_TOTAL_MISS for ' +
+        'the same identity.',
+      'If no prior eventDetected row exists, late content still records a normal hit ' +
+        "(no regression of today's already-published recapture path).",
+      'Unit/fixture tests cover: (a) eventDetected pending → late SEC/content hit ' +
+        'upgrades without second total-miss; (b) no prior event row → ordinary ' +
+        'hit/recapture path unchanged; (c) identity mismatch does not upgrade the ' +
+        'wrong row.',
     ],
     fileHints: [
-      'src/detections.js (pruneDetectionsLedger)',
-      'src/scheduler.js (maintenance call site)',
-      'tests under test/ for detections prune/rotation',
+      'src/scheduler-active-window-poll.js',
+      'src/scheduler-no-source-recapture.js',
+      'src/scheduled-detection-persistence.js',
+      'src/acquisition/anomaly.js',
+      'src/detections.js',
     ],
     testHints: [
-      'unit: over-cap fixture → archive + truncated live head',
-      'unit: under-cap → no-op',
-      'unit: lock held across rewrite/rotation',
+      'unit: pending eventDetected + late content → upgrade, no second miss',
+      'unit: no prior event → ordinary hit path',
+      'unit: wrong identity does not upgrade',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): confirmed-date total-miss alerts bypass quiet-hours drop',
+      'feat(acquisition): multi-source identity corroboration stamp before high-confidence delivery',
     goal:
-      'Ensure confirmed-date acquisition total-miss alerts are not hard-dropped by ' +
-      'quiet-hours so operators still get loud miss signal for product-critical ' +
-      'windows — RFC-012 §5.7 quiet-hours residual under umbrella #1587 (ship the ' +
-      'bypass half before full redelivery plumbing if needed).',
+      'When ≥2 independent acquisition surfaces agree on release identity (ticker + ' +
+      'event date, and optionally headline/EPS trigger), stamp identityCorroborated=true ' +
+      'on the detection/delivery path and keep single-source hits explicitly unverified ' +
+      '— first PR of RFC-012 §5.8 corroboration-first content capture under umbrella ' +
+      '#1587 (measure + gate stamp, not full multi-source merge).',
     acceptanceCriteria: [
-      'When a total-miss anomaly/alert is classified as confirmed-date (or equivalent ' +
-        'high-confidence armed date), the Discord/delivery path does not permanently ' +
-        'drop it solely because quiet-hours is active — either bypass quiet-hours or ' +
-        'durable-withhold and redeliver at quiet-hours end.',
-      'Non-confirmed / low-confidence or non-total-miss proactive messages keep ' +
-        'existing quiet-hours behavior (no alert storm expansion beyond the confirmed ' +
-        'total-miss class).',
-      'Unit/fixture tests cover: (a) confirmed-date total-miss during quiet-hours → ' +
-        'delivered or durable-queued for redelivery; (b) ordinary proactive message ' +
-        'during quiet-hours still withheld/dropped per existing policy; (c) ' +
-        'non-confirmed miss does not take the bypass path.',
+      'On a successful multi-tier race (or sequential hit within the same window), when ' +
+        '≥2 of {issuer, newswire/wire, SEC/EDGAR} contribute matching identity evidence, ' +
+        'the retained detection row stamps identityCorroborated=true (or equivalent) ' +
+        'with a small sources[] evidence list.',
+      'Single-source hits remain deliverable but stamp identityCorroborated=false / ' +
+        'absent so operators and scorecard can separate corroborated vs single-source ' +
+        'confidence; no silent upgrade of single-source to corroborated.',
+      'Unit/fixture tests cover: (a) wire+SEC same ticker/date → identityCorroborated ' +
+        'true; (b) issuer-only hit → false/absent; (c) conflicting identity across ' +
+        'sources does not stamp corroborated true.',
     ],
     fileHints: [
-      'src/scheduler-discord-delivery.js',
-      'src/acquisition/anomaly.js (total-miss emit)',
-      'src/scheduler-active-window-poll.js / total-miss anomaly path',
+      'src/acquisition/acquire.js',
+      'src/scheduled-detection-persistence.js',
+      'src/detection-scorecard.js',
+      'src/earnings-source.js',
+      'src/acquisition/tiers/',
     ],
     testHints: [
-      'unit: quiet-hours + confirmed total-miss → not hard-dropped',
-      'unit: quiet-hours + ordinary proactive → existing behavior',
+      'unit: two-source match → identityCorroborated true',
+      'unit: single-source → false/absent',
+      'unit: identity conflict → not corroborated',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
