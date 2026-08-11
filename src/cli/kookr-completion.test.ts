@@ -134,6 +134,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
     expect(script).toContain('verify doctor');
+    expect(script).toContain('status drain remember yield');
+    expect(script).toContain('compgen -W "--json --days --kookr-dir -h --help"');
     expect(script).toContain('--from-command');
     expect(script).toContain('--run-commands');
     expect(script).toContain('compgen -W "--spec --out --review-out --plugin-dir --cache-dir --json -h --help"');
@@ -159,6 +161,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd -- list claim release owner');
     expect(script).toContain('compadd -- verify doctor');
+    expect(script).toContain('status drain remember yield');
+    expect(script).toContain('compadd -- --json --days --kookr-dir -h --help');
     expect(script).toContain('--from-command');
     expect(script).toContain('--run-commands');
     expect(script).toContain('compadd -- --spec --out --review-out --plugin-dir --cache-dir --json -h --help');
@@ -375,6 +379,49 @@ describe('bash completion behavior', () => {
     ]);
   });
 
+  // #2311: lesson yield is a live verb; shell completion must offer it + flags.
+  it('completes lesson subcommands including yield', async () => {
+    await expect(completeBash(['kookr', 'lesson', ''])).resolves.toEqual([
+      'status',
+      'drain',
+      'remember',
+      'yield',
+    ]);
+  });
+
+  it('completes lesson flags for the selected verb', async () => {
+    await expect(completeBash(['kookr', 'lesson', 'status', ''])).resolves.toEqual([
+      '--json',
+      '--dir',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'lesson', 'drain', ''])).resolves.toEqual([
+      '--json',
+      '--dir',
+      '--dry-run',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'lesson', 'remember', ''])).resolves.toEqual([
+      '--title',
+      '--kb',
+      '--stdin',
+      '--yes',
+      '--dir',
+      '--json',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'lesson', 'yield', ''])).resolves.toEqual([
+      '--json',
+      '--days',
+      '--kookr-dir',
+      '-h',
+      '--help',
+    ]);
+  });
+
   it('completes push subcommands', async () => {
     await expect(completeBash(['kookr', 'push', ''])).resolves.toEqual(['test']);
   });
@@ -488,6 +535,29 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     await expect(completeZsh(['kookr', 'signal', ''], 3)).resolves.toEqual(
       expect.arrayContaining(['completion-ready', '--note', '--task-id', '--json']),
     );
+  });
+
+  // #2311: lesson yield is a live verb; shell completion must offer it + flags.
+  it('completes lesson subcommands including yield and verb-specific flags', async () => {
+    await expect(completeZsh(['kookr', 'lesson', ''], 3)).resolves.toEqual([
+      'status',
+      'drain',
+      'remember',
+      'yield',
+    ]);
+    await expect(completeZsh(['kookr', 'lesson', 'status', ''], 4)).resolves.toEqual([
+      '--json',
+      '--dir',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'lesson', 'yield', ''], 4)).resolves.toEqual([
+      '--json',
+      '--days',
+      '--kookr-dir',
+      '-h',
+      '--help',
+    ]);
   });
 
   it('completes maintenance subcommands and verb-specific flags', async () => {

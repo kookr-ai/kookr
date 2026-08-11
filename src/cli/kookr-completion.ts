@@ -14,6 +14,8 @@ const LESSON_REMEMBER_FLAGS = [
   '-h',
   '--help',
 ] as const;
+// #2311: yield flags mirror `kookr lesson yield` in src/cli/kookr-lesson.ts.
+const LESSON_YIELD_FLAGS = ['--json', '--days', '--kookr-dir', '-h', '--help'] as const;
 const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
 // #1858 / #1518: known model base ids for spawn --model tab-completion.
 // Keep in sync with ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in
@@ -131,11 +133,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'lesson',
-    subcommands: ['status', 'drain', 'remember'],
+    subcommands: ['status', 'drain', 'remember', 'yield'],
     flags: [
       ...LESSON_STATUS_FLAGS,
       ...LESSON_DRAIN_FLAGS,
       ...LESSON_REMEMBER_FLAGS,
+      ...LESSON_YIELD_FLAGS,
     ],
   },
   {
@@ -385,6 +388,7 @@ function renderBashCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const lessonYieldFlags = shellWords(LESSON_YIELD_FLAGS);
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
@@ -556,6 +560,9 @@ _kookr()
           remember)
             COMPREPLY=( $(compgen -W "${lessonRememberFlags}" -- "\${cur}") )
             ;;
+          yield)
+            COMPREPLY=( $(compgen -W "${lessonYieldFlags}" -- "\${cur}") )
+            ;;
           *)
             COMPREPLY=()
             ;;
@@ -671,6 +678,7 @@ function renderZshCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const lessonYieldFlags = shellWords(LESSON_YIELD_FLAGS);
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
@@ -796,6 +804,7 @@ _kookr()
           status) compadd -- ${lessonStatusFlags} ;;
           drain) compadd -- ${lessonDrainFlags} ;;
           remember) compadd -- ${lessonRememberFlags} ;;
+          yield) compadd -- ${lessonYieldFlags} ;;
         esac
       fi
       ;;
