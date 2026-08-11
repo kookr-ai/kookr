@@ -5,6 +5,17 @@ import { tmpdir } from 'node:os';
 import { OssAttemptStore } from '../core/oss-attempt-store.js';
 import { OssRefresher, extractAllIssueNumbersFromBody } from './oss-refresh.js';
 
+/** Fixture timestamps kept inside the default 90d OSS attempt retention window
+ *  so prune-on-save does not drop terminal records mid-test (issue #2286). */
+const DAY_MS = 24 * 60 * 60 * 1000;
+const daysAgo = (n: number): string => new Date(Date.now() - n * DAY_MS).toISOString();
+const FIX_T_CREATED = daysAgo(20); // was 2026-04-01
+const FIX_T_MERGED = daysAgo(16);  // was 2026-04-05
+const FIX_T_UPDATED = daysAgo(11); // was 2026-04-10
+const FIX_T_CLOSED = daysAgo(9);   // was 2026-04-12
+const FIX_T_CLOSED_LATE = daysAgo(8); // was 2026-04-13
+
+
 describe('extractAllIssueNumbersFromBody', () => {
   test('matches "Fixes #N" case-insensitively (migrated from singular test)', () => {
     expect(extractAllIssueNumbersFromBody('Fixes #42')).toEqual([42]);
@@ -113,10 +124,10 @@ describe('OssRefresher', () => {
           title: 'Fix dashboard bug',
           url: 'https://github.com/grafana/grafana/pull/100',
           state: 'MERGED',
-          createdAt: '2026-04-01T00:00:00Z',
-          mergedAt: '2026-04-05T00:00:00Z',
+          createdAt: FIX_T_CREATED,
+          mergedAt: FIX_T_MERGED,
           closedAt: null,
-          updatedAt: '2026-04-05T00:00:00Z',
+          updatedAt: FIX_T_MERGED,
         },
       ]),
       'pr list --repo rust-lang/rust': '[]',
@@ -138,22 +149,22 @@ describe('OssRefresher', () => {
           title: 'Rejected fix',
           url: 'https://github.com/grafana/grafana/pull/100',
           state: 'CLOSED',
-          createdAt: '2026-04-01T00:00:00Z',
+          createdAt: FIX_T_CREATED,
           mergedAt: null,
-          closedAt: '2026-04-05T00:00:00Z',
-          updatedAt: '2026-04-05T00:00:00Z',
+          closedAt: FIX_T_MERGED,
+          updatedAt: FIX_T_MERGED,
         },
       ]),
       'pr list --repo rust-lang/rust': '[]',
       'pr view https://github.com/grafana/grafana/pull/100': JSON.stringify({
         state: 'CLOSED',
         mergedAt: null,
-        closedAt: '2026-04-05T00:00:00Z',
+        closedAt: FIX_T_MERGED,
         comments: [
           {
             author: { login: 'maintainer' },
             body: 'This duplicates #123 — closing.',
-            createdAt: '2026-04-05T00:00:00Z',
+            createdAt: FIX_T_MERGED,
           },
         ],
       }),
@@ -208,10 +219,10 @@ describe('OssRefresher', () => {
       title: `PR ${i + 1}`,
       url: `https://github.com/grafana/grafana/pull/${i + 1}`,
       state: 'MERGED',
-      createdAt: '2026-03-01T00:00:00Z',
-      mergedAt: '2026-03-05T00:00:00Z',
+      createdAt: FIX_T_CREATED,
+      mergedAt: FIX_T_MERGED,
       closedAt: null,
-      updatedAt: '2026-03-05T00:00:00Z',
+      updatedAt: FIX_T_MERGED,
     }));
     const { runGh } = fakeGhFactory({
       'grafana/grafana': JSON.stringify(hundredPrs),
@@ -236,15 +247,15 @@ describe('OssRefresher', () => {
           title: 'First attempt',
           url: 'https://github.com/grafana/grafana/pull/500',
           state: 'CLOSED',
-          createdAt: '2026-01-01T00:00:00Z',
+          createdAt: FIX_T_CREATED,
           mergedAt: null,
-          closedAt: '2026-01-05T00:00:00Z',
-          updatedAt: '2026-01-05T00:00:00Z',
+          closedAt: FIX_T_MERGED,
+          updatedAt: FIX_T_MERGED,
         },
       ]),
       'pr list --repo rust-lang/rust': '[]',
       'pr view https://github.com/grafana/grafana/pull/500': JSON.stringify({
-        closedAt: '2026-01-05T00:00:00Z',
+        closedAt: FIX_T_MERGED,
         comments: [{ author: { login: 'maintainer' }, body: 'out of scope' }],
         body: '## Summary\n\nFixes #42\n\nRemoves the guard...',
       }),
@@ -302,10 +313,10 @@ function mkListPr(overrides: Partial<{
     title: 'Test PR',
     url: 'https://github.com/grafana/grafana/pull/1',
     state: 'OPEN',
-    createdAt: '2026-04-01T00:00:00Z',
+    createdAt: FIX_T_CREATED,
     mergedAt: null,
     closedAt: null,
-    updatedAt: '2026-04-10T00:00:00Z',
+    updatedAt: FIX_T_UPDATED,
     body: '',
     ...overrides,
   };
@@ -390,7 +401,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-12T00:00:00Z',
+            closed_at: FIX_T_CLOSED,
             closed_by: { pull_request: { number: 99 } },
           }),
           stderr: '',
@@ -403,7 +414,7 @@ describe('OssRefresher — zombie-PR detection', () => {
     const attempt = store.getByRepo('grafana/grafana')[0];
     expect(attempt.linkedIssue?.state).toBe('closed');
     expect(attempt.linkedIssue?.closingPrNumber).toBe(99);
-    expect(attempt.linkedIssue?.closedAt).toBe('2026-04-12T00:00:00Z');
+    expect(attempt.linkedIssue?.closedAt).toBe(FIX_T_CLOSED);
   });
 
   // T-R3: Skip re-fetch when cached closed state matches a current linked number.
@@ -417,14 +428,14 @@ describe('OssRefresher — zombie-PR detection', () => {
       prTitle: 'Zombie',
       state: 'pr_open',
       source: 'refresh_poll',
-      at: '2026-04-10T00:00:00Z',
+      at: FIX_T_UPDATED,
     });
     store.attachLinkedIssue('grafana/grafana', 1, {
       number: 10,
       state: 'closed',
-      closedAt: '2026-04-12T00:00:00Z',
+      closedAt: FIX_T_CLOSED,
       closingPrNumber: 99,
-      verifiedAt: '2026-04-12T00:00:00Z',
+      verifiedAt: FIX_T_CLOSED,
     });
 
     const calls: string[] = [];
@@ -456,14 +467,14 @@ describe('OssRefresher — zombie-PR detection', () => {
       prTitle: 'PR',
       state: 'pr_open',
       source: 'refresh_poll',
-      at: '2026-04-10T00:00:00Z',
+      at: FIX_T_UPDATED,
     });
     store.attachLinkedIssue('grafana/grafana', 1, {
       number: 10,
       state: 'open',
       closedAt: null,
       closingPrNumber: null,
-      verifiedAt: '2026-04-10T00:00:00Z',
+      verifiedAt: FIX_T_UPDATED,
     });
 
     let issueCallCount = 0;
@@ -499,14 +510,14 @@ describe('OssRefresher — zombie-PR detection', () => {
       prTitle: 'Old Title',
       state: 'pr_open',
       source: 'refresh_poll',
-      at: '2026-04-10T00:00:00Z',
+      at: FIX_T_UPDATED,
     });
     store.attachLinkedIssue('grafana/grafana', 1, {
       number: 10,
       state: 'closed',
-      closedAt: '2026-04-12T00:00:00Z',
+      closedAt: FIX_T_CLOSED,
       closingPrNumber: 99,
-      verifiedAt: '2026-04-12T00:00:00Z',
+      verifiedAt: FIX_T_CLOSED,
     });
 
     const runGh = async (args: string[]) => {
@@ -543,10 +554,10 @@ describe('OssRefresher — zombie-PR detection', () => {
               title: 'fix(together_ai): support reasoning_effort for gpt-oss models',
               url: 'https://github.com/BerriAI/litellm/pull/25520',
               state: 'OPEN',
-              createdAt: '2026-04-10T00:00:00Z',
+              createdAt: FIX_T_UPDATED,
               mergedAt: null,
               closedAt: null,
-              updatedAt: '2026-04-10T00:00:00Z',
+              updatedAt: FIX_T_UPDATED,
               body:
                 '## Relevant issues\n\nFixes #25132\n\n## Changes\n\nTogether AI config fix...',
             },
@@ -558,7 +569,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-13T03:42:00Z',
+            closed_at: FIX_T_CLOSED_LATE,
             closed_by: { pull_request: { number: 25263 } },
           }),
           stderr: '',
@@ -578,7 +589,7 @@ describe('OssRefresher — zombie-PR detection', () => {
     expect(attempt.linkedIssue?.number).toBe(25132);
     expect(attempt.linkedIssue?.state).toBe('closed');
     expect(attempt.linkedIssue?.closingPrNumber).toBe(25263);
-    expect(attempt.linkedIssue?.closedAt).toBe('2026-04-13T03:42:00Z');
+    expect(attempt.linkedIssue?.closedAt).toBe(FIX_T_CLOSED_LATE);
   });
 
   // T-R8: Issue-state fetch throws → issueCheckErrors, lastRefreshAt still advances.
@@ -620,7 +631,7 @@ describe('OssRefresher — zombie-PR detection', () => {
       state: 'pr_open',
       issueNumber: 42, // already set
       source: 'refresh_poll',
-      at: '2026-04-10T00:00:00Z',
+      at: FIX_T_UPDATED,
     });
 
     const runGh = async (args: string[]) => {
@@ -651,17 +662,17 @@ describe('OssRefresher — zombie-PR detection', () => {
 
   // T-R10: fetchLinkedIssueState defensive closed_by shapes — all four.
   test.each([
-    ['closed_by: null', { state: 'closed', closed_at: '2026-04-12T00:00:00Z', closed_by: null }],
-    ['closed_by: {}', { state: 'closed', closed_at: '2026-04-12T00:00:00Z', closed_by: {} }],
+    ['closed_by: null', { state: 'closed', closed_at: FIX_T_CLOSED, closed_by: null }],
+    ['closed_by: {}', { state: 'closed', closed_at: FIX_T_CLOSED, closed_by: {} }],
     [
       'closed_by: { pull_request: null }',
       {
         state: 'closed',
-        closed_at: '2026-04-12T00:00:00Z',
+        closed_at: FIX_T_CLOSED,
         closed_by: { pull_request: null },
       },
     ],
-    ['closed_by missing entirely', { state: 'closed', closed_at: '2026-04-12T00:00:00Z' }],
+    ['closed_by missing entirely', { state: 'closed', closed_at: FIX_T_CLOSED }],
   ])('T-R10: handles %s without crashing (closingPrNumber=null)', async (_label, detail) => {
     await store.load();
     const runGh = async (args: string[]) => {
@@ -707,7 +718,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-12T00:00:00Z',
+            closed_at: FIX_T_CLOSED,
             closed_by: { pull_request: { number: 30 } },
           }),
           stderr: '',
@@ -743,7 +754,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-12T00:00:00Z',
+            closed_at: FIX_T_CLOSED,
             closed_by: { pull_request: { number: 99 } },
           }),
           stderr: '',
@@ -786,7 +797,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-12T00:00:00Z',
+            closed_at: FIX_T_CLOSED,
             closed_by: { pull_request: { number: 99 } },
           }),
           stderr: '',
@@ -817,7 +828,7 @@ describe('OssRefresher — zombie-PR detection', () => {
     expect(grafanaRecord.linkedIssue.state).toBe('closed');
     expect(grafanaRecord.linkedIssue.number).toBe(10);
     expect(grafanaRecord.linkedIssue.closingPrNumber).toBe(99);
-    expect(grafanaRecord.linkedIssue.closedAt).toBe('2026-04-12T00:00:00Z');
+    expect(grafanaRecord.linkedIssue.closedAt).toBe(FIX_T_CLOSED);
 
     // Secondary assertion: save was called at least 3 times (2 per-repo
     // `finally` + 1 end-of-run). `>= 2` is too weak — it passes even if one
@@ -930,7 +941,7 @@ describe('OssRefresher — zombie-PR detection', () => {
       prTitle: 'PR',
       state: 'pr_open',
       source: 'refresh_poll',
-      at: '2026-04-10T00:00:00Z',
+      at: FIX_T_UPDATED,
     });
     // Seed a valid prior open cache for #10.
     store.attachLinkedIssue('grafana/grafana', 1, {
@@ -938,7 +949,7 @@ describe('OssRefresher — zombie-PR detection', () => {
       state: 'open',
       closedAt: null,
       closingPrNumber: null,
-      verifiedAt: '2026-04-12T00:00:00Z',
+      verifiedAt: FIX_T_CLOSED,
     });
 
     const runGh = async (args: string[]) => {
@@ -986,7 +997,7 @@ describe('OssRefresher — zombie-PR detection', () => {
         return {
           stdout: JSON.stringify({
             state: 'closed',
-            closed_at: '2026-04-12T00:00:00Z',
+            closed_at: FIX_T_CLOSED,
             closed_by: { pull_request: { number: 99 } },
           }),
           stderr: '',
