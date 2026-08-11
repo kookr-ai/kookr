@@ -23,7 +23,7 @@ Usage:
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
-  kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
+  kookr lesson status|drain|remember|yield  Durable lesson-write spool + yield metric.
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
   kookr value-density classify|admit|composition|decline  Refactor-class emission/spawn governor + composition (#1846).
