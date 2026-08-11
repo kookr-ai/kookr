@@ -112,4 +112,52 @@ describe('appendJsonlWithRotation', () => {
     expect(readFileSync(`${logPath}.1`, 'utf-8')).toBe('current\n');
     expect(readFileSync(logPath, 'utf-8')).toBe('new\n');
   });
+
+  test.runIf(process.platform !== 'win32')(
+    'creates parent dir with dirMode and new file with fileMode',
+    async () => {
+      await appendJsonlWithRotation(logPath, 'secret\n', {
+        maxBytes: 1024,
+        rotatedGenerations: 2,
+        dirMode: 0o700,
+        fileMode: 0o600,
+      });
+
+      expect(statSync(dirname(logPath)).mode & 0o777).toBe(0o700);
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
+      expect(readFileSync(logPath, 'utf-8')).toBe('secret\n');
+    },
+  );
+
+  test.runIf(process.platform !== 'win32')(
+    're-chmods an existing world-readable file on next append',
+    async () => {
+      mkdirSync(dirname(logPath), { recursive: true, mode: 0o755 });
+      writeFileSync(logPath, 'old\n', { mode: 0o644 });
+      expect(statSync(logPath).mode & 0o777).toBe(0o644);
+
+      await appendJsonlWithRotation(logPath, 'new\n', {
+        maxBytes: 1024,
+        rotatedGenerations: 2,
+        fileMode: 0o600,
+      });
+
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
+      expect(readFileSync(logPath, 'utf-8')).toBe('old\nnew\n');
+    },
+  );
+
+  test('default path leaves pre-existing mode bits alone (no implicit chmod)', async () => {
+    mkdirSync(dirname(logPath), { recursive: true });
+    writeFileSync(logPath, 'old\n', { mode: 0o644 });
+    const before = statSync(logPath).mode & 0o777;
+
+    await appendJsonlWithRotation(logPath, 'new\n', {
+      maxBytes: 1024,
+      rotatedGenerations: 2,
+    });
+
+    expect(statSync(logPath).mode & 0o777).toBe(before);
+    expect(readFileSync(logPath, 'utf-8')).toBe('old\nnew\n');
+  });
 });

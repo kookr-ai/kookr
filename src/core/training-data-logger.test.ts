@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -159,6 +159,38 @@ describe('training-data-logger', () => {
       const dir = getTrainingDataDir();
       expect(dir).toBe(join(tempDir, '.kookr', 'training-data'));
     });
+  });
+
+  describe('file modes', () => {
+    test.runIf(process.platform !== 'win32')(
+      'creates training-data dir as 0o700 and log files as 0o600',
+      async () => {
+        logTaskNaming('Fix bug', '/project', undefined, 'Fix it');
+        await flushTrainingDataWrites();
+
+        const dirPath = join(tempDir, '.kookr', 'training-data');
+        const filePath = join(dirPath, 'task-naming.jsonl');
+        expect(statSync(dirPath).mode & 0o777).toBe(0o700);
+        expect(statSync(filePath).mode & 0o777).toBe(0o600);
+      },
+    );
+
+    test.runIf(process.platform !== 'win32')(
+      'tightens an existing 0644 training-data log on the next write',
+      async () => {
+        const dirPath = join(tempDir, '.kookr', 'training-data');
+        const filePath = join(dirPath, 'task-naming.jsonl');
+        // Pre-create world-readable file as older installs did.
+        mkdirSync(dirPath, { recursive: true, mode: 0o755 });
+        writeFileSync(filePath, '', { mode: 0o644 });
+        expect(statSync(filePath).mode & 0o777).toBe(0o644);
+
+        logTaskNaming('Fix bug', '/project', undefined, 'Fix it');
+        await flushTrainingDataWrites();
+
+        expect(statSync(filePath).mode & 0o777).toBe(0o600);
+      },
+    );
   });
 
   describe('rotation', () => {
