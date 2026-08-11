@@ -1,3 +1,4 @@
+import { chmodSync, statSync } from 'node:fs';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -94,6 +95,28 @@ async function createVerifiedPairing(opts: {
 }
 
 describe('ContactIdentityStore', () => {
+  it('persists collaboration-identities.json with owner-only mode 0o600', async () => {
+    const kookrDir = await tempKookrDir();
+    const now = () => new Date('2026-05-21T00:00:00.000Z');
+    const { store: created } = await createVerifiedPairing({ kookrDir, now });
+
+    const identitiesPath = join(kookrDir, 'collaboration-identities.json');
+    const modeAfterCreate = statSync(identitiesPath).mode & 0o777;
+    expect(modeAfterCreate).toBe(0o600);
+
+    // Re-write after a world-readable seed must still land at 0o600 (rename
+    // preserves the temp file’s mode rather than the prior destination mode).
+    chmodSync(identitiesPath, 0o644);
+    expect(statSync(identitiesPath).mode & 0o777).toBe(0o644);
+
+    const contact = created.listContacts()[0];
+    expect(contact).toBeDefined();
+    const revoked = await created.revokeDevice(contact!.contactId, contact!.devices[0]!.deviceId);
+    expect(revoked).not.toBeNull();
+
+    expect(statSync(identitiesPath).mode & 0o777).toBe(0o600);
+  });
+
   it('persists verified contact/device trust only after explicit fingerprint and code verification', async () => {
     const kookrDir = await tempKookrDir();
     const now = () => new Date('2026-05-21T00:00:00.000Z');

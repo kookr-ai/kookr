@@ -698,7 +698,11 @@ export class ContactIdentityStore {
       acceptedAuthNonces: [...this.acceptedAuthNonces.values()]
         .filter((nonce) => !this.isExpiredAuthNonce(nonce.expiresAt)),
     };
-    await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));
+    // Pairing public keys, nonces, and contact device material — match sibling
+    // secret stores (share-grants, relay credentials) with owner-only mode.
+    await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2), {
+      mode: 0o600,
+    });
   }
 
   private async appendAudit(kind: PairingAuditEventKind, detail: PairingAuditDetail): Promise<void> {
