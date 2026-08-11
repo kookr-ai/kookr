@@ -1584,6 +1584,37 @@ describe('diagnostics routes', () => {
           + faa.skippedOpenPrUnknown
           + faa.skippedUnderTtl,
       ).toBe(faa.lastCandidatesConsidered);
+
+      // Issue #2228: non-zero unknown + non-trivial aggregate on /api/health.
+      metrics.recordSelection({
+        candidatesConsidered: 3,
+        skips: {
+          skipped_bad_raised_at: 0,
+          skipped_open_pr_confirmed: 1,
+          skipped_open_pr_unknown: 2,
+          skipped_under_ttl: 0,
+        },
+        outcomes: [
+          { taskId: 't-confirmed', outcome: 'skipped_open_pr_confirmed', ageMs: 1_000_000 },
+          { taskId: 't-unknown-a', outcome: 'skipped_open_pr_unknown', ageMs: 1_000_000 },
+          { taskId: 't-unknown-b', outcome: 'skipped_open_pr_unknown', ageMs: 1_000_000 },
+        ],
+      });
+      const splitRes = await mkApp(baseDeps).request('/api/health');
+      expect(splitRes.status).toBe(200);
+      const splitBody = (await splitRes.json()) as {
+        finishedAwaitingAckTtlReclaim?: Record<string, unknown>;
+      };
+      expect(splitBody.finishedAwaitingAckTtlReclaim).toMatchObject({
+        // Cumulative: prior confirmed=1 + this confirmed=1 / unknown=2
+        skippedOpenPrConfirmed: 2,
+        skippedOpenPrUnknown: 2,
+        skippedOpenPrFailsafe: 4,
+        lastOutcomes: expect.arrayContaining([
+          expect.objectContaining({ outcome: 'skipped_open_pr_unknown' }),
+          expect.objectContaining({ outcome: 'skipped_open_pr_confirmed' }),
+        ]),
+      });
     });
   });
 
