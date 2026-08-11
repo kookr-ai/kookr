@@ -129,6 +129,7 @@ import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
+import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
@@ -3003,6 +3004,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // ledgers and records the flip with no manual bookkeeping step.
         onDeployVerified: (deployedSha, isContained) =>
           scheduleStore.recordDeployVerification(deployedSha, isContained),
+      }),
+      // In-process deploy-convergence (issue #2226). Closes the stall where the
+      // agent schedule was never registered: past the 15m grace, POST
+      // /api/deploy/trigger; if behindCount≥1 + deploying=false for the residual
+      // window, page via operator signal. Enabled by default on port 4800 only.
+      deployConvergenceController: createDeployConvergenceControllerFromEnv({
+        env: process.env,
+        port,
+        repoPath: serverCwd,
+        apiBaseUrl: `http://127.0.0.1:${port}`,
+        getRunningSha: () => (buildInfo.commitHash && buildInfo.commitHash !== 'dev' ? buildInfo.commitHash : null),
+        broadcast: detectorBroadcast,
       }),
     },
   });

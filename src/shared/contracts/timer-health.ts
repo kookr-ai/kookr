@@ -18,6 +18,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'serverLogRotation',
   'prodSmokeTick',
   'deployLagDetector',
+  'deployConvergence',
   'relayOrphanSweep',
   'reflectWorktreeSweep',
 ] as const;

@@ -19,6 +19,11 @@ export const CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES: readonly string[] = [
   // Product-surface residual / journey sensing.
   'lucy-product-surface-journey.md',
   'lucy-product-surface-journey',
+  // Merge→prod auto-advance (issue #1883 / #2226). Agent schedule is a
+  // belt-and-suspenders path beside the in-process controller; if it exists
+  // it must not sit disabled without an explicit operator hold.
+  'kookr-deploy-convergence.md',
+  'kookr-deploy-convergence',
 ];
 
 /**
@@ -28,6 +33,7 @@ export const CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES: readonly string[] = [
 export const CRITICAL_SCHEDULE_NAME_PATTERNS: readonly RegExp[] = [
   /orchestration\s+effectiveness/i,
   /product\s+surface\s+journey/i,
+  /kookr\s+deploy\s+convergence/i,
 ];
 
 export type CriticalRearmSkipReason =

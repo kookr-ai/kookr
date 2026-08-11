@@ -10,7 +10,22 @@
 set -euo pipefail
 
 API="${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}"
-KOOKR_DEV="${KOOKR_DEV_DIR:-$HOME/git/kookr}"
+# Prefer an explicit KOOKR_DEV_DIR; otherwise walk common trees so a dirty main
+# checkout without the playbook (feature branch worktree) does not block
+# registration of a schedule that already lives on kookr-prod (issue #2226).
+KOOKR_DEV="${KOOKR_DEV_DIR:-}"
+if [[ -z "$KOOKR_DEV" ]]; then
+  for candidate in \
+    "${KOOKR_PROD_DIR:-$HOME/git/kookr-prod}" \
+    "$HOME/git/kookr" \
+    "$(cd "$(dirname "$0")/.." && pwd)"; do
+    if [[ -f "$candidate/.kookr/playbooks/kookr-deploy-convergence.md" ]]; then
+      KOOKR_DEV="$candidate"
+      break
+    fi
+  done
+fi
+KOOKR_DEV="${KOOKR_DEV:-$HOME/git/kookr}"
 # Omit agentType when CONVERGENCE_AGENT_TYPE is unset so the schedule service
 # pins the operator's settings.defaultAgentType (not a hard-coded claude-code).
 AGENT="${CONVERGENCE_AGENT_TYPE:-}"
@@ -27,7 +42,8 @@ NAME="Kookr Deploy Convergence"
 
 if [[ ! -f "$PLAYBOOK_FILE" ]]; then
   echo "ERROR: missing playbook at $PLAYBOOK_FILE" >&2
-  echo "Check out the branch that adds .kookr/playbooks/$PLAYBOOK_PATH first." >&2
+  echo "Check out the branch that adds .kookr/playbooks/$PLAYBOOK_PATH first," >&2
+  echo "or set KOOKR_DEV_DIR / KOOKR_PROD_DIR to a tree that has it." >&2
   exit 1
 fi
 
