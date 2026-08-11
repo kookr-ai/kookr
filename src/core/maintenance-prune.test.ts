@@ -66,6 +66,19 @@ describe('planAndPruneMaintenance', () => {
     return path;
   }
 
+  /** Flat reaper report under `reports/` (first-hook-miss / hung-task / …). */
+  async function writeReport(fileName: string, mtimeDaysAgo?: number): Promise<string> {
+    const reportsDir = join(dataDir, 'reports');
+    await mkdir(reportsDir, { recursive: true });
+    const path = join(reportsDir, fileName);
+    await writeFile(path, `# report\n${fileName}\n`, 'utf8');
+    if (mtimeDaysAgo !== undefined) {
+      const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
+      await utimes(path, when, when);
+    }
+    return path;
+  }
+
   async function writeActivity(session: string, opts: { rotated?: boolean; mtimeDaysAgo?: number } = {}): Promise<string> {
     const activityDir = join(dataDir, 'activity');
     await mkdir(activityDir, { recursive: true });
@@ -352,6 +365,81 @@ describe('planAndPruneMaintenance', () => {
     expect(result.removed).toHaveLength(0);
     expect(result.reclaimedBytes).toBeGreaterThan(0);
     expect(await exists(agedGeneration)).toBe(true);
+  });
+
+  test('prunes aged first-hook-miss reports and retains recent ones (#2233)', async () => {
+    await writeTasks([]);
+    const aged = await writeReport(
+      'first-hook-miss-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-04-01T00-00-00-000Z.md',
+      45,
+    );
+    const recent = await writeReport(
+      'first-hook-miss-11111111-2222-3333-4444-555555555555-2026-05-28T12-00-00-000Z.md',
+      3,
+    );
+    // Non-matching siblings in reports/ must never be candidates.
+    const hungAged = await writeReport(
+      'hung-task-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-04-01T00-00-00-000Z.md',
+      60,
+    );
+    const otherMd = await writeReport('notes.md', 90);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    const missPlanned = result.planned.filter((p) => p.kind === 'first-hook-miss-report');
+    expect(missPlanned).toHaveLength(1);
+    expect(missPlanned[0]).toMatchObject({
+      kind: 'first-hook-miss-report',
+      reason: 'first-hook-miss-report-aged',
+      fileName: 'first-hook-miss-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-04-01T00-00-00-000Z.md',
+      ageDays: 45,
+    });
+    expect(result.removed).toHaveLength(1);
+    expect(await exists(aged)).toBe(false);
+    expect(await exists(recent)).toBe(true);
+    expect(await exists(hungAged)).toBe(true);
+    expect(await exists(otherMd)).toBe(true);
+  });
+
+  test('dry-run lists aged first-hook-miss candidates without deleting them (#2233)', async () => {
+    await writeTasks([]);
+    const aged = await writeReport(
+      'first-hook-miss-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-03-01T00-00-00-000Z.md',
+      60,
+    );
+    const hungAged = await writeReport(
+      'hung-task-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-03-01T00-00-00-000Z.md',
+      60,
+    );
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, dryRun: true, now });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.planned.filter((p) => p.kind === 'first-hook-miss-report')).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({
+      kind: 'first-hook-miss-report',
+      reason: 'first-hook-miss-report-aged',
+    });
+    expect(result.removed).toHaveLength(0);
+    expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(aged)).toBe(true);
+    expect(await exists(hungAged)).toBe(true);
+  });
+
+  test('malformed tasks.json still prunes aged first-hook-miss reports (#2233)', async () => {
+    await writeFile(join(dataDir, 'tasks.json'), '{ this is not json', 'utf8');
+    const aged = await writeReport(
+      'first-hook-miss-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-2026-03-01T00-00-00-000Z.md',
+      60,
+    );
+    const orphan = await writeHook('kookr-orphan-old', 90);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.warnings.join('\n')).toMatch(/tasks\.json is unreadable/);
+    expect(result.planned.filter((p) => p.kind === 'first-hook-miss-report')).toHaveLength(1);
+    expect(await exists(aged)).toBe(false);
+    expect(await exists(orphan)).toBe(true); // session-keyed still skipped
   });
 
   test('malformed tasks.json still allows server.log generation pruning', async () => {
