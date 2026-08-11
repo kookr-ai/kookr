@@ -647,7 +647,10 @@ export class Monitor {
    * leak the state as an unattributed "ghost" agent in client snapshots
    * (agentId === session.tmuxSession === this map's key).
    */
-  getTaskSnapshot(opts?: { excludeTerminalBeforeMs?: number }): Task[] {
+  getTaskSnapshot(opts?: {
+    excludeTerminalBeforeMs?: number;
+    maxTerminalTasks?: number;
+  }): Task[] {
     if (opts?.excludeTerminalBeforeMs === undefined) {
       return this.taskStore.listTasksForSnapshot(opts);
     }

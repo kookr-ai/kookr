@@ -226,6 +226,61 @@ describe('TaskStore', () => {
         .toEqual(store.getAllTasks().map((t) => t.id).sort());
     });
 
+    test('listTasksForSnapshot caps non-protected terminal tasks by recency', () => {
+      const live = store.createTask('Live work', '/cwd');
+      store.startTask(live.id);
+      const terminalIds: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const done = store.createTask(`Done ${i}`, '/cwd');
+        store.startTask(done.id);
+        store.completeTask(done.id);
+        const mut = store.getTaskForMutation(done.id)!;
+        // Older i finishes earlier.
+        const finishedAt = new Date(Date.now() - (10 - i) * 60_000);
+        mut.updatedAt = finishedAt;
+        mut.finishedAt = finishedAt;
+        terminalIds.push(done.id);
+      }
+
+      const capped = store.listTasksForSnapshot({
+        excludeTerminalBeforeMs: Date.now() - 7 * 24 * 60 * 60 * 1000,
+        maxTerminalTasks: 3,
+      });
+      // Live always kept + 3 most recent terminals (highest i).
+      expect(capped.map((t) => t.id).sort()).toEqual(
+        [live.id, terminalIds[7], terminalIds[8], terminalIds[9]].sort(),
+      );
+
+      // Protected sessions are never dropped by the cap, even if aged.
+      const protectedDone = store.createTask('Protected done', '/cwd');
+      store.startTask(protectedDone.id);
+      store.addSession(protectedDone.id, {
+        tmuxSession: 'kookr-protect-me',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      store.completeTask(protectedDone.id);
+      const protectedMut = store.getTaskForMutation(protectedDone.id)!;
+      const ancient = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+      protectedMut.updatedAt = ancient;
+      protectedMut.finishedAt = ancient;
+
+      const withProtect = store.listTasksForSnapshot({
+        excludeTerminalBeforeMs: Date.now() - 7 * 24 * 60 * 60 * 1000,
+        maxTerminalTasks: 1,
+        protectSessionIds: new Set(['kookr-protect-me']),
+      });
+      expect(withProtect.map((t) => t.id)).toContain(protectedDone.id);
+      expect(withProtect.map((t) => t.id)).toContain(live.id);
+      // Cap still applies to non-protected terminals (only 1 of the 10).
+      const nonProtectedTerminals = withProtect.filter(
+        (t) => t.id !== live.id && t.id !== protectedDone.id,
+      );
+      expect(nonProtectedTerminals).toHaveLength(1);
+      expect(nonProtectedTerminals[0]!.id).toBe(terminalIds[9]);
+    });
+
     test('listSessionHealthRefs is live-only by default and returns plain value objects', () => {
       const live = store.createTask('Live work', '/cwd');
       store.startTask(live.id);

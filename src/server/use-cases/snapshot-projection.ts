@@ -44,19 +44,25 @@ const FINDING_CAUSALITY_SEVERITY_ORDER: Record<Anomaly['severity'], number> = {
 };
 
 /**
- * Terminal tasks whose last activity is older than this many days are excluded
- * from the client-facing WebSocket snapshot (issue #1526 Phase C / C2 payload
- * diet). The Completed pane keeps rendering the recent window; older history
- * is available on demand via `GET /api/tasks` (with `status`/`since`/`limit`
- * filters) and `GET /api/tasks/:id`. Debug/raw snapshot surfaces
- * (`getSnapshotAgentsRaw`, `/api/snapshot`) are NOT affected.
- */
-/**
  * WS snapshot synthetic terminal entries older than this are excluded (payload
  * diet). Aligned with hot-store prune default so the dashboard never carries
- * terminal tasks the server is about to drop from memory.
+ * terminal tasks the server is about to drop from memory. Older history stays
+ * available via `GET /api/tasks` (+ `status`/`since`/`limit`) and
+ * `GET /api/tasks/:id`. Debug/raw snapshot surfaces are NOT affected.
  */
 export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS = 1;
+
+/**
+ * Hard cap on synthetic terminal rows in the client WebSocket snapshot.
+ *
+ * Age alone is not enough on high-throughput hosts: with hundreds of same-day
+ * terminal tasks the dashboard still ships multi-MB snapshots, blocks the
+ * event loop on `JSON.stringify`, and disconnects clients with
+ * `1013 sustained dashboard snapshot backpressure` before playbook
+ * list/launch messages can land. Keep the most recent N for the Completed
+ * pane; REST remains the full-history path.
+ */
+export const SNAPSHOT_TERMINAL_TASK_MAX_COUNT = 100;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -90,6 +96,14 @@ export function buildSnapshotProjection(deps: {
    * so they keep full-fidelity history.
    */
   excludeTerminalBeforeMs?: number;
+  /**
+   * When set (client path), keep only the most recent N non-aged terminal
+   * synthetic rows after the age cutoff. Raw/debug paths leave this unset.
+   * Defaults to {@link SNAPSHOT_TERMINAL_TASK_MAX_COUNT} when
+   * `excludeTerminalBeforeMs` is set so client callers stay bounded even if
+   * they forget to pass the count.
+   */
+  maxTerminalTasks?: number;
 }): AgentState[] {
   // Hot-path ranking (issue #1781): snapshot rebuild runs on every broadcast and
   // is a known heavy contributor. Two clock reads + one O(1) record per rebuild.
@@ -140,6 +154,7 @@ export function buildSnapshotProjection(deps: {
   }
 
   const states: AgentState[] = [];
+  const presentTaskIds = new Set<string>();
   for (const rawState of deps.monitorStates) {
     const meta = sessionIndex.get(rawState.agentId);
     if (
@@ -156,32 +171,78 @@ export function buildSnapshotProjection(deps: {
       enrichLiveState(state, meta);
     }
     states.push(state);
+    if (state.taskId) presentTaskIds.add(state.taskId);
   }
 
+  const pendingTasks: Task[] = [];
+  const terminalCandidates: Task[] = [];
   for (const task of deps.tasks) {
     if (task.status === 'pending') {
-      states.push(buildPendingTaskEntry(task));
-    } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
-      // Terminal-state tasks are synthetic entries for the dashboard Completed
-      // pane. Without this, terminated tasks can become invisible before the
-      // user acknowledges them. Aged terminal tasks are excluded from client
-      // snapshots (issue #1526 Phase C / C2) — history stays reachable via
-      // the REST task list/detail endpoints.
-      if (
-        deps.excludeTerminalBeforeMs !== undefined
-        && isAgedTerminalTask(task, deps.excludeTerminalBeforeMs)
-      ) {
-        continue;
-      }
-      if (!states.some((state) => state.taskId === task.id)) {
-        states.push(buildTerminalTaskEntry(task));
-      }
+      pendingTasks.push(task);
+      continue;
     }
+    if (task.status !== 'completed' && task.status !== 'cancelled' && task.status !== 'terminated') {
+      continue;
+    }
+    // Terminal-state tasks are synthetic entries for the dashboard Completed
+    // pane. Without this, terminated tasks can become invisible before the
+    // user acknowledges them. Aged terminal tasks are excluded from client
+    // snapshots (issue #1526 Phase C / C2) — history stays reachable via
+    // the REST task list/detail endpoints.
+    if (
+      deps.excludeTerminalBeforeMs !== undefined
+      && isAgedTerminalTask(task, deps.excludeTerminalBeforeMs)
+    ) {
+      continue;
+    }
+    if (presentTaskIds.has(task.id)) continue;
+    terminalCandidates.push(task);
+  }
+
+  for (const task of pendingTasks) {
+    states.push(buildPendingTaskEntry(task));
+    presentTaskIds.add(task.id);
+  }
+
+  // Client path: age + hard count cap. Prefer most recent by recency so the
+  // Completed pane stays useful under high same-day terminal throughput.
+  const terminalCap = resolveTerminalCap(deps);
+  let terminalsToEmit = terminalCandidates;
+  if (terminalCap !== undefined && terminalCandidates.length > terminalCap) {
+    terminalsToEmit = [...terminalCandidates]
+      .sort((a, b) => taskSnapshotRecencyMs(b) - taskSnapshotRecencyMs(a))
+      .slice(0, terminalCap);
+  }
+  for (const task of terminalsToEmit) {
+    states.push(buildTerminalTaskEntry(task));
   }
 
   annotateFindingCausality(states);
   recordHotPath('snapshot_rebuild', performance.now() - startedAt);
   return states;
+}
+
+/**
+ * Resolve the synthetic-terminal count cap for a projection build.
+ * - explicit `maxTerminalTasks` wins (including 0)
+ * - client path (`excludeTerminalBeforeMs` set) defaults to
+ *   {@link SNAPSHOT_TERMINAL_TASK_MAX_COUNT}
+ * - raw/debug path (no age cutoff) stays unbounded
+ */
+function resolveTerminalCap(deps: {
+  excludeTerminalBeforeMs?: number;
+  maxTerminalTasks?: number;
+}): number | undefined {
+  if (deps.maxTerminalTasks !== undefined) {
+    if (!Number.isFinite(deps.maxTerminalTasks) || deps.maxTerminalTasks < 0) {
+      return SNAPSHOT_TERMINAL_TASK_MAX_COUNT;
+    }
+    return Math.floor(deps.maxTerminalTasks);
+  }
+  if (deps.excludeTerminalBeforeMs !== undefined) {
+    return SNAPSHOT_TERMINAL_TASK_MAX_COUNT;
+  }
+  return undefined;
 }
 
 function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {

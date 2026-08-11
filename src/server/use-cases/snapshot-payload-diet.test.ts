@@ -9,6 +9,7 @@ import {
   buildSnapshotProjection,
   isAgedTerminalTask,
   SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+  SNAPSHOT_TERMINAL_TASK_MAX_COUNT,
   taskSnapshotRecencyMs,
 } from './snapshot-projection.js';
 import { buildRelationProjection } from './build-relation-projection.js';
@@ -129,6 +130,57 @@ describe('aged terminal task snapshot exclusion (issue #1526 Phase C / C2)', () 
 
     const client = getSnapshotAgentsForClient({ monitor: monitorFor(store), now: () => NOW });
     expect(client.map((a) => a.agentId)).toEqual(['agent-aged']);
+  });
+
+  it('buildSnapshotProjection caps synthetic terminal rows to the most recent N on the client path', () => {
+    const store = new TaskStore();
+    const total = SNAPSHOT_TERMINAL_TASK_MAX_COUNT + 25;
+    for (let i = 0; i < total; i++) {
+      // Most recent finish last so recency order is deterministic.
+      seedCompletedTask(store, {
+        name: `done-${i}`,
+        session: `agent-done-${i}`,
+        finishedAt: new Date(RECENT.getTime() + i * 1_000),
+      });
+    }
+
+    const client = buildSnapshotProjection({
+      monitorStates: [],
+      tasks: store.getAllTasks(),
+      excludeTerminalBeforeMs: NOW.getTime() - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+    });
+    expect(client).toHaveLength(SNAPSHOT_TERMINAL_TASK_MAX_COUNT);
+    // Newest N survive: agent-done-(total-1) … agent-done-(total-N).
+    const expectedNewest = Array.from({ length: SNAPSHOT_TERMINAL_TASK_MAX_COUNT }, (_, k) => {
+      const i = total - 1 - k;
+      return `agent-done-${i}`;
+    }).sort();
+    expect(client.map((a) => a.agentId).sort()).toEqual(expectedNewest);
+
+    // Raw path (no age cutoff) stays unbounded.
+    const raw = buildSnapshotProjection({
+      monitorStates: [],
+      tasks: store.getAllTasks(),
+    });
+    expect(raw).toHaveLength(total);
+  });
+
+  it('getSnapshotAgentsForClient applies the terminal count cap end-to-end', () => {
+    const store = new TaskStore();
+    const total = SNAPSHOT_TERMINAL_TASK_MAX_COUNT + 10;
+    for (let i = 0; i < total; i++) {
+      seedCompletedTask(store, {
+        name: `client-${i}`,
+        session: `agent-client-${i}`,
+        finishedAt: new Date(RECENT.getTime() + i * 1_000),
+      });
+    }
+
+    const client = getSnapshotAgentsForClient({ monitor: monitorFor(store), now: () => NOW });
+    expect(client).toHaveLength(SNAPSHOT_TERMINAL_TASK_MAX_COUNT);
+
+    const raw = getSnapshotAgentsRaw({ monitor: monitorFor(store) });
+    expect(raw).toHaveLength(total);
   });
 });
 

@@ -730,21 +730,69 @@ export class TaskStore {
    */
   listTasksForSnapshot(opts?: {
     excludeTerminalBeforeMs?: number;
+    /**
+     * Cap on non-protected terminal tasks kept after the age cutoff. Most
+     * recent first (by {@link taskSnapshotRecencyMs}). Live/non-terminal tasks
+     * and protected terminal owners are never capped. When unset, no count cap
+     * is applied (raw/debug path).
+     */
+    maxTerminalTasks?: number;
     /** Session ids (`tmuxSession`) whose owning tasks are kept regardless of age. */
     protectSessionIds?: ReadonlySet<string>;
   }): Task[] {
     const cutoff = opts?.excludeTerminalBeforeMs;
     const protect = opts?.protectSessionIds;
-    const out: Task[] = [];
-    for (const task of this.tasks.values()) {
-      if (
-        cutoff !== undefined
-        && isAgedTerminalTask(task, cutoff)
-        && !(protect && task.sessions.some((s) => protect.has(s.tmuxSession)))
-      ) continue;
-      out.push(cloneTask(task));
+    const maxTerminal = opts?.maxTerminalTasks;
+    const applyTerminalCap =
+      maxTerminal !== undefined
+      && Number.isFinite(maxTerminal)
+      && maxTerminal >= 0;
+
+    // Fast path: no count cap → previous single-pass clone (age + protect only).
+    if (!applyTerminalCap) {
+      const out: Task[] = [];
+      for (const task of this.tasks.values()) {
+        if (
+          cutoff !== undefined
+          && isAgedTerminalTask(task, cutoff)
+          && !(protect && task.sessions.some((s) => protect.has(s.tmuxSession)))
+        ) continue;
+        out.push(cloneTask(task));
+      }
+      return out;
     }
-    return out;
+
+    // Count-capped path: keep all live/pending + protected terminal owners, then
+    // the most recent N non-protected terminals that survive the age cutoff.
+    // Cloning only the retained set avoids the ~hundreds-of-MB transient cost of
+    // cloning every same-day terminal task on high-throughput hosts.
+    const always: Task[] = [];
+    const terminalCandidates: Task[] = [];
+    for (const task of this.tasks.values()) {
+      const isProtected = Boolean(
+        protect && task.sessions.some((s) => protect.has(s.tmuxSession)),
+      );
+      if (isTerminalStatus(task.status)) {
+        if (isProtected) {
+          always.push(task);
+          continue;
+        }
+        if (cutoff !== undefined && isAgedTerminalTask(task, cutoff)) continue;
+        terminalCandidates.push(task);
+        continue;
+      }
+      always.push(task);
+    }
+
+    const terminalCap = Math.floor(maxTerminal as number);
+    let terminals = terminalCandidates;
+    if (terminalCandidates.length > terminalCap) {
+      terminals = [...terminalCandidates]
+        .sort((a, b) => taskSnapshotRecencyMs(b) - taskSnapshotRecencyMs(a))
+        .slice(0, terminalCap);
+    }
+
+    return [...always, ...terminals].map((task) => cloneTask(task));
   }
 
   private transition(id: string, to: TaskStatus): Task {
