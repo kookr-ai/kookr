@@ -10,10 +10,10 @@ export interface ReadJsonFileOptions {
 
 export interface AtomicWriteFileOptions {
   /**
-   * File mode applied when the temp file is created. The rename preserves that
-   * mode on the destination, so secret stores can force owner-only (`0o600`)
-   * rather than the platform default (`0o666` masked by umask, typically
-   * `0o644`). Omit to keep the previous default for non-secret callers.
+   * Exact permission bits for the final file (e.g. `0o600` for secret stores).
+   * Applied at open and re-applied via fchmod so the result is not masked by
+   * the process umask. Omit to keep the platform default for non-secret callers
+   * (`0o666` masked by umask, typically `0o644`).
    */
   mode?: number;
 }
@@ -24,9 +24,9 @@ export interface AtomicWriteFileOptions {
  * data loss on power failure or kernel crash.
  *
  * The temp file is created in the same directory as `filePath` with a random
- * suffix so concurrent writers don't collide. When `options.mode` is set, it is
- * applied at open time so the final renamed file carries that mode (subject to
- * umask on create).
+ * suffix so concurrent writers don't collide. When `options.mode` is set, the
+ * mode is passed to `open` and then forced with `fchmod` before rename so the
+ * final path carries the requested bits even when umask would strip them.
  */
 export async function atomicWriteFile(
   filePath: string,
@@ -34,9 +34,14 @@ export async function atomicWriteFile(
   options?: AtomicWriteFileOptions,
 ): Promise<void> {
   const tempPath = join(dirname(filePath), `.tmp-${randomUUID()}`);
-  const fh = await open(tempPath, 'w', options?.mode);
+  const mode = options?.mode;
+  const fh = await open(tempPath, 'w', mode);
   try {
     await fh.writeFile(data, 'utf-8');
+    // open() applies mode & ~umask; fchmod forces the exact requested bits.
+    if (mode !== undefined) {
+      await fh.chmod(mode);
+    }
     await fh.sync();
   } finally {
     await fh.close();

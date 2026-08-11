@@ -30,6 +30,18 @@ describe('atomicWriteFile', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
   });
 
+  test('fchmod forces requested mode bits despite a restrictive umask', async () => {
+    // 0o077 would strip group bits from open(mode=0o640) → 0o600 without fchmod.
+    const previousUmask = process.umask(0o077);
+    try {
+      const filePath = join(tempDir, 'group-readable.json');
+      await atomicWriteFile(filePath, '{"ok":true}', { mode: 0o640 });
+      expect(statSync(filePath).mode & 0o777).toBe(0o640);
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
+
   test('default path keeps non-secret world-readable-by-umask behavior', async () => {
     const filePath = join(tempDir, 'public.json');
     await atomicWriteFile(filePath, '{"ok":true}');
