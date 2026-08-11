@@ -199,7 +199,10 @@ export class WorkspaceAttemptRepository {
 
     const fd = openSync(tempPath, 'w');
     try {
-      writeFileSync(fd, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+      // Compact JSON: create/update rewrites the full attempts array; pretty-print
+      // inflates bytes/CPU on every mutation with no parse benefit (issue #2280).
+      // Load still accepts legacy pretty-printed files via JSON.parse.
+      writeFileSync(fd, JSON.stringify(payload) + '\n', 'utf-8');
       fsyncSync(fd);
     } finally {
       closeSync(fd);
