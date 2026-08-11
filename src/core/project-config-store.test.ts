@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectConfigStore } from './project-config-store.js';
@@ -54,6 +54,35 @@ describe('ProjectConfigStore', () => {
     const config = store2.getConfig('github.com/org/repo')!;
     expect(config.dailyPrLimit).toBe(5);
     expect(config.notes).toBe('Test');
+  });
+
+  test('save writes compact JSON without pretty-print indentation (issue #2318)', async () => {
+    await store.load();
+    store.setConfig('github.com/org/repo', { dailyPrLimit: 3, notes: 'compact' });
+    await store.save();
+
+    const body = readFileSync(join(tempDir, 'project-configs.json'), 'utf-8');
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(body).not.toMatch(/\n {2}/);
+    // Canonical compact form (+ optional trailing newline): re-stringify of parse equals body.
+    const parsed = JSON.parse(body);
+    const canonical = JSON.stringify(parsed);
+    expect(body.replace(/\n$/, '')).toBe(canonical);
+    expect(parsed[0].notes).toBe('compact');
+  });
+
+  test('load accepts legacy pretty-printed project-configs.json (issue #2318)', async () => {
+    const pretty = JSON.stringify(
+      [{ project: 'github.com/org/legacy', dailyPrLimit: 2, notes: 'legacy pretty' }],
+      null,
+      2,
+    );
+    expect(pretty).toMatch(/\n {2}/);
+    writeFileSync(join(tempDir, 'project-configs.json'), pretty + '\n', 'utf-8');
+
+    await store.load();
+    expect(store.getConfig('github.com/org/legacy')?.dailyPrLimit).toBe(2);
+    expect(store.getConfig('github.com/org/legacy')?.notes).toBe('legacy pretty');
   });
 
   test('sanitizes and persists a per-project budget threshold', async () => {

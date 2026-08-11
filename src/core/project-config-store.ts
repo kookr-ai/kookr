@@ -112,7 +112,10 @@ export class ProjectConfigStore {
 
   async save(): Promise<void> {
     const arr = Array.from(this.configs.values());
-    await atomicWriteFile(this.filePath, JSON.stringify(arr, null, 2));
+    // Compact JSON (issue #2318): drop pretty-print to cut rewrite amplification
+    // on a frequently updated operator config store. Load still accepts legacy
+    // pretty-printed files via JSON.parse.
+    await atomicWriteFile(this.filePath, JSON.stringify(arr));
   }
 
   getConfig(project: string): ProjectConfig | undefined {
