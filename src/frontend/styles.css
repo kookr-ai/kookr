@@ -9390,12 +9390,21 @@ button.project-drawer-link:focus-visible {
   cursor: pointer;
   padding: 0;
   text-align: left;
+  font: inherit;
+}
+.pipeline-starvation-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .pipeline-starvation-body {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 4px 6px;
+}
+.pipeline-starvation-section .diagnostic-muted {
+  color: var(--text-secondary);
 }
 .pipeline-starvation-list {
   display: flex;
