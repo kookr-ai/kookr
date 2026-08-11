@@ -616,11 +616,11 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-If both default ports respond and no explicit target is set, the command exits with an ambiguity error.
+Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status` and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr github`, `kookr ralph`, and their deprecated standalone aliases accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr status`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -647,6 +647,7 @@ Examples:
 ```bash
 kookr spawn --json --prompt-file /tmp/prompt.md
 kookr status --json
+kookr github status --json
 kookr ralph status <taskId> --json
 ```
 
@@ -780,7 +781,7 @@ Environment (server discovery — same precedence as [Server Discovery](#server-
 | `KOOKR_PORT` | Specific port on `127.0.0.1` (overrides auto-detect). |
 | `KOOKR_API_TOKEN` | Bearer token for non-loopback servers. |
 
-Exit behavior (matches `GITHUB_HELP_TEXT` in `src/cli/kookr-github.ts`):
+Exit behavior (consistent with `GITHUB_HELP_TEXT` and the exit constants in `src/cli/kookr-github.ts`):
 
 - `0` Success.
 - `2` User error (bad flags / unknown verb / missing verb / invalid `KOOKR_PORT`).
