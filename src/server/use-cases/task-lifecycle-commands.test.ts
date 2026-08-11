@@ -504,6 +504,90 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
       process.off('unhandledRejection', onRejection);
     }
   });
+
+  test('GCs the deleted task first-hook-miss reports without touching other tasks (issue #2227)', async () => {
+    const reportsDir = await mkdtemp(join(tmpdir(), 'kookr-reports-fhm-gc-'));
+    try {
+      const taskStore = new TaskStore();
+      const doomed = taskStore.createTask('Doomed', '/repo');
+      taskStore.startTask(doomed.id);
+      taskStore.completeTask(doomed.id);
+      const survivor = taskStore.createTask('Survivor', '/repo');
+      taskStore.startTask(survivor.id);
+
+      // Two first-hook-miss reports for the doomed task (the reaper writes one per reap).
+      const doomedReportA = join(reportsDir, `first-hook-miss-${doomed.id}-2026-08-06T00-00-00-000Z.md`);
+      const doomedReportB = join(reportsDir, `first-hook-miss-${doomed.id}-2026-08-06T01-00-00-000Z.md`);
+      // A survivor whose id differs: gcFirstHookMissReports scans the whole dir, so this
+      // proves the prefix filter, not merely that the task was never swept.
+      const survivorReport = join(reportsDir, `first-hook-miss-${survivor.id}-2026-08-06T00-00-00-000Z.md`);
+      // A task whose id has the doomed id as a strict prefix — the trailing
+      // '-' boundary must spare it.
+      const prefixSibling = join(reportsDir, `first-hook-miss-${doomed.id}xyz-2026-08-06T00-00-00-000Z.md`);
+      // A doomed-prefixed but non-`.md` partial (e.g. an interrupted write):
+      // the GC matches the reaper's `*.md` glob, so this must survive.
+      const doomedPartial = join(reportsDir, `first-hook-miss-${doomed.id}-2026-08-06T02-00-00-000Z.md.tmp`);
+      // Unrelated hung-task report for a *different* task — must survive both GCs.
+      const hungOther = join(reportsDir, `hung-task-${survivor.id}-2026-08-06T00-00-00-000Z.md`);
+      const unrelated = join(reportsDir, 'some-other-report.md');
+      await Promise.all(
+        [doomedReportA, doomedReportB, survivorReport, prefixSibling, doomedPartial, hungOther, unrelated].map((p) =>
+          writeFile(p, 'report', 'utf-8'),
+        ),
+      );
+
+      const { deps } = makeDeps(taskStore, { reportsDir, takePredeleteSnapshot: vi.fn(async () => undefined) });
+
+      const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({});
+
+      expect(result).toMatchObject({ outcome: 'cleared', deletedTaskIds: [doomed.id] });
+      // The GC is fire-and-forget; wait for the doomed first-hook-miss `.md` reports to disappear.
+      await vi.waitFor(async () => {
+        const remaining = (await readdir(reportsDir)).sort();
+        expect(remaining).toEqual(
+          [
+            `first-hook-miss-${survivor.id}-2026-08-06T00-00-00-000Z.md`,
+            `first-hook-miss-${doomed.id}xyz-2026-08-06T00-00-00-000Z.md`,
+            `first-hook-miss-${doomed.id}-2026-08-06T02-00-00-000Z.md.tmp`,
+            `hung-task-${survivor.id}-2026-08-06T00-00-00-000Z.md`,
+            'some-other-report.md',
+          ].sort(),
+        );
+      });
+    } finally {
+      await rm(reportsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('first-hook-miss report GC is fail-open when the reports dir is absent (issue #2227)', async () => {
+    const taskStore = new TaskStore();
+    const doomed = taskStore.createTask('Doomed', '/repo');
+    taskStore.startTask(doomed.id);
+    taskStore.completeTask(doomed.id);
+    const { deps } = makeDeps(taskStore, {
+      reportsDir: join(tmpdir(), 'kookr-reports-fhm-does-not-exist', 'nested'),
+      takePredeleteSnapshot: vi.fn(async () => undefined),
+    });
+
+    // gcFirstHookMissReports is fire-and-forget (a void IIFE), so a `readdir` failure on the
+    // absent dir would escape as a process-level unhandledRejection rather than
+    // failing the awaited clear. Capture rejections to prove the guard actually
+    // swallows the error (mirrors hung-task GC resilience checks).
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({});
+
+      expect(result).toMatchObject({ outcome: 'cleared', deletedTaskIds: [doomed.id] });
+      expect(taskStore.getTask(doomed.id)).toBeUndefined();
+      // Let microtasks + a macrotask settle so any escaped rejection materializes.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
 });
 
 describe('TaskLifecycleCommands.batchAbortTasks', () => {

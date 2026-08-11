@@ -21,6 +21,7 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { firstHookMissReportBasename } from './first-hook-miss-report-paths.js';
 
 /** In-memory snapshot for `/api/health` + `/metrics` (issue #2036). */
 export interface FirstHookMissMetricsSnapshot {
@@ -105,7 +106,7 @@ async function writeReport(
   now: Date,
 ): Promise<string | undefined> {
   const slug = now.toISOString().replace(/[:.]/g, '-');
-  const reportPath = join(reportsDir, `first-hook-miss-${task.id}-${slug}.md`);
+  const reportPath = join(reportsDir, firstHookMissReportBasename(task.id, slug));
   try {
     await mkdir(reportsDir, { recursive: true });
     await writeFile(reportPath, buildReportMarkdown(task, evidence, now), 'utf-8');
