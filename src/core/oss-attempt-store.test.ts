@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import {
   OssAttemptStore,
   isExternalRepo,
+  DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+  readOssAttemptRetentionMsFromEnv,
 } from './oss-attempt-store.js';
 
 // Mirrors the internal constant in oss-attempt-store.ts. Kept local so the
@@ -786,5 +788,262 @@ describe('OssAttemptStore — ledger ingestion', () => {
 
     const attempt = store.getAllAttempts()[0];
     expect(attempt.taskId).toBe('task-alpha');
+  });
+
+  describe('pruneTerminalAttempts (bounded oss-attempts store — #2286)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function seedAttemptFile(attempts: unknown[]): void {
+      writeFileSync(
+        join(tempDir, 'oss-attempts.json'),
+        JSON.stringify({
+          schemaVersion: OSS_ATTEMPTS_SCHEMA_VERSION,
+          attempts,
+          lastRefreshAt: null,
+        }),
+      );
+    }
+
+    function terminalAttempt(opts: {
+      id: string;
+      state: 'merged' | 'closed';
+      terminalAt: string;
+      withClosing?: boolean;
+    }) {
+      return {
+        id: opts.id,
+        repo: 'grafana/grafana',
+        issueNumber: null,
+        issueUrl: null,
+        prNumber: Number(opts.id.split('#')[1]) || 1,
+        prUrl: `https://github.com/grafana/grafana/pull/${opts.id.split('#')[1] ?? 1}`,
+        prTitle: 'x',
+        state: opts.state,
+        history: [
+          {
+            state: opts.state,
+            at: opts.terminalAt,
+            source: 'refresh_poll',
+            note: null,
+            url: null,
+          },
+        ],
+        closing: opts.withClosing
+          ? {
+              closedAt: opts.terminalAt,
+              closerLogin: 'maintainer',
+              closingComment: 'done',
+            }
+          : null,
+        createdAt: opts.terminalAt,
+        updatedAt: opts.terminalAt,
+      };
+    }
+
+    function activeAttempt(opts: {
+      id: string;
+      state: 'scouted' | 'pr_open';
+      at: string;
+    }) {
+      return {
+        id: opts.id,
+        repo: 'grafana/grafana',
+        issueNumber: opts.state === 'scouted' ? 99 : null,
+        issueUrl: null,
+        prNumber: opts.state === 'pr_open' ? 7 : null,
+        prUrl: opts.state === 'pr_open' ? 'https://github.com/grafana/grafana/pull/7' : null,
+        prTitle: opts.state === 'pr_open' ? 'open' : null,
+        state: opts.state,
+        history: [
+          {
+            state: opts.state,
+            at: opts.at,
+            source: opts.state === 'scouted' ? 'scout_emit' : 'posttool_hook',
+            note: null,
+            url: null,
+          },
+        ],
+        closing: null,
+        createdAt: opts.at,
+        updatedAt: opts.at,
+      };
+    }
+
+    test('drops aged terminal attempts and keeps active + recent terminal', async () => {
+      const now = Date.now();
+      const aged = new Date(now - 120 * DAY_MS).toISOString();
+      const recent = new Date(now - 5 * DAY_MS).toISOString();
+      seedAttemptFile([
+        terminalAttempt({ id: 'grafana/grafana#1', state: 'merged', terminalAt: aged, withClosing: true }),
+        terminalAttempt({ id: 'grafana/grafana#2', state: 'closed', terminalAt: aged }),
+        terminalAttempt({ id: 'grafana/grafana#3', state: 'merged', terminalAt: recent }),
+        activeAttempt({ id: 'grafana/grafana#issue-99', state: 'scouted', at: aged }),
+        activeAttempt({ id: 'grafana/grafana#7', state: 'pr_open', at: aged }),
+      ]);
+
+      await store.load();
+
+      const ids = store.getAllAttempts().map((a) => a.id).sort();
+      expect(ids).toEqual([
+        'grafana/grafana#3',
+        'grafana/grafana#7',
+        'grafana/grafana#issue-99',
+      ]);
+
+      // Durable write from prune-on-load drops the aged terminals.
+      const onDisk = JSON.parse(readFileSync(join(tempDir, 'oss-attempts.json'), 'utf-8'));
+      expect(onDisk.attempts.map((a: { id: string }) => a.id).sort()).toEqual(ids);
+    });
+
+    test('retentionMs=0 prunes every terminal attempt immediately; active preserved', () => {
+      // Use a stamp strictly in the past so cutoff=Date.now() does not share
+      // the same millisecond as the terminal event (which would keep it).
+      const past = new Date(Date.now() - 60_000).toISOString();
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 1,
+        prUrl: 'https://github.com/grafana/grafana/pull/1',
+        prTitle: 'm',
+        state: 'merged',
+        at: past,
+        source: 'refresh_poll',
+      });
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 2,
+        prUrl: 'https://github.com/grafana/grafana/pull/2',
+        prTitle: 'o',
+        state: 'pr_open',
+        at: past,
+        source: 'posttool_hook',
+      });
+      store.upsertScouted({
+        repo: 'grafana/grafana',
+        issueNumber: 42,
+        at: past,
+      });
+
+      expect(store.pruneTerminalAttempts(0)).toBe(1);
+      const remaining = store.getAllAttempts();
+      expect(remaining).toHaveLength(2);
+      expect(remaining.map((a) => a.state).sort()).toEqual(['pr_open', 'scouted']);
+    });
+
+    test('save() compacts aged terminals before writing; no-op prune leaves count unchanged', async () => {
+      const now = Date.now();
+      const aged = new Date(now - 120 * DAY_MS).toISOString();
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 1,
+        prUrl: 'https://github.com/grafana/grafana/pull/1',
+        prTitle: 'old merge',
+        state: 'merged',
+        at: aged,
+        source: 'refresh_poll',
+      });
+      store.attachClosing({
+        repo: 'grafana/grafana',
+        prNumber: 1,
+        closedAt: aged,
+        closerLogin: 'bot',
+        closingComment: 'merged',
+      });
+      // Force state terminal with aged stamp (attachClosing bumps updatedAt to now).
+      const internal = store.getAttemptsReadonly()[0];
+      // Mutate via closed transition already set; prune uses closing.closedAt.
+      expect(internal.state).toBe('merged');
+
+      await store.save();
+      expect(store.getAllAttempts()).toHaveLength(0);
+      const onDisk = JSON.parse(readFileSync(join(tempDir, 'oss-attempts.json'), 'utf-8'));
+      expect(onDisk.attempts).toEqual([]);
+    });
+
+    test('does not rewrite contribution-ledger.jsonl when pruning', async () => {
+      const now = Date.now();
+      const aged = new Date(now - 120 * DAY_MS).toISOString();
+      const ledgerLine = JSON.stringify({
+        timestamp: aged,
+        repo: 'grafana/grafana',
+        action: 'pr_created',
+        prUrl: 'https://github.com/grafana/grafana/pull/9',
+      });
+      writeFileSync(join(tempDir, 'contribution-ledger.jsonl'), ledgerLine + '\n');
+      seedAttemptFile([
+        terminalAttempt({
+          id: 'grafana/grafana#9',
+          state: 'merged',
+          terminalAt: aged,
+          withClosing: true,
+        }),
+      ]);
+
+      await store.load();
+      expect(store.getAllAttempts()).toHaveLength(0);
+
+      // Ledger bytes untouched — rate-limit authority stays intact.
+      expect(readFileSync(join(tempDir, 'contribution-ledger.jsonl'), 'utf-8')).toBe(
+        ledgerLine + '\n',
+      );
+
+      // Aged ledger entry must not resurrect the pruned attempt as pr_open.
+      await store.loadFromLedger();
+      expect(store.getAllAttempts()).toHaveLength(0);
+      expect(store.getAllLedgerEntries()).toHaveLength(1);
+    });
+
+    test('loadFromLedger still ingests recent pr_created entries', async () => {
+      const recent = new Date().toISOString();
+      writeFileSync(
+        join(tempDir, 'contribution-ledger.jsonl'),
+        JSON.stringify({
+          timestamp: recent,
+          repo: 'grafana/grafana',
+          action: 'pr_created',
+          prUrl: 'https://github.com/grafana/grafana/pull/11',
+        }) + '\n',
+      );
+
+      await store.load();
+      await store.loadFromLedger();
+      expect(store.getAllAttempts()).toHaveLength(1);
+      expect(store.getAllAttempts()[0].state).toBe('pr_open');
+    });
+
+    test('negative retentionMs is clamped to 0', () => {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      store.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 1,
+        prUrl: 'https://github.com/grafana/grafana/pull/1',
+        prTitle: 'm',
+        state: 'merged',
+        at: past,
+        source: 'refresh_poll',
+      });
+      expect(store.pruneTerminalAttempts(-1)).toBe(1);
+      expect(store.getAllAttempts()).toHaveLength(0);
+    });
+  });
+});
+
+describe('readOssAttemptRetentionMsFromEnv', () => {
+  test('defaults to 90 days', () => {
+    expect(DEFAULT_OSS_ATTEMPT_RETENTION_MS).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(readOssAttemptRetentionMsFromEnv({})).toBe(DEFAULT_OSS_ATTEMPT_RETENTION_MS);
+  });
+
+  test('honours 0 and positive overrides; rejects blank/negative/NaN', () => {
+    expect(readOssAttemptRetentionMsFromEnv({ KOOKR_OSS_ATTEMPT_RETENTION_MS: '0' })).toBe(0);
+    expect(readOssAttemptRetentionMsFromEnv({ KOOKR_OSS_ATTEMPT_RETENTION_MS: '1000' })).toBe(1000);
+    expect(readOssAttemptRetentionMsFromEnv({ KOOKR_OSS_ATTEMPT_RETENTION_MS: '' })).toBe(
+      DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+    );
+    expect(readOssAttemptRetentionMsFromEnv({ KOOKR_OSS_ATTEMPT_RETENTION_MS: '-5' })).toBe(
+      DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+    );
+    expect(readOssAttemptRetentionMsFromEnv({ KOOKR_OSS_ATTEMPT_RETENTION_MS: 'nope' })).toBe(
+      DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+    );
   });
 });

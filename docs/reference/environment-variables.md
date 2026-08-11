@@ -93,6 +93,7 @@ of its own (below) and otherwise reuses the bind/auth/transport knobs above:
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_SHARE_GRANT_RETENTION_MS` | `2592000000` (30 days) | Non-negative integer (milliseconds), `0` prunes immediately | Retention window applied to the viewer share-grant store (`share-grants.json`). A revoked or expired grant is compacted out of the store once its terminal timestamp is older than this window; pruning runs on load and rewrites the file only when something is removed. Active grants and terminal grants still inside the window are never touched, so this is storage compaction, not an authorization change. Blank, non-numeric, or negative values use the default. |
+| `KOOKR_OSS_ATTEMPT_RETENTION_MS` | `7776000000` (90 days) | Non-negative integer (milliseconds), `0` prunes immediately | Retention window for terminal OSS contribution attempts in `oss-attempts.json` (`merged` / `closed`). Records whose terminal timestamp (`closing.closedAt` or last history `at`) is older than this window are dropped from memory on load and before each save; `scouted` and `pr_open` attempts are never removed. Does not rewrite `contribution-ledger.jsonl` (rate-limit authority). Blank, non-numeric, or negative values use the default. |
 
 The bind/auth/transport knobs it reuses:
 
