@@ -648,9 +648,12 @@ describe('ScheduleStore', () => {
     await store.persist();
 
     const content = await readFile(join(dir, 'schedules.json'), 'utf-8');
-    // Compact JSON has no multi-space indent lines (pretty uses 2-space indent).
-    expect(content).not.toMatch(/\n {2}/);
-    expect(content).toBe(JSON.stringify(JSON.parse(content)));
+    const parsed = JSON.parse(content) as Array<{ name: string }>;
+    // Couple compact format to a real persist result (not empty/wrong payload).
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe('Compact Write');
+    // Canonical compact form: re-stringify of parse equals on-disk bytes.
+    expect(content).toBe(JSON.stringify(parsed));
   });
 
   it('loads legacy pretty-printed schedules.json (#2217)', async () => {
