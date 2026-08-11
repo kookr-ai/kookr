@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { isValidTelegramApiUrl } from '../integrations/telegram/telegram-api-url.js';
 import { isValidRelayNodeUrl } from '../shared/contracts/relay-node-url.js';
 import { isValidSpeechServiceUrl } from './speech-service-url.js';
 
@@ -73,6 +74,14 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     validate: isValidRelayNodeUrl,
     description:
       'http(s)/ws(s) relay URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
+  },
+  {
+    // Issue #2219: reject cloud-metadata / link-local / credentialed Telegram
+    // API base URLs before bot API + file CDN fetches can use them.
+    variable: 'KOOKR_TELEGRAM_API_URL',
+    validate: isValidTelegramApiUrl,
+    description:
+      'http(s) Telegram Bot API base URL without credentials (loopback and private LAN allowed; metadata/link-local blocked)',
   },
   {
     variable: 'KOOKR_REQUEST_BODY_LIMIT_BYTES',

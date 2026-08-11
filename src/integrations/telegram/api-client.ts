@@ -11,7 +11,11 @@
  *
  * The base URL is overridable via `KOOKR_TELEGRAM_API_URL` so tests can
  * point at an in-process fake HTTP server. Default: api.telegram.org.
+ * Overrides are host-validated (issue #2219) so a mis-set env value cannot
+ * fetch cloud-metadata or link-local addresses.
  */
+
+import { validateTelegramApiUrl } from './telegram-api-url.js';
 
 const DEFAULT_BASE_URL = 'https://api.telegram.org';
 
@@ -121,7 +125,12 @@ export class TelegramDownloadTooLargeError extends Error {
 export class TelegramApiClient {
   private readonly baseUrl: string;
   constructor(private readonly token: string, baseUrl?: string) {
-    this.baseUrl = baseUrl ?? process.env.KOOKR_TELEGRAM_API_URL ?? DEFAULT_BASE_URL;
+    const resolved = baseUrl ?? process.env.KOOKR_TELEGRAM_API_URL ?? DEFAULT_BASE_URL;
+    const validation = validateTelegramApiUrl(resolved);
+    if (!validation.ok) {
+      throw new Error(`Invalid Telegram API base URL: ${validation.reason}`);
+    }
+    this.baseUrl = validation.url;
   }
 
   private endpoint(method: string): string {
