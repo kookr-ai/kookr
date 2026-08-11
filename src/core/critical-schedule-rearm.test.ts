@@ -67,8 +67,23 @@ describe('isCriticalAllowlistedSchedule', () => {
   });
 
   it('allowlist stays small (no accidental expansion)', () => {
-    // Two critical roles × (with/without .md) = 4 basenames.
-    expect(CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES.length).toBe(4);
+    // Three critical roles × (with/without .md) = 6 basenames.
+    expect(CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES.length).toBe(6);
+  });
+
+  it('allowlists kookr deploy-convergence by playbook and name (issue #2226)', () => {
+    expect(
+      isCriticalAllowlistedSchedule({
+        name: 'other',
+        playbook: { path: 'kookr-deploy-convergence.md' },
+      }),
+    ).toBe(true);
+    expect(
+      isCriticalAllowlistedSchedule({
+        name: 'Kookr Deploy Convergence',
+        playbook: { path: 'renamed.md' },
+      }),
+    ).toBe(true);
   });
 });
 

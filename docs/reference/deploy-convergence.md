@@ -35,9 +35,11 @@ there rather than trusting the repo the check happens to run in.
 | Piece | Path | Role |
 | --- | --- | --- |
 | Pure classifier | `src/core/deploy-convergence.ts` | `evaluateConvergence` (grace window, divergence-age anchored to the merge commit time, `divergent → redeploy` action); `classifyDelivery` (merged vs delivered); `DEFAULT_CONVERGENCE_THRESHOLDS` (grace **15 min**). No I/O — unit-tested in `src/core/deploy-convergence.test.ts`. |
+| Stale residual classifier | `src/core/deploy-stale-residual.ts` | `evaluateDeployStaleResidual`: **behindCount≥1 + deploying=false for ≥T** (default **20 min**) → alert. Pure — issue #2226. |
+| In-process controller | `src/server/deploy-convergence-controller.ts` | Lifecycle tick (default every **5 min** on port 4800): past grace → `POST /api/deploy/trigger`; residual → operator signal `deploy:stale-residual`. Does **not** depend on agent schedules (the 2026-08-11 stall was a missing schedule). |
 | Probe CLI | `scripts/deploy-convergence-check.ts` (`pnpm deploy:convergence`) | Probes `/api/health` + `git` ancestry against `origin/main`, persists a baseline so divergence age accrues across ticks, exits **0** converged/within-grace · **2** DIVERGENT · **1** probe failure. |
-| Schedule playbook | `.kookr/playbooks/kookr-deploy-convergence.md` | Every-15-min run that on DIVERGENT triggers the redeploy, re-probes, and files a P0 only if the redeploy fails to converge. |
-| Register script | `scripts/register-deploy-convergence-schedule.sh` | Creates/updates that schedule via `POST /api/schedules`. |
+| Schedule playbook | `.kookr/playbooks/kookr-deploy-convergence.md` | Every-15-min agent path (belt-and-suspenders). On DIVERGENT triggers redeploy, re-probes, files a P0 only if redeploy fails. |
+| Register script | `scripts/register-deploy-convergence-schedule.sh` | Creates/updates that schedule via `POST /api/schedules`. Prefers `kookr-prod` when the main checkout lacks the playbook. |
 
 ## Running the probe
 

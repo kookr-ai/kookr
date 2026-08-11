@@ -51,6 +51,7 @@ import { nowISO } from '../core/interaction-log.js';
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
+import type { DeployConvergenceController } from './deploy-convergence-controller.js';
 import { pruneLoopDeliveryWatchdog, type LoopDeliveryWatchdogRegistry } from '../core/loop-delivery-watchdog.js';
 import {
   autoCompleteDeliveredTasks,
@@ -431,6 +432,16 @@ export interface TimerDeps {
    */
   deployLagDetector?: DeployLagDetector;
   /**
+   * Optional in-process deploy-convergence controller (issue #2226). When
+   * provided, a dedicated interval asserts serving SHA includes origin/main
+   * and — past the 15m grace — triggers the canonical redeploy path, plus
+   * pages a residual operator signal when behindCount≥1 and deploying=false
+   * for the residual stale window. Closes the gap left when the agent
+   * schedule was never registered. Undefined (dev/test, or disabled) starts
+   * no interval. `maybeRun()` never throws and guards against pile-up itself.
+   */
+  deployConvergenceController?: DeployConvergenceController;
+  /**
    * Optional relay-orphan sweep (issue #1723). When `intervalHours > 0`
    * (resolved from `KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS`, default off), a
    * dedicated interval reaps leaked `relay/server.ts` processes whose task
@@ -451,9 +462,9 @@ export interface TimerDeps {
   /**
    * Optional event-loop pressure gate for non-critical intervals (issue #1785).
    * When elevated, maintenance prune / server-log rotation / relay-orphan /
-   * reflect-worktree / prod-smoke / deploy-lag ticks skip their body. Critical
-   * loops (token scan, watchdog, liveness, save, snooze, quota) are never
-   * gated. Fail-open when omitted.
+   * reflect-worktree / prod-smoke / deploy-lag / deploy-convergence ticks skip
+   * their body. Critical loops (token scan, watchdog, liveness, save, snooze,
+   * quota) are never gated. Fail-open when omitted.
    */
   nonCriticalTickPause?: {
     shouldSkipTick(): boolean;
@@ -485,6 +496,8 @@ export interface TimerHandles {
   prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the deploy-lag detector (issue #1594) was configured. */
   deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the deploy-convergence controller (issue #2226) was configured. */
+  deployConvergenceInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep (issue #1723) was configured. */
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep startup reclaim (issue #1885) is pending. */
@@ -1963,6 +1976,27 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Deploy-convergence controller (issue #2226), optional ---
+  // In-process auto-advance + residual page so merge→prod does not depend on
+  // a manually registered agent schedule (the 2026-08-11 stall: schedule
+  // missing, behindCount≥1, deploying=false, health green). maybeRun() never
+  // throws and self-gates pile-up/cadence.
+  let deployConvergenceInterval: ReturnType<typeof setInterval> | null = null;
+  const deployConvergenceController = deps.deployConvergenceController;
+  if (deployConvergenceController) {
+    const intervalMs = deployConvergenceController.hostIntervalMs;
+    console.log(
+      `[deploy-convergence] controller enabled (every ${Math.round(intervalMs / 60_000)}m; ` +
+        'act on DIVERGENT past grace + residual page when behind+idle)',
+    );
+    timerHealth?.register('deployConvergence', intervalMs);
+    deployConvergenceInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'deployConvergence')) return;
+      timerHealth?.recordFire('deployConvergence', intervalMs);
+      void deployConvergenceController.maybeRun();
+    }, intervalMs);
+  }
+
   return {
     tokenScanInterval,
     watchdogInterval,
@@ -1974,6 +2008,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     serverLogRotationInterval,
     prodSmokeTickInterval,
     deployLagDetectorInterval,
+    deployConvergenceInterval,
     relayOrphanSweepInterval,
     relayOrphanSweepStartupTimer,
     reflectWorktreeSweepInterval,
@@ -2002,6 +2037,7 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.serverLogRotationInterval) clearInterval(handles.serverLogRotationInterval);
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
+  if (handles.deployConvergenceInterval) clearInterval(handles.deployConvergenceInterval);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
   if (handles.relayOrphanSweepStartupTimer) clearTimeout(handles.relayOrphanSweepStartupTimer);
   if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);

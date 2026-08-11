@@ -82,6 +82,7 @@ describe('setupFiles live worker scrub (#1372)', () => {
     expect(process.env.KOOKR_SIGNAL_OUTBOX).toBe('0');
     expect(process.env.KOOKR_PROD_SMOKE_TICK).toBe('0');
     expect(process.env.KOOKR_DEPLOY_LAG_DETECTOR).toBe('0');
+    expect(process.env.KOOKR_DEPLOY_CONVERGENCE).toBe('0');
     expect(process.env.KOOKR_RELAY_DIE_WITH_PARENT).toBe('1');
     expect(process.env.KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS).toBe('250');
   });
