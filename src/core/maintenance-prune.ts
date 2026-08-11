@@ -19,10 +19,14 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  *  - activity-ledger files (`activity/<kookrSessionId>.jsonl` and their rotated
  *    `.jsonl.1` companion) under the same terminal/orphan-and-aged rules;
  *  - aged rotated `server.log.N` generations;
- *  - aged `playbook-state/<playbook>/<runKey>` run directories; and
+ *  - aged `playbook-state/<playbook>/<runKey>` run directories;
  *  - aged operator-signal spool files under
  *    `playbook-state/operator-signals/` (issue #2034), with separate caps for
- *    delivered vs undelivered files and a minimum-age floor for active fire keys.
+ *    delivered vs undelivered files and a minimum-age floor for active fire keys; and
+ *  - aged first-hook-miss diagnostic reports under `reports/first-hook-miss-*.md`
+ *    (issue #2233) — orphan flat files that accumulate when GC-on-delete was
+ *    never wired. Hung-task reports (`hung-task-*.md`) are intentionally left
+ *    alone (they already have delete-time GC via issue #2126).
  *
  * ## Why these stores, and (deliberately) nothing else
  *
@@ -68,6 +72,14 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  * not truncated early. The well-known `operator-signals` directory is never
  * treated as a playbook with run keys.
  *
+ * First-hook-miss reports live at
+ * `<dataDir>/reports/first-hook-miss-<taskId>-<slug>.md` (issue #2036 writer,
+ * #2233 retention). Unlike hung-task reports they have no delete-time GC, so
+ * unattended hosts accumulate aged orphans after the owning task is gone. The
+ * planner ages them by file mtime against {@link MaintenancePruneOptions.maxAgeDays}
+ * and only matches the `first-hook-miss-*.md` prefix — sibling report classes
+ * (notably `hung-task-*.md`) are never candidates.
+ *
  * Every other on-disk store is left intact on purpose — see
  * {@link PRESERVED_STORES} for the per-store rationale. The guiding rule from
  * the issue: when a store is ambiguous to map, or is needed for crash recovery
@@ -81,11 +93,19 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
 const HOOKS_DIRNAME = 'hooks';
 const ACTIVITY_DIRNAME = 'activity';
 const PLAYBOOK_STATE_DIRNAME = 'playbook-state';
+/** Flat diagnostic reports written by reapers (`first-hook-miss`, hung-task, …). */
+const REPORTS_DIRNAME = 'reports';
 /** Flat spool under playbook-state; matches operator-signal.ts path layout. */
 const OPERATOR_SIGNALS_DIRNAME = 'operator-signals';
 /** Delivery marker file name; mirrors DELIVERED_MARKER_FILE in operator-signal.ts. */
 const OPERATOR_SIGNAL_DELIVERED_MARKER = '.delivered.json';
 const SERVER_LOG_GENERATION_RE = /^server\.log\.(\d+)$/;
+/**
+ * First-hook-miss report basenames written by first-hook-deadline-sweep.ts:
+ * `first-hook-miss-<taskId>-<iso-slug>.md`. Deliberately narrower than a generic
+ * `reports/*.md` match so hung-task and other sibling reports stay untouched.
+ */
+const FIRST_HOOK_MISS_REPORT_RE = /^first-hook-miss-.+\.md$/;
 /** Rotated JSONL segment: `<session>.jsonl.N`. Captures the owning session and
  *  the numeric generation. Shared by hook logs (issue #1433) and the activity
  *  ledger's rotated `.jsonl.1` companion. */
@@ -214,12 +234,21 @@ export interface OperatorSignalPlannedRemoval extends PlannedRemovalBase {
   deliveryStatus: 'delivered' | 'undelivered';
 }
 
+export interface FirstHookMissReportPlannedRemoval extends PlannedRemovalBase {
+  /** Artifact category. */
+  kind: 'first-hook-miss-report';
+  reason: 'first-hook-miss-report-aged';
+  /** Basename under `reports/` (e.g. `first-hook-miss-<taskId>-<slug>.md`). */
+  fileName: string;
+}
+
 export type PlannedRemoval =
   | HookLogPlannedRemoval
   | ActivityLedgerPlannedRemoval
   | ServerLogGenerationPlannedRemoval
   | PlaybookStateRunPlannedRemoval
-  | OperatorSignalPlannedRemoval;
+  | OperatorSignalPlannedRemoval
+  | FirstHookMissReportPlannedRemoval;
 
 export interface PreservedStore {
   /** Human-readable label of the store left intact. */
@@ -639,6 +668,66 @@ async function planServerLogGenerationRemovals({
   return planned;
 }
 
+/**
+ * Plan removal of aged first-hook-miss diagnostic reports (issue #2233).
+ *
+ * Reports are flat under `reports/` and keyed only by basename prefix — no
+ * tasks.json dependency. Age is file mtime against `maxAgeDays`. Sibling
+ * report classes (e.g. hung-task) never match {@link FIRST_HOOK_MISS_REPORT_RE}.
+ */
+async function planFirstHookMissReportRemovals({
+  dataDir,
+  maxAgeDays,
+  now,
+  warnings,
+}: {
+  dataDir: string;
+  maxAgeDays: number;
+  now: () => number;
+  warnings: string[];
+}): Promise<FirstHookMissReportPlannedRemoval[]> {
+  const planned: FirstHookMissReportPlannedRemoval[] = [];
+  const thresholdMs = now() - maxAgeDays * MS_PER_DAY;
+  const reportsDir = join(dataDir, REPORTS_DIRNAME);
+  let entries: string[];
+  try {
+    entries = await readdir(reportsDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return planned;
+    warnings.push(`Could not read reports directory ${reportsDir}: ${(err as Error).message}`);
+    return planned;
+  }
+
+  for (const fileName of entries) {
+    if (!FIRST_HOOK_MISS_REPORT_RE.test(fileName)) continue;
+
+    const filePath = join(reportsDir, fileName);
+    let bytes = 0;
+    let mtimeMs = now();
+    try {
+      const st = await stat(filePath);
+      if (!st.isFile()) continue;
+      bytes = st.size;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue; // vanished between readdir and stat — nothing to do
+    }
+
+    if (mtimeMs > thresholdMs) continue;
+
+    planned.push({
+      path: filePath,
+      kind: 'first-hook-miss-report',
+      reason: 'first-hook-miss-report-aged',
+      fileName,
+      bytes,
+      ageDays: Math.floor((now() - mtimeMs) / MS_PER_DAY),
+    });
+  }
+
+  return planned;
+}
+
 /** Recursive total byte size of a directory tree; best-effort (skips races). */
 async function directorySizeBytes(dir: string): Promise<number> {
   let total = 0;
@@ -976,14 +1065,15 @@ export async function planAndPruneMaintenance(
   const tasks = await readTasks(dataDir);
   if (tasks === undefined) {
     // We cannot tell active sessions from dead ones — refuse to delete any
-    // session-keyed or task-keyed artifact. server.log generations and the
-    // operator-signal spool are process/outbox diagnostics with no task
-    // dependency, so they can still be pruned.
+    // session-keyed or task-keyed artifact. server.log generations, the
+    // operator-signal spool, and first-hook-miss reports are process/outbox
+    // diagnostics with no task dependency, so they can still be pruned.
     warnings.push(
       'tasks.json is unreadable or malformed; skipping hook-log, activity-ledger, and playbook-state pruning to avoid deleting live state.',
     );
     result.planned.push(
       ...(await planServerLogGenerationRemovals({ dataDir, maxAgeDays, now, warnings })),
+      ...(await planFirstHookMissReportRemovals({ dataDir, maxAgeDays, now, warnings })),
       ...(await planOperatorSignalRemovals({
         dataDir,
         deliveredMaxAgeDays: operatorSignalDeliveredMaxAgeDays,
@@ -999,6 +1089,7 @@ export async function planAndPruneMaintenance(
       ...(await planHookLogRemovals({ dataDir, maxAgeDays, now, classification, warnings })),
       ...(await planActivityLedgerRemovals({ dataDir, maxAgeDays, now, classification, warnings })),
       ...(await planServerLogGenerationRemovals({ dataDir, maxAgeDays, now, warnings })),
+      ...(await planFirstHookMissReportRemovals({ dataDir, maxAgeDays, now, warnings })),
       ...(await planPlaybookStateRemovals({
         dataDir,
         maxAgeDays: playbookStateMaxAgeDays,
