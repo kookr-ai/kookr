@@ -9,8 +9,14 @@ import {
   HungSuspectResidualAlerter,
   buildHungResidualAlert,
   buildHungResidualRecoveryAlert,
+  formatSkipContextForPage,
+  isOpenPrFailsafeDominatedLastPass,
+  isOpenPrFailsafeOutcome,
+  summarizeHungResidualSkipBreakdown,
   HUNG_RESIDUAL_ALERT_KEY,
   HUNG_RESIDUAL_METRIC,
+  HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP,
+  OPEN_PR_FAILSAFE_DOMINANT_LABEL,
   DEFAULT_HUNG_RESIDUAL_COUNT_BOUND,
   DEFAULT_HUNG_RESIDUAL_STALE_MS,
   DEFAULT_HUNG_RESIDUAL_COOLDOWN_MS,
@@ -33,6 +39,27 @@ describe('buildHungResidualAlert / clear (issue #1993)', () => {
     });
     expect(alert.summary).toContain('hungSuspect residual high');
     expect(alert.details).toContain('residual=4');
+    expect(alert.details).toContain('no lastOutcomes');
+  });
+
+  it('names open_pr_failsafe dominance and sample task ids (issue #2232)', () => {
+    const alert = buildHungResidualAlert({
+      residualCount: 4,
+      countBound: 3,
+      staleMs: 30 * 60_000,
+      reclaimedCount: 0,
+      lastOutcomes: [
+        { taskId: 'task-a', outcome: 'skipped_open_pr_confirmed' },
+        { taskId: 'task-b', outcome: 'skipped_open_pr_unknown' },
+        { taskId: 'task-c', outcome: 'skipped_open_pr_failsafe' },
+        { taskId: 'task-d', outcome: 'skipped_under_ttl' },
+      ],
+    });
+    expect(alert.summary).toContain('open_pr_failsafe-dominated');
+    expect(alert.details).toContain('Dominant skip reason: open_pr_failsafe (3/4 last pass)');
+    expect(alert.details).toContain('Sample task ids: task-a, task-b, task-c');
+    expect(alert.details).toContain('refresh GitHub PR state');
+    expect(alert.details).toContain('Page only');
   });
 
   it('builds a recovered clear', () => {
@@ -230,6 +257,25 @@ describe('HungSuspectResidualAlerter (issue #1993)', () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it('pages with skip breakdown from lastOutcomes without terminating tasks (issue #2232)', () => {
+    const outcomes = [
+      { taskId: 't1', outcome: 'skipped_open_pr_confirmed' },
+      { taskId: 't2', outcome: 'skipped_open_pr_unknown' },
+      { taskId: 't3', outcome: 'skipped_open_pr_confirmed' },
+      { taskId: 't4', outcome: 'skipped_under_ttl' },
+    ];
+    alerter.evaluate({ residualCount: 4, reclaimedCount: 0, lastOutcomes: outcomes });
+    nowMs += STALE;
+    alerter.evaluate({ residualCount: 4, reclaimedCount: 0, lastOutcomes: outcomes });
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const msg = broadcast.mock.calls[0][0];
+    expect(msg.summary).toContain('open_pr_failsafe-dominated');
+    expect(msg.details).toContain('Dominant skip reason: open_pr_failsafe');
+    expect(msg.details).toContain('t1');
+    expect(msg.details).toContain('t2');
+    expect(msg.details).toContain('Page only');
+  });
+
   it('synthetic residual high state spools operator signal once per cooldown (acceptance)', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hung-residual-signal-'));
     try {
@@ -274,5 +320,86 @@ describe('HungSuspectResidualAlerter (issue #1993)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('open_pr_failsafe dominance threshold (issue #2232)', () => {
+  it('recognizes confirmed/unknown/legacy open-PR outcomes', () => {
+    expect(isOpenPrFailsafeOutcome('skipped_open_pr_failsafe')).toBe(true);
+    expect(isOpenPrFailsafeOutcome('skipped_open_pr_confirmed')).toBe(true);
+    expect(isOpenPrFailsafeOutcome('skipped_open_pr_unknown')).toBe(true);
+    expect(isOpenPrFailsafeOutcome('skipped_under_ttl')).toBe(false);
+    expect(isOpenPrFailsafeOutcome('selected')).toBe(false);
+  });
+
+  it('empty last pass is not dominated', () => {
+    expect(isOpenPrFailsafeDominatedLastPass([])).toBe(false);
+    expect(summarizeHungResidualSkipBreakdown(undefined).openPrFailsafeDominated).toBe(false);
+    expect(summarizeHungResidualSkipBreakdown([]).dominantReason).toBeNull();
+  });
+
+  it('requires open_pr plurality (strict under-TTL majority is not dominated)', () => {
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_under_ttl' },
+      { outcome: 'skipped_under_ttl' },
+      { outcome: 'skipped_open_pr_failsafe' },
+    ])).toBe(false);
+  });
+
+  it('open_pr plurality (strict majority) is dominated', () => {
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_open_pr_confirmed' },
+      { outcome: 'skipped_open_pr_unknown' },
+      { outcome: 'skipped_under_ttl' },
+    ])).toBe(true);
+  });
+
+  it('tie for plurality still counts as open_pr_failsafe-dominated', () => {
+    // Threshold: openPr >= maxOther (ties count).
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_open_pr_failsafe' },
+      { outcome: 'skipped_under_ttl' },
+    ])).toBe(true);
+  });
+
+  it('zero open_pr outcomes is never dominated even when residual high', () => {
+    expect(isOpenPrFailsafeDominatedLastPass([
+      { outcome: 'skipped_under_ttl' },
+      { outcome: 'skipped_no_liveness' },
+      { outcome: 'skipped_provider_paused' },
+    ])).toBe(false);
+  });
+
+  it('summarize collapses open-PR family and samples dominant task ids', () => {
+    const breakdown = summarizeHungResidualSkipBreakdown([
+      { taskId: 'a', outcome: 'skipped_open_pr_confirmed' },
+      { taskId: 'b', outcome: 'skipped_open_pr_unknown' },
+      { taskId: 'c', outcome: 'skipped_open_pr_failsafe' },
+      { taskId: 'd', outcome: 'skipped_under_ttl' },
+      { taskId: 'e', outcome: 'skipped_open_pr_confirmed' },
+      { taskId: 'f', outcome: 'skipped_open_pr_confirmed' },
+    ]);
+    expect(breakdown.openPrFailsafeDominated).toBe(true);
+    expect(breakdown.dominantReason).toBe(OPEN_PR_FAILSAFE_DOMINANT_LABEL);
+    expect(breakdown.dominantCount).toBe(5);
+    expect(breakdown.total).toBe(6);
+    expect(breakdown.openPrFailsafeCount).toBe(5);
+    expect(breakdown.sampleTaskIds).toEqual(['a', 'b', 'c', 'e', 'f'].slice(0, HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP));
+    expect(breakdown.sampleTaskIds).toHaveLength(HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP);
+    expect(formatSkipContextForPage(breakdown)).toContain('Dominant skip reason: open_pr_failsafe (5/6 last pass)');
+    expect(formatSkipContextForPage(breakdown)).toContain('Sample task ids:');
+  });
+
+  it('summarize reports non-open_pr dominant reason when that is the plurality', () => {
+    const breakdown = summarizeHungResidualSkipBreakdown([
+      { taskId: 'u1', outcome: 'skipped_under_ttl' },
+      { taskId: 'u2', outcome: 'skipped_under_ttl' },
+      { taskId: 'p1', outcome: 'skipped_open_pr_confirmed' },
+    ]);
+    expect(breakdown.openPrFailsafeDominated).toBe(false);
+    expect(breakdown.dominantReason).toBe('skipped_under_ttl');
+    expect(breakdown.dominantCount).toBe(2);
+    expect(breakdown.sampleTaskIds).toEqual(['u1', 'u2']);
+    expect(formatSkipContextForPage(breakdown)).toContain('skipped_under_ttl (2/3 last pass)');
   });
 });

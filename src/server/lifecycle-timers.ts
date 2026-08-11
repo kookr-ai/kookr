@@ -1586,9 +1586,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           if (hungSuspectSignals(task).hungSuspect) residualHungSuspect += 1;
         }
         try {
+          // Issue #2232: pass last-pass outcomes so the page names dominant
+          // skip reason + sample task ids (open_pr_failsafe-dominated residual).
+          // Page-only — never terminates extra tasks beyond the reclaim above.
           deps.hungSuspectResidualAlerter.evaluate({
             residualCount: residualHungSuspect,
             reclaimedCount: hungSuspectTtlResult.reclaimedTaskIds.length,
+            lastOutcomes: hungSuspectTtlResult.selection?.outcomes,
           });
         } catch (err) {
           console.warn(
