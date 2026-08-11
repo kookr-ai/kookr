@@ -376,6 +376,46 @@ function summarizeProviderPausedOccupancy(health) {
   };
 }
 
+// Non-critical timer pause projection (issue #2230). /api/health already
+// publishes the full nonCriticalTimerPause block (issue #1785 / #1812). Surface
+// a quiet-by-default slim warning when the gate is currently paused, event-loop
+// delay p95 is above threshold, or pausedTicksTotal > 0 (process-lifetime
+// residual from a latency incident). Null when the block is absent or healthy
+// (paused=false, zero ticks, p95 ≤ threshold). Visibility only.
+function summarizeNonCriticalTimerPause(health) {
+  const block = health?.nonCriticalTimerPause;
+  if (!block || typeof block !== 'object') return null;
+
+  const paused = Boolean(/** @type {{ paused?: unknown }} */ (block).paused);
+  const thresholdRaw = Number(/** @type {{ thresholdMs?: unknown }} */ (block).thresholdMs);
+  const thresholdMs =
+    Number.isFinite(thresholdRaw) && thresholdRaw >= 0 ? Math.floor(thresholdRaw) : 0;
+
+  const p95Raw = /** @type {{ lastEventLoopDelayP95Ms?: unknown }} */ (block).lastEventLoopDelayP95Ms;
+  let lastEventLoopDelayP95Ms = null;
+  if (p95Raw !== null && p95Raw !== undefined) {
+    const n = Number(p95Raw);
+    if (Number.isFinite(n) && n >= 0) lastEventLoopDelayP95Ms = Math.floor(n);
+  }
+
+  const ticksRaw = Number(/** @type {{ pausedTicksTotal?: unknown }} */ (block).pausedTicksTotal);
+  const pausedTicksTotal =
+    Number.isFinite(ticksRaw) && ticksRaw > 0 ? Math.floor(ticksRaw) : 0;
+
+  const p95Elevated =
+    lastEventLoopDelayP95Ms !== null
+    && thresholdMs > 0
+    && lastEventLoopDelayP95Ms > thresholdMs;
+  if (!paused && pausedTicksTotal <= 0 && !p95Elevated) return null;
+
+  return {
+    paused,
+    thresholdMs,
+    lastEventLoopDelayP95Ms,
+    pausedTicksTotal,
+  };
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -519,6 +559,23 @@ function renderReport({ port, health, agents }) {
         `  oldest=${oldest}` +
         `  reclaimAttempted=${providerPaused.reclaimAttempted}` +
         `  reclaimedTotal=${providerPaused.reclaimedTotal}`,
+    );
+  }
+
+  // Non-critical timer pause (issue #2230) — quiet-by-default warning when
+  // /api/health reports current pause, elevated event-loop p95, or residual
+  // pausedTicksTotal from a latency incident.
+  const timerPause = summarizeNonCriticalTimerPause(health);
+  if (timerPause) {
+    const p95 =
+      timerPause.lastEventLoopDelayP95Ms === null
+        ? 'unknown'
+        : `${timerPause.lastEventLoopDelayP95Ms}ms`;
+    lines.push(
+      `Non-critical timer pause: paused=${timerPause.paused}` +
+        `  p95=${p95}` +
+        `  threshold=${timerPause.thresholdMs}ms` +
+        `  pausedTicks=${timerPause.pausedTicksTotal}`,
     );
   }
 
@@ -720,6 +777,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const firstHookMissSummary = summarizeFirstHookMiss(health);
     const capacitySummary = summarizeCapacity(health);
     const providerPausedSummary = summarizeProviderPausedOccupancy(health);
+    const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
     return exitJson({
       out,
       exit,
@@ -743,6 +801,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
           ? { providerPausedOccupancy: providerPausedSummary }
+          : {}),
+        ...(nonCriticalTimerPauseSummary
+          ? { nonCriticalTimerPause: nonCriticalTimerPauseSummary }
           : {}),
         ...gateDetails,
       },
@@ -793,6 +854,7 @@ export {
   summarizeCapacity,
   formatUtilPct,
   summarizeProviderPausedOccupancy,
+  summarizeNonCriticalTimerPause,
   renderReport,
   resolvePort,
   parsePortEnv,

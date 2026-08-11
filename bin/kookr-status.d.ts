@@ -90,6 +90,13 @@ export interface HealthLike {
     reclaimAttempted?: number;
     reclaimedTotal?: number;
   };
+  /** Non-critical timer pause gate (issue #1785 / #2230). */
+  nonCriticalTimerPause?: {
+    paused?: boolean;
+    thresholdMs?: number;
+    lastEventLoopDelayP95Ms?: number | null;
+    pausedTicksTotal?: number;
+  };
 }
 
 export interface FirstHookMissSummary {
@@ -149,6 +156,13 @@ export interface ProviderPausedOccupancySummary {
   reclaimedTotal: number;
 }
 
+export interface NonCriticalTimerPauseSummary {
+  paused: boolean;
+  thresholdMs: number;
+  lastEventLoopDelayP95Ms: number | null;
+  pausedTicksTotal: number;
+}
+
 export interface RenderReportArgs {
   port: number;
   health: HealthLike;
@@ -194,6 +208,9 @@ export function formatUtilPct(pct: number): string;
 export function summarizeProviderPausedOccupancy(
   health: HealthLike,
 ): ProviderPausedOccupancySummary | null;
+export function summarizeNonCriticalTimerPause(
+  health: HealthLike,
+): NonCriticalTimerPauseSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;
