@@ -93,6 +93,20 @@ type GithubScannerStatusProbe = (
 ) => Promise<GithubStatusSnapshot | null>;
 
 /**
+ * Live probe of hook-ingestion lag gauges (issue #2320). null = unreachable /
+ * unknown / no API base — doctor stays green (hermetic offline).
+ */
+export interface HookIngestionLagProbeSnapshot {
+  sessionCount: number;
+  notableLagCount: number;
+  lagWarningThresholdMs: number;
+}
+
+type HookIngestionLagProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<HookIngestionLagProbeSnapshot | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -134,6 +148,12 @@ interface RunDoctorDeps {
    * the host `~/.kookr` never leaks into hermetic unit runs.
    */
   readProdSmokeTickAlert?: ProdSmokeTickAlertReader;
+  /**
+   * Optional override for the live hook-ingestion lag probe (issue #2320).
+   * Defaults to a short-timeout fetch of GET /api/diagnostics/hook-ingestion
+   * when KOOKR_API_BASE_URL or KOOKR_PORT is set. null = unreachable / skip.
+   */
+  probeHookIngestionLag?: HookIngestionLagProbe;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -154,6 +174,7 @@ recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
+hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 `;
@@ -254,6 +275,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(...await checkAgentBinaries(env, run));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
+  checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 
@@ -551,6 +573,67 @@ async function checkResourceWatchdog(
     recommendedAction:
       'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server to enable host-pressure auto-investigation.',
   };
+}
+
+/**
+ * Advisory ops check (issue #2320): WARN when a reachable server reports elevated
+ * hook-ingestion lag (`notableLagCount > 0`). Soft-skip when the server is
+ * unreachable so hermetic offline doctor stays green. Never required:fail.
+ *
+ * Threshold defaults to any notable lag (>0), aligned with
+ * `lagWarningThresholdMs` already applied inside HookIngestion diagnostics.
+ */
+async function checkHookIngestionLag(
+  env: NodeJS.ProcessEnv,
+  probe: HookIngestionLagProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHookIngestionLag;
+  let snap: HookIngestionLagProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'hooks.ingestion-lag',
+      'Hook ingestion lag',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or diagnostics unreachable)',
+      false,
+    );
+  }
+
+  if (snap.notableLagCount > 0) {
+    return {
+      id: 'hooks.ingestion-lag',
+      label: 'Hook ingestion lag',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        `elevated hook-ingestion lag: notableLagCount=${snap.notableLagCount} ` +
+        `across ${snap.sessionCount} session(s)`,
+      detail:
+        `GET /api/diagnostics/hook-ingestion reports notableLagCount=${snap.notableLagCount} ` +
+        `(threshold lagWarningThresholdMs=${snap.lagWarningThresholdMs}). ` +
+        'Dashboard may look fine while agents go silent under data-plane stall.',
+      recommendedAction:
+        'Inspect GET /api/diagnostics/hook-ingestion and event-loop / capacity pressure; ' +
+        'consider prod:update if the server is on a stale build, and reduce co-tenant RAM pressure.',
+    };
+  }
+
+  return okCheck(
+    'hooks.ingestion-lag',
+    'Hook ingestion lag',
+    'ops',
+    snap.sessionCount === 0
+      ? 'no tracked sessions (idle)'
+      : `notableLagCount=0 across ${snap.sessionCount} session(s)`,
+    false,
+  );
 }
 
 /**
@@ -1017,6 +1100,61 @@ async function defaultProbeGithubScannerStatus(
   } catch {
     return null;
   }
+}
+
+/**
+ * Best-effort live probe of GET /api/diagnostics/hook-ingestion (issue #2320).
+ * Only hits the network when the operator pointed at a server. Hermetic
+ * offline doctor skips with OK.
+ */
+async function defaultProbeHookIngestionLag(
+  env: NodeJS.ProcessEnv,
+): Promise<HookIngestionLagProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/diagnostics/hook-ingestion`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseHookIngestionLagDiagnosticsBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/** Parse notableLagCount/sessionCount from diagnostics hook-ingestion JSON. */
+export function parseHookIngestionLagDiagnosticsBody(
+  body: unknown,
+): HookIngestionLagProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as {
+    ingestion?: {
+      sessionCount?: unknown;
+      notableLagCount?: unknown;
+      lagWarningThresholdMs?: unknown;
+    };
+  };
+  const ingestion = root.ingestion;
+  if (!ingestion || typeof ingestion !== 'object') return null;
+
+  const sessionCount = nonNegInt(ingestion.sessionCount);
+  const notableLagCount = nonNegInt(ingestion.notableLagCount);
+  const lagWarningThresholdMs = nonNegInt(ingestion.lagWarningThresholdMs);
+  if (sessionCount === null || notableLagCount === null) return null;
+
+  return {
+    sessionCount,
+    notableLagCount,
+    lagWarningThresholdMs: lagWarningThresholdMs ?? 2000,
+  };
 }
 
 function resolveOptionalHealthBase(env: NodeJS.ProcessEnv): string | null {
