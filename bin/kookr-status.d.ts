@@ -116,6 +116,18 @@ export interface HealthLike {
     shedTotal?: number;
   };
   /**
+   * Hook-ingestion lag summary (issue #2319). Present when ingestion is wired
+   * on the server; omitted when unwired / older servers.
+   */
+  hookIngestion?: {
+    sessionCount?: number;
+    notableLagCount?: number;
+    lagWarningThresholdMs?: number;
+    maxLagMs?: number | null;
+    p95LagMs?: number | null;
+    generatedAt?: string;
+  };
+  /**
    * Lesson-authoring yield gauges for the last 24h (issue #1538 / #2305).
    * Omitted on cold cache; present once the stale-while-revalidate scan lands.
    */
@@ -233,6 +245,16 @@ export interface SnapshotShedSummary {
   shedTotal: number;
 }
 
+/** Slim hook-ingestion lag gauge (issue #2319). */
+export interface HookIngestionSummary {
+  sessionCount: number;
+  notableLagCount: number;
+  lagWarningThresholdMs: number;
+  maxLagMs: number | null;
+  p95LagMs: number | null;
+  generatedAt?: string;
+}
+
 /** Slim lesson-authoring yield gauge (issue #2305 / #1538). */
 export interface LessonYieldSummary {
   yieldRate: number;
@@ -321,6 +343,9 @@ export function summarizeNonCriticalTimerPause(
 export function summarizeSnapshotShed(
   health: HealthLike,
 ): SnapshotShedSummary | null;
+export function summarizeHookIngestion(
+  health: HealthLike,
+): HookIngestionSummary | null;
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;

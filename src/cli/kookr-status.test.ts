@@ -19,6 +19,7 @@ import {
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
+  summarizeHookIngestion,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   renderReport,
@@ -870,6 +871,41 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Snapshot shed:');
   });
 
+  it('surfaces elevated hookIngestion lag when notableLagCount > 0 (issue #2319)', () => {
+    const health = {
+      ...baseHealth,
+      hookIngestion: {
+        sessionCount: 24,
+        notableLagCount: 192,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: 9000,
+        p95LagMs: 8500,
+        generatedAt: '2026-08-01T12:00:00.000Z',
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Hook ingestion lag: notable=192  sessions=24  max=9000ms  p95=8500ms  threshold=2000ms',
+    );
+  });
+
+  it('is a no-op when hookIngestion notableLagCount is zero or absent (issue #2319)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Hook ingestion lag:');
+    const zeroed = {
+      ...baseHealth,
+      hookIngestion: {
+        sessionCount: 3,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: 100,
+        p95LagMs: 80,
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Hook ingestion lag:');
+  });
+
   it('always surfaces lessonYield as a compact gauge when present (issue #2305)', () => {
     const health = {
       ...baseHealth,
@@ -1637,6 +1673,72 @@ describe('kookr-status summarizeSnapshotShed (issue #2299)', () => {
       thresholdMs: 0,
       lastEventLoopDelayP95Ms: null,
       shedTotal: 2,
+    });
+  });
+});
+
+describe('kookr-status summarizeHookIngestion (issue #2319)', () => {
+  it('returns null when hookIngestion is absent', () => {
+    expect(summarizeHookIngestion({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when sessionCount or notableLagCount is non-numeric', () => {
+    expect(
+      summarizeHookIngestion({
+        hookIngestion: {
+          sessionCount: 'x' as unknown as number,
+          notableLagCount: 1,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeHookIngestion({
+        hookIngestion: {
+          sessionCount: 1,
+          notableLagCount: 'x' as unknown as number,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zero notableLagCount (for --json)', () => {
+    expect(
+      summarizeHookIngestion({
+        hookIngestion: {
+          sessionCount: 3,
+          notableLagCount: 0,
+          lagWarningThresholdMs: 2000,
+          maxLagMs: null,
+          p95LagMs: null,
+          generatedAt: '2026-08-01T12:00:00.000Z',
+        },
+      }),
+    ).toEqual({
+      sessionCount: 3,
+      notableLagCount: 0,
+      lagWarningThresholdMs: 2000,
+      maxLagMs: null,
+      p95LagMs: null,
+      generatedAt: '2026-08-01T12:00:00.000Z',
+    });
+  });
+
+  it('floors fractional lag values and defaults missing threshold to 0', () => {
+    expect(
+      summarizeHookIngestion({
+        hookIngestion: {
+          sessionCount: 24.9,
+          notableLagCount: 192.2,
+          maxLagMs: 9000.7,
+          p95LagMs: 8500.1,
+        },
+      }),
+    ).toEqual({
+      sessionCount: 24,
+      notableLagCount: 192,
+      lagWarningThresholdMs: 0,
+      maxLagMs: 9000,
+      p95LagMs: 8500,
     });
   });
 });
@@ -2597,6 +2699,65 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.snapshotShed).toBeUndefined();
+  });
+
+  it('includes details.hookIngestion in --json when present, including zeros (issue #2319)', async () => {
+    mockSuccessfulFetch([], {
+      hookIngestion: {
+        sessionCount: 3,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: null,
+        p95LagMs: null,
+        generatedAt: '2026-08-01T12:00:00.000Z',
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.hookIngestion).toEqual({
+      sessionCount: 3,
+      notableLagCount: 0,
+      lagWarningThresholdMs: 2000,
+      maxLagMs: null,
+      p95LagMs: null,
+      generatedAt: '2026-08-01T12:00:00.000Z',
+    });
+  });
+
+  it('includes elevated details.hookIngestion in --json (issue #2319)', async () => {
+    mockSuccessfulFetch([], {
+      hookIngestion: {
+        sessionCount: 24.9,
+        notableLagCount: 192.2,
+        lagWarningThresholdMs: 2000.1,
+        maxLagMs: 9000.7,
+        p95LagMs: 8500.1,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.hookIngestion).toEqual({
+      sessionCount: 24,
+      notableLagCount: 192,
+      lagWarningThresholdMs: 2000,
+      maxLagMs: 9000,
+      p95LagMs: 8500,
+    });
+  });
+
+  it('omits details.hookIngestion in --json when absent (issue #2319)', async () => {
+    mockSuccessfulFetch([], {});
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.hookIngestion).toBeUndefined();
   });
 
   it('includes a slim hungSuspectTtlReclaim summary in --json when residual elevated (issue #2229)', async () => {

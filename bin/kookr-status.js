@@ -482,6 +482,52 @@ function summarizeSnapshotShed(health) {
   };
 }
 
+// Hook-ingestion lag projection (issue #2319). /api/health publishes
+// hookIngestion.{sessionCount,notableLagCount,maxLagMs,p95LagMs,...} from the
+// in-memory diagnostics snapshot when ingestion is wired. --json mirrors the
+// slim block whenever present (including zeros) so remote digests see lag
+// without scraping /api/diagnostics/hook-ingestion; human render is
+// elevated-only (notableLagCount > 0). Null when absent or non-numeric.
+// Visibility only — never changes readiness.
+function summarizeHookIngestion(health) {
+  const block = health?.hookIngestion;
+  if (!block || typeof block !== 'object') return null;
+
+  const sessionsRaw = Number(/** @type {{ sessionCount?: unknown }} */ (block).sessionCount);
+  const notableRaw = Number(/** @type {{ notableLagCount?: unknown }} */ (block).notableLagCount);
+  if (!Number.isFinite(sessionsRaw) || sessionsRaw < 0) return null;
+  if (!Number.isFinite(notableRaw) || notableRaw < 0) return null;
+
+  const thresholdRaw = Number(
+    /** @type {{ lagWarningThresholdMs?: unknown }} */ (block).lagWarningThresholdMs,
+  );
+  const lagWarningThresholdMs =
+    Number.isFinite(thresholdRaw) && thresholdRaw >= 0 ? Math.floor(thresholdRaw) : 0;
+
+  /** @param {unknown} raw */
+  function nullableNonNegMs(raw) {
+    if (raw === null || raw === undefined) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.floor(n);
+  }
+
+  const generatedAtRaw = /** @type {{ generatedAt?: unknown }} */ (block).generatedAt;
+  const generatedAt =
+    typeof generatedAtRaw === 'string' && generatedAtRaw.length > 0
+      ? generatedAtRaw
+      : undefined;
+
+  return {
+    sessionCount: Math.floor(sessionsRaw),
+    notableLagCount: Math.floor(notableRaw),
+    lagWarningThresholdMs,
+    maxLagMs: nullableNonNegMs(/** @type {{ maxLagMs?: unknown }} */ (block).maxLagMs),
+    p95LagMs: nullableNonNegMs(/** @type {{ p95LagMs?: unknown }} */ (block).p95LagMs),
+    ...(generatedAt ? { generatedAt } : {}),
+  };
+}
+
 // Lesson-authoring yield projection (issue #2305 / #1538). /api/health already
 // publishes lessonYield (yieldRate, decided, completedInWindow, buckets) once
 // the 24h cache is warm; cold cache omits the block. Always-on compact gauge
@@ -862,6 +908,24 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Hook-ingestion lag (issue #2319) — elevated-only human line when
+  // notableLagCount > 0 so silent data-plane stalls show on the default
+  // operator path. Zero gauges still flow through --json.
+  const hookIngestion = summarizeHookIngestion(health);
+  if (hookIngestion && hookIngestion.notableLagCount > 0) {
+    const max =
+      hookIngestion.maxLagMs === null ? 'unknown' : `${hookIngestion.maxLagMs}ms`;
+    const p95 =
+      hookIngestion.p95LagMs === null ? 'unknown' : `${hookIngestion.p95LagMs}ms`;
+    lines.push(
+      `Hook ingestion lag: notable=${hookIngestion.notableLagCount}` +
+        `  sessions=${hookIngestion.sessionCount}` +
+        `  max=${max}` +
+        `  p95=${p95}` +
+        `  threshold=${hookIngestion.lagWarningThresholdMs}ms`,
+    );
+  }
+
   // Hung-suspect TTL reclaim residual (issue #2229) — quiet-by-default when
   // reclaimedTotal=0 and skips/candidates/residual are elevated. Prints the
   // skip breakdown + residual class counts so unattended operators do not
@@ -1095,6 +1159,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const providerPausedSummary = summarizeProviderPausedOccupancy(health);
     const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
     const snapshotShedSummary = summarizeSnapshotShed(health);
+    const hookIngestionSummary = summarizeHookIngestion(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
     return exitJson({
@@ -1121,6 +1186,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
         ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
+        ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
           ? { providerPausedOccupancy: providerPausedSummary }
@@ -1184,6 +1250,7 @@ export {
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
+  summarizeHookIngestion,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   renderReport,
