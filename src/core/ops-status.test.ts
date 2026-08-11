@@ -185,8 +185,10 @@ describe('OpsStatusWriter', () => {
     const parsed = JSON.parse(raw) as unknown;
     expect(isOpsStatusSnapshot(parsed)).toBe(true);
     expect(parsed).toEqual(snap);
-    // Pretty-printed with trailing newline for operator cat/less friendliness.
+    // Compact JSON with trailing newline (machine-read card; issue #2253).
     expect(raw.endsWith('\n')).toBe(true);
+    expect(raw).toBe(`${JSON.stringify(snap)}\n`);
+    expect(raw).not.toMatch(/\n {2}"/);
   });
 
   it('accumulates edges across successive critical events', async () => {
