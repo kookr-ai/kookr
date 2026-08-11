@@ -2,16 +2,24 @@ import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type {
   CapacityResidualStatus,
+  PipelineStarvationRepoStatus,
+  PipelineStarvationStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
 } from '../store/store-types.js';
 
-/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual). */
+/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation). */
 export const OPS_HEALTH_POLL_INTERVAL_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function parseOptionalString(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return typeof value === 'string' ? value : undefined;
 }
 
 function parseProdSmokeTick(value: unknown): ProdSmokeTickStatus | null {
@@ -78,9 +86,56 @@ export function parseCapacityResidual(value: unknown): CapacityResidualStatus | 
 }
 
 /**
+ * Parse `GET /api/health.pipelineStarvation` for the Diagnostics card (issue #2259).
+ * Guards on schemaVersion; unknown/renamed fields are dropped (optional).
+ */
+export function parsePipelineStarvation(value: unknown): PipelineStarvationStatus | null {
+  const rec = asRecord(value);
+  if (!rec || rec.schemaVersion !== 'pipeline-starvation.v1') return null;
+  const reposRaw = asRecord(rec.repos);
+  if (!reposRaw) return { schemaVersion: 'pipeline-starvation.v1', repos: {} };
+
+  const repos: Record<string, PipelineStarvationRepoStatus> = {};
+  for (const [key, rowValue] of Object.entries(reposRaw)) {
+    const row = asRecord(rowValue);
+    if (!row) continue;
+    const consecutive = row.consecutiveBlockedEmpty;
+    if (typeof consecutive !== 'number' || !Number.isFinite(consecutive)) continue;
+    const cooldownRaw = row.effectiveScoutCooldownMs;
+    const effectiveScoutCooldownMs =
+      typeof cooldownRaw === 'number' && Number.isFinite(cooldownRaw) && cooldownRaw > 0
+        ? Math.floor(cooldownRaw)
+        : 0;
+    const repoName = typeof row.repo === 'string' && row.repo.length > 0 ? row.repo : key;
+    const parsed: PipelineStarvationRepoStatus = {
+      repo: repoName,
+      consecutiveBlockedEmpty: Math.max(0, Math.floor(consecutive)),
+      effectiveScoutCooldownMs,
+    };
+    const lastBlockedEmptyAt = parseOptionalString(row.lastBlockedEmptyAt);
+    if (lastBlockedEmptyAt !== undefined) parsed.lastBlockedEmptyAt = lastBlockedEmptyAt;
+    const lastSpawnSkipReason = parseOptionalString(row.lastSpawnSkipReason);
+    if (lastSpawnSkipReason !== undefined) parsed.lastSpawnSkipReason = lastSpawnSkipReason;
+    const lastStarvationScoutTaskId = parseOptionalString(row.lastStarvationScoutTaskId);
+    if (lastStarvationScoutTaskId !== undefined) parsed.lastStarvationScoutTaskId = lastStarvationScoutTaskId;
+    const lastStarvationScoutAt = parseOptionalString(row.lastStarvationScoutAt);
+    if (lastStarvationScoutAt !== undefined) parsed.lastStarvationScoutAt = lastStarvationScoutAt;
+    const lastStarvationAlertAt = parseOptionalString(row.lastStarvationAlertAt);
+    if (lastStarvationAlertAt !== undefined) parsed.lastStarvationAlertAt = lastStarvationAlertAt;
+    const lastBatchKickAt = parseOptionalString(row.lastBatchKickAt);
+    if (lastBatchKickAt !== undefined) parsed.lastBatchKickAt = lastBatchKickAt;
+    if (typeof row.updatedAt === 'string') parsed.updatedAt = row.updatedAt;
+    repos[key] = parsed;
+  }
+
+  return { schemaVersion: 'pipeline-starvation.v1', repos };
+}
+
+/**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
- * enablement, and capacity FAA residual, and push the slim projections into
- * the store for status-bar pills (issues #2037, #2082). Soft-fails on
+ * enablement, capacity FAA residual, and pipeline-starvation drought state,
+ * and push the slim projections into the store for status-bar pills and the
+ * Diagnostics panel (issues #2037, #2082, #2259). Soft-fails on
  * network/parse errors so the dashboard stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
@@ -102,6 +157,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           prodSmokeTick: parseProdSmokeTick(rec.prodSmokeTick),
           resourceWatchdog: parseResourceWatchdog(rec.resourceWatchdog),
           capacityResidual: parseCapacityResidual(rec.capacity),
+          pipelineStarvation: parsePipelineStarvation(rec.pipelineStarvation),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.
