@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import React from 'react';
-import { parseCapacityResidual, useOpsHealthPoll } from './useOpsHealthPoll.js';
+import {
+  parseCapacityResidual,
+  parsePipelineStarvation,
+  useOpsHealthPoll,
+} from './useOpsHealthPoll.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 
 function syncGlobalStore() {
@@ -44,7 +48,7 @@ describe('useOpsHealthPoll', () => {
     vi.unstubAllGlobals();
   });
 
-  test('parses /api/health smoke + watchdog + capacity residual into the store', async () => {
+  test('parses /api/health smoke + watchdog + capacity residual + pipeline starvation into the store', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -69,6 +73,17 @@ describe('useOpsHealthPoll', () => {
           free: 2,
           byClass: { working: 1, finishedAwaitingAck: 7, hungSuspect: 0, launching: 0 },
           oldestFinishedAwaitingAckAgeMs: 9e6,
+        },
+        pipelineStarvation: {
+          schemaVersion: 'pipeline-starvation.v1',
+          repos: {
+            'kookr-ai/kookr': {
+              repo: 'kookr-ai/kookr',
+              consecutiveBlockedEmpty: 3,
+              effectiveScoutCooldownMs: 3_600_000,
+              lastBlockedEmptyAt: '2026-08-04T00:00:00.000Z',
+            },
+          },
         },
       }),
     });
@@ -100,6 +115,17 @@ describe('useOpsHealthPoll', () => {
       finishedAwaitingAck: 7,
       oldestFinishedAwaitingAckAgeMs: 9e6,
     });
+    expect(useKookrStore.getState().pipelineStarvation).toEqual({
+      schemaVersion: 'pipeline-starvation.v1',
+      repos: {
+        'kookr-ai/kookr': {
+          repo: 'kookr-ai/kookr',
+          consecutiveBlockedEmpty: 3,
+          effectiveScoutCooldownMs: 3_600_000,
+          lastBlockedEmptyAt: '2026-08-04T00:00:00.000Z',
+        },
+      },
+    });
   });
 
   test('soft-fails on network error without throwing', async () => {
@@ -116,6 +142,58 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().prodSmokeTick).toBeNull();
     expect(useKookrStore.getState().resourceWatchdog).toBeNull();
     expect(useKookrStore.getState().capacityResidual).toBeNull();
+    expect(useKookrStore.getState().pipelineStarvation).toBeNull();
+  });
+});
+
+describe('parsePipelineStarvation (issue #2259)', () => {
+  test('returns null for missing or wrong schemaVersion', () => {
+    expect(parsePipelineStarvation(null)).toBeNull();
+    expect(parsePipelineStarvation(undefined)).toBeNull();
+    expect(parsePipelineStarvation({ schemaVersion: 'other.v1', repos: {} })).toBeNull();
+    expect(parsePipelineStarvation({ repos: {} })).toBeNull();
+  });
+
+  test('parses valid repos and drops rows without consecutiveBlockedEmpty', () => {
+    expect(parsePipelineStarvation({
+      schemaVersion: 'pipeline-starvation.v1',
+      repos: {
+        'a/repo': {
+          repo: 'a/repo',
+          consecutiveBlockedEmpty: 2.7,
+          effectiveScoutCooldownMs: 1_800_000.9,
+          lastSpawnSkipReason: 'scout_cooldown',
+        },
+        'bad/repo': { repo: 'bad/repo' },
+        'idle/repo': {
+          repo: 'idle/repo',
+          consecutiveBlockedEmpty: 0,
+          effectiveScoutCooldownMs: -10,
+        },
+      },
+    })).toEqual({
+      schemaVersion: 'pipeline-starvation.v1',
+      repos: {
+        'a/repo': {
+          repo: 'a/repo',
+          consecutiveBlockedEmpty: 2,
+          effectiveScoutCooldownMs: 1_800_000,
+          lastSpawnSkipReason: 'scout_cooldown',
+        },
+        'idle/repo': {
+          repo: 'idle/repo',
+          consecutiveBlockedEmpty: 0,
+          effectiveScoutCooldownMs: 0,
+        },
+      },
+    });
+  });
+
+  test('accepts empty repos map', () => {
+    expect(parsePipelineStarvation({
+      schemaVersion: 'pipeline-starvation.v1',
+      repos: {},
+    })).toEqual({ schemaVersion: 'pipeline-starvation.v1', repos: {} });
   });
 });
 

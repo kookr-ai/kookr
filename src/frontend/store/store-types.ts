@@ -524,10 +524,38 @@ export interface CapacityResidualStatus {
   oldestFinishedAwaitingAckAgeMs: number | null;
 }
 
+/**
+ * Per-repo row from `GET /api/health.pipelineStarvation` (pipeline-starvation.v1).
+ * Dashboard keeps the fields the Diagnostics card and CLI already surface.
+ */
+export interface PipelineStarvationRepoStatus {
+  repo: string;
+  consecutiveBlockedEmpty: number;
+  effectiveScoutCooldownMs: number;
+  lastBlockedEmptyAt?: string | null;
+  lastSpawnSkipReason?: string | null;
+  lastStarvationScoutTaskId?: string | null;
+  lastStarvationScoutAt?: string | null;
+  lastStarvationAlertAt?: string | null;
+  lastBatchKickAt?: string | null;
+  updatedAt?: string;
+}
+
+/**
+ * Slim projection of `GET /api/health.pipelineStarvation` for the Diagnostics
+ * panel (issue #2259). Full health block is retained so elevated rows can be
+ * filtered client-side without a second request.
+ */
+export interface PipelineStarvationStatus {
+  schemaVersion: 'pipeline-starvation.v1';
+  repos: Record<string, PipelineStarvationRepoStatus>;
+}
+
 export interface OpsHealthPayload {
   prodSmokeTick?: ProdSmokeTickStatus | null;
   resourceWatchdog?: ResourceWatchdogStatus | null;
   capacityResidual?: CapacityResidualStatus | null;
+  pipelineStarvation?: PipelineStarvationStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -539,9 +567,11 @@ export interface SystemStatusSlice {
   resourceWatchdog: ResourceWatchdogStatus | null;
   /** Capacity FAA residual from `/api/health.capacity` (issue #2082). */
   capacityResidual: CapacityResidualStatus | null;
+  /** Pipeline-starvation drought projection from `/api/health` (issue #2259). */
+  pipelineStarvation: PipelineStarvationStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual projections used by status-bar pills. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

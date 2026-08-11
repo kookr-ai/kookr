@@ -7,6 +7,7 @@ import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
 import { LiveFrictionCalibrationPanel } from './LiveFrictionCalibrationPanel.js';
 import { OutcomeLedgerPanel } from './OutcomeLedgerPanel.js';
+import { PipelineStarvationPanel } from './PipelineStarvationPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 
@@ -51,6 +52,7 @@ export function OperationsPanel({ send, onClose }: Props) {
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
           <SessionHealthPanel />
+          <PipelineStarvationPanel />
           <LiveFrictionCalibrationPanel />
           <FindingEvidenceDiagnosticsPanel />
           <CircuitBreakerPanel send={send} defaultExpanded showEmpty />

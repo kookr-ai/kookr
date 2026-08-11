@@ -4006,6 +4006,7 @@ button.section-header.detection-stats-header:focus-visible {
 .operations-panel-body .detection-stats-section,
 .operations-panel-body .live-calibration-section,
 .operations-panel-body .finding-evidence-section,
+.operations-panel-body .pipeline-starvation-section,
 .operations-panel-body .circuit-breaker-section {
   border-top: 0;
   border-bottom: 1px solid var(--border-dim);
@@ -9368,6 +9369,69 @@ button.project-drawer-link:focus-visible {
   font-size: 9px;
   color: var(--text-muted);
   margin-top: 3px;
+}
+
+/* --- Pipeline Starvation Panel (issue #2259) --- */
+.pipeline-starvation-section {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pipeline-starvation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.pipeline-starvation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+.pipeline-starvation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pipeline-starvation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.06);
+}
+.pipeline-starvation-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pipeline-starvation-repo {
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.pipeline-starvation-metric {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.pipeline-starvation-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 /* --- Circuit Breaker Panel --- */
