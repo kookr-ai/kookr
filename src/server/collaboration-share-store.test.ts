@@ -1,3 +1,4 @@
+import { chmodSync, statSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,6 +82,27 @@ describe('CollaborationShareStore persistence', () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  test('persists collaboration-shares.json with owner-only mode 0o600', async () => {
+    const shareStore = store(filePath);
+    await shareStore.load();
+    await shareStore.createOutboundInvite(PRINCIPAL, { taskId: 'task-1' });
+
+    const modeAfterCreate = statSync(filePath).mode & 0o777;
+    expect(modeAfterCreate).toBe(0o600);
+
+    // Re-write after a world-readable seed must still land at 0o600 (rename
+    // preserves the temp file’s mode rather than the prior destination mode).
+    chmodSync(filePath, 0o644);
+    expect(statSync(filePath).mode & 0o777).toBe(0o644);
+
+    await shareStore.createOutboundInvite(
+      { contactId: 'contact-2', deviceId: 'device-2' },
+      { taskId: 'task-2' },
+    );
+
+    expect(statSync(filePath).mode & 0o777).toBe(0o600);
   });
 
   test('recovers from a truncated store file as empty state and can save again', async () => {

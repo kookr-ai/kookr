@@ -654,7 +654,11 @@ export class CollaborationShareStore {
       grants: [...this.grants.values()].map(cloneGrant),
       tombstones: [...this.tombstones.values()].map(cloneTombstone),
     };
-    await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));
+    // Contact/device principals, invites, grants, and revocation tombstones —
+    // match sibling secret stores (share-grants, contact-identity) with owner-only mode.
+    await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2), {
+      mode: 0o600,
+    });
   }
 
   private auditDetail(invite: CollaborationContactShareInvite, grantId?: string, policyVersion?: number): Record<string, unknown> {
