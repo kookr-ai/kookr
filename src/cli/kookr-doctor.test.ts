@@ -8,8 +8,10 @@ import {
   formatDoctorReport,
   GITHUB_SCANNER_BACKOFF_WARN_MS,
   isOpenPrFailsafeDominatedLastPass,
+  parseHookIngestionLagDiagnosticsBody,
   parseHungSuspectReclaimHealthBody,
   runDoctorCli,
+  type HookIngestionLagProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
 } from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
@@ -32,6 +34,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.codex-plugin-dir',
   'ops.resource-watchdog',
   'ops.hung-reclaim',
+  'hooks.ingestion-lag',
   'ops.prod-smoke-tick',
   'ops.maintenance-prune',
 ] as const;
@@ -46,6 +49,7 @@ const opsOkEnv = {
 const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
+  probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
@@ -141,6 +145,7 @@ describe('kookr doctor --json', () => {
       'agent.codex-plugin-dir',
       'ops.resource-watchdog',
       'ops.hung-reclaim',
+      'hooks.ingestion-lag',
       'ops.prod-smoke-tick',
       'ops.maintenance-prune',
     ]));
@@ -155,6 +160,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -330,6 +340,79 @@ describe('kookr doctor --json', () => {
       status: 'warn',
       required: false,
     });
+  });
+
+  it('WARNs on hooks.ingestion-lag when notableLagCount > 0 (issue #2320)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-08-11T00:00:00.000Z'),
+      ...hermeticOps,
+      probeHookIngestionLag: async () => ({
+        sessionCount: 24,
+        notableLagCount: 192,
+        lagWarningThresholdMs: 2000,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'hooks.ingestion-lag');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('notableLagCount=192'),
+    });
+    expect(check?.detail).toContain('lagWarningThresholdMs=2000');
+  });
+
+  it('keeps hooks.ingestion-lag green when notableLagCount=0 or probe offline (issue #2320)', async () => {
+    const run = commandRunner(happyFixtures());
+    const healthy = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookIngestionLag: async () => ({
+        sessionCount: 3,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+      }),
+    });
+    expect(healthy.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('notableLagCount=0'),
+    });
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookIngestionLag: async () => null,
+    });
+    expect(offline.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('parseHookIngestionLagDiagnosticsBody extracts gauges from diagnostics route body', () => {
+    expect(parseHookIngestionLagDiagnosticsBody({
+      schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+      ingestion: {
+        sessionCount: 2,
+        notableLagCount: 5,
+        lagWarningThresholdMs: 2000,
+      },
+    })).toEqual({
+      sessionCount: 2,
+      notableLagCount: 5,
+      lagWarningThresholdMs: 2000,
+    });
+    expect(parseHookIngestionLagDiagnosticsBody({})).toBeNull();
+    expect(parseHookIngestionLagDiagnosticsBody(null)).toBeNull();
   });
 
   it('WARNs on ops.hung-reclaim when residual + reclaimedTotal=0 + open_pr last-pass dominance (issue #2231)', async () => {
