@@ -230,7 +230,7 @@ describe('selectExpiredFinishedAwaitingAckTasks skip-reason breakdown (issue #20
     expect(sel.candidatesConsidered).toBe(sel.expired.length + sumSkips(sel.skips));
   });
 
-  it('counts skipped_open_pr_failsafe for true, unknown, and unwired PR holds', () => {
+  it('issue #2228: splits open-PR fail-safe into confirmed vs unknown (tri-state)', () => {
     const stranded = faaTask({
       id: 'stranded',
       pendingSignal: {
@@ -258,21 +258,29 @@ describe('selectExpiredFinishedAwaitingAckTasks skip-reason breakdown (issue #20
       ttlMs,
       isHoldingOpenPr: () => true,
     });
-    expect(holdTrue.skips.skipped_open_pr_failsafe).toBe(1);
-    expect(holdTrue.outcomes[0]?.outcome).toBe('skipped_open_pr_failsafe');
+    expect(holdTrue.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(holdTrue.skips.skipped_open_pr_unknown).toBe(0);
+    expect(holdTrue.outcomes[0]?.outcome).toBe('skipped_open_pr_confirmed');
+    expect(holdTrue.candidatesConsidered).toBe(
+      holdTrue.expired.length + sumSkips(holdTrue.skips),
+    );
 
     const holdUnknown = selectExpiredFinishedAwaitingAckTasks([unknown], {
       now: NOW,
       ttlMs,
       isHoldingOpenPr: () => undefined,
     });
-    expect(holdUnknown.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(holdUnknown.skips.skipped_open_pr_unknown).toBe(1);
+    expect(holdUnknown.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(holdUnknown.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
 
     const noPredicate = selectExpiredFinishedAwaitingAckTasks([unwired], {
       now: NOW,
       ttlMs,
     });
-    expect(noPredicate.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(noPredicate.skips.skipped_open_pr_unknown).toBe(1);
+    expect(noPredicate.skips.skipped_open_pr_confirmed).toBe(0);
+    expect(noPredicate.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
     expect(noPredicate.candidatesConsidered).toBe(
       noPredicate.expired.length + sumSkips(noPredicate.skips),
     );
@@ -349,12 +357,13 @@ describe('selectExpiredFinishedAwaitingAckTasks skip-reason breakdown (issue #20
     expect(sel.skips).toEqual({
       skipped_bad_raised_at: 1,
       skipped_under_ttl: 1,
-      skipped_open_pr_failsafe: 1,
+      skipped_open_pr_confirmed: 1,
+      skipped_open_pr_unknown: 0,
     });
     expect(sel.candidatesConsidered).toBe(sel.expired.length + sumSkips(sel.skips));
     expect(sel.outcomes.find((o) => o.taskId === 'reclaim')?.outcome).toBe('selected');
     expect(sel.outcomes.find((o) => o.taskId === 'under')?.outcome).toBe('skipped_under_ttl');
-    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_failsafe');
+    expect(sel.outcomes.find((o) => o.taskId === 'pr')?.outcome).toBe('skipped_open_pr_confirmed');
     expect(sel.outcomes.find((o) => o.taskId === 'bogus')?.outcome).toBe('skipped_bad_raised_at');
   });
 

@@ -517,6 +517,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           reclaimSucceeded: hungSuspectTtlReclaimSnapshot.reclaimSucceeded,
           skippedNoLiveness: hungSuspectTtlReclaimSnapshot.skippedNoLiveness,
           skippedOpenPrFailsafe: hungSuspectTtlReclaimSnapshot.skippedOpenPrFailsafe,
+          skippedOpenPrConfirmed: hungSuspectTtlReclaimSnapshot.skippedOpenPrConfirmed,
+          skippedOpenPrUnknown: hungSuspectTtlReclaimSnapshot.skippedOpenPrUnknown,
           skippedUnderTtl: hungSuspectTtlReclaimSnapshot.skippedUnderTtl,
           skippedExemptAnomaly: hungSuspectTtlReclaimSnapshot.skippedExemptAnomaly,
           skippedProviderPaused: hungSuspectTtlReclaimSnapshot.skippedProviderPaused,
@@ -541,6 +543,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded,
           skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt,
           skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe,
+          skippedOpenPrConfirmed: finishedAwaitingAckReclaimSnapshot.skippedOpenPrConfirmed,
+          skippedOpenPrUnknown: finishedAwaitingAckReclaimSnapshot.skippedOpenPrUnknown,
           skippedUnderTtl: finishedAwaitingAckReclaimSnapshot.skippedUnderTtl,
           lastCandidatesConsidered:
             finishedAwaitingAckReclaimSnapshot.lastCandidatesConsidered,
@@ -568,6 +572,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           reclaimSucceeded: providerPausedOccupancySnapshot.reclaimSucceeded,
           skippedUnderTtl: providerPausedOccupancySnapshot.skippedUnderTtl,
           skippedOpenPrFailsafe: providerPausedOccupancySnapshot.skippedOpenPrFailsafe,
+          skippedOpenPrConfirmed: providerPausedOccupancySnapshot.skippedOpenPrConfirmed,
+          skippedOpenPrUnknown: providerPausedOccupancySnapshot.skippedOpenPrUnknown,
           skippedNoPauseStart: providerPausedOccupancySnapshot.skippedNoPauseStart,
           skippedAwaitingProviderReset:
             providerPausedOccupancySnapshot.skippedAwaitingProviderReset,

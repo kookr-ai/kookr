@@ -155,10 +155,13 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       reclaimedTotal: 0,
       reclaimAttempted: 0,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       lastCandidatesConsidered: 1,
       lastAttemptedTaskIds: [],
     });
-    expect(result.selection?.skips.skipped_open_pr_failsafe).toBe(1);
+    expect(result.selection?.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(result.selection?.skips.skipped_open_pr_unknown).toBe(0);
     await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
   });
 
@@ -198,6 +201,8 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       reclaimAttempted: 1,
       skippedUnderTtl: 1,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       skippedBadRaisedAt: 1,
       lastCandidatesConsidered: 4,
       lastAttemptedTaskIds: ['reclaim'],

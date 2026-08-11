@@ -115,16 +115,22 @@ export interface ExpiredProviderPausedEntry {
   pausedForMs: number;
 }
 
+/**
+ * Issue #2228: open-PR fail-safe split into confirmed vs unknown. Aggregate
+ * `skippedOpenPrFailsafe` on health/metrics = confirmed + unknown.
+ */
 export type ProviderPausedTtlSkipReason =
   | 'skipped_under_ttl'
-  | 'skipped_open_pr_failsafe'
+  | 'skipped_open_pr_confirmed'
+  | 'skipped_open_pr_unknown'
   | 'skipped_no_pause_start'
   /** Provider reset not yet elapsed — hold for #1896 auto-resume (issue #2079). */
   | 'skipped_awaiting_provider_reset';
 
 export const PROVIDER_PAUSED_TTL_SKIP_REASONS: readonly ProviderPausedTtlSkipReason[] = [
   'skipped_under_ttl',
-  'skipped_open_pr_failsafe',
+  'skipped_open_pr_confirmed',
+  'skipped_open_pr_unknown',
   'skipped_no_pause_start',
   'skipped_awaiting_provider_reset',
 ] as const;
@@ -134,10 +140,18 @@ export type ProviderPausedTtlSkipCounts = Record<ProviderPausedTtlSkipReason, nu
 export function emptyProviderPausedTtlSkipCounts(): ProviderPausedTtlSkipCounts {
   return {
     skipped_under_ttl: 0,
-    skipped_open_pr_failsafe: 0,
+    skipped_open_pr_confirmed: 0,
+    skipped_open_pr_unknown: 0,
     skipped_no_pause_start: 0,
     skipped_awaiting_provider_reset: 0,
   };
+}
+
+/** Aggregate open-PR fail-safe skips (confirmed + unknown) for health/metrics compat. */
+export function providerPausedOpenPrFailsafeSkipTotal(
+  skips: Pick<ProviderPausedTtlSkipCounts, 'skipped_open_pr_confirmed' | 'skipped_open_pr_unknown'>,
+): number {
+  return skips.skipped_open_pr_confirmed + skips.skipped_open_pr_unknown;
 }
 
 export interface ProviderPausedTtlCandidateOutcome {
@@ -214,7 +228,8 @@ export function effectiveProviderPausedStartMs(
  * - missing pause start → `skipped_no_pause_start`;
  * - effective pause age under TTL → `skipped_under_ttl`;
  * - awaiting provider reset (#1896) → `skipped_awaiting_provider_reset`;
- * - open-PR fail-safe (true or unknown) → `skipped_open_pr_failsafe`;
+ * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
+ *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).
  */
 export function selectExpiredProviderPausedTasks(
@@ -265,13 +280,24 @@ export function selectExpiredProviderPausedTasks(
     }
 
     // Fail-safe: only a definite `false` clears the task for reclaim.
-    if (opts.isHoldingOpenPr?.(task) !== false) {
-      skips.skipped_open_pr_failsafe += 1;
-      outcomes.push({
-        taskId: task.id,
-        outcome: 'skipped_open_pr_failsafe',
-        pausedForMs,
-      });
+    // Issue #2228: split confirmed-open vs unknown (state-fetch lag / unwired).
+    const openPrHold = opts.isHoldingOpenPr?.(task);
+    if (openPrHold !== false) {
+      if (openPrHold === true) {
+        skips.skipped_open_pr_confirmed += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_confirmed',
+          pausedForMs,
+        });
+      } else {
+        skips.skipped_open_pr_unknown += 1;
+        outcomes.push({
+          taskId: task.id,
+          outcome: 'skipped_open_pr_unknown',
+          pausedForMs,
+        });
+      }
       continue;
     }
 

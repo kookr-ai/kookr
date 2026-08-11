@@ -1515,6 +1515,8 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 0,
         skippedBadRaisedAt: 0,
         skippedOpenPrFailsafe: 0,
+        skippedOpenPrConfirmed: 0,
+        skippedOpenPrUnknown: 0,
         skippedUnderTtl: 0,
         lastCandidatesConsidered: 0,
         lastOutcomes: [],
@@ -1529,12 +1531,13 @@ describe('diagnostics routes', () => {
         candidatesConsidered: 4,
         skips: {
           skipped_bad_raised_at: 1,
-          skipped_open_pr_failsafe: 1,
+          skipped_open_pr_confirmed: 1,
+          skipped_open_pr_unknown: 0,
           skipped_under_ttl: 1,
         },
         outcomes: [
           { taskId: 't-selected', outcome: 'selected', ageMs: 1_000_000 },
-          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', ageMs: 1_000_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_confirmed', ageMs: 1_000_000 },
         ],
       });
 
@@ -1549,27 +1552,36 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 1,
         skippedBadRaisedAt: 1,
         skippedOpenPrFailsafe: 1,
+        skippedOpenPrConfirmed: 1,
+        skippedOpenPrUnknown: 0,
         skippedUnderTtl: 1,
         lastCandidatesConsidered: 4,
         lastAttemptedTaskIds: ['t-selected'],
         lastOutcomes: [
           { taskId: 't-selected', outcome: 'selected', ageMs: 1_000_000 },
-          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', ageMs: 1_000_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_confirmed', ageMs: 1_000_000 },
         ],
       });
       // Single-pass invariant: selected + sum(skips) === candidates considered.
       // lastOutcomes may be a capped sample; use reclaimAttempted + skip totals.
+      // Aggregate skippedOpenPrFailsafe must not be double-counted with split.
       const faa = afterBody.finishedAwaitingAckTtlReclaim as {
         reclaimAttempted: number;
         skippedBadRaisedAt: number;
+        skippedOpenPrConfirmed: number;
+        skippedOpenPrUnknown: number;
         skippedOpenPrFailsafe: number;
         skippedUnderTtl: number;
         lastCandidatesConsidered: number;
       };
+      expect(faa.skippedOpenPrFailsafe).toBe(
+        faa.skippedOpenPrConfirmed + faa.skippedOpenPrUnknown,
+      );
       expect(
         faa.reclaimAttempted
           + faa.skippedBadRaisedAt
-          + faa.skippedOpenPrFailsafe
+          + faa.skippedOpenPrConfirmed
+          + faa.skippedOpenPrUnknown
           + faa.skippedUnderTtl,
       ).toBe(faa.lastCandidatesConsidered);
     });
@@ -1614,6 +1626,8 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 0,
         skippedNoLiveness: 0,
         skippedOpenPrFailsafe: 0,
+        skippedOpenPrConfirmed: 0,
+        skippedOpenPrUnknown: 0,
         skippedUnderTtl: 0,
         skippedExemptAnomaly: 0,
         skippedProviderPaused: 0,
@@ -1628,14 +1642,15 @@ describe('diagnostics routes', () => {
         candidatesConsidered: 5,
         skips: {
           skipped_no_liveness: 1,
-          skipped_open_pr_failsafe: 1,
+          skipped_open_pr_confirmed: 1,
+          skipped_open_pr_unknown: 0,
           skipped_under_ttl: 1,
           skipped_exempt_anomaly: 0,
           skipped_provider_paused: 0,
         },
         outcomes: [
           { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
-          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_600_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_confirmed', silentForMs: 1_600_000 },
         ],
       });
 
@@ -1650,12 +1665,14 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 2,
         skippedNoLiveness: 1,
         skippedOpenPrFailsafe: 1,
+        skippedOpenPrConfirmed: 1,
+        skippedOpenPrUnknown: 0,
         skippedUnderTtl: 1,
         lastCandidatesConsidered: 5,
         lastAttemptedTaskIds: ['t-selected'],
         lastOutcomes: [
           { taskId: 't-selected', outcome: 'selected', silentForMs: 1_600_000 },
-          { taskId: 't-pr', outcome: 'skipped_open_pr_failsafe', silentForMs: 1_600_000 },
+          { taskId: 't-pr', outcome: 'skipped_open_pr_confirmed', silentForMs: 1_600_000 },
         ],
       });
     });
@@ -1699,6 +1716,8 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 0,
         skippedUnderTtl: 0,
         skippedOpenPrFailsafe: 0,
+        skippedOpenPrConfirmed: 0,
+        skippedOpenPrUnknown: 0,
         skippedNoPauseStart: 0,
         skippedAwaitingProviderReset: 0,
         lastCandidatesConsidered: 0,
@@ -1719,13 +1738,14 @@ describe('diagnostics routes', () => {
         candidatesConsidered: 3,
         skips: {
           skipped_under_ttl: 1,
-          skipped_open_pr_failsafe: 1,
+          skipped_open_pr_confirmed: 1,
+          skipped_open_pr_unknown: 0,
           skipped_no_pause_start: 0,
           skipped_awaiting_provider_reset: 0,
         },
         outcomes: [
           { taskId: 'p1', outcome: 'selected', pausedForMs: 2 * 60 * 60_000 },
-          { taskId: 'p2', outcome: 'skipped_open_pr_failsafe', pausedForMs: 3 * 60 * 60_000 },
+          { taskId: 'p2', outcome: 'skipped_open_pr_confirmed', pausedForMs: 3 * 60 * 60_000 },
         ],
       });
 
@@ -1743,6 +1763,8 @@ describe('diagnostics routes', () => {
         reclaimSucceeded: 1,
         skippedUnderTtl: 1,
         skippedOpenPrFailsafe: 1,
+        skippedOpenPrConfirmed: 1,
+        skippedOpenPrUnknown: 0,
         lastCandidatesConsidered: 3,
         lastAttemptedTaskIds: ['p1'],
         hardTtlMs: 2 * 60 * 60_000,

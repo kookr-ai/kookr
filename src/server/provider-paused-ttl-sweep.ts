@@ -5,6 +5,7 @@ import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
   emptyProviderPausedTtlSkipCounts,
+  providerPausedOpenPrFailsafeSkipTotal,
   selectExpiredProviderPausedTasks,
   summarizeProviderPausedOccupancy,
   type ProviderPausedOccupancySnapshot,
@@ -96,7 +97,16 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
   reclaimAttempted: number;
   reclaimSucceeded: number;
   skippedUnderTtl: number;
+  /**
+   * Aggregate open-PR fail-safe skips (`confirmed + unknown`) for scraper
+   * compat. Prefer {@link skippedOpenPrConfirmed} / {@link skippedOpenPrUnknown}
+   * when attributing residual (issue #2228).
+   */
   skippedOpenPrFailsafe: number;
+  /** Confirmed-open PR hold (`isHoldingOpenPr === true`) — issue #2228. */
+  skippedOpenPrConfirmed: number;
+  /** Unknown/unwired PR hold (GitHub state lag or predicate omitted) — issue #2228. */
+  skippedOpenPrUnknown: number;
   skippedNoPauseStart: number;
   skippedAwaitingProviderReset: number;
   lastCandidatesConsidered: number;
@@ -154,7 +164,8 @@ export class ProviderPausedOccupancyMetrics {
   }): void {
     this.lastCandidatesConsidered = selection.candidatesConsidered;
     this.skips.skipped_under_ttl += selection.skips.skipped_under_ttl;
-    this.skips.skipped_open_pr_failsafe += selection.skips.skipped_open_pr_failsafe;
+    this.skips.skipped_open_pr_confirmed += selection.skips.skipped_open_pr_confirmed;
+    this.skips.skipped_open_pr_unknown += selection.skips.skipped_open_pr_unknown;
     this.skips.skipped_no_pause_start += selection.skips.skipped_no_pause_start;
     this.skips.skipped_awaiting_provider_reset +=
       selection.skips.skipped_awaiting_provider_reset;
@@ -175,7 +186,9 @@ export class ProviderPausedOccupancyMetrics {
       reclaimAttempted: this.reclaimAttempted,
       reclaimSucceeded: this.reclaimedTotal,
       skippedUnderTtl: this.skips.skipped_under_ttl,
-      skippedOpenPrFailsafe: this.skips.skipped_open_pr_failsafe,
+      skippedOpenPrFailsafe: providerPausedOpenPrFailsafeSkipTotal(this.skips),
+      skippedOpenPrConfirmed: this.skips.skipped_open_pr_confirmed,
+      skippedOpenPrUnknown: this.skips.skipped_open_pr_unknown,
       skippedNoPauseStart: this.skips.skipped_no_pause_start,
       skippedAwaitingProviderReset: this.skips.skipped_awaiting_provider_reset,
       lastCandidatesConsidered: this.lastCandidatesConsidered,

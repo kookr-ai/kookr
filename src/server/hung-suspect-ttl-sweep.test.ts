@@ -326,12 +326,14 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       skippedUnderTtl: 1,
       skippedNoLiveness: 1,
       skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
       skippedExemptAnomaly: 0,
       lastCandidatesConsidered: 4,
       lastAttemptedTaskIds: ['needs'],
     });
     expect(snap.lastOutcomes.find((o) => o.taskId === 'pr')?.outcome).toBe(
-      'skipped_open_pr_failsafe',
+      'skipped_open_pr_confirmed',
     );
     expect(snap.lastOutcomes.find((o) => o.taskId === 'needs')?.outcome).toBe('selected');
     expect(result.selection?.skips.skipped_under_ttl).toBe(1);
@@ -391,9 +393,14 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     expect(metrics.getSnapshot().lastOutcomes).toEqual([
       expect.objectContaining({
         taskId: 'stranded-pr',
-        outcome: 'skipped_open_pr_failsafe',
+        outcome: 'skipped_open_pr_confirmed',
       }),
     ]);
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
+      skippedOpenPrFailsafe: 1,
+    });
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {

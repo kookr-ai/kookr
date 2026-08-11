@@ -205,7 +205,11 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
 
     expect(result.reclaimedTaskIds).toEqual([]);
     expect(taskStore.terminateTask).not.toHaveBeenCalled();
-    expect(metrics.getSnapshot().skippedOpenPrFailsafe).toBe(1);
+    expect(metrics.getSnapshot()).toMatchObject({
+      skippedOpenPrFailsafe: 1,
+      skippedOpenPrConfirmed: 1,
+      skippedOpenPrUnknown: 0,
+    });
   });
 
   it('never force-completes as delivered — disposition is always terminated/needs-human', () => {
