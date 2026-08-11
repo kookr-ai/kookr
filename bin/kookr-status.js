@@ -514,28 +514,18 @@ function summarizeLessonYield(health) {
       block
     ).buckets;
   const b = bucketsRaw && typeof bucketsRaw === 'object' ? bucketsRaw : {};
-  const floorBucket = (raw) => {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0) return 0;
-    return Math.floor(n);
-  };
 
   return {
     yieldRate,
     decided,
     completedInWindow,
     buckets: {
-      wroteLesson: floorBucket(b.wroteLesson),
-      explicitSkip: floorBucket(b.explicitSkip),
-      searchOnly: floorBucket(b.searchOnly),
-      noKbActivity: floorBucket(b.noKbActivity),
+      wroteLesson: nonNegIntFloor(b.wroteLesson),
+      explicitSkip: nonNegIntFloor(b.explicitSkip),
+      searchOnly: nonNegIntFloor(b.searchOnly),
+      noKbActivity: nonNegIntFloor(b.noKbActivity),
     },
   };
-}
-
-function formatYieldRate(rate) {
-  if (!Number.isFinite(rate)) return '0';
-  return String(Number(rate.toFixed(2)));
 }
 
 // Hung-suspect TTL reclaim residual projection (issue #2229). /api/health
@@ -783,7 +773,7 @@ function renderReport({ port, health, agents }) {
   if (lessonYield) {
     const b = lessonYield.buckets;
     lines.push(
-      `Lesson yield: rate=${formatYieldRate(lessonYield.yieldRate)}` +
+      `Lesson yield: rate=${formatUtilPct(lessonYield.yieldRate)}` +
         `  decided=${lessonYield.decided}/${lessonYield.completedInWindow}` +
         `  wrote=${b.wroteLesson}` +
         `  skip=${b.explicitSkip}` +
@@ -1196,7 +1186,6 @@ export {
   summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
-  formatYieldRate,
   renderReport,
   resolvePort,
   parsePortEnv,

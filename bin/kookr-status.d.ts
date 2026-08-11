@@ -327,7 +327,6 @@ export function summarizeHungSuspectTtlReclaim(
 export function summarizeLessonYield(
   health: HealthLike,
 ): LessonYieldSummary | null;
-export function formatYieldRate(rate: number): string;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

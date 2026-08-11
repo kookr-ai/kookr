@@ -21,7 +21,6 @@ import {
   summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
-  formatYieldRate,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -1526,7 +1525,7 @@ describe('kookr-status summarizeLessonYield (issue #2305)', () => {
     });
   });
 
-  it('returns elevated summary, floors counters, preserves yieldRate float', () => {
+  it('returns slim non-zero gauge, floors counters, preserves yieldRate float', () => {
     expect(
       summarizeLessonYield({
         lessonYield: {
@@ -1573,19 +1572,6 @@ describe('kookr-status summarizeLessonYield (issue #2305)', () => {
         noKbActivity: 0,
       },
     });
-  });
-});
-
-describe('kookr-status formatYieldRate (issue #2305)', () => {
-  it('formats finite rates with up to two decimals', () => {
-    expect(formatYieldRate(0.75)).toBe('0.75');
-    expect(formatYieldRate(1)).toBe('1');
-    expect(formatYieldRate(0)).toBe('0');
-    expect(formatYieldRate(0.666)).toBe('0.67');
-  });
-
-  it('falls back to 0 for non-finite input', () => {
-    expect(formatYieldRate(Number.NaN)).toBe('0');
   });
 });
 
