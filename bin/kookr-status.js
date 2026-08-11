@@ -450,6 +450,38 @@ function summarizeNonCriticalTimerPause(health) {
   };
 }
 
+// Snapshot rebuild shed projection (issue #2299 / #1775). /api/health publishes
+// snapshotShed.{thresholdMs,lastEventLoopDelayP95Ms,shedTotal}. --json mirrors
+// the slim gauge whenever the block is present (including shedTotal=0) so remote
+// digests see the counter without curling health; human render is elevated-only
+// (shedTotal > 0) because zero sheds is steady state. Null when absent or the
+// counters are non-numeric. Visibility only — does not change shed behavior.
+function summarizeSnapshotShed(health) {
+  const block = health?.snapshotShed;
+  if (!block || typeof block !== 'object') return null;
+
+  const shedRaw = Number(/** @type {{ shedTotal?: unknown }} */ (block).shedTotal);
+  if (!Number.isFinite(shedRaw) || shedRaw < 0) return null;
+  const shedTotal = Math.floor(shedRaw);
+
+  const thresholdRaw = Number(/** @type {{ thresholdMs?: unknown }} */ (block).thresholdMs);
+  const thresholdMs =
+    Number.isFinite(thresholdRaw) && thresholdRaw >= 0 ? Math.floor(thresholdRaw) : 0;
+
+  const p95Raw = /** @type {{ lastEventLoopDelayP95Ms?: unknown }} */ (block).lastEventLoopDelayP95Ms;
+  let lastEventLoopDelayP95Ms = null;
+  if (p95Raw !== null && p95Raw !== undefined) {
+    const n = Number(p95Raw);
+    if (Number.isFinite(n) && n >= 0) lastEventLoopDelayP95Ms = Math.floor(n);
+  }
+
+  return {
+    thresholdMs,
+    lastEventLoopDelayP95Ms,
+    shedTotal,
+  };
+}
+
 // Hung-suspect TTL reclaim residual projection (issue #2229). /api/health
 // already publishes hungSuspectTtlReclaim (issue #1989 / #2045) with process-
 // lifetime skip-reason breakdown (and #2228 open-PR confirmed/unknown split).
@@ -751,6 +783,22 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Snapshot rebuild shed (issue #2299) — elevated-only human line when
+  // shedTotal > 0 so #2167-class event-loop starvation drops are visible on
+  // the default operator path. Zero gauges still flow through --json.
+  const snapshotShed = summarizeSnapshotShed(health);
+  if (snapshotShed && snapshotShed.shedTotal > 0) {
+    const p95 =
+      snapshotShed.lastEventLoopDelayP95Ms === null
+        ? 'unknown'
+        : `${snapshotShed.lastEventLoopDelayP95Ms}ms`;
+    lines.push(
+      `Snapshot shed: shedTotal=${snapshotShed.shedTotal}` +
+        `  p95=${p95}` +
+        `  threshold=${snapshotShed.thresholdMs}ms`,
+    );
+  }
+
   // Hung-suspect TTL reclaim residual (issue #2229) — quiet-by-default when
   // reclaimedTotal=0 and skips/candidates/residual are elevated. Prints the
   // skip breakdown + residual class counts so unattended operators do not
@@ -983,6 +1031,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const capacitySummary = summarizeCapacity(health);
     const providerPausedSummary = summarizeProviderPausedOccupancy(health);
     const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
+    const snapshotShedSummary = summarizeSnapshotShed(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     return exitJson({
       out,
@@ -1014,6 +1063,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(nonCriticalTimerPauseSummary
           ? { nonCriticalTimerPause: nonCriticalTimerPauseSummary }
           : {}),
+        ...(snapshotShedSummary ? { snapshotShed: snapshotShedSummary } : {}),
         ...(hungReclaimSummary
           ? { hungSuspectTtlReclaim: hungReclaimSummary }
           : {}),
@@ -1068,6 +1118,7 @@ export {
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
+  summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
   renderReport,
   resolvePort,

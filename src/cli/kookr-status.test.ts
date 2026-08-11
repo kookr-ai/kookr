@@ -18,6 +18,7 @@ import {
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
+  summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
   renderReport,
   parsePortEnv,
@@ -820,6 +821,54 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Non-critical timer pause:');
   });
 
+  it('surfaces elevated snapshotShed with p95 and threshold (issue #2299)', () => {
+    const health = {
+      ...baseHealth,
+      snapshotShed: {
+        schemaVersion: 'snapshot-shed.v1',
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 400.7,
+        shedTotal: 1600,
+        // Extra health fields must not appear in the human line.
+        unused: true,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Snapshot shed: shedTotal=1600  p95=400ms  threshold=1500ms',
+    );
+  });
+
+  it('renders p95=unknown when lastEventLoopDelayP95Ms is null (issue #2299)', () => {
+    const health = {
+      ...baseHealth,
+      snapshotShed: {
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: null,
+        shedTotal: 3,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Snapshot shed: shedTotal=3  p95=unknown  threshold=1500ms',
+    );
+  });
+
+  it('is a no-op when snapshotShed is zero or absent (issue #2299)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Snapshot shed:');
+    const zeroed = {
+      ...baseHealth,
+      snapshotShed: {
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 54,
+        shedTotal: 0,
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Snapshot shed:');
+  });
+
   it('surfaces hungSuspectTtlReclaim skip breakdown when reclaimedTotal=0 and skips elevated (issue #2229)', () => {
     const health = {
       ...baseHealth,
@@ -1365,6 +1414,72 @@ describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
   });
 });
 
+describe('kookr-status summarizeSnapshotShed (issue #2299)', () => {
+  it('returns null when snapshotShed is absent', () => {
+    expect(summarizeSnapshotShed({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when shedTotal is non-numeric', () => {
+    expect(
+      summarizeSnapshotShed({
+        snapshotShed: {
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 400,
+          shedTotal: 'x' as unknown as number,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zero shedTotal (for --json)', () => {
+    expect(
+      summarizeSnapshotShed({
+        snapshotShed: {
+          schemaVersion: 'snapshot-shed.v1',
+          thresholdMs: 1500,
+          lastEventLoopDelayP95Ms: 54.5,
+          shedTotal: 0,
+        },
+      }),
+    ).toEqual({
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 54,
+      shedTotal: 0,
+    });
+  });
+
+  it('returns elevated summary and floors fractional values', () => {
+    expect(
+      summarizeSnapshotShed({
+        snapshotShed: {
+          thresholdMs: 1500.9,
+          lastEventLoopDelayP95Ms: 400.7,
+          shedTotal: 1600.2,
+        },
+      }),
+    ).toEqual({
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 400,
+      shedTotal: 1600,
+    });
+  });
+
+  it('preserves null p95 and defaults missing threshold to 0', () => {
+    expect(
+      summarizeSnapshotShed({
+        snapshotShed: {
+          lastEventLoopDelayP95Ms: null,
+          shedTotal: 2,
+        },
+      }),
+    ).toEqual({
+      thresholdMs: 0,
+      lastEventLoopDelayP95Ms: null,
+      shedTotal: 2,
+    });
+  });
+});
+
 describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
   it('returns null when hungSuspectTtlReclaim is absent', () => {
     expect(summarizeHungSuspectTtlReclaim({ status: 'ok' })).toBeNull();
@@ -1872,14 +1987,15 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
-    // / providerPausedOccupancy / nonCriticalTimerPause / hungSuspectTtlReclaim
-    // block on /api/health → no slim summary (no-op).
+    // / providerPausedOccupancy / nonCriticalTimerPause / snapshotShed /
+    // hungSuspectTtlReclaim block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
     expect(envelope.details.providerPausedOccupancy).toBeUndefined();
     expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
+    expect(envelope.details.snapshotShed).toBeUndefined();
     expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
   });
 
@@ -2197,6 +2313,58 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
+  });
+
+  it('includes details.snapshotShed in --json when present, including zeros (issue #2299)', async () => {
+    mockSuccessfulFetch([], {
+      snapshotShed: {
+        schemaVersion: 'snapshot-shed.v1',
+        thresholdMs: 1500,
+        lastEventLoopDelayP95Ms: 54.5,
+        shedTotal: 0,
+        // Extra health fields must NOT leak into the slim summary.
+        unused: true,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.snapshotShed).toEqual({
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 54,
+      shedTotal: 0,
+    });
+  });
+
+  it('includes elevated details.snapshotShed in --json (issue #2299)', async () => {
+    mockSuccessfulFetch([], {
+      snapshotShed: {
+        thresholdMs: 1500.9,
+        lastEventLoopDelayP95Ms: 400.7,
+        shedTotal: 1600.2,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.snapshotShed).toEqual({
+      thresholdMs: 1500,
+      lastEventLoopDelayP95Ms: 400,
+      shedTotal: 1600,
+    });
+  });
+
+  it('omits details.snapshotShed in --json when absent (issue #2299)', async () => {
+    mockSuccessfulFetch([], {});
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.snapshotShed).toBeUndefined();
   });
 
   it('includes a slim hungSuspectTtlReclaim summary in --json when residual elevated (issue #2229)', async () => {
