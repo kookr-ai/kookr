@@ -428,6 +428,14 @@ export interface RouteDeps {
    */
   getPayloadDietStats?: () => import('../maintenance-prune-schedule.js').PayloadDietStats;
   /**
+   * Hook replay-checkpoint gauges (issue #2281). `/api/health` reads only the
+   * slim `getReplayCheckpointStats()` snapshot — in-memory session count plus
+   * `stat().size` for file bytes. Must never parse the (multi-MB) checkpoint
+   * JSON on the request path. Absent in partial test harnesses ⇒ health omits
+   * the block; returns `null` when checkpoints are disabled on the watcher.
+   */
+  getHookReplayCheckpointStats?: () => import('../hook-watcher.js').HookReplayCheckpointStats | null;
+  /**
    * Non-critical timer pause gate (issue #1785). `/api/health` and `/metrics`
    * read only `getSnapshot()` — in-memory pause counter + last sample; never
    * a fresh event-loop measurement on the request path.

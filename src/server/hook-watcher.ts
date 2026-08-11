@@ -85,6 +85,17 @@ export interface HookWatcherHealthSnapshot {
   sessions: HookWatcherSessionHealth[];
 }
 
+/**
+ * Cheap replay-checkpoint file gauges for `/api/health` + `kookr status`
+ * (issue #2281). Intentionally avoids parsing the on-disk JSON — session count
+ * comes from the in-memory envelope already held by the watcher; file size is
+ * a single `stat`.
+ */
+export interface HookReplayCheckpointStats {
+  sessionCount: number;
+  fileBytes: number;
+}
+
 interface MutableHookWatcherSessionHealth {
   tmuxName: string;
   mode: HookWatcherMode;
@@ -342,6 +353,28 @@ export class HookFileWatcher {
       sessionCount: sessions.length,
       sessions,
     };
+  }
+
+  /**
+   * Operator gauge for the replay-checkpoint store (issue #2281).
+   *
+   * - `null` when checkpoints are disabled (`replayCheckpointPath` unset).
+   * - Otherwise `{ sessionCount, fileBytes }` from the in-memory session map
+   *   plus `stat().size` — never a full-file JSON parse on the health path.
+   * - Missing checkpoint file ⇒ `fileBytes: 0` (sessionCount still reflects
+   *   the in-memory envelope, which starts empty until the first write).
+   */
+  getReplayCheckpointStats(): HookReplayCheckpointStats | null {
+    if (!this.replayCheckpointPath) return null;
+    const sessionCount = Object.keys(this.replayCheckpoints.sessions).length;
+    let fileBytes = 0;
+    try {
+      fileBytes = statSync(this.replayCheckpointPath).size;
+    } catch {
+      // Missing/unreadable file is non-fatal: report zero bytes so health
+      // stays cheap and operators still see the in-memory session count.
+    }
+    return { sessionCount, fileBytes };
   }
 
   /**

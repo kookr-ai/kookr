@@ -1152,6 +1152,74 @@ describe('diagnostics routes', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // GET /api/health — hookReplayCheckpoints block (issue #2281)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health hookReplayCheckpoints block (issue #2281)', () => {
+    test('omits hookReplayCheckpoints when getHookReplayCheckpointStats is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hookReplayCheckpoints?: unknown };
+      expect(body.hookReplayCheckpoints).toBeUndefined();
+    });
+
+    test('projects sessionCount / fileBytes from the getter', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getHookReplayCheckpointStats: () => ({
+          sessionCount: 5364,
+          fileBytes: 19_900_000,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookReplayCheckpoints: { sessionCount: number; fileBytes: number };
+      };
+      expect(body.hookReplayCheckpoints).toEqual({
+        sessionCount: 5364,
+        fileBytes: 19_900_000,
+      });
+    });
+
+    test('preserves null when checkpoints are disabled', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getHookReplayCheckpointStats: () => null,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hookReplayCheckpoints: null };
+      expect(body.hookReplayCheckpoints).toBeNull();
+    });
+
+    test('projects zero gauges when the checkpoint file is empty/missing', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getHookReplayCheckpointStats: () => ({
+          sessionCount: 0,
+          fileBytes: 0,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookReplayCheckpoints: { sessionCount: number; fileBytes: number };
+      };
+      expect(body.hookReplayCheckpoints).toEqual({
+        sessionCount: 0,
+        fileBytes: 0,
+      });
+    });
+  });
+
   // GET /api/health — capacity block (issue #1526 Phase B / FM9)
   // ---------------------------------------------------------------------------
   describe('GET /api/health capacity block', () => {

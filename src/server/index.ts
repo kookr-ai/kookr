@@ -2423,6 +2423,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputRttMetrics,
     sessionReaper,
     getPayloadDietStats,
+    getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
