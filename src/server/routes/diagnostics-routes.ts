@@ -63,6 +63,7 @@ import {
   hooksDirFromKookrDir,
   type LessonYieldSnapshot,
 } from '../../core/lesson-decision.js';
+import { summarizeOssAttemptsForHealth } from '../oss-attempts-snapshot.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
@@ -671,6 +672,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // Observability only; does not change /api/ready criticality.
       ...(deps.hookIngestion
         ? { hookIngestion: buildHookIngestionHealthSummary(deps.hookIngestion.getDiagnosticsSnapshot()) }
+        : {}),
+      // OSS attempts summary (issue #2332): open/total counts + last refresh +
+      // issue-check error count so operators see contribution-gate pressure from
+      // /api/health and `kookr status` without fetching the full attempts array.
+      // Omitted when the OSS store is not wired (feature disabled).
+      ...(deps.ossAttemptStore
+        ? { ossAttempts: summarizeOssAttemptsForHealth(deps.ossAttemptStore) }
         : {}),
     });
   });

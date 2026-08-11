@@ -161,6 +161,16 @@ export interface HealthLike {
     lastOutcomes?: ReadonlyArray<{ taskId?: string; outcome?: string }>;
     lastAttemptedTaskIds?: ReadonlyArray<string>;
   };
+  /**
+   * Slim OSS contribution-attempts gauge (issue #2332). Present when the
+   * OSS store is wired on the server; omitted when disabled / older servers.
+   */
+  ossAttempts?: {
+    openCount?: number;
+    totalCount?: number;
+    lastRefreshAt?: string | null;
+    issueCheckErrorCount?: number;
+  };
 }
 
 export interface FirstHookMissSummary {
@@ -268,6 +278,14 @@ export interface LessonYieldSummary {
   };
 }
 
+/** Slim OSS contribution-attempts gauge (issue #2332). */
+export interface OssAttemptsSummary {
+  openCount: number;
+  totalCount: number;
+  lastRefreshAt: string | null;
+  issueCheckErrorCount: number;
+}
+
 /** Slim hungSuspect TTL reclaim residual (issue #2229). Elevated only. */
 export interface HungSuspectTtlReclaimSummary {
   reclaimedTotal: number;
@@ -352,6 +370,9 @@ export function summarizeHungSuspectTtlReclaim(
 export function summarizeLessonYield(
   health: HealthLike,
 ): LessonYieldSummary | null;
+export function summarizeOssAttempts(
+  health: HealthLike,
+): OssAttemptsSummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

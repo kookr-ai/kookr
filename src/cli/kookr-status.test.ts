@@ -22,6 +22,7 @@ import {
   summarizeHookIngestion,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
+  summarizeOssAttempts,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -958,6 +959,41 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Lesson yield:');
   });
 
+  it('always surfaces ossAttempts as a compact gauge when present (issue #2332)', () => {
+    const health = {
+      ...baseHealth,
+      ossAttempts: {
+        openCount: 3,
+        totalCount: 12,
+        lastRefreshAt: '2026-08-12T00:00:00.000Z',
+        issueCheckErrorCount: 2,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'OSS attempts: open=3  total=12  lastRefresh=2026-08-12T00:00:00.000Z  issueCheckErrors=2',
+    );
+  });
+
+  it('renders lastRefresh=never and keeps the zero error gauge (issue #2332)', () => {
+    const health = {
+      ...baseHealth,
+      ossAttempts: {
+        openCount: 0,
+        totalCount: 0,
+        lastRefreshAt: null,
+        issueCheckErrorCount: 0,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'OSS attempts: open=0  total=0  lastRefresh=never  issueCheckErrors=0',
+    );
+  });
+
+  it('is a no-op when ossAttempts is absent (issue #2332)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('OSS attempts:');
+  });
+
   it('surfaces hungSuspectTtlReclaim skip breakdown when reclaimedTotal=0 and skips elevated (issue #2229)', () => {
     const health = {
       ...baseHealth,
@@ -1499,6 +1535,88 @@ describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
       thresholdMs: 1500,
       lastEventLoopDelayP95Ms: null,
       pausedTicksTotal: 0,
+    });
+  });
+});
+
+describe('kookr-status summarizeOssAttempts (issue #2332)', () => {
+  it('returns null when ossAttempts is absent', () => {
+    expect(summarizeOssAttempts({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when openCount/totalCount are non-numeric', () => {
+    expect(
+      summarizeOssAttempts({
+        ossAttempts: {
+          openCount: 'x' as unknown as number,
+          totalCount: 2,
+          issueCheckErrorCount: 0,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeOssAttempts({
+        ossAttempts: {
+          openCount: 1,
+          totalCount: 'y' as unknown as number,
+          issueCheckErrorCount: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zeros (for --json and always-on human)', () => {
+    expect(
+      summarizeOssAttempts({
+        ossAttempts: {
+          openCount: 0,
+          totalCount: 0,
+          lastRefreshAt: null,
+          issueCheckErrorCount: 0,
+          // Extra fields must not leak into the slim projection.
+          attempts: [{ id: 'should-not-leak' }],
+        },
+      }),
+    ).toEqual({
+      openCount: 0,
+      totalCount: 0,
+      lastRefreshAt: null,
+      issueCheckErrorCount: 0,
+    });
+  });
+
+  it('floors counters and preserves lastRefreshAt string', () => {
+    expect(
+      summarizeOssAttempts({
+        ossAttempts: {
+          openCount: 2.9,
+          totalCount: 5.1,
+          lastRefreshAt: '2026-08-12T01:00:00.000Z',
+          issueCheckErrorCount: 1.7,
+        },
+      }),
+    ).toEqual({
+      openCount: 2,
+      totalCount: 5,
+      lastRefreshAt: '2026-08-12T01:00:00.000Z',
+      issueCheckErrorCount: 1,
+    });
+  });
+
+  it('defaults missing issueCheckErrorCount to zero and nulls empty lastRefreshAt', () => {
+    expect(
+      summarizeOssAttempts({
+        ossAttempts: {
+          openCount: 1,
+          totalCount: 1,
+          lastRefreshAt: '',
+        },
+      }),
+    ).toEqual({
+      openCount: 1,
+      totalCount: 1,
+      lastRefreshAt: null,
+      issueCheckErrorCount: 0,
     });
   });
 });

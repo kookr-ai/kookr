@@ -528,6 +528,41 @@ function summarizeHookIngestion(health) {
   };
 }
 
+// OSS attempts projection (issue #2332). /api/health publishes a slim
+// `ossAttempts` block when the store is wired (open/total counts, lastRefreshAt,
+// issueCheckErrorCount). Always-on compact gauge whenever openCount+totalCount
+// are numeric so operators see contribution-gate pressure without curling the
+// full /api/oss-attempts payload. Null when absent or non-numeric.
+// Visibility only — does not change rate-limit policy.
+function summarizeOssAttempts(health) {
+  const block = health?.ossAttempts;
+  if (!block || typeof block !== 'object') return null;
+
+  const openRaw = Number(/** @type {{ openCount?: unknown }} */ (block).openCount);
+  const totalRaw = Number(/** @type {{ totalCount?: unknown }} */ (block).totalCount);
+  if (!Number.isFinite(openRaw) || openRaw < 0) return null;
+  if (!Number.isFinite(totalRaw) || totalRaw < 0) return null;
+
+  const errRaw = Number(
+    /** @type {{ issueCheckErrorCount?: unknown }} */ (block).issueCheckErrorCount,
+  );
+  const issueCheckErrorCount =
+    Number.isFinite(errRaw) && errRaw >= 0 ? Math.floor(errRaw) : 0;
+
+  const lastRefreshRaw = /** @type {{ lastRefreshAt?: unknown }} */ (block).lastRefreshAt;
+  const lastRefreshAt =
+    typeof lastRefreshRaw === 'string' && lastRefreshRaw.length > 0
+      ? lastRefreshRaw
+      : null;
+
+  return {
+    openCount: Math.floor(openRaw),
+    totalCount: Math.floor(totalRaw),
+    lastRefreshAt,
+    issueCheckErrorCount,
+  };
+}
+
 // Lesson-authoring yield projection (issue #2305 / #1538). /api/health already
 // publishes lessonYield (yieldRate, decided, completedInWindow, buckets) once
 // the 24h cache is warm; cold cache omits the block. Always-on compact gauge
@@ -825,6 +860,21 @@ function renderReport({ port, health, agents }) {
         `  skip=${b.explicitSkip}` +
         `  searchOnly=${b.searchOnly}` +
         `  noKb=${b.noKbActivity}`,
+    );
+  }
+
+  // OSS attempts (issue #2332) — always-on compact gauge when /api/health
+  // publishes the slim ossAttempts block. Operators debugging contribution
+  // rate-limits or a stale refresh see pressure without opening the dashboard.
+  const ossAttempts = summarizeOssAttempts(health);
+  if (ossAttempts) {
+    const refresh =
+      ossAttempts.lastRefreshAt === null ? 'never' : ossAttempts.lastRefreshAt;
+    lines.push(
+      `OSS attempts: open=${ossAttempts.openCount}` +
+        `  total=${ossAttempts.totalCount}` +
+        `  lastRefresh=${refresh}` +
+        `  issueCheckErrors=${ossAttempts.issueCheckErrorCount}`,
     );
   }
 
@@ -1162,6 +1212,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const hookIngestionSummary = summarizeHookIngestion(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
+    const ossAttemptsSummary = summarizeOssAttempts(health);
     return exitJson({
       out,
       exit,
@@ -1186,6 +1237,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
         ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
+        ...(ossAttemptsSummary ? { ossAttempts: ossAttemptsSummary } : {}),
         ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
@@ -1253,6 +1305,7 @@ export {
   summarizeHookIngestion,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
+  summarizeOssAttempts,
   renderReport,
   resolvePort,
   parsePortEnv,
