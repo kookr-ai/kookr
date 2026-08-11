@@ -61,6 +61,10 @@ function PluginInstallConfirmDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby="plugin-install-dialog-title"
+        // Focusable container so the Tab trap still has a target when all
+        // action buttons are disabled during install (useDialogFocus falls
+        // back to the dialog element when FOCUSABLE_SELECTOR matches none).
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dialog-header">

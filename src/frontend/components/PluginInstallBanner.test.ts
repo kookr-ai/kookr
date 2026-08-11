@@ -395,4 +395,74 @@ describe('PluginInstallBanner dialog focus management', () => {
 
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  test('while installing, Tab still pulls focus back into the dialog container', async () => {
+    // Hang the install request so the dialog stays open with all actions disabled.
+    let resolveInstall: ((value: unknown) => void) | undefined;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/deploy/status')) {
+        return {
+          ok: true,
+          json: async () => ({
+            plugin: {
+              pluginId: 'kookr-toolkit@kookr',
+              installedVersion: null,
+              availableVersion: '0.7.4',
+              stale: false,
+            },
+          }),
+        };
+      }
+      if (String(url).includes('/api/deploy/plugin-install')) {
+        return new Promise((resolve) => {
+          resolveInstall = resolve;
+        });
+      }
+      return { ok: false, json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await mountAndFlush(root);
+
+    const installBtn = container.querySelector('.btn-install') as HTMLButtonElement | null;
+    await act(async () => {
+      installBtn?.click();
+    });
+
+    const confirmBtn = container.querySelector('.dialog .btn-primary') as HTMLButtonElement | null;
+    expect(confirmBtn).not.toBeNull();
+    await act(async () => {
+      confirmBtn?.click();
+    });
+    // Let React re-render with installing=true (buttons disabled).
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.getAttribute('tabindex')).toBe('-1');
+    // All action buttons are disabled while installing.
+    const enabled = focusablesInDialog(container);
+    expect(enabled).toHaveLength(0);
+
+    // Simulate browser moving focus to body when the active button is disabled.
+    const outside = document.createElement('button');
+    outside.textContent = 'Outside';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    const escapedFocus = sendTab();
+    expect(escapedFocus.defaultPrevented).toBe(true);
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+
+    // Unblock the hanging install so the test can tear down cleanly.
+    await act(async () => {
+      resolveInstall?.({
+        ok: false,
+        json: async () => ({ error: 'aborted for test' }),
+      });
+      await Promise.resolve();
+    });
+  });
 });
