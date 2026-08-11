@@ -45,6 +45,46 @@ describe('IdempotencyLedger', () => {
     expect(onDisk.entries.k1.taskId).toBe('task-1');
   });
 
+  test('persist writes compact JSON without pretty-print indentation (issue #2266)', async () => {
+    await ledger.load();
+    const reservation = ledger.reserveOrWait('k1');
+    if (reservation.kind !== 'own') throw new Error('expected own');
+    await reservation.finalize('task-1');
+
+    const raw = readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8');
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(raw).not.toMatch(/\n {2}"/);
+    // Canonical compact form: re-stringify of parse equals on-disk bytes.
+    const parsed = JSON.parse(raw) as { schemaVersion: number; entries: { k1: { taskId: string } } };
+    expect(raw).toBe(JSON.stringify(parsed));
+    // Couple format to a real finalized payload (not empty/wrong file).
+    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.entries.k1.taskId).toBe('task-1');
+  });
+
+  test('load() accepts legacy pretty-printed idempotency-ledger.json (issue #2266)', async () => {
+    const pretty = JSON.stringify(
+      {
+        schemaVersion: 1,
+        entries: {
+          legacy: {
+            taskId: 'task-legacy',
+            createdAt: new Date().toISOString(),
+          },
+        },
+      },
+      null,
+      2,
+    );
+    // Sanity: fixture is actually pretty-printed (multi-space indent).
+    expect(pretty).toMatch(/\n {2}/);
+    writeFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), pretty, 'utf-8');
+
+    const reloaded = new IdempotencyLedger(tempDir);
+    await reloaded.load();
+    expect(reloaded.reserveOrWait('legacy')).toEqual({ kind: 'replay', taskId: 'task-legacy' });
+  });
+
   test('a second reserveOrWait for a still-pending key returns kind=wait, resolved by finalize', async () => {
     await ledger.load();
     const owner = ledger.reserveOrWait('k1');
