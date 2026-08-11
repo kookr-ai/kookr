@@ -332,7 +332,12 @@ describe('bash completion behavior', () => {
   });
 
   it('completes doctor flags', async () => {
-    await expect(completeBash(['kookr', 'doctor', ''])).resolves.toEqual(['--json', '-h', '--help']);
+    await expect(completeBash(['kookr', 'doctor', ''])).resolves.toEqual([
+      '--json',
+      '--strict',
+      '-h',
+      '--help',
+    ]);
   });
 
   it('completes status flags and fail-on values', async () => {
@@ -443,7 +448,12 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   });
 
   it('completes doctor flags', async () => {
-    await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual(['--json', '-h', '--help']);
+    await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual([
+      '--json',
+      '--strict',
+      '-h',
+      '--help',
+    ]);
   });
 
   it('completes status flags and fail-on values', async () => {
