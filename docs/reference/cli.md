@@ -610,17 +610,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn` and `kookr signal` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr signal`, `kookr status`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-If both default ports respond and no explicit target is set, the command exits with an ambiguity error.
+Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status` and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr ralph`, and their deprecated standalone aliases accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr status`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -647,6 +647,7 @@ Examples:
 ```bash
 kookr spawn --json --prompt-file /tmp/prompt.md
 kookr status --json
+kookr github status --json
 kookr ralph status <taskId> --json
 ```
 
@@ -702,6 +703,15 @@ The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as 
 
 Callers that wire `kookr pr-checklist verify` into CI must treat exit `2` as “gate failed — fix the PR”, not “retry with better args”.
 
+### `kookr github`
+
+| Exit code | Meaning |
+| --- | --- |
+| exit 0 | Success — scanner status printed (human line or JSON envelope). |
+| exit 2 | User error (unknown flag / unknown verb / missing verb / invalid `KOOKR_PORT`). |
+| exit 3 | No Kookr server reachable. |
+| exit 4 | Server rejected the request or returned an unexpected `/api/github/status` payload. |
+
 ## `kookr status`
 
 Print a read-only snapshot of the running Kookr instance:
@@ -729,6 +739,56 @@ Exit behavior:
 - `1` for invalid `KOOKR_PORT`, unreachable servers, or unexpected server responses.
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
+
+## `kookr github`
+
+Print GitHub scanner liveness, remaining rate-limit backoff, and tracked-ref count — a thin terminal read-side for operators and spawned agents that need scanner health without opening the dashboard.
+
+```bash
+kookr github status
+kookr github status --json
+```
+
+The command calls [`GET /api/github/status`](./api.md) (see the GitHub section there) and reports:
+
+| Field | Meaning |
+| --- | --- |
+| `active` | Whether the GitHub scanner is currently live. |
+| `stateFetchBackoffMs` | Remaining state-fetch rate-limit backoff in milliseconds. |
+| `repoHealthBackoffMs` | Remaining repo-health rate-limit backoff in milliseconds. |
+| `trackedRefCount` | Number of PR/issue refs currently tracked. |
+
+Human output is one line:
+
+```text
+github scanner: active  state-fetch-backoff=0ms  repo-health-backoff=0ms  tracked-refs=12
+```
+
+With `--json`, stdout is one envelope whose `details` object holds the four fields above (`code: "OK"` on success; `USER_ERROR` / `NO_SERVER` / `SERVER_ERROR` on failure).
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Environment (server discovery — same precedence as [Server Discovery](#server-discovery)):
+
+| Variable | Meaning |
+| --- | --- |
+| `KOOKR_API_BASE_URL` | Base URL of a running Kookr server (overrides auto-detect). |
+| `KOOKR_PORT` | Specific port on `127.0.0.1` (overrides auto-detect). |
+| `KOOKR_API_TOKEN` | Bearer token for non-loopback servers. |
+
+Exit behavior (consistent with `GITHUB_HELP_TEXT` and the exit constants in `src/cli/kookr-github.ts`):
+
+- `0` Success.
+- `2` User error (bad flags / unknown verb / missing verb / invalid `KOOKR_PORT`).
+- `3` No Kookr server reachable.
+- `4` Server rejected the request (non-200 or unexpected payload).
+
+Related: the advisory `github.scanner-backoff` check in [`kookr doctor`](#kookr-doctor) probes the same endpoint when an API base is configured.
 
 ## `kookr doctor`
 
@@ -1281,4 +1341,6 @@ pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/b
 kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + github.scanner-backoff + ops.resource-watchdog + ops.hung-reclaim + ops.prod-smoke-tick + ops.maintenance-prune)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
+kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
+kookr github status --json  # same scanner status as one JSON envelope
 ```
