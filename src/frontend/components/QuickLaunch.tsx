@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
+import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
@@ -19,10 +20,20 @@ interface Props {
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
-  const [agentType, setAgentType] = useState<AgentSelection>('claude-code');
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
+  // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
+  // agent type (effect) → last-used → server default → 'claude-code'.
+  // Initializer covers the no-selected-agent path; the effect re-applies when
+  // selection / availability / server default change.
+  const [agentType, setAgentType] = useState<AgentSelection>(() => {
+    const store = useKookrStore.getState();
+    const options = buildAgentSelectionOptions(store.availableAgentTypes);
+    const lastUsed = loadLastAgentType();
+    if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
+    return store.defaultAgentType ?? 'claude-code';
+  });
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -58,8 +69,16 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       setAgentType(selected.agentType);
       return;
     }
+    // RFC F6: last-used preference beats the server default when no selected
+    // agent pins a type. Skip last-used when it is not currently offered.
+    const options = buildAgentSelectionOptions(availableAgentTypes);
+    const lastUsed = loadLastAgentType();
+    if (lastUsed && options.some((opt) => opt.type === lastUsed)) {
+      setAgentType(lastUsed);
+      return;
+    }
     setAgentType(defaultAgentType ?? 'claude-code');
-  }, [agents, selectedAgentId, defaultAgentType]);
+  }, [agents, selectedAgentId, defaultAgentType, availableAgentTypes]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -77,6 +96,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       agentType,
     });
     if (sent) {
+      saveLastAgentType(agentType);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
