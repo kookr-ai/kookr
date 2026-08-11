@@ -13,7 +13,9 @@
  * - fires an operational alert (key `hung:residual`) once residual has stayed
  *   ≥ N without decreasing for M minutes;
  * - re-pages at most once per cooldown while residual remains high;
- * - emits a matching `recovered` clear when hungSuspect returns to 0.
+ * - emits a matching `recovered` clear when hungSuspect returns to 0;
+ * - includes last-pass skip-reason dominance + sample task ids so remote
+ *   operators can heal without `/api/health` spelunking (issue #2232).
  *
  * Wire via detectorBroadcast (index.ts) so the operational-alert bridge
  * spools operator signals to Discord (issue #1716).
@@ -44,6 +46,16 @@ export const DEFAULT_HUNG_RESIDUAL_STALE_MS = 30 * 60_000;
 /** Re-page cooldown while residual remains high (default 1h). */
 export const DEFAULT_HUNG_RESIDUAL_COOLDOWN_MS = 60 * 60_000;
 
+/** Cap sample task ids in the Discord page body (issue #2232). */
+export const HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP = 5;
+
+/**
+ * Display label for the open-PR fail-safe skip family (confirmed + unknown +
+ * legacy). Matches doctor / health vocabulary so operators can cross-check
+ * `kookr doctor` and `GET /api/health`.
+ */
+export const OPEN_PR_FAILSAFE_DOMINANT_LABEL = 'open_pr_failsafe' as const;
+
 export interface HungSuspectResidualAlerterDeps {
   /**
    * Broadcast path — prefer `detectorBroadcast` so fire/clear edges spool to
@@ -60,11 +72,23 @@ export interface HungSuspectResidualAlerterDeps {
   now?: () => number;
 }
 
+/** One last-pass reclaim candidate (mirrors hungSuspectTtlReclaim.lastOutcomes). */
+export interface HungResidualOutcomeSample {
+  taskId: string;
+  outcome: string;
+}
+
 export interface EvaluateHungResidualInput {
   /** Current hungSuspect count after this tick's reclaim. */
   residualCount: number;
   /** Tasks reclaimed this tick (informational; in details only). */
   reclaimedCount?: number;
+  /**
+   * Last reclaim pass per-candidate outcomes (issue #2232). When present the
+   * page names the dominant skip reason and sample task ids so Discord-limited
+   * operators can heal (refresh GitHub PR state vs close stranded PRs).
+   */
+  lastOutcomes?: ReadonlyArray<HungResidualOutcomeSample>;
 }
 
 export interface HungSuspectResidualAlerterStats {
@@ -76,6 +100,135 @@ export interface HungSuspectResidualAlerterStats {
   residualHighSinceMs: number | null;
   /** When the last fire/re-page was emitted, or null. */
   lastAlertedAtMs: number | null;
+}
+
+/**
+ * Collapse open-PR fail-safe outcome variants into one dominance bucket.
+ * Issue #2228 split confirmed vs unknown; #2232 pages on the family.
+ * Legacy `skipped_open_pr_failsafe` kept for older health snapshots.
+ */
+export function isOpenPrFailsafeOutcome(outcome: string): boolean {
+  return (
+    outcome === 'skipped_open_pr_failsafe'
+    || outcome === 'skipped_open_pr_confirmed'
+    || outcome === 'skipped_open_pr_unknown'
+  );
+}
+
+/**
+ * Last-pass open_pr fail-safe dominates when it is the plurality among
+ * `lastOutcomes` (ties for first still count — residual is still held by the
+ * fail-safe). Empty last pass → not dominated (cannot attribute residual yet).
+ *
+ * Same threshold as `kookr doctor` ops.hung-reclaim (issue #2231 / #2232).
+ */
+export function isOpenPrFailsafeDominatedLastPass(
+  lastOutcomes: ReadonlyArray<{ outcome: string }>,
+): boolean {
+  if (lastOutcomes.length === 0) return false;
+  let openPr = 0;
+  const otherCounts = new Map<string, number>();
+  for (const entry of lastOutcomes) {
+    if (isOpenPrFailsafeOutcome(entry.outcome)) {
+      openPr += 1;
+      continue;
+    }
+    otherCounts.set(entry.outcome, (otherCounts.get(entry.outcome) ?? 0) + 1);
+  }
+  if (openPr === 0) return false;
+  const maxOther = otherCounts.size === 0
+    ? 0
+    : Math.max(...otherCounts.values());
+  return openPr >= maxOther;
+}
+
+export interface HungResidualSkipBreakdown {
+  /** Outcomes considered this pass (denominator). */
+  total: number;
+  /**
+   * Dominant skip/selected label for the page. Open-PR family collapses to
+   * {@link OPEN_PR_FAILSAFE_DOMINANT_LABEL}. Null when lastOutcomes empty.
+   */
+  dominantReason: string | null;
+  /** Count for {@link dominantReason} (open-PR family summed when applicable). */
+  dominantCount: number;
+  /** True when open_pr fail-safe is the plurality (ties count). */
+  openPrFailsafeDominated: boolean;
+  /** Aggregate open-PR family count this pass. */
+  openPrFailsafeCount: number;
+  /**
+   * Sample task ids for the dominant bucket (prefer open-PR holds when that
+   * family dominates). Capped at {@link HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP}.
+   */
+  sampleTaskIds: string[];
+  /** Per-label counts after open-PR collapse (for tests / diagnostics). */
+  counts: Record<string, number>;
+}
+
+/**
+ * Summarize last-pass reclaim outcomes for the residual page (issue #2232).
+ * Pure — no I/O, never terminates tasks.
+ */
+export function summarizeHungResidualSkipBreakdown(
+  lastOutcomes: ReadonlyArray<HungResidualOutcomeSample> | undefined,
+): HungResidualSkipBreakdown {
+  const outcomes = lastOutcomes ?? [];
+  const counts = new Map<string, number>();
+  const taskIdsByLabel = new Map<string, string[]>();
+
+  for (const entry of outcomes) {
+    const label = isOpenPrFailsafeOutcome(entry.outcome)
+      ? OPEN_PR_FAILSAFE_DOMINANT_LABEL
+      : entry.outcome;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+    if (entry.taskId) {
+      const ids = taskIdsByLabel.get(label) ?? [];
+      if (ids.length < HUNG_RESIDUAL_SAMPLE_TASK_ID_CAP && !ids.includes(entry.taskId)) {
+        ids.push(entry.taskId);
+        taskIdsByLabel.set(label, ids);
+      }
+    }
+  }
+
+  const total = outcomes.length;
+  const openPrFailsafeCount = counts.get(OPEN_PR_FAILSAFE_DOMINANT_LABEL) ?? 0;
+  const openPrFailsafeDominated = isOpenPrFailsafeDominatedLastPass(outcomes);
+
+  let dominantReason: string | null = null;
+  let dominantCount = 0;
+  for (const [label, count] of counts) {
+    if (
+      count > dominantCount
+      || (count === dominantCount && label === OPEN_PR_FAILSAFE_DOMINANT_LABEL)
+    ) {
+      dominantReason = label;
+      dominantCount = count;
+    }
+  }
+
+  // When open_pr is plurality (including ties), prefer that label even if a
+  // lexicographically later non-open_pr bucket tied in the loop above.
+  if (openPrFailsafeDominated) {
+    dominantReason = OPEN_PR_FAILSAFE_DOMINANT_LABEL;
+    dominantCount = openPrFailsafeCount;
+  }
+
+  const sampleTaskIds = dominantReason
+    ? [...(taskIdsByLabel.get(dominantReason) ?? [])]
+    : [];
+
+  const countsRecord: Record<string, number> = {};
+  for (const [label, count] of counts) countsRecord[label] = count;
+
+  return {
+    total,
+    dominantReason,
+    dominantCount,
+    openPrFailsafeDominated,
+    openPrFailsafeCount,
+    sampleTaskIds,
+    counts: countsRecord,
+  };
 }
 
 /**
@@ -157,6 +310,7 @@ export class HungSuspectResidualAlerter {
         countBound: bound,
         staleMs,
         reclaimedCount: reclaimed,
+        lastOutcomes: input.lastOutcomes,
       }),
     );
   }
@@ -212,20 +366,31 @@ export function buildHungResidualAlert(args: {
   countBound: number;
   staleMs: number;
   reclaimedCount: number;
+  lastOutcomes?: ReadonlyArray<HungResidualOutcomeSample>;
 }): Extract<ServerMessage, { type: 'alert' }> {
   const staleMin = Math.round(args.staleMs / 60_000);
+  const breakdown = summarizeHungResidualSkipBreakdown(args.lastOutcomes);
+  const skipContext = formatSkipContextForPage(breakdown);
+  const openPrNote = breakdown.openPrFailsafeDominated
+    ? ' open_pr_failsafe-dominated'
+    : '';
+
   return {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
     summary:
-      `hungSuspect residual high: ${args.residualCount} task(s) still hung after TTL reclaim window`,
+      `hungSuspect residual high: ${args.residualCount} task(s) still hung after TTL reclaim window`
+      + openPrNote,
     details:
-      `Issue #1993: hungSuspect residual stayed ≥ ${args.countBound} for ≥ ${staleMin}m `
+      `Issue #1993/#2232: hungSuspect residual stayed ≥ ${args.countBound} for ≥ ${staleMin}m `
       + `without decreasing after the hungSuspect TTL reclaim (#1935). `
       + `Current residual=${args.residualCount}; reclaimed this tick=${args.reclaimedCount}. `
-      + 'Page only — no extra terminations. Free slots manually (complete/cancel dead tasks) '
-      + 'or inspect exemptions (needs_input, permission_blocked, open PR, provider pause). '
-      + 'Health: GET /api/health → hungSuspectCapacityFinding / capacity.byClass.hungSuspect.',
+      + `${skipContext} `
+      + 'Page only — no extra terminations. '
+      + (breakdown.openPrFailsafeDominated
+        ? 'Heal: refresh GitHub PR state for residual task ids, or complete/merge/cancel stranded open-PR work so fail-safe releases slots. '
+        : 'Free slots manually (complete/cancel dead tasks) or inspect exemptions (needs_input, permission_blocked, open PR, provider pause). ')
+      + 'Health: GET /api/health → hungSuspectTtlReclaim.lastOutcomes / capacity.byClass.hungSuspect.',
     severity: 'warning',
     operationalAlert: {
       key: HUNG_RESIDUAL_ALERT_KEY,
@@ -233,6 +398,21 @@ export function buildHungResidualAlert(args: {
       state: 'fired',
     },
   };
+}
+
+/** Format skip dominance + sample task ids for the page body (issue #2232). */
+export function formatSkipContextForPage(breakdown: HungResidualSkipBreakdown): string {
+  if (breakdown.total === 0 || breakdown.dominantReason === null) {
+    return 'Last reclaim pass had no lastOutcomes (cannot attribute skip reason yet).';
+  }
+  const sample = breakdown.sampleTaskIds.length > 0
+    ? ` Sample task ids: ${breakdown.sampleTaskIds.join(', ')}.`
+    : '';
+  return (
+    `Dominant skip reason: ${breakdown.dominantReason} `
+    + `(${breakdown.dominantCount}/${breakdown.total} last pass).`
+    + sample
+  );
 }
 
 export function buildHungResidualRecoveryAlert(): Extract<ServerMessage, { type: 'alert' }> {
@@ -251,4 +431,3 @@ export function buildHungResidualRecoveryAlert(): Extract<ServerMessage, { type:
     },
   };
 }
-
