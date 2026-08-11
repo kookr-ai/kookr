@@ -15,6 +15,7 @@ import {
   summarizeFirstHookMiss,
   summarizeCapacity,
   formatUtilPct,
+  summarizeProviderPausedOccupancy,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -685,6 +686,57 @@ describe('kookr-status renderReport', () => {
       .not.toContain('First-hook miss:');
   });
 
+  it('surfaces elevated providerPausedOccupancy with age and reclaim counters (issue #2236)', () => {
+    const health = {
+      ...baseHealth,
+      providerPausedOccupancy: {
+        count: 8,
+        oldestPauseAgeMs: 3_600_000,
+        reclaimAttempted: 2,
+        reclaimedTotal: 1,
+        // Extra health fields must not appear in the human line.
+        taskIds: ['a', 'b'],
+        hardTtlMs: 7_200_000,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Provider-paused occupancy: count=8  oldest=1h 0m  reclaimAttempted=2  reclaimedTotal=1',
+    );
+  });
+
+  it('renders oldest=unknown when pause start age is null (issue #2236)', () => {
+    const health = {
+      ...baseHealth,
+      providerPausedOccupancy: {
+        count: 3,
+        oldestPauseAgeMs: null,
+        reclaimAttempted: 0,
+        reclaimedTotal: 0,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Provider-paused occupancy: count=3  oldest=unknown  reclaimAttempted=0  reclaimedTotal=0',
+    );
+  });
+
+  it('is a no-op when providerPausedOccupancy count is zero or absent (issue #2236)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Provider-paused occupancy:');
+    const zeroed = {
+      ...baseHealth,
+      providerPausedOccupancy: {
+        count: 0,
+        oldestPauseAgeMs: null,
+        reclaimAttempted: 0,
+        reclaimedTotal: 0,
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Provider-paused occupancy:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -911,6 +963,63 @@ describe('kookr-status summarizePayloadDiet (issue #2220)', () => {
       trackedTasks: 40,
       terminalTasks: 30,
       lastSnapshotBytes: 123_456,
+    });
+  });
+});
+
+describe('kookr-status summarizeProviderPausedOccupancy (issue #2236)', () => {
+  it('returns null when providerPausedOccupancy is absent', () => {
+    expect(summarizeProviderPausedOccupancy({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when count is zero or non-positive', () => {
+    expect(
+      summarizeProviderPausedOccupancy({
+        providerPausedOccupancy: {
+          count: 0,
+          oldestPauseAgeMs: null,
+          reclaimAttempted: 0,
+          reclaimedTotal: 0,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeProviderPausedOccupancy({
+        providerPausedOccupancy: { count: -1 },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns a slim elevated summary and floors fractional values', () => {
+    expect(
+      summarizeProviderPausedOccupancy({
+        providerPausedOccupancy: {
+          count: 8.9,
+          oldestPauseAgeMs: 3_600_000.7,
+          reclaimAttempted: 2.2,
+          reclaimedTotal: 1.8,
+          taskIds: ['x'],
+          hardTtlMs: 7_200_000,
+        },
+      }),
+    ).toEqual({
+      count: 8,
+      oldestPauseAgeMs: 3_600_000,
+      reclaimAttempted: 2,
+      reclaimedTotal: 1,
+    });
+  });
+
+  it('defaults missing reclaim counters to 0 and preserves null oldest age', () => {
+    expect(
+      summarizeProviderPausedOccupancy({
+        providerPausedOccupancy: { count: 3, oldestPauseAgeMs: null },
+      }),
+    ).toEqual({
+      count: 3,
+      oldestPauseAgeMs: null,
+      reclaimAttempted: 0,
+      reclaimedTotal: 0,
     });
   });
 });
@@ -1306,11 +1415,12 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
-    // block on /api/health → no slim summary (no-op).
+    // / providerPausedOccupancy block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
+    expect(envelope.details.providerPausedOccupancy).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -1500,6 +1610,48 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.capacity).toBeUndefined();
+  });
+
+  it('includes a slim providerPausedOccupancy summary in --json when elevated (issue #2236)', async () => {
+    mockSuccessfulFetch([], {
+      providerPausedOccupancy: {
+        count: 8,
+        oldestPauseAgeMs: 3_600_000,
+        reclaimAttempted: 2,
+        reclaimedTotal: 1,
+        // Extra health fields must NOT leak into the slim summary.
+        taskIds: ['a', 'b'],
+        hardTtlMs: 7_200_000,
+        lastOutcomes: [],
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.providerPausedOccupancy).toEqual({
+      count: 8,
+      oldestPauseAgeMs: 3_600_000,
+      reclaimAttempted: 2,
+      reclaimedTotal: 1,
+    });
+  });
+
+  it('omits details.providerPausedOccupancy in --json when count is zero (issue #2236)', async () => {
+    mockSuccessfulFetch([], {
+      providerPausedOccupancy: {
+        count: 0,
+        oldestPauseAgeMs: null,
+        reclaimAttempted: 0,
+        reclaimedTotal: 0,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.providerPausedOccupancy).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {

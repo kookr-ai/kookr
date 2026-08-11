@@ -84,6 +84,12 @@ export interface HealthLike {
   /** Process-lifetime first-hook miss reaps (issue #2036 / #2235). */
   firstHookMissTotal?: number;
   capacity?: CapacityHealthLike;
+  providerPausedOccupancy?: {
+    count?: number;
+    oldestPauseAgeMs?: number | null;
+    reclaimAttempted?: number;
+    reclaimedTotal?: number;
+  };
 }
 
 export interface FirstHookMissSummary {
@@ -136,6 +142,13 @@ export interface PayloadDietSummary {
   lastSnapshotBytes: number | null;
 }
 
+export interface ProviderPausedOccupancySummary {
+  count: number;
+  oldestPauseAgeMs: number | null;
+  reclaimAttempted: number;
+  reclaimedTotal: number;
+}
+
 export interface RenderReportArgs {
   port: number;
   health: HealthLike;
@@ -178,6 +191,9 @@ export function summarizeCapacity(
   health: HealthLike,
 ): CapacitySummary | null;
 export function formatUtilPct(pct: number): string;
+export function summarizeProviderPausedOccupancy(
+  health: HealthLike,
+): ProviderPausedOccupancySummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;
