@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { readFile, access, writeFile, appendFile } from 'node:fs/promises';
-import { join, isAbsolute, resolve } from 'node:path';
+import { readFile, access, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, isAbsolute, resolve } from 'node:path';
 import type {
   AttemptState,
   ContributionAttempt,
@@ -18,8 +18,22 @@ import {
   projectIdFromRepoSpecifier,
 } from './project-identity.js';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
+import { appendJsonlWithRotation } from './jsonl-rotation.js';
 
 const OSS_ATTEMPTS_SCHEMA_VERSION = 1;
+
+/** Rotate the contribution ledger before an append would exceed this size. */
+export const DEFAULT_CONTRIBUTION_LEDGER_MAX_BYTES = 4 * 1024 * 1024;
+/** Rotated generations retained by default (keeps `.1` and `.2`). */
+export const DEFAULT_CONTRIBUTION_LEDGER_ROTATED_GENERATIONS = 2;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
 
 /**
  * Default retention window (ms) for terminal (`merged` / `closed`) OSS attempt
@@ -167,6 +181,20 @@ export function projectIdForRepo(repo: string): string {
 
 // --- Store ---
 
+export interface OssAttemptStoreOptions {
+  ownNamespaces?: readonly string[];
+  /**
+   * Size cap for the active `contribution-ledger.jsonl` before rotation.
+   * Defaults to `KOOKR_CONTRIBUTION_LEDGER_MAX_BYTES` or 4 MiB.
+   */
+  ledgerMaxBytes?: number;
+  /**
+   * Number of rotated ledger generations (`.1` … `.N`) to retain.
+   * Defaults to `KOOKR_CONTRIBUTION_LEDGER_ROTATE_KEEP` or 2.
+   */
+  ledgerRotatedGenerations?: number;
+}
+
 export class OssAttemptStore {
   private attempts: ContributionAttempt[] = [];
   private lastRefreshAt: string | null = null;
@@ -175,30 +203,80 @@ export class OssAttemptStore {
   private ledgerPath: string;
   private ledgerEntries: LedgerEntry[] = [];
   private ownNamespaces: readonly string[];
+  private readonly ledgerMaxBytes: number;
+  private readonly ledgerRotatedGenerations: number;
   /** Async write mutex — serializes save() calls across concurrent async callers. */
   private writeLock: Promise<void> = Promise.resolve();
+  /**
+   * Serializes ledger append/rotate so concurrent writers cannot race the
+   * stat/rotate/append sequence (same pattern as training-data / budget-burn).
+   */
+  private ledgerAppendQueue: Promise<void> = Promise.resolve();
 
   constructor(
     kookrDir: string,
-    options: { ownNamespaces?: readonly string[] } = {},
+    options: OssAttemptStoreOptions = {},
   ) {
     this.filePath = join(kookrDir, 'oss-attempts.json');
     this.ledgerPath = join(kookrDir, 'contribution-ledger.jsonl');
     this.ownNamespaces = options.ownNamespaces ?? DEFAULT_OWN_NAMESPACES;
+    this.ledgerMaxBytes =
+      options.ledgerMaxBytes ??
+      readPositiveIntEnv(
+        'KOOKR_CONTRIBUTION_LEDGER_MAX_BYTES',
+        DEFAULT_CONTRIBUTION_LEDGER_MAX_BYTES,
+      );
+    this.ledgerRotatedGenerations =
+      options.ledgerRotatedGenerations ??
+      readPositiveIntEnv(
+        'KOOKR_CONTRIBUTION_LEDGER_ROTATE_KEEP',
+        DEFAULT_CONTRIBUTION_LEDGER_ROTATED_GENERATIONS,
+      );
   }
 
   getOwnNamespaces(): readonly string[] {
     return this.ownNamespaces;
   }
 
-  /** Watch the append-only contribution ledger without exposing its path. */
+  /**
+   * Watch the contribution ledger without exposing its path.
+   *
+   * Watches the parent directory (filtered to the ledger basename and its
+   * rotated `.N` generations) so a size-rotation rename of the active file
+   * still delivers change events for subsequent appends. A bare
+   * `watch(ledgerPath)` follows the pre-rename inode on Linux and goes
+   * silent after the first rotation.
+   */
   watchLedger(onChange: () => void): FSWatcher {
-    return watch(this.ledgerPath, onChange);
+    const ledgerDir = dirname(this.ledgerPath);
+    const ledgerBase = basename(this.ledgerPath);
+    return watch(ledgerDir, (_eventType, filename) => {
+      if (filename == null) {
+        onChange();
+        return;
+      }
+      const name = filename.toString();
+      if (name === ledgerBase || name.startsWith(`${ledgerBase}.`)) {
+        onChange();
+      }
+    });
   }
 
   /** Append one contribution-ledger entry without exposing the ledger path. */
   async appendLedgerEntry(entry: LedgerEntry): Promise<void> {
-    await appendFile(this.ledgerPath, JSON.stringify(entry) + '\n');
+    const line = `${JSON.stringify(entry)}\n`;
+    const run = this.ledgerAppendQueue
+      .catch(() => {
+        /* keep the queue alive after an earlier write failure */
+      })
+      .then(() =>
+        appendJsonlWithRotation(this.ledgerPath, line, {
+          maxBytes: this.ledgerMaxBytes,
+          rotatedGenerations: this.ledgerRotatedGenerations,
+        }),
+      );
+    this.ledgerAppendQueue = run;
+    await run;
   }
 
   async load(): Promise<void> {
@@ -279,38 +357,55 @@ export class OssAttemptStore {
 
   /**
    * Load `pr_created` entries from the append-only `contribution-ledger.jsonl`
-   * and fold them into the attempts list. Ledger is the authoritative source
-   * for PR *creation* counts (incl. slot_reset accounting); the attempts list
-   * is the authoritative source for PR *lifecycle* (state, closing details,
-   * linked issue).
+   * (and retained rotated generations `.1` … `.N`) and fold them into the
+   * attempts list. Ledger is the authoritative source for PR *creation*
+   * counts (incl. slot_reset accounting); the attempts list is the
+   * authoritative source for PR *lifecycle* (state, closing details, linked
+   * issue).
    *
    * Safe to call repeatedly — `upsertPr` is idempotent keyed on
    * `${repo}#${prNumber}`, and we only emit a history entry when the state
    * actually changes. Ledger entries missing a PR number (malformed or
    * pre-refactor) are still recorded as ledger history for blocked-banner
    * surfacing but do not create a synthetic attempt.
+   *
+   * Rotated generations are included so rate-limit / weekly counts remain
+   * correct for the size-based retention window after rotation.
    */
   async loadFromLedger(): Promise<void> {
     this.ledgerEntries = [];
-    let raw: string;
-    try {
-      await access(this.ledgerPath);
-      raw = await readFile(this.ledgerPath, 'utf-8');
-    } catch {
-      return; // No ledger file — nothing to load
-    }
 
-    const lines = raw.split('\n').filter((l) => l.trim());
-    for (const line of lines) {
+    // Oldest generation first, then active — keeps in-memory order roughly
+    // chronological (`.N` is oldest rotated, active is newest).
+    const paths: string[] = [];
+    for (let gen = this.ledgerRotatedGenerations; gen >= 1; gen -= 1) {
+      paths.push(`${this.ledgerPath}.${gen}`);
+    }
+    paths.push(this.ledgerPath);
+
+    let anyLoaded = false;
+    for (const path of paths) {
+      let raw: string;
       try {
-        const entry = JSON.parse(line) as LedgerEntry;
-        if (entry.timestamp && entry.repo && entry.action) {
-          this.ledgerEntries.push(entry);
-        }
+        await access(path);
+        raw = await readFile(path, 'utf-8');
       } catch {
-        // Skip malformed lines
+        continue;
+      }
+      anyLoaded = true;
+      const lines = raw.split('\n').filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line) as LedgerEntry;
+          if (entry.timestamp && entry.repo && entry.action) {
+            this.ledgerEntries.push(entry);
+          }
+        } catch {
+          // Skip malformed lines
+        }
       }
     }
+    if (!anyLoaded) return;
 
     // Ingest pr_created entries into the attempts list. Only external repos
     // get persisted attempts; internal-namespace entries still live in

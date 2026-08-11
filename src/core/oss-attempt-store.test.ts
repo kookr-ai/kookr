@@ -1,13 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   OssAttemptStore,
   isExternalRepo,
   DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+  DEFAULT_CONTRIBUTION_LEDGER_MAX_BYTES,
+  DEFAULT_CONTRIBUTION_LEDGER_ROTATED_GENERATIONS,
   readOssAttemptRetentionMsFromEnv,
 } from './oss-attempt-store.js';
+import type { LedgerEntry } from '../shared/contracts/oss-attempts.js';
 
 // Mirrors the internal constant in oss-attempt-store.ts. Kept local so the
 // schema version is not part of the module's public API — tests pin the
@@ -1024,6 +1027,159 @@ describe('OssAttemptStore — ledger ingestion', () => {
       expect(store.pruneTerminalAttempts(-1)).toBe(1);
       expect(store.getAllAttempts()).toHaveLength(0);
     });
+  });
+});
+
+describe('OssAttemptStore — contribution ledger rotation (#2331)', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'ledger-rotate-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function ledgerEntry(overrides: Partial<LedgerEntry> & Pick<LedgerEntry, 'action' | 'repo'>): LedgerEntry {
+    return {
+      timestamp: overrides.timestamp ?? new Date().toISOString(),
+      repo: overrides.repo,
+      action: overrides.action,
+      prUrl: overrides.prUrl,
+      command: overrides.command,
+      taskId: overrides.taskId,
+      blockReason: overrides.blockReason,
+    };
+  }
+
+  test('defaults export safe rotation knobs', () => {
+    expect(DEFAULT_CONTRIBUTION_LEDGER_MAX_BYTES).toBe(4 * 1024 * 1024);
+    expect(DEFAULT_CONTRIBUTION_LEDGER_ROTATED_GENERATIONS).toBe(2);
+  });
+
+  test('appendLedgerEntry rotates when an append would exceed maxBytes', async () => {
+    // Small cap so a handful of ~100-byte JSON lines force rotation.
+    const store = new OssAttemptStore(tempDir, {
+      ledgerMaxBytes: 120,
+      ledgerRotatedGenerations: 2,
+    });
+    const ledgerPath = join(tempDir, 'contribution-ledger.jsonl');
+
+    await store.appendLedgerEntry(
+      ledgerEntry({
+        repo: 'grafana/grafana',
+        action: 'pr_created',
+        prUrl: 'https://github.com/grafana/grafana/pull/1',
+        command: 'gh pr create -R grafana/grafana',
+      }),
+    );
+    expect(existsSync(ledgerPath)).toBe(true);
+    expect(existsSync(`${ledgerPath}.1`)).toBe(false);
+
+    // Second append exceeds the cap → first generation rotates to `.1`.
+    await store.appendLedgerEntry(
+      ledgerEntry({
+        repo: 'grafana/grafana',
+        action: 'pr_created',
+        prUrl: 'https://github.com/grafana/grafana/pull/2',
+        command: 'gh pr create -R grafana/grafana',
+      }),
+    );
+    expect(existsSync(`${ledgerPath}.1`)).toBe(true);
+    expect(statSync(ledgerPath).size).toBeLessThanOrEqual(120 + 200);
+
+    // Third append rotates again; with keep=2 we retain `.1` and `.2`.
+    await store.appendLedgerEntry(
+      ledgerEntry({
+        repo: 'rust-lang/rust',
+        action: 'pr_created',
+        prUrl: 'https://github.com/rust-lang/rust/pull/3',
+        command: 'gh pr create -R rust-lang/rust',
+      }),
+    );
+    expect(existsSync(`${ledgerPath}.1`)).toBe(true);
+    expect(existsSync(`${ledgerPath}.2`)).toBe(true);
+  });
+
+  test('loadFromLedger reads active file plus retained rotated generations', async () => {
+    const store = new OssAttemptStore(tempDir, {
+      ledgerMaxBytes: 120,
+      ledgerRotatedGenerations: 2,
+    });
+
+    // Seed three generations via the real append path so load sees rotated files.
+    for (const n of [1, 2, 3]) {
+      await store.appendLedgerEntry(
+        ledgerEntry({
+          repo: 'grafana/grafana',
+          action: 'pr_created',
+          prUrl: `https://github.com/grafana/grafana/pull/${n}`,
+          command: 'gh pr create',
+        }),
+      );
+    }
+
+    const reloaded = new OssAttemptStore(tempDir, {
+      ledgerMaxBytes: 120,
+      ledgerRotatedGenerations: 2,
+    });
+    await reloaded.load();
+    await reloaded.loadFromLedger();
+
+    const entries = reloaded.getAllLedgerEntries();
+    expect(entries.length).toBeGreaterThanOrEqual(3);
+    const prUrls = entries
+      .filter((e) => e.action === 'pr_created')
+      .map((e) => e.prUrl)
+      .sort();
+    expect(prUrls).toEqual([
+      'https://github.com/grafana/grafana/pull/1',
+      'https://github.com/grafana/grafana/pull/2',
+      'https://github.com/grafana/grafana/pull/3',
+    ]);
+    // Rate-limit-facing attempts ingest still works across generations.
+    expect(reloaded.getAllAttempts()).toHaveLength(3);
+  });
+
+  test('drops generations beyond the keep count', async () => {
+    const store = new OssAttemptStore(tempDir, {
+      ledgerMaxBytes: 80,
+      ledgerRotatedGenerations: 1,
+    });
+    const ledgerPath = join(tempDir, 'contribution-ledger.jsonl');
+
+    for (const n of [1, 2, 3, 4]) {
+      await store.appendLedgerEntry(
+        ledgerEntry({
+          repo: 'grafana/grafana',
+          action: 'slot_reset',
+          command: `reset-${n}-${'x'.repeat(40)}`,
+        }),
+      );
+    }
+
+    expect(existsSync(`${ledgerPath}.1`)).toBe(true);
+    expect(existsSync(`${ledgerPath}.2`)).toBe(false);
+  });
+
+  test('still loads legacy pretty single-file ledgers without rotation artifacts', async () => {
+    const today = new Date().toISOString();
+    writeFileSync(
+      join(tempDir, 'contribution-ledger.jsonl'),
+      JSON.stringify({
+        timestamp: today,
+        repo: 'grafana/grafana',
+        action: 'pr_created',
+        prUrl: 'https://github.com/grafana/grafana/pull/99',
+      }) + '\n',
+    );
+
+    const store = new OssAttemptStore(tempDir);
+    await store.load();
+    await store.loadFromLedger();
+    expect(store.getAllAttempts()).toHaveLength(1);
+    expect(store.getAllLedgerEntries()).toHaveLength(1);
   });
 });
 
