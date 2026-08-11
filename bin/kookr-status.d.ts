@@ -115,6 +115,22 @@ export interface HealthLike {
     lastEventLoopDelayP95Ms?: number | null;
     shedTotal?: number;
   };
+  /**
+   * Lesson-authoring yield gauges for the last 24h (issue #1538 / #2305).
+   * Omitted on cold cache; present once the stale-while-revalidate scan lands.
+   */
+  lessonYield?: {
+    schemaVersion?: string;
+    yieldRate?: number;
+    decided?: number;
+    completedInWindow?: number;
+    buckets?: {
+      wroteLesson?: number;
+      explicitSkip?: number;
+      searchOnly?: number;
+      noKbActivity?: number;
+    };
+  };
   /** Process-lifetime hungSuspect TTL reclaim gauges (issue #1989 / #2229). */
   hungSuspectTtlReclaim?: {
     reclaimedTotal?: number;
@@ -217,6 +233,19 @@ export interface SnapshotShedSummary {
   shedTotal: number;
 }
 
+/** Slim lesson-authoring yield gauge (issue #2305 / #1538). */
+export interface LessonYieldSummary {
+  yieldRate: number;
+  decided: number;
+  completedInWindow: number;
+  buckets: {
+    wroteLesson: number;
+    explicitSkip: number;
+    searchOnly: number;
+    noKbActivity: number;
+  };
+}
+
 /** Slim hungSuspect TTL reclaim residual (issue #2229). Elevated only. */
 export interface HungSuspectTtlReclaimSummary {
   reclaimedTotal: number;
@@ -295,6 +324,10 @@ export function summarizeSnapshotShed(
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;
+export function summarizeLessonYield(
+  health: HealthLike,
+): LessonYieldSummary | null;
+export function formatYieldRate(rate: number): string;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

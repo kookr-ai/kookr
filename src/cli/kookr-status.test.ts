@@ -20,6 +20,8 @@ import {
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
   summarizeHungSuspectTtlReclaim,
+  summarizeLessonYield,
+  formatYieldRate,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -869,6 +871,58 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Snapshot shed:');
   });
 
+  it('always surfaces lessonYield as a compact gauge when present (issue #2305)', () => {
+    const health = {
+      ...baseHealth,
+      lessonYield: {
+        schemaVersion: 'lesson-yield.v2',
+        yieldRate: 0.75,
+        decided: 3,
+        completedInWindow: 4,
+        buckets: {
+          wroteLesson: 2,
+          explicitSkip: 1,
+          searchOnly: 0,
+          noKbActivity: 1,
+        },
+        // Extra health fields must not appear in the human line.
+        byCompletionPath: { agent: { wroteLesson: 2 } },
+        contractRate: 0.75,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Lesson yield: rate=0.75  decided=3/4  wrote=2  skip=1  searchOnly=0  noKb=1',
+    );
+    expect(out).not.toContain('byCompletionPath');
+    expect(out).not.toContain('contractRate');
+  });
+
+  it('keeps the always-on zero lessonYield gauge (issue #2305)', () => {
+    const health = {
+      ...baseHealth,
+      lessonYield: {
+        yieldRate: 0,
+        decided: 0,
+        completedInWindow: 0,
+        buckets: {
+          wroteLesson: 0,
+          explicitSkip: 0,
+          searchOnly: 0,
+          noKbActivity: 0,
+        },
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Lesson yield: rate=0  decided=0/0  wrote=0  skip=0  searchOnly=0  noKb=0',
+    );
+  });
+
+  it('is a no-op when lessonYield is absent (issue #2305)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Lesson yield:');
+  });
+
   it('surfaces hungSuspectTtlReclaim skip breakdown when reclaimedTotal=0 and skips elevated (issue #2229)', () => {
     const health = {
       ...baseHealth,
@@ -1411,6 +1465,127 @@ describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
       lastEventLoopDelayP95Ms: null,
       pausedTicksTotal: 0,
     });
+  });
+});
+
+describe('kookr-status summarizeLessonYield (issue #2305)', () => {
+  it('returns null when lessonYield is absent', () => {
+    expect(summarizeLessonYield({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when decided/completedInWindow are non-numeric', () => {
+    expect(
+      summarizeLessonYield({
+        lessonYield: {
+          yieldRate: 0.5,
+          decided: 'x' as unknown as number,
+          completedInWindow: 2,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeLessonYield({
+        lessonYield: {
+          yieldRate: 0.5,
+          decided: 1,
+          completedInWindow: 'y' as unknown as number,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zeros (for --json and always-on human)', () => {
+    expect(
+      summarizeLessonYield({
+        lessonYield: {
+          schemaVersion: 'lesson-yield.v2',
+          yieldRate: 0,
+          decided: 0,
+          completedInWindow: 0,
+          buckets: {
+            wroteLesson: 0,
+            explicitSkip: 0,
+            searchOnly: 0,
+            noKbActivity: 0,
+          },
+          // Extra fields must not leak into the slim projection.
+          byCompletionPath: {},
+          contractRate: 0,
+        },
+      }),
+    ).toEqual({
+      yieldRate: 0,
+      decided: 0,
+      completedInWindow: 0,
+      buckets: {
+        wroteLesson: 0,
+        explicitSkip: 0,
+        searchOnly: 0,
+        noKbActivity: 0,
+      },
+    });
+  });
+
+  it('returns elevated summary, floors counters, preserves yieldRate float', () => {
+    expect(
+      summarizeLessonYield({
+        lessonYield: {
+          yieldRate: 0.666,
+          decided: 2.9,
+          completedInWindow: 3.1,
+          buckets: {
+            wroteLesson: 1.7,
+            explicitSkip: 1.2,
+            searchOnly: 0.4,
+            noKbActivity: 0.9,
+          },
+        },
+      }),
+    ).toEqual({
+      yieldRate: 0.666,
+      decided: 2,
+      completedInWindow: 3,
+      buckets: {
+        wroteLesson: 1,
+        explicitSkip: 1,
+        searchOnly: 0,
+        noKbActivity: 0,
+      },
+    });
+  });
+
+  it('defaults missing buckets to zero and recomputes yieldRate when omitted', () => {
+    expect(
+      summarizeLessonYield({
+        lessonYield: {
+          decided: 2,
+          completedInWindow: 4,
+        },
+      }),
+    ).toEqual({
+      yieldRate: 0.5,
+      decided: 2,
+      completedInWindow: 4,
+      buckets: {
+        wroteLesson: 0,
+        explicitSkip: 0,
+        searchOnly: 0,
+        noKbActivity: 0,
+      },
+    });
+  });
+});
+
+describe('kookr-status formatYieldRate (issue #2305)', () => {
+  it('formats finite rates with up to two decimals', () => {
+    expect(formatYieldRate(0.75)).toBe('0.75');
+    expect(formatYieldRate(1)).toBe('1');
+    expect(formatYieldRate(0)).toBe('0');
+    expect(formatYieldRate(0.666)).toBe('0.67');
+  });
+
+  it('falls back to 0 for non-finite input', () => {
+    expect(formatYieldRate(Number.NaN)).toBe('0');
   });
 });
 
@@ -1988,7 +2163,8 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
     // / providerPausedOccupancy / nonCriticalTimerPause / snapshotShed /
-    // hungSuspectTtlReclaim block on /api/health → no slim summary (no-op).
+    // hungSuspectTtlReclaim / lessonYield block on /api/health → no slim
+    // summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
@@ -1997,6 +2173,7 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
     expect(envelope.details.snapshotShed).toBeUndefined();
     expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
+    expect(envelope.details.lessonYield).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -2156,6 +2333,75 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
+  });
+
+  it('includes details.lessonYield in --json when present, including zeros (issue #2305)', async () => {
+    mockSuccessfulFetch([], {
+      lessonYield: {
+        schemaVersion: 'lesson-yield.v2',
+        yieldRate: 0.75,
+        decided: 3,
+        completedInWindow: 4,
+        buckets: {
+          wroteLesson: 2,
+          explicitSkip: 1,
+          searchOnly: 0,
+          noKbActivity: 1,
+        },
+        // Extra fields must not leak into the slim projection.
+        byCompletionPath: { agent: { wroteLesson: 2 } },
+        contractRate: 0.75,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.lessonYield).toEqual({
+      yieldRate: 0.75,
+      decided: 3,
+      completedInWindow: 4,
+      buckets: {
+        wroteLesson: 2,
+        explicitSkip: 1,
+        searchOnly: 0,
+        noKbActivity: 1,
+      },
+    });
+    expect(envelope.details.lessonYield.byCompletionPath).toBeUndefined();
+    expect(envelope.details.lessonYield.contractRate).toBeUndefined();
+  });
+
+  it('includes details.lessonYield zeros in --json (issue #2305)', async () => {
+    mockSuccessfulFetch([], {
+      lessonYield: {
+        yieldRate: 0,
+        decided: 0,
+        completedInWindow: 0,
+        buckets: {
+          wroteLesson: 0,
+          explicitSkip: 0,
+          searchOnly: 0,
+          noKbActivity: 0,
+        },
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.lessonYield).toEqual({
+      yieldRate: 0,
+      decided: 0,
+      completedInWindow: 0,
+      buckets: {
+        wroteLesson: 0,
+        explicitSkip: 0,
+        searchOnly: 0,
+        noKbActivity: 0,
+      },
+    });
   });
 
   it('includes a slim capacity summary in --json when elevated (issue #2234)', async () => {
