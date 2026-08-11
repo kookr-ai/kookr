@@ -1027,111 +1027,112 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 
 /**
  * lucy#1587 "acquisition redundancy & failover". Wave-1 residual leaves
- * (#2082–#2085 readiness / EDGAR-only / epic sync) and follow-ons (#2351–#2354,
- * #2422–#2424 newswire gate / interval backoff / tier-health) shipped and are
- * title-exhausted. Invent wave 2 (queue-feeder 2026-08-11, invent-product-wave
- * #2069) covers still-open acquisition-redundancy residuals under RFC-012:
- * automated already-published recapture on no_source terminal misses, multi-tier
- * possible_gate_miss rescue (issuer+newswire, not only SEC), and a weekly
- * search-backend failover hit-rate metric. Live GitHub leaves #2518–#2520.
- * Title idempotency prevents re-emit once those exist.
+ * (#2082–#2085 readiness / EDGAR-only / epic sync), follow-ons (#2351–#2354,
+ * #2422–#2424 newswire gate / interval backoff / tier-health), and invent
+ * wave 2 (#2518–#2520 no_source recapture / multi-tier gate-miss / backend
+ * hit-rate) shipped and are title-exhausted. Invent wave 3 (queue-feeder
+ * 2026-08-11, invent-product-wave #2069) covers still-open RFC-012 residuals
+ * under the acquisition-redundancy umbrella: dual-session BMO↔AMC coverage
+ * before terminal no_source (LEVI), tri-state stealth readiness + runaway
+ * heartbeat anomaly, and an auto-re-resolve worker driven by total-miss rows.
+ * Live GitHub leaves #2551–#2553. Title idempotency prevents re-emit once
+ * those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): automatic already-published recapture when window ends with no_source',
+      'feat(acquisition): dual-session BMO↔AMC coverage before terminal no_source (LEVI)',
     goal:
-      'When an armed earnings window closes as missClass=no_source, automatically run a ' +
-      'bounded already-published recapture pass (reuse the acquire detect/pull path from ' +
-      '#2504/#2505) so reports that published slightly late or were missed mid-window are ' +
-      'still captured without waiting for an operator to paste a URL — the flagship ' +
-      'acquisition-redundancy gap under umbrella #1587 / RFC-012.',
+      'When session is unproven or first-session for an armed earnings job, cover both ' +
+      'BMO and AMC halves (extend or dual-session poll) before classifying a terminal ' +
+      'no_source miss — the LEVI-class session-correctness hole under RFC-012 Phase 1 / ' +
+      'umbrella #1587 so redundancy is not wasted on the wrong half-day window.',
     acceptanceCriteria: [
-      'On terminal total-miss classification with missClass=no_source (and not operator-aborted), ' +
-        'Lucy schedules or runs one bounded already-published detect/recapture attempt for that ' +
-        'ticker+date within a documented grace window, reusing existing acquire detect/pull ' +
-        'helpers rather than a second acquisition stack.',
-      'Successful recapture is stamped as recovery/recapture (not live window success) and is ' +
-        'visible in outcomes or the acquisition miss surface so scorecards can separate live-hit ' +
-        'from recapture-hit; failed recapture leaves the original no_source classification intact.',
-      'Unit/fixture tests cover: (a) no_source terminal → recapture invoked once; (b) non-no_source ' +
-        'miss (e.g. possible_gate_miss / verification_reject) does not take this path; (c) recapture ' +
-        'success stamps recovery mode; (d) double-fire guard so a second terminal event does not ' +
-        'spawn a second recapture for the same job identity.',
+      'For armed jobs whose session is unproven/unknown/first-session (or equivalent ' +
+        'resolutionStatus), the active-window poll path evaluates or extends into the ' +
+        'complementary session half (BMO↔AMC) before emitting a terminal total-miss with ' +
+        'missClass=no_source solely because the first half emptied.',
+      'Jobs with an already-confirmed session (BMO-only or AMC-only with high-confidence ' +
+        'stamp) do not double-poll the opposite half; no false dual-session for confirmed ' +
+        'sessions.',
+      'Unit/fixture tests cover: (a) unproven session + empty first half → complementary ' +
+        'half polled or window extended before terminal no_source; (b) confirmed AMC ' +
+        'session → no BMO dual-session; (c) terminal classification records whether ' +
+        'dual-session was attempted (field or log attribute) so scorecards can attribute ' +
+        'session-miss vs true no_source.',
     ],
     fileHints: [
       'src/scheduler-active-window-poll.js',
-      'src/acquisition-commands.js',
-      'src/acquisition/anomaly.js',
-      'src/scheduler-pending-verdict-recovery.js',
+      'src/earnings-date/ session / resolution helpers',
+      'src/acquisition/anomaly.js or miss classification path',
     ],
     testHints: [
-      'unit: terminal no_source job fixture → recapture scheduled once with ticker+date',
-      'unit: missClass=possible_gate_miss → recapture path not invoked',
+      'unit: unproven session fixture → complementary half attempted before no_source',
+      'unit: confirmed BMO fixture → no AMC dual-session',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): possible_gate_miss rescue across issuer and newswire tiers',
+      'feat(acquisition): tri-state stealth readiness + runaway heartbeat anomaly',
     goal:
-      'Extend the possible_gate_miss rescue / operator-visible candidate path beyond SEC ' +
-      'so issuer and newswire tiers that found a document but failed the release-text gate ' +
-      'surface recoverable candidates (URLs + failure codes) the same way SEC does — ' +
-      'closing the multi-tier verification false-negative hole in RFC-012 Phase 2 under ' +
-      'umbrella #1587.',
+      'Expose stealth render tier readiness as an explicit tri-state (ready / degraded / ' +
+      'unready) with a live runaway-heartbeat anomaly so operators see stealth failover ' +
+      'health before an armed window — closing the RFC-012 Phase 2 stealth-operability ' +
+      'residual under umbrella #1587.',
     acceptanceCriteria: [
-      'When issuer or newswire tier fetch succeeds but classic release-text / identity gate ' +
-        'rejects, the miss path records missClass=possible_gate_miss (or a documented ' +
-        'tier-qualified equivalent) with the candidate URL(s), not a silent no_source that ' +
-        'hides that a document was found.',
-      'Total-miss / anomaly alerts for those tiers include the candidate release URL(s) for ' +
-        '!bot acquire pull recovery (same shape discipline as #2506 for verification_reject), ' +
-        'without requiring an operator to dig logs.',
-      'Unit tests: (a) issuer page fetched + gate reject → possible_gate_miss + URL present; ' +
-        '(b) newswire host hit + gate reject → same; (c) true empty/no-document path remains ' +
-        'no_source without false gate-miss labeling.',
+      'A pure readiness helper returns tri-state stealth readiness from probe/build/runtime ' +
+        'signals (not only boolean "process up"), and zero-ready or degraded stealth is ' +
+        'distinguishable from healthy.',
+      'When stealth polls are runaway (heartbeat gap or attempt rate above a documented ' +
+        'bound during an armed window), an anomaly or readiness problem is raised through ' +
+        'existing acquisition/status or anomaly surfaces without requiring log scrape.',
+      'Unit tests: (a) healthy probe → ready; (b) missing native/module or failed probe → ' +
+        'unready; (c) simulated runaway heartbeat → anomaly/degraded flag; (d) surface is ' +
+        'visible via acquire status or schedule-readiness style path.',
     ],
     fileHints: [
-      'src/acquisition/tiers/issuer.js',
-      'src/acquisition/tiers/newswire.js',
-      'src/acquisition/scoreboard.js',
-      'src/scheduler-active-window-poll.js',
+      'src/stealth.js / stealth probe path',
+      'src/acquisition/status.js or src/acquisition/tier-health.js',
       'src/acquisition/anomaly.js',
+      'src/schedule-readiness.js',
     ],
     testHints: [
-      'unit: synthetic issuer HTML without earnings lexicon → possible_gate_miss + url',
-      'unit: empty issuer listing → no_source, not gate_miss',
+      'unit: inject probe failure → unready',
+      'unit: inject heartbeat gap fixture → anomaly raised',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
-    title: 'feat(acquisition): weekly search-backend failover hit-rate metric',
+    title: 'feat(acquisition): auto-re-resolve worker driven by total-miss rows',
     goal:
-      'Publish a tested weekly (or rollup) metric for per-search-backend success and ' +
-      'failover share during armed windows so acquisition redundancy is measurable beyond ' +
-      'zero-healthy readiness — operators can see whether Brave/Perplexity/etc. actually ' +
-      'carried hits or the chain silently collapsed to SEC-only.',
+      'Drive an automatic, bounded IR/feed/wire re-resolve pass from durable total-miss ' +
+      'rows so acquisition redundancy heals broken issuer channel maps without waiting ' +
+      'for a manual registry edit — RFC-012 Phase 3 auto-re-resolve residual under ' +
+      'umbrella #1587.',
     acceptanceCriteria: [
-      'A pure aggregator over retrieval-health / provider-outcome records (or armed-window ' +
-        'tierOutcomes) computes per-backend attempt count, success count, and success share ' +
-        'for a documented window (e.g. last 7d), plus an overall multi-backend vs ' +
-        'single-backend-or-none summary.',
-      'The weekly acquisition scoreboard or detection weekly report path surfaces those ' +
-        'numbers (JSONL and/or status/control-room text) without requiring a live Discord scrape.',
-      'Unit tests with fixture provider-outcome rows: (a) two backends with mixed success → ' +
-        'correct per-backend rates; (b) zero attempts → null/unmeasurable not zero; ' +
-        '(c) single-backend-only week flagged distinctly from multi-backend healthy week.',
+      'After a terminal total-miss (documented missClasses e.g. no_source / ' +
+        'host_cooling_down with empty non-SEC channels), Lucy schedules at most one ' +
+        'bounded re-resolve attempt for that ticker\'s issuer channels (IR root / feed / ' +
+        'wire discovery helpers already in the tree), idempotent per job identity.',
+      'Successful re-resolve persists discoveries into the issuer registry (or equivalent ' +
+        'durable store used by knownNonSecChannels) so the next arm sees non-EDGAR ' +
+        'channels; failed re-resolve leaves prior registry intact and records the attempt ' +
+        'outcome.',
+      'Unit tests: (a) miss row with edgarOnly ticker → re-resolve invoked once; (b) second ' +
+        'miss same identity → no second concurrent re-resolve; (c) successful discovery ' +
+        'written to fixture registry; (d) non-eligible missClass does not trigger re-resolve.',
     ],
     fileHints: [
-      'src/retrieval-health.js',
-      'src/acquisition/scoreboard.js',
-      'scripts/detection-report.mjs',
-      'src/weekly-denominator-report.js or weekly acquisition scoreboard path',
+      'src/acquisition/feed-discovery.js',
+      'src/acquisition/issuer-url-resolver.js',
+      'src/acquisition/registry.js',
+      'src/acquisition/status.js (knownNonSecChannels)',
+      'miss / anomaly consumer path',
     ],
     testHints: [
-      'unit: fixture outcomes → per-backend successShare matches hand count',
-      'unit: empty window → unmeasurable, no divide-by-zero',
+      'unit: total-miss fixture → re-resolve once + registry update on success',
+      'unit: double-fire guard on same job identity',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
