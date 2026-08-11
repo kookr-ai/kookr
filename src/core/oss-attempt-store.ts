@@ -21,6 +21,55 @@ import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
 
 const OSS_ATTEMPTS_SCHEMA_VERSION = 1;
 
+/**
+ * Default retention window (ms) for terminal (`merged` / `closed`) OSS attempt
+ * records before {@link OssAttemptStore.pruneTerminalAttempts} may drop them.
+ * 90 days keeps recent dashboard/dedup history without unbounded growth.
+ * Override with `KOOKR_OSS_ATTEMPT_RETENTION_MS`. Rate-limit authority stays in
+ * the append-only contribution ledger, which this retention never rewrites.
+ */
+export const DEFAULT_OSS_ATTEMPT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Parse `KOOKR_OSS_ATTEMPT_RETENTION_MS` from process.env. Returns the default
+ * when the var is unset, blank, or unparseable. A value of `0` is honoured
+ * (prune every terminal attempt immediately); negative values fall back to the
+ * default rather than a surprising future cutoff.
+ */
+export function readOssAttemptRetentionMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  defaultMs = DEFAULT_OSS_ATTEMPT_RETENTION_MS,
+): number {
+  const raw = env.KOOKR_OSS_ATTEMPT_RETENTION_MS;
+  if (raw == null || raw.trim() === '') return defaultMs;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return defaultMs;
+  return parsed;
+}
+
+/**
+ * Ms timestamp at which an attempt entered a terminal (`merged` / `closed`)
+ * state, or `null` if it is still active (`scouted` / `pr_open`) or has no
+ * parseable terminal stamp. Prefers `closing.closedAt`, then the last history
+ * entry's `at`. Missing/unparseable stamps keep the record (conservative).
+ */
+function attemptTerminalAtMs(attempt: ContributionAttempt): number | null {
+  if (attempt.state !== 'merged' && attempt.state !== 'closed') return null;
+
+  if (attempt.closing?.closedAt) {
+    const closedMs = Date.parse(attempt.closing.closedAt);
+    if (!Number.isNaN(closedMs)) return closedMs;
+  }
+
+  const lastHistory = attempt.history[attempt.history.length - 1];
+  if (lastHistory?.at) {
+    const historyMs = Date.parse(lastHistory.at);
+    if (!Number.isNaN(historyMs)) return historyMs;
+  }
+
+  return null;
+}
+
 export type {
   AttemptState,
   ClosingInfo,
@@ -184,6 +233,48 @@ export class OssAttemptStore {
     this.lastRefreshIssueCheckErrors = Array.isArray(loaded.lastRefreshIssueCheckErrors)
       ? loaded.lastRefreshIssueCheckErrors
       : [];
+
+    // Compact aged terminal attempts so neither memory nor the next durable
+    // write grows without bound. Best-effort: a persist failure must not block
+    // startup — in-memory compaction already took effect for this process.
+    try {
+      const removed = this.pruneTerminalAttempts();
+      if (removed > 0) {
+        await this.save();
+      }
+    } catch (err) {
+      console.warn(
+        `[oss-attempt-store] Prune-on-load failed to persist compaction: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Drop attempts whose latest state is terminal (`merged` or `closed`) and
+   * whose terminal timestamp is older than `retentionMs`. Active states
+   * (`scouted`, `pr_open`) are never removed. Does not read or rewrite
+   * `contribution-ledger.jsonl` — rate-limit accounting stays intact.
+   *
+   * Compacts the in-memory array only; callers that need durability should
+   * `save()` (or rely on load-time auto-persist when removals occur). Returns
+   * the number of attempts pruned.
+   *
+   * A negative `retentionMs` is clamped to `0` (prune every already-terminal
+   * attempt) rather than treated as a future cutoff.
+   */
+  pruneTerminalAttempts(
+    retentionMs: number = readOssAttemptRetentionMsFromEnv(),
+  ): number {
+    const cutoffMs = Date.now() - Math.max(0, retentionMs);
+    const before = this.attempts.length;
+    this.attempts = this.attempts.filter((attempt) => {
+      const terminalMs = attemptTerminalAtMs(attempt);
+      // Keep active records and terminal records still inside the window (or
+      // with no parseable stamp — conservative retention).
+      if (terminalMs === null) return true;
+      return terminalMs >= cutoffMs;
+    });
+    return before - this.attempts.length;
   }
 
   /**
@@ -224,6 +315,14 @@ export class OssAttemptStore {
     // Ingest pr_created entries into the attempts list. Only external repos
     // get persisted attempts; internal-namespace entries still live in
     // `ledgerEntries` for rate-limit accounting but are not tracked as PRs.
+    //
+    // Aged entries (older than the terminal-attempt retention window) do not
+    // create *new* attempt rows: otherwise prune-on-load would be undone on
+    // every restart by re-upserting long-closed PRs as `pr_open`. Ledger
+    // entries themselves stay in `ledgerEntries` for rate-limit math.
+    const retentionMs = readOssAttemptRetentionMsFromEnv();
+    const ledgerCutoffMs = Date.now() - Math.max(0, retentionMs);
+
     for (const entry of this.ledgerEntries) {
       if (entry.action !== 'pr_created') continue;
       if (!isExternalRepo(entry.repo, this.ownNamespaces)) continue;
@@ -234,6 +333,15 @@ export class OssAttemptStore {
 
       const projectId = await ledgerEntryToProjectId(entry);
       const repo = projectIdToRepoVariants(projectId)[0] ?? entry.repo.toLowerCase();
+
+      const attemptId = `${repo}#${prNumber}`;
+      const alreadyTracked = this.attempts.some((a) => a.id === attemptId);
+      if (!alreadyTracked) {
+        const entryMs = Date.parse(entry.timestamp);
+        if (!Number.isNaN(entryMs) && entryMs < ledgerCutoffMs) {
+          continue;
+        }
+      }
 
       const upserted = this.upsertPr({
         repo,
@@ -273,6 +381,9 @@ export class OssAttemptStore {
     });
     try {
       await prev;
+      // Compact aged terminal attempts before every durable write so the on-disk
+      // file stays bounded even without a process restart (store-local GC).
+      this.pruneTerminalAttempts();
       const file: OssAttemptStoreFile = {
         schemaVersion: OSS_ATTEMPTS_SCHEMA_VERSION,
         attempts: this.attempts,
