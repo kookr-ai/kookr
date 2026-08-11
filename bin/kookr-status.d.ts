@@ -89,6 +89,9 @@ export interface HealthLike {
     oldestPauseAgeMs?: number | null;
     reclaimAttempted?: number;
     reclaimedTotal?: number;
+    softTtlMs?: number;
+    effectiveTtlMs?: number;
+    capacityEarlyReclaim?: boolean;
   };
   /** Non-critical timer pause gate (issue #1785 / #2230). */
   nonCriticalTimerPause?: {
@@ -172,6 +175,12 @@ export interface ProviderPausedOccupancySummary {
   oldestPauseAgeMs: number | null;
   reclaimAttempted: number;
   reclaimedTotal: number;
+  /** Soft TTL ms when published (issue #2225); null if absent. */
+  softTtlMs: number | null;
+  /** Effective TTL used on last pass (issue #2225); null if absent. */
+  effectiveTtlMs: number | null;
+  /** Whether capacity-aware early reclaim was active on last pass (issue #2225). */
+  capacityEarlyReclaim: boolean;
 }
 
 export interface NonCriticalTimerPauseSummary {

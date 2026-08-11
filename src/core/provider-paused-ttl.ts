@@ -27,11 +27,24 @@ import type { Task } from './task-read-model.js';
 export const DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS = 2 * 60 * 60_000;
 
 /**
+ * Soft TTL for capacity-aware early reclaim (issue #2225): 40 minutes.
+ * When the fleet has idle effective headroom (or sustained phantom/paused
+ * occupancy), reclaim uses this bound instead of waiting the full hard 2h.
+ */
+export const DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS = 40 * 60_000;
+
+/**
  * Hard max TTL: 6 hours. Operator override (env/settings) can lengthen the
  * hold for long free-tier cooldowns but never restore multi-day phantom holds
  * this feature exists to bound.
  */
 export const MAX_PROVIDER_PAUSED_HARD_TTL_MS = 6 * 60 * 60_000;
+
+/**
+ * Minimum soft TTL (issue #2225): 15 minutes — never early-reclaim faster than
+ * a short free-tier reset window.
+ */
+export const MIN_PROVIDER_PAUSED_SOFT_TTL_MS = 15 * 60_000;
 
 /** Cap task ids on the health occupancy snapshot. */
 export const MAX_PROVIDER_PAUSED_OCCUPANCY_TASK_IDS = 16;
@@ -169,7 +182,20 @@ export interface ProviderPausedTtlSelection {
 
 export interface SelectExpiredProviderPausedTasksOpts {
   now?: Date;
+  /** Hard TTL (default {@link DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS}). */
   ttlMs?: number;
+  /**
+   * Soft TTL for capacity-aware early reclaim (issue #2225). Used only when
+   * {@link capacityAllowsEarlyReclaim} is true. Defaults to
+   * {@link DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS}.
+   */
+  softTtlMs?: number;
+  /**
+   * When true, select candidates once pause age reaches the soft TTL instead
+   * of waiting for the hard 2h bound (issue #2225). Wire from capacity ledger
+   * (phantom/paused occupancy + free general-source slots).
+   */
+  capacityAllowsEarlyReclaim?: boolean;
   isProviderPaused: (task: Task) => boolean;
   /**
    * First-observed continuous pause start (ms). Missing start → skip
@@ -200,6 +226,46 @@ export interface SelectExpiredProviderPausedTasksOpts {
 }
 
 /**
+ * Effective TTL for one provider_paused selection pass (issue #2225).
+ * Capacity-aware early reclaim uses min(hard, soft); otherwise hard only.
+ */
+export function effectiveProviderPausedTtlMs(opts: {
+  ttlMs?: number;
+  softTtlMs?: number;
+  capacityAllowsEarlyReclaim?: boolean;
+}): number {
+  const hard = opts.ttlMs ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  if (!opts.capacityAllowsEarlyReclaim) return hard;
+  const soft = opts.softTtlMs ?? DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+  return Math.min(hard, Math.max(MIN_PROVIDER_PAUSED_SOFT_TTL_MS, soft));
+}
+
+/**
+ * Capacity gate for soft provider_paused reclaim (issue #2225 AC3).
+ *
+ * Fires when the fleet has free general-source headroom AND sustained
+ * phantom/paused occupancy — the live shape where hard-TTL under-TTL skips
+ * dominate while product work could still launch into free slots.
+ */
+export function capacityAllowsProviderPausedEarlyReclaim(input: {
+  phantomActive: number;
+  providerPausedCount: number;
+  freeForGeneralSources: number;
+  /** Minimum free general slots (default 3). */
+  freeBound?: number;
+  /** Minimum phantom+paused occupancy (default 4). */
+  occupancyBound?: number;
+}): boolean {
+  const freeBound = input.freeBound ?? 3;
+  const occupancyBound = input.occupancyBound ?? 4;
+  const free = input.freeForGeneralSources;
+  if (!Number.isFinite(free) || free < freeBound) return false;
+  const occupancy =
+    Math.max(0, input.phantomActive) + Math.max(0, input.providerPausedCount);
+  return occupancy >= occupancyBound;
+}
+
+/**
  * Effective continuous-pause start for hard TTL (issue #2079).
  * Later of first-observed pause latch and last liveness activity — so sticky
  * historical billing events do not accumulate age while the agent works.
@@ -220,9 +286,13 @@ export function effectiveProviderPausedStartMs(
 }
 
 /**
- * Pure selection of provider_paused tasks past the hard TTL (issue #2079).
+ * Pure selection of provider_paused tasks past the (hard or soft) TTL
+ * (issues #2079 / #2225).
  *
- * Boundary is inclusive: `pausedForMs >= ttlMs` selects. Guards (order):
+ * Boundary is inclusive: `pausedForMs >= effectiveTtlMs` selects. When
+ * {@link SelectExpiredProviderPausedTasksOpts.capacityAllowsEarlyReclaim} is
+ * true, effective TTL is min(hard, soft) so aged pauses free slots without
+ * waiting the full 2h hard bound. Guards (order):
  * - only `status === 'inProgress'` without `completion_ready`;
  * - `isProviderPaused` must return true;
  * - missing pause start → `skipped_no_pause_start`;
@@ -237,7 +307,11 @@ export function selectExpiredProviderPausedTasks(
   opts: SelectExpiredProviderPausedTasksOpts,
 ): ProviderPausedTtlSelection {
   const nowMs = (opts.now ?? new Date()).getTime();
-  const ttlMs = opts.ttlMs ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  const ttlMs = effectiveProviderPausedTtlMs({
+    ttlMs: opts.ttlMs,
+    softTtlMs: opts.softTtlMs,
+    capacityAllowsEarlyReclaim: opts.capacityAllowsEarlyReclaim,
+  });
   const out: ExpiredProviderPausedEntry[] = [];
   const skips = emptyProviderPausedTtlSkipCounts();
   const outcomes: ProviderPausedTtlCandidateOutcome[] = [];

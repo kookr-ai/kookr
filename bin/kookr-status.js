@@ -362,6 +362,13 @@ function summarizeProviderPausedOccupancy(health) {
   const reclaimedTotalRaw = Number(
     /** @type {{ reclaimedTotal?: unknown }} */ (block).reclaimedTotal,
   );
+  const softTtlRaw = Number(/** @type {{ softTtlMs?: unknown }} */ (block).softTtlMs);
+  const effectiveTtlRaw = Number(
+    /** @type {{ effectiveTtlMs?: unknown }} */ (block).effectiveTtlMs,
+  );
+  const capacityEarlyReclaim = Boolean(
+    /** @type {{ capacityEarlyReclaim?: unknown }} */ (block).capacityEarlyReclaim,
+  );
   return {
     count: Math.floor(countRaw),
     oldestPauseAgeMs,
@@ -373,6 +380,14 @@ function summarizeProviderPausedOccupancy(health) {
       Number.isFinite(reclaimedTotalRaw) && reclaimedTotalRaw >= 0
         ? Math.floor(reclaimedTotalRaw)
         : 0,
+    // Issue #2225: soft/capacity early reclaim policy (optional on older servers).
+    softTtlMs:
+      Number.isFinite(softTtlRaw) && softTtlRaw > 0 ? Math.floor(softTtlRaw) : null,
+    effectiveTtlMs:
+      Number.isFinite(effectiveTtlRaw) && effectiveTtlRaw > 0
+        ? Math.floor(effectiveTtlRaw)
+        : null,
+    capacityEarlyReclaim,
   };
 }
 
@@ -675,11 +690,18 @@ function renderReport({ port, health, agents }) {
       providerPaused.oldestPauseAgeMs === null
         ? 'unknown'
         : formatUptime(providerPaused.oldestPauseAgeMs);
+    const softPart =
+      providerPaused.capacityEarlyReclaim && providerPaused.effectiveTtlMs
+        ? `  earlyReclaim=on effectiveTtl=${formatUptime(providerPaused.effectiveTtlMs)}`
+        : providerPaused.capacityEarlyReclaim
+          ? '  earlyReclaim=on'
+          : '';
     lines.push(
       `Provider-paused occupancy: count=${providerPaused.count}` +
         `  oldest=${oldest}` +
         `  reclaimAttempted=${providerPaused.reclaimAttempted}` +
-        `  reclaimedTotal=${providerPaused.reclaimedTotal}`,
+        `  reclaimedTotal=${providerPaused.reclaimedTotal}` +
+        softPart,
     );
   }
 

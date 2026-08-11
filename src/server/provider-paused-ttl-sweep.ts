@@ -4,7 +4,9 @@ import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
   emptyProviderPausedTtlSkipCounts,
+  effectiveProviderPausedTtlMs,
   providerPausedOpenPrFailsafeSkipTotal,
   selectExpiredProviderPausedTasks,
   summarizeProviderPausedOccupancy,
@@ -114,6 +116,16 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
   lastAttemptedTaskIds: string[];
   /** Configured hard TTL (ms) last used for selection. */
   hardTtlMs: number;
+  /**
+   * Soft TTL (ms) for capacity-aware early reclaim (issue #2225). Present when
+   * the sweep supports soft reclaim; equals the soft bound even when the last
+   * pass used the hard TTL only.
+   */
+  softTtlMs: number;
+  /** Effective TTL used on the last selection pass (hard or min(hard, soft)). */
+  effectiveTtlMs: number;
+  /** Whether the last pass enabled capacity-aware early reclaim (issue #2225). */
+  capacityEarlyReclaim: boolean;
 }
 
 /**
@@ -134,6 +146,9 @@ export class ProviderPausedOccupancyMetrics {
     taskIds: [],
   };
   private hardTtlMs = DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  private softTtlMs = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+  private effectiveTtlMs = DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  private capacityEarlyReclaim = false;
 
   recordOccupancy(snapshot: ProviderPausedOccupancySnapshot): void {
     this.lastOccupancy = {
@@ -146,6 +161,31 @@ export class ProviderPausedOccupancyMetrics {
   recordHardTtlMs(ttlMs: number): void {
     if (typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0) {
       this.hardTtlMs = Math.floor(ttlMs);
+    }
+  }
+
+  /** Soft TTL + capacity gate for the last selection pass (issue #2225). */
+  recordSoftTtlPolicy(opts: {
+    softTtlMs?: number;
+    capacityAllowsEarlyReclaim?: boolean;
+    effectiveTtlMs?: number;
+  }): void {
+    if (typeof opts.softTtlMs === 'number' && Number.isFinite(opts.softTtlMs) && opts.softTtlMs > 0) {
+      this.softTtlMs = Math.floor(opts.softTtlMs);
+    }
+    this.capacityEarlyReclaim = opts.capacityAllowsEarlyReclaim === true;
+    if (
+      typeof opts.effectiveTtlMs === 'number'
+      && Number.isFinite(opts.effectiveTtlMs)
+      && opts.effectiveTtlMs > 0
+    ) {
+      this.effectiveTtlMs = Math.floor(opts.effectiveTtlMs);
+    } else {
+      this.effectiveTtlMs = effectiveProviderPausedTtlMs({
+        ttlMs: this.hardTtlMs,
+        softTtlMs: this.softTtlMs,
+        capacityAllowsEarlyReclaim: this.capacityEarlyReclaim,
+      });
     }
   }
 
@@ -195,6 +235,9 @@ export class ProviderPausedOccupancyMetrics {
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
       hardTtlMs: this.hardTtlMs,
+      softTtlMs: this.softTtlMs,
+      effectiveTtlMs: this.effectiveTtlMs,
+      capacityEarlyReclaim: this.capacityEarlyReclaim,
     };
   }
 }
@@ -225,6 +268,16 @@ export interface ReclaimProviderPausedTasksDeps {
     detail?: string,
   ) => { holdForResume: boolean } | void;
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
+  /**
+   * Soft TTL for capacity-aware early reclaim (issue #2225). Defaults to
+   * {@link DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS} when capacity allows early reclaim.
+   */
+  softTtlMs?: number;
+  /**
+   * When true, select at the soft TTL instead of only the hard 2h bound
+   * (issue #2225). Wire from capacity ledger + occupancy.
+   */
+  capacityAllowsEarlyReclaim?: boolean;
   metrics?: Pick<
     ProviderPausedOccupancyMetrics,
     | 'recordReclaimed'
@@ -232,6 +285,7 @@ export interface ReclaimProviderPausedTasksDeps {
     | 'recordSelection'
     | 'recordOccupancy'
     | 'recordHardTtlMs'
+    | 'recordSoftTtlPolicy'
   >;
 }
 
@@ -278,11 +332,29 @@ export function buildProviderPausedTtlDisposition(at: string): TaskDisposition {
  */
 export async function reclaimAgedProviderPausedTasks(
   deps: ReclaimProviderPausedTasksDeps,
-  opts: { now?: Date; ttlMs?: number } = {},
+  opts: {
+    now?: Date;
+    ttlMs?: number;
+    softTtlMs?: number;
+    capacityAllowsEarlyReclaim?: boolean;
+  } = {},
 ): Promise<ReclaimProviderPausedTasksResult> {
   const now = opts.now ?? new Date();
   const nowMs = now.getTime();
-  const ttlMs = opts.ttlMs ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  const hardTtlMs = opts.ttlMs ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
+  const softTtlMs =
+    opts.softTtlMs
+    ?? deps.softTtlMs
+    ?? DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+  const capacityAllowsEarlyReclaim =
+    opts.capacityAllowsEarlyReclaim
+    ?? deps.capacityAllowsEarlyReclaim
+    ?? false;
+  const ttlMs = effectiveProviderPausedTtlMs({
+    ttlMs: hardTtlMs,
+    softTtlMs,
+    capacityAllowsEarlyReclaim,
+  });
   const tasks = deps.taskStore.listTasks();
 
   const getPauseStartedAtMs = deps.pauseStartTracker.observeAll(
@@ -297,7 +369,12 @@ export async function reclaimAgedProviderPausedTasks(
     getPauseStartedAtMs: (task) => getPauseStartedAtMs(task),
   });
   deps.metrics?.recordOccupancy(occupancy);
-  deps.metrics?.recordHardTtlMs(ttlMs);
+  deps.metrics?.recordHardTtlMs(hardTtlMs);
+  deps.metrics?.recordSoftTtlPolicy({
+    softTtlMs,
+    capacityAllowsEarlyReclaim,
+    effectiveTtlMs: ttlMs,
+  });
 
   const lifecycleDeps = deps.lifecycleDeps;
   if (!lifecycleDeps) {
@@ -306,7 +383,9 @@ export async function reclaimAgedProviderPausedTasks(
 
   const selection = selectExpiredProviderPausedTasks(tasks, {
     now,
-    ttlMs,
+    ttlMs: hardTtlMs,
+    softTtlMs,
+    capacityAllowsEarlyReclaim,
     isProviderPaused: deps.isProviderPaused,
     getPauseStartedAtMs: (task) => getPauseStartedAtMs(task),
     getLastActivityAtMs: (task) => {
@@ -354,7 +433,9 @@ export async function reclaimAgedProviderPausedTasks(
         reason: 'timeout',
         detail:
           `provider-paused-ttl: paused for ${Math.round(pausedForMs / 1000)}s `
-          + `(threshold ${Math.round(ttlMs / 1000)}s)`,
+          + `(threshold ${Math.round(ttlMs / 1000)}s`
+          + (capacityAllowsEarlyReclaim && ttlMs < hardTtlMs ? ', soft/capacity' : '')
+          + `)`,
       });
     } catch (err) {
       console.warn(
@@ -408,11 +489,19 @@ export async function reclaimAgedProviderPausedTasks(
     deps.broadcastToAll?.({
       type: 'alert',
       agentId: '',
-      summary: `Reclaimed ${reclaimedTaskIds.length} provider_paused task(s) (hard TTL)`,
+      summary:
+        `Reclaimed ${reclaimedTaskIds.length} provider_paused task(s) `
+        + (capacityAllowsEarlyReclaim && ttlMs < hardTtlMs
+          ? '(soft TTL / capacity)'
+          : '(hard TTL)'),
       details:
-        'These tasks were provider_paused (billing/quota) past providerPausedHardTtl '
-        + 'and were terminated to free active concurrency slots. Disposition is needs-human '
-        + '(never auto-completed as delivered). Review the disposition ledger.',
+        'These tasks were provider_paused (billing/quota) past the effective TTL '
+        + `(${Math.round(ttlMs / 60_000)}m`
+        + (capacityAllowsEarlyReclaim && ttlMs < hardTtlMs
+          ? `; soft capacity-aware bound, hard ${Math.round(hardTtlMs / 60_000)}m`
+          : '')
+        + ') and were terminated to free active concurrency slots. Disposition is '
+        + 'needs-human (never auto-completed as delivered). Review the disposition ledger.',
       severity: 'warning',
     });
 

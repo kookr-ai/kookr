@@ -510,6 +510,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // skip-reason breakdown) onto /api/health. Cheap in-memory read only —
     // never a fresh reclaim scan on this path.
     const hungSuspectTtlReclaimSnapshot = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
+    // Issue #2225: why open_pr_failsafe holds reclaim (delivery_open vs
+    // delivery_state_unknown) with sample taskIds + PR linkage.
+    const openPrFailsafeByReason = deps.openPrFailsafeReasonMetrics?.getSnapshot();
     const hungSuspectTtlReclaimBlock = hungSuspectTtlReclaimSnapshot
       ? {
           reclaimedTotal: hungSuspectTtlReclaimSnapshot.reclaimedTotal,
@@ -527,6 +530,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           // can map hungSuspect candidates to skip/attempt classes.
           lastOutcomes: hungSuspectTtlReclaimSnapshot.lastOutcomes,
           lastAttemptedTaskIds: hungSuspectTtlReclaimSnapshot.lastAttemptedTaskIds,
+          ...(openPrFailsafeByReason ? { openPrFailsafeByReason } : {}),
         }
       : undefined;
 
@@ -582,6 +586,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           lastOutcomes: providerPausedOccupancySnapshot.lastOutcomes,
           lastAttemptedTaskIds: providerPausedOccupancySnapshot.lastAttemptedTaskIds,
           hardTtlMs: providerPausedOccupancySnapshot.hardTtlMs,
+          // Issue #2225: soft TTL + capacity-aware early reclaim policy.
+          softTtlMs: providerPausedOccupancySnapshot.softTtlMs,
+          effectiveTtlMs: providerPausedOccupancySnapshot.effectiveTtlMs,
+          capacityEarlyReclaim: providerPausedOccupancySnapshot.capacityEarlyReclaim,
         }
       : undefined;
 
