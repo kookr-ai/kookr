@@ -62,7 +62,6 @@ describe('escalateKill', () => {
       { pid: 11, sig: 'SIGTERM' },
     ]);
     expect(sleep).not.toHaveBeenCalled();
-    expect(calls.some((c) => c.sig === 'SIGKILL')).toBe(false);
   });
 
   it('waits one grace period then SIGKILLs only survivors', async () => {
@@ -130,11 +129,11 @@ describe('escalateKill', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('skips pids already dead before the TERM sweep (no signal to gone pids after early skip via isAlive only on KILL path)', async () => {
+  it('TERMs listed pids even when already dead, then skips sleep and KILL', async () => {
     // TERM is always attempted for every listed pid (caller already decided
-    // they should be reaped); KILL is gated on isAlive after grace. Model a
-    // pid that was never alive — TERM still fires (production signaler
-    // swallows ESRCH), KILL does not.
+    // they should be reaped); KILL is gated on isAlive after grace. Model
+    // pids that were never alive — TERM still fires (production signaler
+    // swallows ESRCH), then the all-dead check early-returns.
     const { signaler, calls } = createFakeSignaler([]); // none alive
     const sleep = vi.fn(async () => {});
 
