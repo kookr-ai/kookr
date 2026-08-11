@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { ApiError, getEffectiveHookSettings } from '../api/index.js';
 
@@ -16,14 +17,12 @@ interface Props {
 export function EffectiveHookSettingsModal({ sessionId, onClose }: Props): React.ReactElement {
   const [data, setData] = useState<EffectiveHookSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const titleId = 'effective-hook-settings-title';
 
   useEscapeToClose(onClose);
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-  }, []);
+  useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +53,7 @@ export function EffectiveHookSettingsModal({ sessionId, onClose }: Props): React
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="dialog effective-hook-settings-dialog"
         role="dialog"
         aria-modal="true"
