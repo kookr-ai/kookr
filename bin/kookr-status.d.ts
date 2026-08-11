@@ -45,6 +45,25 @@ export interface StaleProcessClassHealthLike {
   rssBytes?: number;
 }
 
+export interface CapacityByClassHealthLike {
+  working?: number;
+  finishedAwaitingAck?: number;
+  hungSuspect?: number;
+  launching?: number;
+}
+
+export interface CapacityHealthLike {
+  maxActiveTasks?: number;
+  active?: number;
+  free?: number;
+  byClass?: CapacityByClassHealthLike;
+  effectiveWorking?: number;
+  phantomActive?: number;
+  utilizationPct?: number;
+  effectiveUtilizationPct?: number;
+  freeForGeneralSources?: number;
+}
+
 export interface HealthLike {
   status?: string;
   serverStartedAt?: string;
@@ -64,10 +83,30 @@ export interface HealthLike {
   };
   /** Process-lifetime first-hook miss reaps (issue #2036 / #2235). */
   firstHookMissTotal?: number;
+  capacity?: CapacityHealthLike;
 }
 
 export interface FirstHookMissSummary {
   firstHookMissTotal: number;
+}
+
+export interface CapacityByClassSummary {
+  working: number;
+  finishedAwaitingAck: number;
+  hungSuspect: number;
+  launching: number;
+}
+
+export interface CapacitySummary {
+  maxActiveTasks: number;
+  active: number;
+  free: number;
+  effectiveWorking: number;
+  phantomActive: number;
+  utilizationPct: number;
+  effectiveUtilizationPct: number;
+  byClass: CapacityByClassSummary;
+  freeForGeneralSources?: number;
 }
 
 export interface PipelineStarvationSummaryRow {
@@ -135,6 +174,10 @@ export function summarizePayloadDiet(
 export function summarizeFirstHookMiss(
   health: HealthLike,
 ): FirstHookMissSummary | null;
+export function summarizeCapacity(
+  health: HealthLike,
+): CapacitySummary | null;
+export function formatUtilPct(pct: number): string;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;
