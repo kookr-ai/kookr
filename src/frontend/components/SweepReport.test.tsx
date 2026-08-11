@@ -16,6 +16,33 @@ function syncGlobalStore() {
   useKookrStore.setState(nextData);
 }
 
+function flush() {
+  return act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function sendEscape(): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
+function sendTab(shiftKey = false): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key: 'Tab',
+    shiftKey,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
 function makeRow(overrides: Partial<SweepReportRow> & Pick<SweepReportRow, 'bucket'>): SweepReportRow {
   return {
     projectId: 'github.com/acme/default-project',
@@ -367,5 +394,88 @@ describe('SweepReport', () => {
 
     expect(useKookrStore.getState().sweepReportOpen).toBe(false);
     expect(container.querySelector('[data-testid="sweep-report-panel"]')).toBeNull();
+  });
+
+  test('bulk-remove confirm: Escape closes without deleting paths', async () => {
+    useKookrStore.setState({ sweepReport: makeReport(), sweepReportOpen: true });
+
+    render();
+
+    const bulkButton = container.querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-remove"]');
+    expect(bulkButton).not.toBeNull();
+    bulkButton!.focus();
+    await act(async () => {
+      bulkButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="sweep-report-bulk-confirm"]')).not.toBeNull();
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-testid="sweep-report-bulk-cancel"]'),
+    );
+
+    await act(async () => {
+      sendEscape();
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="sweep-report-bulk-confirm"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(useKookrStore.getState().bulkRemoveRunning).toBe(false);
+  });
+
+  test('bulk-remove confirm: focuses Cancel and traps Tab between Cancel and Remove', async () => {
+    useKookrStore.setState({ sweepReport: makeReport(), sweepReportOpen: true });
+
+    render();
+
+    const bulkButton = container.querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-remove"]');
+    expect(bulkButton).not.toBeNull();
+    bulkButton!.focus();
+    await act(async () => {
+      bulkButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const cancel = container.querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-cancel"]');
+    const confirm = container.querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-confirm-go"]');
+    expect(cancel).not.toBeNull();
+    expect(confirm).not.toBeNull();
+    expect(document.activeElement).toBe(cancel);
+
+    confirm!.focus();
+    const forwardWrap = sendTab();
+    expect(document.activeElement).toBe(cancel);
+    expect(forwardWrap.defaultPrevented).toBe(true);
+
+    cancel!.focus();
+    const backwardWrap = sendTab(true);
+    expect(document.activeElement).toBe(confirm);
+    expect(backwardWrap.defaultPrevented).toBe(true);
+  });
+
+  test('bulk-remove confirm: Cancel click restores focus to the bulk-remove trigger', async () => {
+    useKookrStore.setState({ sweepReport: makeReport(), sweepReportOpen: true });
+
+    render();
+
+    const bulkButton = container.querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-remove"]');
+    expect(bulkButton).not.toBeNull();
+    bulkButton!.focus();
+    await act(async () => {
+      bulkButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="sweep-report-bulk-cancel"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="sweep-report-bulk-confirm"]')).toBeNull();
+    expect(document.activeElement).toBe(bulkButton);
+    expect(send).not.toHaveBeenCalled();
   });
 });

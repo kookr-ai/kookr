@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
+import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import type { ClientMessage, SweepReportBucketSummary, SweepReportRow } from '../../shared/protocol.js';
 import { ClassificationBadge } from './cleanup-classification-badge.js';
 import { formatAge } from './cleanup-row-format.js';
@@ -16,6 +18,83 @@ type SortMode = 'default' | 'footprint-desc';
  * checkboxes, button, and confirm — without disturbing the read-only report.
  */
 const BULK_REMOVE_ENABLED = true;
+
+interface BulkRemoveConfirmDialogProps {
+  selectedCount: number;
+  sensitiveSelectedCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+/**
+ * Destructive bulk path-remove confirm. Mounted only while open so
+ * Escape-to-close and the focus trap attach for the dialog lifetime only —
+ * same pattern as SweepButton's SweepConfirmDialog.
+ */
+function BulkRemoveConfirmDialog({
+  selectedCount,
+  sensitiveSelectedCount,
+  onCancel,
+  onConfirm,
+}: BulkRemoveConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  useEscapeToClose(onCancel);
+  useDialogFocus({ dialogRef, initialFocusRef: cancelButtonRef });
+
+  return (
+    <div
+      ref={dialogRef}
+      className="sweep-confirm-backdrop"
+      data-testid="sweep-report-bulk-confirm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sweep-report-bulk-confirm-title"
+    >
+      <div className="sweep-confirm-dialog">
+        <h3 className="sweep-confirm-title" id="sweep-report-bulk-confirm-title">
+          Remove {selectedCount} worktree path(s)
+        </h3>
+        <p>
+          Kookr will delete the working directory of each selected worktree and{' '}
+          <strong>keep its branch and commits</strong>. Everything in those directories that is
+          not committed is deleted — including gitignored files (<code>.env</code>, local
+          databases, build output).
+        </p>
+        {sensitiveSelectedCount > 0 && (
+          <p className="sweep-confirm-warning" data-testid="sweep-report-bulk-sensitive-warning">
+            ⚠ {sensitiveSelectedCount} selected worktree(s) hold gitignored files that are{' '}
+            <strong>not</strong> just regenerable build output. Those files will be permanently
+            deleted.
+          </p>
+        )}
+        <p className="sweep-confirm-hint">
+          Branches and their commits stay reachable in each repo — only the working directories
+          are removed.
+        </p>
+        <div className="sweep-confirm-actions">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            className="sweep-confirm-cancel"
+            data-testid="sweep-report-bulk-cancel"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="sweep-confirm-go"
+            data-testid="sweep-report-bulk-confirm-go"
+            onClick={onConfirm}
+          >
+            Remove {selectedCount} path(s)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function shortProjectLabel(projectId: string): string {
   const parts = projectId.split('/').filter(Boolean);
@@ -363,51 +442,12 @@ export function SweepReport({ send }: Props) {
       </div>
 
       {confirmingBulk && (
-        <div
-          className="sweep-confirm-backdrop"
-          data-testid="sweep-report-bulk-confirm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="sweep-confirm-dialog">
-            <h3 className="sweep-confirm-title">Remove {selectedCount} worktree path(s)</h3>
-            <p>
-              Kookr will delete the working directory of each selected worktree and{' '}
-              <strong>keep its branch and commits</strong>. Everything in those directories that is
-              not committed is deleted — including gitignored files (<code>.env</code>, local
-              databases, build output).
-            </p>
-            {sensitiveSelectedCount > 0 && (
-              <p className="sweep-confirm-warning" data-testid="sweep-report-bulk-sensitive-warning">
-                ⚠ {sensitiveSelectedCount} selected worktree(s) hold gitignored files that are{' '}
-                <strong>not</strong> just regenerable build output. Those files will be permanently
-                deleted.
-              </p>
-            )}
-            <p className="sweep-confirm-hint">
-              Branches and their commits stay reachable in each repo — only the working directories
-              are removed.
-            </p>
-            <div className="sweep-confirm-actions">
-              <button
-                type="button"
-                className="sweep-confirm-cancel"
-                data-testid="sweep-report-bulk-cancel"
-                onClick={() => setConfirmingBulk(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="sweep-confirm-go"
-                data-testid="sweep-report-bulk-confirm-go"
-                onClick={triggerBulkRemove}
-              >
-                Remove {selectedCount} path(s)
-              </button>
-            </div>
-          </div>
-        </div>
+        <BulkRemoveConfirmDialog
+          selectedCount={selectedCount}
+          sensitiveSelectedCount={sensitiveSelectedCount}
+          onCancel={() => setConfirmingBulk(false)}
+          onConfirm={triggerBulkRemove}
+        />
       )}
     </section>
   );
