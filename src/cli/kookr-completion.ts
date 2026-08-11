@@ -87,7 +87,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'doctor',
-    flags: ['--json', '-h', '--help'],
+    flags: ['--json', '--strict', '-h', '--help'],
   },
   {
     name: 'status',
