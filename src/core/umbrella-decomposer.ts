@@ -1026,113 +1026,110 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Wave-1 residual leaves
- * (#2082–#2085 readiness / EDGAR-only / epic sync), follow-ons (#2351–#2354,
- * #2422–#2424 newswire gate / interval backoff / tier-health), and invent
- * wave 2 (#2518–#2520 no_source recapture / multi-tier gate-miss / backend
- * hit-rate) shipped and are title-exhausted. Invent wave 3 (queue-feeder
- * 2026-08-11, invent-product-wave #2069) covers still-open RFC-012 residuals
- * under the acquisition-redundancy umbrella: dual-session BMO↔AMC coverage
- * before terminal no_source (LEVI), tri-state stealth readiness + runaway
- * heartbeat anomaly, and an auto-re-resolve worker driven by total-miss rows.
- * Live GitHub leaves #2551–#2553. Title idempotency prevents re-emit once
- * those exist.
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–3 residual leaves
+ * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553) shipped and
+ * are title-exhausted. Invent wave 4 (queue-feeder 2026-08-11, invent-product-
+ * wave #2069) covers still-open RFC-012 residuals under the acquisition-
+ * redundancy umbrella: resolutionStatus-gated auto-arm for phantom single-
+ * source estimates (§5.4), append-only detections.jsonl rotation instead of
+ * in-place prune rewrite (§5.1), and confirmed-date total-miss quiet-hours
+ * bypass (§5.7). Live GitHub leaves #2609–#2611. Title idempotency prevents
+ * re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): dual-session BMO↔AMC coverage before terminal no_source (LEVI)',
+      'feat(acquisition): gate auto-arm on resolutionStatus for single_source_estimate (phantom-date policy)',
     goal:
-      'When session is unproven or first-session for an armed earnings job, cover both ' +
-      'BMO and AMC halves (extend or dual-session poll) before classifying a terminal ' +
-      'no_source miss — the LEVI-class session-correctness hole under RFC-012 Phase 1 / ' +
-      'umbrella #1587 so redundancy is not wasted on the wrong half-day window.',
+      'Gate auto-arm of uncorroborated earnings dates on resolutionStatus so a bare ' +
+      'single_source_estimate (and equivalent low-trust statuses) routes to ' +
+      'propose-and-confirm instead of silently arming a phantom window — the RFC-012 ' +
+      '§5.4 residual under umbrella #1587 / RVSN-class phantom-date policy.',
     acceptanceCriteria: [
-      'For armed jobs whose session is unproven/unknown/first-session (or equivalent ' +
-        'resolutionStatus), the active-window poll path evaluates or extends into the ' +
-        'complementary session half (BMO↔AMC) before emitting a terminal total-miss with ' +
-        'missClass=no_source solely because the first half emptied.',
-      'Jobs with an already-confirmed session (BMO-only or AMC-only with high-confidence ' +
-        'stamp) do not double-poll the opposite half; no false dual-session for confirmed ' +
-        'sessions.',
-      'Unit/fixture tests cover: (a) unproven session + empty first half → complementary ' +
-        'half polled or window extended before terminal no_source; (b) confirmed AMC ' +
-        'session → no BMO dual-session; (c) terminal classification records whether ' +
-        'dual-session was attempted (field or log attribute) so scorecards can attribute ' +
-        'session-miss vs true no_source.',
+      'shouldAutoArmWithoutReview (or the shared auto-arm gate used by ' +
+        'rearmWatchlistEntries and watchlist arm paths) refuses auto-arm when ' +
+        'resolutionStatus is single_source_estimate / pattern_estimated / equivalent ' +
+        'low-trust statuses, even when source/confidence would previously allow arming.',
+      'Official/confirmed resolution statuses (e.g. official_confirmed, high-trust ' +
+        'third-party confirmed) still auto-arm without review; conflict/unknown ' +
+        'statuses remain non-auto-arm.',
+      'Unit/fixture tests cover: (a) single_source_estimate → no auto-arm, ' +
+        'enqueue/review path; (b) official_confirmed → auto-arm; (c) ' +
+        'rearmWatchlistEntries does not arm a single_source_estimate watchlist entry.',
     ],
     fileHints: [
-      'src/scheduler-active-window-poll.js',
-      'src/earnings-date/ session / resolution helpers',
-      'src/acquisition/anomaly.js or miss classification path',
+      'src/earnings-date/policy.js',
+      'src/scheduler-maintenance.js (rearmWatchlistEntries)',
+      'src/watchlist-commands.js',
+      'src/earnings-date/contracts.js',
     ],
     testHints: [
-      'unit: unproven session fixture → complementary half attempted before no_source',
-      'unit: confirmed BMO fixture → no AMC dual-session',
+      'unit: single_source_estimate fixture → shouldAutoArmWithoutReview false',
+      'unit: official_confirmed fixture → true',
+      'unit: rearm path skips low-trust resolutionStatus',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): tri-state stealth readiness + runaway heartbeat anomaly',
+      'feat(acquisition): append-only detections.jsonl rotation (no in-place prune rewrite)',
     goal:
-      'Expose stealth render tier readiness as an explicit tri-state (ready / degraded / ' +
-      'unready) with a live runaway-heartbeat anomaly so operators see stealth failover ' +
-      'health before an armed window — closing the RFC-012 Phase 2 stealth-operability ' +
-      'residual under umbrella #1587.',
+      'Replace in-place detections.jsonl prune rewrite with append-only rotation to a ' +
+      'dated archive so the forensic miss trail RFC-012 was built from is never ' +
+      'silently truncated mid-file — Phase 2 residual under umbrella #1587 / RFC-012 §5.1.',
     acceptanceCriteria: [
-      'A pure readiness helper returns tri-state stealth readiness from probe/build/runtime ' +
-        'signals (not only boolean "process up"), and zero-ready or degraded stealth is ' +
-        'distinguishable from healthy.',
-      'When stealth polls are runaway (heartbeat gap or attempt rate above a documented ' +
-        'bound during an armed window), an anomaly or readiness problem is raised through ' +
-        'existing acquisition/status or anomaly surfaces without requiring log scrape.',
-      'Unit tests: (a) healthy probe → ready; (b) missing native/module or failed probe → ' +
-        'unready; (c) simulated runaway heartbeat → anomaly/degraded flag; (d) surface is ' +
-        'visible via acquire status or schedule-readiness style path.',
+      'When the detections ledger exceeds its row cap, older rows are moved to a dated ' +
+        'archive file (or equivalent append-only rotated artifact under the data root) ' +
+        'before the live ledger retains only the newest window — no silent mid-file ' +
+        'rewrite that destroys older rows without an archive copy.',
+      'Append hot path remains append-only and concurrent-safe with rotation (existing ' +
+        'flush/lock contract preserved or strengthened); rotation is throttled like ' +
+        "today's prune so maintenance can call it freely.",
+      'Unit/fixture tests cover: (a) over-cap ledger → archive contains dropped prefix ' +
+        'rows and live file keeps newest N; (b) under-cap → no rotation; (c) concurrent ' +
+        'append during rotation does not lose a row (lock/race fixture).',
     ],
     fileHints: [
-      'src/stealth.js / stealth probe path',
-      'src/acquisition/status.js or src/acquisition/tier-health.js',
-      'src/acquisition/anomaly.js',
-      'src/schedule-readiness.js',
+      'src/detections.js (pruneDetectionsLedger)',
+      'src/scheduler.js (maintenance call site)',
+      'tests under test/ for detections prune/rotation',
     ],
     testHints: [
-      'unit: inject probe failure → unready',
-      'unit: inject heartbeat gap fixture → anomaly raised',
+      'unit: over-cap fixture → archive + truncated live head',
+      'unit: under-cap → no-op',
+      'unit: lock held across rewrite/rotation',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
-    title: 'feat(acquisition): auto-re-resolve worker driven by total-miss rows',
+    title:
+      'feat(acquisition): confirmed-date total-miss alerts bypass quiet-hours drop',
     goal:
-      'Drive an automatic, bounded IR/feed/wire re-resolve pass from durable total-miss ' +
-      'rows so acquisition redundancy heals broken issuer channel maps without waiting ' +
-      'for a manual registry edit — RFC-012 Phase 3 auto-re-resolve residual under ' +
-      'umbrella #1587.',
+      'Ensure confirmed-date acquisition total-miss alerts are not hard-dropped by ' +
+      'quiet-hours so operators still get loud miss signal for product-critical ' +
+      'windows — RFC-012 §5.7 quiet-hours residual under umbrella #1587 (ship the ' +
+      'bypass half before full redelivery plumbing if needed).',
     acceptanceCriteria: [
-      'After a terminal total-miss (documented missClasses e.g. no_source / ' +
-        'host_cooling_down with empty non-SEC channels), Lucy schedules at most one ' +
-        'bounded re-resolve attempt for that ticker\'s issuer channels (IR root / feed / ' +
-        'wire discovery helpers already in the tree), idempotent per job identity.',
-      'Successful re-resolve persists discoveries into the issuer registry (or equivalent ' +
-        'durable store used by knownNonSecChannels) so the next arm sees non-EDGAR ' +
-        'channels; failed re-resolve leaves prior registry intact and records the attempt ' +
-        'outcome.',
-      'Unit tests: (a) miss row with edgarOnly ticker → re-resolve invoked once; (b) second ' +
-        'miss same identity → no second concurrent re-resolve; (c) successful discovery ' +
-        'written to fixture registry; (d) non-eligible missClass does not trigger re-resolve.',
+      'When a total-miss anomaly/alert is classified as confirmed-date (or equivalent ' +
+        'high-confidence armed date), the Discord/delivery path does not permanently ' +
+        'drop it solely because quiet-hours is active — either bypass quiet-hours or ' +
+        'durable-withhold and redeliver at quiet-hours end.',
+      'Non-confirmed / low-confidence or non-total-miss proactive messages keep ' +
+        'existing quiet-hours behavior (no alert storm expansion beyond the confirmed ' +
+        'total-miss class).',
+      'Unit/fixture tests cover: (a) confirmed-date total-miss during quiet-hours → ' +
+        'delivered or durable-queued for redelivery; (b) ordinary proactive message ' +
+        'during quiet-hours still withheld/dropped per existing policy; (c) ' +
+        'non-confirmed miss does not take the bypass path.',
     ],
     fileHints: [
-      'src/acquisition/feed-discovery.js',
-      'src/acquisition/issuer-url-resolver.js',
-      'src/acquisition/registry.js',
-      'src/acquisition/status.js (knownNonSecChannels)',
-      'miss / anomaly consumer path',
+      'src/scheduler-discord-delivery.js',
+      'src/acquisition/anomaly.js (total-miss emit)',
+      'src/scheduler-active-window-poll.js / total-miss anomaly path',
     ],
     testHints: [
-      'unit: total-miss fixture → re-resolve once + registry update on success',
-      'unit: double-fire guard on same job identity',
+      'unit: quiet-hours + confirmed total-miss → not hard-dropped',
+      'unit: quiet-hours + ordinary proactive → existing behavior',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
