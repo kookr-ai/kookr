@@ -325,6 +325,86 @@ x-ratelimit-reset: ${Date.parse('2026-06-18T00:07:00.000Z') / 1000}
     });
   });
 
+  it('recovers live aliases from a field-level NOT_FOUND partial GraphQL body (issue #2272)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Production uses `gh api graphql --include`; failed invocations still carry headers + body.
+    const err = Object.assign(new Error('gh exited 1: GraphQL: Could not resolve to an Issue with the number of 999'), {
+      stdout: includeResponse('HTTP/2.0 200 OK\nx-ratelimit-remaining: 4999', {
+        data: {
+          repository: {
+            issue_999: null,
+            pr_42: {
+              title: 'Still live PR',
+              state: 'OPEN',
+              mergeable: 'MERGEABLE',
+              isDraft: false,
+              author: { login: 'alice' },
+              headRefName: 'feat',
+              baseRefName: 'main',
+              reviewDecision: null,
+              comments: { totalCount: 0 },
+              reviewThreads: { nodes: [] },
+              reviews: { nodes: [] },
+              commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] },
+            },
+          },
+        },
+        errors: [
+          {
+            type: 'NOT_FOUND',
+            path: ['repository', 'issue_999'],
+            message: 'Could not resolve to an Issue with the number of 999.',
+          },
+        ],
+      }),
+      stderr: 'gh: GraphQL: Could not resolve to an Issue with the number of 999. (repository.issue_999)',
+    });
+    childProcessMocks.execFilePromisified.mockRejectedValue(err);
+
+    const result = await fetchStates([ref('issue', 999), ref('pr', 42)]);
+
+    expect(result.prs).toHaveLength(1);
+    expect(result.prs[0]).toMatchObject({
+      title: 'Still live PR',
+      status: 'open',
+      author: 'alice',
+    });
+    expect(result.issues).toEqual([]);
+    expect(result.rateLimit).toBeUndefined();
+    // Partial recovery is a success for the group — no failure log / AggregateError.
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(getGitHubStateFetchFailureSnapshot()).toEqual([]);
+    errorSpy.mockRestore();
+  });
+
+  it('still fails when gh rejection has empty/non-JSON stdout (issue #2272)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Non-transient message so retries do not mask the empty-stdout path.
+    const err = Object.assign(new Error('gh exited 1: GraphQL: Something went wrong'), {
+      stdout: 'not-json-at-all',
+      stderr: 'GraphQL: Something went wrong',
+    });
+    childProcessMocks.execFilePromisified.mockRejectedValue(err);
+
+    await expect(fetchStates([ref('issue', 7)])).rejects.toSatisfy((thrown: unknown) => {
+      expect(thrown).toBeInstanceOf(AggregateError);
+      const aggregate = thrown as AggregateError;
+      expect(aggregate.message).toMatch(/all 1 repo group/);
+      expect(aggregate.errors).toHaveLength(1);
+      return true;
+    });
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(getGitHubStateFetchFailureSnapshot()).toEqual([
+      expect.objectContaining({
+        repo: 'acme/app',
+        failures: 1,
+        lastError: 'gh exited 1: GraphQL: Something went wrong',
+      }),
+    ]);
+    errorSpy.mockRestore();
+  });
+
   it('rethrows when every repo group fails a non-rate-limit error (issue #1940)', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     childProcessMocks.execFilePromisified.mockRejectedValue(

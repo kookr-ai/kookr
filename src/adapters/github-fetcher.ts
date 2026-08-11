@@ -345,6 +345,17 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
         console.warn(`[github] rate limited while fetching state for ${group.owner}/${group.repo}: ${rateLimit.message}`);
         return result;
       }
+      // gh exits non-zero when any aliased field is NOT_FOUND, but stdout often
+      // still carries partial data.repository with nulls for missing aliases
+      // and real payloads for live ones (issue #2272).
+      const partial = tryRecoverPartialRepoStateBatch(err, group.refs);
+      if (partial) {
+        result.prs.push(...partial.prs);
+        result.issues.push(...partial.issues);
+        clearFetchStateBatchFailure(group.owner, group.repo);
+        successGroups++;
+        continue;
+      }
       recordFetchStateBatchFailure(group.owner, group.repo, err);
       failures.push(toError(err));
     }
@@ -474,6 +485,64 @@ export function parseRepoStateBatchResponse(data: unknown, refs: GitHubReference
   }
 
   return result;
+}
+
+/**
+ * Recover usable PR/issue rows from a failed `gh api graphql` invocation when
+ * stdout still contains a GraphQL body with `data.repository` (field-level
+ * errors such as deleted-issue NOT_FOUND leave live aliases intact).
+ * Returns null for transport failures, non-JSON stdout, or top-level GraphQL
+ * failures with no repository object — those stay on the hard-failure path.
+ * Issue #2272.
+ */
+function tryRecoverPartialRepoStateBatch(
+  err: unknown,
+  refs: GitHubReference[],
+): GitHubFetchBatchResult | null {
+  const stdout = ghErrorStdout(err);
+  if (!stdout) return null;
+
+  let parsed: unknown;
+  try {
+    const response = splitGhApiOutput(stdout);
+    parsed = JSON.parse(response.body);
+  } catch {
+    return null;
+  }
+
+  // Require a real repository object. Top-level failures (no data, or
+  // repository: null for a missing repo) must not be masked as success.
+  if (!isRecord(parsed) || !getRecord(getRecord(parsed.data)?.repository)) {
+    return null;
+  }
+
+  // When errors are present, only recover field-level ones (NOT_FOUND etc.).
+  // Unknown/top-level GraphQL errors with no field path stay on the failure path.
+  if (!areGraphQLErrorsFieldLevel(parsed)) {
+    return null;
+  }
+
+  return parseRepoStateBatchResponse(parsed, refs);
+}
+
+/**
+ * True when the GraphQL body has no errors, or every error looks field-scoped
+ * (has a path under repository, and/or type NOT_FOUND). Rejects RATE_LIMITED
+ * (already handled upstream) and bare top-level errors without a path.
+ */
+function areGraphQLErrorsFieldLevel(parsed: unknown): boolean {
+  if (!isRecord(parsed) || !Array.isArray(parsed.errors)) return true;
+  if (parsed.errors.length === 0) return true;
+
+  return parsed.errors.every((entry) => {
+    if (!isRecord(entry)) return false;
+    const type = typeof entry.type === 'string' ? entry.type.toUpperCase() : '';
+    if (type === 'RATE_LIMITED') return false;
+    if (type === 'NOT_FOUND') return true;
+    const path = entry.path;
+    // Field-level: path includes repository plus at least one alias segment.
+    return Array.isArray(path) && path.length >= 2 && path[0] === 'repository';
+  });
 }
 
 function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
