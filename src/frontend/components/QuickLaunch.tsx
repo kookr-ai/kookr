@@ -20,17 +20,20 @@ interface Props {
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
-  // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
-  // agent type → last-used → server default → 'claude-code'. Initial state
-  // applies the same chain without a selected agent (resolved in the effect).
-  const [agentType, setAgentType] = useState<AgentSelection>(() => {
-    const lastUsed = loadLastAgentType();
-    if (lastUsed) return lastUsed;
-    return 'claude-code';
-  });
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
+  // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
+  // agent type (effect) → last-used → server default → 'claude-code'.
+  // Initializer covers the no-selected-agent path; the effect re-applies when
+  // selection / availability / server default change.
+  const [agentType, setAgentType] = useState<AgentSelection>(() => {
+    const store = useKookrStore.getState();
+    const options = buildAgentSelectionOptions(store.availableAgentTypes);
+    const lastUsed = loadLastAgentType();
+    if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
+    return store.defaultAgentType ?? 'claude-code';
+  });
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {

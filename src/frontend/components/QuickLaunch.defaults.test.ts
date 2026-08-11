@@ -96,8 +96,11 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
   });
 
   test('selected agent type beats last-used and server default', async () => {
+    // last-used and server default both prefer claude-code; only the selected
+    // agent path yields codex-cli — uniquely proves selected wins.
     localStorage.setItem(LAST_AGENT_TYPE_KEY, 'claude-code');
     useKookrStore.setState({
+      defaultAgentType: 'claude-code',
       selectedAgentId: 'sess-1',
       agents: [{
         agentId: 'sess-1',
@@ -126,7 +129,8 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
   });
 
   test('successful submit persists the selected agent as last-used', async () => {
-    const root = renderQuickLaunch(container, () => true);
+    const sent: ClientMessage[] = [];
+    const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return true; });
     await flush();
 
     // Server default is codex-cli; switch to claude-code and launch.
@@ -143,13 +147,16 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'claude-code' });
     expect(localStorage.getItem(LAST_AGENT_TYPE_KEY)).toBe('claude-code');
     act(() => root.unmount());
   });
 
   test('failed submit (send returns false) does not persist last-used', async () => {
     localStorage.setItem(LAST_AGENT_TYPE_KEY, 'claude-code');
-    const root = renderQuickLaunch(container, () => false);
+    const sent: ClientMessage[] = [];
+    const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return false; });
     await flush();
 
     const select = getAgentSelectEl(container);
@@ -165,7 +172,8 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
 
-    // Unchanged — failed launches must not overwrite the last-used preference.
+    // Send ran but failed — must not overwrite the last-used preference.
+    expect(sent).toHaveLength(1);
     expect(localStorage.getItem(LAST_AGENT_TYPE_KEY)).toBe('claude-code');
     act(() => root.unmount());
   });
