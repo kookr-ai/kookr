@@ -19,6 +19,7 @@ import {
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
+  summarizeHookIngestion,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   renderReport,

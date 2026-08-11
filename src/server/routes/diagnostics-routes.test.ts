@@ -18,6 +18,7 @@ import {
   SCHEDULER_TICK_STALE_INTERVALS,
   checkSchedulerTickReadiness,
   checkHookIngestionReadiness,
+  buildHookIngestionHealthSummary,
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
@@ -1067,6 +1068,129 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — hookIngestion summary (issue #2319)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health hookIngestion summary (issue #2319)', () => {
+    test('omits hookIngestion when ingestion is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hookIngestion?: unknown };
+      expect(body.hookIngestion).toBeUndefined();
+    });
+
+    test('projects sessionCount and notableLagCount from diagnostics snapshot', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hookIngestion: {
+          getDiagnosticsSnapshot: () => ({
+            schemaVersion: 'hook-ingestion-diagnostics.v1',
+            generatedAt: '2026-08-11T00:00:00.000Z',
+            lagWarningThresholdMs: 2000,
+            sessionCount: 3,
+            totalArrivals: 10,
+            missingWriteTimestampCount: 0,
+            notableLagCount: 2,
+            sessions: [
+              {
+                kookrSessionId: 's1',
+                totalArrivals: 5,
+                dispatchedArrivals: 5,
+                duplicateArrivals: 0,
+                missingWriteTimestampCount: 0,
+                invalidWriteTimestampCount: 0,
+                futureWriteTimestampCount: 0,
+                notableLagCount: 1,
+                startupReplayArrivalCount: 0,
+                lastProcessedAt: null,
+                lastWriteTimestampAt: null,
+                lastWriteTimestampSource: null,
+                lag: { count: 2, lastMs: 1500, meanMs: 2000, maxMs: 3000, p95Ms: 2800 },
+                sourceCounts: { file: 5, http: 0 },
+                writeTimestampSourceCounts: { payload: 0, file_mtime: 5, missing: 0, invalid: 0 },
+              },
+              {
+                kookrSessionId: 's2',
+                totalArrivals: 5,
+                dispatchedArrivals: 5,
+                duplicateArrivals: 0,
+                missingWriteTimestampCount: 0,
+                invalidWriteTimestampCount: 0,
+                futureWriteTimestampCount: 0,
+                notableLagCount: 1,
+                startupReplayArrivalCount: 0,
+                lastProcessedAt: null,
+                lastWriteTimestampAt: null,
+                lastWriteTimestampSource: null,
+                lag: { count: 1, lastMs: 4000, meanMs: 4000, maxMs: 4000, p95Ms: 4000 },
+                sourceCounts: { file: 5, http: 0 },
+                writeTimestampSourceCounts: { payload: 0, file_mtime: 5, missing: 0, invalid: 0 },
+              },
+            ],
+          }),
+        } as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookIngestion: {
+          sessionCount: number;
+          notableLagCount: number;
+          lagWarningThresholdMs: number;
+          maxLagMs: number | null;
+          p95LagMs: number | null;
+        };
+      };
+      expect(body.hookIngestion).toEqual({
+        sessionCount: 3,
+        notableLagCount: 2,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: 4000,
+        p95LagMs: 4000,
+        generatedAt: '2026-08-11T00:00:00.000Z',
+      });
+    });
+
+    test('safe empty snapshot when no sessions yet', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hookIngestion: {
+          getDiagnosticsSnapshot: () => ({
+            schemaVersion: 'hook-ingestion-diagnostics.v1',
+            generatedAt: '2026-08-11T00:00:00.000Z',
+            lagWarningThresholdMs: 2000,
+            sessionCount: 0,
+            totalArrivals: 0,
+            missingWriteTimestampCount: 0,
+            notableLagCount: 0,
+            sessions: [],
+          }),
+        } as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookIngestion: {
+          sessionCount: number;
+          notableLagCount: number;
+          maxLagMs: number | null;
+          p95LagMs: number | null;
+        };
+      };
+      expect(body.hookIngestion).toMatchObject({
+        sessionCount: 0,
+        notableLagCount: 0,
+        maxLagMs: null,
+        p95LagMs: null,
+      });
+    });
+  });
+
   // GET /api/health — payloadDiet block (issue #2220)
   // ---------------------------------------------------------------------------
   describe('GET /api/health payloadDiet block (issue #2220)', () => {
@@ -1216,6 +1340,155 @@ describe('diagnostics routes', () => {
       expect(body.hookReplayCheckpoints).toEqual({
         sessionCount: 0,
         fileBytes: 0,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — hookIngestion block (issue #2319)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health hookIngestion block (issue #2319)', () => {
+    test('omits hookIngestion when ingestion is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { hookIngestion?: unknown };
+      expect(body.hookIngestion).toBeUndefined();
+    });
+
+    test('projects sessionCount / notableLagCount / max+p95 from diagnostics snapshot', async () => {
+      const ingestionSnapshot = {
+        schemaVersion: 'hook-ingestion-diagnostics.v1' as const,
+        generatedAt: '2026-08-01T12:00:00.000Z',
+        lagWarningThresholdMs: 2000,
+        sessionCount: 24,
+        totalArrivals: 100,
+        missingWriteTimestampCount: 0,
+        notableLagCount: 192,
+        sessions: [
+          {
+            kookrSessionId: 'kookr-a',
+            totalArrivals: 50,
+            dispatchedArrivals: 50,
+            duplicateArrivals: 0,
+            missingWriteTimestampCount: 0,
+            invalidWriteTimestampCount: 0,
+            futureWriteTimestampCount: 0,
+            notableLagCount: 100,
+            startupReplayArrivalCount: 0,
+            lastProcessedAt: '2026-08-01T12:00:00.000Z',
+            lastWriteTimestampAt: '2026-08-01T12:00:00.000Z',
+            lastWriteTimestampSource: 'payload' as const,
+            lag: { count: 10, lastMs: 3000, meanMs: 2500, maxMs: 4000, p95Ms: 3800 },
+            sourceCounts: { file: 50, http: 0 },
+            writeTimestampSourceCounts: {
+              payload: 50, file_mtime: 0, missing: 0, invalid: 0,
+            },
+          },
+          {
+            kookrSessionId: 'kookr-b',
+            totalArrivals: 50,
+            dispatchedArrivals: 50,
+            duplicateArrivals: 0,
+            missingWriteTimestampCount: 0,
+            invalidWriteTimestampCount: 0,
+            futureWriteTimestampCount: 0,
+            notableLagCount: 92,
+            startupReplayArrivalCount: 0,
+            lastProcessedAt: '2026-08-01T12:00:00.000Z',
+            lastWriteTimestampAt: '2026-08-01T12:00:00.000Z',
+            lastWriteTimestampSource: 'payload' as const,
+            lag: { count: 8, lastMs: 5000, meanMs: 4000, maxMs: 9000, p95Ms: 8500 },
+            sourceCounts: { file: 50, http: 0 },
+            writeTimestampSourceCounts: {
+              payload: 50, file_mtime: 0, missing: 0, invalid: 0,
+            },
+          },
+        ],
+      };
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hookIngestion: { getDiagnosticsSnapshot: () => ingestionSnapshot } as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookIngestion: {
+          sessionCount: number;
+          notableLagCount: number;
+          lagWarningThresholdMs: number;
+          maxLagMs: number | null;
+          p95LagMs: number | null;
+          generatedAt: string;
+        };
+      };
+      expect(body.hookIngestion).toEqual({
+        sessionCount: 24,
+        notableLagCount: 192,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: 9000,
+        p95LagMs: 8500,
+        generatedAt: '2026-08-01T12:00:00.000Z',
+      });
+      // Slim summary — never ship the full per-session array on /api/health.
+      expect(body.hookIngestion).not.toHaveProperty('sessions');
+    });
+
+    test('projects zero/null lag gauges when sessions are idle', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hookIngestion: {
+          getDiagnosticsSnapshot: () => ({
+            schemaVersion: 'hook-ingestion-diagnostics.v1',
+            generatedAt: '2026-08-01T12:00:00.000Z',
+            lagWarningThresholdMs: 2000,
+            sessionCount: 0,
+            totalArrivals: 0,
+            missingWriteTimestampCount: 0,
+            notableLagCount: 0,
+            sessions: [],
+          }),
+        } as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        hookIngestion: {
+          sessionCount: number;
+          notableLagCount: number;
+          maxLagMs: number | null;
+          p95LagMs: number | null;
+        };
+      };
+      expect(body.hookIngestion).toMatchObject({
+        sessionCount: 0,
+        notableLagCount: 0,
+        maxLagMs: null,
+        p95LagMs: null,
+      });
+    });
+
+    test('buildHookIngestionHealthSummary is pure and rolls up max/p95', () => {
+      expect(buildHookIngestionHealthSummary({
+        sessionCount: 1,
+        notableLagCount: 2,
+        lagWarningThresholdMs: 2000,
+        generatedAt: '2026-08-01T12:00:00.000Z',
+        sessions: [{
+          lag: { count: 1, lastMs: 100, meanMs: 100, maxMs: 250, p95Ms: 200 },
+        } as never],
+      })).toEqual({
+        sessionCount: 1,
+        notableLagCount: 2,
+        lagWarningThresholdMs: 2000,
+        maxLagMs: 250,
+        p95LagMs: 200,
+        generatedAt: '2026-08-01T12:00:00.000Z',
       });
     });
   });

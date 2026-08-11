@@ -664,6 +664,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(deps.firstHookMissMetrics
         ? { firstHookMissTotal: deps.firstHookMissMetrics.getSnapshot().firstHookMissTotal }
         : {}),
+      // Hook-ingestion lag summary (issue #2319): sessionCount / notableLagCount
+      // + max/p95 from the in-memory diagnostics snapshot. Operators and drain
+      // automation polling /api/health (and `kookr status`) see data-plane lag
+      // without scraping /api/diagnostics/hook-ingestion. Never re-scans files.
+      // Observability only; does not change /api/ready criticality.
+      ...(deps.hookIngestion
+        ? { hookIngestion: buildHookIngestionHealthSummary(deps.hookIngestion.getDiagnosticsSnapshot()) }
+        : {}),
     });
   });
 
@@ -1577,6 +1585,57 @@ export function checkHookIngestionReadiness(
     status: 'stalled',
     reason: 'ingestion-lag',
     detail: `last lag ${worstLagMs}ms exceeds threshold ${thresholdMs}ms across ${stalled.length} session(s)`,
+  };
+}
+
+/**
+ * Slim hook-ingestion lag gauges for GET `/api/health` (issue #2319).
+ *
+ * Projects counters already on {@link HookIngestionDiagnosticsSnapshot}
+ * plus max/p95 lag rolled up from in-memory session lag samples — never
+ * re-scans hook files. Omitted from health when ingestion is unwired.
+ * Observability only; does not affect `/api/ready` criticality.
+ */
+export interface HookIngestionHealthSummary {
+  sessionCount: number;
+  notableLagCount: number;
+  lagWarningThresholdMs: number;
+  maxLagMs: number | null;
+  p95LagMs: number | null;
+  generatedAt: string;
+}
+
+export function buildHookIngestionHealthSummary(
+  snapshot: Pick<
+    HookIngestionDiagnosticsSnapshot,
+    | 'sessionCount'
+    | 'notableLagCount'
+    | 'lagWarningThresholdMs'
+    | 'generatedAt'
+    | 'sessions'
+  >,
+): HookIngestionHealthSummary {
+  let maxLagMs: number | null = null;
+  let p95LagMs: number | null = null;
+  for (const session of snapshot.sessions) {
+    const maxMs = session.lag?.maxMs;
+    if (typeof maxMs === 'number' && Number.isFinite(maxMs)) {
+      maxLagMs = maxLagMs === null ? maxMs : Math.max(maxLagMs, maxMs);
+    }
+    const p95Ms = session.lag?.p95Ms;
+    if (typeof p95Ms === 'number' && Number.isFinite(p95Ms)) {
+      // Worst-session p95: a compact fleet-wide stall signal without re-aggregating
+      // every lag sample (per-session p95 is already computed in the snapshot).
+      p95LagMs = p95LagMs === null ? p95Ms : Math.max(p95LagMs, p95Ms);
+    }
+  }
+  return {
+    sessionCount: snapshot.sessionCount,
+    notableLagCount: snapshot.notableLagCount,
+    lagWarningThresholdMs: snapshot.lagWarningThresholdMs,
+    maxLagMs,
+    p95LagMs,
+    generatedAt: snapshot.generatedAt,
   };
 }
 
