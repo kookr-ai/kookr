@@ -64,7 +64,14 @@ function enqueueAppend(
   const prev = appendQueues.get(filePath) ?? Promise.resolve();
   const next = prev
     .catch(() => { /* keep the queue alive after an earlier write failure */ })
-    .then(() => appendJsonlWithRotation(filePath, line, rotation))
+    .then(() =>
+      appendJsonlWithRotation(filePath, line, {
+        ...rotation,
+        // Training logs contain full task prompts; match secret-adjacent stores.
+        dirMode: 0o700,
+        fileMode: 0o600,
+      }),
+    )
     .catch(() => { /* fire-and-forget: never throw, never block the caller */ });
   appendQueues.set(filePath, next);
 }

@@ -15,7 +15,7 @@
  * one file, which assumes a single daemon per data directory.
  */
 
-import { appendFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export interface JsonlRotationOptions {
@@ -23,6 +23,19 @@ export interface JsonlRotationOptions {
   maxBytes: number;
   /** Number of rotated generations to retain, e.g. 2 keeps `.1` and `.2`. */
   rotatedGenerations: number;
+  /**
+   * Optional mode for the parent directory when it is created (e.g. `0o700`).
+   * Only applied on create via `mkdir`; existing directories are left unchanged.
+   * Omit for default umask-based modes (non-sensitive diagnostic logs).
+   */
+  dirMode?: number;
+  /**
+   * Optional mode for the log file (e.g. `0o600`). Applied on create via
+   * `appendFile` and re-applied with `chmod` after every successful append so
+   * pre-existing world-readable files tighten on the next write.
+   * Omit for default umask-based modes.
+   */
+  fileMode?: number;
 }
 
 /**
@@ -37,8 +50,12 @@ export async function appendJsonlWithRotation(
 ): Promise<void> {
   const maxBytes = Math.max(1, Math.floor(options.maxBytes));
   const rotatedGenerations = Math.max(1, Math.floor(options.rotatedGenerations));
+  const { dirMode, fileMode } = options;
 
-  await mkdir(dirname(logFilePath), { recursive: true });
+  await mkdir(dirname(logFilePath), {
+    recursive: true,
+    ...(dirMode !== undefined ? { mode: dirMode } : {}),
+  });
 
   let currentSize = 0;
   try {
@@ -51,7 +68,14 @@ export async function appendJsonlWithRotation(
     await rotateJsonl(logFilePath, rotatedGenerations);
   }
 
-  await appendFile(logFilePath, lines, 'utf-8');
+  if (fileMode !== undefined) {
+    await appendFile(logFilePath, lines, { encoding: 'utf-8', mode: fileMode });
+    // appendFile's mode only applies on create; re-apply so pre-existing 0644
+    // files (and any umask-softened create) end up owner-only.
+    await chmod(logFilePath, fileMode);
+  } else {
+    await appendFile(logFilePath, lines, 'utf-8');
+  }
 }
 
 async function rotateJsonl(logFilePath: string, rotatedGenerations: number): Promise<void> {
