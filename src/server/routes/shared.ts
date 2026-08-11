@@ -462,6 +462,15 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * open-PR fail-safe reason breakdown (issue #2225). `/api/health` reads
+   * only `getSnapshot()` — cumulative hold reasons + sample taskIds/PR
+   * linkage so operators can see *why* open_pr_failsafe dominates.
+   */
+  openPrFailsafeReasonMetrics?: Pick<
+    import('../../core/open-pr-hold.js').OpenPrFailsafeReasonMetrics,
+    'getSnapshot'
+  >;
+  /**
    * provider_paused occupancy + hard-TTL reclaim counters (issue #2079).
    * `/api/health` and `/metrics` read only `getSnapshot()` — live occupancy
    * plus process-lifetime reclaim counters; never a fresh scan on the request path.

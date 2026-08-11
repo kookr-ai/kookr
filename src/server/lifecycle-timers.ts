@@ -96,6 +96,9 @@ import type { ProviderPausedOccupancyAlerter } from './provider-paused-occupancy
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  capacityAllowsProviderPausedEarlyReclaim,
+  summarizeProviderPausedOccupancy,
 } from '../core/provider-paused-ttl.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
@@ -279,6 +282,20 @@ export interface TimerDeps {
    * #2079). Read on every liveness tick. Falls back to 2h when absent.
    */
   getProviderPausedHardTtlMs?: () => number;
+  /**
+   * Live getter for the provider_paused soft TTL, in milliseconds (issue
+   * #2225). Used when capacity-aware early reclaim is enabled. Falls back
+   * to 40m when absent.
+   */
+  getProviderPausedSoftTtlMs?: () => number;
+  /**
+   * Capacity gate for soft provider_paused reclaim (issue #2225). Receives
+   * the live provider_paused occupancy count. When true, the sweep uses
+   * soft TTL. When absent, early reclaim is disabled (hard TTL only).
+   */
+  getCapacityAllowsProviderPausedEarlyReclaim?: (
+    providerPausedCount: number,
+  ) => boolean;
   /** Optional counters for provider_paused occupancy + hard-TTL reclaim (issue #2079). */
   providerPausedOccupancyMetrics?: Pick<
     ProviderPausedOccupancyMetrics,
@@ -287,6 +304,7 @@ export interface TimerDeps {
     | 'recordSelection'
     | 'recordOccupancy'
     | 'recordHardTtlMs'
+    | 'recordSoftTtlPolicy'
   >;
   /**
    * Operator page when provider_paused occupancy stays high (issue #2079).
@@ -1615,13 +1633,39 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
 
-      // provider_paused occupancy bound + hard TTL (issue #2079): observe
-      // pauseStartedAt, hard-TTL reclaim aged pauses (needs-human, never
-      // delivered), then page when occupancy stays ≥ bound past the stale window.
+      // provider_paused occupancy bound + hard/soft TTL (issues #2079 / #2225):
+      // observe pauseStartedAt, reclaim aged pauses (needs-human, never
+      // delivered) — soft TTL when capacity allows early reclaim — then page
+      // when occupancy stays ≥ bound past the stale window.
       let providerPausedTtlResult: Awaited<ReturnType<typeof reclaimAgedProviderPausedTasks>> | null =
         null;
       if (deps.providerPausedStartTracker) {
         try {
+          // Pre-count occupancy for the soft-TTL capacity gate (issue #2225).
+          // Uses the same pause-start tracker + pause predicate the sweep will
+          // use; a second observeAll inside the sweep is idempotent.
+          const prePauseNow = Date.now();
+          const preGetPauseStart = deps.providerPausedStartTracker.observeAll(
+            taskStore.listTasks(),
+            isTaskProviderPaused,
+            prePauseNow,
+          );
+          const preOccupancy = summarizeProviderPausedOccupancy(taskStore.listTasks(), {
+            now: new Date(prePauseNow),
+            isProviderPaused: isTaskProviderPaused,
+            getPauseStartedAtMs: (task) => preGetPauseStart(task),
+          });
+          const capacityAllowsEarlyReclaim =
+            deps.getCapacityAllowsProviderPausedEarlyReclaim?.(preOccupancy.count)
+            ?? capacityAllowsProviderPausedEarlyReclaim({
+              // Fallback when wiring omits the capacity callback: only occupancy
+              // count is known here — refuse early reclaim without free-slot
+              // evidence (fail closed on capacity).
+              phantomActive: 0,
+              providerPausedCount: preOccupancy.count,
+              freeForGeneralSources: 0,
+            });
+
           providerPausedTtlResult = await reclaimAgedProviderPausedTasks(
             {
               taskStore,
@@ -1648,6 +1692,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               ttlMs:
                 deps.getProviderPausedHardTtlMs?.()
                 ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+              softTtlMs:
+                deps.getProviderPausedSoftTtlMs?.()
+                ?? DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+              capacityAllowsEarlyReclaim,
             },
           );
         } catch (err) {

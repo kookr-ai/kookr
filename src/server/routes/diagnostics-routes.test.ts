@@ -32,6 +32,7 @@ import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '..
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
 import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
+import { OpenPrFailsafeReasonMetrics } from '../../core/open-pr-hold.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
@@ -1707,6 +1708,49 @@ describe('diagnostics routes', () => {
         ],
       });
     });
+
+    test('issue #2225: exposes openPrFailsafeByReason with counts and sample taskIds', async () => {
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const openPrMetrics = new OpenPrFailsafeReasonMetrics();
+      openPrMetrics.recordHold('task-open', {
+        isHolding: true,
+        reason: 'delivery_open',
+        sample: { prNumber: 42, owner: 'kookr-ai', repo: 'kookr' },
+      });
+      openPrMetrics.recordHold('task-unknown', {
+        isHolding: undefined,
+        reason: 'delivery_state_unknown',
+        sample: { prNumber: 7 },
+      });
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungSuspectTtlReclaimMetrics: metrics,
+        openPrFailsafeReasonMetrics: openPrMetrics,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        hungSuspectTtlReclaim?: {
+          openPrFailsafeByReason?: Record<
+            string,
+            { count: number; sampleTaskIds: string[]; samples: Array<{ prNumber: number }> }
+          >;
+        };
+      };
+      const byReason = body.hungSuspectTtlReclaim?.openPrFailsafeByReason;
+      expect(byReason?.delivery_open).toMatchObject({
+        count: 1,
+        sampleTaskIds: ['task-open'],
+      });
+      expect(byReason?.delivery_open?.samples?.[0]?.prNumber).toBe(42);
+      expect(byReason?.delivery_state_unknown).toMatchObject({
+        count: 1,
+        sampleTaskIds: ['task-unknown'],
+      });
+      expect(byReason?.prompt_cited_only?.count).toBe(0);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -1755,6 +1799,9 @@ describe('diagnostics routes', () => {
         lastOutcomes: [],
         lastAttemptedTaskIds: [],
         hardTtlMs: expect.any(Number),
+        softTtlMs: expect.any(Number),
+        effectiveTtlMs: expect.any(Number),
+        capacityEarlyReclaim: false,
       });
 
       metrics.recordOccupancy({
@@ -1763,6 +1810,11 @@ describe('diagnostics routes', () => {
         taskIds: ['p1', 'p2', 'p3'],
       });
       metrics.recordHardTtlMs(2 * 60 * 60_000);
+      metrics.recordSoftTtlPolicy({
+        softTtlMs: 40 * 60_000,
+        capacityAllowsEarlyReclaim: true,
+        effectiveTtlMs: 40 * 60_000,
+      });
       metrics.recordAttempted(1);
       metrics.recordReclaimed(1);
       metrics.recordSelection({
@@ -1799,6 +1851,9 @@ describe('diagnostics routes', () => {
         lastCandidatesConsidered: 3,
         lastAttemptedTaskIds: ['p1'],
         hardTtlMs: 2 * 60 * 60_000,
+        softTtlMs: 40 * 60_000,
+        effectiveTtlMs: 40 * 60_000,
+        capacityEarlyReclaim: true,
       });
     });
   });

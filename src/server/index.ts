@@ -57,8 +57,15 @@ import {
 import { ProviderPausedOccupancyAlerter } from './provider-paused-occupancy-alert.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
   MAX_PROVIDER_PAUSED_HARD_TTL_MS,
+  capacityAllowsProviderPausedEarlyReclaim,
 } from '../core/provider-paused-ttl.js';
+import {
+  evaluateTaskOpenPrHold,
+  OpenPrFailsafeReasonMetrics,
+  type OpenPrHoldCandidate,
+} from '../core/open-pr-hold.js';
 import type { Task } from '../core/tasks.js';
 import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import {
@@ -1014,22 +1021,38 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return { commits, prsOpened, prsMerged };
   };
 
-  // Stranded-PR / merge_required exemption for the finishedAwaitingAck TTL
-  // reclaim (issue #1884). Fail-safe: only a task with zero PR references, or
-  // with every referenced PR CONFIRMED closed/merged, returns `false` (safe
-  // to reclaim). Any reference GitHub has not yet fetched an open/closed
-  // verdict for returns `undefined` — treated the same as `true` by the
-  // selector, so an unfetched ref never lets a possibly-open PR get clobbered.
+  // Stranded-PR / merge_required exemption for reclaim paths (issues #1884 /
+  // #1935 / #2079 / #2225). Delivery-scoped: only an agent-authored delivery
+  // PR that is still open (or whose state is unknown) holds reclaim.
+  // Prompt-cited PRs, bot/foreign open PRs, and fully closed/merged sets clear
+  // the hold so stale linkage cannot permanent-block capacity reclaim.
+  const openPrFailsafeReasonMetrics = new OpenPrFailsafeReasonMetrics();
   const isTaskHoldingOpenPr = (task: Task): boolean | undefined => {
     const prRefs = githubStateStore.getReferences(task.id).filter((ref) => ref.type === 'pr');
-    if (prRefs.length === 0) return false;
-    let sawUnknown = false;
-    for (const ref of prRefs) {
-      const open = githubStateStore.isRefOpen(ref);
-      if (open === true) return true;
-      if (open === undefined) sawUnknown = true;
+    const candidates: OpenPrHoldCandidate[] = prRefs.map((ref) => {
+      const state = githubStateStore.getPRState(ref);
+      return {
+        number: ref.number,
+        owner: ref.owner,
+        repo: ref.repo,
+        detectedFrom: ref.detectedFrom,
+        isOpen: githubStateStore.isRefOpen(ref),
+        author: state?.author ?? null,
+        headBranch: state?.branch ?? null,
+      };
+    });
+    // Prefer the most recent session branch as the delivery head signal.
+    let taskBranch: string | null = null;
+    for (let i = task.sessions.length - 1; i >= 0; i -= 1) {
+      const branch = task.sessions[i]?.gitBranch;
+      if (typeof branch === 'string' && branch.trim().length > 0) {
+        taskBranch = branch.trim();
+        break;
+      }
     }
-    return sawUnknown ? undefined : false;
+    const evaluation = evaluateTaskOpenPrHold({ prs: candidates, taskBranch });
+    openPrFailsafeReasonMetrics.recordHold(task.id, evaluation);
+    return evaluation.isHolding;
   };
   const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
   const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
@@ -1980,6 +2003,56 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
   };
 
+  // Soft TTL for capacity-aware early reclaim (issue #2225, default 40m).
+  // Env `KOOKR_PROVIDER_PAUSED_SOFT_TTL_MS` overrides when finite and positive;
+  // always clamped at or below the hard TTL.
+  const getProviderPausedSoftTtlMs = (): number => {
+    const hard = getProviderPausedHardTtlMs();
+    let soft = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+    const raw = process.env.KOOKR_PROVIDER_PAUSED_SOFT_TTL_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        soft = Math.floor(parsed);
+      }
+    }
+    return Math.min(soft, hard);
+  };
+
+  // Capacity gate for soft provider_paused reclaim (issue #2225 AC3).
+  // Reuses the same ledger builder as /api/health so the soft-TTL gate and
+  // freeForGeneralSources tell one story.
+  const getCapacityAllowsProviderPausedEarlyReclaim = (
+    providerPausedCount: number,
+  ): boolean => {
+    try {
+      const now = Date.now();
+      const capacity = buildCapacityLedger(taskStore.listTasks(), {
+        now,
+        maxActiveTasks: getMaxActiveTasks(),
+        isHungSuspect: (task) =>
+          resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
+        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        reservedActiveSlots: getReservedActiveSlots(),
+        reservedSlotSources: getReservedSlotSources(),
+      });
+      const freeForGeneralSources =
+        capacity.freeForGeneralSources
+        ?? Math.max(0, capacity.maxActiveTasks - capacity.effectiveWorking);
+      return capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: capacity.phantomActive,
+        providerPausedCount,
+        freeForGeneralSources,
+      });
+    } catch (err) {
+      console.warn(
+        '[provider-paused-ttl] capacity gate failed; soft early reclaim disabled:',
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  };
+
   const { scheduleStore, scheduleService, scheduleRunner, operationalAlertSink } = await createScheduleRuntime({
     kookrDir,
     taskStore,
@@ -2354,6 +2427,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
     hungSuspectTtlReclaimMetrics,
+    openPrFailsafeReasonMetrics,
     firstHookMissMetrics,
     providerPausedOccupancyMetrics,
     resourceWatchdog: resourceWatchdogService,
@@ -2869,9 +2943,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hungSuspectResidualAlerter,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
       finishedAwaitingAckResidualAlerter,
-      // issue #2079: provider_paused occupancy bound + hard TTL reclaim
+      // issue #2079 / #2225: provider_paused occupancy bound + hard/soft TTL reclaim
       providerPausedStartTracker,
       getProviderPausedHardTtlMs,
+      getProviderPausedSoftTtlMs,
+      getCapacityAllowsProviderPausedEarlyReclaim,
       providerPausedOccupancyMetrics,
       providerPausedOccupancyAlerter,
       getPostMergeCleanupBudgetMs,

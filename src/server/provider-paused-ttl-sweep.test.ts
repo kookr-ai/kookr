@@ -11,7 +11,10 @@ import {
   buildProviderPausedTtlDisposition,
 } from './provider-paused-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
-import { DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS } from '../core/provider-paused-ttl.js';
+import {
+  DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+} from '../core/provider-paused-ttl.js';
 
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
 vi.mock('../adapters/git-worktree.js', () => ({
@@ -181,6 +184,79 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(metrics.getSnapshot().skippedUnderTtl).toBe(1);
     expect(metrics.getSnapshot().count).toBe(1);
     expect(metrics.getSnapshot().oldestPauseAgeMs).toBe(TTL_MS - 60_000);
+  });
+
+  it('issue #2225 AC3: soft TTL + capacity gate reclaims before hard 2h bound', async () => {
+    const soft = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+    const task = makePausedTask({ id: 'soft-reclaim' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    // Aged past soft (40m) but still under hard (2h).
+    tracker.observe(task, true, NOW.getTime() - (soft + 5 * 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        dispositionLedgerPath,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        softTtlMs: soft,
+        capacityAllowsEarlyReclaim: true,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['soft-reclaim']);
+    expect(taskStore.terminateTask).toHaveBeenCalledWith('soft-reclaim', expect.anything());
+    const snap = metrics.getSnapshot();
+    expect(snap.reclaimAttempted).toBe(1);
+    expect(snap.reclaimedTotal).toBe(1);
+    expect(snap.capacityEarlyReclaim).toBe(true);
+    expect(snap.effectiveTtlMs).toBe(soft);
+    expect(snap.softTtlMs).toBe(soft);
+  });
+
+  it('issue #2225: past soft TTL without capacity gate still waits for hard TTL', async () => {
+    const soft = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+    const task = makePausedTask({ id: 'hard-only' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - (soft + 5 * 60_000));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        softTtlMs: soft,
+        capacityAllowsEarlyReclaim: false,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    const snap = metrics.getSnapshot();
+    expect(snap.skippedUnderTtl).toBe(1);
+    expect(snap.capacityEarlyReclaim).toBe(false);
+    expect(snap.effectiveTtlMs).toBe(TTL_MS);
   });
 
   it('open-PR fail-safe: past TTL but holding open PR is not terminated', async () => {

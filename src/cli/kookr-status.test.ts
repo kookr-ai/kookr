@@ -1141,6 +1141,9 @@ describe('kookr-status summarizeProviderPausedOccupancy (issue #2236)', () => {
       oldestPauseAgeMs: 3_600_000,
       reclaimAttempted: 2,
       reclaimedTotal: 1,
+      softTtlMs: null,
+      effectiveTtlMs: null,
+      capacityEarlyReclaim: false,
     });
   });
 
@@ -1154,6 +1157,33 @@ describe('kookr-status summarizeProviderPausedOccupancy (issue #2236)', () => {
       oldestPauseAgeMs: null,
       reclaimAttempted: 0,
       reclaimedTotal: 0,
+      softTtlMs: null,
+      effectiveTtlMs: null,
+      capacityEarlyReclaim: false,
+    });
+  });
+
+  it('issue #2225: surfaces soft TTL capacity-early reclaim policy when present', () => {
+    expect(
+      summarizeProviderPausedOccupancy({
+        providerPausedOccupancy: {
+          count: 5,
+          oldestPauseAgeMs: 2_400_000,
+          reclaimAttempted: 1,
+          reclaimedTotal: 1,
+          softTtlMs: 40 * 60_000,
+          effectiveTtlMs: 40 * 60_000,
+          capacityEarlyReclaim: true,
+        },
+      }),
+    ).toEqual({
+      count: 5,
+      oldestPauseAgeMs: 2_400_000,
+      reclaimAttempted: 1,
+      reclaimedTotal: 1,
+      softTtlMs: 40 * 60_000,
+      effectiveTtlMs: 40 * 60_000,
+      capacityEarlyReclaim: true,
     });
   });
 });
@@ -1983,6 +2013,9 @@ describe('kookr-status main (integration-style)', () => {
       oldestPauseAgeMs: 3_600_000,
       reclaimAttempted: 2,
       reclaimedTotal: 1,
+      softTtlMs: null,
+      effectiveTtlMs: null,
+      capacityEarlyReclaim: false,
     });
   });
 

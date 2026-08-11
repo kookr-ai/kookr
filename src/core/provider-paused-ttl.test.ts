@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import type { Task } from './task-read-model.js';
 import {
   DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS,
+  DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+  capacityAllowsProviderPausedEarlyReclaim,
+  effectiveProviderPausedTtlMs,
   listExpiredProviderPausedTasks,
   selectExpiredProviderPausedTasks,
   summarizeProviderPausedOccupancy,
@@ -250,5 +253,104 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
       isHoldingOpenPr: () => false,
     });
     expect(sel.expired.map((e) => e.task.id)).toEqual(['paused-1']);
+  });
+});
+
+describe('capacity-aware soft TTL (issue #2225)', () => {
+  const alwaysPaused = () => true;
+  const startAgo = (ms: number) => () => NOW.getTime() - ms;
+  const SOFT = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS; // 40m
+
+  it('effectiveProviderPausedTtlMs uses soft bound only when capacity allows', () => {
+    expect(
+      effectiveProviderPausedTtlMs({
+        ttlMs: TTL_MS,
+        softTtlMs: SOFT,
+        capacityAllowsEarlyReclaim: false,
+      }),
+    ).toBe(TTL_MS);
+    expect(
+      effectiveProviderPausedTtlMs({
+        ttlMs: TTL_MS,
+        softTtlMs: SOFT,
+        capacityAllowsEarlyReclaim: true,
+      }),
+    ).toBe(SOFT);
+  });
+
+  it('capacityAllowsProviderPausedEarlyReclaim requires free slots + occupancy', () => {
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 4,
+        providerPausedCount: 0,
+        freeForGeneralSources: 3,
+      }),
+    ).toBe(true);
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 0,
+        providerPausedCount: 5,
+        freeForGeneralSources: 3,
+      }),
+    ).toBe(true);
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 7,
+        providerPausedCount: 5,
+        freeForGeneralSources: 2,
+      }),
+    ).toBe(false);
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 1,
+        providerPausedCount: 1,
+        freeForGeneralSources: 7,
+      }),
+    ).toBe(false);
+  });
+
+  it('AC3: past soft TTL with capacity gate selects (reclaimAttempted path)', () => {
+    const task = pausedTask({ id: 'soft-aged' });
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: true,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(SOFT + 60_000),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['soft-aged']);
+    expect(sel.candidatesConsidered).toBe(1);
+  });
+
+  it('under soft TTL still skips even when capacity allows early reclaim', () => {
+    const task = pausedTask({ id: 'young' });
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: true,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(SOFT - 60_000),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+  });
+
+  it('past soft but under hard without capacity gate still skips under_ttl', () => {
+    const task = pausedTask({ id: 'mid' });
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: SOFT,
+      capacityAllowsEarlyReclaim: false,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(SOFT + 60_000),
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
   });
 });
