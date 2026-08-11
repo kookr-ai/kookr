@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceAttemptRepository } from './workspace-attempt-repository.js';
@@ -352,6 +352,68 @@ describe('WorkspaceAttemptRepository', () => {
       const reloaded = new WorkspaceAttemptRepository(filePath);
       expect(reloaded.listByProject('proj')).toHaveLength(1);
       expect(reloaded.getAttempt(attempt.attemptId)?.status).toBe('passed');
+    });
+
+    it('persist writes compact JSON without pretty-print indentation (issue #2280)', () => {
+      const filePath = join(tempDir, 'workspace-attempts.json');
+      const persistentRepo = new WorkspaceAttemptRepository(filePath);
+
+      const attempt = persistentRepo.createAttempt({
+        type: 'cleanup',
+        projectId: 'proj',
+        reasonCode: 'cleanup_requested',
+        source: 'workspace_ui',
+        evidenceSummary: 'compact write check',
+      });
+
+      const raw = readFileSync(filePath, 'utf-8');
+      // Compact form has no 2-space indent after newlines (pretty-print marker).
+      expect(raw).not.toMatch(/\n {2}"/);
+      // Canonical compact form (+ trailing newline): re-stringify of parse equals body.
+      const parsed = JSON.parse(raw) as {
+        version: number;
+        attempts: Array<{ attemptId: string; projectId: string; evidenceSummary: string }>;
+      };
+      expect(raw).toBe(JSON.stringify(parsed) + '\n');
+      // Couple format to a real persist result (not empty/wrong payload).
+      expect(parsed.version).toBe(1);
+      expect(parsed.attempts).toHaveLength(1);
+      expect(parsed.attempts[0].attemptId).toBe(attempt.attemptId);
+      expect(parsed.attempts[0].projectId).toBe('proj');
+      expect(parsed.attempts[0].evidenceSummary).toBe('compact write check');
+    });
+
+    it('load accepts legacy pretty-printed workspace-attempts.json (issue #2280)', () => {
+      const filePath = join(tempDir, 'workspace-attempts.json');
+      const pretty = JSON.stringify(
+        {
+          version: 1,
+          attempts: [
+            {
+              attemptId: 'legacy-pretty-1',
+              type: 'preflight',
+              projectId: 'proj-legacy',
+              reasonCode: 'legacy',
+              source: 'test',
+              observedAt: '2026-01-01T00:00:00.000Z',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              status: 'passed',
+              disposition: 'passed',
+              evidenceSummary: 'legacy pretty fixture',
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      // Sanity: fixture is actually pretty-printed (multi-space indent).
+      expect(pretty).toMatch(/\n {2}/);
+      writeFileSync(filePath, pretty + '\n', 'utf-8');
+
+      const reloaded = new WorkspaceAttemptRepository(filePath);
+      expect(reloaded.listByProject('proj-legacy')).toHaveLength(1);
+      expect(reloaded.getAttempt('legacy-pretty-1')?.status).toBe('passed');
+      expect(reloaded.getAttempt('legacy-pretty-1')?.evidenceSummary).toBe('legacy pretty fixture');
     });
 
     it('falls back to empty state on corrupt files', () => {
