@@ -760,7 +760,9 @@ export class HookFileWatcher {
       };
       mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
       const tmpPath = `${this.replayCheckpointPath}.tmp`;
-      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints, null, 2)}\n`, 'utf-8');
+      // Compact JSON (issue #2298): pretty-print multiplies bytes and stringify
+      // time on the drain hot path when sessionCount is in the thousands.
+      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints)}\n`, 'utf-8');
       renameSync(tmpPath, this.replayCheckpointPath);
     } catch (err) {
       this.recordHealthError(tmuxName, err);
