@@ -17,6 +17,7 @@ import {
   formatUtilPct,
   summarizeProviderPausedOccupancy,
   summarizeNonCriticalTimerPause,
+  summarizeHungSuspectTtlReclaim,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -789,6 +790,87 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Non-critical timer pause:');
   });
 
+  it('surfaces hungSuspectTtlReclaim skip breakdown when reclaimedTotal=0 and skips elevated (issue #2229)', () => {
+    const health = {
+      ...baseHealth,
+      capacity: {
+        maxActiveTasks: 16,
+        active: 10,
+        free: 6,
+        byClass: {
+          working: 6,
+          finishedAwaitingAck: 0,
+          hungSuspect: 4,
+          launching: 0,
+        },
+        effectiveWorking: 6,
+        phantomActive: 4,
+        utilizationPct: 62.5,
+        effectiveUtilizationPct: 37.5,
+      },
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        reclaimSucceeded: 0,
+        skippedNoLiveness: 0,
+        skippedOpenPrFailsafe: 12,
+        skippedOpenPrConfirmed: 8,
+        skippedOpenPrUnknown: 4,
+        skippedUnderTtl: 3,
+        skippedExemptAnomaly: 0,
+        skippedProviderPaused: 5,
+        lastCandidatesConsidered: 4,
+        lastOutcomes: [
+          { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
+          { taskId: 'b', outcome: 'skipped_open_pr_failsafe' },
+          { taskId: 'c', outcome: 'skipped_under_ttl' },
+        ],
+        lastAttemptedTaskIds: [],
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Hung-suspect reclaim: reclaimedTotal=0 hungSuspect=4  reclaimAttempted=0  candidates=4'
+        + '  skips openPr=12 openPrConfirmed=8 openPrUnknown=4 underTtl=3 providerPaused=5'
+        + ' noLiveness=0 exemptAnomaly=0'
+        + '  residual=skipped_open_pr_failsafe=2,skipped_under_ttl=1',
+    );
+  });
+
+  it('is a no-op when hungSuspectTtlReclaim is absent, reclaiming, or all gauges zero (issue #2229)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Hung-suspect reclaim:');
+    const progressing = {
+      ...baseHealth,
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 2,
+        reclaimAttempted: 2,
+        skippedOpenPrFailsafe: 100,
+        lastCandidatesConsidered: 1,
+      },
+    };
+    expect(renderReport({ port: 4800, health: progressing, agents: [] }))
+      .not.toContain('Hung-suspect reclaim:');
+    const zeroed = {
+      ...baseHealth,
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        skippedNoLiveness: 0,
+        skippedOpenPrFailsafe: 0,
+        skippedOpenPrConfirmed: 0,
+        skippedOpenPrUnknown: 0,
+        skippedUnderTtl: 0,
+        skippedExemptAnomaly: 0,
+        skippedProviderPaused: 0,
+        lastCandidatesConsidered: 0,
+        lastOutcomes: [],
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Hung-suspect reclaim:');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
@@ -1167,6 +1249,122 @@ describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
       thresholdMs: 1500,
       lastEventLoopDelayP95Ms: null,
       pausedTicksTotal: 0,
+    });
+  });
+});
+
+describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
+  it('returns null when hungSuspectTtlReclaim is absent', () => {
+    expect(summarizeHungSuspectTtlReclaim({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when reclaimedTotal > 0 (reclaim progressing)', () => {
+    expect(
+      summarizeHungSuspectTtlReclaim({
+        hungSuspectTtlReclaim: {
+          reclaimedTotal: 1,
+          reclaimAttempted: 1,
+          skippedOpenPrFailsafe: 99,
+          lastCandidatesConsidered: 2,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when reclaimedTotal=0 but all skips/candidates/residual are zero', () => {
+    expect(
+      summarizeHungSuspectTtlReclaim({
+        hungSuspectTtlReclaim: {
+          reclaimedTotal: 0,
+          reclaimAttempted: 0,
+          skippedNoLiveness: 0,
+          skippedOpenPrFailsafe: 0,
+          skippedOpenPrConfirmed: 0,
+          skippedOpenPrUnknown: 0,
+          skippedUnderTtl: 0,
+          skippedExemptAnomaly: 0,
+          skippedProviderPaused: 0,
+          lastCandidatesConsidered: 0,
+          lastOutcomes: [],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns slim residual with skip breakdown, hungSuspect, and residual class counts', () => {
+    expect(
+      summarizeHungSuspectTtlReclaim({
+        capacity: {
+          maxActiveTasks: 16,
+          active: 10,
+          free: 6,
+          byClass: {
+            working: 6,
+            finishedAwaitingAck: 0,
+            hungSuspect: 4.9,
+            launching: 0,
+          },
+        },
+        hungSuspectTtlReclaim: {
+          reclaimedTotal: 0,
+          reclaimAttempted: 0.2,
+          reclaimSucceeded: 0,
+          skippedNoLiveness: 1.1,
+          skippedOpenPrFailsafe: 12.7,
+          skippedOpenPrConfirmed: 8.2,
+          skippedOpenPrUnknown: 4.9,
+          skippedUnderTtl: 3.2,
+          skippedExemptAnomaly: 0,
+          skippedProviderPaused: 5.9,
+          lastCandidatesConsidered: 4.1,
+          lastOutcomes: [
+            { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
+            { taskId: 'b', outcome: 'skipped_open_pr_failsafe' },
+            { taskId: 'c', outcome: 'skipped_under_ttl' },
+            { taskId: 'd' }, // missing outcome ignored
+          ],
+          lastAttemptedTaskIds: ['x'],
+        },
+      }),
+    ).toEqual({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedNoLiveness: 1,
+      skippedOpenPrFailsafe: 12,
+      skippedOpenPrConfirmed: 8,
+      skippedOpenPrUnknown: 4,
+      skippedUnderTtl: 3,
+      skippedExemptAnomaly: 0,
+      skippedProviderPaused: 5,
+      lastCandidatesConsidered: 4,
+      hungSuspect: 4,
+      residualClasses: {
+        skipped_open_pr_failsafe: 2,
+        skipped_under_ttl: 1,
+      },
+    });
+  });
+
+  it('elevates on candidates alone without lifetime skips', () => {
+    expect(
+      summarizeHungSuspectTtlReclaim({
+        hungSuspectTtlReclaim: {
+          reclaimedTotal: 0,
+          reclaimAttempted: 0,
+          lastCandidatesConsidered: 3,
+        },
+      }),
+    ).toEqual({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedNoLiveness: 0,
+      skippedOpenPrFailsafe: 0,
+      skippedOpenPrConfirmed: 0,
+      skippedOpenPrUnknown: 0,
+      skippedUnderTtl: 0,
+      skippedExemptAnomaly: 0,
+      skippedProviderPaused: 0,
+      lastCandidatesConsidered: 3,
     });
   });
 });
@@ -1562,14 +1760,15 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.failOn).toBeUndefined();
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
-    // / providerPausedOccupancy / nonCriticalTimerPause block on /api/health →
-    // no slim summary (no-op).
+    // / providerPausedOccupancy / nonCriticalTimerPause / hungSuspectTtlReclaim
+    // block on /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
     expect(envelope.details.providerPausedOccupancy).toBeUndefined();
     expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
+    expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -1842,6 +2041,80 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.nonCriticalTimerPause).toBeUndefined();
+  });
+
+  it('includes a slim hungSuspectTtlReclaim summary in --json when residual elevated (issue #2229)', async () => {
+    mockSuccessfulFetch([], {
+      capacity: {
+        maxActiveTasks: 16,
+        active: 10,
+        free: 6,
+        byClass: {
+          working: 6,
+          finishedAwaitingAck: 0,
+          hungSuspect: 4,
+          launching: 0,
+        },
+        effectiveWorking: 6,
+        phantomActive: 4,
+        utilizationPct: 62.5,
+        effectiveUtilizationPct: 37.5,
+      },
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 0,
+        reclaimAttempted: 0,
+        reclaimSucceeded: 0,
+        skippedNoLiveness: 0,
+        skippedOpenPrFailsafe: 12,
+        skippedOpenPrConfirmed: 8,
+        skippedOpenPrUnknown: 4,
+        skippedUnderTtl: 3,
+        skippedExemptAnomaly: 0,
+        skippedProviderPaused: 5,
+        lastCandidatesConsidered: 4,
+        lastOutcomes: [
+          { taskId: 'a', outcome: 'skipped_open_pr_failsafe' },
+          { taskId: 'b', outcome: 'skipped_open_pr_failsafe' },
+        ],
+        lastAttemptedTaskIds: ['x'],
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.hungSuspectTtlReclaim).toEqual({
+      reclaimedTotal: 0,
+      reclaimAttempted: 0,
+      skippedNoLiveness: 0,
+      skippedOpenPrFailsafe: 12,
+      skippedOpenPrConfirmed: 8,
+      skippedOpenPrUnknown: 4,
+      skippedUnderTtl: 3,
+      skippedExemptAnomaly: 0,
+      skippedProviderPaused: 5,
+      lastCandidatesConsidered: 4,
+      hungSuspect: 4,
+      residualClasses: { skipped_open_pr_failsafe: 2 },
+    });
+    expect(envelope.details.hungSuspectTtlReclaim.lastAttemptedTaskIds).toBeUndefined();
+  });
+
+  it('omits details.hungSuspectTtlReclaim in --json when reclaiming or gauges zero (issue #2229)', async () => {
+    mockSuccessfulFetch([], {
+      hungSuspectTtlReclaim: {
+        reclaimedTotal: 2,
+        reclaimAttempted: 2,
+        skippedOpenPrFailsafe: 100,
+        lastCandidatesConsidered: 1,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {
