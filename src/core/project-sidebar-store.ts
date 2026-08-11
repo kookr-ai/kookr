@@ -86,7 +86,7 @@ export class ProjectSidebarStore {
   }
 
   async save(): Promise<void> {
-    await atomicWriteFile(this.filePath, JSON.stringify(this.state, null, 2));
+    await atomicWriteFile(this.filePath, JSON.stringify(this.state));
   }
 
   getState(): ProjectSidebarState {

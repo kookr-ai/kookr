@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectSidebarStore, normalizeProjectSidebarState } from './project-sidebar-store.js';
@@ -63,6 +63,34 @@ describe('ProjectSidebarStore', () => {
         },
       },
     });
+  });
+
+  test('save writes compact JSON without pretty-print indentation (issue #2304)', async () => {
+    const store = new ProjectSidebarStore(tempDir);
+    await store.load();
+    store.setState({
+      ordered: ['github.com/a/repo'],
+      pinned: ['github.com/a/repo'],
+      hidden: [],
+      catalog: {
+        'github.com/a/repo': {
+          project: 'github.com/a/repo',
+          displayName: 'a/repo',
+          color: 1,
+          lastSeenAt: '2026-05-09T00:00:00.000Z',
+        },
+      },
+    });
+    await store.save();
+
+    const raw = readFileSync(join(tempDir, 'project-sidebar.json'), 'utf8');
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(raw).not.toMatch(/\n {2}"/);
+    // Keys are adjacent without space after colon (compact stringify).
+    expect(raw).toContain('"version":1');
+    const parsed = JSON.parse(raw);
+    expect(parsed.ordered).toEqual(['github.com/a/repo']);
+    expect(parsed.pinned).toEqual(['github.com/a/repo']);
   });
 
   test('normalizes malformed persisted values', () => {
