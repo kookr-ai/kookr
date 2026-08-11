@@ -13,6 +13,8 @@ import {
   summarizeStaleProcesses,
   summarizePayloadDiet,
   summarizeFirstHookMiss,
+  summarizeCapacity,
+  formatUtilPct,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -581,6 +583,91 @@ describe('kookr-status renderReport', () => {
       .not.toContain('Payload diet:');
   });
 
+  it('surfaces capacity when phantomActive > 0 (issue #2234)', () => {
+    // Live residual shape: util=93.75 while effective=56.25 with phantomActive=6.
+    const health = {
+      ...baseHealth,
+      capacity: {
+        maxActiveTasks: 16,
+        active: 15,
+        free: 1,
+        byClass: {
+          working: 9,
+          finishedAwaitingAck: 2,
+          hungSuspect: 4,
+          launching: 0,
+        },
+        effectiveWorking: 9,
+        phantomActive: 6,
+        utilizationPct: 93.75,
+        effectiveUtilizationPct: 56.25,
+        freeForGeneralSources: 5,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Capacity: active=15/16 free=1 freeGeneral=5  util=93.75% effective=56.25%'
+        + '  effectiveWorking=9 phantom=6'
+        + '  working=9 finishedAwaitingAck=2 hungSuspect=4 launching=0',
+    );
+  });
+
+  it('surfaces capacity on high nominal util even without phantoms (issue #2234)', () => {
+    const health = {
+      ...baseHealth,
+      capacity: {
+        maxActiveTasks: 16,
+        active: 14,
+        free: 2,
+        byClass: {
+          working: 13,
+          finishedAwaitingAck: 0,
+          hungSuspect: 0,
+          launching: 1,
+        },
+        effectiveWorking: 14,
+        phantomActive: 0,
+        utilizationPct: 87.5,
+        effectiveUtilizationPct: 87.5,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Capacity: active=14/16 free=2  util=87.5% effective=87.5%'
+        + '  effectiveWorking=14 phantom=0'
+        + '  working=13 finishedAwaitingAck=0 hungSuspect=0 launching=1',
+    );
+    expect(out).not.toContain('freeGeneral=');
+  });
+
+  it('is a no-op when capacity is healthy and quiet (issue #2234)', () => {
+    const health = {
+      ...baseHealth,
+      capacity: {
+        maxActiveTasks: 16,
+        active: 4,
+        free: 12,
+        byClass: {
+          working: 4,
+          finishedAwaitingAck: 0,
+          hungSuspect: 0,
+          launching: 0,
+        },
+        effectiveWorking: 4,
+        phantomActive: 0,
+        utilizationPct: 25,
+        effectiveUtilizationPct: 25,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] }))
+      .not.toContain('Capacity:');
+  });
+
+  it('is a no-op when capacity is absent (issue #2234)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Capacity:');
+  });
+
   it('surfaces firstHookMissTotal when elevated (issue #2235)', () => {
     const health = {
       ...baseHealth,
@@ -847,6 +934,204 @@ describe('kookr-status summarizeFirstHookMiss (issue #2235)', () => {
     expect(summarizeFirstHookMiss({ firstHookMissTotal: 4.9 })).toEqual({
       firstHookMissTotal: 4,
     });
+  });
+});
+
+describe('kookr-status summarizeCapacity (issue #2234)', () => {
+  const elevatedPhantom = {
+    maxActiveTasks: 16,
+    active: 15,
+    free: 1,
+    byClass: {
+      working: 9,
+      finishedAwaitingAck: 2,
+      hungSuspect: 4,
+      launching: 0,
+    },
+    effectiveWorking: 9,
+    phantomActive: 6,
+    utilizationPct: 93.75,
+    effectiveUtilizationPct: 56.25,
+    freeForGeneralSources: 5,
+  };
+
+  it('returns null when capacity is absent', () => {
+    expect(summarizeCapacity({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when required fields are non-numeric', () => {
+    expect(
+      summarizeCapacity({
+        capacity: {
+          ...elevatedPhantom,
+          phantomActive: 'x' as unknown as number,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when byClass is incomplete', () => {
+    expect(
+      summarizeCapacity({
+        capacity: {
+          ...elevatedPhantom,
+          byClass: { working: 9 } as unknown as typeof elevatedPhantom.byClass,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns slim capacity for phantom residual (sample from issue #2234)', () => {
+    expect(summarizeCapacity({ capacity: elevatedPhantom })).toEqual({
+      maxActiveTasks: 16,
+      active: 15,
+      free: 1,
+      effectiveWorking: 9,
+      phantomActive: 6,
+      utilizationPct: 93.75,
+      effectiveUtilizationPct: 56.25,
+      byClass: {
+        working: 9,
+        finishedAwaitingAck: 2,
+        hungSuspect: 4,
+        launching: 0,
+      },
+      freeForGeneralSources: 5,
+    });
+  });
+
+  it('surfaces high util without phantoms (>= 75%)', () => {
+    expect(
+      summarizeCapacity({
+        capacity: {
+          maxActiveTasks: 16,
+          active: 12,
+          free: 4,
+          byClass: {
+            working: 12,
+            finishedAwaitingAck: 0,
+            hungSuspect: 0,
+            launching: 0,
+          },
+          effectiveWorking: 12,
+          phantomActive: 0,
+          utilizationPct: 75,
+          effectiveUtilizationPct: 75,
+        },
+      }),
+    ).toEqual({
+      maxActiveTasks: 16,
+      active: 12,
+      free: 4,
+      effectiveWorking: 12,
+      phantomActive: 0,
+      utilizationPct: 75,
+      effectiveUtilizationPct: 75,
+      byClass: {
+        working: 12,
+        finishedAwaitingAck: 0,
+        hungSuspect: 0,
+        launching: 0,
+      },
+    });
+  });
+
+  it('surfaces a large util gap even below high-util and without phantoms', () => {
+    // Isolates CAPACITY_UTIL_GAP_PCT (defensive gate under ledger invariants).
+    expect(
+      summarizeCapacity({
+        capacity: {
+          maxActiveTasks: 16,
+          active: 8,
+          free: 8,
+          byClass: {
+            working: 8,
+            finishedAwaitingAck: 0,
+            hungSuspect: 0,
+            launching: 0,
+          },
+          effectiveWorking: 6,
+          phantomActive: 0,
+          utilizationPct: 50,
+          effectiveUtilizationPct: 37.5, // gap 12.5 >= 10
+        },
+      }),
+    ).toMatchObject({
+      utilizationPct: 50,
+      effectiveUtilizationPct: 37.5,
+      phantomActive: 0,
+    });
+  });
+
+  it('stays quiet for healthy low-util fleets', () => {
+    expect(
+      summarizeCapacity({
+        capacity: {
+          maxActiveTasks: 16,
+          active: 4,
+          free: 12,
+          byClass: {
+            working: 4,
+            finishedAwaitingAck: 0,
+            hungSuspect: 0,
+            launching: 0,
+          },
+          effectiveWorking: 4,
+          phantomActive: 0,
+          utilizationPct: 25,
+          effectiveUtilizationPct: 25,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('floors integer counters while preserving util percentages', () => {
+    expect(
+      summarizeCapacity({
+        capacity: {
+          maxActiveTasks: 16.9,
+          active: 15.2,
+          free: 0.9,
+          byClass: {
+            working: 9.1,
+            finishedAwaitingAck: 2.8,
+            hungSuspect: 4.2,
+            launching: 0.4,
+          },
+          effectiveWorking: 9.7,
+          phantomActive: 6.3,
+          utilizationPct: 93.75,
+          effectiveUtilizationPct: 56.25,
+        },
+      }),
+    ).toEqual({
+      maxActiveTasks: 16,
+      active: 15,
+      free: 0,
+      effectiveWorking: 9,
+      phantomActive: 6,
+      utilizationPct: 93.75,
+      effectiveUtilizationPct: 56.25,
+      byClass: {
+        working: 9,
+        finishedAwaitingAck: 2,
+        hungSuspect: 4,
+        launching: 0,
+      },
+    });
+  });
+});
+
+describe('kookr-status formatUtilPct (issue #2234)', () => {
+  it('trims trailing zeros while keeping two-decimal precision', () => {
+    expect(formatUtilPct(93.75)).toBe('93.75');
+    expect(formatUtilPct(87.5)).toBe('87.5');
+    expect(formatUtilPct(50)).toBe('50');
+    expect(formatUtilPct(56.2500001)).toBe('56.25');
+  });
+
+  it('returns 0 for non-finite input', () => {
+    expect(formatUtilPct(Number.NaN)).toBe('0');
   });
 });
 
@@ -1144,6 +1429,77 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
+  });
+
+  it('includes a slim capacity summary in --json when elevated (issue #2234)', async () => {
+    mockSuccessfulFetch([], {
+      capacity: {
+        maxActiveTasks: 16,
+        active: 15,
+        free: 1,
+        byClass: {
+          working: 9,
+          finishedAwaitingAck: 2,
+          hungSuspect: 4,
+          launching: 0,
+        },
+        effectiveWorking: 9,
+        phantomActive: 6,
+        utilizationPct: 93.75,
+        effectiveUtilizationPct: 56.25,
+        freeForGeneralSources: 5,
+        // Extra ledger fields must not leak into the slim projection.
+        pendingQueueDepth: 0,
+        oldestPendingAgeMs: null,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.capacity).toEqual({
+      maxActiveTasks: 16,
+      active: 15,
+      free: 1,
+      effectiveWorking: 9,
+      phantomActive: 6,
+      utilizationPct: 93.75,
+      effectiveUtilizationPct: 56.25,
+      byClass: {
+        working: 9,
+        finishedAwaitingAck: 2,
+        hungSuspect: 4,
+        launching: 0,
+      },
+      freeForGeneralSources: 5,
+    });
+    expect(envelope.details.capacity.pendingQueueDepth).toBeUndefined();
+  });
+
+  it('omits details.capacity in --json when fleet is quiet (issue #2234)', async () => {
+    mockSuccessfulFetch([], {
+      capacity: {
+        maxActiveTasks: 16,
+        active: 4,
+        free: 12,
+        byClass: {
+          working: 4,
+          finishedAwaitingAck: 0,
+          hungSuspect: 0,
+          launching: 0,
+        },
+        effectiveWorking: 4,
+        phantomActive: 0,
+        utilizationPct: 25,
+        effectiveUtilizationPct: 25,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.capacity).toBeUndefined();
   });
 
   it('keeps default status exit behavior at zero even with active findings', async () => {

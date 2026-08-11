@@ -204,8 +204,11 @@ function summarizeStaleProcesses(health) {
 
 // Payload-diet projection (issue #2220). /api/health publishes
 // `payloadDiet.{trackedTasks,terminalTasks,lastSnapshotBytes}` from the same
-// getter already logged at boot/prune. Always-on compact gauge (like capacity)
-// whenever the block is present — operators need steady-state pressure, not
+// getter already logged at boot/prune. Always-on compact gauge whenever the
+// block is present — operators need steady-state pressure, not only spikes
+// (capacity, by contrast, is elevated-only — see summarizeCapacity). Return
+// null when the block is absent (older server / partial health fixture).
+// PLACEHOLDER_REMOVE — operators need steady-state pressure, not
 // only spikes. Return null when the block is absent (older server / partial
 // health fixture).
 function summarizePayloadDiet(health) {
@@ -238,6 +241,102 @@ function summarizeFirstHookMiss(health) {
   const total = Number(raw);
   if (!Number.isFinite(total) || total <= 0) return null;
   return { firstHookMissTotal: Math.floor(total) };
+}
+
+// Capacity projection (issue #2234). /api/health already publishes the full
+// capacity ledger (`effectiveWorking`, `phantomActive`, `utilizationPct`,
+// `byClass`, free slots…). Remote operators and Lucy/Discord digests only saw
+// findings — not capacity truth — so a 93.8% nominal fleet with phantom slots
+// looked healthy. Surface a slim projection when phantomActive > 0, the util
+// gap is large, or nominal utilization is high; steady-state healthy fleets
+// stay quiet. Visibility only — never mutates admission.
+const CAPACITY_HIGH_UTIL_PCT = 75;
+const CAPACITY_UTIL_GAP_PCT = 10;
+const CAPACITY_BY_CLASS_KEYS = /** @type {const} */ ([
+  'working',
+  'finishedAwaitingAck',
+  'hungSuspect',
+  'launching',
+]);
+
+function formatUtilPct(pct) {
+  if (!Number.isFinite(pct)) return '0';
+  return String(Number(pct.toFixed(2)));
+}
+
+function summarizeCapacity(health) {
+  const block = health?.capacity;
+  if (!block || typeof block !== 'object') return null;
+
+  const maxActiveTasks = Number(/** @type {{ maxActiveTasks?: unknown }} */ (block).maxActiveTasks);
+  const active = Number(/** @type {{ active?: unknown }} */ (block).active);
+  const free = Number(/** @type {{ free?: unknown }} */ (block).free);
+  const effectiveWorking = Number(/** @type {{ effectiveWorking?: unknown }} */ (block).effectiveWorking);
+  const phantomActive = Number(/** @type {{ phantomActive?: unknown }} */ (block).phantomActive);
+  const utilizationPct = Number(/** @type {{ utilizationPct?: unknown }} */ (block).utilizationPct);
+  const effectiveUtilizationPct = Number(
+    /** @type {{ effectiveUtilizationPct?: unknown }} */ (block).effectiveUtilizationPct,
+  );
+  if (
+    !Number.isFinite(maxActiveTasks)
+    || !Number.isFinite(active)
+    || !Number.isFinite(free)
+    || !Number.isFinite(effectiveWorking)
+    || !Number.isFinite(phantomActive)
+    || !Number.isFinite(utilizationPct)
+    || !Number.isFinite(effectiveUtilizationPct)
+  ) {
+    return null;
+  }
+
+  const byClassRaw = /** @type {{ byClass?: unknown }} */ (block).byClass;
+  if (!byClassRaw || typeof byClassRaw !== 'object') return null;
+  /** @type {Record<string, number>} */
+  const byClass = {};
+  for (const key of CAPACITY_BY_CLASS_KEYS) {
+    const n = Number(/** @type {Record<string, unknown>} */ (byClassRaw)[key]);
+    if (!Number.isFinite(n)) return null;
+    byClass[key] = Math.floor(n);
+  }
+
+  const utilGap = utilizationPct - effectiveUtilizationPct;
+  const elevated =
+    phantomActive > 0
+    || utilGap >= CAPACITY_UTIL_GAP_PCT
+    || utilizationPct >= CAPACITY_HIGH_UTIL_PCT;
+  if (!elevated) return null;
+
+  /** @type {{
+   *   maxActiveTasks: number,
+   *   active: number,
+   *   free: number,
+   *   effectiveWorking: number,
+   *   phantomActive: number,
+   *   utilizationPct: number,
+   *   effectiveUtilizationPct: number,
+   *   byClass: Record<string, number>,
+   *   freeForGeneralSources?: number,
+   * }} */
+  const summary = {
+    maxActiveTasks: Math.floor(maxActiveTasks),
+    active: Math.floor(active),
+    free: Math.floor(free),
+    effectiveWorking: Math.floor(effectiveWorking),
+    phantomActive: Math.floor(phantomActive),
+    utilizationPct,
+    effectiveUtilizationPct,
+    byClass,
+  };
+
+  const freeGeneralRaw = /** @type {{ freeForGeneralSources?: unknown }} */ (block).freeForGeneralSources;
+  if (freeGeneralRaw !== undefined && freeGeneralRaw !== null) {
+    const freeGeneral = Number(freeGeneralRaw);
+    if (Number.isFinite(freeGeneral)) {
+      summary.freeForGeneralSources = Math.floor(freeGeneral);
+    }
+  }
+
+  return summary;
 }
 
 function renderReport({ port, health, agents }) {
@@ -344,6 +443,29 @@ function renderReport({ port, health, agents }) {
   const firstHookMiss = summarizeFirstHookMiss(health);
   if (firstHookMiss) {
     lines.push(`First-hook miss: total=${firstHookMiss.firstHookMissTotal}`);
+  }
+
+  // Capacity (issue #2234) — phantom / high-util pressure from the ledger
+  // already on /api/health. Quiet by default; one line with byClass + free
+  // slots when phantoms, a large util gap, or high nominal utilization
+  // would otherwise hide real free capacity from remote digests.
+  const capacity = summarizeCapacity(health);
+  if (capacity) {
+    const freeGeneral =
+      typeof capacity.freeForGeneralSources === 'number'
+        ? ` freeGeneral=${capacity.freeForGeneralSources}`
+        : '';
+    const byClassParts = CAPACITY_BY_CLASS_KEYS
+      .map((key) => `${key}=${capacity.byClass[key]}`)
+      .join(' ');
+    lines.push(
+      `Capacity: active=${capacity.active}/${capacity.maxActiveTasks} free=${capacity.free}${freeGeneral}`
+        + `  util=${formatUtilPct(capacity.utilizationPct)}%`
+        + ` effective=${formatUtilPct(capacity.effectiveUtilizationPct)}%`
+        + `  effectiveWorking=${capacity.effectiveWorking}`
+        + ` phantom=${capacity.phantomActive}`
+        + `  ${byClassParts}`,
+    );
   }
 
   if (findings.length > 0) {
@@ -542,6 +664,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const staleSummary = summarizeStaleProcesses(health);
     const payloadDietSummary = summarizePayloadDiet(health);
     const firstHookMissSummary = summarizeFirstHookMiss(health);
+    const capacitySummary = summarizeCapacity(health);
     return exitJson({
       out,
       exit,
@@ -562,6 +685,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(firstHookMissSummary
           ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
           : {}),
+        ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...gateDetails,
       },
     });
@@ -608,6 +732,8 @@ export {
   summarizeStaleProcesses,
   summarizePayloadDiet,
   summarizeFirstHookMiss,
+  summarizeCapacity,
+  formatUtilPct,
   renderReport,
   resolvePort,
   parsePortEnv,
