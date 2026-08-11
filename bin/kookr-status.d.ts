@@ -108,6 +108,13 @@ export interface HealthLike {
     lastEventLoopDelayP95Ms?: number | null;
     pausedTicksTotal?: number;
   };
+  /** Snapshot rebuild shed gauges (issue #1775 / #2299). */
+  snapshotShed?: {
+    schemaVersion?: string;
+    thresholdMs?: number;
+    lastEventLoopDelayP95Ms?: number | null;
+    shedTotal?: number;
+  };
   /** Process-lifetime hungSuspect TTL reclaim gauges (issue #1989 / #2229). */
   hungSuspectTtlReclaim?: {
     reclaimedTotal?: number;
@@ -203,6 +210,13 @@ export interface NonCriticalTimerPauseSummary {
   pausedTicksTotal: number;
 }
 
+/** Slim snapshot rebuild shed gauge (issue #2299 / #1775). */
+export interface SnapshotShedSummary {
+  thresholdMs: number;
+  lastEventLoopDelayP95Ms: number | null;
+  shedTotal: number;
+}
+
 /** Slim hungSuspect TTL reclaim residual (issue #2229). Elevated only. */
 export interface HungSuspectTtlReclaimSummary {
   reclaimedTotal: number;
@@ -275,6 +289,9 @@ export function summarizeProviderPausedOccupancy(
 export function summarizeNonCriticalTimerPause(
   health: HealthLike,
 ): NonCriticalTimerPauseSummary | null;
+export function summarizeSnapshotShed(
+  health: HealthLike,
+): SnapshotShedSummary | null;
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;
