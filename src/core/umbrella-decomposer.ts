@@ -1154,109 +1154,117 @@ export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * lucy#1590 "headline metrics in tested code". Wave-1 residual leaves
  * (#2090–#2093 alerts / control-room health / per-tier attribution / weekly
  * acquisition scoreboard) and follow-ons (#2445 backfill, #2464–#2466 cron +
- * control-room threshold surface) shipped and are title-exhausted. Invent
- * wave 2 (queue-feeder 2026-08-11, invent-product-wave #2069) covers the still-
- * open acceptance residual: flagship SEC race quality (beforeShare) is silent
- * in alerts and status, and there is no durable weekly triad trend for
- * anchorCoverage / sessionHitRate / beforeShare. Live GitHub leaves #2510–#2512.
- * Title idempotency prevents re-emit once those exist.
+ * control-room threshold surface) shipped; invent wave 2 (#2510–#2512 beforeShare
+ * alert / status surface / durable weekly triad aggregator) also title-exhausted.
+ * Invent wave 3 (queue-feeder 2026-08-12, invent-product-wave #2069) covers the
+ * still-open residual: weekly triad never auto-appends after rollup-nightly,
+ * control-room has no week-over-week triad surface, and status/rollup secLead
+ * parity is unenforced by canary. Live GitHub leaves #2743–#2745. Title
+ * idempotency prevents re-emit once those exist.
  */
 export const LUCY_1590_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(metrics): alert when secLead beforeShare is chronically below threshold',
+      'feat(metrics): wire product-metric-trend into detection-rollup nightly so weekly triad grows in prod',
     goal:
-      'Extend product-metric alerts so a chronically zero (or below-threshold) ' +
-      'secLead beforeShare with a measurable anchored sample posts a durable operator ' +
-      'warning via the existing safeSend / product-metric-alerts path. Live prod rollup ' +
-      'shows beforeCount=0 / afterShare=1 on n≈31 — Lucy never beat SEC on the measured ' +
-      'set — but only anchorCoverage and sessionHitRate are thresholded today, so the ' +
-      'flagship "beat SEC EDGAR" failure mode stays silent.',
+      'Close a residual longitudinal hole under umbrella #1590: product-metric-trend.mjs ' +
+      '(#2512) can write weekly anchorCoverage/sessionHitRate/beforeShare rows, but nothing ' +
+      'in the prod schedule appends them after detection-rollup-nightly refreshes the rollup. ' +
+      'Without an automatic path the triad series stays empty or operator-driven, so ' +
+      'longitudinal proof that acquisition/data-quality work moved headline metrics never ' +
+      'accumulates in LUCY_DATA_DIR.',
     acceptanceCriteria: [
-      'evaluateProductMetricAlerts (or a sibling pure evaluator in product-metric-alerts.js) ' +
-        'emits a beforeShare alert when beforeShare is below a documented threshold ' +
-        '(default e.g. 0.05–0.10) AND the anchored sample size is above a documented floor ' +
-        '(so tiny n cannot false-alert); null/unmeasurable beforeShare or n-below-floor → no alert.',
-      'The product-metric-alerts CLI and the shared alert path used by the nightly/safeSend ' +
-        'chokepoint surface kind, beforeShare rate, beforeCount/afterCount (or before/total), ' +
-        'threshold, and sample n — same shape discipline as anchorCoverage alerts.',
-      'Unit tests: (a) beforeShare=0 with n≥floor → alert; (b) beforeShare above threshold → no alert; ' +
-        '(c) n below floor → no alert; (d) null beforeShare → no false alert.',
+      'detection-rollup-nightly.sh (or a sibling install-*-cron path documented next to ' +
+        'detection-rollup) invokes product-metric-trend in append mode against the same ' +
+        'absolute LUCY_DATA_DIR after a successful rollup write — weekly product-metric-trend ' +
+        'JSONL/JSON under that data dir gains or upserts the current ISO week row without ' +
+        'manual CLI.',
+      'When rollup write fails or LUCY_DATA_DIR is unset/relative, trend append is skipped ' +
+        'with a non-fatal log line (same fail-open discipline as other nightly side jobs) and ' +
+        'must not flip the rollup script\'s primary exit to hard-fail solely because trend failed.',
+      'Unit/script tests or fixture dry-run: (a) successful rollup path triggers trend ' +
+        'invocation with expected out paths; (b) rollup failure/skip does not require trend; ' +
+        '(c) npm script / install docs mention the chained schedule so operators can --check ' +
+        'the combined path.',
+    ],
+    fileHints: [
+      'scripts/detection-rollup-nightly.sh',
+      'scripts/product-metric-trend.mjs',
+      'src/product-metric-trend.js',
+      'scripts/install-detection-rollup-cron.sh',
+      'package.json (product-metric:trend)',
+    ],
+    testHints: [
+      'script/fixture: mock rollup success → trend CLI invoked with LUCY_DATA_DIR',
+      'script/fixture: rollup failure → trend not required for primary exit',
+    ],
+    labels: ['product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): control-room surfaces weekly triad trend from product-metric-trend.jsonl',
+    goal:
+      'Close a residual presentation hole under umbrella #1590: weekly product-metric-trend ' +
+      'rows may exist on disk, but operators still cannot answer \'did anchorCoverage / ' +
+      'sessionHitRate / beforeShare improve week-over-week?\' from the control room alone. ' +
+      'Point-in-time productMetricHealthSnapshot shows latest rates; the longitudinal triad ' +
+      'must be a first-class control-room surface with denominators.',
+    acceptanceCriteria: [
+      'Control-room snapshot/compose (or product-metrics panel) projects the last N weekly ' +
+        'triad rows from product-metric-trend.jsonl (or .json) under LUCY_DATA_DIR: week id, ' +
+        'anchorCoverage, sessionHitRate when measurable, beforeShare when measurable, and ' +
+        'sample denominators — scannable without opening the raw file.',
+      'Missing/empty trend file or unparseable rows degrade to an explicit data-gap state ' +
+        '(not a crash, not fabricated rates). Zero-anchor / null beforeShare weeks render gap ' +
+        'phrases consistent with secLead zero-anchor contract.',
+      'Unit/fixture tests: (a) multi-week fixture → panel/snapshot fields match rows; ' +
+        '(b) missing file → gap; (c) partial null metrics week → no fabricated share.',
+    ],
+    fileHints: [
+      'src/control-room-snapshot-compose.js',
+      'src/control-room/',
+      'src/product-metric-trend.js',
+      'src/product-metric-alerts.js (productMetricHealthSnapshot pattern)',
+      'data/product-metric-trend.jsonl',
+    ],
+    testHints: [
+      'unit: fixture trend JSONL → snapshot weekly triad fields',
+      'unit: missing trend → data-gap, no throw',
+    ],
+    labels: ['product-metric', 'product-surface-ux', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): canary fails when status secLead fields diverge from latest detection-rollup row',
+    goal:
+      'Enforce the #1590 acceptance that flagship SEC-lead numbers are code-sourced and ' +
+      'byte-reproducible from detection-rollup.jsonl: if productMetricHealthSnapshot / status ' +
+      'secLead (beforeShare, median lead, anchored/total) disagree with the latest durable ' +
+      'rollup secLead row under LUCY_DATA_DIR, a canary or pure comparator must fail loudly ' +
+      'so prose/status drift cannot silently reappear after the #1966 rollup path.',
+    acceptanceCriteria: [
+      'A pure comparator (plus optional CLI/canary script) loads the latest detection-rollup ' +
+        'secLead row and the status/health snapshot projection and returns ok only when ' +
+        'beforeShare (or before/total), medianLeadSec when both present, and anchored/total ' +
+        'denominators match within documented tolerance (exact for counts; float share within ' +
+        'epsilon).',
+      'Mismatch, missing rollup while status claims numeric lead, or status fabricating a ' +
+        'median on zero-anchor when rollup says anchored=0 → non-zero canary / failed ' +
+        'comparator with a structured diff (fields + both values).',
+      'Unit tests: (a) matching fixture → ok; (b) beforeShare drift → fail; (c) zero-anchor ' +
+        'rollup vs numeric status median → fail; (d) both missing → ok or explicit skip, not crash.',
     ],
     fileHints: [
       'src/product-metric-alerts.js',
-      'scripts/product-metric-alerts.mjs',
-      'scripts/detection-report.mjs (computeSecLead shape)',
+      'scripts/detection-report.mjs',
+      'src/acquisition/status.js',
+      'scripts/sec-anchor-canary-nightly.sh (pattern reuse)',
       'test/product-metric-alerts.test.js',
     ],
     testHints: [
-      'unit: inject secLead fixture with beforeShare=0, anchored n=20 → alert kind beforeShare',
-      'unit: beforeShare=0.4 or n=2 → no alert',
-    ],
-    labels: ['product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(metrics): surface secLead beforeShare and median lead with denominator in status',
-    goal:
-      'Make the control-room / !bot status product-metrics surface show the flagship ' +
-      'SEC race quality — beforeShare, median lead seconds, and the anchored denominator ' +
-      '("anchored subset, n=K of N") — not only coverage and sessionHitRate. Umbrella ' +
-      '#1590 acceptance still requires the lead to be labeled with its denominator so ' +
-      'operators can judge race quality without running detection:report by hand.',
-    acceptanceCriteria: [
-      'productMetricHealthSnapshot (or status projection used by control-room and !bot status) ' +
-        'includes secLead fields: beforeShare (or beforeCount/total), medianLeadSec when ' +
-        'anchored>0, and denominator labels anchored/total from the latest detection-rollup ' +
-        'secLead row under LUCY_DATA_DIR.',
-      'When anchored=0 (zero-anchor day), the surface shows an explicit data-gap / no-lead ' +
-        'phrase and must not render a fabricated median lead (parity with detection-report ' +
-        'zero-anchor contract).',
-      'Unit/fixture tests: (a) secLead with beforeShare=0 and n>0 → fields visible with ' +
-        'denominator; (b) zero-anchor total>0 anchored=0 → gap phrase, no median; ' +
-        '(c) missing rollup → missing/degraded, not a crash.',
-    ],
-    fileHints: [
-      'src/product-metric-alerts.js (productMetricHealthSnapshot / format helpers)',
-      'src/acquisition/status.js',
-      'src/index.js (status / readiness subsystem)',
-      'src/control-room-snapshot-compose.js',
-      'scripts/detection-report.mjs (formatSecLead / zero-anchor contract)',
-    ],
-    testHints: [
-      'unit: health snapshot includes beforeShare + anchored/total from fixture rollup row',
-      'unit: zero-anchor fixture never exposes a numeric median lead',
-    ],
-    labels: ['product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(metrics): durable weekly trend of anchorCoverage sessionHitRate beforeShare',
-    goal:
-      'Persist a tested weekly product-metric trend series (anchorCoverage, sessionHitRate, ' +
-      'beforeShare with denominators) so longitudinal proof that acquisition/data-quality ' +
-      'work moved the #1590 headline metrics exists in code and durable data — not operator ' +
-      'memory or one-off CLI output. Complements the weekly acquisition scoreboard ' +
-      '(#2093) which is tier/failureCode focused rather than the SEC-lead/reliability triad.',
-    acceptanceCriteria: [
-      'A pure aggregator (plus optional CLI/script) reads detection-rollup.jsonl and ' +
-        'earnings-date reliability inputs (or their rollup/history) and emits one weekly row ' +
-        'with: week start, anchorCoverage (anchored/total), sessionHitRate when measurable, ' +
-        'beforeShare when measurable, and sample denominators — durable JSON/JSONL under data/ ' +
-        'or a documented path under LUCY_DATA_DIR.',
-      'Unit tests with fixture rollup/history rows: known week windows → expected rates and ' +
-        'denominators; empty/missing input degrades cleanly (no fabricated rates).',
-      'Document how to run the aggregator (npm script or scripts/*.mjs) so the nightly/cron ' +
-        'path can schedule it later without re-deriving the contract in prose.',
-    ],
-    fileHints: [
-      'src/product-metric-alerts.js or new src/product-metric-trend.js',
-      'scripts/detection-report.mjs / data/detection-rollup.jsonl consumers',
-      'scripts/acquisition-weekly-scoreboard.mjs (pattern reuse, not a second tier board)',
-      'data/ or LUCY_DATA_DIR product-metric-trend.jsonl',
-    ],
-    testHints: [
-      'unit: synthetic multi-week rollup fixture → weekly trend rows match hand-computed rates',
+      'unit: matching rollup+snapshot → ok',
+      'unit: beforeShare mismatch → fail with field names',
+      'unit: zero-anchor vs fabricated median → fail',
     ],
     labels: ['product-metric', 'enhancement'],
   }),

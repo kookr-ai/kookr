@@ -845,6 +845,12 @@ describe('lucy#1590 headline metrics residual curated plan', () => {
       expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1590');
+    // invent wave 3 titles (live leaves #2743–#2745)
+    expect(plan!.map((l) => l.title)).toEqual([
+      'feat(metrics): wire product-metric-trend into detection-rollup nightly so weekly triad grows in prod',
+      'feat(metrics): control-room surfaces weekly triad trend from product-metric-trend.jsonl',
+      'feat(metrics): canary fails when status secLead fields diverge from latest detection-rollup row',
+    ]);
   });
 
   it('emits lucy#1590 leaves when it has no open children yet', () => {
