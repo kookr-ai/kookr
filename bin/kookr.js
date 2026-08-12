@@ -22,6 +22,7 @@ Usage:
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
+  kookr migrate --to <agent> [OPTIONS]  Continue interrupted tasks under a different agent.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember|yield  Durable lesson-write spool + yield metric.
@@ -157,6 +158,14 @@ async function main({
   if (command === 'drain' || command === 'resume') {
     const { runDrainCli } = await import('./kookr-drain.js');
     return exit(await runDrainCli(argv));
+  }
+
+  // Cross-agent task migration (RFC: docs/rfc/rfc-cross-agent-task-migration.md).
+  // Thin HTTP client against the running server's /api/tasks/migratable +
+  // /api/tasks/migrate routes, so it dispatches here rather than booting a server.
+  if (command === 'migrate') {
+    const { main: runMigrateCli } = await import('./kookr-migrate.js');
+    return runMigrateCli({ argv: rest, env, out, err, exit });
   }
 
   // Data-directory retention/compaction sweep (issue #706). Operates directly

@@ -1604,6 +1604,7 @@ async function launchTaskCore(
     deliveryAuthorization,
     autoCloseOnSignal: opts.autoCloseOnSignal,
     unattended: opts.unattended,
+    migratedFromTaskId: opts.migratedFromTaskId,
   });
 
   if (resolvedClaimKey && deps.relaunchArbiter) {

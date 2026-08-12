@@ -314,6 +314,7 @@ export class TaskStore {
       deliveryAuthorization,
       autoCloseOnSignal,
       unattended,
+      migratedFromTaskId,
     } = opts;
 
     // Validate parent exists if specified
@@ -375,6 +376,10 @@ export class TaskStore {
     }
     if (playbookId) task.playbookId = playbookId;
     if (projectId) task.projectId = projectId;
+    // Cross-agent migration lineage (RFC: rfc-cross-agent-task-migration): a
+    // continuation task records the interrupted task it continues. The reverse
+    // link is written on the source via setMigrationLink().
+    if (migratedFromTaskId) task.migratedFromTaskId = migratedFromTaskId;
     if (playbookParameterValues) {
       task.playbookParameterValues = structuredClone(playbookParameterValues) as Record<string, string>;
     }
@@ -424,6 +429,22 @@ export class TaskStore {
   getTask(id: string): Task | undefined {
     const task = this.tasks.get(id);
     return task ? cloneTask(task) : undefined;
+  }
+
+  /**
+   * Record cross-agent migration lineage (RFC: rfc-cross-agent-task-migration).
+   * Sets `migratedToTaskId` on the interrupted source task, pointing at the
+   * continuation task that took over its work under a different agent. The
+   * forward link (`migratedFromTaskId`) is set at continuation-task creation.
+   * `agentType` is deliberately NOT touched — the source keeps its original
+   * agent so cost/outcome ledgers stay truthful. No-op if the source is unknown.
+   */
+  setMigrationLink(sourceTaskId: string, continuationTaskId: string): void {
+    const source = this.tasks.get(sourceTaskId);
+    if (!source) return;
+    source.migratedToTaskId = continuationTaskId;
+    source.updatedAt = new Date();
+    this.markTaskDirty(sourceTaskId);
   }
 
   /**

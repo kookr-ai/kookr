@@ -108,6 +108,12 @@ export interface CreateTaskOptions {
    * {@link autoCloseOnSignal}; set `false` to opt a successor back out.
    */
   unattended?: boolean;
+  /**
+   * Cross-agent migration lineage (RFC: rfc-cross-agent-task-migration). Set on
+   * a continuation task to record the interrupted task it continues. The
+   * reverse link (`migratedToTaskId`) is written on the source separately.
+   */
+  migratedFromTaskId?: string;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -159,6 +165,20 @@ export interface Task {
    */
   provenance?: TaskProvenance;
   childTaskIds?: string[];
+  /**
+   * Cross-agent task migration lineage (RFC: rfc-cross-agent-task-migration).
+   * On a continuation task, `migratedFromTaskId` points at the interrupted task
+   * whose work this task continues under a different agent. On the interrupted
+   * source task, `migratedToTaskId` points at the continuation task that took
+   * over. The two are set as a pair. Distinct from `parentTaskId` (subtask
+   * spawn): migration continues the SAME work under a new agent, it does not
+   * fan out a child. `agentType` is never mutated by migration — the source
+   * keeps its original agent so cost/outcome ledgers stay truthful; the agent
+   * change is recorded as a `task_migrate` hop in the continuation's
+   * `metadata.agentSubstitutionChain`.
+   */
+  migratedFromTaskId?: string;
+  migratedToTaskId?: string;
   /** User-declared dependency edges for tasks this task blocks. */
   blocks?: TaskDependencyEdge[];
   /** User-declared dependency edges for tasks or milestones blocking this task. */

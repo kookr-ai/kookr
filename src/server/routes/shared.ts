@@ -97,6 +97,14 @@ export interface TaskRouteDeps {
   activityLedger?: ActivityLedger;
   launchServiceDeps: LaunchServiceDeps;
   /**
+   * Terminal backend for live session-liveness probes (RFC:
+   * rfc-cross-agent-task-migration). Used by the migrate endpoint to re-check
+   * that an interrupted task is not actually running before continuing it under
+   * a new agent. Optional; when absent the probe conservatively reports no live
+   * session (terminated/cancelled candidates have none anyway).
+   */
+  terminalBackend?: TerminalBackend;
+  /**
    * Latest already-sampled host/server resource snapshot (issue #1590). The
    * `POST /api/tasks` admission gate reads
    * `server.eventLoopDelayP95Ms` from it to fast-fail with 503 when the event

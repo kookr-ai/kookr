@@ -27,6 +27,7 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode, RelaunchTask } from '../store/store-types.js';
+import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -1048,6 +1049,13 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
               <button className="action-btn action-btn--neutral" onClick={() => send({ type: 'reopenTask', taskId: agent.taskId! })}>Reopen</button>
               <button className="action-btn action-btn--neutral" onClick={handleRelaunch}>Relaunch</button>
             </>
+          )}
+          {/* Cross-agent migration (RFC: rfc-cross-agent-task-migration): terminated,
+              cancelled, or inProgress-but-interrupted tasks — not completed, and not
+              actively running (the server rejects a live session with a clear reason). */}
+          {agent.taskId
+            && (agent.taskStatus === 'terminated' || agent.taskStatus === 'cancelled' || agent.taskStatus === 'inProgress') && (
+            <MigrateTaskControl taskId={agent.taskId} currentAgentType={agent.agentType} />
           )}
         </div>
       </div>

@@ -46,7 +46,7 @@ import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { MAX_BATCH_ABORT_TASKS } from '../../shared/contracts/messages.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
-import type { TaskRouteDeps } from './shared.js';
+import type { RouteDeps, TaskRouteDeps } from './shared.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
@@ -66,6 +66,15 @@ import {
 import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
 import { isAuthorizedSupervisorRequest } from '../supervisor-auth.js';
 import { ackAllStaleCompletionReadyTasks } from '../use-cases/ack-all-completion-ready.js';
+import {
+  migrateTasks,
+  resolveMigratable,
+  type MigrateScope,
+  type MigrateTasksDeps,
+} from '../use-cases/migrate-tasks.js';
+import { applyDefaultAgentUpdate } from '../settings-service.js';
+import { filterLaunchableAgentTypes } from '../../adapters/grok-auth-availability.js';
+import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
 import {
   evaluateLessonDecisionGate,
@@ -233,6 +242,56 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       count: tasks.length,
       tasks,
     });
+  });
+
+  // Cross-agent migration preview (RFC: rfc-cross-agent-task-migration).
+  // Registered BEFORE `/api/tasks/:id` so the static `migratable` segment is not
+  // captured by the `:id` param route. `buildMigrateDeps` is defined lower in
+  // this function; the handler only calls it at request time, after
+  // registration completes, so the reference resolves.
+  app.get('/api/tasks/migratable', async (c) => {
+    const targetRaw = c.req.query('targetAgent');
+    if (!targetRaw || !isAgentType(targetRaw)) {
+      return c.json({ error: 'targetAgent query param is required and must be a known agent type' }, 400);
+    }
+    const fromRaw = c.req.query('fromAgent');
+    const fromAgent: AgentType | undefined = fromRaw && isAgentType(fromRaw) ? fromRaw : undefined;
+    const includeCancelled = c.req.query('includeCancelled') === 'true';
+    const onlyIsolated = c.req.query('onlyIsolated') === 'true';
+    // Optional ids-scoped preview: `?taskIds=a,b,c` mirrors the POST `ids` scope
+    // (explicit selection opts in to cancelled tasks) and avoids classifying the
+    // whole store. Absent → the `all` listing filtered by fromAgent.
+    const idsRaw = c.req.query('taskIds');
+    const taskIds = idsRaw
+      ? idsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    const { eligible, blocked } = await resolveMigratable(
+      buildMigrateDeps(),
+      targetRaw,
+      taskIds
+        ? { taskIds, includeCancelled: true, onlyIsolated }
+        : { fromAgent, includeCancelled, onlyIsolated },
+    );
+    const candidates = [
+      ...eligible.map((e) => ({
+        taskId: e.task.id,
+        name: e.task.name ?? null,
+        cwd: e.cwd,
+        fromAgent: e.task.agentType,
+        status: e.task.status,
+        eligible: true,
+        worktreeShared: e.worktreeShared,
+      })),
+      ...blocked
+        .filter((b) => b.reason !== 'not_found')
+        .map((b) => ({
+          taskId: b.taskId,
+          eligible: false,
+          reason: b.reason,
+          worktreeShared: b.worktreeShared ?? null,
+        })),
+    ];
+    return c.json({ targetAgent: targetRaw, candidates });
   });
 
   app.get('/api/tasks/:id', (c) => {
@@ -749,6 +808,114 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         ...(result.outcome === 'already_terminal' ? { alreadyTerminal: true } : {}),
         ...(result.outcome === 'partial_ralph_completion' ? { partialRalphCompletion: true } : {}),
       });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Cross-agent task migration (RFC: rfc-cross-agent-task-migration). Continue
+  // interrupted tasks under a DIFFERENT, user-chosen agent by creating linked
+  // continuation tasks through the ordinary launch path. Single / id-batch /
+  // all(-from-agent) scopes; optional "set as default".
+  const buildMigrateDeps = (actorHeader?: string): MigrateTasksDeps => ({
+    taskStore,
+    launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
+    availableAgentTypes: () =>
+      filterLaunchableAgentTypes(deps.launchServiceDeps.adapterRegistry.getTypes(), {
+        grokAuthUsable: deps.launchServiceDeps.isGrokAuthUsable?.() ?? true,
+      }),
+    hasLiveSession: async (task) => {
+      const backend = deps.terminalBackend;
+      if (!backend) return false;
+      for (const s of task.sessions) {
+        if (s.tmuxSession && (await backend.isAlive(s.tmuxSession))) return true;
+      }
+      return false;
+    },
+    // Quiesce an interrupted-but-not-terminal source. The classifier already
+    // guaranteed no live session, so a store-level transition is sufficient and
+    // avoids stopping a session that isn't there. Marks inProgress → terminated
+    // so the stale source can't be crash-recovered under its old agent.
+    terminateTask: async (taskId) => {
+      try {
+        taskStore.terminateTask(taskId);
+      } catch {
+        // Non-fatal: an invalid transition (already terminal) is fine here.
+      }
+    },
+    // Reuse the full settings path (validate + audit + broadcast). The route is
+    // always invoked with a full RouteDeps object (see routes.ts sharedDeps).
+    setDefaultAgent: (agent) => applyDefaultAgentUpdate(deps as unknown as RouteDeps, agent, actorHeader),
+    logAudit: (event) => {
+      void deps.interactionLog?.append(event as never);
+    },
+  });
+
+  // Protected by the same /api auth + CSRF middleware as POST /api/tasks (this
+  // is a task-creation path, not a destructive one), so both the browser GUI
+  // (session auth) and the CLI can call it without a separate supervisor token.
+  app.post('/api/tasks/migrate', async (c) => {
+    let body: {
+      targetAgent?: unknown;
+      scope?: unknown;
+      effort?: unknown;
+      setAsDefault?: unknown;
+      onlyIsolated?: unknown;
+    };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'body must be a JSON object' }, 400);
+    }
+    if (typeof body.targetAgent !== 'string' || !isAgentType(body.targetAgent)) {
+      return c.json({ error: 'targetAgent is required and must be a known agent type' }, 400);
+    }
+    const targetAgent = body.targetAgent;
+    const rawScope = body.scope;
+    if (!rawScope || typeof rawScope !== 'object' || Array.isArray(rawScope)) {
+      return c.json({ error: 'scope is required and must be an object' }, 400);
+    }
+    const scopeObj = rawScope as Record<string, unknown>;
+    let scope: MigrateScope;
+    if (scopeObj.kind === 'ids') {
+      if (!Array.isArray(scopeObj.taskIds) || scopeObj.taskIds.some((id) => typeof id !== 'string')) {
+        return c.json({ error: 'scope.taskIds must be an array of strings' }, 400);
+      }
+      if (scopeObj.taskIds.length === 0) {
+        return c.json({ error: 'scope.taskIds must not be empty' }, 400);
+      }
+      if (scopeObj.taskIds.length > MAX_BATCH_ABORT_TASKS) {
+        return c.json({ error: `cannot migrate more than ${MAX_BATCH_ABORT_TASKS} tasks in one request` }, 400);
+      }
+      scope = { kind: 'ids', taskIds: (scopeObj.taskIds as string[]).filter((id) => !isSharedTaskId(id)) };
+    } else if (scopeObj.kind === 'all') {
+      const fromAgent =
+        typeof scopeObj.fromAgent === 'string' && isAgentType(scopeObj.fromAgent) ? scopeObj.fromAgent : undefined;
+      scope = {
+        kind: 'all',
+        ...(fromAgent ? { fromAgent } : {}),
+        includeCancelled: scopeObj.includeCancelled === true,
+      };
+    } else {
+      return c.json({ error: "scope.kind must be 'ids' or 'all'" }, 400);
+    }
+    if (body.effort !== undefined && typeof body.effort !== 'string') {
+      return c.json({ error: 'effort must be a string when supplied' }, 400);
+    }
+    try {
+      const result = await migrateTasks(buildMigrateDeps(c.req.header(ACTOR_HEADER)), {
+        scope,
+        targetAgent,
+        effort: typeof body.effort === 'string' ? body.effort : undefined,
+        setAsDefault: body.setAsDefault === true,
+        onlyIsolated: body.onlyIsolated === true,
+      });
+      broadcastSnapshotWithCoordinator();
+      return c.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);

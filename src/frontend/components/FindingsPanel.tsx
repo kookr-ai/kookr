@@ -12,6 +12,12 @@ import { track } from '../telemetry.js';
 import { formatCompactDateTime } from '../presentation.js';
 import { ReapWarningBanners } from './ReapWarningBanner.js';
 import { ScheduleSection } from './ScheduleSection.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
+import {
+  detectShortcutPlatform,
+  getDefaultShortcutBindings,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
 import type { SchedulePrefill } from './SchedulesDialog.js';
 import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
@@ -38,6 +44,7 @@ import { SnoozedRow } from './FindingsPanel/SnoozedRow.js';
 import { CompletedRow } from './FindingsPanel/CompletedRow.js';
 import { ClearCompletedButton } from './FindingsPanel/ClearCompletedButton.js';
 import { AbortActiveButton } from './FindingsPanel/AbortActiveButton.js';
+import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
 import { BottomSectionsResizer } from './FindingsPanel/BottomSectionsResizer.js';
 
@@ -91,6 +98,18 @@ interface Props {
    * per-row schedule button is simply not wired.
    */
   onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
+  /**
+   * Open the launch modal from the cold empty rail (issue #2394). Optional so
+   * non-App call sites (tests) can omit it; when absent the empty rail shows
+   * only the muted copy, with no primary CTA.
+   */
+  onLaunch?: () => void;
+  /**
+   * Bindings used to render the quick-launch shortcut hint under the cold-start
+   * CTA. Defaults to the platform defaults so the hint mirrors OverviewEmptyState
+   * when the caller doesn't thread the user's custom bindings through.
+   */
+  shortcutBindings?: ShortcutBindingMap;
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -122,6 +141,8 @@ export function FindingsPanel({
   onQueueDeleteTask,
   onQueueClearCompleted,
   onSchedulePlaybook,
+  onLaunch,
+  shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
@@ -257,6 +278,7 @@ export function FindingsPanel({
         <span className="findings-header-title">Supervisor Findings</span>
         <span className="findings-header-actions">
           <AbortActiveButton taskIds={abortActiveTaskIds} send={send} />
+          <MigrateInterruptedButton />
           <button
             type="button"
             className="findings-collapse-all-button"
@@ -276,6 +298,14 @@ export function FindingsPanel({
         {findings.length === 0 && totalAgents === 0 && (
           <div className="findings-empty">
             No agents running yet — launch one to begin.
+            {onLaunch && (
+              <div className="findings-empty-cta">
+                <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+                <p className="findings-empty-hint">
+                  <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
+                </p>
+              </div>
+            )}
           </div>
         )}
         {findingDisplayItems.map((item) => {
