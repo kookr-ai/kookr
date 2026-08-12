@@ -102,4 +102,31 @@ describe('resource-watchdog prompt templates', () => {
     expect(prompt).toContain('Spawns in the last 24h before this one: 4');
     expect(prompt).toContain('NO INTERACTIVE PROMPTS');
   });
+
+  // pragma: allowlist secret — synthetic redaction fixtures only; not live credentials.
+  test('investigation prompt embeds only scrubbed server.log tails (issue #2346)', () => {
+    const bearer = ['super-secret-bearer-value', '-0123456789abcdef'].join('');
+    const ghPat = ['ghp', '_0123456789abcdefghij'].join('');
+    const rawTail = [
+      'pressure tick',
+      `Authorization: Bearer ${bearer}`,
+      `forward token=${ghPat}`,
+      'Cookie: sessionid=abc123def456ghi789; path=/',
+    ].join('\n');
+    const prompt = buildResourceWatchdogPrompt({
+      kind: 'investigation',
+      sample,
+      triggers: [{ reason: 'swap_percent', detail: 'swap 80%', observed: 80, threshold: 50 }],
+      spawnsInWindow: 1,
+      spawnBudget24h: 4,
+      serverLogTail: rawTail,
+    });
+    expect(prompt).toContain('## Recent server.log (tail)');
+    expect(prompt).toContain('pressure tick');
+    expect(prompt).toContain('[REDACTED]');
+    expect(prompt).not.toContain(bearer);
+    expect(prompt).not.toContain(ghPat);
+    expect(prompt).not.toContain('sessionid=abc123def456ghi789');
+    expect(prompt).not.toMatch(/Bearer\s+super-secret/i);
+  });
 });

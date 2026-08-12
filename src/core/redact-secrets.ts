@@ -26,6 +26,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bdckr_pat_[A-Za-z0-9_-]{16,}\b/g, // Docker PAT
   /\bya29\.[A-Za-z0-9_-]+\b/g, // Google OAuth token
   /\b(?:[A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password))\s*[:=]\s*[^\s&]+/gi, // key-value credentials
+  // HTTP Authorization / bare Bearer tokens (server.log lines often include these)
+  /(?:\bAuthorization\s*[:=]\s*["']?|\b)Bearer\s+[^\s"'\\]+/gi,
+  // Cookie / Set-Cookie header values (session tokens in log lines)
+  /\b(?:Set-)?Cookie\s*[:=]\s*[^\r\n]+/gi,
   /-----BEGIN [A-Z ]+-----[\s\S]+?-----END [A-Z ]+-----/g, // PEM blocks
 ];
 

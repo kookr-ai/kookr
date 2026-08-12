@@ -82,4 +82,25 @@ describe('redactSecrets', () => {
     const text = 'db password is hunter2';
     expect(redactSecrets(text)).toBe(text);
   });
+
+  it('redacts Authorization Bearer headers (generic and known-prefix tokens)', () => {
+    const generic = secretFixture('super-secret-bearer-value', '-0123456789abcdef');
+    expect(redactSecrets(`Authorization: Bearer ${generic}`)).toBe('[REDACTED]');
+    expect(redactSecrets(`authorization: Bearer ${generic}`)).toBe('[REDACTED]');
+
+    const gh = secretFixture('ghp', '_0123456789abcdefghij');
+    const out = redactSecrets(`curl -H "Authorization: Bearer ${gh}"`);
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain(gh);
+  });
+
+  it('redacts bare Bearer tokens and Cookie headers', () => {
+    const bare = secretFixture('bare-bearer-token-value', '-xyz9876543210');
+    expect(redactSecrets(`proxy Bearer ${bare}`)).toContain('[REDACTED]');
+    expect(redactSecrets(`proxy Bearer ${bare}`)).not.toContain(bare);
+
+    const cookie = 'sessionid=abc123def456ghi789; path=/';
+    expect(redactSecrets(`Cookie: ${cookie}`)).toBe('[REDACTED]');
+    expect(redactSecrets(`Set-Cookie: ${cookie}`)).toBe('[REDACTED]');
+  });
 });

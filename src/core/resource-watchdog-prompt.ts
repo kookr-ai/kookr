@@ -4,11 +4,21 @@
  * never hangs on interactive prompts and never kills non-kookr processes.
  */
 
+import { redactSecrets } from './redact-secrets.js';
 import type {
   ResourceWatchdogSample,
   ResourceWatchdogSpawnKind,
   ResourceWatchdogTrigger,
 } from './resource-watchdog-types.js';
+
+/**
+ * Scrub free-text tails before they land in investigation/meta prompts.
+ * Defense-in-depth: even if a caller passes an unredacted string, the brief
+ * never embeds raw Authorization/Bearer/token shapes (issue #2346).
+ */
+function scrubBriefTail(text: string): string {
+  return redactSecrets(text);
+}
 
 const HARD_RULES_BLOCK = `## 0. HARD RULES — read first (NON-NEGOTIABLE)
 - **NO INTERACTIVE PROMPTS, EVER.** Never call AskUserQuestion or any clarification/confirmation prompt — it HANGS forever.
@@ -92,10 +102,10 @@ function buildInvestigationPrompt(input: BuildResourceWatchdogPromptInput): stri
   ];
 
   if (input.serverLogTail) {
-    parts.push('', '## Recent server.log (tail)', '```', input.serverLogTail, '```');
+    parts.push('', '## Recent server.log (tail)', '```', scrubBriefTail(input.serverLogTail), '```');
   }
   if (input.recentAuditTail) {
-    parts.push('', '## Recent watchdog audit lines', '```', input.recentAuditTail, '```');
+    parts.push('', '## Recent watchdog audit lines', '```', scrubBriefTail(input.recentAuditTail), '```');
   }
 
   return parts.join('\n');
@@ -131,10 +141,10 @@ function buildMetaReflectionPrompt(input: BuildResourceWatchdogPromptInput): str
   ];
 
   if (input.recentAuditTail) {
-    parts.push('', '## Recent watchdog audit lines', '```', input.recentAuditTail, '```');
+    parts.push('', '## Recent watchdog audit lines', '```', scrubBriefTail(input.recentAuditTail), '```');
   }
   if (input.serverLogTail) {
-    parts.push('', '## Recent server.log (tail)', '```', input.serverLogTail, '```');
+    parts.push('', '## Recent server.log (tail)', '```', scrubBriefTail(input.serverLogTail), '```');
   }
 
   return parts.join('\n');
