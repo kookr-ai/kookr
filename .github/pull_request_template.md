@@ -11,6 +11,9 @@ template.
 
 ## Summary
 
+<!-- Intent first (2–4 plain sentences): what problem, what changed in human terms, why it matters.
+     Define project jargon on first use. Put function names / constants / paths in Changes, not here.
+     Skill: clear-technical-writing (plugin). Reviewer: kookr-toolkit:clear-writing-reviewer. -->
 
 ## Test plan
 
@@ -23,3 +26,4 @@ template.
 - [ ] Reviewed the CI coverage summary on this PR (Checks → `test` job → Summary) — see [docs/testing.md](../docs/testing.md)
 - [ ] <!-- kookr:check:tests --> Added or updated tests for the changed behavior, or explained why this change is docs/config-only
 - [ ] <!-- kookr:check:mbse --> System design documents are up to date with codebase changes (ADRs, `docs/architecture.md`, `docs/features.md`, skills — verify no drift)
+- [ ] <!-- kookr:check:prose --> Summary is cold-reader clear: plain-language intent first, jargon glossed, symbols only in technical details (`clear-technical-writing` skill). Strike with a one-line reason only for pure typo / formatting / mechanical renames.
