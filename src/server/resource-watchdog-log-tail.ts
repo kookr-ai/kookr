@@ -3,14 +3,20 @@
  *
  * Under host pressure we must not `readFileSync` multi-GB `server.log` files
  * (issue #1553 lesson). Open + fstat + read the last N bytes only.
+ *
+ * Secrets (Authorization/Bearer, known token prefixes, cookies, key=value
+ * credentials) are scrubbed before return so investigation prompts never
+ * inherit raw credentials from server.log (issue #2346).
  */
 
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { redactSecrets } from '../core/redact-secrets.js';
 
 /**
  * Return the last `maxBytes` of `filePath` as utf-8 text, or `null` on any
  * I/O error / empty file. When the file is larger than `maxBytes`, the result
  * may start mid-line; a leading partial line is dropped for readability.
+ * Known secret shapes are redacted before the text is returned.
  */
 export function readTrailingFileBytes(
   filePath: string,
@@ -31,7 +37,8 @@ export function readTrailingFileBytes(
       const nl = text.indexOf('\n');
       if (nl >= 0 && nl + 1 < text.length) text = text.slice(nl + 1);
     }
-    return text.length > 0 ? text : null;
+    if (text.length === 0) return null;
+    return redactSecrets(text);
   } catch {
     return null;
   } finally {
