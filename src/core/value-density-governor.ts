@@ -55,6 +55,10 @@ export const DEFAULT_PRODUCT_METRIC_LABELS: readonly string[] = Object.freeze([
   // Acquisition / failover umbrellas (lucy#1587) rank with product metrics so
   // idle capacity is not spent on harness polish while report-fetch work waits.
   'acquisition',
+  // Control-room UX density (lucy#2713 dual co-priority) — invent under
+  // starvation must prefer these over micro-hardening (#2358).
+  'product-surface-ux',
+  'control-room',
 ]);
 
 /**
@@ -276,6 +280,10 @@ const PRODUCT_METRIC_TITLE_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bacquisition\b/i,
   /\bfailover\b/i,
   /\bnewswire\b/i,
+  // Control-room UX dual co-priority (lucy#2713 / invent preference #2358)
+  /\bproduct[- ]surface\b/i,
+  /\bcontrol[- ]room\b/i,
+  /\bux\s+density\b/i,
 ]);
 function emptyByClass(): Record<WorkClass, CompositionBucket> {
   const out = {} as Record<WorkClass, CompositionBucket>;

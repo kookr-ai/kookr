@@ -74,7 +74,7 @@ gh issue list -R jeanibarz/lucy --label umbrella --state open --limit 20 \
 
 For each candidate, count **OPEN** children only whose body mentions `Leaf of umbrella …#N` or the queue-feeder backref. Do **not** include closed children in `openChildrenCount` (#2069). Prefer candidates with `openChildrenCount == 0` and product-facing titles (SEC, anchor, acquisition, reaction, detection).
 
-When building the snapshot, set `priority` higher for product-facing titles (acquisition, detection, metric, SEC, reaction) than harness/docs/reflection umbrellas so ranking does not pick idea-scout residuals first.
+When building the snapshot, set `priority` higher for product-facing titles (acquisition, product-surface-ux / control-room, detection, metric, SEC, reaction) than harness/docs/reflection umbrellas so ranking does not pick idea-scout residuals first. When `pipelineStarvation[repo].consecutiveBlockedEmpty ≥ 3`, also pass `consecutiveBlockedEmpty` in the snapshot so the CLI suppresses micro-hardening secondary emit while product invent runway remains (#2358).
 
 ### Ready issues (secondary path — #2044)
 

@@ -129,6 +129,14 @@ export function PipelineStarvationPanel({
           className="pipeline-starvation-body"
           aria-live="polite"
         >
+          {block?.inventByPriorityClass ? (
+            <div className="pipeline-starvation-invent-mix diagnostic-muted">
+              invent {block.inventByPriorityClass.windowHours}h: product=
+              {block.inventByPriorityClass.product} micro=
+              {block.inventByPriorityClass.micro} other=
+              {block.inventByPriorityClass.other}
+            </div>
+          ) : null}
           {elevated.length === 0 ? (
             <div className="diagnostic-muted">No elevated pipeline starvation.</div>
           ) : (

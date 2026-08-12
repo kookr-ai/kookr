@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   listPipelineStarvationHealth,
+  loadInventPriorityClassHealth,
   loadPipelineStarvationState,
   savePipelineStarvationState,
 } from './pipeline-starvation-state.js';
@@ -74,5 +75,69 @@ describe('listPipelineStarvationHealth (#2171 effectiveScoutCooldownMs)', () => 
     const loaded = await loadPipelineStarvationState('jeanibarz/lucy', { stateDir, nowMs: NOW });
     expect(loaded.blockedEmptyAt).toHaveLength(3);
     expect(loaded.handledRunKeys).toEqual(state.handledRunKeys);
+  });
+});
+
+describe('loadInventPriorityClassHealth (#2358)', () => {
+  let kookrDir: string;
+
+  beforeEach(async () => {
+    kookrDir = await mkdtemp(join(tmpdir(), 'kookr-invent-health-'));
+    await mkdir(join(kookrDir, 'playbook-state', 'queue-feeder'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(kookrDir, { recursive: true, force: true });
+  });
+
+  test('rolls product vs micro invent classes from the queue-feeder ledger', async () => {
+    const ledger = join(kookrDir, 'playbook-state', 'queue-feeder', 'decisions.jsonl');
+    const lines = [
+      {
+        ts: new Date(NOW - 60_000).toISOString(),
+        action: 'invent-product-wave',
+        inventPriorityClass: 'product',
+        leafCount: 0,
+      },
+      {
+        ts: new Date(NOW - 30_000).toISOString(),
+        action: 'emit-secondary',
+        inventPriorityClass: 'micro',
+        leafCount: 2,
+      },
+      {
+        ts: new Date(NOW - 10_000).toISOString(),
+        action: 'shred',
+        inventPriorityClass: 'product',
+        productMetricBlocking: true,
+        leafCount: 3,
+      },
+      // Outside window
+      {
+        ts: new Date(NOW - 48 * 3_600_000).toISOString(),
+        action: 'emit-secondary',
+        inventPriorityClass: 'micro',
+        leafCount: 5,
+      },
+    ];
+    await writeFile(ledger, lines.map((r) => JSON.stringify(r)).join('\n') + '\n');
+
+    const health = await loadInventPriorityClassHealth({
+      kookrDir,
+      nowMs: NOW,
+      windowHours: 24,
+    });
+    expect(health.product).toBe(1 + 3); // invent wave counts as 1 + shred leafCount 3
+    expect(health.micro).toBe(2);
+    expect(health.other).toBe(0);
+    expect(health.windowHours).toBe(24);
+  });
+
+  test('missing ledger returns zeros', async () => {
+    const health = await loadInventPriorityClassHealth({
+      kookrDir,
+      nowMs: NOW,
+    });
+    expect(health).toEqual({ product: 0, micro: 0, other: 0, windowHours: 24 });
   });
 });

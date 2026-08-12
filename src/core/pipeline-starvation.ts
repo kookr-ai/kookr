@@ -341,6 +341,13 @@ export interface PipelineStarvationDecision {
    * for every applicable, non-replay blocked-empty.
    */
   effectiveScoutCooldownMs?: number;
+  /**
+   * When true, arm `kickBatchWhenScoutCompletes` even though this tick did not
+   * spawn a scout (issue #2358). Used when a scout is already in flight while
+   * the belt is empty so scout completion re-enters the implement batch instead
+   * of stranding free slots on a scout-already-running skip.
+   */
+  armKickBatchWhenScoutCompletes?: boolean;
 }
 
 /**
@@ -721,6 +728,10 @@ export function evaluatePipelineStarvationRefill(
   // True only when the belt-empty residual bypass (#2068/#2071) actually fired,
   // i.e. we spawned despite still being inside the effective cooldown window.
   let beltEmptyBypassApplied = false;
+  // Issue #2358: arm scout-complete batch kick when a scout is already running
+  // while the belt is empty / drought is elevated, so completion re-enters
+  // implement instead of stranding free slots on scout-already-running skip.
+  let armKickBatchWhenScoutCompletes = false;
 
   const recentIdeation =
     ctx.recentSuccessfulIdeationAtMs !== null
@@ -739,6 +750,12 @@ export function evaluatePipelineStarvationRefill(
     spawnScout = false;
     spawnSkipReason = 'scout already running or queued for this repo';
     followOnAction = 'none';
+    if (
+      isIdeationSuccessEmptyQueue(ctx.capacity)
+      || consecutiveBlockedEmpty >= REFILL_POSTCONDITION_MIN_CONSECUTIVE
+    ) {
+      armKickBatchWhenScoutCompletes = true;
+    }
   } else if (recentIdeation && !ideationSuccessEmptyQueue) {
     spawnScout = false;
     spawnSkipReason = `successful ideation within last ${Math.round(SUCCESSFUL_IDEATION_LOOKBACK_MS / 3_600_000)}h`;
@@ -831,6 +848,7 @@ export function evaluatePipelineStarvationRefill(
     ...(scoutDedupBypassedForBeltEmpty ? { scoutDedupBypassedForBeltEmpty: true } : {}),
     ...(scoutCooldownSkipWhileBeltEmpty ? { scoutCooldownSkipWhileBeltEmpty: true } : {}),
     ...(starvationRefillPostcondition ? { starvationRefillPostcondition } : {}),
+    ...(armKickBatchWhenScoutCompletes ? { armKickBatchWhenScoutCompletes: true } : {}),
   };
 }
 
@@ -879,9 +897,19 @@ export function nextPipelineStarvationState(
   } else if (decision.spawnSkipReason && decision.applicable && !decision.alreadyHandled) {
     next.lastSpawnSkipReason = decision.spawnSkipReason;
     next.lastSpawnSkipAt = nowIso;
+    // Issue #2358: scout already in flight under empty belt / elevated drought
+    // — arm so that scout's terminal still re-enters the implement batch.
+    if (decision.armKickBatchWhenScoutCompletes) {
+      next.kickBatchWhenScoutCompletes = true;
+      next.kickBatchWhenScoutCompletesAt = nowIso;
+    }
   } else {
     next.lastSpawnSkipReason = prior?.lastSpawnSkipReason;
     next.lastSpawnSkipAt = prior?.lastSpawnSkipAt;
+    if (decision.armKickBatchWhenScoutCompletes) {
+      next.kickBatchWhenScoutCompletes = true;
+      next.kickBatchWhenScoutCompletesAt = nowIso;
+    }
   }
   // #2068: durable residual counter for L3/health when cooldown blocks belt-empty.
   if (decision.scoutCooldownSkipWhileBeltEmpty && decision.applicable && !decision.alreadyHandled) {
