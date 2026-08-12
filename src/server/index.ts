@@ -1711,12 +1711,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // the operator-signal outbox; until then evaluate is a no-op.
   const resourceWatchdogStatePath = join(kookrDir, 'resource-watchdog.state.json');
   const resourceWatchdogAuditPath = defaultResourceWatchdogAuditPath(kookrDir);
-  const buildResourceWatchdogConfig = (): ResourceWatchdogConfig => ({
-    ...readResourceWatchdogConfigFromEnv(process.env),
-    taskCwd: process.env.KOOKR_RESOURCE_WATCHDOG_CWD?.trim() || serverCwd,
-    stateFilePath: resourceWatchdogStatePath,
-    auditLogPath: resourceWatchdogAuditPath,
-  });
+  const buildResourceWatchdogConfig = (): ResourceWatchdogConfig => {
+    const envCfg = readResourceWatchdogConfigFromEnv(process.env);
+    // Under Vitest, refuse ambient auto-enable unless the test process
+    // explicitly set KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE. Hosts running the
+    // suite often already trip soft-bound dtach pressure; auto-spawning
+    // investigation tasks into integration harnesses is not the #2354 goal.
+    const autoEnableOnPressure =
+      process.env.VITEST
+      && process.env.KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE == null
+        ? false
+        : envCfg.autoEnableOnPressure;
+    return {
+      ...envCfg,
+      autoEnableOnPressure,
+      taskCwd: process.env.KOOKR_RESOURCE_WATCHDOG_CWD?.trim() || serverCwd,
+      stateFilePath: resourceWatchdogStatePath,
+      auditLogPath: resourceWatchdogAuditPath,
+    };
+  };
   // Filled once detectorBroadcast exists (after signal-delivery config).
   const watchdogDisabledPressureAlerterHolder: {
     current: WatchdogDisabledPressureAlerter | null;
