@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync, existsSync, renameSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync, existsSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HookFileWatcher } from './hook-watcher.js';
+import { HookFileWatcher, selectStaleReplayCheckpointKeys } from './hook-watcher.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { AttentionQueue } from '../core/attention-queue.js';
@@ -14,7 +14,6 @@ import type { ServerMessage } from '../shared/contracts/messages.js';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS writer module without bundled types; runtime contract is the public API surface.
 import { appendRecord } from '../../bin/kookr-hook-writer.js';
-import { statSync } from 'node:fs';
 
 describe('HookFileWatcher', () => {
   let tempDir: string;
@@ -75,6 +74,275 @@ describe('HookFileWatcher', () => {
     watcher.stopAll();
     expect(watcher.isWatching('kookr-1')).toBe(false);
     expect(watcher.isWatching('kookr-2')).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Replay-checkpoint prune (issue #2385)
+  // ---------------------------------------------------------------------------
+  describe('selectStaleReplayCheckpointKeys (issue #2385)', () => {
+    const livePath = '/hooks/live.jsonl';
+    const missingPath = '/hooks/gone.jsonl';
+    const orphanPath = '/hooks/orphan.jsonl';
+    const sessions = {
+      live: { filePath: livePath },
+      gone: { filePath: missingPath },
+      orphan: { filePath: orphanPath },
+    };
+    const existing = new Set([livePath, orphanPath]);
+    const fileExists = (p: string) => existing.has(p);
+
+    test('retains live sessions and drops missing-file entries', () => {
+      const stale = selectStaleReplayCheckpointKeys({
+        sessions,
+        retainSessionKeys: new Set(['live']),
+        fileExists,
+      });
+      expect(stale.sort()).toEqual(['gone']);
+    });
+
+    test('dropUnwatched also removes non-retained keys whose files still exist', () => {
+      const stale = selectStaleReplayCheckpointKeys({
+        sessions,
+        retainSessionKeys: new Set(['live']),
+        fileExists,
+        dropUnwatched: true,
+      });
+      expect(stale.sort()).toEqual(['gone', 'orphan']);
+    });
+
+    test('never selects a retained key even when its file is missing', () => {
+      const stale = selectStaleReplayCheckpointKeys({
+        sessions: { live: { filePath: missingPath } },
+        retainSessionKeys: new Set(['live']),
+        fileExists,
+        dropUnwatched: true,
+      });
+      expect(stale).toEqual([]);
+    });
+
+    test('returns empty when every key is retained', () => {
+      const stale = selectStaleReplayCheckpointKeys({
+        sessions,
+        retainSessionKeys: new Set(['live', 'gone', 'orphan']),
+        fileExists,
+        dropUnwatched: true,
+      });
+      expect(stale).toEqual([]);
+    });
+  });
+
+  test('stop removes the session key from the durable checkpoint map (issue #2385)', async () => {
+    const hookFile = join(tempDir, 'kookr-stop-prune.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-stop-prune');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-stop-prune', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+    const before = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(before.sessions['kookr-stop-prune']).toBeDefined();
+
+    watcher.stop('kookr-stop-prune');
+
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(0);
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-stop-prune']).toBeUndefined();
+    expect(Object.keys(after.sessions)).toHaveLength(0);
+  });
+
+  test('pruneStaleReplayCheckpoints drops missing-file keys and retains live watches (issue #2385)', async () => {
+    const liveHook = join(tempDir, 'kookr-live-prune.jsonl');
+    const goneHook = join(tempDir, 'kookr-gone-prune.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints-sweep.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(liveHook, `${event1}\n`);
+    writeFileSync(goneHook, `${event1}\n`);
+    registerSession('kookr-live-prune');
+    registerSession('kookr-gone-prune');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-live-prune', { replayExisting: true, useReplayCheckpoint: true });
+    watcher.watch('kookr-gone-prune', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(2);
+
+    // Simulate maintenance prune deleting the gone session's hook file while
+    // the watcher is still tracking live only (unwatch gone first without
+    // stop() so the durable key would otherwise linger, then delete the file).
+    watcher['offsets'].delete('kookr-gone-prune');
+    watcher['watchers'].get('kookr-gone-prune')?.close();
+    watcher['watchers'].delete('kookr-gone-prune');
+    const gonePoll = watcher['pollIntervals'].get('kookr-gone-prune');
+    if (gonePoll) {
+      clearInterval(gonePoll);
+      watcher['pollIntervals'].delete('kookr-gone-prune');
+    }
+    rmSync(goneHook, { force: true });
+
+    const pruned = watcher.pruneStaleReplayCheckpoints();
+    expect(pruned).toBe(1);
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-live-prune']).toBeDefined();
+    expect(after.sessions['kookr-gone-prune']).toBeUndefined();
+  });
+
+  test('constructor missing-file sweep removes orphan keys before watches arm (issue #2385)', () => {
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints-boot.json');
+    const missingPath = join(tempDir, 'kookr-already-gone.jsonl');
+    writeFileSync(checkpointPath, `${JSON.stringify({
+      schemaVersion: 'hook-replay-checkpoints.v1',
+      sessions: {
+        'kookr-already-gone': {
+          filePath: missingPath,
+          dev: 1,
+          ino: 2,
+          sizeBytes: 10,
+          offsetChars: 10,
+          offsetTail: 'x'.repeat(10),
+        },
+      },
+    })}\n`);
+    expect(existsSync(missingPath)).toBe(false);
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(0);
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-already-gone']).toBeUndefined();
+  });
+
+  test('constructor does not dropUnwatched keys whose hook file still exists (issue #2385)', () => {
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints-boot-retain.json');
+    const missingPath = join(tempDir, 'kookr-boot-gone.jsonl');
+    const keepPath = join(tempDir, 'kookr-boot-keep.jsonl');
+    writeFileSync(keepPath, '{}\n');
+    writeFileSync(checkpointPath, `${JSON.stringify({
+      schemaVersion: 'hook-replay-checkpoints.v1',
+      sessions: {
+        'kookr-boot-gone': {
+          filePath: missingPath,
+          dev: 1,
+          ino: 2,
+          sizeBytes: 10,
+          offsetChars: 10,
+          offsetTail: 'x'.repeat(10),
+        },
+        'kookr-boot-keep': {
+          filePath: keepPath,
+          dev: 1,
+          ino: 3,
+          sizeBytes: 3,
+          offsetChars: 3,
+          offsetTail: '{}\n',
+        },
+      },
+    })}\n`);
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-boot-gone']).toBeUndefined();
+    expect(after.sessions['kookr-boot-keep']).toBeDefined();
+  });
+
+  test('stopAll preserves durable checkpoints for restart resume (issue #2385)', async () => {
+    const hookFile = join(tempDir, 'kookr-stopall-keep.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints-stopall.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-stopall-keep');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-stopall-keep', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+
+    watcher.stopAll();
+    expect(watcher.isWatching('kookr-stopall-keep')).toBe(false);
+    // Durable map and file must retain the key so a process restart can resume.
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-stopall-keep']).toBeDefined();
+  });
+
+  test('pruneStaleReplayCheckpoints dropUnwatched removes non-watched keys with files present (issue #2385)', async () => {
+    const liveHook = join(tempDir, 'kookr-drop-live.jsonl');
+    const orphanHook = join(tempDir, 'kookr-drop-orphan.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints-drop-unwatched.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(liveHook, `${event1}\n`);
+    writeFileSync(orphanHook, `${event1}\n`);
+    registerSession('kookr-drop-live');
+    registerSession('kookr-drop-orphan');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-drop-live', { replayExisting: true, useReplayCheckpoint: true });
+    watcher.watch('kookr-drop-orphan', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(2);
+
+    // Unwatch orphan without stop() so the durable key remains, file still present.
+    watcher['offsets'].delete('kookr-drop-orphan');
+    watcher['watchers'].get('kookr-drop-orphan')?.close();
+    watcher['watchers'].delete('kookr-drop-orphan');
+    const orphanPoll = watcher['pollIntervals'].get('kookr-drop-orphan');
+    if (orphanPoll) {
+      clearInterval(orphanPoll);
+      watcher['pollIntervals'].delete('kookr-drop-orphan');
+    }
+    expect(existsSync(orphanHook)).toBe(true);
+
+    const pruned = watcher.pruneStaleReplayCheckpoints({ dropUnwatched: true });
+    expect(pruned).toBe(1);
+    expect(watcher.getReplayCheckpointStats()?.sessionCount).toBe(1);
+    const after = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, unknown>;
+    };
+    expect(after.sessions['kookr-drop-live']).toBeDefined();
+    expect(after.sessions['kookr-drop-orphan']).toBeUndefined();
   });
 
   test('detects new lines appended to hook file', async () => {
