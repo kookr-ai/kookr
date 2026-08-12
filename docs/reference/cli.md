@@ -610,17 +610,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr signal`, `kookr status`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status` and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -647,6 +647,7 @@ Examples:
 ```bash
 kookr spawn --json --prompt-file /tmp/prompt.md
 kookr status --json
+kookr ops digest --json
 kookr github status --json
 kookr ralph status <taskId> --json
 ```
@@ -739,6 +740,53 @@ Exit behavior:
 - `1` for invalid `KOOKR_PORT`, unreachable servers, or unexpected server responses.
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
+
+## `kookr ops digest`
+
+Pasteable one-pager of top unattended failure signals for remote diagnosis (Discord/Lucy) — issue #2347. Complements the offline recovery card by turning the same field set into a single CLI.
+
+```bash
+kookr ops digest
+kookr ops digest --json
+```
+
+The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then prints ready status plus up to five elevated warnings with field paths operators can re-query:
+
+| Signal | Field path | When shown |
+| --- | --- | --- |
+| SAFE MODE engaged | `safeMode.engaged` | `true` |
+| Host pressure while watchdog off | `resourceWatchdog.pressureWhileDisabled` | `true` |
+| Phantom active capacity | `capacity.phantomActive` | `> 0` |
+| Hung residual | `capacity.byClass.hungSuspect` | `> 0` |
+| Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
+| Low data-dir disk | `dataDirectory.diskFreePercent` | free percent known and ≤15% |
+
+Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Environment (server discovery — same precedence as [Server Discovery](#server-discovery)):
+
+| Variable | Meaning |
+| --- | --- |
+| `KOOKR_API_BASE_URL` | Base URL of a running Kookr server (overrides auto-detect). |
+| `KOOKR_PORT` | Specific port on `127.0.0.1` (overrides auto-detect). |
+| `KOOKR_API_TOKEN` | Bearer token for non-loopback servers. |
+
+Exit behavior:
+
+- `0` Ready (engine safe to supervise).
+- `1` Ready failed (critical not-ready / HTTP 503).
+- `2` User error (bad flags / unknown verb / invalid `KOOKR_PORT`).
+- `3` No Kookr server reachable.
+- `4` Server rejected `/api/health` or returned an unexpected payload.
+
+Related: [`kookr status`](#kookr-status) for agent-finding snapshots; [offline recovery card](./offline-recovery-card.md) and [unattended recovery runbook](./unattended-recovery-runbook.md) for the same field map in prose.
 
 ## `kookr github`
 
@@ -1343,6 +1391,8 @@ pnpm doctor          # human-readable shell report (scripts/doctor.sh) — env/b
 kookr doctor         # human-readable launch preflight (gh/kb/agent binaries + github.scanner-backoff + ops.resource-watchdog + ops.hung-reclaim + hooks.ingestion-lag + ops.host-stale-dtach + ops.prod-smoke-tick + ops.maintenance-prune)
 kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `kookr doctor`
 kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
+kookr ops digest     # one-pager of top unattended failure signals (GET /api/ready + /api/health)
+kookr ops digest --json  # same digest as one JSON envelope (exit 1 on ready fail)
 kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
 kookr github status --json  # same scanner status as one JSON envelope
 ```

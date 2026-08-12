@@ -15,6 +15,7 @@ Usage:
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
+  kookr ops digest [--json]      One-pager of top unattended failure signals (ready + health).
   kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
@@ -40,7 +41,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json with spawn, doctor, status, signal, or ralph for one machine-readable output envelope.
+Use --json with spawn, doctor, status, ops digest, signal, or ralph for one machine-readable output envelope.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
@@ -102,6 +103,13 @@ async function main({
   if (command === 'status') {
     const { main: runStatusCli } = await import('./kookr-status.js');
     return runStatusCli({ argv: rest, env, out, exit });
+  }
+
+  // Ops digest one-pager (issue #2347). Thin HTTP client against
+  // /api/ready + /api/health — dispatches here rather than booting a server.
+  if (command === 'ops') {
+    await runOpsCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   // GitHub scanner status (issue #1947). Thin HTTP client against
@@ -391,6 +399,21 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
+}
+
+async function runOpsCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-ops-digest.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-ops-digest.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] ops digest module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runOpsDigestCli(argv, { env, out, err });
 }
 
 async function runGithubCommand(argv, { env = process.env, out = console, err = console } = {}) {
