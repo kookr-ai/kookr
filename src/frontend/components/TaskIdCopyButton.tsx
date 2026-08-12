@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { copyText } from '../clipboard.js';
 
 interface Props {
   taskId: string | undefined;
@@ -30,27 +31,6 @@ function CheckIcon(): React.ReactElement {
 
 function shortTaskId(taskId: string): string {
   return taskId.slice(0, 8);
-}
-
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.style.position = 'fixed';
-  textarea.style.opacity = '0';
-  document.body.appendChild(textarea);
-  textarea.select();
-
-  try {
-    document.execCommand('copy');
-  } finally {
-    document.body.removeChild(textarea);
-  }
 }
 
 export function TaskIdCopyButton({ taskId, compact = false, iconOnly = false }: Props): React.ReactElement | null {
