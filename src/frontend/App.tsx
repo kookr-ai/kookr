@@ -1205,6 +1205,8 @@ export function App() {
         setSchedulePrefill(prefill);
         openModal('schedules');
       }}
+      shortcutBindings={shortcutBindings}
+      onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'findings_empty' }); openModal('launch'); }}
     />
   );
 
