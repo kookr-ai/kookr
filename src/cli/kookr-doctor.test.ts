@@ -198,7 +198,7 @@ describe('kookr doctor --json', () => {
     expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
       status: 'warn',
       required: false,
-      summary: 'host-pressure auto-investigation is disabled',
+      summary: 'host-pressure continuous monitoring is disabled',
     });
     expect(report.checks.find((c) => c.id === 'ops.maintenance-prune')).toMatchObject({
       status: 'warn',
@@ -337,6 +337,33 @@ describe('kookr doctor --json', () => {
     expect(enabledLive.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
       status: 'ok',
       summary: expect.stringContaining('resourceWatchdog.enabled=true'),
+    });
+  });
+
+  it('elevates ops.resource-watchdog when live pressureWhileDisabled is true (issue #2354)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeResourceWatchdogEnabled: async () => ({
+        enabled: false,
+        pressureWhileDisabled: true,
+        pressureWhileDisabledReason:
+          'staleProcesses.dtach.count=33 ≥ soft bound 20 while resourceWatchdog is disabled',
+        lastDecision: 'spawn',
+        autoEnableOnPressure: true,
+      }),
+    });
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('pressureWhileDisabled=true'),
+      detail: expect.stringContaining('lastDecision=spawn'),
+      recommendedAction: expect.stringContaining('KOOKR_RESOURCE_WATCHDOG=1'),
     });
   });
 

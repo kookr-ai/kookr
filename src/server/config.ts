@@ -276,6 +276,12 @@ export const DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1
 
 export interface ResourceWatchdogEnvConfig {
   enabled: boolean;
+  /**
+   * When master is off, still auto-enable a rate-limited investigation under
+   * soft-bound pressure (issue #2354). Default true; set
+   * `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only.
+   */
+  autoEnableOnPressure: boolean;
   intervalMs: number;
   swapUsedPercentThreshold: number;
   memAvailableMbFloor: number;
@@ -293,17 +299,34 @@ function readTruthyEnvFlag(raw: string | undefined): boolean {
 }
 
 /**
- * Read the resource-watchdog configuration (issue #1724) from the environment.
+ * Truthy flag that defaults to **true** when unset/empty (issue #2354).
+ * Explicit 0/false/no/off disables; 1/true/yes/on enables.
+ */
+function readTruthyEnvFlagDefaultTrue(raw: string | undefined): boolean {
+  if (raw == null || raw.trim() === '') return true;
+  const v = raw.trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false;
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Read the resource-watchdog configuration (issue #1724 / #2354) from the
+ * environment.
  *
- * **Disabled by default.** Set `KOOKR_RESOURCE_WATCHDOG=1` (or true/yes/on) to
- * enable the actuator after review. Thresholds of `0` disable the individual
- * rule (same convention as operational alerts).
+ * **Master switch disabled by default.** Set `KOOKR_RESOURCE_WATCHDOG=1` (or
+ * true/yes/on) for continuous sampling. When the master is off,
+ * `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE` defaults to on so soft-bound pressure
+ * still gets one rate-limited investigation spawn. Thresholds of `0` disable
+ * the individual rule (same convention as operational alerts).
  */
 export function readResourceWatchdogConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): ResourceWatchdogEnvConfig {
   return {
     enabled: readTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG),
+    autoEnableOnPressure: readTruthyEnvFlagDefaultTrue(
+      env.KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE,
+    ),
     intervalMs: Math.max(
       1_000,
       readNonNegativeNumber(env.KOOKR_RESOURCE_WATCHDOG_INTERVAL_MS, DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS)
