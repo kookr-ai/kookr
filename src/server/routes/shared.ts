@@ -522,6 +522,14 @@ export interface RouteDeps {
    */
   lessonYieldHealth?: LessonYieldHealthCache;
   /**
+   * Shared stale-process /proc summary cache (issues #1723, #2081, #2350).
+   * Health reads via SWR `getSummary()`; session reaper + resource watchdog
+   * share the same instance for pressure gauges so only one /proc walk runs
+   * per TTL window. Absent in partial test harnesses ⇒ diagnostics builds a
+   * private fallback cache (same pattern as lessonYieldHealth).
+   */
+  staleProcessSummaryCache?: import('../stale-dtach-pressure.js').StaleProcessSummaryCache;
+  /**
    * Resource watchdog (issue #1724). `/api/health` reads only
    * `getHealthSnapshot({ staleDtachCount })` — last sample, last trigger,
    * throttle state, spawns-in-24h, plus `pressureWhileDisabled` from the
