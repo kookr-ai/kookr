@@ -4,6 +4,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { useProjectNotificationMute } from '../hooks/useProjectNotificationMute.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { Tooltip } from './Tooltip.js';
+import { formatCost } from '../presentation.js';
 
 type DropPosition = 'before' | 'after';
 
@@ -188,6 +189,11 @@ function ProjectIcon({
     summary.dailyLimit !== undefined
       ? `PRs today: ${summary.todayPrCount}/${summary.dailyLimit}`
       : `PRs today: ${summary.todayPrCount}`,
+    summary.costUsd !== undefined || (summary.budgetWarnUsd !== undefined && summary.budgetWarnUsd > 0)
+      ? (summary.budgetWarnUsd !== undefined && summary.budgetWarnUsd > 0
+        ? `Spend: ${formatCost(summary.costUsd ?? 0)}/${formatCost(summary.budgetWarnUsd)}`
+        : `Spend: ${formatCost(summary.costUsd ?? 0)}`)
+      : null,
   ].filter((part): part is string => Boolean(part)).join(' · ');
 
   return (

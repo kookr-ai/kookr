@@ -38,6 +38,15 @@ export interface ProjectSummary {
   dailyLimit?: number;
   budgetWarnUsd?: number;
   /**
+   * Accumulated agent spend for this project in USD, summed from each of the
+   * project's agents' `tokenUsage.costUsd`. Surfaced next to `budgetWarnUsd` for
+   * at-a-glance context. Note `budgetWarnUsd` is a *per-task* threshold, so this
+   * project-wide total is a reference figure, not the value the per-task budget
+   * alert compares against. Omitted when the project has no agents with a
+   * recorded cost.
+   */
+  costUsd?: number;
+  /**
    * Contribution attempts currently in Kookr's `pr_open` state. This is scoped
    * to Kookr agent attempts; repo-wide open PRs live at `repoHealth.openPullRequests`.
    */
