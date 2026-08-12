@@ -90,6 +90,15 @@ export interface SnapshotShedMetricsSnapshot {
   lastEventLoopDelayP95Ms: number | null;
   /** Total non-critical full-snapshot rebuilds skipped since process start. */
   shedTotal: number;
+  /**
+   * Subset of {@link shedTotal} skipped because the #1725 load-shed gate was
+   * active rather than the instantaneous-p95 threshold (issue #2409). Additive
+   * field: lets an operator tell a gate-driven shed (which can post a healthy
+   * {@link lastEventLoopDelayP95Ms} on its recovery tail) from a live-saturation
+   * p95 shed, so `shedTotal` climbing next to a healthy p95 is no longer
+   * self-contradictory. Optional so pre-#2409 consumers/fixtures stay valid.
+   */
+  gateShedTotal?: number;
 }
 
 export interface EventPipelineDeps {
@@ -158,6 +167,33 @@ export interface EventPipelineDeps {
    * to {@link DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS}; `0` disables.
    */
   snapshotShedEventLoopDelayThresholdMs?: number;
+  /**
+   * The #1725 WS load-shed gate's hysteresis `isActive` signal (issue #2409).
+   * Reuses the SAME gate the dashboard broadcaster already consults, so the
+   * event-pipeline build stage and the broadcaster transport stage shed on one
+   * authoritative signal. When it returns `true` the coalesced flush skips the
+   * `createSnapshotMessage` structuredClone + fleet projection entirely: while
+   * the gate is engaged `broadcaster.broadcast` discards ANY snapshot handed to
+   * it and emits a tiny degraded frame instead, so building one is pure waste
+   * (the #2408 incident spent ~60% of the main thread rebuilding shed frames).
+   * The flush still hands the broadcaster a cheap agents-less sentinel so the
+   * client-facing `wsBackpressureNotice` degraded / recovered frames keep firing
+   * — the degraded-frame path needs no fleet snapshot.
+   *
+   * The gate's hysteresis keeps it active for `recoverTicks` after the sampled
+   * p95 dips back under its threshold. With the shared 1500ms default the gate
+   * therefore sheds at least the window {@link getEventLoopDelayP95Ms} +
+   * {@link shouldShedSnapshotRebuild} would, plus the recovery tail. The two
+   * thresholds are independent env vars (gate:
+   * `KOOKR_WS_LOAD_SHED_EVENT_LOOP_DELAY_MS`, pipeline:
+   * `KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS`), so raising the gate threshold
+   * above the pipeline's changes that relationship — the OR below keeps the
+   * decision correct either way.
+   *
+   * Fail-open: unwired (tests / minimal wirings) or `false` preserves the
+   * pre-#2409 behavior (shed decided solely by the instantaneous p95).
+   */
+  getLoadShedActive?: () => boolean;
 }
 
 /** Idle / healthy floor for adaptive snapshot coalesce (one display frame). */
@@ -309,6 +345,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   let snapshotDirty = false;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let snapshotShedTotal = 0;
+  let gateSnapshotShedTotal = 0;
   let lastSnapshotShedSampleMs: number | null = null;
   let lastEffectiveCoalesceWindowMs =
     coalesceMode === 'fixed'
@@ -360,11 +397,38 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       if (p95 != null && Number.isFinite(p95)) {
         lastSnapshotShedSampleMs = p95;
       }
-      if (shouldShedSnapshotRebuild({
-        eventLoopDelayP95Ms: p95,
-        thresholdMs: snapshotShedThresholdMs,
-      })) {
+      // #2409: consult the authoritative #1725 load-shed gate BEFORE building
+      // the snapshot. While that gate is engaged the broadcaster throws away any
+      // snapshot we build (it emits a degraded frame instead), so paying for the
+      // `createSnapshotMessage` structuredClone + projection here is pure waste.
+      // The gate's hysteresis also stays active through the recovery tail after
+      // the instantaneous p95 dips under its threshold, so (with the shared
+      // default) it sheds a window covering `shouldShedSnapshotRebuild`'s plus
+      // the tail. OR-ing both keeps the shed correct if the thresholds diverge.
+      const gateActive = deps.getLoadShedActive?.() ?? false;
+      if (
+        gateActive ||
+        shouldShedSnapshotRebuild({
+          eventLoopDelayP95Ms: p95,
+          thresholdMs: snapshotShedThresholdMs,
+        })
+      ) {
         snapshotShedTotal += 1;
+        if (gateActive) {
+          gateSnapshotShedTotal += 1;
+          // #2409: preserve the client-facing degraded signal WITHOUT the fleet
+          // build. Handing a tiny agents-less snapshot to `broadcastToAll` while
+          // the shared load-shed gate is active drives the broadcaster's
+          // `wsBackpressureNotice` degraded / recovered frames (see
+          // viewer-broadcaster.ts): the broadcaster discards the snapshot's
+          // content while the gate is active, so no `createSnapshotMessage`
+          // clone/projection is paid. Because it is the SAME gate instance the
+          // broadcaster consults — read synchronously with no intervening yield —
+          // this sentinel can never leak out as a real (empty) snapshot. Skipping
+          // the sentinel for a p95-only shed (gate inactive) is deliberate: the
+          // broadcaster would fan an empty snapshot out and wipe every client.
+          broadcastToAll({ type: 'snapshot', agents: [], serverCwd });
+        }
         // Keep dirty and re-arm so a later quiet window converges once load drops.
         armCoalesceTimer(() => flushSnapshotInternal());
         return;
@@ -611,6 +675,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       thresholdMs: snapshotShedThresholdMs,
       lastEventLoopDelayP95Ms: lastSnapshotShedSampleMs,
       shedTotal: snapshotShedTotal,
+      gateShedTotal: gateSnapshotShedTotal,
     }),
     getSnapshotCoalesceMetrics: () => ({
       schemaVersion: 'snapshot-coalesce.v1',

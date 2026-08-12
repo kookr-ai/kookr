@@ -133,6 +133,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               thresholdMs: snapshotShed.thresholdMs,
               lastEventLoopDelayP95Ms: snapshotShed.lastEventLoopDelayP95Ms,
               shedTotal: snapshotShed.shedTotal,
+              gateShedTotal: snapshotShed.gateShedTotal,
             },
           }
         : {}),

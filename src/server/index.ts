@@ -1891,6 +1891,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     permissionAlertBreaker,
     getEventLoopDelayP95Ms: () => getEventLoopDelayP95MsForSnapshotShed(),
     snapshotShedEventLoopDelayThresholdMs: snapshotShedConfig.eventLoopDelayThresholdMs,
+    // #2409: reuse the #1725 WS load-shed gate as the authoritative shed signal
+    // so the coalesced flush skips the createSnapshotMessage rebuild while the
+    // broadcaster is shedding (it discards any snapshot built during a shed).
+    getLoadShedActive: () => realtime.isLoadShedActive(),
   });
 
   // Terminal input deps — used by terminal bridge handlers

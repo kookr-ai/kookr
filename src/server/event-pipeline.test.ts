@@ -1561,6 +1561,264 @@ describe('event-pipeline: snapshot rebuild shed under saturation (#1775)', () =>
 });
 
 // ---------------------------------------------------------------------------
+// #2409: the #1725 WS load-shed gate (hysteresis over the same sampled p95) is
+// the authoritative shed signal the broadcaster consults. The coalesced flush
+// must consult it BEFORE building the snapshot, so an active shed skips the
+// `createSnapshotMessage` structuredClone + projection — building one only to
+// have the broadcaster discard it was ~60% of the main thread in the #2408
+// incident. The gate stays active for the recovery tail after the instantaneous
+// p95 dips under the snapshot-shed threshold, so (with the shared default) it
+// sheds a window covering `shouldShedSnapshotRebuild`'s plus that tail.
+//
+// A gate shed still hands the broadcaster a cheap AGENTS-LESS sentinel snapshot
+// so the client-facing `wsBackpressureNotice` degraded/recovered frames keep
+// firing (the broadcaster discards its content while the gate is active). So in
+// these mock-based tests we distinguish the expensive FLEET rebuild (mock
+// monitor returns a non-empty agent list, so `createSnapshotMessage` yields
+// `agents.length > 0`) from the degraded sentinel (`agents.length === 0`).
+// ---------------------------------------------------------------------------
+
+describe('event-pipeline: load-shed gate sheds the snapshot BUILD (#2409)', () => {
+  const toolUse = (id: string): AgentEvent =>
+    ({ type: 'tool_use', toolName: 'Read', toolUseId: id } as AgentEvent);
+
+  // A real `createSnapshotMessage` build (the expensive path we shed) projects
+  // the mock monitor's non-empty fleet → agents.length > 0.
+  const fleetRebuilds = (broadcasts: ServerMessage[]) =>
+    snapshotBroadcasts(broadcasts).filter((m) => m.agents.length > 0);
+  // The #2409 degraded sentinel: an agents-less snapshot handed to the
+  // broadcaster purely to drive its `wsBackpressureNotice`.
+  const degradedSentinels = (broadcasts: ServerMessage[]) =>
+    snapshotBroadcasts(broadcasts).filter((m) => m.agents.length === 0);
+
+  beforeEach(() => {
+    _resetLifecycles();
+  });
+
+  test('active gate skips the fleet rebuild even when instantaneous p95 is below the snapshot-shed threshold', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // Pin the coalesce window so each advanceTimersByTime(250) fires exactly
+      // one re-armed flush (isolates the shed count from #1778 adaptive sizing).
+      deps.snapshotCoalesceWindowMs = 250;
+      // p95 is BELOW the shed threshold — `shouldShedSnapshotRebuild` alone would
+      // NOT shed. Only the hysteresis gate (still active through recovery) does.
+      deps.getEventLoopDelayP95Ms = () => 100;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      deps.getLoadShedActive = () => true;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+
+      // No expensive fleet rebuild despite the healthy instantaneous p95 — the
+      // gate wins — but a degraded sentinel IS emitted so clients stay informed.
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(degradedSentinels(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(1);
+
+      // Gate still active on the re-armed timer → another shed + another notice.
+      vi.advanceTimersByTime(250);
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(degradedSentinels(broadcasts)).toHaveLength(2);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(2);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('active gate sheds even when the p95 sampler is unwired (gate is the sole shed signal)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 250;
+      // No getEventLoopDelayP95Ms at all: the gate is the only shed input.
+      deps.getLoadShedActive = () => true;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('when the gate recovers, the re-armed flush rebuilds the fleet exactly once', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 250;
+      let gateActive = true;
+      deps.getEventLoopDelayP95Ms = () => 100; // healthy throughout — only the gate sheds
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      deps.getLoadShedActive = () => gateActive;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+
+      gateActive = false; // gate recovered
+      vi.advanceTimersByTime(250);
+      expect(fleetRebuilds(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('attention transition force-builds the fleet even while the gate is active (pipeline build-shed fails open)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 100;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      deps.getLoadShedActive = () => true;
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+
+      // The warning-severity transition force-flushes past the pipeline's build
+      // shed: the FLEET snapshot is BUILT and handed to broadcastToAll (proven
+      // here via the mock — agents.length > 0). NOTE: whether that frame reaches
+      // clients while the gate is active is governed downstream by the #1725
+      // broadcaster gate, which discards it — this test asserts only the
+      // pipeline-layer force bypass, not client delivery.
+      expect(fleetRebuilds(broadcasts)).toHaveLength(1);
+      // The force path skips the whole shed block, so it emits NO degraded
+      // sentinel — only the real fleet frame.
+      expect(degradedSentinels(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('unwired getLoadShedActive preserves pre-#2409 behavior (shed decided by p95 alone)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 250;
+      // No getLoadShedActive; healthy p95 → normal fan-out.
+      deps.getEventLoopDelayP95Ms = () => 100;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(fleetRebuilds(broadcasts)).toHaveLength(1);
+      expect(degradedSentinels(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('p95-only shed (gate inactive) skips the build but emits NO sentinel (would wipe clients)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 250;
+      // p95 saturated but the hysteresis gate is NOT engaged: the pre-#1775 path.
+      deps.getEventLoopDelayP95Ms = () => 5_000;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      deps.getLoadShedActive = () => false;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      // No fleet rebuild AND crucially no sentinel: with the gate inactive the
+      // broadcaster would fan an empty snapshot out and wipe every client, so the
+      // sentinel is gated on gateActive only.
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(degradedSentinels(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('gate active AND p95 saturated: the gate branch owns the single shed (attribution + no double-count)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 250;
+      deps.getEventLoopDelayP95Ms = () => 5_000; // both the gate and the p95 shed fire
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      deps.getLoadShedActive = () => true;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      // One flush → one shed (there is a single increment site, and the gate
+      // branch short-circuits the p95 predicate). The point of the test is the
+      // attribution: the gate branch — evaluated first — owns the shed.
+      expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().gateShedTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('synchronous-flush window (0) still respects the gate (no fleet build)', () => {
+    const { deps, fireEvent, broadcasts } = createMockDeps();
+    // Window 0 disables coalescing → broadcastSnapshot flushes synchronously,
+    // but non-force so the gate shed still applies.
+    deps.snapshotCoalesceWindowMs = 0;
+    deps.getLoadShedActive = () => true;
+    (deps.monitor.getSnapshot as any).mockReturnValue([
+      { agentId: 'agent-1', anomaly: null, events: [] },
+    ]);
+    const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+    fireEvent('agent-1', toolUse('tu-1'));
+    // No fleet build despite the sync-flush path — the gate shed skipped it —
+    // but the degraded sentinel still fires synchronously.
+    expect(fleetRebuilds(broadcasts)).toHaveLength(0);
+    expect(degradedSentinels(broadcasts)).toHaveLength(1);
+    expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+    expect(getSnapshotShedMetrics().gateShedTotal).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #705: end-to-end correlation id. The id minted when a hook event is ingested
 // must appear UNCHANGED on the finding derived from that event, so operators
 // have a single lineage id (hook event -> detector -> finding -> alert).

@@ -163,6 +163,14 @@ export interface RealtimeServices {
    * guard. A no-op when `loadShedConfig` was not provided.
    */
   noteEventLoopDelaySample: (delayMs: number | null) => void;
+  /**
+   * Whether the #1725 WS load-shed gate is currently engaged (issue #2409).
+   * Threaded into the event-pipeline coalesced flush (`getLoadShedActive`) so an
+   * active shed skips the `createSnapshotMessage` rebuild — the broadcaster
+   * discards snapshots built while the gate is active. Always `false` when no
+   * `loadShedConfig` was wired (the gate is then absent).
+   */
+  isLoadShedActive: () => boolean;
 }
 
 export interface ProjectSummaryGitHubDeps {
@@ -392,5 +400,6 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     noteEventLoopDelaySample: (delayMs) => {
       loadShedGate?.noteSample(delayMs);
     },
+    isLoadShedActive: () => loadShedGate?.isActive ?? false,
   };
 }
