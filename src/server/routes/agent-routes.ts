@@ -1,5 +1,5 @@
 import type { Hono } from 'hono';
-import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
+import { createSnapshotMessage, getAgentStateProjected } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
 import type { AgentRouteDeps } from './shared.js';
@@ -106,7 +106,9 @@ export function registerAgentRoutes(app: Hono, deps: AgentRouteDeps): void {
         return c.json({ error: 'input is required and must be a string' }, 400);
       }
 
-      const agent = getSnapshotAgentsRaw({ monitor }).find((candidate) => candidate.agentId === agentId);
+      // Single-agent lookup by id — resolve just the owning task instead of
+      // cloning the whole ~37 MB store (issue #2411).
+      const agent = getAgentStateProjected({ monitor, taskStore: deps.taskStore }, agentId);
       if (!agent) {
         return c.json({ error: `Agent not found: ${agentId}` }, 404);
       }

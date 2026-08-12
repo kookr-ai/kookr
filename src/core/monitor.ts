@@ -662,6 +662,17 @@ export class Monitor {
   }
 
   /**
+   * Non-cloning full task view for whole-fleet AGGREGATE snapshot projections
+   * (e.g. project-summary counts/cost) that only READ task fields (issue #2411).
+   * Returns the live store records by reference — same read-only contract as
+   * {@link TaskStore.viewTasks}: callers MUST NOT mutate or retain them. Use
+   * {@link getTaskSnapshot} (cloning) when detached copies are required.
+   */
+  getTaskSnapshotReadonly(): readonly Task[] {
+    return this.taskStore.viewTasks();
+  }
+
+  /**
    * Re-evaluate the Ralph zero-diff signal after the Ralph cycler has updated
    * loop state. Returns true when the queue was mutated (signal inserted or
    * cleared) so callers can decide whether to broadcast a new snapshot.
