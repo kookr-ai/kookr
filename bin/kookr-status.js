@@ -528,6 +528,62 @@ function summarizeHookIngestion(health) {
   };
 }
 
+// Launch-dependency degradation projection (issue #2363). /api/health publishes
+// launchDependencies (schema launch-dependency-diagnostics.v1) with
+// totalDegradedTasks, totalFindings, and per-dependency / per-category rollups.
+// --json mirrors a slim counts object whenever the block is present (including
+// totalDegradedTasks=0) so remote digests see residual launch preflight debt
+// without curling health; human render is elevated-only (totalDegradedTasks > 0).
+// Omits affectedTaskIds — operators that need ids still use /api/health.
+// Null when absent or non-numeric. Visibility only.
+function summarizeLaunchDependencies(health) {
+  const block = health?.launchDependencies;
+  if (!block || typeof block !== 'object') return null;
+
+  const degradedRaw = Number(
+    /** @type {{ totalDegradedTasks?: unknown }} */ (block).totalDegradedTasks,
+  );
+  const findingsRaw = Number(
+    /** @type {{ totalFindings?: unknown }} */ (block).totalFindings,
+  );
+  if (!Number.isFinite(degradedRaw) || degradedRaw < 0) return null;
+  if (!Number.isFinite(findingsRaw) || findingsRaw < 0) return null;
+
+  /** @type {Array<{ dependency: string, degradedTaskCount: number, categories: string[] }>} */
+  const dependencies = [];
+  const depsRaw = /** @type {{ dependencies?: unknown }} */ (block).dependencies;
+  if (Array.isArray(depsRaw)) {
+    for (const row of depsRaw) {
+      if (!row || typeof row !== 'object') continue;
+      const name = /** @type {{ dependency?: unknown }} */ (row).dependency;
+      if (typeof name !== 'string' || name.length === 0) continue;
+      const countRaw = Number(
+        /** @type {{ degradedTaskCount?: unknown }} */ (row).degradedTaskCount,
+      );
+      if (!Number.isFinite(countRaw) || countRaw < 0) continue;
+      const catsRaw = /** @type {{ categories?: unknown }} */ (row).categories;
+      /** @type {string[]} */
+      const categories = [];
+      if (Array.isArray(catsRaw)) {
+        for (const cat of catsRaw) {
+          if (typeof cat === 'string' && cat.length > 0) categories.push(cat);
+        }
+      }
+      dependencies.push({
+        dependency: name,
+        degradedTaskCount: Math.floor(countRaw),
+        categories,
+      });
+    }
+  }
+
+  return {
+    totalDegradedTasks: Math.floor(degradedRaw),
+    totalFindings: Math.floor(findingsRaw),
+    dependencies,
+  };
+}
+
 // Startup crash-recovery counts (issue #2351). /api/health publishes a slim
 // `startupRecovery` block after deferred recovery completes (relaunched /
 // skipped / failed / crashLoopSkips + generatedAt). Always-on compact gauge
@@ -1023,6 +1079,23 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Launch dependencies (issue #2363) — elevated-only human line when
+  // totalDegradedTasks > 0 so advisory preflight / post-restart residual
+  // (e.g. kb provider_api) shows without curling /api/health. Zero totals
+  // still flow through --json when the health block is present.
+  const launchDeps = summarizeLaunchDependencies(health);
+  if (launchDeps && launchDeps.totalDegradedTasks > 0) {
+    const depParts = launchDeps.dependencies.map((d) => {
+      const cats =
+        d.categories.length > 0 ? ` (${d.categories.join(', ')})` : '';
+      return `${d.dependency}=${d.degradedTaskCount}${cats}`;
+    });
+    lines.push(
+      `Launch dependencies: degraded=${launchDeps.totalDegradedTasks}` +
+        (depParts.length > 0 ? `  ${depParts.join('  ')}` : ''),
+    );
+  }
+
   // Hung-suspect TTL reclaim residual (issue #2229) — quiet-by-default when
   // reclaimedTotal=0 and skips/candidates/residual are elevated. Prints the
   // skip breakdown + residual class counts so unattended operators do not
@@ -1257,6 +1330,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
     const snapshotShedSummary = summarizeSnapshotShed(health);
     const hookIngestionSummary = summarizeHookIngestion(health);
+    const launchDependenciesSummary = summarizeLaunchDependencies(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
     const ossAttemptsSummary = summarizeOssAttempts(health);
@@ -1290,6 +1364,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ? { startupRecovery: startupRecoverySummary }
           : {}),
         ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
+        ...(launchDependenciesSummary
+          ? { launchDependencies: launchDependenciesSummary }
+          : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
           ? { providerPausedOccupancy: providerPausedSummary }
@@ -1354,6 +1431,7 @@ export {
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
   summarizeHookIngestion,
+  summarizeLaunchDependencies,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,

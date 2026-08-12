@@ -128,6 +128,32 @@ export interface HealthLike {
     generatedAt?: string;
   };
   /**
+   * Launch-dependency degradation rollup (issue #2363). Present on current
+   * servers (schema launch-dependency-diagnostics.v1); omitted on older
+   * builds. Slim status projection drops affectedTaskIds.
+   */
+  launchDependencies?: {
+    schemaVersion?: string;
+    totalDegradedTasks?: number;
+    totalFindings?: number;
+    dependencies?: Array<{
+      dependency?: string;
+      degradedTaskCount?: number;
+      findingCount?: number;
+      affectedTaskIds?: string[];
+      categories?: string[];
+      lastOccurredAt?: string;
+    }>;
+    categories?: Array<{
+      category?: string;
+      degradedTaskCount?: number;
+      findingCount?: number;
+      affectedTaskIds?: string[];
+      dependencies?: string[];
+      lastOccurredAt?: string;
+    }>;
+  };
+  /**
    * Lesson-authoring yield gauges for the last 24h (issue #1538 / #2305).
    * Omitted on cold cache; present once the stale-while-revalidate scan lands.
    */
@@ -284,6 +310,17 @@ export interface HookIngestionSummary {
   generatedAt?: string;
 }
 
+/** Slim launch-dependency degradation gauge (issue #2363). */
+export interface LaunchDependenciesSummary {
+  totalDegradedTasks: number;
+  totalFindings: number;
+  dependencies: Array<{
+    dependency: string;
+    degradedTaskCount: number;
+    categories: string[];
+  }>;
+}
+
 /** Slim lesson-authoring yield gauge (issue #2305 / #1538). */
 export interface LessonYieldSummary {
   yieldRate: number;
@@ -383,6 +420,9 @@ export function summarizeSnapshotShed(
 export function summarizeHookIngestion(
   health: HealthLike,
 ): HookIngestionSummary | null;
+export function summarizeLaunchDependencies(
+  health: HealthLike,
+): LaunchDependenciesSummary | null;
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;
