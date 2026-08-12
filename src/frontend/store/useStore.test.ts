@@ -137,6 +137,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().capacityResidual).toBeNull();
     expect(store.getState().pipelineStarvation).toBeNull();
     expect(store.getState().launchDependencies).toBeNull();
+    expect(store.getState().lessonYield).toBeNull();
 
     store.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
@@ -158,6 +159,13 @@ describe('Kookr Zustand Store', () => {
         dependencies: [
           { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
         ],
+      },
+      lessonYield: {
+        windowDays: 1,
+        yieldRate: 0.75,
+        decided: 3,
+        completedInWindow: 4,
+        buckets: { wroteLesson: 2, explicitSkip: 1, searchOnly: 0, noKbActivity: 1 },
       },
     });
 
@@ -182,6 +190,13 @@ describe('Kookr Zustand Store', () => {
         { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
       ],
     });
+    expect(store.getState().lessonYield).toEqual({
+      windowDays: 1,
+      yieldRate: 0.75,
+      decided: 3,
+      completedInWindow: 4,
+      buckets: { wroteLesson: 2, explicitSkip: 1, searchOnly: 0, noKbActivity: 1 },
+    });
 
     // Partial update: only smoke — watchdog + capacity residual + starvation + launch deps left alone.
     store.getState().handleOpsHealth({
@@ -192,6 +207,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().capacityResidual?.finishedAwaitingAck).toBe(7);
     expect(store.getState().pipelineStarvation?.repos['kookr-ai/kookr']?.consecutiveBlockedEmpty).toBe(2);
     expect(store.getState().launchDependencies?.totalDegradedTasks).toBe(8);
+    expect(store.getState().lessonYield?.yieldRate).toBe(0.75);
   });
 
   test('handleUpdate updates single agent', () => {

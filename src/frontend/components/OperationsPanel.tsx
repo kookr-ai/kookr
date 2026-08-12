@@ -8,6 +8,7 @@ import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPan
 import { LiveFrictionCalibrationPanel } from './LiveFrictionCalibrationPanel.js';
 import { OutcomeLedgerPanel } from './OutcomeLedgerPanel.js';
 import { PipelineStarvationPanel } from './PipelineStarvationPanel.js';
+import { LessonYieldPanel } from './LessonYieldPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 
@@ -53,6 +54,7 @@ export function OperationsPanel({ send, onClose }: Props) {
           <DetectionStatsPanel defaultExpanded showEmpty />
           <SessionHealthPanel />
           <PipelineStarvationPanel />
+          <LessonYieldPanel />
           <LiveFrictionCalibrationPanel />
           <FindingEvidenceDiagnosticsPanel />
           <CircuitBreakerPanel send={send} defaultExpanded showEmpty />
