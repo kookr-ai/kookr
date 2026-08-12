@@ -25,6 +25,7 @@
  * at most `maxReapsPerSweep` pids per plan.
  */
 
+import { isKookrDtachMasterCmdline } from './orphan-process-scanner.js';
 import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from './resource-watchdog-eval.js';
 
 /** Default minimum age (ms) before a missing-socket master may be selected. */
@@ -210,8 +211,9 @@ export interface DtachProcessFacts {
 
 /**
  * Build a host-stale candidate from a process-table row + live session set.
- * Returns null when the cmdline is not a kookr-dtach master (no
- * `dtach`+`kookr-dtach` markers). Pure aside from the injected `socketExists`.
+ * Returns null when the cmdline is not a kookr-dtach *master* (`dtach -n` /
+ * `-N` + `kookr-dtach` path; attach clients excluded — issue #2383). Pure
+ * aside from the injected `socketExists`.
  */
 export function buildDtachOrphanCandidateFromProcess(
   proc: DtachProcessFacts,
@@ -221,7 +223,7 @@ export function buildDtachOrphanCandidateFromProcess(
     socketExists: (path: string) => boolean;
   },
 ): DtachOrphanCandidate | null {
-  if (!proc.cmdline || !proc.cmdline.includes('dtach') || !proc.cmdline.includes('kookr-dtach')) {
+  if (!isKookrDtachMasterCmdline(proc.cmdline)) {
     return null;
   }
   const socketPath = extractKookrDtachSocketPath(proc.cmdline);

@@ -242,9 +242,10 @@ export function metaReflectionInWindow(
 /**
  * Default soft bound for `staleProcesses.dtach.count` on the
  * `pressureWhileDisabled` health signal (issue #2039) and the disabled-path
- * auto-enable trigger (issue #2354). Lower than the agent-family process
- * ceiling (40) because a live prod observation fired at ~21 dtach processes
- * while continuous monitoring was off.
+ * auto-enable trigger (issue #2354). Count is **masters only** (`dtach -n` /
+ * `-N`; attach clients excluded — issue #2383), so this is a headroom ceiling
+ * above max concurrent sessions (typically `maxActiveTasks`), not a doubled
+ * master+attach total. The original ~21 observation mixed attachers in.
  */
 export const DEFAULT_DTACH_PRESSURE_SOFT_BOUND = 20;
 

@@ -285,11 +285,29 @@ describe('buildDtachOrphanCandidateFromProcess (issue #2356)', () => {
     ).toBeNull();
   });
 
-  it('filters a mixed process list to kookr-dtach only', () => {
+  it('returns null for kookr-dtach attach clients (masters only, issue #2383)', () => {
+    expect(
+      buildDtachOrphanCandidateFromProcess(
+        {
+          pid: 9,
+          cmdline: 'dtach -a /tmp/kookr-dtach/1000/port-4800/kookr-abc.sock -E',
+          startTimeMs: 0,
+        },
+        { now: 120_000, liveSessionIds: new Set(), socketExists: () => false },
+      ),
+    ).toBeNull();
+  });
+
+  it('filters a mixed process list to kookr-dtach masters only', () => {
     const built = buildDtachOrphanCandidatesFromProcesses(
       [
         { pid: 1, cmdline: 'bash', startTimeMs: 0 },
         { pid: 2, cmdline, startTimeMs: 0 },
+        {
+          pid: 3,
+          cmdline: 'dtach -a /tmp/kookr-dtach/1000/port-4800/kookr-abc.sock -E',
+          startTimeMs: 0,
+        },
       ],
       {
         now: 120_000,

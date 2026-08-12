@@ -739,11 +739,12 @@ async function checkHookIngestionLag(
  * Advisory ops check (issue #2348): WARN when host-wide `staleProcesses.dtach`
  * far exceeds what the session reaper reports as orphans/leaks.
  *
- * Live prod pattern: `staleProcesses.dtach.count=23` while
- * `sessionReaper.lastOrphanCount=0` and `lastTerminalLeakCount=0` — host-stale
- * masters accumulate outside TaskStore; session reaper (#1720) cannot see them.
- * The host-stale janitor (#2356) reclaims eligible masters when count ≥ soft
- * bound; doctor surfaces its last-sweep counters when present.
+ * `staleProcesses.dtach.count` is masters only (`dtach -n` / `-N`; attach
+ * clients excluded — issue #2383). Live prod pattern when real host-stale
+ * accumulates: count ≥ soft bound while `sessionReaper.lastOrphanCount=0` and
+ * `lastTerminalLeakCount=0` — masters outside TaskStore that session reaper
+ * (#1720) cannot see. The host-stale janitor (#2356) reclaims eligible masters
+ * when count ≥ soft bound; doctor surfaces its last-sweep counters when present.
  *
  * WARN when `hostExcess = dtachCount - (lastOrphanCount + lastTerminalLeakCount)`
  * is ≥ soft bound (default {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND}). Soft-skip

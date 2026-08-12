@@ -167,7 +167,7 @@ for c in r.get("checks",[]):
 
 | Observation | Meaning | Action |
 | --- | --- | --- |
-| High `staleProcesses.dtach.count`, low `sessionReaper.lastOrphanCount` + `lastTerminalLeakCount` | Host-stale class: process-table masters **outside** TaskStore / live-session inventory | **Not** a broken session reaper — #1720 only sees backend live sessions |
+| High `staleProcesses.dtach.count`, low `sessionReaper.lastOrphanCount` + `lastTerminalLeakCount` | Host-stale class: process-table **masters only** (`dtach -n`; attach clients excluded — #2383) **outside** TaskStore / live-session inventory | **Not** a broken session reaper — #1720 only sees backend live sessions |
 | Doctor WARN `ops.host-stale-dtach` / `host_stale_dtach_mismatch` | Host excess ≥ soft bound (default 20) | Prefer `hostStaleDtachReaper` counters; enable continuous investigation via `KOOKR_RESOURCE_WATCHDOG=1` if off |
 | `hostStaleDtachReaper.lastUnderPressure` / rising `lastHostStaleDtachReaped` | Bounded host-stale reaper (#2356) is acting under soft pressure | Wait for sweeps; use dry-run only when deliberately observing |
 | High `skippedLiveAttached` | Those pids are still live-attached sessions | Do **not** kill; use task/session terminal paths |

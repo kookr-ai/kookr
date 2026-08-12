@@ -92,6 +92,32 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
     expect(service.getHealthSnapshot().lastHostStaleDtachReaped).toBe(0);
   });
 
+  it('does not count attach clients toward pressure (issue #2383)', async () => {
+    const reap = vi.fn();
+    // 11 masters + 11 attachers would have been count=22 pre-#2383 and tripped softBound 20.
+    const masters = manyStale(11);
+    const attachers = masters.map((m, i) =>
+      snap({
+        pid: 9000 + i,
+        cmdline: m.cmdline.replace('dtach -n ', 'dtach -a ').replace(/ -r winch -E claude$/, ' -E'),
+      }),
+    );
+    const service = new HostStaleDtachReaperService({
+      listLiveSessionIds: () => new Set(),
+      listProcesses: () => [...masters, ...attachers],
+      socketExists: () => false,
+      reap,
+      getConfig: () => baseConfig(),
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    const result = await service.runSweep();
+    expect(result.plan.dtachCount).toBe(11);
+    expect(result.plan.underPressure).toBe(false);
+    expect(reap).not.toHaveBeenCalled();
+    expect(result.plan.skippedUnderBound).toBe(11);
+  });
+
   it('never reaps a live-attached session (fail-closed)', async () => {
     const reap = vi.fn();
     // Inflate count with live-attached masters so pressure is high but all are live.

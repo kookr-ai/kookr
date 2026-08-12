@@ -20,7 +20,7 @@ import { existsSync } from 'node:fs';
 
 import { killProcessTree } from '../adapters/process-tree.js';
 import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
-import type { ProcessSnapshot } from '../core/orphan-process-scanner.js';
+import { classifyProcess, type ProcessSnapshot } from '../core/orphan-process-scanner.js';
 import {
   DEFAULT_DTACH_ORPHAN_MIN_AGE_MS,
   DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
@@ -113,10 +113,11 @@ function formatAge(ageMs: number | null): string {
   return `${Math.round(minutes / 60)}h`;
 }
 
+/** Masters only — same classifier as `staleProcesses.dtach` (issue #2383). */
 function defaultDtachCount(processes: readonly ProcessSnapshot[]): number {
   let n = 0;
   for (const p of processes) {
-    if (p.cmdline.includes('dtach') && p.cmdline.includes('kookr-dtach')) n += 1;
+    if (classifyProcess(p.cmdline) === 'dtach') n += 1;
   }
   return n;
 }
