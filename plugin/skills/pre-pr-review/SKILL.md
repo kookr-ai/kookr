@@ -2,7 +2,7 @@
 name: pre-pr-review
 description: Self-review checklist before creating a PR — repo checks, diff review, reviewer specialists, and gate state creation before gh pr create.
 keywords: review, self-review, pre-PR, checklist, before PR, quality, validation, before merge, before submit
-related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage
+related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage, clear-technical-writing
 ---
 
 # Pre-PR Review
@@ -197,6 +197,17 @@ Ask: **"Does every change in this diff directly serve the PR's stated goal?"**
 If you find unrelated improvements, either:
 - Remove them from the PR (stash for a separate PR)
 - Or justify them in the PR description
+
+### 6b. PR prose (cold-reader clarity)
+
+Before `gh pr create`, draft the PR body with the `clear-technical-writing` skill:
+
+1. **Intent first** (2–4 plain sentences; 1 for tiny fixes) — problem, change, why. No symbol dump in the Summary.
+2. **Gloss jargon** on first use; put identifiers/thresholds/paths in Changes or a technical section.
+3. **Mark** `<!-- kookr:check:prose -->` when the Summary would pass a one-month-cold-reader self-check. Strike with a one-line reason only for pure typo / formatting / mechanical renames.
+4. **Optional second pass** for multi-concept or dense drafts: spawn `kookr-toolkit:clear-writing-reviewer` with the draft body and fix any `BLOCK` / `NEEDS_REWRITE` findings before opening the PR.
+
+Do not treat "be concise" as permission to ship telegraphic identifier stacks. Concise means no filler; clarity still wins.
 
 ### 7. Architecture Sanity
 
@@ -440,6 +451,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - diff review: done
 - scope guard: clean / flagged (with fix or PR-body justification)
 - portability check: clean / flagged (with reason or fix) / skipped
+- PR prose (cold-reader): drafted via clear-technical-writing / skipped (tiny only) / rewrite applied after clear-writing-reviewer
 - reviewer specialists: run / skipped, with reason — record the exact `SPECIALISTS=…` selection, whether `--force` was used, and the per-specialist gating `rationale:` block from `select-specialists.sh`
 - docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale; note whether the docs-drift concern was `active` or dormant per the gating decision
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
