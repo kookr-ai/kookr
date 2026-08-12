@@ -210,9 +210,11 @@ export interface RelayReapPolicy {
  * when `maxAgeMs` is explicitly set does age alone qualify a process — callers
  * must opt into that and ensure the production relay is excluded.
  *
- * `dtach` orphans are surfaced for visibility but NOT selected here; their
- * reaping is owned by #1720's session reconciler, which has the task/session
- * map needed to decide safely.
+ * `dtach` orphans are surfaced for visibility but NOT selected here. Live
+ * session reaping is owned by #1720's session reconciler (`session-reap-policy`);
+ * host-stale master selection (missing socket + aged, never when live) is pure
+ * policy in `dtach-orphan-policy` (#2352) — kill wiring is a separate janitor
+ * (#2356) and is intentionally not hooked from this module.
  */
 export function selectRelayOrphansToReap(
   procs: readonly StaleProcess[],
