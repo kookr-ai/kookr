@@ -202,6 +202,59 @@ function summarizeStaleProcesses(health) {
   };
 }
 
+// Host-stale dtach reaper projection (issue #2386). /api/health publishes
+// `hostStaleDtachReaper` (issues #2356 / #2384) with lastUnderPressure,
+// lastDtachCount, and reaped totals. Surface when under pressure or any reaped
+// total is elevated so headless operators see active reclaim without curling
+// health; quiet fleets stay silent. Null when absent or non-elevated.
+// Visibility only — never changes reaper policy.
+function summarizeHostStaleDtachReaper(health) {
+  const block = health?.hostStaleDtachReaper;
+  if (!block || typeof block !== 'object') return null;
+
+  const lastUnderPressure = Boolean(
+    /** @type {{ lastUnderPressure?: unknown }} */ (block).lastUnderPressure,
+  );
+
+  const dtachRaw = /** @type {{ lastDtachCount?: unknown }} */ (block).lastDtachCount;
+  let lastDtachCount = null;
+  if (dtachRaw !== null && dtachRaw !== undefined) {
+    const n = Number(dtachRaw);
+    if (Number.isFinite(n) && n >= 0) lastDtachCount = Math.floor(n);
+  }
+
+  const lastReapedRaw = Number(
+    /** @type {{ lastHostStaleDtachReaped?: unknown }} */ (block).lastHostStaleDtachReaped,
+  );
+  const lastHostStaleDtachReaped =
+    Number.isFinite(lastReapedRaw) && lastReapedRaw >= 0
+      ? Math.floor(lastReapedRaw)
+      : 0;
+
+  const totalReapedRaw = Number(
+    /** @type {{ totalHostStaleDtachReaped?: unknown }} */ (block).totalHostStaleDtachReaped,
+  );
+  const totalHostStaleDtachReaped =
+    Number.isFinite(totalReapedRaw) && totalReapedRaw >= 0
+      ? Math.floor(totalReapedRaw)
+      : 0;
+
+  if (
+    !lastUnderPressure
+    && lastHostStaleDtachReaped <= 0
+    && totalHostStaleDtachReaped <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    lastUnderPressure,
+    lastDtachCount,
+    lastHostStaleDtachReaped,
+    totalHostStaleDtachReaped,
+  };
+}
+
 // Payload-diet projection (issue #2220). /api/health publishes
 // `payloadDiet.{trackedTasks,terminalTasks,lastSnapshotBytes}` from the same
 // getter already logged at boot/prune. Always-on compact gauge whenever the
@@ -954,6 +1007,23 @@ function renderReport({ port, health, agents }) {
     lines.push(`Stale processes: ${parts.join('  ')}`);
   }
 
+  // Host-stale dtach reaper (issue #2386) — under-pressure / reaped totals
+  // already on /api/health. Quiet-by-default so remote operators see active
+  // reclaim without curling health when the soft bound is crossed or kills ran.
+  const hostStaleReaper = summarizeHostStaleDtachReaper(health);
+  if (hostStaleReaper) {
+    const dtach =
+      hostStaleReaper.lastDtachCount === null
+        ? 'unknown'
+        : String(hostStaleReaper.lastDtachCount);
+    lines.push(
+      `Host-stale dtach reaper: underPressure=${hostStaleReaper.lastUnderPressure}` +
+        `  dtach=${dtach}` +
+        `  lastReaped=${hostStaleReaper.lastHostStaleDtachReaped}` +
+        `  totalReaped=${hostStaleReaper.totalHostStaleDtachReaped}`,
+    );
+  }
+
   // Payload diet (issue #2220) — always-on compact gauge when /api/health
   // publishes the block. Matches the boot log line shape so digests and
   // `kookr status` share one mental model for in-memory task-record pressure.
@@ -1398,6 +1468,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     // summary inside renderReport, so computing it here too would be wasted work.
     const starvationSummary = summarizePipelineStarvation(health);
     const staleSummary = summarizeStaleProcesses(health);
+    const hostStaleDtachReaperSummary = summarizeHostStaleDtachReaper(health);
     const payloadDietSummary = summarizePayloadDiet(health);
     const hookReplayCheckpointsSummary = summarizeHookReplayCheckpoints(health);
     const firstHookMissSummary = summarizeFirstHookMiss(health);
@@ -1428,6 +1499,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         summary,
         ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
         ...(staleSummary ? { staleProcesses: staleSummary } : {}),
+        ...(hostStaleDtachReaperSummary
+          ? { hostStaleDtachReaper: hostStaleDtachReaperSummary }
+          : {}),
         ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
         ...(hookReplayCheckpointsSummary
           ? { hookReplayCheckpoints: hookReplayCheckpointsSummary }
@@ -1502,6 +1576,7 @@ export {
   highestKnownSeverity,
   summarizePipelineStarvation,
   summarizeStaleProcesses,
+  summarizeHostStaleDtachReaper,
   summarizePayloadDiet,
   summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
