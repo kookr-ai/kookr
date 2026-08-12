@@ -198,6 +198,18 @@ export interface HealthLike {
     issueCheckErrorCount?: number;
   };
   /**
+   * Scheduled data-directory prune schedule state (issue #2345). Present when
+   * the tracker is wired (always on current servers, including enabled=false).
+   */
+  maintenancePrune?: {
+    enabled?: boolean;
+    intervalHours?: number;
+    lastRunAt?: string | null;
+    lastReclaimedBytes?: number | null;
+    lastRemovedCount?: number | null;
+    lastError?: string | null;
+  };
+  /**
    * Compact crash-recovery counts after deferred startup recovery (issue #2351).
    * Omitted before recovery completes; counts only (no entry lists).
    */
@@ -342,6 +354,16 @@ export interface OssAttemptsSummary {
   issueCheckErrorCount: number;
 }
 
+/** Slim scheduled maintenance-prune gauge (issue #2345). */
+export interface MaintenancePruneSummary {
+  enabled: boolean;
+  intervalHours: number;
+  lastRunAt: string | null;
+  lastReclaimedBytes: number | null;
+  lastRemovedCount: number | null;
+  lastError: string | null;
+}
+
 /** Slim hungSuspect TTL reclaim residual (issue #2229). Elevated only. */
 export interface HungSuspectTtlReclaimSummary {
   reclaimedTotal: number;
@@ -432,6 +454,9 @@ export function summarizeLessonYield(
 export function summarizeOssAttempts(
   health: HealthLike,
 ): OssAttemptsSummary | null;
+export function summarizeMaintenancePrune(
+  health: HealthLike,
+): MaintenancePruneSummary | null;
 export function summarizeStartupRecovery(
   health: HealthLike,
 ): StartupRecoverySummary | null;

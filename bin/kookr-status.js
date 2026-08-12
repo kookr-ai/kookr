@@ -653,6 +653,55 @@ function summarizeOssAttempts(health) {
   };
 }
 
+// Scheduled maintenance-prune projection (issue #2345). /api/health always
+// publishes `maintenancePrune` when the tracker is wired (enabled, intervalHours,
+// lastRunAt, lastReclaimedBytes, lastRemovedCount, lastError). Always-on gauge
+// whenever enabled + intervalHours are present so operators see whether prune is
+// armed and whether the last sweep succeeded without grepping server.log.
+// Null when absent or malformed. Visibility only — does not run a prune.
+function summarizeMaintenancePrune(health) {
+  const block = health?.maintenancePrune;
+  if (!block || typeof block !== 'object') return null;
+
+  if (typeof /** @type {{ enabled?: unknown }} */ (block).enabled !== 'boolean') return null;
+
+  const intervalRaw = Number(/** @type {{ intervalHours?: unknown }} */ (block).intervalHours);
+  if (!Number.isFinite(intervalRaw) || intervalRaw < 0) return null;
+
+  const lastRunRaw = /** @type {{ lastRunAt?: unknown }} */ (block).lastRunAt;
+  const lastRunAt =
+    typeof lastRunRaw === 'string' && lastRunRaw.length > 0 ? lastRunRaw : null;
+
+  const reclaimedRaw = /** @type {{ lastReclaimedBytes?: unknown }} */ (block).lastReclaimedBytes;
+  let lastReclaimedBytes = null;
+  if (reclaimedRaw !== null && reclaimedRaw !== undefined) {
+    const n = Number(reclaimedRaw);
+    if (!Number.isFinite(n) || n < 0) return null;
+    lastReclaimedBytes = Math.floor(n);
+  }
+
+  const removedRaw = /** @type {{ lastRemovedCount?: unknown }} */ (block).lastRemovedCount;
+  let lastRemovedCount = null;
+  if (removedRaw !== null && removedRaw !== undefined) {
+    const n = Number(removedRaw);
+    if (!Number.isFinite(n) || n < 0) return null;
+    lastRemovedCount = Math.floor(n);
+  }
+
+  const errRaw = /** @type {{ lastError?: unknown }} */ (block).lastError;
+  const lastError =
+    typeof errRaw === 'string' && errRaw.length > 0 ? errRaw : null;
+
+  return {
+    enabled: /** @type {{ enabled: boolean }} */ (block).enabled,
+    intervalHours: intervalRaw,
+    lastRunAt,
+    lastReclaimedBytes,
+    lastRemovedCount,
+    lastError,
+  };
+}
+
 // Lesson-authoring yield projection (issue #2305 / #1538). /api/health already
 // publishes lessonYield (yieldRate, decided, completedInWindow, buckets) once
 // the 24h cache is warm; cold cache omits the block. Always-on compact gauge
@@ -965,6 +1014,33 @@ function renderReport({ port, health, agents }) {
         `  total=${ossAttempts.totalCount}` +
         `  lastRefresh=${refresh}` +
         `  issueCheckErrors=${ossAttempts.issueCheckErrorCount}`,
+    );
+  }
+
+  // Maintenance prune (issue #2345) — always-on when /api/health publishes the
+  // schedule block (including enabled=false). Offline operators see whether
+  // prune is armed and what the last sweep reclaimed without grepping logs.
+  const maintenancePrune = summarizeMaintenancePrune(health);
+  if (maintenancePrune) {
+    const lastRun =
+      maintenancePrune.lastRunAt === null ? 'never' : maintenancePrune.lastRunAt;
+    const reclaimed =
+      maintenancePrune.lastReclaimedBytes === null
+        ? 'n/a'
+        : String(maintenancePrune.lastReclaimedBytes);
+    const removed =
+      maintenancePrune.lastRemovedCount === null
+        ? 'n/a'
+        : String(maintenancePrune.lastRemovedCount);
+    const err =
+      maintenancePrune.lastError === null ? 'none' : maintenancePrune.lastError;
+    lines.push(
+      `Maintenance prune: enabled=${maintenancePrune.enabled}` +
+        `  intervalHours=${maintenancePrune.intervalHours}` +
+        `  lastRun=${lastRun}` +
+        `  reclaimed=${reclaimed}` +
+        `  removed=${removed}` +
+        `  lastError=${err}`,
     );
   }
 
@@ -1334,6 +1410,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
     const ossAttemptsSummary = summarizeOssAttempts(health);
+    const maintenancePruneSummary = summarizeMaintenancePrune(health);
     const startupRecoverySummary = summarizeStartupRecovery(health);
     return exitJson({
       out,
@@ -1360,6 +1437,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           : {}),
         ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
         ...(ossAttemptsSummary ? { ossAttempts: ossAttemptsSummary } : {}),
+        ...(maintenancePruneSummary
+          ? { maintenancePrune: maintenancePruneSummary }
+          : {}),
         ...(startupRecoverySummary
           ? { startupRecovery: startupRecoverySummary }
           : {}),
@@ -1435,6 +1515,7 @@ export {
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
+  summarizeMaintenancePrune,
   summarizeStartupRecovery,
   renderReport,
   resolvePort,

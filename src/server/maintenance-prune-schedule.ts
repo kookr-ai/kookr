@@ -15,6 +15,64 @@ export interface RelayOrphanSweepScheduleConfig {
 /** Default min gap between emergency prune runs (issue #2344). */
 export const DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS = 60 * 60 * 1000;
 
+/**
+ * Scheduled-prune last-run tracker state (issue #2345). Always constructed at
+ * bootstrap — even when intervalHours=0 — so health can report `enabled: false`.
+ */
+export interface MaintenancePruneScheduleHealthSnapshot {
+  /** True when a positive interval is configured (timer will fire). */
+  enabled: boolean;
+  /** Configured interval in hours; `0` means disabled. */
+  intervalHours: number;
+  /** ISO timestamp of the last scheduled attempt (success or failure), or null. */
+  lastRunAt: string | null;
+  /** Bytes reclaimed by the last *successful* scheduled sweep, or null. */
+  lastReclaimedBytes: number | null;
+  /** Artifact count removed by the last *successful* scheduled sweep, or null. */
+  lastRemovedCount: number | null;
+  /** Error message from the last failed scheduled attempt, or null after success. */
+  lastError: string | null;
+}
+
+/**
+ * In-memory last-run tracker for the opt-in scheduled data-directory prune.
+ * Request path only reads {@link getSnapshot} — never re-runs a sweep.
+ */
+export class MaintenancePruneHealth {
+  private lastRunAt: string | null = null;
+  private lastReclaimedBytes: number | null = null;
+  private lastRemovedCount: number | null = null;
+  private lastError: string | null = null;
+
+  constructor(
+    private readonly intervalHours: number,
+    private readonly nowIso: () => string = () => new Date().toISOString(),
+  ) {}
+
+  recordSuccess(result: Pick<MaintenancePruneResult, 'reclaimedBytes' | 'removed'>): void {
+    this.lastRunAt = this.nowIso();
+    this.lastReclaimedBytes = result.reclaimedBytes;
+    this.lastRemovedCount = result.removed.length;
+    this.lastError = null;
+  }
+
+  recordFailure(err: unknown): void {
+    this.lastRunAt = this.nowIso();
+    this.lastError = err instanceof Error ? err.message : String(err);
+  }
+
+  getSnapshot(): MaintenancePruneScheduleHealthSnapshot {
+    return {
+      enabled: this.intervalHours > 0,
+      intervalHours: this.intervalHours,
+      lastRunAt: this.lastRunAt,
+      lastReclaimedBytes: this.lastReclaimedBytes,
+      lastRemovedCount: this.lastRemovedCount,
+      lastError: this.lastError,
+    };
+  }
+}
+
 export interface MaintenancePruneScheduleConfig {
   /** Absolute path to the Kookr data directory to sweep. */
   dataDir: string;
@@ -28,6 +86,13 @@ export interface MaintenancePruneScheduleConfig {
   run?: typeof planAndPruneMaintenance;
   /** Injectable clock forwarded to the prune core (tests). */
   now?: () => number;
+  /**
+   * Optional schedule health tracker updated after each scheduled attempt
+   * (issue #2345). Bootstrap always wires one so GET `/api/health` can project
+   * enabled/last-run state. Emergency path may share the same prune config but
+   * does not write schedule last-run fields (those stay on the interval timer).
+   */
+  health?: Pick<MaintenancePruneHealth, 'recordSuccess' | 'recordFailure'>;
   /**
    * Aged terminal task-record pruning (issue #1526 Phase C / C2). Wired at
    * bootstrap to `pruneAgedTaskRecords` over the live TaskStore/Monitor so
@@ -53,15 +118,46 @@ export interface MaintenancePruneScheduleConfig {
 }
 
 /**
- * Health projection for emergency maintenance prune (issue #2344).
- * Served under `GET /api/health.maintenancePrune`.
+ * Combined maintenance-prune health for GET `/api/health.maintenancePrune`
+ * (issues #2344 emergency + #2345 schedule). Schedule fields satisfy the
+ * #2345 AC; emergency fields keep the disk-critical edge counters.
+ *
+ * `lastReclaimedBytes` / `lastRemovedCount` / `lastRunAt` / `lastError` are
+ * the *scheduled* leg. Emergency reclaim is `lastEmergencyReclaimedBytes`.
+ */
+export interface MaintenancePruneHealthSnapshot extends MaintenancePruneScheduleHealthSnapshot {
+  emergencyPruneTriggeredTotal: number;
+  lastEmergencyPruneAt: string | null;
+  /** Bytes reclaimed by the last successful *emergency* sweep, or null. */
+  lastEmergencyReclaimedBytes: number | null;
+  /** Configured min gap between emergency runs (ms). */
+  throttleMs: number;
+}
+
+/**
+ * Emergency-only counters retained on the controller (issue #2344).
+ * Composed with schedule state via {@link composeMaintenancePruneHealth}.
  */
 export interface EmergencyMaintenancePruneHealthSnapshot {
   emergencyPruneTriggeredTotal: number;
   lastEmergencyPruneAt: string | null;
-  lastReclaimedBytes: number | null;
+  lastEmergencyReclaimedBytes: number | null;
   /** Configured min gap between emergency runs (ms). */
   throttleMs: number;
+}
+
+/** Compose schedule + emergency snapshots into the /api/health wire shape. */
+export function composeMaintenancePruneHealth(
+  schedule: MaintenancePruneScheduleHealthSnapshot,
+  emergency: EmergencyMaintenancePruneHealthSnapshot,
+): MaintenancePruneHealthSnapshot {
+  return {
+    ...schedule,
+    emergencyPruneTriggeredTotal: emergency.emergencyPruneTriggeredTotal,
+    lastEmergencyPruneAt: emergency.lastEmergencyPruneAt,
+    lastEmergencyReclaimedBytes: emergency.lastEmergencyReclaimedBytes,
+    throttleMs: emergency.throttleMs,
+  };
 }
 
 export type EmergencyPruneOutcome = 'ran' | 'throttled' | 'in_flight' | 'failed';
@@ -115,7 +211,7 @@ export class EmergencyMaintenancePruneController {
     return {
       emergencyPruneTriggeredTotal: this.emergencyPruneTriggeredTotal,
       lastEmergencyPruneAt: this.lastEmergencyPruneAt,
-      lastReclaimedBytes: this.lastReclaimedBytes,
+      lastEmergencyReclaimedBytes: this.lastReclaimedBytes,
       throttleMs: this.throttleMs,
     };
   }
@@ -147,13 +243,16 @@ export class EmergencyMaintenancePruneController {
         `[maintenance-prune] emergency sweep triggered by data-directory disk-critical ` +
           `(total=${this.emergencyPruneTriggeredTotal}, throttleMs=${this.throttleMs})`,
       );
-      const result = await runScheduledMaintenancePrune(this.options.pruneConfig);
+      // Strip schedule health so emergency reclaims do not overwrite the
+      // interval timer's lastRunAt / lastReclaimedBytes (issue #2345).
+      const { health: _scheduleHealth, ...emergencyConfig } = this.options.pruneConfig;
+      const result = await runScheduledMaintenancePrune(emergencyConfig);
       if (result) {
         this.lastReclaimedBytes = result.reclaimedBytes;
         return 'ran';
       }
       // Failed attempt: do not leave a prior success's reclaim figure as if it
-      // belonged to this run (health couples lastAt with lastReclaimedBytes).
+      // belonged to this run (health couples lastAt with lastEmergencyReclaimedBytes).
       this.lastReclaimedBytes = null;
       return 'failed';
     } catch (err) {
@@ -238,11 +337,13 @@ export async function runScheduledMaintenancePrune(
       `[maintenance-prune] scheduled sweep reclaimed ${result.reclaimedBytes} byte(s) ` +
         `across ${result.removed.length} artifact(s)${warn}`,
     );
+    config.health?.recordSuccess(result);
     await runScheduledTaskRecordPrune(config);
     return result;
   } catch (err) {
     // Non-fatal: log and keep the server running.
     console.error('[maintenance-prune] scheduled sweep failed:', err);
+    config.health?.recordFailure(err);
     await runScheduledTaskRecordPrune(config);
     return null;
   }

@@ -132,8 +132,10 @@ import {
   resolveReclaimScheduleConfig,
 } from './scheduled-worktree-reclaim-runner.js';
 import {
+  composeMaintenancePruneHealth,
   EmergencyMaintenancePruneController,
   formatPayloadDietLogLine,
+  MaintenancePruneHealth,
   resolveEmergencyPruneThrottleMs,
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
@@ -2396,10 +2398,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // service (created later) feeds it on every sample tick.
   const diskAdmissionConfig = readDiskAdmissionConfigFromEnv();
   const diskAdmissionTracker = new DataDirectoryDiskAdmissionTracker();
-  // Emergency maintenance prune (issue #2344): holder filled after takePredelete
-  // is defined; /api/health reads via the getter so createRoutes can close over
-  // the live instance without delaying route construction.
+  // Emergency + schedule maintenance prune health (issues #2344 / #2345):
+  // holders filled after takePredelete is defined; /api/health reads via the
+  // getter so createRoutes can close over the live instances without delaying
+  // route construction. Schedule tracker is always constructed (even when
+  // intervalHours=0) so health can report enabled=false.
   let emergencyMaintenancePrune: EmergencyMaintenancePruneController | undefined;
+  let maintenancePruneHealth: MaintenancePruneHealth | undefined;
+  const emergencyPruneThrottleMsResolved = resolveEmergencyPruneThrottleMs(process.env);
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
@@ -2516,7 +2522,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sessionReaper,
     hostStaleDtachReaper,
     getPayloadDietStats,
-    getMaintenancePruneHealth: () => emergencyMaintenancePrune?.getHealthSnapshot(),
+    getMaintenancePruneHealth: () => {
+      // Combined schedule (#2345) + emergency (#2344) block. Schedule tracker is
+      // always present; emergency may lag until post-takePredelete wiring fills in.
+      if (!maintenancePruneHealth) return undefined;
+      const emergency = emergencyMaintenancePrune?.getHealthSnapshot() ?? {
+        emergencyPruneTriggeredTotal: 0,
+        lastEmergencyPruneAt: null,
+        lastEmergencyReclaimedBytes: null,
+        throttleMs: emergencyPruneThrottleMsResolved,
+      };
+      return composeMaintenancePruneHealth(maintenancePruneHealth.getSnapshot(), emergency);
+    },
     getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
@@ -2732,12 +2749,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       : '[admission] Data-directory disk admission disabled (set KOOKR_ALERT_DATA_DIR_FREE_* or KOOKR_ADMISSION_DATA_DIR_FREE_* to enable)',
   );
 
-  // Shared maintenance-prune config (scheduled interval + emergency edge, #2344).
+  // Shared maintenance-prune config (scheduled interval + emergency edge).
   // Emergency runs even when KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is 0 so
   // disk-critical admission can self-heal without requiring opt-in scheduling.
+  // Schedule health tracker (#2345) is always wired so /api/health projects
+  // enabled=false when the interval is off.
+  const maintenancePruneIntervalHours = resolveMaintenancePruneIntervalHours(process.env);
+  maintenancePruneHealth = new MaintenancePruneHealth(maintenancePruneIntervalHours);
   const maintenancePruneConfig = {
     dataDir: kookrDir,
-    intervalHours: resolveMaintenancePruneIntervalHours(process.env),
+    intervalHours: maintenancePruneIntervalHours,
+    health: maintenancePruneHealth,
     pruneTaskRecords: () => pruneAgedTaskRecords({
       taskStore,
       monitor,
@@ -2755,14 +2777,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     getPayloadDietStats,
   };
-  const emergencyPruneThrottleMs = resolveEmergencyPruneThrottleMs(process.env);
   emergencyMaintenancePrune = new EmergencyMaintenancePruneController({
     pruneConfig: maintenancePruneConfig,
-    throttleMs: emergencyPruneThrottleMs,
+    throttleMs: emergencyPruneThrottleMsResolved,
   });
   console.log(
     `[maintenance-prune] emergency sweep armed on disk-critical admission edge ` +
-      `(throttleMs=${emergencyPruneThrottleMs})`,
+      `(throttleMs=${emergencyPruneThrottleMsResolved})`,
   );
 
   const resourceStatusService = createResourceStatusService({

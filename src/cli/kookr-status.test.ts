@@ -24,6 +24,7 @@ import {
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
+  summarizeMaintenancePrune,
   summarizeStartupRecovery,
   renderReport,
   parsePortEnv,
@@ -1075,6 +1076,45 @@ describe('kookr-status renderReport', () => {
       .not.toContain('OSS attempts:');
   });
 
+  it('always surfaces maintenancePrune as a compact gauge when present (issue #2345)', () => {
+    const health = {
+      ...baseHealth,
+      maintenancePrune: {
+        enabled: true,
+        intervalHours: 24,
+        lastRunAt: '2026-08-12T00:00:00.000Z',
+        lastReclaimedBytes: 4096,
+        lastRemovedCount: 3,
+        lastError: null,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Maintenance prune: enabled=true  intervalHours=24  lastRun=2026-08-12T00:00:00.000Z  reclaimed=4096  removed=3  lastError=none',
+    );
+  });
+
+  it('surfaces enabled=false and never-run nulls for disabled prune (issue #2345)', () => {
+    const health = {
+      ...baseHealth,
+      maintenancePrune: {
+        enabled: false,
+        intervalHours: 0,
+        lastRunAt: null,
+        lastReclaimedBytes: null,
+        lastRemovedCount: null,
+        lastError: null,
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Maintenance prune: enabled=false  intervalHours=0  lastRun=never  reclaimed=n/a  removed=n/a  lastError=none',
+    );
+  });
+
+  it('is a no-op when maintenancePrune is absent (issue #2345)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Maintenance prune:');
+  });
+
   it('always surfaces startupRecovery as a compact gauge when present (issue #2351)', () => {
     const health = {
       ...baseHealth,
@@ -1697,6 +1737,70 @@ describe('kookr-status summarizeStartupRecovery (issue #2351)', () => {
       crashLoopSkips: 1,
       generatedAt: null,
     });
+  });
+});
+
+describe('kookr-status summarizeMaintenancePrune (issue #2345)', () => {
+  it('returns null when maintenancePrune is absent', () => {
+    expect(summarizeMaintenancePrune({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns the full schedule block including null last-run fields', () => {
+    expect(
+      summarizeMaintenancePrune({
+        maintenancePrune: {
+          enabled: false,
+          intervalHours: 0,
+          lastRunAt: null,
+          lastReclaimedBytes: null,
+          lastRemovedCount: null,
+          lastError: null,
+        },
+      }),
+    ).toEqual({
+      enabled: false,
+      intervalHours: 0,
+      lastRunAt: null,
+      lastReclaimedBytes: null,
+      lastRemovedCount: null,
+      lastError: null,
+    });
+  });
+
+  it('floors numeric reclaim counters and keeps lastError strings', () => {
+    expect(
+      summarizeMaintenancePrune({
+        maintenancePrune: {
+          enabled: true,
+          intervalHours: 12.5,
+          lastRunAt: '2026-08-12T01:00:00.000Z',
+          lastReclaimedBytes: 4096.9,
+          lastRemovedCount: 2.2,
+          lastError: 'disk exploded',
+        },
+      }),
+    ).toEqual({
+      enabled: true,
+      intervalHours: 12.5,
+      lastRunAt: '2026-08-12T01:00:00.000Z',
+      lastReclaimedBytes: 4096,
+      lastRemovedCount: 2,
+      lastError: 'disk exploded',
+    });
+  });
+
+  it('returns null when enabled is missing or non-boolean', () => {
+    expect(
+      summarizeMaintenancePrune({
+        maintenancePrune: {
+          intervalHours: 24,
+          lastRunAt: null,
+          lastReclaimedBytes: null,
+          lastRemovedCount: null,
+          lastError: null,
+        },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -2859,6 +2963,66 @@ describe('kookr-status main (integration-style)', () => {
         noKbActivity: 0,
       },
     });
+  });
+
+  it('includes details.maintenancePrune in --json when present, including disabled (issue #2345)', async () => {
+    mockSuccessfulFetch([], {
+      maintenancePrune: {
+        enabled: false,
+        intervalHours: 0,
+        lastRunAt: null,
+        lastReclaimedBytes: null,
+        lastRemovedCount: null,
+        lastError: null,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.maintenancePrune).toEqual({
+      enabled: false,
+      intervalHours: 0,
+      lastRunAt: null,
+      lastReclaimedBytes: null,
+      lastRemovedCount: null,
+      lastError: null,
+    });
+  });
+
+  it('includes details.maintenancePrune last-run fields in --json (issue #2345)', async () => {
+    mockSuccessfulFetch([], {
+      maintenancePrune: {
+        enabled: true,
+        intervalHours: 24,
+        lastRunAt: '2026-08-12T02:00:00.000Z',
+        lastReclaimedBytes: 8192,
+        lastRemovedCount: 5,
+        lastError: null,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.maintenancePrune).toEqual({
+      enabled: true,
+      intervalHours: 24,
+      lastRunAt: '2026-08-12T02:00:00.000Z',
+      lastReclaimedBytes: 8192,
+      lastRemovedCount: 5,
+      lastError: null,
+    });
+  });
+
+  it('omits details.maintenancePrune in --json when absent (issue #2345)', async () => {
+    mockSuccessfulFetch([], {});
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.maintenancePrune).toBeUndefined();
   });
 
   it('includes a slim capacity summary in --json when elevated (issue #2234)', async () => {

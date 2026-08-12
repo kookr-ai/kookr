@@ -94,7 +94,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(controller.getHealthSnapshot()).toEqual({
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(1_000_000).toISOString(),
-      lastReclaimedBytes: 8192,
+      lastEmergencyReclaimedBytes: 8192,
       throttleMs: 60 * 60 * 1000,
     });
     expect(logSpy.mock.calls.flat().join('\n')).toMatch(/emergency sweep triggered/);
@@ -188,12 +188,12 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(controller.getHealthSnapshot()).toEqual({
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(42_000).toISOString(),
-      lastReclaimedBytes: null,
+      lastEmergencyReclaimedBytes: null,
       throttleMs: 0,
     });
   });
 
-  test('failed attempt after a success clears lastReclaimedBytes (no stale reclaim figure)', async () => {
+  test('failed attempt after a success clears lastEmergencyReclaimedBytes (no stale reclaim figure)', async () => {
     const run = vi
       .fn()
       .mockResolvedValueOnce(fakeResult({ reclaimedBytes: 8192 }))
@@ -208,12 +208,12 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
-    expect(controller.getHealthSnapshot().lastReclaimedBytes).toBe(8192);
+    expect(controller.getHealthSnapshot().lastEmergencyReclaimedBytes).toBe(8192);
     nowMs = 10;
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
     expect(controller.getHealthSnapshot()).toMatchObject({
       emergencyPruneTriggeredTotal: 2,
-      lastReclaimedBytes: null,
+      lastEmergencyReclaimedBytes: null,
     });
   });
 
@@ -225,7 +225,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(controller.getHealthSnapshot()).toEqual({
       emergencyPruneTriggeredTotal: 0,
       lastEmergencyPruneAt: null,
-      lastReclaimedBytes: null,
+      lastEmergencyReclaimedBytes: null,
       throttleMs: 3_600_000,
     });
   });
