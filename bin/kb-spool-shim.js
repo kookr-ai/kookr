@@ -57,9 +57,15 @@ function resolveRealKb(env) {
   const pathEnv = env.PATH ?? '';
   const parts = pathEnv.split(delimiter).filter(Boolean);
   // Skip our own bin dir so we don't recurse into this shim.
+  // Also skip EVERY Kookr launcher bin (any directory that contains
+  // kb-spool-shim.js). When both `kookr` and `kookr-prod` (or any two
+  // checkouts) appear on PATH, each shim used to resolve the other as the
+  // "real" kb and spawn an unbounded process chain (fork bomb).
   const selfDir = realpathSafe(here);
   for (const dir of parts) {
-    if (realpathSafe(dir) === selfDir) continue;
+    const resolvedDir = realpathSafe(dir);
+    if (resolvedDir === selfDir) continue;
+    if (isKookrLauncherBinDir(resolvedDir)) continue;
     for (const name of ['kb', 'kb.js']) {
       const candidate = join(dir, name);
       if (existsSync(candidate)) return candidate;
@@ -72,11 +78,25 @@ function resolveRealKb(env) {
     '/usr/local/bin/kb',
   ];
   for (const candidate of fallbacks) {
-    if (existsSync(candidate) && realpathSafe(dirname(candidate)) !== selfDir) {
-      return candidate;
-    }
+    if (!existsSync(candidate)) continue;
+    const candidateDir = realpathSafe(dirname(candidate));
+    if (candidateDir === selfDir) continue;
+    if (isKookrLauncherBinDir(candidateDir)) continue;
+    return candidate;
   }
   return null;
+}
+
+/**
+ * True when `dir` is a Kookr agent-launcher bin (ships `kb-spool-shim.js`).
+ * Used to skip peer checkouts that would otherwise recurse into each other.
+ */
+function isKookrLauncherBinDir(dir) {
+  try {
+    return existsSync(join(dir, 'kb-spool-shim.js'));
+  } catch {
+    return false;
+  }
 }
 
 function realpathSafe(p) {
@@ -89,8 +109,22 @@ function realpathSafe(p) {
 
 function execReal(bin, argv, env) {
   return new Promise((resolve) => {
+    // Depth guard: if a peer shim still slips through (e.g. renamed without
+    // the marker file), refuse to chain forever.
+    const depth = Number.parseInt(env.KOOKR_KB_SHIM_DEPTH ?? '0', 10);
+    if (Number.isFinite(depth) && depth >= 3) {
+      process.stderr.write(
+        '[kookr] kb spool shim: recursion depth exceeded while resolving real `kb`.\n',
+      );
+      resolve(127);
+      return;
+    }
+    const childEnv = {
+      ...env,
+      KOOKR_KB_SHIM_DEPTH: String((Number.isFinite(depth) ? depth : 0) + 1),
+    };
     const child = spawn(bin, argv, {
-      env,
+      env: childEnv,
       stdio: 'inherit',
     });
     child.on('error', (err) => {
