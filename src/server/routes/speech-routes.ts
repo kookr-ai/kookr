@@ -3,7 +3,7 @@ import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { AgentSpeakCache } from '../agent-speak-cache.js';
 import { TaskSpeechSummaryCache } from '../task-speech-summary-cache.js';
-import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
+import { getAgentStateProjected, getTaskAgentsProjected } from '../use-cases/get-snapshot.js';
 import { buildTaskSpeechSubject } from '../use-cases/task-speech-summary-input.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
 import { buildAgentSpeakContext } from '../../core/agent-speak-context.js';
@@ -106,7 +106,9 @@ async function parseSpeakAgentBody(c: Context): Promise<SpeakAgentRequest> {
 }
 
 function findAgent(deps: RouteDeps, agentId: string): AgentState | undefined {
-  return getSnapshotAgentsRaw({ monitor: deps.monitor }).find((candidate) => candidate.agentId === agentId);
+  // Single-agent lookup by id — resolve just the owning task instead of cloning
+  // the whole ~37 MB store (issue #2411).
+  return getAgentStateProjected({ monitor: deps.monitor, taskStore: deps.taskStore }, agentId);
 }
 
 function ttsWarnExceeded(rung: VerbosityScale, ttsMs: number): boolean {
@@ -344,7 +346,9 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     const collectStart = Date.now();
     const subject = buildTaskSpeechSubject({
       taskId,
-      agents: getSnapshotAgentsRaw({ monitor: deps.monitor }),
+      // Only this task's agents are needed — project them from the single task
+      // instead of cloning the whole ~37 MB store (issue #2411).
+      agents: getTaskAgentsProjected({ monitor: deps.monitor, taskStore: deps.taskStore }, taskId),
       task: deps.taskStore.getTask(taskId),
     });
     const collectMs = Date.now() - collectStart;

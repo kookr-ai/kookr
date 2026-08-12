@@ -672,6 +672,92 @@ describe('snapshot use cases', () => {
     });
   });
 
+  it('aggregates project summaries over the non-cloning full task view (issue #2411)', () => {
+    const taskStore = new TaskStore();
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+    const AGED_MS = 30 * 24 * 60 * 60 * 1000;
+    const project = 'github.com/octo/cat';
+
+    // Live in-progress task in the project (drives activeAgents); cost 5.
+    const liveTask = taskStore.createTask('Live work', '/repo');
+    taskStore.setProjectId(liveTask.id, project);
+    taskStore.addSession(liveTask.id, {
+      tmuxSession: 'agent-live',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    // addSession auto-transitions the task open -> inProgress.
+    monitor.processEvents('agent-live', [
+      { type: 'tool_use', sessionId: 'agent-live', toolName: 'Read', toolInput: { file_path: '/repo/x' } },
+    ]);
+    taskStore.updateTokenUsage(liveTask.id, {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 5,
+    });
+
+    // Aged completed task in the same project (beyond the 7-day snapshot diet);
+    // cost 10. Its spend MUST still be counted — a cost aggregate needs every
+    // terminal task, so the diet is deliberately NOT applied here.
+    const agedTask = taskStore.createTask('Old completed work', '/repo');
+    taskStore.setProjectId(agedTask.id, project);
+    taskStore.addSession(agedTask.id, {
+      tmuxSession: 'agent-old',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(Date.now() - AGED_MS),
+    });
+    taskStore.updateTokenUsage(agedTask.id, {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 10,
+    });
+    taskStore.completeTask(agedTask.id);
+    const agedLive = taskStore.getTaskForMutation(agedTask.id)!;
+    const old = new Date(Date.now() - AGED_MS);
+    agedLive.updatedAt = old;
+    if (agedLive.finishedAt) agedLive.finishedAt = old;
+
+    // Prove the aggregate reads the NON-CLONING view and never the cloning one.
+    let readonlyCalls = 0;
+    let cloningCalls = 0;
+    const originalReadonly = monitor.getTaskSnapshotReadonly.bind(monitor);
+    const originalCloning = monitor.getTaskSnapshot.bind(monitor);
+    monitor.getTaskSnapshotReadonly = (() => { readonlyCalls += 1; return originalReadonly(); }) as typeof monitor.getTaskSnapshotReadonly;
+    monitor.getTaskSnapshot = ((opts?: Parameters<typeof originalCloning>[0]) => { cloningCalls += 1; return originalCloning(opts); }) as typeof monitor.getTaskSnapshot;
+
+    const summaries = getProjectSummaries({
+      monitor,
+      ledgerAnalytics: {
+        getTodayCount: () => 0,
+        getWeekCount: () => 0,
+        getAttemptsByProject: () => [],
+        getAttemptsByProjectRecent: () => [],
+        getTodayCountsByProject: () => new Map(),
+        getWeekCountsByProject: () => new Map(),
+        getAttemptsByProjectMap: () => new Map(),
+        getProjects: () => [],
+        getTodayBlockedEntries: () => [],
+      } as any,
+      projectConfigStore: {
+        getConfig: () => undefined,
+        getRateLimit: () => undefined,
+        getAllConfigs: () => [],
+        getEffectiveDailyLimit: () => undefined,
+      } as any,
+    });
+
+    const summary = summaries.find((s) => s.project === project);
+    expect(summary).toBeDefined();
+    expect(summary!.activeAgents).toBe(1);
+    // Full fidelity: aged terminal task's cost is still summed (5 + 10) and it
+    // still appears in recentTasks — the diet must NOT drop it here.
+    expect(summary!.costUsd).toBe(15);
+    const recentIds = summary!.recentTasks.map((t) => t.taskId);
+    expect(recentIds).toContain(liveTask.id);
+    expect(recentIds).toContain(agedTask.id);
+    // Non-cloning: aggregation reads viewTasks, never the ~37 MB cloning path.
+    expect(readonlyCalls).toBe(1);
+    expect(cloningCalls).toBe(0);
+  });
+
   describe('relation projection (#601)', () => {
     const baseRelation = (overrides: Record<string, unknown>) => ({
       id: 'rel-1',

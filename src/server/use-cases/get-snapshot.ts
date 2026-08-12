@@ -45,7 +45,7 @@ import {
 import { isProjectInScope, type Scope } from '../viewer-data-policy.js';
 
 export interface SnapshotQueryDeps {
-  monitor: Pick<Monitor, 'getSnapshot'> & Partial<Pick<Monitor, 'getTaskSnapshot'>>;
+  monitor: Pick<Monitor, 'getSnapshot'> & Partial<Pick<Monitor, 'getTaskSnapshot' | 'getTaskSnapshotReadonly'>>;
   /** Optional provider of per-Kookr-session activity counters. Wires
    *  {@link AgentState.activityMeta} on each snapshot so the activity panel
    *  can disclose partial-window state and child / malformed counts. */
@@ -378,6 +378,14 @@ function projectFindingEvidenceAuditForClient(record: FindingEvidenceAuditRecord
  * Get agents with events at full fidelity.
  * Use this for debug endpoints (/api/snapshot, /api/agents/:id) and any
  * server-internal caller that needs the raw toolResponse / toolInput / lastMessage.
+ *
+ * ⚠ COST (issue #2411): this fetches the FULL task store (`getTaskSnapshot()`
+ * with no cutoff/cap) and clones every record — ~37 MB on a ~776-task prod store
+ * — so it is a debug-only / whole-fleet primitive. Do NOT use it to look one
+ * agent up by id (use {@link getAgentStateProjected}) or to scope to a single
+ * task (use {@link getTaskAgentsProjected}); those resolve just the owning task
+ * (a single ~50 KB clone). Whole-fleet AGGREGATES that only read task fields
+ * ({@link getProjectSummaries}) should use the non-cloning readonly view instead.
  */
 export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
   const raw = getProjectedSnapshotAgents(deps);
@@ -448,6 +456,35 @@ function getProjectedSnapshotAgents(
 }
 
 /**
+ * Projected agents for whole-fleet AGGREGATES ({@link getProjectSummaries}),
+ * read from the NON-CLONING full task view (issue #2411). The raw path clones
+ * every task (~37 MB) just so the summary code can read a handful of fields;
+ * this reads the full set by reference via `getTaskSnapshotReadonly`
+ * (backed by issue #2413's `TaskStore.viewTasks`) and never clones.
+ *
+ * Unlike the client snapshot this applies NO age/count diet — a cost/count
+ * aggregate must see every task (`ProjectSummary.costUsd` sums terminal-task
+ * `tokenUsage.costUsd`), so dropping aged terminals would under-report it.
+ *
+ * SAFETY: {@link buildSnapshotProjection} builds fresh AgentState objects but
+ * copies some task sub-objects (e.g. `tokenUsage`, `childTaskIds`) BY REFERENCE.
+ * With the readonly view those references alias live store records, so the
+ * result is READ-ONLY and short-lived: the summary aggregation reads it and
+ * discards it within the same synchronous call — no caller mutates or retains
+ * the agents. Callers that mutate or keep projected agents must use the cloning
+ * {@link getSnapshotAgentsRaw} instead. Falls back to the cloning task snapshot
+ * for monitors that predate `getTaskSnapshotReadonly` (test mocks).
+ */
+function getAggregationAgents(deps: SnapshotQueryDeps): AgentState[] {
+  const rawMonitorStates = deps.monitor.getSnapshot();
+  const taskSnapshot = deps.monitor.getTaskSnapshotReadonly?.() ?? deps.monitor.getTaskSnapshot?.();
+  const projected = !taskSnapshot
+    ? rawMonitorStates
+    : buildSnapshotProjection({ monitorStates: rawMonitorStates, tasks: taskSnapshot });
+  return filterAgentsToScope(projected, deps.scope);
+}
+
+/**
  * Restrict projected agents to a viewer's {@link Scope}. `all` (or undefined)
  * returns the input array **by identity** so non-viewer callers (owners, debug
  * endpoints, reference-equality tests) are byte-for-byte unchanged. A `projects`
@@ -458,6 +495,104 @@ function getProjectedSnapshotAgents(
 function filterAgentsToScope(agents: AgentState[], scope: Scope | undefined): AgentState[] {
   if (!scope || scope.kind === 'all') return agents;
   return agents.filter((agent) => agent.projectId !== undefined && isProjectInScope(scope, agent.projectId));
+}
+
+/**
+ * Deps for the targeted single-agent / single-task snapshot lookups (issue
+ * #2411). Extends {@link SnapshotQueryDeps} with the single-record accessors
+ * those paths use to avoid cloning the whole store: `monitor.getAgentState`
+ * (one live event window) and a `taskStore` supplying the one owning task
+ * (`findTaskBySession` / `getTask` — a single ~50 KB clone, not the ~37 MB
+ * fleet). Both are optional so callers wired without them (legacy mocks, an
+ * `AgentRouteDeps` with no `taskStore`) transparently fall back to the full
+ * fleet scan.
+ */
+export interface AgentLookupDeps extends SnapshotQueryDeps {
+  monitor: SnapshotQueryDeps['monitor'] & Partial<Pick<Monitor, 'getAgentState'>>;
+  taskStore?: Pick<TaskStore, 'getTask' | 'findTaskBySession'>;
+}
+
+/** Synthetic agent ids the projection mints for task-only (no live session) rows. */
+const SYNTHETIC_AGENT_ID_PREFIXES = ['pending-', 'done-'] as const;
+
+/**
+ * Resolve the single task that owns `agentId` without cloning the store. A live
+ * or terminal session id is found via {@link TaskStore.findTaskBySession}; the
+ * projection's synthetic `pending-<taskId>` / `done-<taskId>` ids are resolved
+ * by stripping the prefix and looking the task up by id.
+ */
+function resolveOwningTask(
+  taskStore: Pick<TaskStore, 'getTask' | 'findTaskBySession'>,
+  agentId: string,
+): Task | undefined {
+  const bySession = taskStore.findTaskBySession(agentId);
+  if (bySession) return bySession;
+  for (const prefix of SYNTHETIC_AGENT_ID_PREFIXES) {
+    if (agentId.startsWith(prefix)) {
+      const task = taskStore.getTask(agentId.slice(prefix.length));
+      if (task) return task;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the projected {@link AgentState} for a single agent id WITHOUT
+ * building (and cloning) the whole fleet (issue #2411).
+ *
+ * The raw fleet path (`getSnapshotAgentsRaw(...).find(id)`) pays a full ~37 MB
+ * `getTaskSnapshot` store clone per call just to look one agent up — and Kookr's
+ * own supervision loop hits `POST /api/agents/:id/message` (plus every
+ * `/api/agents/:id/speak`) on that path. This instead resolves only the single
+ * owning task (one ~50 KB clone) and runs the exact same
+ * {@link buildSnapshotProjection} over a ≤1-agent, ≤1-task universe, so
+ * live-enrichment, the terminal/aborted exclusion, and the synthetic
+ * pending/terminal entries stay faithful to the fleet result. The only
+ * fleet-wide step it necessarily drops is cross-agent finding-causality
+ * annotation (`relatedFindingIds` / `rootCauseFindingId`), which single-agent
+ * lookup callers do not read.
+ *
+ * Falls back to the full fleet scan when the single-record accessors are absent.
+ */
+export function getAgentStateProjected(deps: AgentLookupDeps, agentId: string): AgentState | undefined {
+  const { monitor, taskStore } = deps;
+  if (typeof monitor.getAgentState !== 'function' || !taskStore) {
+    return getSnapshotAgentsRaw(deps).find((agent) => agent.agentId === agentId);
+  }
+  const liveState = monitor.getAgentState(agentId);
+  const task = resolveOwningTask(taskStore, agentId);
+  const projected = buildSnapshotProjection({
+    monitorStates: liveState ? [liveState] : [],
+    tasks: task ? [task] : [],
+  });
+  return filterAgentsToScope(projected, deps.scope).find((agent) => agent.agentId === agentId);
+}
+
+/**
+ * Projected agents owned by a SINGLE task id, without cloning the whole store
+ * (issue #2411). `POST /api/tasks/:taskId/speak-summary` only needs the agent(s)
+ * of one task, yet the raw fleet build cloned all ~776 tasks and then
+ * `.find(taskId)`. This resolves the one task (single clone) and projects its
+ * live sessions, reusing the exact {@link buildSnapshotProjection} so synthetic
+ * pending/terminal rows for the task are preserved.
+ *
+ * NOTE ON FALLBACK: when the single-record accessors are absent this returns the
+ * WHOLE projected fleet (unfiltered by task), preserving the pre-#2411 behavior
+ * of the sole caller — `buildTaskSpeechSubject`, which `.find`s the task itself.
+ * A caller that needs a strictly task-scoped result must filter by `taskId`.
+ */
+export function getTaskAgentsProjected(deps: AgentLookupDeps, taskId: string): AgentState[] {
+  const { monitor, taskStore } = deps;
+  if (typeof monitor.getAgentState !== 'function' || !taskStore) {
+    return getSnapshotAgentsRaw(deps);
+  }
+  const task = taskStore.getTask(taskId);
+  if (!task) return [];
+  const monitorStates = task.sessions
+    .map((session) => monitor.getAgentState!(session.tmuxSession))
+    .filter((state): state is AgentState => state !== undefined);
+  const projected = buildSnapshotProjection({ monitorStates, tasks: [task] });
+  return filterAgentsToScope(projected, deps.scope);
 }
 
 /**
@@ -634,7 +769,15 @@ export function buildCoordinatorDetectorTasks(
 }
 
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {
-  const agents = getSnapshotAgentsRaw(deps);
+  // #2411: aggregate over the NON-CLONING full task view. getProjectSummaries is
+  // broadcast on WS-connect / config change / ledger writes (300 ms debounce) —
+  // exactly when the dashboard may be unhealthy — and the raw fetch cloned the
+  // entire ~776-task store (~37 MB) each time just to read a few fields per task.
+  // A cost/count aggregate needs EVERY task (`ProjectSummary.costUsd` sums
+  // `tokenUsage.costUsd` over terminal tasks too), so the client age/count diet
+  // is NOT usable here — it would under-report cost. `getAggregationAgents`
+  // reads the full set by reference (issue #2413's `viewTasks`) and never clones.
+  const agents = getAggregationAgents(deps);
   const githubTaskOverlay = deps.getTaskGithubReferences
     ? buildGithubTaskOverlay({
         agents,
