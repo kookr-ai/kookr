@@ -1,117 +1,115 @@
 ---
 name: clear-technical-writing
-description: Write clear technical prose for PRs, changelogs, summaries, and status updates — plain-language intent first, jargon defined, identifiers only after the human explanation. Use when drafting PR bodies, release notes, task summaries, or any agent-written technical text that humans must understand cold.
-keywords: technical writing, PR description, changelog, summary, clarity, jargon, plain language, readable, cold reader, PR body, status update, release notes, concise vs cryptic, writing style
+description: Write clear technical prose everywhere — code documentation (docstrings, comments, module/API/reference docs, config comments), design docs and READMEs, PR bodies/changelogs/summaries, AND explanations of genuinely hard ideas (novel algorithms, subtle failure modes, non-obvious tradeoffs). Plain-language intent first, jargon defined, identifiers only after the human explanation; for hard ideas, build intuition with analogies that carry the real mechanism. Use for any writing a human must understand cold.
+keywords: technical writing, code documentation, docstring, code comment, API docs, reference docs, README, design doc, PR description, changelog, summary, explaining hard ideas, analogy, intuition, clarity, jargon, plain language, cold reader, concise vs cryptic, writing style, great explainer
 related: pre-pr-review, git-commit-discipline, pr-contribution-excellence, pr-review-triage
 ---
 
 # Clear Technical Writing
 
-Write for a **competent teammate who last touched this area weeks ago** — not for the author of the diff, and not for someone who already has the full subsystem mental model loaded.
+Write for a **competent teammate who last touched this area weeks ago** — not the diff author. Assume a capable mind that is simply missing *this* context. **Respect the reader's intelligence: never talk down.** The goal is to leave the reader feeling smart, not to make you look smart.
 
-**Concise ≠ cryptic.** Cut filler, hedging, and repetition. Do **not** cut the explanations a cold reader needs. A clear longer paragraph beats a short opaque one. Density is not professionalism.
+Good explanation is not decoration on top of understanding — it *is* a deeper form of understanding. A passage you cannot make clear is usually one you have not fully grasped yet; the effort to explain is the effort to understand.
 
-Load this skill whenever you draft a PR body, changelog entry, task summary, release note, or similar technical prose. Pair with `kookr-toolkit:clear-writing-reviewer` when you want a second pass on a finished draft.
+**This applies to *everything* you write, not just human-facing summaries.** A docstring, inline comment, module header, API/reference doc, or config comment is read by exactly that cold teammate — often *while debugging*, with less patience than a PR reviewer has. There is no "internal, so it can be cryptic" tier.
 
-## Required shape
+**Concise ≠ cryptic.** Cut filler and repetition; do **not** cut the explanation a cold reader needs. Density is not professionalism.
 
-### Multi-concept changes
+Use for any technical text: docstrings and code comments, module/API/reference docs, READMEs and design docs, PR bodies, changelogs, summaries — and for explaining hard ideas. Optional second pass: `kookr-toolkit:clear-writing-reviewer`.
 
-(New metrics, multi-file features, non-obvious bug fixes, behavior changes.)
+## Shape
 
-1. **Intent first (2–4 plain-language sentences).** What problem exists? What changes in product/ops terms? Why does it matter? No function names, constants, or file paths yet.
-2. **Define domain terms on first use.** Project-specific or compound jargon gets a short gloss once.
-3. **Technical details next.** Exact names, thresholds (constant **and** natural language), wiring, order, repo-relative paths, design tradeoffs.
-4. **Verification last.** Commands run and outcomes. Evidence of correctness — not a substitute for intent.
+1. **Intent first** — 2–4 plain sentences (1 for tiny fixes): problem, change, why. No function names, constants, or paths yet.
+2. **Gloss jargon once** — project-specific compounds get a short definition on first use.
+3. **Technical details next** — names, thresholds in words *and* constants, wiring, repo-relative paths.
+4. **Verification last** — commands and outcomes (not a substitute for intent).
 
-### Tiny changes
+### Code documentation
 
-Single-file / one-line fixes may stay shorter, but still open with **one** plain-language sentence of intent before any symbol list.
+Same principles, adapted to code:
+
+- **Docstrings lead with what and why, not the signature.** The types already state the shape; say what it is *for*. Re-typing the parameter list in English is not documentation.
+- **Comments explain intent, not mechanics.** The code already says *what*; a comment earns its place by saying *why* — the constraint, edge case, or non-obvious reason this branch exists. Delete comments that only narrate the next line.
+- **Gloss magic numbers in words next to the constant** (`# 0.50 — page when free-surface coverage falls below half`).
+- **Module/API/reference docs open with the problem solved and who calls it**, then the exported surface.
+
+## Explaining hard ideas
+
+Most writing just needs the shape above. But when the *idea itself* is hard — a novel algorithm, a subtle race, a non-obvious tradeoff, a design that reshapes the reader's mental model — the intent block is not enough; you have to *build* the idea. These techniques scale with difficulty: a one-line fix gets one sentence; a new consensus protocol earns an analogy and a run-up.
+
+- **Motivate before you formalize.** Show why the problem is hard or interesting *first*, then the solution. Lead the reader to the "aha" in the order a curious mind meets it — do not just assert the result.
+- **Concrete before abstract.** One specific, real example first; generalize after. A reader who has seen the mechanism work once can then hold the general rule.
+- **Analogies are bridges, not substitutes.** Reach for one when a concept resists direct statement — but it must carry the *real mechanism*, and you must name **where it breaks**. An analogy that quietly replaces the concept is a comfortable lie. Make it as simple as possible, *but no simpler*.
+- **Keep the real texture.** Do not sand off the uncertainty, the edge cases, or the reason the thing is hard or elegant. Accuracy and wonder are not in tension — a truthful account of something deep should still feel deep. Say what is *not* yet known.
+- **Name the thing precisely once you've earned it.** Intuition first, but then give the real term and the real symbols, so the reader can find it elsewhere. Illuminating ≠ vague.
 
 ## Hard rules
 
-| # | Rule | Why |
-|---|------|-----|
-| 1 | Lead with human intent | Reviewers decide whether to care before they open the diff |
-| 2 | Gloss jargon once | Compound project terms are not shared context |
-| 3 | Prefer full sentences over telegraphic noun stacks | Density without grammar is noise |
-| 4 | One new idea per sentence when introducing thresholds or concepts | Stacked clauses overload working memory |
-| 5 | Restate numbers in words next to constants | `FOO_MIN = 0.50` alone does not say what happens |
-| 6 | Symbol lists only in the technical section | `evaluateX + extractY` is not a summary |
-| 7 | Restate issue titles in your own words | Titles are labels, not explanations |
-| 8 | Repo-relative paths only in shared text | Machine-local `/home/…` paths do not travel |
-| 9 | Keep full technical accuracy | Clarity does not mean dumbing down or omitting IDs |
+- Full sentences over telegraphic noun stacks; one new concept/threshold cluster per sentence.
+- Symbol lists only in the technical section — never as the summary.
+- An analogy must carry the real mechanism and state where it breaks; never let it stand in for the concept.
+- Restate issue titles in your own words; titles are labels, not explanations.
+- Shared text uses repo-relative paths only (no `/home/…` or `/Users/…`).
+- Keep full technical accuracy — clarity relocates facts, it does not drop them, and never trades truth for a tidy story.
 
-## Anti-patterns (reject these)
+## Anti-patterns
 
-- Leading with "Adds X wired through A / B / C matching D and E patterns."
-- A bullet that is only function or constant names.
-- One sentence that stacks metric id + threshold + sample floor + routing path + purpose.
-- Assuming the reader already knows the subsystem vocabulary.
-- "Professional" density that would fail a one-month-cold-reader test.
-- Treating "be concise" as permission to omit audience reconstruction.
+- "Adds X wired through A / B / C matching D…" as the opening.
+- Bullets that are only function or constant names.
+- One sentence packing metric + threshold + sample floor + path + purpose.
+- Formalism (equations, types, protocol steps) dumped before any motivation.
+- An analogy that replaces the concept and never says where it breaks; "simplification" that sands off the real difficulty (false clarity).
+- Assuming subsystem vocabulary; "be concise" used to skip the explanation the reader actually needs.
 
-## Self-check (before shipping)
+## Self-check
 
-Could a smart engineer who last saw this code a month ago understand **what changed and why it matters** after one careful read — without opening the diff first?
+Could a smart engineer cold to this subsystem understand **what changed and why** after one careful read — without the diff? For a hard idea: would they come away able to *rebuild the intuition themselves*, with the real terms intact and the analogy's limits clear — not just nodding at a metaphor? If not, rewrite the intent; do not add more identifiers.
 
-If not, rewrite the intent block. Do not add more identifiers.
+## Examples
 
-## Worked examples
+**Dense product alert → clear**
 
-### Example A — product alert (bad → good)
+Bad: `Adds freeSurfaceShare — weekly free-surface share of armed tickers below 50% (armed ≥ 3) pages when free-surface collapses into EDGAR-only.`
 
-**Bad:**
+Good: We now alert when free data coverage collapses. *Free-surface share* is the fraction of armed tickers still on free-surface sources rather than EDGAR-only. Below 50% with ≥3 armed tickers → product-metric alert on the existing Discord/digest path. Implementation: `evaluateFreeSurfaceShareAlert`, `PRODUCT_METRIC_FREE_SURFACE_SHARE_MIN` (0.50), `_MIN_ARMED` (3).
 
-> Adds freeSurfaceShare — weekly free-surface share of armed tickers below 50% (armed ≥ 3) pages when free-surface collapses into EDGAR-only.
+**Hard idea (analogy as a bridge, not a substitute)**
 
-**Good:**
+Flat: `The reconciler orders concurrent writes with vector clocks and resolves conflicts last-writer-wins per key.`
 
-> We now alert when free data coverage collapses. *Free-surface share* is the fraction of armed tickers that still have free-surface coverage rather than falling back to EDGAR-only sources. If that share drops below 50% while at least three tickers are armed, we fire a product-metric alert on the existing Discord/digest path.
->
-> Implementation: `evaluateFreeSurfaceShareAlert` via `PRODUCT_METRIC_FREE_SURFACE_SHARE_MIN` (0.50) and `_MIN_ARMED` (3).
+Illuminating: Two people edit the same doc offline; on reconnect, whose change wins? A *vector clock* is each replica keeping a tally of "how many edits I've seen from everyone." Compare two tallies and you can tell whether one edit truly happened *after* another or whether they were concurrent — a genuine conflict. The reconciler uses that ordering; for the rare true conflict it falls back to last-writer-wins per key. *(Where the analogy breaks: the clock tracks causality — "saw the other's edit" — not wall-clock time, so "after" is not "later o'clock.")*
 
-### Example B — multi-item PR summary structure
+Why it works: the analogy carries the actual mechanism (causal ordering), keeps the real term intact, and marks its own limit instead of leaving a tidy lie.
 
-```markdown
-## Summary
+**Docstring & comment**
 
-<2–4 plain sentences: problem, change, why it matters>
+Bad:
 
-Terms used below:
-- *term-a* — one-line gloss
-- *term-b* — one-line gloss
-
-## Changes
-
-- Human-readable bullet, then optional (`symbol` / path)
-- …
-
-## Verification
-
-\`\`\`
-<command>
-# outcome
-\`\`\`
+```python
+def evaluate(share, armed):
+    # if share < 0.50 and armed >= 3 return True
+    return share < 0.50 and armed >= 3
 ```
 
-### Example C — tiny fix (still intent-first)
+Good:
 
-**Bad:** `fix parseHookEvent null branch in hook-file-watcher.ts`
+```python
+def evaluate(share, armed):
+    """Decide whether to page on collapsing free-data coverage.
 
-**Good:** Hook file watcher no longer throws when a partial JSONL line arrives mid-write. Fix is a null-safe branch in `parseHookEvent` (`src/server/hook-file-watcher.ts`).
+    `share` is the fraction of armed tickers still on free-surface sources
+    (vs. EDGAR-only fallback). Page when it drops below half while at least
+    three tickers are armed — a broad collapse, not one-off noise.
+    """
+    # 0.50 = "less than half of armed tickers still have free coverage".
+    # 3-armed floor avoids paging on a single ticker flapping.
+    return share < FREE_SURFACE_SHARE_MIN and armed >= MIN_ARMED
+```
 
-## When writing PR bodies in Kookr
+## Kookr docs & PR bodies
 
-1. Draft against this skill (intent → gloss → details → verification).
-2. Mark the PR template prose checklist item (`kookr:check:prose`) when the Summary would pass the cold-reader self-check.
-3. Strike that item with a one-line reason only for pure typo / formatting / mechanical renames where a multi-sentence intent block would be noise.
-4. Optional: spawn `kookr-toolkit:clear-writing-reviewer` on the draft body before `gh pr create`.
+Draft intent → gloss → details → verification; for a docstring or comment, apply the code-documentation rules above; for a hard idea, build the intuition first. Mark `kookr:check:prose` (the PR template's prose checklist item) when the Summary — and any docs the PR adds or changes — passes the self-check; strike it (delete the line with a one-word reason) only for pure typo/rename noise. Optional: spawn `clear-writing-reviewer` before `gh pr create`.
 
 ## See also
 
-- Project always-on rules: `CLAUDE.md` / `AGENTS.md` → **Technical writing**
-- [[pre-pr-review]] — run this skill when composing the PR description
-- [[git-commit-discipline]] — commit subjects stay short; bodies still explain why
-- [[pr-contribution-excellence]] — OSS PR description quality
-- `kookr-toolkit:clear-writing-reviewer` — second-pass reviewer for dense or multi-concept prose
+Always-on: `CLAUDE.md` → **Technical writing**. Related: [[pre-pr-review]], [[git-commit-discipline]], [[pr-contribution-excellence]], `kookr-toolkit:clear-writing-reviewer`.

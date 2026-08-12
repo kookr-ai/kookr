@@ -156,7 +156,9 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - **RFC workflow** — When generating an RFC or design document, follow the iterative review pattern: draft in worktree → run parallel critic subagents → incorporate feedback → repeat (default 3 rounds) → present to user and wait for approval before committing or implementing. See `rfc-iterative-review` skill.
 - **Technical prose for humans** — PR bodies, changelogs, status updates, and similar summaries follow **Technical writing** below and the distributed `clear-technical-writing` skill. Do not ship telegraphic identifier dumps as the only explanation. Mark `kookr:check:prose` in the PR template; optional second pass via `kookr-toolkit:clear-writing-reviewer`.
 
-## Technical writing (PRs, changelogs, summaries, status updates)
+## Technical writing (PRs, changelogs, summaries, status updates, and code documentation)
+
+Applies to **everything you write**, including documentation embedded in code — docstrings, inline comments, module/API/reference docs — not just human-facing summaries.
 
 Audience: a competent teammate who last touched this area **weeks ago** — not the agent that just wrote the code.
 
@@ -172,6 +174,7 @@ Always-on rules:
 4. **Verification last** — commands + outcomes.
 5. **No stacked density** — one new concept/threshold cluster per sentence; symbol lists only in the technical section.
 6. **Self-check** — would a smart engineer cold to this subsystem understand what/why without opening the diff?
+7. **Hard ideas** — build the intuition before the formalism; an analogy must carry the real mechanism and say where it breaks (as simple as possible, *but no simpler*). Respect the reader; never talk down.
 
 ## KB-First Task Policy
 
