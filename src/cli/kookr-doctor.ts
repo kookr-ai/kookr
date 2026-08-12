@@ -741,10 +741,11 @@ async function checkHookIngestionLag(
  *
  * `staleProcesses.dtach.count` is masters only (`dtach -n` / `-N`; attach
  * clients excluded — issue #2383). Live prod pattern when real host-stale
- * accumulates: count ≥ soft bound while `sessionReaper.lastOrphanCount=0` and
+ * accumulates: elevated count while `sessionReaper.lastOrphanCount=0` and
  * `lastTerminalLeakCount=0` — masters outside TaskStore that session reaper
- * (#1720) cannot see. The host-stale janitor (#2356) reclaims eligible masters
- * when count ≥ soft bound; doctor surfaces its last-sweep counters when present.
+ * (#1720) cannot see. The host-stale janitor (#2356 / #2384) reclaims
+ * `missing_socket_aged` masters even under the soft bound; doctor surfaces its
+ * last-sweep counters when present.
  *
  * WARN when `hostExcess = dtachCount - (lastOrphanCount + lastTerminalLeakCount)`
  * is ≥ soft bound (default {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND}). Soft-skip
@@ -806,9 +807,10 @@ async function checkHostStaleDtach(
         reaperCounters,
       recommendedAction:
         'Inspect GET /api/health hostStaleDtachReaper (lastHostStaleDtachReaped / ' +
-        'skippedLiveAttached / skippedUnderBound) and staleProcesses.dtach; ' +
-        'the bounded host-stale reaper (#2356) reclaims missing-socket masters when ' +
-        'count ≥ soft bound (set KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1 to observe). ' +
+        'lastReapedAlways / lastReapedUnderPressure / skippedLiveAttached / ' +
+        'skippedUnderBound) and staleProcesses.dtach; the bounded host-stale reaper ' +
+        '(#2356 / #2384) always reclaims missing-socket aged masters (rate-limited; ' +
+        'set KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1 to observe). ' +
         'Enable KOOKR_RESOURCE_WATCHDOG=1 for briefed auto-investigation. ' +
         'Restart only as last resort — do not invent kill logic from doctor.',
     };

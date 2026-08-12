@@ -72,13 +72,50 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
     expect(health.lastUnderPressure).toBe(true);
   });
 
-  it('does not kill when under soft bound (skippedUnderBound)', async () => {
-    const reap = vi.fn();
+  it('reaps missing_socket_aged even under soft bound (issue #2384)', async () => {
+    const reap = vi.fn().mockResolvedValue(undefined);
     const processes = manyStale(5); // well under soft bound 20
     const service = new HostStaleDtachReaperService({
       listLiveSessionIds: () => new Set(),
       listProcesses: () => processes,
       socketExists: () => false,
+      reap,
+      getConfig: () => baseConfig({ maxReapsPerSweep: 5 }),
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    const result = await service.runSweep();
+    // Always-select: proven zombies must not wait for host pressure.
+    expect(reap).toHaveBeenCalledTimes(5);
+    expect(result.reaped).toHaveLength(5);
+    expect(result.plan.underPressure).toBe(false);
+    expect(result.plan.skippedUnderBound).toBe(0);
+    expect(result.plan.selectedAlways).toBe(5);
+    expect(service.getHealthSnapshot().skippedUnderBound).toBe(0);
+    expect(service.getHealthSnapshot().lastHostStaleDtachReaped).toBe(5);
+    expect(service.getHealthSnapshot().lastReapedAlways).toBe(5);
+    expect(service.getHealthSnapshot().lastReapedUnderPressure).toBe(0);
+    expect(service.getHealthSnapshot().totalHostStaleDtachReaped).toBe(5);
+  });
+
+  it('still never reaps live_session or socket_present under soft bound (issue #2384)', async () => {
+    const reap = vi.fn();
+    const liveSock = Array.from({ length: 3 }, (_, i) =>
+      snap({
+        pid: 4000 + i,
+        cmdline: `dtach -n /tmp/kookr-dtach/1000/port-4800/kookr-live-${i}.sock -r winch -E claude`,
+      }),
+    );
+    const withSocket = Array.from({ length: 2 }, (_, i) =>
+      snap({
+        pid: 5000 + i,
+        cmdline: `dtach -n /tmp/kookr-dtach/1000/port-4800/kookr-sock-${i}.sock -r winch -E claude`,
+      }),
+    );
+    const service = new HostStaleDtachReaperService({
+      listLiveSessionIds: () => new Set(['kookr-live-0', 'kookr-live-1', 'kookr-live-2']),
+      listProcesses: () => [...liveSock, ...withSocket],
+      socketExists: (path) => path.includes('kookr-sock-'),
       reap,
       getConfig: () => baseConfig(),
       logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -86,15 +123,17 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
 
     const result = await service.runSweep();
     expect(reap).not.toHaveBeenCalled();
-    expect(result.reaped).toEqual([]);
-    expect(result.plan.skippedUnderBound).toBe(5);
-    expect(service.getHealthSnapshot().skippedUnderBound).toBe(5);
-    expect(service.getHealthSnapshot().lastHostStaleDtachReaped).toBe(0);
+    expect(result.plan.toReap).toEqual([]);
+    expect(result.plan.skippedLiveAttached).toBe(3);
+    expect(result.plan.skippedSocketPresent).toBe(2);
   });
 
   it('does not count attach clients toward pressure (issue #2383)', async () => {
-    const reap = vi.fn();
+    const reap = vi.fn().mockResolvedValue(undefined);
     // 11 masters + 11 attachers would have been count=22 pre-#2383 and tripped softBound 20.
+    // Masters-only count stays 11 (under soft bound). Issue #2384 still reaps
+    // missing_socket_aged under soft bound (rate-limited); attachers never enter
+    // the candidate list (no -n/-N master cmdline).
     const masters = manyStale(11);
     const attachers = masters.map((m, i) =>
       snap({
@@ -107,15 +146,18 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
       listProcesses: () => [...masters, ...attachers],
       socketExists: () => false,
       reap,
-      getConfig: () => baseConfig(),
+      getConfig: () => baseConfig({ maxReapsPerSweep: 5 }),
       logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
 
     const result = await service.runSweep();
     expect(result.plan.dtachCount).toBe(11);
     expect(result.plan.underPressure).toBe(false);
-    expect(reap).not.toHaveBeenCalled();
-    expect(result.plan.skippedUnderBound).toBe(11);
+    // Attachers excluded from candidates; masters always-selected (#2384), rate-limited.
+    expect(reap).toHaveBeenCalledTimes(5);
+    expect(result.reaped.every((r) => r.pid >= 2000 && r.pid < 9000)).toBe(true);
+    expect(result.plan.skippedUnderBound).toBe(0);
+    expect(result.plan.skippedRateLimited).toBe(6);
   });
 
   it('never reaps a live-attached session (fail-closed)', async () => {

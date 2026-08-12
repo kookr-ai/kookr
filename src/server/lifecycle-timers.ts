@@ -497,11 +497,13 @@ export interface TimerDeps {
    */
   relayOrphanSweep?: RelayOrphanSweepScheduleConfig;
   /**
-   * Optional host-stale dtach reaper (issue #2356). When `intervalMinutes > 0`
-   * (resolved from `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES`, default 5),
-   * a dedicated interval reclaims process-table kookr-dtach masters that are
-   * not live-attached, whose socket is gone, and only when host count ≥ soft
-   * bound. Distinct from session reaper. Failures are logged, never crash.
+   * Optional host-stale dtach reaper (issues #2356, #2384). When
+   * `intervalMinutes > 0` (resolved from
+   * `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES`, default 5), a dedicated
+   * interval reclaims process-table kookr-dtach masters that are not
+   * live-attached and whose socket is gone (`missing_socket_aged` always
+   * selects, rate-limited). Distinct from session reaper. Failures are logged,
+   * never crash.
    */
   hostStaleDtachReaper?: {
     intervalMinutes: number;
@@ -2052,9 +2054,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
-  // --- Host-stale dtach reaper (issue #2356), ON by default (5m) ---
-  // Reclaims process-table kookr-dtach masters outside the session reaper when
-  // host count ≥ soft bound. Fail-closed selection; dry-run/rate-limit via env.
+  // --- Host-stale dtach reaper (issues #2356, #2384), ON by default (5m) ---
+  // Reclaims process-table kookr-dtach masters outside the session reaper
+  // (missing_socket_aged always selects, rate-limited). Fail-closed selection;
+  // dry-run/rate-limit via env.
   let hostStaleDtachReapInterval: ReturnType<typeof setInterval> | null = null;
   let hostStaleDtachReapStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const hostStaleDtachReaper = deps.hostStaleDtachReaper;

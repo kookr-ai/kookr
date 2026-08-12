@@ -148,7 +148,8 @@ print("sessionReaper.lastTerminalLeakCount", reaper.get("lastTerminalLeakCount")
 print("sessionReaper.totalSessionsReaped", reaper.get("totalSessionsReaped"))
 print("hostStaleDtachReaper", {k: host.get(k) for k in (
   "enabled","lastDtachCount","lastUnderPressure",
-  "lastHostStaleDtachReaped","skippedLiveAttached","skippedUnderBound","dryRun",
+  "lastHostStaleDtachReaped","lastReapedAlways","lastReapedUnderPressure",
+  "skippedLiveAttached","skippedUnderBound","dryRun",
 )})
 print("resourceWatchdog.enabled", (h.get("resourceWatchdog") or {}).get("enabled"))
 '
@@ -169,7 +170,7 @@ for c in r.get("checks",[]):
 | --- | --- | --- |
 | High `staleProcesses.dtach.count`, low `sessionReaper.lastOrphanCount` + `lastTerminalLeakCount` | Host-stale class: process-table **masters only** (`dtach -n`; attach clients excluded — #2383) **outside** TaskStore / live-session inventory | **Not** a broken session reaper — #1720 only sees backend live sessions |
 | Doctor WARN `ops.host-stale-dtach` / `host_stale_dtach_mismatch` | Host excess ≥ soft bound (default 20) | Prefer `hostStaleDtachReaper` counters; enable continuous investigation via `KOOKR_RESOURCE_WATCHDOG=1` if off |
-| `hostStaleDtachReaper.lastUnderPressure` / rising `lastHostStaleDtachReaped` | Bounded host-stale reaper (#2356) is acting under soft pressure | Wait for sweeps; use dry-run only when deliberately observing |
+| Rising `lastHostStaleDtachReaped` / `lastReapedAlways` | Host-stale reaper reaping `missing_socket_aged` (always-select, #2384) | Wait for sweeps; use dry-run only when deliberately observing |
 | High `skippedLiveAttached` | Those pids are still live-attached sessions | Do **not** kill; use task/session terminal paths |
 
 **Do not** invent kill logic from doctor, assume `sessionReaper` is broken, or reboot solely because dtach count is high with orphan gauges near zero. Full procedure: [unattended-recovery-runbook.md](./unattended-recovery-runbook.md) §6.
