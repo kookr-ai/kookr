@@ -411,6 +411,31 @@ describe('HookFileWatcher', () => {
     expect(raw).toBe(`${JSON.stringify(parsed)}\n`);
   });
 
+  // ---------------------------------------------------------------------------
+  // Checkpoint file mode (issue #2365)
+  // ---------------------------------------------------------------------------
+  test('writeReplayCheckpoint creates the durable file with mode 0o600 (issue #2365)', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-mode.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-checkpoint-mode');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-mode', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(existsSync(checkpointPath)).toBe(true);
+    const mode = statSync(checkpointPath).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
   test('startup replay malformed records stay quiet but later live malformed records alert once', async () => {
     const hookFile = join(tempDir, 'kookr-startup-replay.jsonl');
     writeFileSync(hookFile, '{"old":true}\n');

@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   mkdirSync,
   openSync,
@@ -762,7 +763,15 @@ export class HookFileWatcher {
       const tmpPath = `${this.replayCheckpointPath}.tmp`;
       // Compact JSON (issue #2298): pretty-print multiplies bytes and stringify
       // time on the drain hot path when sessionCount is in the thousands.
-      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints)}\n`, 'utf-8');
+      // Owner-only mode (issue #2365): checkpoints store raw hook JSONL tails
+      // (tool inputs / assistant text) — match sibling secret durable writes.
+      // mode on write only applies when the temp path is created; chmod forces
+      // exact bits after open (umask / leftover .tmp) before rename.
+      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints)}\n`, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      chmodSync(tmpPath, 0o600);
       renameSync(tmpPath, this.replayCheckpointPath);
     } catch (err) {
       this.recordHealthError(tmuxName, err);
