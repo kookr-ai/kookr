@@ -420,6 +420,15 @@ export interface RouteDeps {
    */
   sessionReaper?: Pick<import('../session-reaper.js').SessionReaperService, 'getHealthSnapshot'>;
   /**
+   * Host-stale dtach reaper (issue #2356). `/api/health` reads only
+   * `getHealthSnapshot()` — last-sweep counters (reaped / skip reasons), never
+   * a fresh `/proc` walk on the request path (issue #1553).
+   */
+  hostStaleDtachReaper?: Pick<
+    import('../host-stale-dtach-reaper.js').HostStaleDtachReaperService,
+    'getHealthSnapshot'
+  >;
+  /**
    * Payload-diet gauges (issue #2220 / #1526 Phase C). `/api/health` reads
    * only the slim `getPayloadDietStats()` snapshot — tracked/terminal task
    * counts plus last snapshot broadcast bytes. Must be a non-cloning store

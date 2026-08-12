@@ -110,6 +110,10 @@ import {
   type RelayOrphanSweepScheduleConfig,
 } from './maintenance-prune-schedule.js';
 import {
+  runScheduledHostStaleDtachReap,
+  type HostStaleDtachReaperService,
+} from './host-stale-dtach-reaper.js';
+import {
   runScheduledReflectWorktreeSweep,
   type ReflectWorktreeSweepScheduleConfig,
 } from './use-cases/request-task-reflect.js';
@@ -493,6 +497,17 @@ export interface TimerDeps {
    */
   relayOrphanSweep?: RelayOrphanSweepScheduleConfig;
   /**
+   * Optional host-stale dtach reaper (issue #2356). When `intervalMinutes > 0`
+   * (resolved from `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES`, default 5),
+   * a dedicated interval reclaims process-table kookr-dtach masters that are
+   * not live-attached, whose socket is gone, and only when host count ≥ soft
+   * bound. Distinct from session reaper. Failures are logged, never crash.
+   */
+  hostStaleDtachReaper?: {
+    intervalMinutes: number;
+    service: Pick<HostStaleDtachReaperService, 'runSweep'>;
+  };
+  /**
    * Optional reflect-worktree orphan sweep (issue #1860). When `intervalHours > 0`
    * (resolved from `KOOKR_REFLECT_WORKTREE_SWEEP_INTERVAL_HOURS`, default 1h), a
    * dedicated interval reaps ephemeral reflect worktrees whose source task is
@@ -544,6 +559,10 @@ export interface TimerHandles {
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep startup reclaim (issue #1885) is pending. */
   relayOrphanSweepStartupTimer: ReturnType<typeof setTimeout> | null;
+  /** Null unless the host-stale dtach reaper (issue #2356) was configured. */
+  hostStaleDtachReapInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the host-stale dtach reaper startup reclaim is pending. */
+  hostStaleDtachReapStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the reflect-worktree orphan sweep (issue #1860) was configured. */
   reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null;
 }
@@ -934,6 +953,11 @@ export const SNOOZE_EXPIRY_INTERVAL_MS = 1_000;
  * daemon sheds its accumulated orphans within a minute of coming up.
  */
 export const RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS = 30_000;
+/**
+ * Delay before the host-stale dtach reaper's one-shot startup reclaim (#2356).
+ * Slightly after the relay-orphan startup reclaim so boot I/O is staggered.
+ */
+export const HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS = 45_000;
 
 /**
  * Helper for issue #1785: if the optional non-critical pause gate is elevated,
@@ -2028,6 +2052,30 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Host-stale dtach reaper (issue #2356), ON by default (5m) ---
+  // Reclaims process-table kookr-dtach masters outside the session reaper when
+  // host count ≥ soft bound. Fail-closed selection; dry-run/rate-limit via env.
+  let hostStaleDtachReapInterval: ReturnType<typeof setInterval> | null = null;
+  let hostStaleDtachReapStartupTimer: ReturnType<typeof setTimeout> | null = null;
+  const hostStaleDtachReaper = deps.hostStaleDtachReaper;
+  if (hostStaleDtachReaper && hostStaleDtachReaper.intervalMinutes > 0) {
+    const intervalMs = hostStaleDtachReaper.intervalMinutes * 60 * 1000;
+    console.log(
+      `[host-stale-dtach-reaper] scheduled sweep enabled every ${hostStaleDtachReaper.intervalMinutes}m`,
+    );
+    timerHealth?.register('hostStaleDtachReap', intervalMs);
+    hostStaleDtachReapStartupTimer = setTimeout(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'hostStaleDtachReap')) return;
+      void runScheduledHostStaleDtachReap(hostStaleDtachReaper.service);
+    }, HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS);
+    hostStaleDtachReapStartupTimer.unref?.();
+    hostStaleDtachReapInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'hostStaleDtachReap')) return;
+      timerHealth?.recordFire('hostStaleDtachReap', intervalMs);
+      void runScheduledHostStaleDtachReap(hostStaleDtachReaper.service);
+    }, intervalMs);
+  }
+
   // --- Reflect-worktree orphan sweep (issue #1860), optional ---
   // Reaps ephemeral reflect worktrees whose source task is gone — periodic
   // backstop for the startup sweep so long-lived instances don't fill disk.
@@ -2128,6 +2176,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     deployConvergenceInterval,
     relayOrphanSweepInterval,
     relayOrphanSweepStartupTimer,
+    hostStaleDtachReapInterval,
+    hostStaleDtachReapStartupTimer,
     reflectWorktreeSweepInterval,
   };
 }
@@ -2157,5 +2207,7 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.deployConvergenceInterval) clearInterval(handles.deployConvergenceInterval);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
   if (handles.relayOrphanSweepStartupTimer) clearTimeout(handles.relayOrphanSweepStartupTimer);
+  if (handles.hostStaleDtachReapInterval) clearInterval(handles.hostStaleDtachReapInterval);
+  if (handles.hostStaleDtachReapStartupTimer) clearTimeout(handles.hostStaleDtachReapStartupTimer);
   if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);
 }

@@ -212,9 +212,9 @@ export interface RelayReapPolicy {
  *
  * `dtach` orphans are surfaced for visibility but NOT selected here. Live
  * session reaping is owned by #1720's session reconciler (`session-reap-policy`);
- * host-stale master selection (missing socket + aged, never when live) is pure
- * policy in `dtach-orphan-policy` (#2352) — kill wiring is a separate janitor
- * (#2356) and is intentionally not hooked from this module.
+ * host-stale master selection + bounded kill is pure policy in
+ * `dtach-orphan-policy` (#2352) plus the `host-stale-dtach-reaper` janitor
+ * (#2356) — never hooked from this relay-only selector.
  */
 export function selectRelayOrphansToReap(
   procs: readonly StaleProcess[],

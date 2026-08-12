@@ -20,6 +20,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'deployLagDetector',
   'deployConvergence',
   'relayOrphanSweep',
+  'hostStaleDtachReap',
   'reflectWorktreeSweep',
 ] as const;
 
