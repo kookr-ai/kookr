@@ -108,6 +108,32 @@ describe('snapshot projection', () => {
     }
   });
 
+  it('suppresses a ghost monitor state whose id is in suppressSessionIds but has no owning task (issue #2408)', () => {
+    // A terminal task owning this live session was dropped from the bounded
+    // clone set (`tasks` omits it), so there is no session-index entry. Without
+    // the guard the raw monitor state leaks as an unattributed agent card.
+    const taskStore = new TaskStore();
+    const states = buildSnapshotProjection({
+      monitorStates: [liveAgent('kookr-ghost')],
+      tasks: taskStore.getAllTasks(),
+      suppressSessionIds: new Set(['kookr-ghost']),
+    });
+    expect(states.find((s) => s.agentId === 'kookr-ghost')).toBeUndefined();
+    expect(states.filter((s) => !s.taskId)).toEqual([]);
+  });
+
+  it('still surfaces an orphan monitor state whose id is NOT in suppressSessionIds (issue #2408)', () => {
+    // Only terminal-owned dropped sessions are suppressed; an unowned orphan
+    // (e.g. a live session with no store task yet) surfaces as before.
+    const taskStore = new TaskStore();
+    const states = buildSnapshotProjection({
+      monitorStates: [liveAgent('kookr-orphan')],
+      tasks: taskStore.getAllTasks(),
+      suppressSessionIds: new Set(['kookr-ghost']),
+    });
+    expect(states.find((s) => s.agentId === 'kookr-orphan')).toBeDefined();
+  });
+
   it('enriches live monitor state with linked task metadata without mutating the raw state', () => {
     const taskStore = new TaskStore();
     const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/workspace/webapp');

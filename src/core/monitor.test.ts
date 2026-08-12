@@ -1914,17 +1914,22 @@ describe('Monitor', () => {
       expect(monitor.sweepAgedTerminalAgents(cutoff(), { skipSessionIds: new Set() })).toBe(1);
     });
 
-    test('a swept agent no longer inflates the getTaskSnapshot protect set', () => {
-      // The #1760 ghost-agent guard keeps any task owning a live agentEvents
-      // key — after the sweep, the aged task must actually leave the filtered
-      // task snapshot instead of being protected forever.
+    test('an aged terminal task with a live agent is dropped from getTaskSnapshot and reported for ghost suppression (issue #2408, no more protect set)', () => {
+      // The clone set is bounded strictly by age now — the aged terminal task
+      // is dropped even though its session is live in the monitor, and the
+      // dropped session id is reported via droppedTerminalSessions so the
+      // projection can suppress the resulting ghost instead of protecting
+      // (and re-cloning) the whole terminal fleet forever.
       const agedId = makeTaskWithSession('kookr-stale');
       ageTerminal(agedId);
       monitor.processEvents('kookr-stale', [makeToolUse('kookr-stale', 'Read', { file_path: '/tmp/x' })]);
 
-      expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).toContain(agedId);
-      monitor.sweepAgedTerminalAgents(cutoff());
-      expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).not.toContain(agedId);
+      const dropped = new Set<string>();
+      const ids = monitor
+        .getTaskSnapshot({ excludeTerminalBeforeMs: cutoff(), droppedTerminalSessions: dropped })
+        .map((t) => t.id);
+      expect(ids).not.toContain(agedId);
+      expect(dropped.has('kookr-stale')).toBe(true);
     });
   });
 
@@ -2169,15 +2174,20 @@ describe('Monitor', () => {
       expect(monitor.getTaskSnapshot().map((t) => t.id)).toContain(agedId);
     });
 
-    test('ALWAYS keeps a task whose session is live in the monitor, however aged (ghost-agent guard)', () => {
-      // A live monitor state whose owning task is missing from the projection's
-      // session index leaks as an unattributed ghost agent — the age cutoff
-      // must never remove the owner of a live session.
+    test('drops an aged terminal task even with a live session, reporting it via droppedTerminalSessions instead (ghost-agent guard, issue #2408)', () => {
+      // The clone set is bounded strictly by age now — an aged terminal task
+      // owning a live monitor session is dropped, not force-kept. The dropped
+      // session id is reported so the projection suppresses the resulting
+      // orphan monitor state instead of leaking it as a ghost agent.
       const agedId = makeAgedTerminalTask('kookr-ghost');
       monitor.processEvents('kookr-ghost', [makeToolUse('kookr-ghost', 'Read', { file_path: '/tmp/x' })]);
       const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const ids = monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff }).map((t) => t.id);
-      expect(ids).toContain(agedId);
+      const dropped = new Set<string>();
+      const ids = monitor
+        .getTaskSnapshot({ excludeTerminalBeforeMs: cutoff, droppedTerminalSessions: dropped })
+        .map((t) => t.id);
+      expect(ids).not.toContain(agedId);
+      expect(dropped.has('kookr-ghost')).toBe(true);
     });
   });
 });

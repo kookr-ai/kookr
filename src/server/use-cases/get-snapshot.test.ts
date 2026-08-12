@@ -374,10 +374,11 @@ describe('snapshot use cases', () => {
   });
 
   it('aged terminal task with a live monitor state is suppressed, not leaked as a ghost agent (issue #1749 follow-up)', () => {
-    // Real Monitor + real TaskStore: the pre-clone age filter must never drop
-    // a task owning a session that is live in the monitor — the projection
-    // suppresses that state via the session index built from these tasks, and
-    // a missing owner leaks the state as an unattributed agent card.
+    // Real Monitor + real TaskStore: the aged terminal task IS dropped from the
+    // bounded clone set (issue #2408 — no more protect-set exemption), so its
+    // live monitor state has no session-index entry. The projection suppresses
+    // that ghost via `suppressSessionIds` (fed by `droppedTerminalSessions`);
+    // without it the state would leak as an unattributed agent card.
     const taskStore = new TaskStore();
     const monitor = new Monitor(taskStore, new AttentionQueue());
     const AGED_MS = 30 * 24 * 60 * 60 * 1000;
@@ -399,8 +400,8 @@ describe('snapshot use cases', () => {
     ]);
 
     const client = getSnapshotAgentsForClient({ monitor });
-    // Suppressed by the terminal-session branch — and in particular NOT present
-    // as an entry without task attribution.
+    // Suppressed by the `suppressSessionIds` (`!meta`) branch — and in
+    // particular NOT present as an entry without task attribution.
     const ghost = client.find((a) => a.agentId === 'kookr-ghost');
     expect(ghost).toBeUndefined();
     expect(client.filter((a) => !a.taskId)).toEqual([]);

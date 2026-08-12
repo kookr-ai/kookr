@@ -398,21 +398,29 @@ function getProjectedSnapshotAgents(
   // Thread the age cutoff + terminal count cap into the fetch so aged/excess
   // terminal tasks are skipped BEFORE the per-task clone (issue #1749 follow-up
   // + high-throughput same-day cap) — cloning hundreds of terminal tasks per
-  // snapshot build was a heap-limit OOM / event-loop stall driver. The fetch
-  // keeps any aged task owning a LIVE monitor session (ghost-agent guard), so
-  // buildSnapshotProjection's re-application of the same cutoff/cap below is
-  // REQUIRED, not redundant: it is what keeps those protected tasks out of the
-  // client payload as synthetic terminal entries (#1526 payload diet). It also
-  // keeps mocks that ignore the argument filtered.
+  // snapshot build was a heap-limit OOM / event-loop stall driver. The clone
+  // set is bounded strictly by age + count now (issue #2408): getTaskSnapshot
+  // no longer force-keeps (and deep-clones) terminal tasks owning a live
+  // monitor session. buildSnapshotProjection's re-application of the same
+  // cutoff/cap below stays REQUIRED (mocks that ignore the argument, plus the
+  // #1526 payload diet on the projected set).
+  //
+  // Ghost-agent guard (issue #2408): a dropped terminal owner of a live
+  // monitor session would otherwise leak its raw state as an unattributed
+  // agent card. `droppedTerminalSessions` collects those sessions during the
+  // fetch's existing single walk (no second scan, no clones); the projection
+  // uses it as `suppressSessionIds` to drop the resulting ghosts.
   const clientDiet = opts.excludeTerminalBeforeMs !== undefined;
+  const droppedTerminalSessions = new Set<string>();
   const taskSnapshot = deps.monitor.getTaskSnapshot?.(
     clientDiet
       ? {
           excludeTerminalBeforeMs: opts.excludeTerminalBeforeMs,
           maxTerminalTasks: opts.maxTerminalTasks ?? SNAPSHOT_TERMINAL_TASK_MAX_COUNT,
+          droppedTerminalSessions,
         }
       : opts.maxTerminalTasks !== undefined
-        ? { maxTerminalTasks: opts.maxTerminalTasks }
+        ? { maxTerminalTasks: opts.maxTerminalTasks, droppedTerminalSessions }
         : undefined,
   );
   // Lightweight tests and legacy mocks may provide only raw monitor state.
@@ -431,6 +439,9 @@ function getProjectedSnapshotAgents(
               maxTerminalTasks:
                 opts.maxTerminalTasks ?? SNAPSHOT_TERMINAL_TASK_MAX_COUNT,
             }
+          : {}),
+        ...(droppedTerminalSessions.size > 0
+          ? { suppressSessionIds: droppedTerminalSessions }
           : {}),
       });
   return filterAgentsToScope(projected, deps.scope);

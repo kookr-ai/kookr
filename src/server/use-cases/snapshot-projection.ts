@@ -104,6 +104,17 @@ export function buildSnapshotProjection(deps: {
    * they forget to pass the count.
    */
   maxTerminalTasks?: number;
+  /**
+   * Ghost-agent guard (issue #2408, replaces the #1760 clone-set protection).
+   * Session ids (`tmuxSession`) that are live in the monitor snapshot but
+   * owned by a terminal task the caller deliberately dropped from `tasks`
+   * (age/count bounded). A raw monitor state whose id is in this set but has
+   * NO {@link SessionSnapshotMeta} entry is suppressed instead of leaking as
+   * an unattributed agent card. Orphan monitor states (id absent from the
+   * set) still surface, preserving prior behavior. Cheap Set of ids — the
+   * caller no longer clones the owning tasks just to build the session index.
+   */
+  suppressSessionIds?: ReadonlySet<string>;
 }): AgentState[] {
   // Hot-path ranking (issue #1781): snapshot rebuild runs on every broadcast and
   // is a known heavy contributor. Two clock reads + one O(1) record per rebuild.
@@ -163,6 +174,13 @@ export function buildSnapshotProjection(deps: {
         || meta.sessionStatus === 'completed'
         || meta.sessionStatus === 'aborted')
     ) {
+      continue;
+    }
+    // Ghost-agent guard (issue #2408): the owning terminal task was dropped
+    // from the (bounded) clone set, so there is no session-index entry to
+    // suppress this live monitor state via the terminal branch above. Drop it
+    // here instead of leaking it as an unattributed agent card.
+    if (!meta && deps.suppressSessionIds?.has(rawState.agentId)) {
       continue;
     }
 

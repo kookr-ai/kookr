@@ -641,23 +641,24 @@ export class Monitor {
    * transient garbage) was a heap-limit OOM driver. Raw/debug callers omit it
    * and keep full-fidelity history.
    *
-   * Tasks owning a session that is live in this monitor's agent map are ALWAYS
-   * kept regardless of age: the projection suppresses a live monitor state via
-   * the session index built from these tasks, and dropping the owner would
-   * leak the state as an unattributed "ghost" agent in client snapshots
-   * (agentId === session.tmuxSession === this map's key).
+   * The clone set is now bounded strictly by age + count (issue #2408): tasks
+   * owning a live monitor session are NOT force-kept here. Deep-cloning the
+   * whole terminal fleet every flush just to build the projection's
+   * session-suppression index was pure `structuredClone` waste — the
+   * projection re-applies the same cutoff/cap and drops those tasks from the
+   * payload anyway. Ghost-agent suppression (a live monitor state whose owning
+   * terminal task was dropped) now runs off `droppedTerminalSessions`: pass a
+   * `Set` and {@link TaskStore.listTasksForSnapshot} fills it, during its
+   * existing single walk, with the `tmuxSession`s of terminal tasks the bound
+   * removed — no extra store scan and no clones. The projection wiring feeds it
+   * to `buildSnapshotProjection`'s `suppressSessionIds`.
    */
   getTaskSnapshot(opts?: {
     excludeTerminalBeforeMs?: number;
     maxTerminalTasks?: number;
+    droppedTerminalSessions?: Set<string>;
   }): Task[] {
-    if (opts?.excludeTerminalBeforeMs === undefined) {
-      return this.taskStore.listTasksForSnapshot(opts);
-    }
-    return this.taskStore.listTasksForSnapshot({
-      ...opts,
-      protectSessionIds: new Set(this.agentEvents.keys()),
-    });
+    return this.taskStore.listTasksForSnapshot(opts);
   }
 
   /**
