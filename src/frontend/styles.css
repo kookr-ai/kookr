@@ -5741,6 +5741,13 @@ label.task-share-row {
   outline: none;
   border-color: var(--teal);
 }
+.snooze-dialog-time {
+  flex-wrap: wrap;
+}
+.snooze-dialog-time-actions {
+  display: flex;
+  gap: 8px;
+}
 .snooze-dialog-hint {
   margin-top: 12px;
   text-align: center;
