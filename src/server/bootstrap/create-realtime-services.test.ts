@@ -338,6 +338,10 @@ describe('createRealtimeServices', () => {
       // behavior, unrelated to #1725) — both still reach the client normally.
       expect(parseSent(send.mock.calls.map((c) => c[0] as string)).map((m) => m.type))
         .toEqual(['snapshot', 'coordinator.snapshot']);
+
+      // #2409: with no gate wired, the signal the event-pipeline consults to
+      // shed the snapshot BUILD must fail open (never sheds).
+      expect(realtime.isLoadShedActive()).toBe(false);
     });
 
     test('with loadShedConfig, sustained high delay engages the gate and snapshots are replaced by a degraded notice', async () => {
@@ -349,8 +353,19 @@ describe('createRealtimeServices', () => {
       addDashboardSocket(realtime, openSocket(send));
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+      // #2409: before engaging, the event-pipeline shed signal is false.
+      expect(realtime.isLoadShedActive()).toBe(false);
+
       realtime.noteEventLoopDelaySample(500);
       realtime.noteEventLoopDelaySample(500); // 2nd consecutive tick over threshold -> engaged
+
+      // #2409: `isLoadShedActive()` is exactly the gate signal `index.ts` threads
+      // into `wireEventPipeline` as `getLoadShedActive`, so the coalesced flush
+      // skips the `createSnapshotMessage` build once the gate engages — not just
+      // the transport. Assert the accessor against a LIVE gate here (the #2409
+      // event-pipeline tests only stub the callback); the index.ts pass-through
+      // itself is covered by the type-checker, not this test.
+      expect(realtime.isLoadShedActive()).toBe(true);
 
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
 
@@ -370,10 +385,12 @@ describe('createRealtimeServices', () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       realtime.noteEventLoopDelaySample(500); // engages
+      expect(realtime.isLoadShedActive()).toBe(true); // #2409: build-shed signal on
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
       send.mockClear();
 
       realtime.noteEventLoopDelaySample(10); // recovers
+      expect(realtime.isLoadShedActive()).toBe(false); // #2409: build-shed signal off
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
 
       const messages = parseSent(send.mock.calls.map((c) => c[0] as string));

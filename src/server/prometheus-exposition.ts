@@ -58,6 +58,8 @@ export interface SnapshotShedMetricsExposition {
   thresholdMs: number;
   lastEventLoopDelayP95Ms: number | null;
   shedTotal: number;
+  /** Subset of `shedTotal` caused by the #1725 load-shed gate (issue #2409). */
+  gateShedTotal?: number;
 }
 
 export interface PrometheusExpositionSnapshot {
@@ -966,6 +968,7 @@ const EMPTY_SNAPSHOT_SHED: SnapshotShedMetricsExposition = {
   thresholdMs: 0,
   lastEventLoopDelayP95Ms: null,
   shedTotal: 0,
+  gateShedTotal: 0,
 };
 
 function appendSnapshotShedMetrics(
@@ -976,6 +979,9 @@ function appendSnapshotShedMetrics(
     '# HELP kookr_snapshot_shed_total Total non-critical full-snapshot rebuilds skipped because event-loop delay p95 was elevated.',
     '# TYPE kookr_snapshot_shed_total counter',
     metricLine('kookr_snapshot_shed_total', {}, snapshot.shedTotal),
+    '# HELP kookr_snapshot_shed_gate_total Subset of kookr_snapshot_shed_total skipped because the #1725 WS load-shed gate was active (vs the instantaneous p95 threshold).',
+    '# TYPE kookr_snapshot_shed_gate_total counter',
+    metricLine('kookr_snapshot_shed_gate_total', {}, snapshot.gateShedTotal ?? 0),
     '# HELP kookr_snapshot_shed_threshold_ms Configured event-loop delay p95 threshold (ms) for snapshot rebuild shed; 0 means disabled.',
     '# TYPE kookr_snapshot_shed_threshold_ms gauge',
     metricLine('kookr_snapshot_shed_threshold_ms', {}, snapshot.thresholdMs),

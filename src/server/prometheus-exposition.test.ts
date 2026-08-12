@@ -416,11 +416,15 @@ describe('renderPrometheusExposition', () => {
         thresholdMs: 1_500,
         lastEventLoopDelayP95Ms: 2_400,
         shedTotal: 11,
+        gateShedTotal: 4,
       },
     });
 
     expect(output).toContain('# TYPE kookr_snapshot_shed_total counter');
     expect(output).toContain('kookr_snapshot_shed_total 11');
+    // #2409: gate-driven sheds are attributed separately from p95-driven ones.
+    expect(output).toContain('# TYPE kookr_snapshot_shed_gate_total counter');
+    expect(output).toContain('kookr_snapshot_shed_gate_total 4');
     expect(output).toContain('kookr_snapshot_shed_threshold_ms 1500');
     expect(output).toContain('kookr_snapshot_shed_last_event_loop_delay_p95_ms 2400');
   });
@@ -431,8 +435,22 @@ describe('renderPrometheusExposition', () => {
       circuitBreakers: [],
     });
     expect(output).toContain('kookr_snapshot_shed_total 0');
+    expect(output).toContain('kookr_snapshot_shed_gate_total 0');
     expect(output).toContain('kookr_snapshot_shed_threshold_ms 0');
     expect(output).toContain('kookr_snapshot_shed_last_event_loop_delay_p95_ms -1');
+  });
+
+  test('renders snapshot shed gate counter as 0 when the field is absent (pre-#2409 producer)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      snapshotShed: {
+        thresholdMs: 1_500,
+        lastEventLoopDelayP95Ms: 2_400,
+        shedTotal: 11,
+      },
+    });
+    expect(output).toContain('kookr_snapshot_shed_gate_total 0');
   });
 
   test('renders aggregate auth throttle counters without source labels', () => {
