@@ -97,6 +97,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    name: 'ops',
+    subcommands: ['digest'],
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'github',
     subcommands: ['status'],
     flags: ['--json', '-h', '--help'],
@@ -369,6 +374,8 @@ function renderBashCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const opsSubcommands = subcommandsFor('ops');
+  const opsFlags = flagsFor('ops');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
@@ -490,6 +497,13 @@ _kookr()
       ;;
     status)
       COMPREPLY=( $(compgen -W "${statusFlags}" -- "\${cur}") )
+      ;;
+    ops)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${opsSubcommands} ${opsFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${opsFlags}" -- "\${cur}") )
+      fi
       ;;
     github)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -659,6 +673,8 @@ function renderZshCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const opsSubcommands = subcommandsFor('ops');
+  const opsFlags = flagsFor('ops');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
@@ -748,6 +764,13 @@ _kookr()
         --fail-on) compadd ${statusFailOnValues}; return ;;
       esac
       compadd -- ${statusFlags}
+      ;;
+    ops)
+      if (( CURRENT == 3 )); then
+        compadd -- ${opsSubcommands} ${opsFlags}
+      else
+        compadd -- ${opsFlags}
+      fi
       ;;
     github)
       if (( CURRENT == 3 )); then
