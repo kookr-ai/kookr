@@ -891,6 +891,39 @@ describe('capacityHasResidualPhantomPressure (issue #2357)', () => {
     ).toBe(false);
   });
 
+  test('issue #2357: coherent residual ledger — verdict, residual gate, and idle slots agree', () => {
+    // Nominal full (free=0): 12 working + 4 FAA phantoms, reserved freeForGeneral=4.
+    // Residual-only util/phantom shape relative to #2355 bound of 4 with util at 75.
+    const residual = evaluateCapacityThroughputVerdict({
+      maxActiveTasks: 16,
+      active: 16,
+      effectiveWorking: 12,
+      phantomActive: 4,
+      utilizationPct: 100,
+      effectiveUtilizationPct: 75,
+      freeForGeneralSources: 4,
+    });
+    expect(residual.verdict).toBe('idle_capacity');
+    expect(residual.idleEffectiveSlots).toBe(4);
+    expect(residual.phantomActive).toBe(4);
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: residual.idleEffectiveSlots,
+        phantomActive: residual.phantomActive,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+    // Residual-only shape (phantom under #2355 bound of 4, util not < 75) still
+    // enables soft reclaim via idleEffectiveSlots from the same verdict.
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: residual.idleEffectiveSlots,
+        phantomActive: 3,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+  });
+
   test('occupancy bound defaults to 2; single squatter under idle does not fire', () => {
     expect(DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND).toBe(2);
     expect(

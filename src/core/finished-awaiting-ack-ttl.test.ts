@@ -497,6 +497,81 @@ describe('capacity-pressure soft TTL for awaiting_poll FAA (issue #2355)', () =>
     ).toBe(false);
   });
 
+  it('issue #2357: residual-only shape (util=75, phantom=3) soft-reclaims awaiting_poll', () => {
+    // Residual-isolating inputs: #2355 alone rejects util=75 + phantom=3
+    // (util not < 75, phantom under bound 4). With idleEffectiveSlots>0 the
+    // residual path enables soft TTL; open-PR delivery stays held.
+    const hardTtlMsLocal = 15 * 60_000;
+    const softTtlMsLocal = DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS; // 5m
+    const staleThresholdMsLocal = 60 * 60_000;
+    const softAgedRaisedAt = new Date(NOW.getTime() - softTtlMsLocal - 30_000).toISOString();
+
+    const faaTasks = Array.from({ length: 3 }, (_, i) =>
+      faaTask({
+        id: `faa-res-${i}`,
+        pendingSignal: { kind: 'completion_ready', raisedAt: softAgedRaisedAt },
+      }),
+    );
+    const deliveryOpen = faaTask({
+      id: 'delivery-open-res',
+      pendingSignal: { kind: 'completion_ready', raisedAt: softAgedRaisedAt },
+    });
+
+    // Control: same util/phantom without idle residual → soft gate off.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 75,
+        phantomActive: 3,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(false);
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 75,
+        phantomActive: 3,
+        pendingQueueDepth: 0,
+        idleEffectiveSlots: 0,
+      }),
+    ).toBe(false);
+
+    const gate = capacityAllowsFinishedAwaitingAckEarlyReclaim({
+      effectiveUtilizationPct: 75,
+      phantomActive: 3,
+      pendingQueueDepth: 0,
+      idleEffectiveSlots: 2,
+    });
+    expect(gate).toBe(true);
+
+    const sel = selectExpiredFinishedAwaitingAckTasks([...faaTasks, deliveryOpen], {
+      now: NOW,
+      ttlMs: hardTtlMsLocal,
+      softTtlMs: softTtlMsLocal,
+      capacityAllowsEarlyReclaim: gate,
+      staleThresholdMs: staleThresholdMsLocal,
+      isHoldingOpenPr: (t) => (t.id === 'delivery-open-res' ? true : false),
+    });
+
+    expect(sel.expired.map((e) => e.task.id).sort()).toEqual(
+      faaTasks.map((t) => t.id).sort(),
+    );
+    expect(sel.expired.every((e) => e.capacityPressureEarlyReclaim === true)).toBe(true);
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(sel.outcomes.find((o) => o.taskId === 'delivery-open-res')?.outcome).toBe(
+      'skipped_open_pr_confirmed',
+    );
+    // Without residual pressure the same ages all skip under hard TTL.
+    const noPressure = selectExpiredFinishedAwaitingAckTasks(faaTasks, {
+      now: NOW,
+      ttlMs: hardTtlMsLocal,
+      softTtlMs: softTtlMsLocal,
+      capacityAllowsEarlyReclaim: false,
+      staleThresholdMs: staleThresholdMsLocal,
+      isHoldingOpenPr: () => false,
+    });
+    expect(noPressure.expired).toEqual([]);
+    expect(noPressure.skips.skipped_under_ttl).toBe(3);
+  });
+
   it('issue #2357: 16 active / 6 FAA awaiting_poll under idle_capacity reclaims at soft TTL', () => {
     // Live residual shape from the issue: nominal full, 6 poll/ack squatters,
     // idle_capacity with effective free — soft path must free them without
