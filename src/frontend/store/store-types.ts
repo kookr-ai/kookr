@@ -551,11 +551,34 @@ export interface PipelineStarvationStatus {
   repos: Record<string, PipelineStarvationRepoStatus>;
 }
 
+/**
+ * Per-dependency rollup from `GET /api/health.launchDependencies` for the
+ * status-bar deps pill (issue #2364). Omits affectedTaskIds — tooltip only
+ * needs names, counts, and categories.
+ */
+export interface LaunchDependencyStatusRow {
+  dependency: string;
+  degradedTaskCount: number;
+  categories: string[];
+}
+
+/**
+ * Slim projection of `GET /api/health.launchDependencies` for the status-bar
+ * warn pill (issue #2364). Pill is elevated-only (`totalDegradedTasks > 0`);
+ * the poll may still store a zeroed projection when the block is present.
+ */
+export interface LaunchDependenciesStatus {
+  totalDegradedTasks: number;
+  totalFindings?: number;
+  dependencies: LaunchDependencyStatusRow[];
+}
+
 export interface OpsHealthPayload {
   prodSmokeTick?: ProdSmokeTickStatus | null;
   resourceWatchdog?: ResourceWatchdogStatus | null;
   capacityResidual?: CapacityResidualStatus | null;
   pipelineStarvation?: PipelineStarvationStatus | null;
+  launchDependencies?: LaunchDependenciesStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -569,9 +592,11 @@ export interface SystemStatusSlice {
   capacityResidual: CapacityResidualStatus | null;
   /** Pipeline-starvation drought projection from `/api/health` (issue #2259). */
   pipelineStarvation: PipelineStarvationStatus | null;
+  /** Launch-dependency degradation from `/api/health.launchDependencies` (issue #2364). */
+  launchDependencies: LaunchDependenciesStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

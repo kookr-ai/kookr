@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import React from 'react';
 import {
   parseCapacityResidual,
+  parseLaunchDependencies,
   parsePipelineStarvation,
   useOpsHealthPoll,
 } from './useOpsHealthPoll.js';
@@ -48,7 +49,7 @@ describe('useOpsHealthPoll', () => {
     vi.unstubAllGlobals();
   });
 
-  test('parses /api/health smoke + watchdog + capacity residual + pipeline starvation into the store', async () => {
+  test('parses /api/health smoke + watchdog + capacity residual + pipeline starvation + launch deps into the store', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -84,6 +85,22 @@ describe('useOpsHealthPoll', () => {
               lastBlockedEmptyAt: '2026-08-04T00:00:00.000Z',
             },
           },
+        },
+        launchDependencies: {
+          schemaVersion: 'launch-dependency-diagnostics.v1',
+          totalDegradedTasks: 8,
+          totalFindings: 9,
+          dependencies: [
+            {
+              dependency: 'kb',
+              degradedTaskCount: 8,
+              findingCount: 8,
+              affectedTaskIds: ['a', 'b'],
+              categories: ['provider_api'],
+              lastOccurredAt: '2026-08-04T00:00:00.000Z',
+            },
+          ],
+          categories: [],
         },
       }),
     });
@@ -126,6 +143,15 @@ describe('useOpsHealthPoll', () => {
         },
       },
     });
+    expect(useKookrStore.getState().launchDependencies).toEqual({
+      totalDegradedTasks: 8,
+      totalFindings: 9,
+      dependencies: [
+        { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
+      ],
+    });
+    // Slim projection must not carry affectedTaskIds.
+    expect(JSON.stringify(useKookrStore.getState().launchDependencies)).not.toContain('affectedTaskIds');
   });
 
   test('soft-fails on network error without throwing', async () => {
@@ -143,6 +169,7 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().resourceWatchdog).toBeNull();
     expect(useKookrStore.getState().capacityResidual).toBeNull();
     expect(useKookrStore.getState().pipelineStarvation).toBeNull();
+    expect(useKookrStore.getState().launchDependencies).toBeNull();
   });
 });
 
@@ -229,5 +256,72 @@ describe('parseCapacityResidual (issue #2082)', () => {
       byClass: { finishedAwaitingAck: 1 },
       oldestFinishedAwaitingAckAgeMs: -50,
     })).toEqual({ finishedAwaitingAck: 1, oldestFinishedAwaitingAckAgeMs: 0 });
+  });
+});
+
+describe('parseLaunchDependencies (issue #2364)', () => {
+  test('returns null for missing or malformed blocks', () => {
+    expect(parseLaunchDependencies(null)).toBeNull();
+    expect(parseLaunchDependencies(undefined)).toBeNull();
+    expect(parseLaunchDependencies('x')).toBeNull();
+    expect(parseLaunchDependencies({})).toBeNull();
+    expect(parseLaunchDependencies({ totalDegradedTasks: '8' })).toBeNull();
+    expect(parseLaunchDependencies({ totalDegradedTasks: Number.NaN })).toBeNull();
+    expect(parseLaunchDependencies({ totalDegradedTasks: -1 })).toBeNull();
+  });
+
+  test('parses zero degraded (empty) without dependency rows', () => {
+    expect(parseLaunchDependencies({
+      schemaVersion: 'launch-dependency-diagnostics.v1',
+      totalDegradedTasks: 0,
+      totalFindings: 0,
+      dependencies: [],
+      categories: [],
+    })).toEqual({
+      totalDegradedTasks: 0,
+      totalFindings: 0,
+      dependencies: [],
+    });
+  });
+
+  test('parses degraded multi-dependency rows and skips malformed rows', () => {
+    expect(parseLaunchDependencies({
+      totalDegradedTasks: 3.9,
+      totalFindings: 4.2,
+      dependencies: [
+        {
+          dependency: 'kb',
+          degradedTaskCount: 2.7,
+          findingCount: 3,
+          affectedTaskIds: ['t1', 't2'],
+          categories: ['provider_api', 'unknown'],
+        },
+        {
+          dependency: 'gh',
+          degradedTaskCount: 1,
+          categories: ['auth'],
+        },
+        { dependency: '', degradedTaskCount: 9 },
+        { dependency: 'bad', degradedTaskCount: 'x' },
+        null,
+      ],
+    })).toEqual({
+      totalDegradedTasks: 3,
+      totalFindings: 4,
+      dependencies: [
+        { dependency: 'kb', degradedTaskCount: 2, categories: ['provider_api', 'unknown'] },
+        { dependency: 'gh', degradedTaskCount: 1, categories: ['auth'] },
+      ],
+    });
+  });
+
+  test('tolerates missing totalFindings and non-array dependencies', () => {
+    expect(parseLaunchDependencies({
+      totalDegradedTasks: 2,
+      dependencies: 'not-array',
+    })).toEqual({
+      totalDegradedTasks: 2,
+      dependencies: [],
+    });
   });
 });

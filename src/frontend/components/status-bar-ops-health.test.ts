@@ -2,8 +2,9 @@
 
 /**
  * Status-bar pills for prod smoke-tick failing streak + resourceWatchdog
- * disabled (issue #2037) + chronic FAA residual (issue #2082). Fixtures drive
- * the store directly — the poll hook is covered separately.
+ * disabled (issue #2037) + chronic FAA residual (issue #2082) + launch
+ * dependency degradation (issue #2364). Fixtures drive the store directly —
+ * the poll hook is covered separately.
  */
 
 import React from 'react';
@@ -43,7 +44,7 @@ async function renderStatusBar(root: Root, props: { onOpenCapacity?: () => void 
   await flush();
 }
 
-describe('StatusBar ops-health pills (issue #2037 / #2082)', () => {
+describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -75,11 +76,12 @@ describe('StatusBar ops-health pills (issue #2037 / #2082)', () => {
     document.body.innerHTML = '';
   });
 
-  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear)', async () => {
+  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear, deps clear)', async () => {
     useKookrStore.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 0, status: 'ok', failingChecks: [] },
       resourceWatchdog: { enabled: true, lastDecision: 'idle' },
       capacityResidual: { finishedAwaitingAck: 0, oldestFinishedAwaitingAckAgeMs: null },
+      launchDependencies: { totalDegradedTasks: 0, totalFindings: 0, dependencies: [] },
     });
 
     await renderStatusBar(root);
@@ -88,9 +90,11 @@ describe('StatusBar ops-health pills (issue #2037 / #2082)', () => {
     expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-faa-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('Smoke: fail');
     expect(container.textContent).not.toContain('Watchdog: off');
     expect(container.textContent).not.toContain('FAA residual');
+    expect(container.textContent).not.toContain('Deps:');
   });
 
   test('hides all pills when store has no ops-health data yet', async () => {
@@ -100,6 +104,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082)', () => {
     expect(container.textContent).not.toContain('Smoke: fail');
     expect(container.textContent).not.toContain('Watchdog: off');
     expect(container.textContent).not.toContain('FAA residual');
+    expect(container.textContent).not.toContain('Deps:');
   });
 
   test('shows Smoke: fail×N when consecutiveFailures >= 1', async () => {
@@ -220,5 +225,61 @@ describe('StatusBar ops-health pills (issue #2037 / #2082)', () => {
       (faa as HTMLButtonElement).click();
     });
     expect(onOpenCapacity).toHaveBeenCalledOnce();
+  });
+
+  test('hides launch-deps pill when totalDegradedTasks === 0 (issue #2364)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      launchDependencies: {
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain('Deps:');
+  });
+
+  test('shows Deps: kb×N when launch dependencies are degraded (issue #2364)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      launchDependencies: {
+        totalDegradedTasks: 8,
+        totalFindings: 9,
+        dependencies: [
+          { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
+        ],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toBe('Deps: kb×8');
+    expect(pill?.getAttribute('title')).toContain('8 tasks launched with degraded dependencies');
+    expect(pill?.getAttribute('title')).toContain('kb=8 (provider_api)');
+    expect(pill?.getAttribute('title')).toContain('GET /api/health.launchDependencies');
+  });
+
+  test('shows multi-dependency segments and +N overflow on launch-deps pill (issue #2364)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      launchDependencies: {
+        totalDegradedTasks: 6,
+        totalFindings: 7,
+        dependencies: [
+          { dependency: 'kb', degradedTaskCount: 3, categories: ['provider_api'] },
+          { dependency: 'gh', degradedTaskCount: 2, categories: ['auth'] },
+          { dependency: 'tts', degradedTaskCount: 1, categories: ['binary'] },
+        ],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
+    expect(pill?.textContent).toBe('Deps: kb×3 · gh×2 +1');
+    expect(pill?.getAttribute('title')).toContain('tts=1 (binary)');
   });
 });

@@ -7570,9 +7570,9 @@ label.task-share-row {
   margin-left: 6px;
 }
 
-/* Issue #2037 / #2082: smoke-tick failing streak, resourceWatchdog disabled,
-   and chronic FAA residual pills. Hidden entirely when healthy; amber/red so
-   they read as attention, not info. */
+/* Issue #2037 / #2082 / #2364: smoke-tick failing streak, resourceWatchdog
+   disabled, chronic FAA residual, and launch-dependency degradation pills.
+   Hidden entirely when healthy; amber/red so they read as attention, not info. */
 .ops-health-pills {
   display: inline-flex;
   align-items: center;
@@ -7609,6 +7609,12 @@ label.task-share-row {
 .ops-health-pill.ops-health-faa {
   background: rgba(251, 146, 60, 0.16);
   color: #fb923c;
+}
+
+/* Launch-dependency degradation: amber advisory (agents still launch). */
+.ops-health-pill.ops-health-launch-deps {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--amber);
 }
 
 button.ops-health-pill.ops-health-faa {

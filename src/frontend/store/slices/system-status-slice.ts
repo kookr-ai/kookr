@@ -8,6 +8,7 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
     resourceWatchdog: null,
     capacityResidual: null,
     pipelineStarvation: null,
+    launchDependencies: null,
 
     handleResourceStatus: (status, receivedAtMs = Date.now()) => {
       set({
@@ -29,6 +30,9 @@ export function createSystemStatusSlice(set: StoreSet): SystemStatusSlice {
       }
       if ('pipelineStarvation' in payload) {
         next.pipelineStarvation = payload.pipelineStarvation ?? null;
+      }
+      if ('launchDependencies' in payload) {
+        next.launchDependencies = payload.launchDependencies ?? null;
       }
       if (Object.keys(next).length > 0) set(next);
     },

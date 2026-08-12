@@ -18,6 +18,11 @@ import {
   formatFaaResidualLabel,
   shouldShowFaaResidualPill,
 } from './faa-residual-pill.js';
+import {
+  formatLaunchDepsLabel,
+  formatLaunchDepsTitle,
+  shouldShowLaunchDepsPill,
+} from './launch-deps-pill.js';
 
 interface Props {
   findings: number;
@@ -167,13 +172,15 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
 
 /**
  * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
- * (issue #2037), and chronic finishedAwaitingAck residual (issue #2082).
- * Hidden when healthy / enabled / residual clear / no data yet.
+ * (issue #2037), chronic finishedAwaitingAck residual (issue #2082), and
+ * launch-dependency degradation (issue #2364). Hidden when healthy / enabled /
+ * residual clear / no data yet.
  */
 function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
   const capacityResidual = useKookrStore((s) => s.capacityResidual);
+  const launchDependencies = useKookrStore((s) => s.launchDependencies);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
@@ -181,8 +188,9 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const faaCount = capacityResidual?.finishedAwaitingAck ?? 0;
   const faaAgeMs = capacityResidual?.oldestFinishedAwaitingAckAgeMs ?? null;
   const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
+  const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
 
-  if (!showSmoke && !showWatchdog && !showFaa) return null;
+  if (!showSmoke && !showWatchdog && !showFaa && !showLaunchDeps) return null;
 
   const smokeTitle = showSmoke
     ? [
@@ -222,6 +230,11 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
         'See GET /api/health.capacity',
       ].filter(Boolean).join(' · ')
     : '';
+
+  const launchDepsLabel =
+    showLaunchDeps && launchDependencies ? formatLaunchDepsLabel(launchDependencies) : '';
+  const launchDepsTitle =
+    showLaunchDeps && launchDependencies ? formatLaunchDepsTitle(launchDependencies) : '';
 
   return (
     <span className="ops-health-pills" data-testid="ops-health-pills">
@@ -267,6 +280,16 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
             {faaLabel}
           </span>
         )
+      )}
+      {showLaunchDeps && (
+        <span
+          className="ops-health-pill ops-health-launch-deps"
+          data-testid="ops-health-launch-deps-pill"
+          title={launchDepsTitle}
+          role="status"
+        >
+          {launchDepsLabel}
+        </span>
       )}
     </span>
   );

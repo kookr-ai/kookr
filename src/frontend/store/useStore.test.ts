@@ -131,11 +131,12 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().resourceStatusReceivedAtMs).toBe(123);
   });
 
-  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, and pipeline starvation projections', () => {
+  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, pipeline starvation, and launch deps projections', () => {
     expect(store.getState().prodSmokeTick).toBeNull();
     expect(store.getState().resourceWatchdog).toBeNull();
     expect(store.getState().capacityResidual).toBeNull();
     expect(store.getState().pipelineStarvation).toBeNull();
+    expect(store.getState().launchDependencies).toBeNull();
 
     store.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
@@ -150,6 +151,13 @@ describe('Kookr Zustand Store', () => {
             effectiveScoutCooldownMs: 1_800_000,
           },
         },
+      },
+      launchDependencies: {
+        totalDegradedTasks: 8,
+        totalFindings: 9,
+        dependencies: [
+          { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
+        ],
       },
     });
 
@@ -167,8 +175,15 @@ describe('Kookr Zustand Store', () => {
       oldestFinishedAwaitingAckAgeMs: 9e6,
     });
     expect(store.getState().pipelineStarvation?.repos['kookr-ai/kookr']?.consecutiveBlockedEmpty).toBe(2);
+    expect(store.getState().launchDependencies).toEqual({
+      totalDegradedTasks: 8,
+      totalFindings: 9,
+      dependencies: [
+        { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
+      ],
+    });
 
-    // Partial update: only smoke — watchdog + capacity residual + starvation left alone.
+    // Partial update: only smoke — watchdog + capacity residual + starvation + launch deps left alone.
     store.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 0, status: 'ok' },
     });
@@ -176,6 +191,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().resourceWatchdog?.enabled).toBe(false);
     expect(store.getState().capacityResidual?.finishedAwaitingAck).toBe(7);
     expect(store.getState().pipelineStarvation?.repos['kookr-ai/kookr']?.consecutiveBlockedEmpty).toBe(2);
+    expect(store.getState().launchDependencies?.totalDegradedTasks).toBe(8);
   });
 
   test('handleUpdate updates single agent', () => {

@@ -2,13 +2,15 @@ import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type {
   CapacityResidualStatus,
+  LaunchDependenciesStatus,
+  LaunchDependencyStatusRow,
   PipelineStarvationRepoStatus,
   PipelineStarvationStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
 } from '../store/store-types.js';
 
-/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation). */
+/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps). */
 export const OPS_HEALTH_POLL_INTERVAL_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -86,6 +88,55 @@ export function parseCapacityResidual(value: unknown): CapacityResidualStatus | 
 }
 
 /**
+ * Parse `GET /api/health.launchDependencies` for the status-bar deps pill
+ * (issue #2364). Returns null when the block is missing or totalDegradedTasks
+ * is non-numeric. Slim rows drop affectedTaskIds.
+ */
+export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatus | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  const totalRaw = rec.totalDegradedTasks;
+  if (typeof totalRaw !== 'number' || !Number.isFinite(totalRaw) || totalRaw < 0) {
+    return null;
+  }
+
+  const dependencies: LaunchDependencyStatusRow[] = [];
+  if (Array.isArray(rec.dependencies)) {
+    for (const rowValue of rec.dependencies) {
+      const row = asRecord(rowValue);
+      if (!row) continue;
+      const name = row.dependency;
+      if (typeof name !== 'string' || name.length === 0) continue;
+      const countRaw = row.degradedTaskCount;
+      if (typeof countRaw !== 'number' || !Number.isFinite(countRaw) || countRaw < 0) continue;
+      const categories: string[] = [];
+      if (Array.isArray(row.categories)) {
+        for (const cat of row.categories) {
+          if (typeof cat === 'string' && cat.length > 0) categories.push(cat);
+        }
+      }
+      dependencies.push({
+        dependency: name,
+        degradedTaskCount: Math.floor(countRaw),
+        categories,
+      });
+    }
+  }
+
+  const findingsRaw = rec.totalFindings;
+  const totalFindings =
+    typeof findingsRaw === 'number' && Number.isFinite(findingsRaw) && findingsRaw >= 0
+      ? Math.floor(findingsRaw)
+      : undefined;
+
+  return {
+    totalDegradedTasks: Math.floor(totalRaw),
+    ...(totalFindings !== undefined ? { totalFindings } : {}),
+    dependencies,
+  };
+}
+
+/**
  * Parse `GET /api/health.pipelineStarvation` for the Diagnostics card (issue #2259).
  * Guards on schemaVersion; unknown/renamed fields are dropped (optional).
  */
@@ -133,10 +184,10 @@ export function parsePipelineStarvation(value: unknown): PipelineStarvationStatu
 
 /**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
- * enablement, capacity FAA residual, and pipeline-starvation drought state,
- * and push the slim projections into the store for status-bar pills and the
- * Diagnostics panel (issues #2037, #2082, #2259). Soft-fails on
- * network/parse errors so the dashboard stays up.
+ * enablement, capacity FAA residual, pipeline-starvation drought state, and
+ * launch-dependency degradation, and push the slim projections into the store
+ * for status-bar pills and the Diagnostics panel (issues #2037, #2082, #2259,
+ * #2364). Soft-fails on network/parse errors so the dashboard stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
   const handleOpsHealth = useKookrStore((s) => s.handleOpsHealth);
@@ -158,6 +209,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           resourceWatchdog: parseResourceWatchdog(rec.resourceWatchdog),
           capacityResidual: parseCapacityResidual(rec.capacity),
           pipelineStarvation: parsePipelineStarvation(rec.pipelineStarvation),
+          launchDependencies: parseLaunchDependencies(rec.launchDependencies),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.
