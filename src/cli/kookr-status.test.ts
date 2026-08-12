@@ -2779,6 +2779,25 @@ describe('kookr-status main (integration-style)', () => {
     expect(deps.logs).toEqual([]);
   });
 
+  it('does NOT attach the outage verdict when the server is reachable but errors (HTTP 500) (#2410)', async () => {
+    // A reachable server returning 500 is neither a planned restart nor a crash
+    // outage — the marker verdict must not be applied to an HTTP-status error.
+    globalThis.fetch = vi.fn(async () => new Response('boom', { status: 500 })) as typeof fetch;
+    const deps = makeDeps({ KOOKR_PORT: '9999' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs) as {
+      code: string;
+      message: string;
+      details: Record<string, unknown>;
+    };
+    expect(deps.exits).toEqual([1]);
+    expect(envelope.code).toBe('SERVER_ERROR');
+    expect(envelope.message).toContain('HTTP 500');
+    expect(envelope.message).not.toContain('unexpected outage');
+    expect(envelope.message).not.toContain('restarting');
+    expect(envelope.details.restartIntent).toBeUndefined();
+  });
+
   it('prints a report on the happy path', async () => {
     const snapshotBody = [
       {

@@ -1432,11 +1432,16 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     ]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // Issue #2410: an explicit-port fetch failure is also an "API unreachable"
-    // case — read the marker for this port to tell a planned redeploy apart
-    // from an unexpected outage.
+    // Issue #2410: the planned-vs-unexpected-outage verdict only applies when
+    // the API is actually DOWN. A wrapped `HTTP <status>` message means the
+    // server WAS reached and simply returned an error (or malformed body), so
+    // it is neither a planned restart nor a crash — do not attach the marker
+    // verdict to it. Only connection-level failures (refused / timeout / DNS)
+    // get enriched.
+    const serverReached = /HTTP \d{3}/.test(msg);
     const now = Date.now();
-    const { intent, message: cause } = readUnreachableCause({ port, env, now });
+    const cause = serverReached ? null : readUnreachableCause({ port, env, now });
+    const causeSuffix = cause ? ` ${cause.message}` : '';
     if (args.json) {
       return exitJson({
         out,
@@ -1445,24 +1450,24 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ok: false,
         code: 'SERVER_ERROR',
         message: resolved.kind === 'explicit'
-          ? `Failed to reach Kookr on port ${port} (${msg}). ${cause}`
-          : `Failed to reach Kookr on port ${port}: ${msg}. ${cause}`,
+          ? `Failed to reach Kookr on port ${port} (${msg}).${causeSuffix}`
+          : `Failed to reach Kookr on port ${port}: ${msg}.${causeSuffix}`,
         details: {
           port,
           resolvedKind: resolved.kind,
           error: msg,
-          restartIntent: restartIntentJson(intent, now),
+          ...(cause ? { restartIntent: restartIntentJson(cause.intent, now) } : {}),
         },
       });
     }
     if (resolved.kind === 'explicit') {
       out.error(
         `Failed to reach Kookr on port ${port} (${msg}).\n` +
-        `${cause}\n` +
+        `${cause ? `${cause.message}\n` : ''}` +
         `Is Kookr running? KOOKR_PORT=${port}.`,
       );
     } else {
-      out.error(`Failed to reach Kookr on port ${port}: ${msg}.\n${cause}`);
+      out.error(`Failed to reach Kookr on port ${port}: ${msg}.${cause ? `\n${cause.message}` : ''}`);
     }
     return exit(1);
   }

@@ -94,10 +94,13 @@ export function writeRestartIntent({ kookrDir, reason, initiator, pid, staleAfte
     host: host !== undefined ? host : safeHostname(),
   };
   mkdirSync(kookrDir, { recursive: true });
-  // Write to a temp file then rename so a concurrent reader never observes a
-  // half-written marker (rename is atomic within a directory on POSIX).
+  // Write to a per-process temp file then rename so a concurrent reader never
+  // observes a half-written marker (rename is atomic within a directory on
+  // POSIX). The pid suffix keeps two overlapping restart processes from
+  // clobbering each other's temp file mid-write (each restart is its own
+  // `node` process), so the final rename reflects exactly one writer's content.
   const target = restartIntentPath(kookrDir);
-  const tmp = `${target}.tmp`;
+  const tmp = `${target}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
   renameSync(tmp, target);
   return record;

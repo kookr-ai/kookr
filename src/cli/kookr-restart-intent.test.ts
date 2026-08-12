@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -73,6 +73,13 @@ describe('write/read/clear roundtrip', () => {
     expect(intent).not.toBeNull();
     expect(intent?.reason).toBe('prod:update');
     expect(intent?.startedAtMs).toBe(now);
+  });
+
+  it('leaves no leftover .tmp file after an atomic write', async () => {
+    const dir = await makeDir();
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update' });
+    const leftovers = (await readdir(dir)).filter((f) => f.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
   });
 
   it('defaults reason/initiator when blank', async () => {
