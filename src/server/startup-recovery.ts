@@ -200,6 +200,21 @@ export async function runStartupRecoveryPhase({
     hookWatcher.watch(tmuxName, { replayExisting: true, suppressParseAlertsForExisting: true });
   }
 
+  // Drop durable resume offsets for sessions that were not re-armed above
+  // (historical terminal / orphan debt). Live watches are retained. Safe only
+  // after the re-watch loop so resumed sessions keep their checkpoints
+  // (issue #2385).
+  try {
+    const pruned = hookWatcher.pruneStaleReplayCheckpoints({ dropUnwatched: true });
+    if (pruned > 0) {
+      console.log(
+        `[hook-watcher] pruned ${pruned} stale replay checkpoint(s) after startup recovery`,
+      );
+    }
+  } catch (err) {
+    console.warn('[hook-watcher] stale replay checkpoint prune failed:', err);
+  }
+
   // Post-restart transport verification (kookr-ai/kookr#1345). The resumed
   // sessions above are re-registered off process/socket liveness, which does
   // NOT catch a wedged internal attach (alive but emitting no bytes). Verify

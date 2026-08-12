@@ -1,6 +1,7 @@
 import {
   chmodSync,
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -97,6 +98,46 @@ export interface HookReplayCheckpointStats {
   fileBytes: number;
 }
 
+/**
+ * Inputs for pure stale-checkpoint selection (issue #2385).
+ * Kept free of I/O so unit tests can cover the policy without a filesystem.
+ */
+export interface SelectStaleReplayCheckpointKeysInput {
+  /** Session key → durable checkpoint (only `filePath` is consulted). */
+  sessions: Readonly<Record<string, { filePath: string }>>;
+  /** Keys for sessions currently watched / about to be retained. */
+  retainSessionKeys: ReadonlySet<string>;
+  /** True when the checkpoint's hook JSONL path still exists on disk. */
+  fileExists: (filePath: string) => boolean;
+  /**
+   * When true, also drop every non-retained key even if the hook file still
+   * exists. Safe only after startup recovery has re-armed live watches — used
+   * to clear historical terminal-session debt without waiting for hook-file GC.
+   */
+  dropUnwatched?: boolean;
+}
+
+/**
+ * Select replay-checkpoint session keys that are safe to drop (issue #2385).
+ *
+ * - Live/retained sessions are never selected.
+ * - Default: drop non-retained keys whose `filePath` is missing.
+ * - `dropUnwatched: true`: drop all non-retained keys (post-recovery sweep).
+ */
+export function selectStaleReplayCheckpointKeys(
+  input: SelectStaleReplayCheckpointKeysInput,
+): string[] {
+  const dropUnwatched = input.dropUnwatched === true;
+  const stale: string[] = [];
+  for (const [tmuxName, checkpoint] of Object.entries(input.sessions)) {
+    if (input.retainSessionKeys.has(tmuxName)) continue;
+    if (dropUnwatched || !input.fileExists(checkpoint.filePath)) {
+      stale.push(tmuxName);
+    }
+  }
+  return stale;
+}
+
 interface MutableHookWatcherSessionHealth {
   tmuxName: string;
   mode: HookWatcherMode;
@@ -187,6 +228,9 @@ export class HookFileWatcher {
     this.adapter = adapter;
     this.replayCheckpointPath = options?.replayCheckpointPath ?? null;
     this.replayCheckpoints = this.loadReplayCheckpoints();
+    // Cheap missing-file sweep only: no watches are armed yet, so
+    // dropUnwatched would wipe every key and break startup resume.
+    this.pruneStaleReplayCheckpoints();
   }
 
   /** Start watching a hook file for a tmux session.
@@ -309,9 +353,18 @@ export class HookFileWatcher {
     this.inodes.delete(tmuxName);
     this.reading.delete(tmuxName);
     this.healthBySession.delete(tmuxName);
+    // Session intentionally ended — drop its durable resume offset so the
+    // checkpoint map does not accumulate forever (issue #2385).
+    this.deleteReplayCheckpoint(tmuxName);
   }
 
-  /** Stop all watchers. */
+  /**
+   * Stop all watchers. Live maps are cleared; durable replay checkpoints are
+   * intentionally kept so a process restart can resume offsets for sessions
+   * that are re-armed during startup recovery. Terminal sessions must go
+   * through {@link stop} (or {@link pruneStaleReplayCheckpoints}) so their
+   * keys are removed (issue #2385).
+   */
   stopAll(): void {
     for (const [name, watcher] of this.watchers) {
       watcher.close();
@@ -325,6 +378,38 @@ export class HookFileWatcher {
     this.inodes.clear();
     this.reading.clear();
     this.healthBySession.clear();
+  }
+
+  /**
+   * Drop stale replay-checkpoint entries and persist when anything changed
+   * (issue #2385).
+   *
+   * @param options.dropUnwatched When true, also remove non-watched keys whose
+   *   hook file still exists. Call only after startup recovery has re-armed
+   *   live watches so resume offsets for resumed sessions are retained.
+   * @returns Number of session keys removed from the in-memory map.
+   */
+  pruneStaleReplayCheckpoints(options?: { dropUnwatched?: boolean }): number {
+    if (!this.replayCheckpointPath) return 0;
+    const retainSessionKeys = this.liveReplayCheckpointRetainKeys();
+    const stale = selectStaleReplayCheckpointKeys({
+      sessions: this.replayCheckpoints.sessions,
+      retainSessionKeys,
+      fileExists: (filePath) => {
+        try {
+          return existsSync(filePath);
+        } catch {
+          return false;
+        }
+      },
+      dropUnwatched: options?.dropUnwatched === true,
+    });
+    if (stale.length === 0) return 0;
+    for (const tmuxName of stale) {
+      delete this.replayCheckpoints.sessions[tmuxName];
+    }
+    this.persistReplayCheckpoints();
+    return stale.length;
   }
 
   /**
@@ -751,6 +836,9 @@ export class HookFileWatcher {
       const offsetTail = tailByteLen === 0
         ? ''
         : (await readFileRange(filePath, offset - tailByteLen, tailByteLen)).toString('latin1');
+      // After awaits: stop()/prune may have unwatched this session. Do not
+      // resurrect a key that is no longer live (issue #2385 race).
+      if (!this.liveReplayCheckpointRetainKeys().has(tmuxName)) return;
       this.replayCheckpoints.sessions[tmuxName] = {
         filePath,
         dev: stats.dev,
@@ -759,6 +847,41 @@ export class HookFileWatcher {
         offsetChars: offset,
         offsetTail,
       };
+      this.persistReplayCheckpoints();
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
+      console.warn(`[hook-watcher] failed to write replay checkpoint for ${tmuxName}:`, err);
+    }
+  }
+
+  /**
+   * Session keys that must keep a durable resume offset: anything still
+   * tracked by a live watcher, backup poll, or offset map entry.
+   */
+  private liveReplayCheckpointRetainKeys(): Set<string> {
+    return new Set<string>([
+      ...this.watchers.keys(),
+      ...this.pollIntervals.keys(),
+      ...this.offsets.keys(),
+    ]);
+  }
+
+  /** Remove one session key and persist when the durable store is enabled. */
+  private deleteReplayCheckpoint(tmuxName: string): void {
+    if (!this.replayCheckpointPath) return;
+    if (!(tmuxName in this.replayCheckpoints.sessions)) return;
+    delete this.replayCheckpoints.sessions[tmuxName];
+    this.persistReplayCheckpoints();
+  }
+
+  /**
+   * Atomically rewrite the durable checkpoint envelope (issue #2298 compact,
+   * issue #2365 mode 0o600). No-op when checkpoints are disabled. Failures are
+   * non-fatal — next successful write rewrites the file.
+   */
+  private persistReplayCheckpoints(): void {
+    if (!this.replayCheckpointPath) return;
+    try {
       mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
       const tmpPath = `${this.replayCheckpointPath}.tmp`;
       // Compact JSON (issue #2298): pretty-print multiplies bytes and stringify
@@ -774,8 +897,7 @@ export class HookFileWatcher {
       chmodSync(tmpPath, 0o600);
       renameSync(tmpPath, this.replayCheckpointPath);
     } catch (err) {
-      this.recordHealthError(tmuxName, err);
-      console.warn(`[hook-watcher] failed to write replay checkpoint for ${tmuxName}:`, err);
+      console.warn('[hook-watcher] failed to persist replay checkpoints:', err);
     }
   }
 }
