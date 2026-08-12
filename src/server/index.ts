@@ -138,6 +138,11 @@ import {
 } from './maintenance-prune-schedule.js';
 import { resolveServerLogRotationEnv } from './server-log-rotation.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
+import {
+  HostStaleDtachReaperService,
+  readHostStaleDtachReaperConfigFromEnv,
+  resolveHostStaleDtachReapIntervalMinutes,
+} from './host-stale-dtach-reaper.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
@@ -1206,6 +1211,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // pressure-adaptive orphan age. When /proc is unavailable the reaper falls
   // back to this sweep's live session count (see SessionReaperService.runSweep).
   const getStaleDtachCount = createCachedStaleDtachCountReader();
+  // Host-stale dtach reaper (issue #2356): process-table GC for masters that
+  // are not live-attached and whose socket is gone, gated on soft pressure.
+  // Distinct from session reaper (backend live sessions only).
+  const hostStaleDtachReaper = new HostStaleDtachReaperService({
+    listLiveSessionIds: async () => {
+      const ids = await terminalBackend.listSessions();
+      return new Set(ids);
+    },
+    getConfig: () => readHostStaleDtachReaperConfigFromEnv(process.env),
+  });
   const sessionReaper = new SessionReaperService({
     taskStore,
     backend: terminalBackend,
@@ -2484,6 +2499,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalInputRttMetrics,
     sessionReaper,
+    hostStaleDtachReaper,
     getPayloadDietStats,
     getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
@@ -3112,6 +3128,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // exists and it carries no test marker, so it is never selected).
       relayOrphanSweep: {
         intervalHours: resolveRelayOrphanSweepIntervalHours(process.env),
+      },
+      // Host-stale dtach reaper (issue #2356). ON by default (5m); set
+      // KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES=0 to disable. Reclaims
+      // process-table kookr-dtach masters not live-attached with missing
+      // sockets when host count ≥ soft bound. Fail-closed pure policy.
+      hostStaleDtachReaper: {
+        intervalMinutes: resolveHostStaleDtachReapIntervalMinutes(process.env),
+        service: hostStaleDtachReaper,
       },
       // Reflect-worktree orphan sweep (issue #1860). Default 1h so long-lived
       // instances reclaim crash orphans without a restart; set

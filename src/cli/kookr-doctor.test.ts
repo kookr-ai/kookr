@@ -491,6 +491,7 @@ describe('kookr doctor --json', () => {
     expect(check?.detail).toContain(`code=${HOST_STALE_DTACH_MISMATCH_CODE}`);
     expect(check?.detail).toContain('staleProcesses.dtach.count=23');
     expect(check?.detail).toContain('sessionReaper.lastOrphanCount=0');
+    expect(check?.recommendedAction).toContain('hostStaleDtachReaper');
     expect(check?.recommendedAction).toContain('KOOKR_RESOURCE_WATCHDOG');
   });
 
@@ -595,6 +596,48 @@ describe('kookr doctor --json', () => {
     })).toBeNull();
     expect(parseHostStaleDtachHealthBody({})).toBeNull();
     expect(parseHostStaleDtachHealthBody(null)).toBeNull();
+  });
+
+  it('parseHostStaleDtachHealthBody folds hostStaleDtachReaper counters (issue #2356)', () => {
+    expect(parseHostStaleDtachHealthBody({
+      staleProcesses: { dtach: { count: 33 } },
+      sessionReaper: { lastOrphanCount: 0, lastTerminalLeakCount: 0 },
+      hostStaleDtachReaper: {
+        lastHostStaleDtachReaped: 5,
+        skippedLiveAttached: 2,
+        skippedUnderBound: 0,
+      },
+    })).toEqual({
+      dtachCount: 33,
+      lastOrphanCount: 0,
+      lastTerminalLeakCount: 0,
+      lastHostStaleDtachReaped: 5,
+      skippedLiveAttached: 2,
+      skippedUnderBound: 0,
+    });
+  });
+
+  it('WARNs with hostStaleDtachReaper counter detail when probe supplies them (issue #2356)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHostStaleDtach: async () => hostStaleSnap({
+        dtachCount: 33,
+        lastOrphanCount: 0,
+        lastTerminalLeakCount: 0,
+        lastHostStaleDtachReaped: 5,
+        skippedLiveAttached: 1,
+        skippedUnderBound: 0,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'ops.host-stale-dtach');
+    expect(check?.status).toBe('warn');
+    expect(check?.detail).toContain('lastHostStaleDtachReaped=5');
+    expect(check?.detail).toContain('skippedLiveAttached=1');
+    expect(check?.detail).toContain('skippedUnderBound=0');
   });
 
   it('WARNs on ops.hung-reclaim when residual + reclaimedTotal=0 + open_pr last-pass dominance (issue #2231)', async () => {

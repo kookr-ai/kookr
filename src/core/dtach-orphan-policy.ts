@@ -1,16 +1,15 @@
 /**
- * Pure host-stale dtach selection policy (issue #2352).
+ * Pure host-stale dtach selection policy (issues #2352, #2356).
  *
- * Prep for a bounded host-stale janitor (#2356). Today `staleProcesses.dtach`
- * only counts kookr-dtach masters from `/proc`, and the session reaper (#1720)
- * only reaps sessions the backend still reports as live. Host-stale masters —
- * process-table dtach that are not live-attached and whose socket is gone —
- * accumulate outside both paths.
+ * Host-stale masters — process-table `kookr-dtach` that are not live-attached
+ * and whose socket is gone — accumulate outside both `staleProcesses.dtach`
+ * visibility and the session reaper (#1720), which only reaps sessions the
+ * backend still reports as live.
  *
  * This module is pure: it classifies already-observed facts into a reap
- * verdict. No process kill, no `/proc` I/O, no production wiring. A future
- * janitor calls {@link evaluateDtachOrphanReap} / {@link selectDtachOrphansToReap}
- * and acts only on `shouldReap: true` candidates.
+ * verdict and plans a bounded sweep. No process kill, no `/proc` I/O. The
+ * server janitor (`host-stale-dtach-reaper`) calls
+ * {@link planHostStaleDtachReap} and acts only on `toReap` pids.
  *
  * Fail-closed rules (exhaustive):
  *  1. Live session id present → never
@@ -20,10 +19,19 @@
  *  5. Missing socket but too young → skip (teardown race)
  *  6. Unparseable session id is allowed when other signals are strong; live-set
  *     checks only apply when a session id is known
+ *
+ * Pressure gate (#2356): even eligible candidates are not selected when the
+ * host-wide dtach count is below the soft bound (default 20). Rate limit:
+ * at most `maxReapsPerSweep` pids per plan.
  */
+
+import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from './resource-watchdog-eval.js';
 
 /** Default minimum age (ms) before a missing-socket master may be selected. */
 export const DEFAULT_DTACH_ORPHAN_MIN_AGE_MS = 60_000;
+
+/** Default max masters a single host-stale sweep may select (issue #2356). */
+export const DEFAULT_HOST_STALE_DTACH_MAX_REAPS_PER_SWEEP = 5;
 
 /**
  * Observed facts about one kookr-dtach master process, as assembled by a
@@ -191,3 +199,194 @@ export function buildDtachOrphanCandidate(
     ...overrides,
   };
 }
+
+/** Minimal process facts needed to assemble a {@link DtachOrphanCandidate}. */
+export interface DtachProcessFacts {
+  pid: number;
+  cmdline: string;
+  /** Wall-clock start (ms), or null when unknown. */
+  startTimeMs: number | null;
+}
+
+/**
+ * Build a host-stale candidate from a process-table row + live session set.
+ * Returns null when the cmdline is not a kookr-dtach master (no
+ * `dtach`+`kookr-dtach` markers). Pure aside from the injected `socketExists`.
+ */
+export function buildDtachOrphanCandidateFromProcess(
+  proc: DtachProcessFacts,
+  deps: {
+    now: number;
+    liveSessionIds: ReadonlySet<string>;
+    socketExists: (path: string) => boolean;
+  },
+): DtachOrphanCandidate | null {
+  if (!proc.cmdline || !proc.cmdline.includes('dtach') || !proc.cmdline.includes('kookr-dtach')) {
+    return null;
+  }
+  const socketPath = extractKookrDtachSocketPath(proc.cmdline);
+  const sessionId = socketPath ? sessionIdFromDtachSocketPath(socketPath) : null;
+  const liveSessionPresent =
+    sessionId !== null && deps.liveSessionIds.has(sessionId);
+  return {
+    pid: proc.pid,
+    sessionId,
+    socketPath,
+    socketExists: socketPath !== null ? deps.socketExists(socketPath) : false,
+    liveSessionPresent,
+    ageMs:
+      proc.startTimeMs === null || !Number.isFinite(proc.startTimeMs)
+        ? null
+        : Math.max(0, deps.now - proc.startTimeMs),
+  };
+}
+
+/** Assemble candidates for every kookr-dtach row in a process snapshot. */
+export function buildDtachOrphanCandidatesFromProcesses(
+  processes: readonly DtachProcessFacts[],
+  deps: {
+    now: number;
+    liveSessionIds: ReadonlySet<string>;
+    socketExists: (path: string) => boolean;
+  },
+): DtachOrphanCandidate[] {
+  const out: DtachOrphanCandidate[] = [];
+  for (const proc of processes) {
+    const c = buildDtachOrphanCandidateFromProcess(proc, deps);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+export interface HostStaleDtachReapPlanOptions extends DtachOrphanReapPolicy {
+  /**
+   * Host-wide kookr-dtach master count (`staleProcesses.dtach.count`). The
+   * pressure gate compares this to {@link softBound}.
+   */
+  dtachCount: number;
+  /**
+   * Soft pressure bound. Defaults to
+   * {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND} (20). When `dtachCount < softBound`,
+   * the plan selects nobody (`skippedUnderBound` = eligible count). `<= 0`
+   * disables the pressure gate (always allow selection).
+   */
+  softBound?: number;
+  /**
+   * Max pids selected per plan. Defaults to
+   * {@link DEFAULT_HOST_STALE_DTACH_MAX_REAPS_PER_SWEEP}. Values `<= 0` mean
+   * select nobody (rate-limit fully closed).
+   */
+  maxReapsPerSweep?: number;
+}
+
+/**
+ * Result of a pure host-stale sweep plan (issue #2356). Actuators execute
+ * `toReap` only — never invent extra pids. Counters are last-plan only.
+ */
+export interface HostStaleDtachReapPlan {
+  /** True when `dtachCount >= softBound` (or softBound disabled). */
+  underPressure: boolean;
+  softBound: number;
+  dtachCount: number;
+  maxReapsPerSweep: number;
+  /** Candidates selected for kill / dry-run (already rate-limited). */
+  toReap: DtachOrphanCandidate[];
+  /** Per-candidate verdicts for audit / dry-run logs. */
+  verdicts: DtachOrphanReapVerdict[];
+  /** Eligible before pressure gate + rate limit. */
+  eligibleCount: number;
+  /** Count of candidates skipped because session was live-attached. */
+  skippedLiveAttached: number;
+  /** Eligible candidates not selected because host was under the soft bound. */
+  skippedUnderBound: number;
+  /** Eligible candidates past maxReapsPerSweep. */
+  skippedRateLimited: number;
+  skippedSocketPresent: number;
+  skippedUnknownAge: number;
+  skippedTooYoung: number;
+}
+
+/**
+ * Plan a bounded host-stale dtach reap. Pure and fail-closed.
+ *
+ * Order: evaluate every candidate → count skip reasons → if under soft bound,
+ * refuse all reaps (`skippedUnderBound = eligible`) → else take the first
+ * `maxReapsPerSweep` eligible pids (stable input order).
+ */
+export function planHostStaleDtachReap(
+  candidates: readonly DtachOrphanCandidate[],
+  options: HostStaleDtachReapPlanOptions,
+): HostStaleDtachReapPlan {
+  const softBound = options.softBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
+  const maxReapsPerSweep =
+    options.maxReapsPerSweep ?? DEFAULT_HOST_STALE_DTACH_MAX_REAPS_PER_SWEEP;
+  const policy: DtachOrphanReapPolicy = { minAgeMs: options.minAgeMs };
+  const dtachCount = options.dtachCount;
+
+  let skippedLiveAttached = 0;
+  let skippedSocketPresent = 0;
+  let skippedUnknownAge = 0;
+  let skippedTooYoung = 0;
+  const eligible: DtachOrphanCandidate[] = [];
+  const verdicts: DtachOrphanReapVerdict[] = [];
+
+  for (const c of candidates) {
+    const verdict = evaluateDtachOrphanReap(c, policy);
+    verdicts.push(verdict);
+    if (verdict.shouldReap) {
+      eligible.push(c);
+      continue;
+    }
+    switch (verdict.reason) {
+      case 'live_session':
+        skippedLiveAttached += 1;
+        break;
+      case 'socket_present':
+        skippedSocketPresent += 1;
+        break;
+      case 'unknown_age':
+        skippedUnknownAge += 1;
+        break;
+      case 'too_young':
+        skippedTooYoung += 1;
+        break;
+      case 'missing_socket_aged':
+        // shouldReap true only — unreachable
+        break;
+    }
+  }
+
+  // softBound <= 0 disables the pressure gate (always under pressure for planning).
+  const underPressure = softBound <= 0 || dtachCount >= softBound;
+  let toReap: DtachOrphanCandidate[] = [];
+  let skippedUnderBound = 0;
+  let skippedRateLimited = 0;
+
+  if (!underPressure) {
+    skippedUnderBound = eligible.length;
+  } else if (maxReapsPerSweep <= 0) {
+    skippedRateLimited = eligible.length;
+  } else {
+    toReap = eligible.slice(0, maxReapsPerSweep);
+    skippedRateLimited = Math.max(0, eligible.length - toReap.length);
+  }
+
+  return {
+    underPressure,
+    softBound,
+    dtachCount,
+    maxReapsPerSweep: Math.max(0, maxReapsPerSweep),
+    toReap,
+    verdicts,
+    eligibleCount: eligible.length,
+    skippedLiveAttached,
+    skippedUnderBound,
+    skippedRateLimited,
+    skippedSocketPresent,
+    skippedUnknownAge,
+    skippedTooYoung,
+  };
+}
+
+/** Re-export soft bound for callers that only import this module. */
+export { DEFAULT_DTACH_PRESSURE_SOFT_BOUND };

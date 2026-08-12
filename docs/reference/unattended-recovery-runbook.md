@@ -37,6 +37,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
+| `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `hostStaleDtachReaper` + `staleProcesses.dtach` | Bounded host-stale reaper should reclaim missing-socket masters when count ≥ soft bound — [host-stale dtach](#6-host-stale-dtach-reaper) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
 | Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §5 |
 
@@ -336,6 +337,72 @@ task may replace another investigation. Details:
 
 ---
 
+## 6. Host-stale dtach reaper
+
+**Symptom.** `staleProcesses.dtach.count` is high (often ≥ soft bound 20) while
+`sessionReaper.lastOrphanCount` / `lastTerminalLeakCount` stay near zero and
+`totalSessionsReaped` does not climb. Doctor may WARN on `ops.host-stale-dtach`
+(`host_stale_dtach_mismatch`). These are process-table masters outside the
+session reaper’s live-session inventory — usually missing sockets after a hard
+kill or crashed server generation.
+
+**What the reaper does (issue #2356).** A bounded periodic sweep (default every
+5 minutes, plus ~45s after boot) plans candidates with the pure
+`planHostStaleDtachReap` policy:
+
+1. Never select a master whose session id is still live-attached.
+2. Never select a master whose socket file still exists.
+3. Skip unknown age / too-young (teardown-race floor, default 60s).
+4. Only act when host-wide dtach **count ≥ soft bound** (default 20).
+5. Rate-limit to max N reaps per sweep (default 5).
+6. Kill path is `killProcessTree` (SIGTERM → grace → SIGKILL) on **selected
+   pids only** — no unbounded `kill -9` of unknown processes.
+
+**Health field** (cheap last-sweep counters; never a `/proc` scan on this path):
+
+```bash
+python3 - <<'PY'
+import json
+h=json.load(open("/tmp/kookr-health.json"))
+print(json.dumps(h.get("hostStaleDtachReaper"), indent=2, default=str))
+print("staleProcesses.dtach", (h.get("staleProcesses") or {}).get("dtach"))
+PY
+```
+
+Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
+`skippedUnderBound`, `skippedRateLimited`, `totalHostStaleDtachReaped`,
+`lastDtachCount`, `lastUnderPressure`, `dryRun`.
+
+**Operator knobs** (see [environment-variables.md](./environment-variables.md)):
+
+| Env | Role |
+| --- | --- |
+| `KOOKR_HOST_STALE_DTACH_REAP` | Master enable (on by default; `0`/`off` disables) |
+| `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1` | Log would-reap pids without signalling |
+| `KOOKR_HOST_STALE_DTACH_REAP_SOFT_BOUND` | Pressure gate (default 20) |
+| `KOOKR_HOST_STALE_DTACH_REAP_MAX_PER_SWEEP` | Rate limit (default 5) |
+| `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES=0` | Disable the timer |
+
+**Actions (ordered):**
+
+1. Confirm the mismatch on health / `kookr doctor` (`ops.host-stale-dtach`).
+2. Prefer letting the automatic reaper clear pressure when enabled and not
+   dry-run. Check logs for `[host-stale-dtach-reaper] reaped pid=…`.
+3. If `skippedUnderBound` is high and count is just below the soft bound, wait
+   for more accumulation or lower soft bound only with intent.
+4. If `skippedLiveAttached` is high, do **not** kill those pids — they are still
+   backend live sessions; use the session reaper / task terminal path instead.
+5. For a safe observation pass before kills: set
+   `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1`, restart, read
+   `hostStaleDtachReaper.lastHostStaleDtachReaped` + dry-run log lines, then
+   clear dry-run.
+
+This reaper is **not** a substitute for enabling the resource watchdog (section
+5) when you want briefed investigation tasks — it only reclaims host-stale
+dtach masters under the documented selection policy.
+
+---
+
 ## Related
 
 | Doc | Use when |
@@ -350,4 +417,4 @@ task may replace another investigation. Details:
 No webhook URLs, tokens, or private paths belong in this runbook. Keep edits
 tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hungSuspectTtlReclaim`, `prodSmokeTick`, `resourceWatchdog`,
-`data_directory_disk_critical`).
+`hostStaleDtachReaper`, `staleProcesses`, `data_directory_disk_critical`).

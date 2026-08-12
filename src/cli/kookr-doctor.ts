@@ -139,6 +139,10 @@ export interface HostStaleDtachProbeSnapshot {
    * `<= 0` disables the check.
    */
   softBound?: number;
+  /** Last host-stale reaper sweep counters (issue #2356), when health publishes them. */
+  lastHostStaleDtachReaped?: number;
+  skippedLiveAttached?: number;
+  skippedUnderBound?: number;
 }
 
 type HostStaleDtachProbe = (
@@ -737,13 +741,14 @@ async function checkHookIngestionLag(
  *
  * Live prod pattern: `staleProcesses.dtach.count=23` while
  * `sessionReaper.lastOrphanCount=0` and `lastTerminalLeakCount=0` — host-stale
- * masters accumulate outside TaskStore; reaper (#1720) cannot see them, and
- * doctor previously stayed green.
+ * masters accumulate outside TaskStore; session reaper (#1720) cannot see them.
+ * The host-stale janitor (#2356) reclaims eligible masters when count ≥ soft
+ * bound; doctor surfaces its last-sweep counters when present.
  *
  * WARN when `hostExcess = dtachCount - (lastOrphanCount + lastTerminalLeakCount)`
  * is ≥ soft bound (default {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND}). Soft-skip
  * when the server is unreachable so hermetic offline doctor stays green.
- * Never required:fail. Does not enable kill/spawn paths.
+ * Never required:fail.
  */
 async function checkHostStaleDtach(
   env: NodeJS.ProcessEnv,
@@ -773,6 +778,12 @@ async function checkHostStaleDtach(
   const mismatch = softBound > 0 && hostExcess >= softBound;
 
   if (mismatch) {
+    const reaperCounters =
+      snap.lastHostStaleDtachReaped !== undefined
+        ? ` hostStaleDtachReaper.lastHostStaleDtachReaped=${snap.lastHostStaleDtachReaped}` +
+          ` skippedLiveAttached=${snap.skippedLiveAttached ?? 0}` +
+          ` skippedUnderBound=${snap.skippedUnderBound ?? 0}.`
+        : '';
     return {
       id: 'ops.host-stale-dtach',
       label: 'Host-stale dtach',
@@ -790,11 +801,14 @@ async function checkHostStaleDtach(
         `sessionReaper.lastOrphanCount=${snap.lastOrphanCount} + ` +
         `lastTerminalLeakCount=${snap.lastTerminalLeakCount} ` +
         `(reaper-visible=${reaperVisible}, hostExcess=${hostExcess}, softBound=${softBound}). ` +
-        'Host-stale dtach masters accumulate outside TaskStore; session reaper cannot see them.',
+        'Host-stale dtach masters accumulate outside TaskStore; session reaper cannot see them.' +
+        reaperCounters,
       recommendedAction:
-        'Enable KOOKR_RESOURCE_WATCHDOG=1 for host-pressure auto-investigation; ' +
-        'inspect GET /api/health staleProcesses and sessionReaper; ' +
-        'consider a host-stale janitor for masters not owned by TaskStore. ' +
+        'Inspect GET /api/health hostStaleDtachReaper (lastHostStaleDtachReaped / ' +
+        'skippedLiveAttached / skippedUnderBound) and staleProcesses.dtach; ' +
+        'the bounded host-stale reaper (#2356) reclaims missing-socket masters when ' +
+        'count ≥ soft bound (set KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1 to observe). ' +
+        'Enable KOOKR_RESOURCE_WATCHDOG=1 for briefed auto-investigation. ' +
         'Restart only as last resort — do not invent kill logic from doctor.',
     };
   }
@@ -1385,7 +1399,8 @@ async function defaultProbeHostStaleDtach(
 
 /**
  * Parse `staleProcesses.dtach` + `sessionReaper` orphan gauges from /api/health.
- * Requires both blocks so a partial payload does not false-WARN.
+ * Optionally folds `hostStaleDtachReaper` last-sweep counters (issue #2356).
+ * Requires both dtach + sessionReaper blocks so a partial payload does not false-WARN.
  */
 export function parseHostStaleDtachHealthBody(
   body: unknown,
@@ -1396,6 +1411,11 @@ export function parseHostStaleDtachHealthBody(
     sessionReaper?: {
       lastOrphanCount?: unknown;
       lastTerminalLeakCount?: unknown;
+    };
+    hostStaleDtachReaper?: {
+      lastHostStaleDtachReaped?: unknown;
+      skippedLiveAttached?: unknown;
+      skippedUnderBound?: unknown;
     };
   };
 
@@ -1415,10 +1435,27 @@ export function parseHostStaleDtachHealthBody(
     return null;
   }
 
+  const hostReaper = root.hostStaleDtachReaper;
+  const lastHostStaleDtachReaped =
+    hostReaper && typeof hostReaper === 'object'
+      ? nonNegInt(hostReaper.lastHostStaleDtachReaped)
+      : null;
+  const skippedLiveAttached =
+    hostReaper && typeof hostReaper === 'object'
+      ? nonNegInt(hostReaper.skippedLiveAttached)
+      : null;
+  const skippedUnderBound =
+    hostReaper && typeof hostReaper === 'object'
+      ? nonNegInt(hostReaper.skippedUnderBound)
+      : null;
+
   return {
     dtachCount,
     lastOrphanCount,
     lastTerminalLeakCount,
+    ...(lastHostStaleDtachReaped !== null ? { lastHostStaleDtachReaped } : {}),
+    ...(skippedLiveAttached !== null ? { skippedLiveAttached } : {}),
+    ...(skippedUnderBound !== null ? { skippedUnderBound } : {}),
   };
 }
 

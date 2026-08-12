@@ -314,6 +314,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // path (issue #1553 lesson: an unbounded scan here previously OOM-crashed
     // prod).
     const sessionReaperBlock = deps.sessionReaper?.getHealthSnapshot();
+    // Host-stale dtach reaper (issue #2356): last-sweep reaped/skip counters —
+    // pure in-memory read, never a /proc scan on this path.
+    const hostStaleDtachReaperBlock = deps.hostStaleDtachReaper?.getHealthSnapshot();
 
     // Non-critical timer pause (issue #1785): always-visible pause metric +
     // latest sample / threshold. Cheap in-memory read only.
@@ -647,6 +650,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       terminalWrite: terminalWriteBlock,
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
+      ...(hostStaleDtachReaperBlock ? { hostStaleDtachReaper: hostStaleDtachReaperBlock } : {}),
       nonCriticalTimerPause: nonCriticalTimerPauseBlock,
       snapshotShed: snapshotShedBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),

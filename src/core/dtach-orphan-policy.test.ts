@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_DTACH_ORPHAN_MIN_AGE_MS,
+  DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+  DEFAULT_HOST_STALE_DTACH_MAX_REAPS_PER_SWEEP,
   buildDtachOrphanCandidate,
+  buildDtachOrphanCandidateFromProcess,
+  buildDtachOrphanCandidatesFromProcesses,
   evaluateDtachOrphanReap,
   extractKookrDtachSocketPath,
+  planHostStaleDtachReap,
   selectDtachOrphansToReap,
   sessionIdFromDtachSocketPath,
 } from './dtach-orphan-policy.js';
@@ -232,5 +237,133 @@ describe('selectDtachOrphansToReap', () => {
         buildDtachOrphanCandidate({ pid: 2, ageMs: null }),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('buildDtachOrphanCandidateFromProcess (issue #2356)', () => {
+  const sock = '/tmp/kookr-dtach/1000/port-4800/kookr-abc.sock';
+  const cmdline = `dtach -n ${sock} -r winch -E claude`;
+
+  it('builds a candidate from cmdline + live set + socket probe', () => {
+    const c = buildDtachOrphanCandidateFromProcess(
+      { pid: 99, cmdline, startTimeMs: 1_000 },
+      {
+        now: 1_000 + DEFAULT_DTACH_ORPHAN_MIN_AGE_MS + 5_000,
+        liveSessionIds: new Set(),
+        socketExists: () => false,
+      },
+    );
+    expect(c).toMatchObject({
+      pid: 99,
+      sessionId: 'kookr-abc',
+      socketPath: sock,
+      socketExists: false,
+      liveSessionPresent: false,
+    });
+    expect(c!.ageMs).toBe(DEFAULT_DTACH_ORPHAN_MIN_AGE_MS + 5_000);
+  });
+
+  it('marks liveSessionPresent when the session id is in the live set', () => {
+    const c = buildDtachOrphanCandidateFromProcess(
+      { pid: 1, cmdline, startTimeMs: 0 },
+      {
+        now: 120_000,
+        liveSessionIds: new Set(['kookr-abc']),
+        socketExists: () => false,
+      },
+    );
+    expect(c?.liveSessionPresent).toBe(true);
+    expect(evaluateDtachOrphanReap(c!).shouldReap).toBe(false);
+  });
+
+  it('returns null for non-kookr-dtach command lines', () => {
+    expect(
+      buildDtachOrphanCandidateFromProcess(
+        { pid: 1, cmdline: 'node dist/index.js', startTimeMs: 0 },
+        { now: 1, liveSessionIds: new Set(), socketExists: () => false },
+      ),
+    ).toBeNull();
+  });
+
+  it('filters a mixed process list to kookr-dtach only', () => {
+    const built = buildDtachOrphanCandidatesFromProcesses(
+      [
+        { pid: 1, cmdline: 'bash', startTimeMs: 0 },
+        { pid: 2, cmdline, startTimeMs: 0 },
+      ],
+      {
+        now: 120_000,
+        liveSessionIds: new Set(),
+        socketExists: () => true,
+      },
+    );
+    expect(built.map((c) => c.pid)).toEqual([2]);
+    expect(built[0]!.socketExists).toBe(true);
+  });
+});
+
+describe('planHostStaleDtachReap (issue #2356)', () => {
+  it('refuses all eligible pids when host count is under the soft bound', () => {
+    const plan = planHostStaleDtachReap(
+      [
+        buildDtachOrphanCandidate({ pid: 1 }),
+        buildDtachOrphanCandidate({ pid: 2 }),
+        buildDtachOrphanCandidate({ pid: 3, liveSessionPresent: true }),
+      ],
+      { dtachCount: DEFAULT_DTACH_PRESSURE_SOFT_BOUND - 1 },
+    );
+    expect(plan.underPressure).toBe(false);
+    expect(plan.toReap).toEqual([]);
+    expect(plan.eligibleCount).toBe(2);
+    expect(plan.skippedUnderBound).toBe(2);
+    expect(plan.skippedLiveAttached).toBe(1);
+    expect(plan.skippedRateLimited).toBe(0);
+  });
+
+  it('selects eligible masters when count ≥ soft bound and rate-limits', () => {
+    const candidates = Array.from({ length: 8 }, (_, i) =>
+      buildDtachOrphanCandidate({ pid: 100 + i }),
+    );
+    const plan = planHostStaleDtachReap(candidates, {
+      dtachCount: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+      maxReapsPerSweep: DEFAULT_HOST_STALE_DTACH_MAX_REAPS_PER_SWEEP,
+    });
+    expect(plan.underPressure).toBe(true);
+    expect(plan.toReap.map((c) => c.pid)).toEqual([100, 101, 102, 103, 104]);
+    expect(plan.skippedRateLimited).toBe(3);
+    expect(plan.skippedUnderBound).toBe(0);
+  });
+
+  it('never selects live-attached or socket-present masters even under pressure', () => {
+    const plan = planHostStaleDtachReap(
+      [
+        buildDtachOrphanCandidate({ pid: 1, liveSessionPresent: true }),
+        buildDtachOrphanCandidate({ pid: 2, socketExists: true }),
+        buildDtachOrphanCandidate({ pid: 3 }),
+      ],
+      { dtachCount: 50, maxReapsPerSweep: 10 },
+    );
+    expect(plan.toReap.map((c) => c.pid)).toEqual([3]);
+    expect(plan.skippedLiveAttached).toBe(1);
+    expect(plan.skippedSocketPresent).toBe(1);
+  });
+
+  it('softBound <= 0 disables the pressure gate', () => {
+    const plan = planHostStaleDtachReap([buildDtachOrphanCandidate({ pid: 9 })], {
+      dtachCount: 0,
+      softBound: 0,
+    });
+    expect(plan.underPressure).toBe(true);
+    expect(plan.toReap.map((c) => c.pid)).toEqual([9]);
+    expect(plan.skippedUnderBound).toBe(0);
+  });
+
+  it('maxReapsPerSweep <= 0 selects nobody (rate-limit closed)', () => {
+    const plan = planHostStaleDtachReap([buildDtachOrphanCandidate({ pid: 1 })], {
+      dtachCount: 99,
+      maxReapsPerSweep: 0,
+    });
+    expect(plan.toReap).toEqual([]);
+    expect(plan.skippedRateLimited).toBe(1);
   });
 });
