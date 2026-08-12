@@ -20,6 +20,7 @@ import {
   summarizeNonCriticalTimerPause,
   summarizeSnapshotShed,
   summarizeHookIngestion,
+  summarizeLaunchDependencies,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
@@ -906,6 +907,85 @@ describe('kookr-status renderReport', () => {
     };
     expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
       .not.toContain('Hook ingestion lag:');
+  });
+
+  it('surfaces elevated launchDependencies with per-dependency categories (issue #2363)', () => {
+    const health = {
+      ...baseHealth,
+      launchDependencies: {
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 8,
+        totalFindings: 9,
+        dependencies: [
+          {
+            dependency: 'kb',
+            degradedTaskCount: 8,
+            findingCount: 8,
+            affectedTaskIds: ['a', 'b', 'c'],
+            categories: ['provider_api'],
+            lastOccurredAt: '2026-08-12T00:00:00.000Z',
+          },
+        ],
+        categories: [
+          {
+            category: 'provider_api',
+            degradedTaskCount: 8,
+            findingCount: 8,
+            affectedTaskIds: ['a', 'b', 'c'],
+            dependencies: ['kb'],
+            lastOccurredAt: '2026-08-12T00:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain('Launch dependencies: degraded=8  kb=8 (provider_api)');
+    // Slim human line must not dump affected task ids.
+    expect(out).not.toContain('affectedTaskIds');
+    expect(out).not.toContain('a, b, c');
+  });
+
+  it('renders multi-dependency launchDependencies segments (issue #2363)', () => {
+    const health = {
+      ...baseHealth,
+      launchDependencies: {
+        totalDegradedTasks: 3,
+        totalFindings: 4,
+        dependencies: [
+          {
+            dependency: 'kb',
+            degradedTaskCount: 2,
+            categories: ['provider_api', 'unknown'],
+          },
+          {
+            dependency: 'gh',
+            degradedTaskCount: 1,
+            categories: ['auth'],
+          },
+        ],
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Launch dependencies: degraded=3  kb=2 (provider_api, unknown)  gh=1 (auth)',
+    );
+  });
+
+  it('is a no-op when launchDependencies is zero or absent (issue #2363)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Launch dependencies:');
+    const zeroed = {
+      ...baseHealth,
+      launchDependencies: {
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+        categories: [],
+      },
+    };
+    expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
+      .not.toContain('Launch dependencies:');
   });
 
   it('always surfaces lessonYield as a compact gauge when present (issue #2305)', () => {
@@ -1942,6 +2022,95 @@ describe('kookr-status summarizeHookIngestion (issue #2319)', () => {
   });
 });
 
+describe('kookr-status summarizeLaunchDependencies (issue #2363)', () => {
+  it('returns null when launchDependencies is absent', () => {
+    expect(summarizeLaunchDependencies({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when totals are non-numeric or negative', () => {
+    expect(
+      summarizeLaunchDependencies({
+        launchDependencies: {
+          totalDegradedTasks: 'x' as unknown as number,
+          totalFindings: 0,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeLaunchDependencies({
+        launchDependencies: {
+          totalDegradedTasks: 0,
+          totalFindings: -1,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zero degraded (for --json)', () => {
+    expect(
+      summarizeLaunchDependencies({
+        launchDependencies: {
+          schemaVersion: 'launch-dependency-diagnostics.v1',
+          totalDegradedTasks: 0,
+          totalFindings: 0,
+          dependencies: [],
+          categories: [],
+        },
+      }),
+    ).toEqual({
+      totalDegradedTasks: 0,
+      totalFindings: 0,
+      dependencies: [],
+    });
+  });
+
+  it('returns slim multi-dependency counts without affectedTaskIds', () => {
+    expect(
+      summarizeLaunchDependencies({
+        launchDependencies: {
+          totalDegradedTasks: 3.9,
+          totalFindings: 4.2,
+          dependencies: [
+            {
+              dependency: 'kb',
+              degradedTaskCount: 2.7,
+              findingCount: 3,
+              affectedTaskIds: ['t1', 't2'],
+              categories: ['provider_api', 'unknown'],
+              lastOccurredAt: '2026-08-12T00:00:00.000Z',
+            },
+            {
+              dependency: 'gh',
+              degradedTaskCount: 1,
+              findingCount: 1,
+              affectedTaskIds: ['t3'],
+              categories: ['auth'],
+            },
+            // Malformed rows are skipped, not fatal.
+            { dependency: '', degradedTaskCount: 9 },
+            { dependency: 'bad', degradedTaskCount: 'x' as unknown as number },
+          ],
+        },
+      }),
+    ).toEqual({
+      totalDegradedTasks: 3,
+      totalFindings: 4,
+      dependencies: [
+        {
+          dependency: 'kb',
+          degradedTaskCount: 2,
+          categories: ['provider_api', 'unknown'],
+        },
+        {
+          dependency: 'gh',
+          degradedTaskCount: 1,
+          categories: ['auth'],
+        },
+      ],
+    });
+  });
+});
+
 describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
   it('returns null when hungSuspectTtlReclaim is absent', () => {
     expect(summarizeHungSuspectTtlReclaim({ status: 'ok' })).toBeNull();
@@ -2450,8 +2619,8 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.highestSeverity).toBeUndefined();
     // No pipelineStarvation / staleProcesses / payloadDiet / firstHookMissTotal
     // / providerPausedOccupancy / nonCriticalTimerPause / snapshotShed /
-    // hungSuspectTtlReclaim / lessonYield block on /api/health → no slim
-    // summary (no-op).
+    // hungSuspectTtlReclaim / lessonYield / launchDependencies block on
+    // /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
@@ -2461,6 +2630,7 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.snapshotShed).toBeUndefined();
     expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
     expect(envelope.details.lessonYield).toBeUndefined();
+    expect(envelope.details.launchDependencies).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
@@ -2957,6 +3127,96 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.hookIngestion).toBeUndefined();
+  });
+
+  it('includes details.launchDependencies in --json when present, including zeros (issue #2363)', async () => {
+    mockSuccessfulFetch([], {
+      launchDependencies: {
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+        categories: [],
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.launchDependencies).toEqual({
+      totalDegradedTasks: 0,
+      totalFindings: 0,
+      dependencies: [],
+    });
+  });
+
+  it('includes a slim multi-dependency launchDependencies summary in --json (issue #2363)', async () => {
+    mockSuccessfulFetch([], {
+      launchDependencies: {
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 8,
+        totalFindings: 9,
+        dependencies: [
+          {
+            dependency: 'kb',
+            degradedTaskCount: 8,
+            findingCount: 8,
+            affectedTaskIds: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+            categories: ['provider_api'],
+            lastOccurredAt: '2026-08-12T00:00:00.000Z',
+          },
+          {
+            dependency: 'gh',
+            degradedTaskCount: 1,
+            findingCount: 1,
+            affectedTaskIds: ['z'],
+            categories: ['auth'],
+          },
+        ],
+        categories: [
+          {
+            category: 'provider_api',
+            degradedTaskCount: 8,
+            findingCount: 8,
+            affectedTaskIds: ['a'],
+            dependencies: ['kb'],
+          },
+        ],
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.launchDependencies).toEqual({
+      totalDegradedTasks: 8,
+      totalFindings: 9,
+      dependencies: [
+        {
+          dependency: 'kb',
+          degradedTaskCount: 8,
+          categories: ['provider_api'],
+        },
+        {
+          dependency: 'gh',
+          degradedTaskCount: 1,
+          categories: ['auth'],
+        },
+      ],
+    });
+    // Slim projection must not dump full task-id lists.
+    expect(JSON.stringify(envelope.details.launchDependencies)).not.toContain('affectedTaskIds');
+  });
+
+  it('omits details.launchDependencies in --json when absent (issue #2363)', async () => {
+    mockSuccessfulFetch([], {});
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.launchDependencies).toBeUndefined();
   });
 
   it('includes a slim hungSuspectTtlReclaim summary in --json when residual elevated (issue #2229)', async () => {
