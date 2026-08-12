@@ -1,4 +1,5 @@
-import { apiFetch, fetchJson, getJson, type ApiResult } from './client.js';
+import { apiFetch, fetchJson, fetchResult, getJson, type ApiResult } from './client.js';
+import type { AgentType } from '../../shared/contracts/agent-types.js';
 
 /**
  * GET one task's full detail (prompt/criteria bodies), the payload the compact
@@ -51,4 +52,103 @@ export function getEvolutionRun<T>(taskId: string, signal: AbortSignal): Promise
  */
 export function getRalphLoopIterations<T>(taskId: string, signal: AbortSignal): Promise<T> {
   return getLatestOrThrow<T>(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/iterations`, signal);
+}
+
+// --- Cross-agent task migration (RFC: rfc-cross-agent-task-migration) -----
+
+/** One eligible migration candidate, as returned by `GET /api/tasks/migratable`. */
+export interface MigratableEligibleCandidate {
+  taskId: string;
+  name: string | null;
+  cwd: string;
+  fromAgent: AgentType;
+  status: string;
+  eligible: true;
+  worktreeShared: boolean;
+}
+
+/** One ineligible candidate, carrying the stable machine-readable block reason. */
+export interface MigratableBlockedCandidate {
+  taskId: string;
+  eligible: false;
+  reason: string;
+  worktreeShared: boolean | null;
+}
+
+export type MigratableCandidate = MigratableEligibleCandidate | MigratableBlockedCandidate;
+
+export interface MigratableResponse {
+  targetAgent: AgentType;
+  candidates: MigratableCandidate[];
+}
+
+export interface MigratableQuery {
+  targetAgent: AgentType;
+  fromAgent?: AgentType;
+  includeCancelled?: boolean;
+  onlyIsolated?: boolean;
+}
+
+/**
+ * GET the migratable-candidate preview for a target agent. Returns the
+ * ok/status/body envelope (rather than throwing) so callers — the batch
+ * dialog's live count — can treat a transient failure as "unknown" instead of
+ * an unhandled rejection.
+ */
+export function getMigratableTasks(
+  query: MigratableQuery,
+  signal?: AbortSignal,
+): Promise<ApiResult<MigratableResponse | { error: string } | null>> {
+  const params = new URLSearchParams({ targetAgent: query.targetAgent });
+  if (query.fromAgent) params.set('fromAgent', query.fromAgent);
+  if (query.includeCancelled) params.set('includeCancelled', 'true');
+  if (query.onlyIsolated) params.set('onlyIsolated', 'true');
+  return fetchResult<MigratableResponse | { error: string }>(
+    `/api/tasks/migratable?${params.toString()}`,
+    signal ? { signal } : undefined,
+  );
+}
+
+export type MigrateOutcome = 'migrated' | 'queued' | 'blocked';
+
+export interface MigrateTaskResult {
+  taskId: string;
+  outcome: MigrateOutcome;
+  reason?: string;
+  newTaskId?: string;
+  worktreeShared?: boolean;
+}
+
+export type MigrateScopeInput =
+  | { kind: 'ids'; taskIds: string[] }
+  | { kind: 'all'; fromAgent?: AgentType; includeCancelled?: boolean };
+
+export interface MigrateTasksRequestBody {
+  targetAgent: AgentType;
+  scope: MigrateScopeInput;
+  effort?: string;
+  setAsDefault?: boolean;
+  onlyIsolated?: boolean;
+}
+
+export interface MigrateTasksResponse {
+  targetAgent: AgentType;
+  defaultUpdated: boolean;
+  defaultUpdateReason?: string;
+  results: MigrateTaskResult[];
+}
+
+/**
+ * POST a migration request (single task or batch — see {@link MigrateScopeInput}).
+ * Returns the ok/status/body envelope; the body is either the success shape
+ * (narrow on `'results' in body`) or `{ error }` on a non-2xx.
+ */
+export function migrateTasks(
+  body: MigrateTasksRequestBody,
+): Promise<ApiResult<MigrateTasksResponse | { error: string }>> {
+  return fetchJson<MigrateTasksResponse | { error: string }>('/api/tasks/migrate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }

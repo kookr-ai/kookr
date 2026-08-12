@@ -132,6 +132,21 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     name: 'resume',
   },
   {
+    // Cross-agent task migration. Keep in sync with bin/kookr-migrate.js help.
+    name: 'migrate',
+    flags: [
+      '--to',
+      '--from',
+      '--all',
+      '--include-cancelled',
+      '--set-default',
+      '--only-isolated',
+      '--effort',
+      '--dry-run',
+      '--yes',
+    ],
+  },
+  {
     name: 'maintenance',
     subcommands: ['prune', 'backup'],
     flags: [...MAINTENANCE_PRUNE_FLAGS, ...MAINTENANCE_BACKUP_FLAGS],
@@ -388,6 +403,7 @@ function renderBashCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
+  const migrateFlags = flagsFor('migrate');
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
@@ -543,6 +559,9 @@ _kookr()
     resume)
       COMPREPLY=()
       ;;
+    migrate)
+      COMPREPLY=( $(compgen -W "${migrateFlags}" -- "\${cur}") )
+      ;;
     maintenance)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${maintenanceSubcommands}" -- "\${cur}") )
@@ -687,6 +706,7 @@ function renderZshCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
+  const migrateFlags = flagsFor('migrate');
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
@@ -808,6 +828,9 @@ _kookr()
       compadd -- ${drainSubcommands} ${drainFlags}
       ;;
     resume)
+      ;;
+    migrate)
+      compadd -- ${migrateFlags}
       ;;
     maintenance)
       if (( CURRENT == 3 )); then

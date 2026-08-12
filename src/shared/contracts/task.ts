@@ -67,7 +67,7 @@ export interface TaskLaunchPermissionPosture {
  * task record and schedule ledger show the full path (e.g. grok→claude then
  * claude→codex) instead of only the first hop.
  */
-export type AgentSubstitutionReason = 'schedule_sub' | 'quota_rotate';
+export type AgentSubstitutionReason = 'schedule_sub' | 'quota_rotate' | 'task_migrate';
 
 export interface AgentSubstitutionHop {
   reason: AgentSubstitutionReason;

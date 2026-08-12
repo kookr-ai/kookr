@@ -15,6 +15,13 @@ export interface LaunchOpts {
   cwd: string;
   criteria?: string;
   parentTaskId?: string;
+  /**
+   * Cross-agent migration lineage (RFC: rfc-cross-agent-task-migration). When
+   * set, the created task records this as the interrupted task it continues
+   * (`Task.migratedFromTaskId`). The migration use-case also stamps a
+   * `task_migrate` hop via {@link LaunchOpts.priorAgentSubstitutions}.
+   */
+  migratedFromTaskId?: string;
   /** Pre-set task name (e.g. from playbooks). Skips AI naming when set. */
   name?: string;
   /** Playbook identifier for traceability. */

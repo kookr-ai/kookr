@@ -578,6 +578,24 @@ kbd {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
+.btn-migrate-interrupted {
+  border: 1px solid var(--blue);
+  background: transparent;
+  color: var(--blue);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.btn-migrate-interrupted:hover {
+  background: rgba(96, 165, 250, 0.15);
+}
+.btn-migrate-interrupted:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
 
 .findings-count { color: var(--amber); }
 .findings-count-empty { color: var(--text-muted); }
@@ -4394,6 +4412,12 @@ textarea::-webkit-resizer { background: transparent; }
 .agent-type-select.compact select {
   padding: 6px 10px;
   font-size: 12px;
+}
+
+.detail-migrate-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Autonomy toggle */

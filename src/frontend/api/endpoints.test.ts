@@ -5,7 +5,7 @@ import {
   formatBlackoutSeconds,
   getDeployStatus,
 } from './deploy.js';
-import { patchTaskEdges } from './tasks.js';
+import { getMigratableTasks, migrateTasks, patchTaskEdges } from './tasks.js';
 import { createTaskShare, getTaskShares, SHARE_CSRF_HEADER } from './sharing.js';
 
 function stubFetch() {
@@ -78,6 +78,45 @@ describe('patchTaskEdges', () => {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ blocks: ['a'] }),
+    });
+  });
+});
+
+describe('getMigratableTasks', () => {
+  test('builds the query string with target/from/includeCancelled/onlyIsolated', async () => {
+    const spy = stubFetch();
+    const signal = new AbortController().signal;
+    await getMigratableTasks(
+      { targetAgent: 'codex-cli', fromAgent: 'claude-code', includeCancelled: true, onlyIsolated: true },
+      signal,
+    );
+    expect(spy).toHaveBeenCalledWith(
+      '/api/tasks/migratable?targetAgent=codex-cli&fromAgent=claude-code&includeCancelled=true&onlyIsolated=true',
+      { signal },
+    );
+  });
+
+  test('omits optional params when unset', async () => {
+    const spy = stubFetch();
+    await getMigratableTasks({ targetAgent: 'grok-build' });
+    expect(spy).toHaveBeenCalledWith('/api/tasks/migratable?targetAgent=grok-build');
+  });
+});
+
+describe('migrateTasks', () => {
+  test('POSTs the migrate endpoint with a JSON body', async () => {
+    const spy = stubFetch();
+    await migrateTasks({
+      targetAgent: 'codex-cli',
+      scope: { kind: 'ids', taskIds: ['t1'] },
+    });
+    expect(spy).toHaveBeenCalledWith('/api/tasks/migrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetAgent: 'codex-cli',
+        scope: { kind: 'ids', taskIds: ['t1'] },
+      }),
     });
   });
 });
