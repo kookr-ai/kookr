@@ -275,6 +275,21 @@ describe('AchievementWatcher', () => {
       expect(data.unlocked).toHaveProperty('first-response');
     });
 
+    test('persist writes compact JSON smaller than pretty form (issue #2339)', async () => {
+      watcher.check({ type: 'client', action: 'respond' });
+
+      const raw = await waitForFile(filePath);
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      expect(parsed.unlocked).toHaveProperty('first-response');
+
+      // Compact form: no multi-line indent (optional trailing newline only).
+      expect(raw.trimEnd()).not.toMatch(/\n\s+/);
+      const compactBytes = Buffer.byteLength(raw, 'utf-8');
+      const prettyBytes = Buffer.byteLength(JSON.stringify(parsed, null, 2), 'utf-8');
+      expect(compactBytes).toBeLessThan(prettyBytes);
+      expect(raw).toBe(JSON.stringify(parsed));
+    });
+
     test('pre-existing unlocks are respected', () => {
       const preloaded = new AchievementWatcher(
         filePath,
