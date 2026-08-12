@@ -206,7 +206,7 @@ describe('readResourceWatchdogConfigFromEnv (issue #1724 / #2354)', () => {
     }
   });
 
-  test('auto-enable defaults true; 0/false/no/off disables page-only mode', () => {
+  test('auto-enable defaults true; 0/false/no/off selects page-only mode', () => {
     expect(readResourceWatchdogConfigFromEnv({}).autoEnableOnPressure).toBe(true);
     for (const raw of ['0', 'false', 'no', 'off', 'FALSE']) {
       expect(

@@ -217,7 +217,7 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
-ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
+ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),

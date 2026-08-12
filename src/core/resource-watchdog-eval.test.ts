@@ -519,4 +519,41 @@ describe('evaluateDisabledPressureAutoEnable (issue #2354)', () => {
       spawnsInWindow: 4,
     });
   });
+
+  test('suppresses further meta thrash once meta_reflection is already in window', () => {
+    let state = emptyResourceWatchdogState();
+    for (let i = 0; i < 4; i += 1) {
+      const t = nowMs - (i + 2) * 60 * 60 * 1000;
+      state = recordSpawn({
+        state,
+        nowIso: new Date(t).toISOString(),
+        nowMs: t,
+        kind: 'investigation',
+        taskId: `t-${i}`,
+        triggerReasons: ['dtach_soft_bound'],
+        retainMs: spawnBudgetWindowMs,
+      });
+    }
+    const metaAt = nowMs - throttleMs - 1;
+    state = recordSpawn({
+      state,
+      nowIso: new Date(metaAt).toISOString(),
+      nowMs: metaAt,
+      kind: 'meta_reflection',
+      taskId: 't-meta',
+      triggerReasons: ['dtach_soft_bound'],
+      retainMs: spawnBudgetWindowMs,
+    });
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: true,
+      dtachCount: 55,
+      state,
+      throttleMs,
+      spawnBudget24h: 4,
+      spawnBudgetWindowMs,
+      nowMs,
+    });
+    expect(decision.action).toBe('suppress_throttled');
+  });
 });

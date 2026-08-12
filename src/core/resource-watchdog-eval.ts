@@ -241,10 +241,10 @@ export function metaReflectionInWindow(
 
 /**
  * Default soft bound for `staleProcesses.dtach.count` on the
- * `pressureWhileDisabled` health signal (issue #2039). Lower than the
- * agent-family process ceiling (40) because a live prod observation fired at
- * ~21 dtach processes while the actuator was off — visibility should catch
- * that class of pressure without auto-enabling the watchdog.
+ * `pressureWhileDisabled` health signal (issue #2039) and the disabled-path
+ * auto-enable trigger (issue #2354). Lower than the agent-family process
+ * ceiling (40) because a live prod observation fired at ~21 dtach processes
+ * while continuous monitoring was off.
  */
 export const DEFAULT_DTACH_PRESSURE_SOFT_BOUND = 20;
 

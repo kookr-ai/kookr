@@ -187,12 +187,14 @@ export function buildWatchdogDisabledPressureAlert(args: {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
     summary:
-      'resourceWatchdog disabled under pressure — host-pressure auto-investigation will not spawn',
+      'resourceWatchdog master off under pressure — continuous monitoring disabled',
     details:
       `Issue #2078: pressureWhileDisabled stayed true for ≥ ${staleMin}m. `
       + `${reasonLine}.${countNote} `
-      + 'Page only — enable remains an operator decision '
-      + '(set KOOKR_RESOURCE_WATCHDOG=1). '
+      + 'Master switch remains an operator decision (set KOOKR_RESOURCE_WATCHDOG=1 '
+      + 'for continuous sampling). Default auto-enable may still spawn a rate-limited '
+      + 'investigation under soft-bound pressure (issue #2354; set '
+      + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only). '
       + 'Health: GET /api/health → resourceWatchdog.pressureWhileDisabled.',
     severity: 'warning',
     operationalAlert: {

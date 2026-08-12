@@ -206,10 +206,12 @@ describe('ResourceWatchdogService', () => {
 
   test('auto-enables rate-limited investigation under pressure (issue #2354)', async () => {
     const audit = new MemoryResourceWatchdogAuditSink();
+    const evaluate = vi.fn();
     const { service } = makeService({
       config: { enabled: false, autoEnableOnPressure: true },
       getStaleDtachCount: () => 33,
       audit,
+      pressureWhileDisabledAlerter: { evaluate },
     });
     await service.runOnce();
     expect(launches).toHaveLength(1);
@@ -217,6 +219,12 @@ describe('ResourceWatchdogService', () => {
     expect(launches[0]?.unattended).toBe(true);
     expect(launches[0]?.prompt).toContain('dtach_soft_bound');
     expect(audit.records.map((r) => r.action)).toEqual(['auto_enable', 'trigger', 'spawn']);
+    // Default path pages AND auto-spawns — alerter is not page-only gated.
+    expect(evaluate).toHaveBeenCalledWith({
+      pressureWhileDisabled: true,
+      reason: expect.stringContaining('staleProcesses.dtach.count=33'),
+      dtachCount: 33,
+    });
     const snap = service.getHealthSnapshot({ staleDtachCount: 33 });
     expect(snap.enabled).toBe(false);
     expect(snap.pressureWhileDisabled).toBe(true);
@@ -231,6 +239,7 @@ describe('ResourceWatchdogService', () => {
     expect(service.getHealthSnapshot({ staleDtachCount: 33 }).lastDecision).toBe(
       'suppress_throttled',
     );
+    expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
   test('spawns investigation with hard-rules prompt on pressure', async () => {
