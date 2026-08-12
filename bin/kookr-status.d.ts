@@ -76,6 +76,28 @@ export interface HealthLike {
     dtach?: StaleProcessClassHealthLike;
     relayServer?: StaleProcessClassHealthLike;
   };
+  /**
+   * Host-stale dtach reaper gauges (issues #2356 / #2384 / #2386). Present when
+   * the reaper service is wired; omitted on older servers.
+   */
+  hostStaleDtachReaper?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    softBound?: number;
+    maxReapsPerSweep?: number;
+    lastSweepAt?: string | null;
+    lastDtachCount?: number | null;
+    lastUnderPressure?: boolean;
+    lastHostStaleDtachReaped?: number;
+    totalHostStaleDtachReaped?: number;
+    skippedLiveAttached?: number;
+    skippedUnderBound?: number;
+    skippedRateLimited?: number;
+    skippedSocketPresent?: number;
+    lastEligibleCount?: number;
+    lastReapedAlways?: number;
+    lastReapedUnderPressure?: number;
+  };
   payloadDiet?: {
     trackedTasks?: number;
     terminalTasks?: number;
@@ -274,6 +296,17 @@ export interface StaleProcessesSummary {
   relayServer?: StaleProcessClassSummary;
 }
 
+/**
+ * Slim host-stale dtach reaper gauge (issue #2386). Elevated only —
+ * under pressure or reaped totals > 0.
+ */
+export interface HostStaleDtachReaperSummary {
+  lastUnderPressure: boolean;
+  lastDtachCount: number | null;
+  lastHostStaleDtachReaped: number;
+  totalHostStaleDtachReaped: number;
+}
+
 export interface PayloadDietSummary {
   trackedTasks: number;
   terminalTasks: number;
@@ -417,6 +450,9 @@ export function summarizePipelineStarvation(
 export function summarizeStaleProcesses(
   health: HealthLike,
 ): StaleProcessesSummary | null;
+export function summarizeHostStaleDtachReaper(
+  health: HealthLike,
+): HostStaleDtachReaperSummary | null;
 export function summarizePayloadDiet(
   health: HealthLike,
 ): PayloadDietSummary | null;

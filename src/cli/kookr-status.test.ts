@@ -11,6 +11,7 @@ import {
   highestKnownSeverity,
   summarizePipelineStarvation,
   summarizeStaleProcesses,
+  summarizeHostStaleDtachReaper,
   summarizePayloadDiet,
   summarizeHookReplayCheckpoints,
   summarizeFirstHookMiss,
@@ -548,6 +549,59 @@ describe('kookr-status renderReport', () => {
     };
     expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
       .not.toContain('Stale processes:');
+  });
+
+  it('surfaces hostStaleDtachReaper when under pressure (issue #2386)', () => {
+    const health = {
+      ...baseHealth,
+      hostStaleDtachReaper: {
+        enabled: true,
+        dryRun: false,
+        softBound: 20,
+        maxReapsPerSweep: 5,
+        lastSweepAt: '2026-08-12T00:00:00.000Z',
+        lastDtachCount: 24,
+        lastUnderPressure: true,
+        lastHostStaleDtachReaped: 0,
+        totalHostStaleDtachReaped: 1,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Host-stale dtach reaper: underPressure=true  dtach=24  lastReaped=0  totalReaped=1',
+    );
+  });
+
+  it('surfaces hostStaleDtachReaper when reaped totals are elevated without pressure (issue #2386)', () => {
+    const health = {
+      ...baseHealth,
+      hostStaleDtachReaper: {
+        lastDtachCount: 3,
+        lastUnderPressure: false,
+        lastHostStaleDtachReaped: 2,
+        totalHostStaleDtachReaped: 5,
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'Host-stale dtach reaper: underPressure=false  dtach=3  lastReaped=2  totalReaped=5',
+    );
+  });
+
+  it('is a no-op for quiet hostStaleDtachReaper fleet (issue #2386)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Host-stale dtach reaper:');
+    const quiet = {
+      ...baseHealth,
+      hostStaleDtachReaper: {
+        lastDtachCount: 4,
+        lastUnderPressure: false,
+        lastHostStaleDtachReaped: 0,
+        totalHostStaleDtachReaped: 0,
+      },
+    };
+    expect(renderReport({ port: 4800, health: quiet, agents: [] }))
+      .not.toContain('Host-stale dtach reaper:');
   });
 
   it('always surfaces payloadDiet as a compact gauge when present (issue #2220)', () => {
@@ -1397,6 +1451,67 @@ describe('kookr-status summarizeStaleProcesses (issue #2209)', () => {
       }),
     ).toEqual({
       relayServer: { count: 5, rssBytes: 1024 },
+    });
+  });
+});
+
+describe('kookr-status summarizeHostStaleDtachReaper (issue #2386)', () => {
+  it('returns null when hostStaleDtachReaper is absent', () => {
+    expect(summarizeHostStaleDtachReaper({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null for a quiet fleet (no pressure, zero reaped)', () => {
+    expect(
+      summarizeHostStaleDtachReaper({
+        hostStaleDtachReaper: {
+          lastDtachCount: 4,
+          lastUnderPressure: false,
+          lastHostStaleDtachReaped: 0,
+          totalHostStaleDtachReaped: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns slim projection when lastUnderPressure is true', () => {
+    expect(
+      summarizeHostStaleDtachReaper({
+        hostStaleDtachReaper: {
+          enabled: true,
+          dryRun: false,
+          softBound: 20,
+          lastDtachCount: 24.7,
+          lastUnderPressure: true,
+          lastHostStaleDtachReaped: 0,
+          totalHostStaleDtachReaped: 1.9,
+          // Extra health fields must not leak into the slim summary.
+          skippedLiveAttached: 9,
+          lastReapedAlways: 1,
+        },
+      }),
+    ).toEqual({
+      lastUnderPressure: true,
+      lastDtachCount: 24,
+      lastHostStaleDtachReaped: 0,
+      totalHostStaleDtachReaped: 1,
+    });
+  });
+
+  it('returns slim projection when reaped totals are elevated without pressure', () => {
+    expect(
+      summarizeHostStaleDtachReaper({
+        hostStaleDtachReaper: {
+          lastDtachCount: null,
+          lastUnderPressure: false,
+          lastHostStaleDtachReaped: 3,
+          totalHostStaleDtachReaped: 0,
+        },
+      }),
+    ).toEqual({
+      lastUnderPressure: false,
+      lastDtachCount: null,
+      lastHostStaleDtachReaped: 3,
+      totalHostStaleDtachReaped: 0,
     });
   });
 });
@@ -2727,6 +2842,7 @@ describe('kookr-status main (integration-style)', () => {
     // /api/health → no slim summary (no-op).
     expect(envelope.details.pipelineStarvation).toBeUndefined();
     expect(envelope.details.staleProcesses).toBeUndefined();
+    expect(envelope.details.hostStaleDtachReaper).toBeUndefined();
     expect(envelope.details.payloadDiet).toBeUndefined();
     expect(envelope.details.firstHookMissTotal).toBeUndefined();
     expect(envelope.details.providerPausedOccupancy).toBeUndefined();
@@ -2735,6 +2851,51 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.hungSuspectTtlReclaim).toBeUndefined();
     expect(envelope.details.lessonYield).toBeUndefined();
     expect(envelope.details.launchDependencies).toBeUndefined();
+  });
+
+  it('includes a slim hostStaleDtachReaper summary in --json when elevated (issue #2386)', async () => {
+    mockSuccessfulFetch([], {
+      hostStaleDtachReaper: {
+        enabled: true,
+        dryRun: false,
+        softBound: 20,
+        maxReapsPerSweep: 5,
+        lastSweepAt: '2026-08-12T00:00:00.000Z',
+        lastDtachCount: 24,
+        lastUnderPressure: true,
+        lastHostStaleDtachReaped: 0,
+        totalHostStaleDtachReaped: 1,
+        skippedLiveAttached: 9,
+        lastReapedAlways: 1,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.hostStaleDtachReaper).toEqual({
+      lastUnderPressure: true,
+      lastDtachCount: 24,
+      lastHostStaleDtachReaped: 0,
+      totalHostStaleDtachReaped: 1,
+    });
+  });
+
+  it('omits details.hostStaleDtachReaper in --json for a quiet fleet (issue #2386)', async () => {
+    mockSuccessfulFetch([], {
+      hostStaleDtachReaper: {
+        lastDtachCount: 4,
+        lastUnderPressure: false,
+        lastHostStaleDtachReaped: 0,
+        totalHostStaleDtachReaped: 0,
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(envelope.details.hostStaleDtachReaper).toBeUndefined();
   });
 
   it('includes a slim pipelineStarvation summary in --json when elevated (issue #2183)', async () => {
