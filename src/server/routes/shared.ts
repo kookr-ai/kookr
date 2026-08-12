@@ -437,6 +437,14 @@ export interface RouteDeps {
    */
   getPayloadDietStats?: () => import('../maintenance-prune-schedule.js').PayloadDietStats;
   /**
+   * Emergency maintenance-prune gauges (issue #2344). `/api/health` reads only
+   * the in-memory emergency counters (triggered total / last run / reclaimed
+   * bytes) — never starts a prune on the request path. Absent ⇒ health omits
+   * the `maintenancePrune` block.
+   */
+  getMaintenancePruneHealth?: () =>
+    import('../maintenance-prune-schedule.js').EmergencyMaintenancePruneHealthSnapshot | undefined;
+  /**
    * Hook replay-checkpoint gauges (issue #2281). `/api/health` reads only the
    * slim `getReplayCheckpointStats()` snapshot — in-memory session count plus
    * `stat().size` for file bytes. Must never parse the (multi-MB) checkpoint

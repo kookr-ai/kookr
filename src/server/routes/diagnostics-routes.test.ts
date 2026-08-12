@@ -1154,6 +1154,76 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — maintenancePrune block (issue #2344)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health maintenancePrune block (issue #2344)', () => {
+    test('omits maintenancePrune when getMaintenancePruneHealth is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { maintenancePrune?: unknown };
+      expect(body.maintenancePrune).toBeUndefined();
+    });
+
+    test('projects emergency prune counters from the getter', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaintenancePruneHealth: () => ({
+          emergencyPruneTriggeredTotal: 2,
+          lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+          lastReclaimedBytes: 4096,
+          throttleMs: 3_600_000,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        maintenancePrune: {
+          emergencyPruneTriggeredTotal: number;
+          lastEmergencyPruneAt: string | null;
+          lastReclaimedBytes: number | null;
+          throttleMs: number;
+        };
+      };
+      expect(body.maintenancePrune).toEqual({
+        emergencyPruneTriggeredTotal: 2,
+        lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+        lastReclaimedBytes: 4096,
+        throttleMs: 3_600_000,
+      });
+    });
+
+    test('projects zero / null counters before any emergency edge', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaintenancePruneHealth: () => ({
+          emergencyPruneTriggeredTotal: 0,
+          lastEmergencyPruneAt: null,
+          lastReclaimedBytes: null,
+          throttleMs: 3_600_000,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        maintenancePrune: {
+          emergencyPruneTriggeredTotal: number;
+          lastEmergencyPruneAt: string | null;
+          lastReclaimedBytes: number | null;
+        };
+      };
+      expect(body.maintenancePrune.emergencyPruneTriggeredTotal).toBe(0);
+      expect(body.maintenancePrune.lastEmergencyPruneAt).toBeNull();
+      expect(body.maintenancePrune.lastReclaimedBytes).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — hookReplayCheckpoints block (issue #2281)
   // ---------------------------------------------------------------------------
   describe('GET /api/health hookReplayCheckpoints block (issue #2281)', () => {
