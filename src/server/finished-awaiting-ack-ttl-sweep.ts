@@ -8,6 +8,7 @@ import {
   finishedAwaitingAckOpenPrFailsafeSkipTotal,
   taskHasLiveTurn,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
+  DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
   type FinishedAwaitingAckReclaimCandidateOutcome,
   type FinishedAwaitingAckReclaimSkipCounts,
 } from '../core/finished-awaiting-ack-ttl.js';
@@ -18,8 +19,9 @@ import { analyzePaneSemantics } from '../shared/pane-semantics.js';
 /** Cap last-pass outcome samples on health (issue #2084 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
 
-/** Age histogram buckets (ms) for meta FAA auto-complete (issue #2070). */
+/** Age histogram buckets (ms) for meta FAA auto-complete + pressure reclaim (issues #2070 / #2355). */
 export const META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS = [
+  5 * 60_000,
   12 * 60_000,
   15 * 60_000,
   30 * 60_000,
@@ -27,7 +29,7 @@ export const META_FAA_AUTO_COMPLETE_AGE_BUCKETS_MS = [
   120 * 60_000,
 ] as const;
 
-/** In-memory snapshot for `/metrics` + `/api/health` (issues #1884 / #2070 / #2084). */
+/** In-memory snapshot for `/metrics` + `/api/health` (issues #1884 / #2070 / #2084 / #2355). */
 export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   /** Cumulative finishedAwaitingAck tasks force-completed by the strict TTL reclaim since process start. */
   reclaimedTotal: number;
@@ -38,6 +40,11 @@ export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   reclaimAttempted: number;
   /** Cumulative successful force-completes — equal to {@link reclaimedTotal}. */
   reclaimSucceeded: number;
+  /**
+   * Cumulative successful reclaim under capacity-pressure soft TTL (issue #2355).
+   * Subset of {@link reclaimedTotal}; hard-path reclaim does not increment this.
+   */
+  capacityPressureEarlyReclaimedTotal: number;
   /** Skip-reason breakdown for finishedAwaitingAck candidates not selected (issue #2084). */
   skippedBadRaisedAt: number;
   /**
@@ -69,20 +76,28 @@ export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   /** Cumulative TOCTOU deferrals (live turn / interactive pane) on the #2070 path. */
   autoCompleteDeferredTotal: number;
   /**
-   * Age-at-auto-complete histogram counts, keyed by upper-bound minutes
-   * (`"12"`, `"15"`, …, `"+Inf"`). Cumulative since process start.
+   * Age-at-auto-complete / pressure-reclaim histogram counts, keyed by
+   * upper-bound minutes (`"5"`, `"12"`, `"15"`, …, `"+Inf"`). Cumulative
+   * since process start. Meta auto-complete and capacity-pressure early
+   * reclaim both record ages here (issue #2355).
    */
   autoCompleteAgeHistogram: Record<string, number>;
+  /** Soft TTL used on the last selection pass (issue #2355), or null if never set. */
+  softTtlMs: number | null;
+  /** Whether capacity-pressure early reclaim was enabled on the last pass (issue #2355). */
+  capacityEarlyReclaim: boolean;
 }
 
 /**
  * Process-lifetime counters for finishedAwaitingAck reclaim (#1884),
- * meta auto-complete (#2070), and skip-reason breakdown (#2084). One instance
- * at bootstrap, threaded into the sweep, `/metrics`, and `/api/health`.
+ * meta auto-complete (#2070), skip-reason breakdown (#2084), and
+ * capacity-pressure soft reclaim (#2355). One instance at bootstrap,
+ * threaded into the sweep, `/metrics`, and `/api/health`.
  */
 export class FinishedAwaitingAckTtlReclaimMetrics {
   private reclaimedTotal = 0;
   private reclaimAttempted = 0;
+  private capacityPressureEarlyReclaimedTotal = 0;
   private skips: FinishedAwaitingAckReclaimSkipCounts =
     emptyFinishedAwaitingAckReclaimSkipCounts();
   private lastCandidatesConsidered = 0;
@@ -91,9 +106,19 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
   private autoCompletedTotal = 0;
   private autoCompleteDeferredTotal = 0;
   private autoCompleteAgeHistogram: Record<string, number> = emptyAgeHistogram();
+  private softTtlMs: number | null = null;
+  private capacityEarlyReclaim = false;
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
+  }
+
+  recordCapacityPressureEarlyReclaimed(count: number, agesMs: readonly number[] = []): void {
+    if (count > 0) this.capacityPressureEarlyReclaimedTotal += count;
+    for (const ageMs of agesMs) {
+      const key = ageHistogramBucketKey(ageMs);
+      this.autoCompleteAgeHistogram[key] = (this.autoCompleteAgeHistogram[key] ?? 0) + 1;
+    }
   }
 
   recordAttempted(count: number): void {
@@ -117,9 +142,20 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
     const outcomes = selection.outcomes ?? [];
     this.lastOutcomes = outcomes.slice(0, MAX_LAST_OUTCOMES).map((o) => ({ ...o }));
     this.lastAttemptedTaskIds = outcomes
-      .filter((o) => o.outcome === 'selected')
+      .filter(
+        (o) =>
+          o.outcome === 'selected' || o.outcome === 'capacity_pressure_early_reclaim',
+      )
       .map((o) => o.taskId)
       .slice(0, MAX_LAST_OUTCOMES);
+  }
+
+  /** Soft TTL + capacity gate used on the last selection pass (issue #2355). */
+  recordSoftTtlPolicy(opts: { softTtlMs: number; capacityEarlyReclaim: boolean }): void {
+    if (Number.isFinite(opts.softTtlMs) && opts.softTtlMs > 0) {
+      this.softTtlMs = Math.floor(opts.softTtlMs);
+    }
+    this.capacityEarlyReclaim = opts.capacityEarlyReclaim === true;
   }
 
   recordAutoCompleted(count: number, agesMs: readonly number[] = []): void {
@@ -139,6 +175,7 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
       reclaimedTotal: this.reclaimedTotal,
       reclaimAttempted: this.reclaimAttempted,
       reclaimSucceeded: this.reclaimedTotal,
+      capacityPressureEarlyReclaimedTotal: this.capacityPressureEarlyReclaimedTotal,
       skippedBadRaisedAt: this.skips.skipped_bad_raised_at,
       skippedOpenPrFailsafe: finishedAwaitingAckOpenPrFailsafeSkipTotal(this.skips),
       skippedOpenPrConfirmed: this.skips.skipped_open_pr_confirmed,
@@ -150,6 +187,8 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
       autoCompletedTotal: this.autoCompletedTotal,
       autoCompleteDeferredTotal: this.autoCompleteDeferredTotal,
       autoCompleteAgeHistogram: { ...this.autoCompleteAgeHistogram },
+      softTtlMs: this.softTtlMs,
+      capacityEarlyReclaim: this.capacityEarlyReclaim,
     };
   }
 }
@@ -210,8 +249,10 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
   metrics?: Pick<
     FinishedAwaitingAckTtlReclaimMetrics,
     | 'recordReclaimed'
+    | 'recordCapacityPressureEarlyReclaimed'
     | 'recordAttempted'
     | 'recordSelection'
+    | 'recordSoftTtlPolicy'
     | 'recordAutoCompleted'
     | 'recordAutoCompleteDeferred'
   >;
@@ -219,6 +260,8 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
 
 export interface ReclaimFinishedAwaitingAckTasksResult {
   reclaimedTaskIds: string[];
+  /** Subset of reclaimedTaskIds closed via capacity-pressure soft TTL (issue #2355). */
+  capacityPressureEarlyReclaimedTaskIds: string[];
   /** Meta/playbook FAA tasks auto-completed by the #2070 path this sweep. */
   autoCompletedTaskIds: string[];
   /** Candidates deferred by TOCTOU (live turn / interactive pane) this sweep. */
@@ -233,11 +276,14 @@ export interface ReclaimFinishedAwaitingAckTasksResult {
 }
 
 /**
- * Reclaim finishedAwaitingAck tasks past the TTL (issue #1884) and
- * age-gated meta/playbook auto-complete (issue #2070). Runs on the liveness
- * tick, after the pending-task TTL sweep.
+ * Reclaim finishedAwaitingAck tasks past the TTL (issue #1884), capacity-pressure
+ * soft TTL for `awaiting_poll` phantoms (issue #2355), and age-gated
+ * meta/playbook auto-complete (issue #2070). Runs on the liveness tick, after
+ * the pending-task TTL sweep.
  *
- * Strict path (#1884): force-complete when `isHoldingOpenPr === false` only.
+ * Strict path (#1884 / #2355): force-complete when `isHoldingOpenPr === false`
+ * only. Soft path under capacity pressure uses a shorter TTL for
+ * `awaiting_poll` only — never for `manual_review_gate` / `auto_close_disabled`.
  *
  * Meta path (#2070): allowlisted meta/playbook (or http-source) tasks past
  * the meta age gate, with relaxed PR fail-safe (only confirmed-open blocks)
@@ -251,12 +297,17 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   opts: {
     now?: Date;
     ttlMs?: number;
+    /** Soft TTL for capacity-pressure early reclaim (issue #2355). */
+    softTtlMs?: number;
+    /** When true, `awaiting_poll` may reclaim at soft TTL (issue #2355). */
+    capacityAllowsEarlyReclaim?: boolean;
     /** Meta auto-complete age gate; defaults to {@link DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS}. */
     metaAutoCompleteTtlMs?: number;
   } = {},
 ): Promise<ReclaimFinishedAwaitingAckTasksResult> {
   const empty: ReclaimFinishedAwaitingAckTasksResult = {
     reclaimedTaskIds: [],
+    capacityPressureEarlyReclaimedTaskIds: [],
     autoCompletedTaskIds: [],
     deferredTaskIds: [],
   };
@@ -264,20 +315,37 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   if (!lifecycleDeps) return empty;
 
   const now = opts.now ?? new Date();
-  // Issue #2084: accumulate skip-reason counts every pass so /api/health can
-  // explain residual finishedAwaitingAck when reclaimedTotal stays flat.
+  const softTtlMs = opts.softTtlMs ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
+  const capacityAllowsEarlyReclaim = opts.capacityAllowsEarlyReclaim === true;
+  deps.metrics?.recordSoftTtlPolicy({
+    softTtlMs,
+    capacityEarlyReclaim: capacityAllowsEarlyReclaim,
+  });
+
+  // Issue #2084 / #2355: accumulate skip-reason counts every pass so /api/health
+  // can explain residual finishedAwaitingAck when reclaimedTotal stays flat.
   const selection = selectExpiredFinishedAwaitingAckTasks(deps.taskStore.listTasks(), {
     now,
     ttlMs: opts.ttlMs,
+    softTtlMs,
+    capacityAllowsEarlyReclaim,
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
   deps.metrics?.recordSelection(selection);
   deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
-  for (const { task, ageMs } of selection.expired) {
+  const capacityPressureEarlyReclaimedTaskIds: string[] = [];
+  const capacityPressureAges: number[] = [];
+  for (const { task, ageMs, capacityPressureEarlyReclaim } of selection.expired) {
+    const reason = capacityPressureEarlyReclaim
+      ? 'finished_awaiting_ack_capacity_pressure'
+      : 'finished_awaiting_ack_ttl';
+    const actor = capacityPressureEarlyReclaim
+      ? 'system:finished-awaiting-ack-capacity-pressure'
+      : 'system:finished-awaiting-ack-ttl';
     try {
-      await completeTask(task.id, lifecycleDeps, { interactionLogReason: 'finished_awaiting_ack_ttl' });
+      await completeTask(task.id, lifecycleDeps, { interactionLogReason: reason });
     } catch (err) {
       // Raced a manual ack or another terminal transition — skip; the task is
       // no longer (only) finishedAwaitingAck, so it is somebody else's to finish.
@@ -289,22 +357,34 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     }
     deps.taskStore.clearPendingSignal(task.id);
     reclaimedTaskIds.push(task.id);
+    if (capacityPressureEarlyReclaim) {
+      capacityPressureEarlyReclaimedTaskIds.push(task.id);
+      capacityPressureAges.push(ageMs);
+    }
     console.warn(
-      `[finished-awaiting-ack-ttl] reclaimed task ${task.id} — finishedAwaitingAck ${Math.round(ageMs / 60_000)}m unacknowledged`,
+      `[finished-awaiting-ack-ttl] reclaimed task ${task.id} — finishedAwaitingAck ${Math.round(ageMs / 60_000)}m unacknowledged` +
+        (capacityPressureEarlyReclaim ? ' (capacity-pressure soft TTL)' : ''),
     );
 
     await appendAuditRow(deps.auditLogPath, {
-      type: 'task.finishedAwaitingAckTtlReclaimed',
+      type: capacityPressureEarlyReclaim
+        ? 'task.finishedAwaitingAckCapacityPressureReclaimed'
+        : 'task.finishedAwaitingAckTtlReclaimed',
       timestamp: nowISO(),
-      actor: 'system:finished-awaiting-ack-ttl',
+      actor,
       taskId: task.id,
-      reason: 'finished_awaiting_ack_ttl',
+      reason,
       ageMs,
       ...(opts.ttlMs !== undefined ? { ttlMs: opts.ttlMs } : {}),
+      ...(capacityPressureEarlyReclaim ? { softTtlMs } : {}),
     });
   }
 
   deps.metrics?.recordReclaimed(reclaimedTaskIds.length);
+  deps.metrics?.recordCapacityPressureEarlyReclaimed(
+    capacityPressureEarlyReclaimedTaskIds.length,
+    capacityPressureAges,
+  );
 
   // Issue #2070: meta/playbook FAA auto-complete for the unfetched-PR-ref residual.
   const alreadyHandled = new Set(reclaimedTaskIds);
@@ -381,8 +461,14 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   const totalClosed = reclaimedTaskIds.length + autoCompletedTaskIds.length;
   if (totalClosed > 0) {
     const parts: string[] = [];
-    if (reclaimedTaskIds.length > 0) {
-      parts.push(`${reclaimedTaskIds.length} strict-TTL`);
+    const hardCount = reclaimedTaskIds.length - capacityPressureEarlyReclaimedTaskIds.length;
+    if (hardCount > 0) {
+      parts.push(`${hardCount} hard-TTL`);
+    }
+    if (capacityPressureEarlyReclaimedTaskIds.length > 0) {
+      parts.push(
+        `${capacityPressureEarlyReclaimedTaskIds.length} capacity-pressure soft-TTL`,
+      );
     }
     if (autoCompletedTaskIds.length > 0) {
       parts.push(`${autoCompletedTaskIds.length} meta-auto-complete`);
@@ -394,6 +480,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
       details:
         'These tasks finished their work and signalled completion_ready, but sat unacknowledged past ' +
         'the finishedAwaitingAck age gate and were force-completed to free the active concurrency slot. ' +
+        'Capacity-pressure soft TTL (#2355) only accelerates awaiting_poll (never ask-first / open-PR holds). ' +
         'Meta/playbook auto-complete (#2070) only acts when TOCTOU is clean (no live turn / interactive pane). ' +
         'Review the completed task if manual follow-up is still needed.',
       severity: 'warning',
@@ -402,6 +489,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
 
   return {
     reclaimedTaskIds,
+    capacityPressureEarlyReclaimedTaskIds,
     autoCompletedTaskIds,
     deferredTaskIds,
     selection: {

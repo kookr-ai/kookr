@@ -7,9 +7,13 @@ import {
   isMetaFaaAutoCompleteEligible,
   taskHasLiveTurn,
   emptyFinishedAwaitingAckReclaimSkipCounts,
+  capacityAllowsFinishedAwaitingAckEarlyReclaim,
+  effectiveFinishedAwaitingAckSoftTtlMs,
   DEFAULT_FINISHED_AWAITING_ACK_TTL_MS,
+  DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   MAX_FINISHED_AWAITING_ACK_TTL_MS,
+  MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
 } from './finished-awaiting-ack-ttl.js';
 import type { Task } from './task-read-model.js';
 import type { SessionInfo } from './session-read-model.js';
@@ -386,6 +390,365 @@ describe('selectExpiredFinishedAwaitingAckTasks skip-reason breakdown (issue #20
       isHoldingOpenPr: () => false,
     });
     expect(listed.map((e) => e.task.id)).toEqual(selected.expired.map((e) => e.task.id));
+  });
+});
+
+describe('capacity-pressure soft TTL for awaiting_poll FAA (issue #2355)', () => {
+  const hardTtlMs = 15 * 60_000;
+  const softTtlMs = DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS; // 5m
+  // Stale threshold well above hard TTL so mid-age tasks stay awaiting_poll.
+  const staleThresholdMs = 60 * 60_000;
+
+  it('effectiveFinishedAwaitingAckSoftTtlMs clamps soft below hard and above min', () => {
+    expect(
+      effectiveFinishedAwaitingAckSoftTtlMs({
+        ttlMs: hardTtlMs,
+        softTtlMs,
+      }),
+    ).toBe(softTtlMs);
+    expect(
+      effectiveFinishedAwaitingAckSoftTtlMs({
+        ttlMs: 3 * 60_000,
+        softTtlMs: 10 * 60_000,
+      }),
+    ).toBe(3 * 60_000);
+    expect(
+      effectiveFinishedAwaitingAckSoftTtlMs({
+        ttlMs: hardTtlMs,
+        softTtlMs: 30_000,
+      }),
+    ).toBe(MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS);
+  });
+
+  it('capacityAllowsFinishedAwaitingAckEarlyReclaim requires empty queue + util or phantoms', () => {
+    // Live shape from issue #2355: effective util 62.5%, phantoms 6, empty queue.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 62.5,
+        phantomActive: 6,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+
+    // Util-only branch: low effective util with no phantoms still fires.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 62.5,
+        phantomActive: 0,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+
+    // High effective util but phantom-bound still fires with empty queue.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 90,
+        phantomActive: 4,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+
+    // Boundary: util at threshold + phantoms under bound → false.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 75,
+        phantomActive: 3,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(false);
+
+    // Non-empty pending queue blocks soft path even under low util.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 40,
+        phantomActive: 8,
+        pendingQueueDepth: 2,
+      }),
+    ).toBe(false);
+
+    // Healthy fleet: high util, few phantoms, empty queue.
+    expect(
+      capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: 90,
+        phantomActive: 1,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('past soft TTL with capacity pressure + awaiting_poll → capacity_pressure_early_reclaim', () => {
+    const softAged = faaTask({
+      id: 'soft-aged',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([softAged], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['soft-aged']);
+    expect(sel.expired[0]?.capacityPressureEarlyReclaim).toBe(true);
+    expect(sel.outcomes).toEqual([
+      {
+        taskId: 'soft-aged',
+        outcome: 'capacity_pressure_early_reclaim',
+        ageMs: softTtlMs + 60_000,
+      },
+    ]);
+  });
+
+  it('under soft TTL still skips even when capacity pressure allows early reclaim', () => {
+    const young = faaTask({
+      id: 'young',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs + 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([young], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+    expect(sel.outcomes[0]?.outcome).toBe('skipped_under_ttl');
+  });
+
+  it('past soft but under hard without capacity pressure still skips under_ttl', () => {
+    const mid = faaTask({
+      id: 'mid',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([mid], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: false,
+      staleThresholdMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+  });
+
+  it('past hard TTL under pressure is hard-path selected (not capacity_pressure_early_reclaim)', () => {
+    const hardAged = faaTask({
+      id: 'hard-aged',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - hardTtlMs - 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([hardAged], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['hard-aged']);
+    expect(sel.expired[0]?.capacityPressureEarlyReclaim).toBe(false);
+    expect(sel.outcomes[0]?.outcome).toBe('selected');
+  });
+
+  it('open-PR failsafe still blocks soft-path reclaim', () => {
+    const softAged = faaTask({
+      id: 'soft-pr',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const confirmed = selectExpiredFinishedAwaitingAckTasks([softAged], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs,
+      isHoldingOpenPr: () => true,
+    });
+    expect(confirmed.expired).toEqual([]);
+    expect(confirmed.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(confirmed.outcomes[0]?.outcome).toBe('skipped_open_pr_confirmed');
+
+    const unknown = selectExpiredFinishedAwaitingAckTasks([softAged], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs,
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(unknown.expired).toEqual([]);
+    expect(unknown.skips.skipped_open_pr_unknown).toBe(1);
+  });
+
+  it('ask-first never uses soft TTL under production defaults (stays awaiting_poll until hard)', () => {
+    // With default stale 60m and hard 15m, ask-first is still awaiting_poll at
+    // soft+ε. Soft path must not collapse the human review hold — hard TTL and
+    // open-PR failsafe remain the only automated reclaim for ask-first.
+    const softAged = faaTask({
+      id: 'ask-first-soft',
+      deliveryAuthorization: 'ask-first',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([softAged], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      // Omit staleThresholdMs → production default (60m).
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(1);
+    expect(sel.outcomes[0]?.outcome).toBe('skipped_under_ttl');
+  });
+
+  it('manual_review_gate / auto_close_disabled never use soft TTL (cause filter)', () => {
+    // Use a short stale threshold so age is past stale → stall cause (not
+    // awaiting_poll), still under hard TTL so only soft path could select —
+    // and must not.
+    const shortStale = 10 * 60_000;
+    const ageMs = 12 * 60_000; // past shortStale, under hardTtl
+
+    const manualReview = faaTask({
+      id: 'manual',
+      deliveryAuthorization: 'ask-first',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ageMs).toISOString(),
+      },
+    });
+    const autoCloseOff = faaTask({
+      id: 'auto-off',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ageMs).toISOString(),
+      },
+    });
+
+    const sel = selectExpiredFinishedAwaitingAckTasks([manualReview, autoCloseOff], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => false,
+    });
+    // Both are past short stale → not awaiting_poll → hard TTL only → under hard → skip.
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_under_ttl).toBe(2);
+    expect(sel.outcomes.every((o) => o.outcome === 'skipped_under_ttl')).toBe(true);
+  });
+
+  it('decision table: causes × age × open-PR × pressure', () => {
+    type Outcome = ReturnType<
+      typeof selectExpiredFinishedAwaitingAckTasks
+    >['outcomes'][number]['outcome'];
+
+    const shortStale = 10 * 60_000;
+    const rows: Array<{
+      id: string;
+      ageMs: number;
+      openPr: boolean | undefined;
+      pressure: boolean;
+      deliveryAuthorization?: 'ask-first';
+      autoCloseOnSignal?: boolean;
+      expectOutcome: Outcome;
+    }> = [
+      // awaiting_poll, soft-aged, pressure, no PR → early reclaim
+      {
+        id: 'poll-soft-pressure',
+        ageMs: softTtlMs + 30_000,
+        openPr: false,
+        pressure: true,
+        expectOutcome: 'capacity_pressure_early_reclaim',
+      },
+      // awaiting_poll, soft-aged, no pressure → under_ttl
+      {
+        id: 'poll-soft-nopressure',
+        ageMs: softTtlMs + 30_000,
+        openPr: false,
+        pressure: false,
+        expectOutcome: 'skipped_under_ttl',
+      },
+      // awaiting_poll, soft-aged, pressure, open PR → confirmed skip
+      {
+        id: 'poll-soft-pr',
+        ageMs: softTtlMs + 30_000,
+        openPr: true,
+        pressure: true,
+        expectOutcome: 'skipped_open_pr_confirmed',
+      },
+      // awaiting_poll, hard-aged, no pressure → selected
+      {
+        id: 'poll-hard',
+        ageMs: hardTtlMs + 30_000,
+        openPr: false,
+        pressure: false,
+        expectOutcome: 'selected',
+      },
+      // manual_review_gate past stale, under hard, pressure → under_ttl (no soft)
+      {
+        id: 'manual-mid-pressure',
+        ageMs: 12 * 60_000,
+        openPr: false,
+        pressure: true,
+        deliveryAuthorization: 'ask-first',
+        autoCloseOnSignal: false,
+        expectOutcome: 'skipped_under_ttl',
+      },
+      // young under soft even with pressure → under_ttl
+      {
+        id: 'young-pressure',
+        ageMs: softTtlMs - 30_000,
+        openPr: false,
+        pressure: true,
+        expectOutcome: 'skipped_under_ttl',
+      },
+    ];
+
+    for (const row of rows) {
+      const task = faaTask({
+        id: row.id,
+        deliveryAuthorization: row.deliveryAuthorization,
+        autoCloseOnSignal: row.autoCloseOnSignal,
+        pendingSignal: {
+          kind: 'completion_ready',
+          raisedAt: new Date(NOW.getTime() - row.ageMs).toISOString(),
+        },
+      });
+      const sel = selectExpiredFinishedAwaitingAckTasks([task], {
+        now: NOW,
+        ttlMs: hardTtlMs,
+        softTtlMs,
+        capacityAllowsEarlyReclaim: row.pressure,
+        staleThresholdMs: shortStale,
+        isHoldingOpenPr: () => row.openPr,
+      });
+      expect(sel.outcomes[0]?.outcome, row.id).toBe(row.expectOutcome);
+    }
   });
 });
 

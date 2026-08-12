@@ -520,6 +520,7 @@ export async function completeTask(
     interactionLogReason?:
       | 'user_marked'
       | 'finished_awaiting_ack_ttl'
+      | 'finished_awaiting_ack_capacity_pressure'
       | 'finished_awaiting_ack_auto_complete'
       | 'finished_awaiting_ack_ack_reap';
   } = {},

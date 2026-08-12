@@ -1969,6 +1969,7 @@ describe('diagnostics routes', () => {
         reclaimedTotal: 0,
         reclaimAttempted: 0,
         reclaimSucceeded: 0,
+        capacityPressureEarlyReclaimedTotal: 0,
         skippedBadRaisedAt: 0,
         skippedOpenPrFailsafe: 0,
         skippedOpenPrConfirmed: 0,
@@ -1979,6 +1980,8 @@ describe('diagnostics routes', () => {
         lastAttemptedTaskIds: [],
         autoCompletedTotal: 0,
         autoCompleteDeferredTotal: 0,
+        softTtlMs: null,
+        capacityEarlyReclaim: false,
       });
 
       metrics.recordAttempted(1);

@@ -62,6 +62,11 @@ import {
   capacityAllowsProviderPausedEarlyReclaim,
 } from '../core/provider-paused-ttl.js';
 import {
+  DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+  MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+  capacityAllowsFinishedAwaitingAckEarlyReclaim,
+} from '../core/finished-awaiting-ack-ttl.js';
+import {
   evaluateTaskOpenPrHold,
   OpenPrFailsafeReasonMetrics,
   type OpenPrHoldCandidate,
@@ -2019,6 +2024,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     return Math.min(soft, hard);
   };
 
+  // Soft TTL for capacity-pressure FAA early reclaim (issue #2355, default 5m).
+  // Env `KOOKR_FINISHED_AWAITING_ACK_SOFT_TTL_MS` overrides when finite and
+  // positive; always clamped at or below the hard TTL and never below 2m.
+  const getFinishedAwaitingAckSoftTtlMs = (): number => {
+    const hard = getFinishedAwaitingAckTtlMs();
+    let soft = DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
+    const raw = process.env.KOOKR_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        soft = Math.floor(parsed);
+      }
+    }
+    return Math.min(hard, Math.max(MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS, soft));
+  };
+
   // Capacity gate for soft provider_paused reclaim (issue #2225 AC3).
   // Reuses the same ledger builder as /api/health so the soft-TTL gate and
   // freeForGeneralSources tell one story.
@@ -2047,6 +2068,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } catch (err) {
       console.warn(
         '[provider-paused-ttl] capacity gate failed; soft early reclaim disabled:',
+        err instanceof Error ? err.message : err,
+      );
+      return false;
+    }
+  };
+
+  // Capacity gate for soft awaiting_poll FAA reclaim (issue #2355). Same ledger
+  // as /api/health so soft-TTL pressure and capacityThroughputVerdict agree.
+  const getCapacityAllowsFinishedAwaitingAckEarlyReclaim = (): boolean => {
+    try {
+      const now = Date.now();
+      const capacity = buildCapacityLedger(taskStore.listTasks(), {
+        now,
+        maxActiveTasks: getMaxActiveTasks(),
+        isHungSuspect: (task) =>
+          resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
+        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        reservedActiveSlots: getReservedActiveSlots(),
+        reservedSlotSources: getReservedSlotSources(),
+      });
+      return capacityAllowsFinishedAwaitingAckEarlyReclaim({
+        effectiveUtilizationPct: capacity.effectiveUtilizationPct,
+        phantomActive: capacity.phantomActive,
+        pendingQueueDepth: capacity.pendingQueueDepth,
+      });
+    } catch (err) {
+      console.warn(
+        '[finished-awaiting-ack-ttl] capacity gate failed; soft early reclaim disabled:',
         err instanceof Error ? err.message : err,
       );
       return false;
@@ -2936,6 +2985,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getCompletionReadyTtlMs,
       getPendingTaskTtlMs,
       getFinishedAwaitingAckTtlMs,
+      getFinishedAwaitingAckSoftTtlMs,
+      getCapacityAllowsFinishedAwaitingAckEarlyReclaim,
       isTaskHoldingOpenPr,
       finishedAwaitingAckTtlReclaimMetrics,
       getHungSuspectTtlMs,

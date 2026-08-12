@@ -547,6 +547,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           reclaimedTotal: finishedAwaitingAckReclaimSnapshot.reclaimedTotal,
           reclaimAttempted: finishedAwaitingAckReclaimSnapshot.reclaimAttempted,
           reclaimSucceeded: finishedAwaitingAckReclaimSnapshot.reclaimSucceeded,
+          // Issue #2355: pressure soft-TTL reclaim is a subset of reclaimedTotal.
+          capacityPressureEarlyReclaimedTotal:
+            finishedAwaitingAckReclaimSnapshot.capacityPressureEarlyReclaimedTotal,
           skippedBadRaisedAt: finishedAwaitingAckReclaimSnapshot.skippedBadRaisedAt,
           skippedOpenPrFailsafe: finishedAwaitingAckReclaimSnapshot.skippedOpenPrFailsafe,
           skippedOpenPrConfirmed: finishedAwaitingAckReclaimSnapshot.skippedOpenPrConfirmed,
@@ -561,6 +564,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
             finishedAwaitingAckReclaimSnapshot.autoCompleteDeferredTotal,
           autoCompleteAgeHistogram:
             finishedAwaitingAckReclaimSnapshot.autoCompleteAgeHistogram,
+          softTtlMs: finishedAwaitingAckReclaimSnapshot.softTtlMs,
+          capacityEarlyReclaim: finishedAwaitingAckReclaimSnapshot.capacityEarlyReclaim,
         }
       : undefined;
 

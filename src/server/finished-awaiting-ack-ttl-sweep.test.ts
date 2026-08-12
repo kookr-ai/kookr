@@ -122,6 +122,7 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       reclaimedTotal: 1,
       reclaimAttempted: 1,
       reclaimSucceeded: 1,
+      capacityPressureEarlyReclaimedTotal: 0,
       skippedBadRaisedAt: 0,
       skippedOpenPrFailsafe: 0,
       skippedUnderTtl: 0,
@@ -134,6 +135,65 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
       candidatesConsidered: 1,
       selectedCount: 1,
     });
+  });
+
+  it('capacity-pressure soft TTL reclaims awaiting_poll with distinct reason (issue #2355)', async () => {
+    const softTtlMs = 5 * 60_000;
+    const task = makeFaaTask({
+      id: 'pressure-1',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        softTtlMs,
+        capacityAllowsEarlyReclaim: true,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['pressure-1']);
+    expect(result.capacityPressureEarlyReclaimedTaskIds).toEqual(['pressure-1']);
+    expect(lifecycleDeps.interactionLog!.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'task_completed',
+        taskId: 'pressure-1',
+        reason: 'finished_awaiting_ack_capacity_pressure',
+      }),
+    );
+
+    const rows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows[0]).toMatchObject({
+      type: 'task.finishedAwaitingAckCapacityPressureReclaimed',
+      actor: 'system:finished-awaiting-ack-capacity-pressure',
+      reason: 'finished_awaiting_ack_capacity_pressure',
+      softTtlMs,
+    });
+
+    const snap = metrics.getSnapshot();
+    expect(snap).toMatchObject({
+      reclaimedTotal: 1,
+      capacityPressureEarlyReclaimedTotal: 1,
+      capacityEarlyReclaim: true,
+      softTtlMs,
+      lastAttemptedTaskIds: ['pressure-1'],
+    });
+    expect(snap.lastOutcomes[0]?.outcome).toBe('capacity_pressure_early_reclaim');
+    expect(Object.values(snap.autoCompleteAgeHistogram).reduce((a, b) => a + b, 0)).toBe(1);
   });
 
   it('records open-PR failsafe skip metrics without reclaiming (issue #2084)', async () => {

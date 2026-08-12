@@ -100,6 +100,7 @@ import {
   capacityAllowsProviderPausedEarlyReclaim,
   summarizeProviderPausedOccupancy,
 } from '../core/provider-paused-ttl.js';
+import { DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS } from '../core/finished-awaiting-ack-ttl.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import {
@@ -214,11 +215,23 @@ export interface TimerDeps {
    */
   getPendingTaskTtlMs?: () => number;
   /**
-   * Live getter for the finishedAwaitingAck TTL, in milliseconds (issue
+   * Live getter for the finishedAwaitingAck hard TTL, in milliseconds (issue
    * #1884, `finishedAwaitingAckTtlMinutes` setting). Read on every liveness
    * tick. Falls back to the module default (15m) when absent.
    */
   getFinishedAwaitingAckTtlMs?: () => number;
+  /**
+   * Live getter for the finishedAwaitingAck soft TTL, in milliseconds
+   * (issue #2355). Used when capacity-pressure early reclaim is enabled.
+   * Falls back to 5m when absent.
+   */
+  getFinishedAwaitingAckSoftTtlMs?: () => number;
+  /**
+   * Capacity gate for soft `awaiting_poll` FAA reclaim (issue #2355). When
+   * true, the sweep uses soft TTL for awaiting_poll only. When absent, early
+   * reclaim is disabled (hard TTL only).
+   */
+  getCapacityAllowsFinishedAwaitingAckEarlyReclaim?: () => boolean;
   /**
    * Stranded-PR / `merge_required` exemption predicate for the
    * finishedAwaitingAck TTL reclaim (issue #1884), backed by
@@ -229,14 +242,16 @@ export interface TimerDeps {
   isTaskHoldingOpenPr?: (task: Task) => boolean | undefined;
   /**
    * Optional counters for the finishedAwaitingAck TTL reclaim (#1884),
-   * meta auto-complete (#2070), and skip-reason breakdown (#2084), exposed
-   * via `/metrics` + `/api/health`.
+   * meta auto-complete (#2070), skip-reason breakdown (#2084), and
+   * capacity-pressure soft reclaim (#2355), exposed via `/metrics` + `/api/health`.
    */
   finishedAwaitingAckTtlReclaimMetrics?: Pick<
     FinishedAwaitingAckTtlReclaimMetrics,
     | 'recordReclaimed'
+    | 'recordCapacityPressureEarlyReclaimed'
     | 'recordAttempted'
     | 'recordSelection'
+    | 'recordSoftTtlPolicy'
     | 'recordAutoCompleted'
     | 'recordAutoCompleteDeferred'
   >;
@@ -1484,10 +1499,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
 
-      // finishedAwaitingAck TTL reclaim (issue #1884) + meta auto-complete
+      // finishedAwaitingAck TTL reclaim (issue #1884) + capacity-pressure soft
+      // TTL for awaiting_poll phantoms (issue #2355) + meta auto-complete
       // (issue #2070): force-complete aged completion_ready tasks. Strict path
-      // requires isHoldingOpenPr === false; meta allowlist relaxes unknown PR
+      // requires isHoldingOpenPr === false; soft path only accelerates
+      // awaiting_poll under capacity pressure; meta allowlist relaxes unknown PR
       // refs and applies Lucy #2238-style TOCTOU (re-GET + live turn / tail veto).
+      const faaCapacityEarly =
+        deps.getCapacityAllowsFinishedAwaitingAckEarlyReclaim?.() === true;
       const finishedAwaitingAckTtlResult = await reclaimAgedFinishedAwaitingAckTasks(
         {
           taskStore,
@@ -1514,7 +1533,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               }
             : {}),
         },
-        { ttlMs: deps.getFinishedAwaitingAckTtlMs?.() },
+        {
+          ttlMs: deps.getFinishedAwaitingAckTtlMs?.(),
+          softTtlMs:
+            deps.getFinishedAwaitingAckSoftTtlMs?.()
+            ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+          capacityAllowsEarlyReclaim: faaCapacityEarly,
+        },
       );
 
       // finishedAwaitingAck residual page (issue #2077): after reclaim, if
