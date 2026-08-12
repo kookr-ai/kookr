@@ -528,6 +528,40 @@ function summarizeHookIngestion(health) {
   };
 }
 
+// Startup crash-recovery counts (issue #2351). /api/health publishes a slim
+// `startupRecovery` block after deferred recovery completes (relaunched /
+// skipped / failed / crashLoopSkips + generatedAt). Always-on compact gauge
+// when present so unattended hosts and Lucy/Discord digests see post-restart
+// recovery without curling /api/startup-summary. Null when absent or non-numeric.
+// Visibility only — does not change recovery policy.
+function summarizeStartupRecovery(health) {
+  const block = health?.startupRecovery;
+  if (!block || typeof block !== 'object') return null;
+
+  const relaunched = Number(/** @type {{ relaunched?: unknown }} */ (block).relaunched);
+  const skipped = Number(/** @type {{ skipped?: unknown }} */ (block).skipped);
+  const failed = Number(/** @type {{ failed?: unknown }} */ (block).failed);
+  const crashLoopSkips = Number(
+    /** @type {{ crashLoopSkips?: unknown }} */ (block).crashLoopSkips,
+  );
+  if (!Number.isFinite(relaunched) || relaunched < 0) return null;
+  if (!Number.isFinite(skipped) || skipped < 0) return null;
+  if (!Number.isFinite(failed) || failed < 0) return null;
+  if (!Number.isFinite(crashLoopSkips) || crashLoopSkips < 0) return null;
+
+  const generatedRaw = /** @type {{ generatedAt?: unknown }} */ (block).generatedAt;
+  const generatedAt =
+    typeof generatedRaw === 'string' && generatedRaw.length > 0 ? generatedRaw : null;
+
+  return {
+    relaunched: Math.floor(relaunched),
+    skipped: Math.floor(skipped),
+    failed: Math.floor(failed),
+    crashLoopSkips: Math.floor(crashLoopSkips),
+    generatedAt,
+  };
+}
+
 // OSS attempts projection (issue #2332). /api/health publishes a slim
 // `ossAttempts` block when the store is wired (open/total counts, lastRefreshAt,
 // issueCheckErrorCount). Always-on compact gauge whenever openCount+totalCount
@@ -878,6 +912,19 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Startup recovery (issue #2351) — compact post-restart crash-recovery
+  // counts when /api/health publishes the block. Always-on so unattended
+  // restarts leave a glanceable relaunch / crash-loop skip trail.
+  const startupRecovery = summarizeStartupRecovery(health);
+  if (startupRecovery) {
+    lines.push(
+      `Startup recovery: relaunched=${startupRecovery.relaunched}` +
+        `  skipped=${startupRecovery.skipped}` +
+        `  failed=${startupRecovery.failed}` +
+        `  crashLoop=${startupRecovery.crashLoopSkips}`,
+    );
+  }
+
   // Capacity (issue #2234) — phantom / high-util pressure from the ledger
   // already on /api/health. Quiet by default; one line with byClass + free
   // slots when phantoms, a large util gap, or high nominal utilization
@@ -1213,6 +1260,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
     const ossAttemptsSummary = summarizeOssAttempts(health);
+    const startupRecoverySummary = summarizeStartupRecovery(health);
     return exitJson({
       out,
       exit,
@@ -1238,6 +1286,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           : {}),
         ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
         ...(ossAttemptsSummary ? { ossAttempts: ossAttemptsSummary } : {}),
+        ...(startupRecoverySummary
+          ? { startupRecovery: startupRecoverySummary }
+          : {}),
         ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
@@ -1306,6 +1357,7 @@ export {
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
+  summarizeStartupRecovery,
   renderReport,
   resolvePort,
   parsePortEnv,

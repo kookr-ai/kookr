@@ -130,8 +130,11 @@ export async function runStartupRecoveryPhase({
 
     await writeCrashRecoveryDispositions(recoveryResult, restartEpoch, dispositionLedgerPath);
 
+    // Always retain the structured result so /api/health can project skip
+    // counts (including crash-loop) even when nothing relaunched/failed
+    // (issue #2351). Interaction-log noise stays gated to material outcomes.
+    startupRecoverySummary = recoveryResult;
     if (recoveryResult.relaunched.length > 0 || recoveryResult.failed.length > 0) {
-      startupRecoverySummary = recoveryResult;
       await interactionLog.append({
         type: 'crash_recovery',
         relaunched: recoveryResult.relaunched.length,
@@ -145,6 +148,11 @@ export async function runStartupRecoveryPhase({
       console.log(
         `[crash-recovery] Recovery complete: ${resumedCount} resumed, ${freshCount} fresh, `
         + `${recoveryResult.skipped.length} skipped, ${recoveryResult.failed.length} failed`,
+      );
+    } else if (recoveryResult.skipped.length > 0) {
+      console.log(
+        `[crash-recovery] Recovery complete: 0 relaunched, `
+        + `${recoveryResult.skipped.length} skipped, 0 failed`,
       );
     }
   }

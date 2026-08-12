@@ -41,6 +41,7 @@ import type { BackendStats } from '../../adapters/terminal-backend.js';
 import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
 import { validateSpeechServiceUrl } from '../speech-service-url.js';
 import type { RouteDeps } from './shared.js';
+import type { CrashRecoveryResult } from '../crash-recovery.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
@@ -603,6 +604,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ? buildInfo.commitHash
         : undefined;
 
+    // Issue #2351: compact crash-recovery counts for remote / unattended polls.
+    // Full entry lists stay on GET /api/startup-summary; health is counts only.
+    // Omitted until recovery completes (or a summary already exists).
+    const startupRecoveryBlock = resolveStartupRecoveryHealthBlock(
+      deps,
+      typeof serverStartedAt === 'string' ? serverStartedAt : undefined,
+    );
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -613,6 +622,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // "listening, still recovering" vs "fully ready" without treating
       // liveness as readiness.
       ...(deps.startupReadiness ? { startup: deps.startupReadiness.getProgress() } : {}),
+      ...(startupRecoveryBlock ? { startupRecovery: startupRecoveryBlock } : {}),
       launchDependencies,
       attentionQueue: {
         activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
@@ -1594,6 +1604,88 @@ export function checkHookIngestionReadiness(
     reason: 'ingestion-lag',
     detail: `last lag ${worstLagMs}ms exceeds threshold ${thresholdMs}ms across ${stalled.length} session(s)`,
   };
+}
+
+/**
+ * Compact crash-recovery counts for GET `/api/health` (issue #2351).
+ *
+ * Counts only — full relaunched/skipped/failed entry lists stay on
+ * `GET /api/startup-summary`. `crashLoopSkips` is the subset of `skipped`
+ * whose reason is the rapid crash-loop guard (see crash-recovery.ts).
+ */
+export interface StartupRecoveryHealthSummary {
+  relaunched: number;
+  skipped: number;
+  failed: number;
+  crashLoopSkips: number;
+  generatedAt: string;
+}
+
+/** Prefix of skip reasons emitted by the rapid crash-loop guard. */
+const CRASH_LOOP_SKIP_REASON_PREFIX = 'rapid crash-loop';
+
+const EMPTY_CRASH_RECOVERY_RESULT: CrashRecoveryResult = {
+  relaunched: [],
+  skipped: [],
+  failed: [],
+};
+
+/**
+ * Project a full crash-recovery result into health counts.
+ */
+export function buildStartupRecoveryHealthSummary(
+  summary: Pick<CrashRecoveryResult, 'relaunched' | 'skipped' | 'failed'>,
+  generatedAt: string,
+): StartupRecoveryHealthSummary {
+  let crashLoopSkips = 0;
+  for (const entry of summary.skipped) {
+    if (
+      typeof entry.reason === 'string' &&
+      entry.reason.startsWith(CRASH_LOOP_SKIP_REASON_PREFIX)
+    ) {
+      crashLoopSkips += 1;
+    }
+  }
+  return {
+    relaunched: summary.relaunched.length,
+    skipped: summary.skipped.length,
+    failed: summary.failed.length,
+    crashLoopSkips,
+    generatedAt,
+  };
+}
+
+/**
+ * Resolve the optional `startupRecovery` health block (issue #2351).
+ *
+ * - Omitted before recovery completes when no summary has been stored yet.
+ * - After `startupReadiness` reports `readyAt` (or once a summary exists),
+ *   returns counts — zeros when crash recovery had nothing to report.
+ * - `generatedAt` prefers readiness `readyAt`, then the caller fallback
+ *   (typically `serverStartedAt`), then "now" for partial test harnesses.
+ */
+export function resolveStartupRecoveryHealthBlock(
+  deps: Pick<
+    RouteDeps,
+    'getStartupRecoverySummary' | 'startupRecoverySummary' | 'startupReadiness'
+  >,
+  fallbackGeneratedAt?: string,
+): StartupRecoveryHealthSummary | undefined {
+  const summary =
+    deps.getStartupRecoverySummary?.() ?? deps.startupRecoverySummary ?? null;
+  const readyAt = deps.startupReadiness?.getProgress()?.readyAt;
+  if (summary == null && readyAt == null) return undefined;
+
+  const generatedAt =
+    readyAt ??
+    (typeof fallbackGeneratedAt === 'string' && fallbackGeneratedAt.length > 0
+      ? fallbackGeneratedAt
+      : new Date().toISOString());
+
+  return buildStartupRecoveryHealthSummary(
+    summary ?? EMPTY_CRASH_RECOVERY_RESULT,
+    generatedAt,
+  );
 }
 
 /**

@@ -1222,6 +1222,149 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — startupRecovery block (issue #2351)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health startupRecovery block (issue #2351)', () => {
+    test('omits startupRecovery before recovery completes (no summary, not ready)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        startupRecoverySummary: null,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { startupRecovery?: unknown };
+      expect(body.startupRecovery).toBeUndefined();
+    });
+
+    test('projects counts only after a recovery summary is available', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        serverStartedAt: '2026-08-12T00:00:00.000Z',
+        startupRecoverySummary: {
+          relaunched: [
+            {
+              taskId: 't1',
+              oldSessionId: 'old',
+              newSessionId: 'new',
+              mode: 'fresh',
+            },
+          ],
+          skipped: [
+            {
+              taskId: 't2',
+              sessionId: 's2',
+              reason: 'rapid crash-loop (relaunched 5s ago, window is 60s)',
+            },
+            {
+              taskId: 't3',
+              sessionId: 's3',
+              reason: 'duplicate prompt already running or relaunched',
+            },
+          ],
+          failed: [{ taskId: 't4', sessionId: 's4', error: 'boom' }],
+        },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        startupRecovery?: {
+          relaunched: number;
+          skipped: number;
+          failed: number;
+          crashLoopSkips: number;
+          generatedAt: string;
+          relaunchedEntries?: unknown;
+        };
+      };
+      expect(body.startupRecovery).toEqual({
+        relaunched: 1,
+        skipped: 2,
+        failed: 1,
+        crashLoopSkips: 1,
+        generatedAt: '2026-08-12T00:00:00.000Z',
+      });
+      // Counts only — no full entry arrays on the compact health surface.
+      expect(body.startupRecovery).not.toHaveProperty('relaunchedEntries');
+    });
+
+    test('prefers the live getter over the static summary field', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        serverStartedAt: '2026-08-12T00:00:00.000Z',
+        startupRecoverySummary: {
+          relaunched: [],
+          skipped: [],
+          failed: [],
+        },
+        getStartupRecoverySummary: () => ({
+          relaunched: [],
+          skipped: [
+            {
+              taskId: 't-loop',
+              sessionId: 's-loop',
+              reason: 'rapid crash-loop (relaunched 12s ago, window is 60s)',
+            },
+          ],
+          failed: [],
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        startupRecovery?: {
+          relaunched: number;
+          skipped: number;
+          failed: number;
+          crashLoopSkips: number;
+        };
+      };
+      expect(body.startupRecovery).toMatchObject({
+        relaunched: 0,
+        skipped: 1,
+        failed: 0,
+        crashLoopSkips: 1,
+      });
+    });
+
+    test('surfaces zero counts once startup readiness reports readyAt', async () => {
+      const { StartupReadiness } = await import('../startup-readiness.js');
+      const gate = new StartupReadiness('2026-08-12T01:00:00.000Z');
+      gate.markListening();
+      gate.markRecovering('test');
+      gate.markReady('startup complete');
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        serverStartedAt: '2026-08-12T01:00:00.000Z',
+        startupReadiness: gate,
+        startupRecoverySummary: null,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        startupRecovery?: {
+          relaunched: number;
+          skipped: number;
+          failed: number;
+          crashLoopSkips: number;
+          generatedAt: string;
+        };
+      };
+      expect(body.startupRecovery).toEqual({
+        relaunched: 0,
+        skipped: 0,
+        failed: 0,
+        crashLoopSkips: 0,
+        generatedAt: gate.getProgress().readyAt,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — ossAttempts block (issue #2332)
   // ---------------------------------------------------------------------------
   describe('GET /api/health ossAttempts block (issue #2332)', () => {

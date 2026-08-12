@@ -171,6 +171,25 @@ export interface HealthLike {
     lastRefreshAt?: string | null;
     issueCheckErrorCount?: number;
   };
+  /**
+   * Compact crash-recovery counts after deferred startup recovery (issue #2351).
+   * Omitted before recovery completes; counts only (no entry lists).
+   */
+  startupRecovery?: {
+    relaunched?: number;
+    skipped?: number;
+    failed?: number;
+    crashLoopSkips?: number;
+    generatedAt?: string;
+  };
+}
+
+export interface StartupRecoverySummary {
+  relaunched: number;
+  skipped: number;
+  failed: number;
+  crashLoopSkips: number;
+  generatedAt: string | null;
 }
 
 export interface FirstHookMissSummary {
@@ -373,6 +392,9 @@ export function summarizeLessonYield(
 export function summarizeOssAttempts(
   health: HealthLike,
 ): OssAttemptsSummary | null;
+export function summarizeStartupRecovery(
+  health: HealthLike,
+): StartupRecoverySummary | null;
 export function renderReport(args: RenderReportArgs): string;
 export function parseStatusArgs(argv: string[]): {
   help: boolean;

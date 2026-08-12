@@ -23,6 +23,7 @@ import {
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
+  summarizeStartupRecovery,
   renderReport,
   parsePortEnv,
   parseStatusArgs,
@@ -994,6 +995,27 @@ describe('kookr-status renderReport', () => {
       .not.toContain('OSS attempts:');
   });
 
+  it('always surfaces startupRecovery as a compact gauge when present (issue #2351)', () => {
+    const health = {
+      ...baseHealth,
+      startupRecovery: {
+        relaunched: 2,
+        skipped: 3,
+        failed: 1,
+        crashLoopSkips: 2,
+        generatedAt: '2026-08-12T00:00:00.000Z',
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'Startup recovery: relaunched=2  skipped=3  failed=1  crashLoop=2',
+    );
+  });
+
+  it('is a no-op when startupRecovery is absent (issue #2351)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('Startup recovery:');
+  });
+
   it('surfaces hungSuspectTtlReclaim skip breakdown when reclaimedTotal=0 and skips elevated (issue #2229)', () => {
     const health = {
       ...baseHealth,
@@ -1535,6 +1557,65 @@ describe('kookr-status summarizeNonCriticalTimerPause (issue #2230)', () => {
       thresholdMs: 1500,
       lastEventLoopDelayP95Ms: null,
       pausedTicksTotal: 0,
+    });
+  });
+});
+
+describe('kookr-status summarizeStartupRecovery (issue #2351)', () => {
+  it('returns null when startupRecovery is absent', () => {
+    expect(summarizeStartupRecovery({ status: 'ok' })).toBeNull();
+  });
+
+  it('returns null when counters are non-numeric', () => {
+    expect(
+      summarizeStartupRecovery({
+        startupRecovery: {
+          relaunched: 'x' as unknown as number,
+          skipped: 1,
+          failed: 0,
+          crashLoopSkips: 0,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns the slim gauge including zeros', () => {
+    expect(
+      summarizeStartupRecovery({
+        startupRecovery: {
+          relaunched: 0,
+          skipped: 0,
+          failed: 0,
+          crashLoopSkips: 0,
+          generatedAt: '2026-08-12T00:00:00.000Z',
+        },
+      }),
+    ).toEqual({
+      relaunched: 0,
+      skipped: 0,
+      failed: 0,
+      crashLoopSkips: 0,
+      generatedAt: '2026-08-12T00:00:00.000Z',
+    });
+  });
+
+  it('floors counters and nulls empty generatedAt', () => {
+    expect(
+      summarizeStartupRecovery({
+        startupRecovery: {
+          relaunched: 1.9,
+          skipped: 2.1,
+          failed: 0.7,
+          crashLoopSkips: 1.2,
+          generatedAt: '',
+        },
+      }),
+    ).toEqual({
+      relaunched: 1,
+      skipped: 2,
+      failed: 0,
+      crashLoopSkips: 1,
+      generatedAt: null,
     });
   });
 });
