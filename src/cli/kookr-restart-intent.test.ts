@@ -232,7 +232,41 @@ describe('describeRestartIntent / describeUnreachableCause', () => {
   });
 });
 
+describe('classifyRestartIntent boundary equality', () => {
+  it('age exactly at staleAfterMs stays in-progress; exactly at expiry stays stale', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started, staleAfterMs: 60_000 });
+    const intent = readRestartIntent(dir);
+    // strict `>` boundaries: equal-to is NOT past the threshold.
+    expect(classifyRestartIntent(intent, started + 60_000).state).toBe('in-progress');
+    expect(classifyRestartIntent(intent, started + 60_001).state).toBe('stale');
+    expect(classifyRestartIntent(intent, started + RESTART_INTENT_EXPIRY_MS).state).toBe('stale');
+    expect(classifyRestartIntent(intent, started + RESTART_INTENT_EXPIRY_MS + 1).state).toBe('none');
+  });
+});
+
+describe('restartIntentJson stale state', () => {
+  it('carries reason + startedAt for a stale marker', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started, staleAfterMs: 60_000 });
+    const json = restartIntentJson(readRestartIntent(dir), started + 120_000);
+    expect(json.state).toBe('stale');
+    expect(json.reason).toBe('prod:update');
+    expect(json.startedAt).toBe(new Date(started).toISOString());
+  });
+});
+
 describe('readUnreachableCause / firstRestartIntentAcrossPorts', () => {
+  // These exercise the port→dir→marker path the CLI actually uses, so they
+  // write under a real (but unlikely-to-exist) port dir and clean it up.
+  const TEST_PORT = 45999;
+  const portDir = resolveKookrDir({ port: TEST_PORT });
+  afterEach(async () => {
+    await rm(portDir, { recursive: true, force: true });
+  });
+
   it('resolves the marker from an explicit dir and classifies it', async () => {
     const dir = await makeDir();
     const started = 1_700_000_000_000;
@@ -243,8 +277,28 @@ describe('readUnreachableCause / firstRestartIntentAcrossPorts', () => {
     expect(result.message).toContain('prod:restart');
   });
 
+  it('readUnreachableCause resolves the marker via port (the CLI call shape)', () => {
+    writeRestartIntent({ kookrDir: portDir, reason: 'prod:update' });
+    const result = readUnreachableCause({ port: TEST_PORT });
+    expect(result.kookrDir).toBe(portDir);
+    expect(result.intent?.reason).toBe('prod:update');
+    expect(result.message).toContain('prod:update');
+  });
+
+  it('firstRestartIntentAcrossPorts finds a marker by port and returns its port', () => {
+    writeRestartIntent({ kookrDir: portDir, reason: 'prod:update' });
+    const found = firstRestartIntentAcrossPorts([TEST_PORT]);
+    expect(found?.port).toBe(TEST_PORT);
+    expect(found?.intent.reason).toBe('prod:update');
+  });
+
+  it('firstRestartIntentAcrossPorts skips an expired-orphan marker (returns null)', () => {
+    // A marker far past the expiry ceiling classifies as `none` → must be skipped.
+    writeRestartIntent({ kookrDir: portDir, reason: 'prod:update', now: 1_000 });
+    expect(firstRestartIntentAcrossPorts([TEST_PORT], { now: 1_000 + RESTART_INTENT_EXPIRY_MS + 1 })).toBeNull();
+  });
+
   it('firstRestartIntentAcrossPorts returns null when no port has a marker', () => {
-    // Ports resolve under the real home dir where no marker exists in tests.
     expect(firstRestartIntentAcrossPorts([59998, 59999])).toBeNull();
   });
 });
@@ -279,6 +333,22 @@ describe('main() CLI', () => {
     const clearCode = await main(['clear', '--dir', dir, '--expect-started-at', printed], { out, err });
     expect(clearCode).toBe(0);
     expect(existsSync(restartIntentPath(dir))).toBe(false);
+  });
+
+  it('show prints the current marker JSON (operator inspect command)', async () => {
+    const dir = await makeDir();
+    const lines: string[] = [];
+    const out = { write: (s: string) => lines.push(s) };
+    const err = { write: () => {} };
+
+    // No marker → prints null.
+    expect(await main(['show', '--dir', dir], { out, err })).toBe(0);
+    expect(lines.join('').trim()).toBe('null');
+
+    lines.length = 0;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update' });
+    expect(await main(['show', '--dir', dir], { out, err })).toBe(0);
+    expect(JSON.parse(lines.join('')).reason).toBe('prod:update');
   });
 
   it('returns exit code 2 with usage on an unknown command', async () => {

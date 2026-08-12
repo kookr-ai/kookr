@@ -45,8 +45,7 @@ import {
   CLI_VERSION,
 } from './kookr-spawn.js';
 import {
-  readRestartIntent,
-  resolveKookrDir,
+  readUnreachableCause,
   firstRestartIntentAcrossPorts,
   describeUnreachableCause,
   restartIntentJson,
@@ -449,8 +448,8 @@ async function main({
     // Transient network/timeout: leave in spool, exit 0. Issue #2410: enrich
     // with the planned-restart-vs-unexpected-outage verdict, reading the marker
     // for the port we actually targeted (from resolved.baseUrl), not a guess.
-    const intent = readRestartIntent(resolveKookrDir({ port: portFromBaseUrl(baseUrl), env }));
-    const cause = describeUnreachableCause(intent);
+    const now = Date.now();
+    const { intent, message: cause } = readUnreachableCause({ port: portFromBaseUrl(baseUrl), env, now });
     const message =
       `daemon unreachable (${e instanceof Error ? e.message : String(e)}); `
       + `signal durably spooled for delivery on reconnect. ${cause}`;
@@ -467,7 +466,7 @@ async function main({
           signalId,
           spooled: true,
           spoolDir,
-          restartIntent: restartIntentJson(intent),
+          restartIntent: restartIntentJson(intent, now),
         },
       });
     }

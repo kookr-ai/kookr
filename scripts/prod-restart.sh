@@ -130,6 +130,10 @@ write_restart_intent() {
 clear_restart_intent() {
   [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
   command -v node >/dev/null 2>&1 || return 0
+  # If write failed (no startedAt captured) there is no marker of OURS to clear;
+  # skip entirely rather than force-remove whatever is on disk — a concurrent
+  # deploy's live marker must not be erased by us.
+  [[ -n "$RESTART_INTENT_STARTED_AT" ]] || return 0
   # Ownership-checked: only delete the marker we wrote, so a concurrent restart's
   # in-flight marker is never erased out from under it.
   if node "$RESTART_INTENT_HELPER" clear \

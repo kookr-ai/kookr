@@ -159,9 +159,9 @@ marker records the reason (`prod:update` / `prod:restart`), `startedAt`, and the
 deploy's own `staleAfterMs` deadline (`KOOKR_STARTUP_TIMEOUT_SECONDS`). The CLI
 reads it locally and enriches its connection-refused message:
 
-- marker present, within the deadline → "kookr is restarting (prod:update started 12s ago)"
-- marker present, past the deadline → "…started 40m ago but the API has not come back — likely a failed deploy"
-- no marker → "no planned restart in progress — this looks like an unexpected outage"
+- marker present, within the deadline → "kookr is restarting (prod:update started 12s ago); the API should return once the redeploy finishes."
+- marker present, past the deadline → "a kookr restart (prod:update) started 40m ago but the API has not come back — this looks like a failed deploy, not a routine restart."
+- no marker → "no planned restart is in progress — this looks like an unexpected outage (crash, OOM, or port conflict)."
 
 The clear is ownership-checked (it only deletes the marker whose `startedAt` it
 wrote), and any marker older than 12h is treated as an expired orphan and

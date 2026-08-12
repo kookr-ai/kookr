@@ -244,17 +244,24 @@ export function readUnreachableCause({ dir, port, env = process.env, now = Date.
 }
 
 /**
- * Read the first present marker across a list of candidate ports (kookr `status`
- * auto-detects across 4800/4801). Returns the marker plus the port it belongs
- * to, or null when none of the ports has one.
+ * Find the most relevant restart marker across a list of candidate ports (kookr
+ * `status` auto-detects across 4800/4801). Prefers an `in-progress` marker over
+ * a `stale` one, and skips `none`-classified markers entirely — an expired
+ * orphan on one port must never mask a live restart on another (issue #2410
+ * correctness review). Returns the marker plus its port, or null when no port
+ * has a marker that still classifies as a restart.
  */
-export function firstRestartIntentAcrossPorts(ports, { env = process.env } = {}) {
+export function firstRestartIntentAcrossPorts(ports, { env = process.env, now = Date.now() } = {}) {
+  let fallbackStale = null;
   for (const port of ports) {
     const kookrDir = resolveKookrDir({ port, env });
     const intent = readRestartIntent(kookrDir);
-    if (intent) return { port, kookrDir, intent };
+    if (!intent) continue;
+    const { state } = classifyRestartIntent(intent, now);
+    if (state === 'in-progress') return { port, kookrDir, intent };
+    if (state === 'stale' && fallbackStale === null) fallbackStale = { port, kookrDir, intent };
   }
-  return null;
+  return fallbackStale;
 }
 
 function parseFlags(argv) {

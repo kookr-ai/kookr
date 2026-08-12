@@ -11,8 +11,7 @@ import {
   firstRestartIntentAcrossPorts,
   describeUnreachableCause,
   restartIntentJson,
-  readRestartIntent,
-  resolveKookrDir,
+  readUnreachableCause,
 } from './kookr-restart-intent.js';
 
 const PORTS_TO_TRY = [4800, 4801];
@@ -1436,8 +1435,8 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     // Issue #2410: an explicit-port fetch failure is also an "API unreachable"
     // case — read the marker for this port to tell a planned redeploy apart
     // from an unexpected outage.
-    const intent = readRestartIntent(resolveKookrDir({ port, env }));
-    const cause = describeUnreachableCause(intent);
+    const now = Date.now();
+    const { intent, message: cause } = readUnreachableCause({ port, env, now });
     if (args.json) {
       return exitJson({
         out,
@@ -1452,7 +1451,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           port,
           resolvedKind: resolved.kind,
           error: msg,
-          restartIntent: restartIntentJson(intent),
+          restartIntent: restartIntentJson(intent, now),
         },
       });
     }

@@ -6,15 +6,6 @@ import {
 } from '../store/deploy-intent-storage.js';
 import { useKookrStore } from '../store/useStore.js';
 
-/**
- * A redeploy that has not come back within this window is more likely a failed
- * deploy than a routine restart, so the banner flips from calm "back shortly"
- * copy to an explicit "may be a failed deploy" warning (issue #2410). Kept
- * below DEPLOY_INTENT_TTL_MS (2 min) so the warning shows before the sticky
- * deploy window expires and the banner reverts to generic reconnect copy.
- */
-export const REDEPLOY_STALLED_MS = 90_000;
-
 /** Compact "12s" / "1m 5s" / "3m" elapsed-time label for the banner. */
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -28,9 +19,13 @@ export function formatElapsed(ms: number): string {
  * Connection status strip. While disconnected, prefer calm redeploy copy when
  * a short-lived client deploy-window flag is active (sessionStorage + store),
  * so intentional prod:update blackouts are not treated as incidents (#1974, #1982).
- * When a deploy is known, surface how long ago it started and — once it drags on
- * past REDEPLOY_STALLED_MS without reconnecting — warn that it may be a failed
- * deploy rather than a routine restart (#2410).
+ * When a deploy is known, surface how long ago it started (#2410).
+ *
+ * The banner intentionally does NOT render a "failed deploy" verdict: the
+ * browser can't see the server's real restart deadline and the sticky deploy
+ * window is capped at 2 min (#1982), so any such claim here would false-alarm on
+ * a legitimately slow deploy. The failed-deploy verdict lives on the `kookr`
+ * CLI, which reads the marker's own `staleAfterMs` budget.
  */
 export function ConnectionBanner() {
   const connected = useKookrStore((state) => state.connected);
@@ -81,26 +76,26 @@ export function ConnectionBanner() {
 
   const intent = deploying ? loadDeployIntent(now) : null;
   const elapsedMs = intent ? Math.max(0, now - intent.stampedAt) : null;
-  const stalled = elapsedMs !== null && elapsedMs >= REDEPLOY_STALLED_MS;
 
-  let badge: string;
-  let text: string;
-  if (deploying && stalled) {
-    badge = 'Redeploy stalled';
-    text = `Redeploy started ${formatElapsed(elapsedMs)} ago but the API hasn't returned — this may be a failed deploy.`;
-  } else if (deploying) {
-    badge = 'Redeploying';
-    text = 'Redeploying production — API should return within a few seconds'
-      + (elapsedMs !== null ? ` · started ${formatElapsed(elapsedMs)} ago` : '');
-  } else {
-    badge = 'Reconnecting';
-    text = 'Dashboard data may be stale until the main connection is restored.';
-  }
+  // `badge` + `text` change only on a state transition (reconnecting ↔
+  // redeploying), so the polite live region announces once per transition. The
+  // per-second elapsed counter is rendered separately and marked aria-hidden —
+  // otherwise, because role="status" is implicitly aria-atomic, every 1s tick
+  // would re-announce the whole sentence and flood the screen-reader queue
+  // (a11y review, issue #2410).
+  const badge = deploying ? 'Redeploying' : 'Reconnecting';
+  const text = deploying
+    ? 'Redeploying production — API should return within a few seconds'
+    : 'Dashboard data may be stale until the main connection is restored.';
+  const elapsedLabel = deploying && elapsedMs !== null ? `started ${formatElapsed(elapsedMs)} ago` : null;
 
   return (
     <div className="connection-banner" role="status" aria-live="polite" data-testid="connection-banner">
       <span className="connection-banner__badge">{badge}</span>
       <span className="connection-banner__text">{text}</span>
+      {elapsedLabel !== null && (
+        <span className="connection-banner__elapsed" aria-hidden="true">{` · ${elapsedLabel}`}</span>
+      )}
     </div>
   );
 }

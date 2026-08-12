@@ -10,7 +10,7 @@ import {
   saveDeployIntent,
 } from '../store/deploy-intent-storage.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { ConnectionBanner, REDEPLOY_STALLED_MS, formatElapsed } from './ConnectionBanner.js';
+import { ConnectionBanner, formatElapsed } from './ConnectionBanner.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -159,7 +159,11 @@ describe('ConnectionBanner', () => {
     expect(container.textContent).not.toContain('failed deploy');
   });
 
-  test('flips to failed-deploy warning once the redeploy stalls (#2410)', () => {
+  test('does NOT render a failed-deploy verdict in the browser (#2410)', () => {
+    // The browser can't see the server's real restart deadline and the sticky
+    // window is capped at 2 min, so the UI must never claim "failed deploy" —
+    // that verdict lives on the CLI. It stays calm redeploy copy until #1982's
+    // TTL clears it back to generic reconnect copy.
     vi.useFakeTimers();
     const t0 = 1_700_000_000_000;
     vi.setSystemTime(t0);
@@ -170,16 +174,33 @@ describe('ConnectionBanner', () => {
     act(() => {
       root.render(React.createElement(ConnectionBanner));
     });
-
     act(() => {
-      vi.advanceTimersByTime(REDEPLOY_STALLED_MS + 1_000);
+      vi.advanceTimersByTime(100_000); // well past a naive "stalled" threshold
     });
 
-    expect(container.textContent).toContain('failed deploy');
-    expect(container.textContent).toContain('Redeploy stalled');
-    // The stalled threshold must sit inside the sticky deploy window so the
-    // warning is reachable before the flag is cleared.
-    expect(REDEPLOY_STALLED_MS).toBeLessThan(DEPLOY_INTENT_TTL_MS);
+    expect(container.textContent).not.toContain('failed deploy');
+    expect(container.textContent).toContain('Redeploying');
+  });
+
+  test('elapsed counter is aria-hidden so the 1s tick does not flood the live region (#2410)', () => {
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now: t0 });
+    syncGlobalStore();
+    useKookrStore.setState({ connected: false, deploying: true });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+    act(() => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    const elapsed = container.querySelector('.connection-banner__elapsed');
+    expect(elapsed).not.toBeNull();
+    expect(elapsed?.getAttribute('aria-hidden')).toBe('true');
+    expect(elapsed?.textContent).toContain('started 15s ago');
   });
 
   test('formatElapsed renders compact labels', () => {
