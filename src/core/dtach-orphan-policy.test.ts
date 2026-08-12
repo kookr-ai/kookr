@@ -320,8 +320,8 @@ describe('buildDtachOrphanCandidateFromProcess (issue #2356)', () => {
   });
 });
 
-describe('planHostStaleDtachReap (issue #2356)', () => {
-  it('refuses all eligible pids when host count is under the soft bound', () => {
+describe('planHostStaleDtachReap (issues #2356, #2384)', () => {
+  it('always selects missing_socket_aged even when under the soft bound (issue #2384)', () => {
     const plan = planHostStaleDtachReap(
       [
         buildDtachOrphanCandidate({ pid: 1 }),
@@ -331,11 +331,29 @@ describe('planHostStaleDtachReap (issue #2356)', () => {
       { dtachCount: DEFAULT_DTACH_PRESSURE_SOFT_BOUND - 1 },
     );
     expect(plan.underPressure).toBe(false);
-    expect(plan.toReap).toEqual([]);
+    // Proven zombies must not wait for host pressure.
+    expect(plan.toReap.map((c) => c.pid)).toEqual([1, 2]);
     expect(plan.eligibleCount).toBe(2);
-    expect(plan.skippedUnderBound).toBe(2);
+    expect(plan.skippedUnderBound).toBe(0);
     expect(plan.skippedLiveAttached).toBe(1);
     expect(plan.skippedRateLimited).toBe(0);
+    expect(plan.selectedAlways).toBe(2);
+    expect(plan.selectedUnderPressure).toBe(0);
+  });
+
+  it('rate-limits always-select candidates under the soft bound', () => {
+    const candidates = Array.from({ length: 8 }, (_, i) =>
+      buildDtachOrphanCandidate({ pid: 100 + i }),
+    );
+    const plan = planHostStaleDtachReap(candidates, {
+      dtachCount: 1, // well under soft bound
+      maxReapsPerSweep: 3,
+    });
+    expect(plan.underPressure).toBe(false);
+    expect(plan.toReap.map((c) => c.pid)).toEqual([100, 101, 102]);
+    expect(plan.skippedRateLimited).toBe(5);
+    expect(plan.skippedUnderBound).toBe(0);
+    expect(plan.selectedAlways).toBe(3);
   });
 
   it('selects eligible masters when count ≥ soft bound and rate-limits', () => {
@@ -350,6 +368,8 @@ describe('planHostStaleDtachReap (issue #2356)', () => {
     expect(plan.toReap.map((c) => c.pid)).toEqual([100, 101, 102, 103, 104]);
     expect(plan.skippedRateLimited).toBe(3);
     expect(plan.skippedUnderBound).toBe(0);
+    expect(plan.selectedAlways).toBe(5);
+    expect(plan.selectedUnderPressure).toBe(0);
   });
 
   it('never selects live-attached or socket-present masters even under pressure', () => {
@@ -366,7 +386,24 @@ describe('planHostStaleDtachReap (issue #2356)', () => {
     expect(plan.skippedSocketPresent).toBe(1);
   });
 
-  it('softBound <= 0 disables the pressure gate', () => {
+  it('never selects live_session / socket_present under soft bound either (issue #2384)', () => {
+    const plan = planHostStaleDtachReap(
+      [
+        buildDtachOrphanCandidate({ pid: 1, liveSessionPresent: true }),
+        buildDtachOrphanCandidate({ pid: 2, socketExists: true }),
+        buildDtachOrphanCandidate({ pid: 3, ageMs: null }),
+        buildDtachOrphanCandidate({ pid: 4 }),
+      ],
+      { dtachCount: 0, softBound: 20, maxReapsPerSweep: 10 },
+    );
+    expect(plan.underPressure).toBe(false);
+    expect(plan.toReap.map((c) => c.pid)).toEqual([4]);
+    expect(plan.skippedLiveAttached).toBe(1);
+    expect(plan.skippedSocketPresent).toBe(1);
+    expect(plan.skippedUnknownAge).toBe(1);
+  });
+
+  it('softBound <= 0 marks underPressure true (gate disabled)', () => {
     const plan = planHostStaleDtachReap([buildDtachOrphanCandidate({ pid: 9 })], {
       dtachCount: 0,
       softBound: 0,

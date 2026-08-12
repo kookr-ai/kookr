@@ -1,15 +1,16 @@
 /**
- * Bounded host-stale dtach reaper (issue #2356).
+ * Bounded host-stale dtach reaper (issues #2356, #2384).
  *
- * When host-wide `staleProcesses.dtach.count` meets the soft pressure bound
- * (default 20), this sweep reclaims process-table kookr-dtach masters that
- * the pure selection policy marks as safe: not live-attached, socket gone,
- * aged past the teardown-race floor. Distinct from the session reaper (#1720),
+ * Reclaims process-table kookr-dtach masters that the pure selection policy
+ * marks as safe: not live-attached, socket gone, aged past the teardown-race
+ * floor (`missing_socket_aged`). Distinct from the session reaper (#1720),
  * which only acts on backend-reported live sessions.
  *
  * Safety:
  *  - Selection is pure + fail-closed (`planHostStaleDtachReap`).
- *  - Pressure gate: no kills when count &lt; soft bound.
+ *  - Always-select: `missing_socket_aged` reaps even under the soft bound
+ *    (#2384) — proven zombies must not wait for host pressure.
+ *  - Soft bound is reserved for future more-aggressive classes.
  *  - Rate limit: max N reaps per sweep (default 5).
  *  - Dry-run mode logs would-reap pids without signalling.
  *  - Kill path uses `killProcessTree` (TERM → grace → KILL) only on selected
@@ -42,7 +43,11 @@ export interface HostStaleDtachReaperConfig {
   enabled: boolean;
   /** Log-only mode — never signal. Default false. */
   dryRun: boolean;
-  /** Soft pressure bound (default 20). `<= 0` disables the pressure gate. */
+  /**
+   * Soft pressure bound (default 20). Reserved for future pressure-gated
+   * classes; `missing_socket_aged` always selects (#2384). `<= 0` marks the
+   * host as always under pressure.
+   */
   softBound: number;
   /** Max pids reaped per sweep (default 5). */
   maxReapsPerSweep: number;
@@ -102,6 +107,9 @@ export interface HostStaleDtachReaperHealthSnapshot {
   skippedRateLimited: number;
   skippedSocketPresent: number;
   lastEligibleCount: number;
+  /** Last-sweep always-select vs pressure-gated reaps (issue #2384). */
+  lastReapedAlways: number;
+  lastReapedUnderPressure: number;
 }
 
 function formatAge(ageMs: number | null): string {
@@ -202,6 +210,8 @@ export class HostStaleDtachReaperService {
   private skippedRateLimited = 0;
   private skippedSocketPresent = 0;
   private lastEligibleCount = 0;
+  private lastReapedAlways = 0;
+  private lastReapedUnderPressure = 0;
   private lastDryRun = false;
 
   constructor(private readonly deps: HostStaleDtachReaperDeps) {}
@@ -223,6 +233,8 @@ export class HostStaleDtachReaperService {
       skippedRateLimited: this.skippedRateLimited,
       skippedSocketPresent: this.skippedSocketPresent,
       lastEligibleCount: this.lastEligibleCount,
+      lastReapedAlways: this.lastReapedAlways,
+      lastReapedUnderPressure: this.lastReapedUnderPressure,
     };
   }
 
@@ -270,14 +282,15 @@ export class HostStaleDtachReaperService {
 
     this.recordPlan(plan, now, plan.toReap.length);
 
-    if (!plan.underPressure) {
-      if (plan.eligibleCount > 0) {
-        logger.log(
-          `[host-stale-dtach-reaper] under soft bound: dtachCount=${plan.dtachCount} ` +
-            `< softBound=${plan.softBound}; eligible=${plan.eligibleCount} skipped (no kill)`,
-        );
-      }
-      return { plan, dryRun: cfg.dryRun, reaped: [], failedPids: [] };
+    // Issue #2384: always-select class may still produce toReap under the soft
+    // bound. Only log a soft-bound note when pressure-gated candidates were
+    // actually deferred (skippedUnderBound > 0).
+    if (!plan.underPressure && plan.skippedUnderBound > 0) {
+      logger.log(
+        `[host-stale-dtach-reaper] under soft bound: dtachCount=${plan.dtachCount} ` +
+          `< softBound=${plan.softBound}; pressureGated=${plan.skippedUnderBound} skipped ` +
+          `(always-select still proceeds)`,
+      );
     }
 
     if (plan.toReap.length === 0) {
@@ -323,7 +336,8 @@ export class HostStaleDtachReaperService {
       logger.log(
         `[host-stale-dtach-reaper] ${cfg.dryRun ? 'dry-run ' : ''}swept ${reaped.length} ` +
           `host-stale dtach master(s) (dtachCount=${plan.dtachCount} softBound=${plan.softBound} ` +
-          `eligible=${plan.eligibleCount} rateLimited=${plan.skippedRateLimited})`,
+          `eligible=${plan.eligibleCount} rateLimited=${plan.skippedRateLimited} ` +
+          `always=${plan.selectedAlways} underPressure=${plan.selectedUnderPressure})`,
       );
     }
 
@@ -349,6 +363,8 @@ export class HostStaleDtachReaperService {
     this.skippedRateLimited = plan.skippedRateLimited;
     this.skippedSocketPresent = plan.skippedSocketPresent;
     this.lastEligibleCount = plan.eligibleCount;
+    this.lastReapedAlways = plan.selectedAlways;
+    this.lastReapedUnderPressure = plan.selectedUnderPressure;
   }
 }
 

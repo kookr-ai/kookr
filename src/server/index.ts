@@ -3174,10 +3174,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       relayOrphanSweep: {
         intervalHours: resolveRelayOrphanSweepIntervalHours(process.env),
       },
-      // Host-stale dtach reaper (issue #2356). ON by default (5m); set
+      // Host-stale dtach reaper (issues #2356, #2384). ON by default (5m); set
       // KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES=0 to disable. Reclaims
       // process-table kookr-dtach masters not live-attached with missing
-      // sockets when host count ≥ soft bound. Fail-closed pure policy.
+      // sockets (missing_socket_aged always selects, rate-limited). Fail-closed
+      // pure policy.
       hostStaleDtachReaper: {
         intervalMinutes: resolveHostStaleDtachReapIntervalMinutes(process.env),
         service: hostStaleDtachReaper,

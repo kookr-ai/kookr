@@ -1,5 +1,5 @@
 /**
- * Pure host-stale dtach selection policy (issues #2352, #2356).
+ * Pure host-stale dtach selection policy (issues #2352, #2356, #2384).
  *
  * Host-stale masters — process-table `kookr-dtach` that are not live-attached
  * and whose socket is gone — accumulate outside both `staleProcesses.dtach`
@@ -15,14 +15,17 @@
  *  1. Live session id present → never
  *  2. Socket still present → never (session reaper / attach lifecycle own those)
  *  3. Unknown age → skip (cannot prove a teardown race is past)
- *  4. Missing socket + aged past minAge → candidate
+ *  4. Missing socket + aged past minAge → candidate (`missing_socket_aged`)
  *  5. Missing socket but too young → skip (teardown race)
  *  6. Unparseable session id is allowed when other signals are strong; live-set
  *     checks only apply when a session id is known
  *
- * Pressure gate (#2356): even eligible candidates are not selected when the
- * host-wide dtach count is below the soft bound (default 20). Rate limit:
- * at most `maxReapsPerSweep` pids per plan.
+ * Always-select class (#2384): `missing_socket_aged` is already fail-closed
+ * (not live, socket gone, past min age). It is selected even when the host
+ * dtach count is below the soft bound — proven zombies must not wait for
+ * unrelated concurrent load. Soft-bound pressure gating is reserved for any
+ * future more-aggressive classes. Rate limit: at most `maxReapsPerSweep`
+ * pids per plan (always applies).
  */
 
 import { isKookrDtachMasterCmdline } from './orphan-process-scanner.js';
@@ -263,14 +266,16 @@ export function buildDtachOrphanCandidatesFromProcesses(
 export interface HostStaleDtachReapPlanOptions extends DtachOrphanReapPolicy {
   /**
    * Host-wide kookr-dtach master count (`staleProcesses.dtach.count`). The
-   * pressure gate compares this to {@link softBound}.
+   * pressure gate compares this to {@link softBound} for **pressure-gated**
+   * classes only (none today — see issue #2384).
    */
   dtachCount: number;
   /**
    * Soft pressure bound. Defaults to
-   * {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND} (20). When `dtachCount < softBound`,
-   * the plan selects nobody (`skippedUnderBound` = eligible count). `<= 0`
-   * disables the pressure gate (always allow selection).
+   * {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND} (20). Reserved for future
+   * more-aggressive eligibility classes that must not run during quiet
+   * operation. `missing_socket_aged` always selects regardless of this bound
+   * (#2384). `<= 0` treats the host as always under pressure.
    */
   softBound?: number;
   /**
@@ -282,8 +287,8 @@ export interface HostStaleDtachReapPlanOptions extends DtachOrphanReapPolicy {
 }
 
 /**
- * Result of a pure host-stale sweep plan (issue #2356). Actuators execute
- * `toReap` only — never invent extra pids. Counters are last-plan only.
+ * Result of a pure host-stale sweep plan (issues #2356, #2384). Actuators
+ * execute `toReap` only — never invent extra pids. Counters are last-plan only.
  */
 export interface HostStaleDtachReapPlan {
   /** True when `dtachCount >= softBound` (or softBound disabled). */
@@ -295,25 +300,44 @@ export interface HostStaleDtachReapPlan {
   toReap: DtachOrphanCandidate[];
   /** Per-candidate verdicts for audit / dry-run logs. */
   verdicts: DtachOrphanReapVerdict[];
-  /** Eligible before pressure gate + rate limit. */
+  /**
+   * Total positive candidates (always-select + pressure-gated), before rate
+   * limit and pressure gating. "How many zombies exist," not "how many are
+   * selectable this sweep."
+   */
   eligibleCount: number;
   /** Count of candidates skipped because session was live-attached. */
   skippedLiveAttached: number;
-  /** Eligible candidates not selected because host was under the soft bound. */
+  /**
+   * Pressure-gated eligible candidates not selected because the host was
+   * under the soft bound. Always-select (`missing_socket_aged`) never
+   * increments this (#2384).
+   */
   skippedUnderBound: number;
-  /** Eligible candidates past maxReapsPerSweep. */
+  /** Selectable candidates past maxReapsPerSweep. */
   skippedRateLimited: number;
   skippedSocketPresent: number;
   skippedUnknownAge: number;
   skippedTooYoung: number;
+  /**
+   * How many of `toReap` came from the always-select class
+   * (`missing_socket_aged`). Issue #2384 observability.
+   */
+  selectedAlways: number;
+  /**
+   * How many of `toReap` came from pressure-gated classes (none today;
+   * reserved for future aggressive classes).
+   */
+  selectedUnderPressure: number;
 }
 
 /**
  * Plan a bounded host-stale dtach reap. Pure and fail-closed.
  *
- * Order: evaluate every candidate → count skip reasons → if under soft bound,
- * refuse all reaps (`skippedUnderBound = eligible`) → else take the first
- * `maxReapsPerSweep` eligible pids (stable input order).
+ * Order: evaluate every candidate → count skip reasons → always-select
+ * `missing_socket_aged` (rate-limited) regardless of soft bound → append any
+ * pressure-gated class only when under pressure → take the first
+ * `maxReapsPerSweep` selectable pids (stable input order).
  */
 export function planHostStaleDtachReap(
   candidates: readonly DtachOrphanCandidate[],
@@ -329,14 +353,26 @@ export function planHostStaleDtachReap(
   let skippedSocketPresent = 0;
   let skippedUnknownAge = 0;
   let skippedTooYoung = 0;
-  const eligible: DtachOrphanCandidate[] = [];
+  /** Always-select: proven zombies (missing_socket_aged). Issue #2384. */
+  const alwaysEligible: DtachOrphanCandidate[] = [];
+  /**
+   * Pressure-gated: reserved for future more-aggressive classes. Empty today
+   * because the only positive reason is `missing_socket_aged`.
+   */
+  const pressureGatedEligible: DtachOrphanCandidate[] = [];
   const verdicts: DtachOrphanReapVerdict[] = [];
 
   for (const c of candidates) {
     const verdict = evaluateDtachOrphanReap(c, policy);
     verdicts.push(verdict);
     if (verdict.shouldReap) {
-      eligible.push(c);
+      // Today every shouldReap is missing_socket_aged → always-select.
+      if (verdict.reason === 'missing_socket_aged') {
+        alwaysEligible.push(c);
+      } else {
+        // Future classes that shouldReap under pressure only.
+        pressureGatedEligible.push(c);
+      }
       continue;
     }
     switch (verdict.reason) {
@@ -360,17 +396,31 @@ export function planHostStaleDtachReap(
 
   // softBound <= 0 disables the pressure gate (always under pressure for planning).
   const underPressure = softBound <= 0 || dtachCount >= softBound;
+
+  // Always-select class is never soft-bound gated (#2384). Pressure-gated
+  // classes (none today) only join when under pressure.
+  const selectable: DtachOrphanCandidate[] = underPressure
+    ? [...alwaysEligible, ...pressureGatedEligible]
+    : [...alwaysEligible];
+  const skippedUnderBound = underPressure ? 0 : pressureGatedEligible.length;
+
   let toReap: DtachOrphanCandidate[] = [];
-  let skippedUnderBound = 0;
   let skippedRateLimited = 0;
 
-  if (!underPressure) {
-    skippedUnderBound = eligible.length;
-  } else if (maxReapsPerSweep <= 0) {
-    skippedRateLimited = eligible.length;
+  if (maxReapsPerSweep <= 0) {
+    skippedRateLimited = selectable.length;
   } else {
-    toReap = eligible.slice(0, maxReapsPerSweep);
-    skippedRateLimited = Math.max(0, eligible.length - toReap.length);
+    toReap = selectable.slice(0, maxReapsPerSweep);
+    skippedRateLimited = Math.max(0, selectable.length - toReap.length);
+  }
+
+  // Split toReap by class for health / audit (always first in selectable).
+  const alwaysCap = alwaysEligible.length;
+  let selectedAlways = 0;
+  let selectedUnderPressure = 0;
+  for (let i = 0; i < toReap.length; i++) {
+    if (i < alwaysCap) selectedAlways += 1;
+    else selectedUnderPressure += 1;
   }
 
   return {
@@ -380,13 +430,17 @@ export function planHostStaleDtachReap(
     maxReapsPerSweep: Math.max(0, maxReapsPerSweep),
     toReap,
     verdicts,
-    eligibleCount: eligible.length,
+    // Total positive candidates (always + pressure-gated), before rate limit /
+    // pressure gating — operators use this as "how many zombies exist".
+    eligibleCount: alwaysEligible.length + pressureGatedEligible.length,
     skippedLiveAttached,
     skippedUnderBound,
     skippedRateLimited,
     skippedSocketPresent,
     skippedUnknownAge,
     skippedTooYoung,
+    selectedAlways,
+    selectedUnderPressure,
   };
 }
 

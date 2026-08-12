@@ -379,14 +379,16 @@ orphan gauges stay ~0, treat as **host-stale class** — not session-reaper
 failure. Prefer `hostStaleDtachReaper` counters next; enable resource watchdog
 (section 5) when you want briefed auto-investigation.
 
-**What the host-stale reaper does (issue #2356).** A bounded periodic sweep
-(default every 5 minutes, plus ~45s after boot) plans candidates with the pure
-`planHostStaleDtachReap` policy:
+**What the host-stale reaper does (issues #2356, #2384).** A bounded periodic
+sweep (default every 5 minutes, plus ~45s after boot) plans candidates with the
+pure `planHostStaleDtachReap` policy:
 
 1. Never select a master whose session id is still live-attached.
 2. Never select a master whose socket file still exists.
 3. Skip unknown age / too-young (teardown-race floor, default 60s).
-4. Only act when host-wide dtach **count ≥ soft bound** (default 20).
+4. **Always select** `missing_socket_aged` masters (not live, socket gone,
+   past min age) even when host-wide dtach count is under the soft bound
+   (#2384). Soft bound is reserved for any future more-aggressive classes.
 5. Rate-limit to max N reaps per sweep (default 5).
 6. Kill path is `killProcessTree` (SIGTERM → grace → SIGKILL) on **selected
    pids only** — no unbounded `kill -9` of unknown processes.
@@ -394,9 +396,10 @@ failure. Prefer `hostStaleDtachReaper` counters next; enable resource watchdog
 **Health field** (cheap last-sweep counters; never a `/proc` scan on this path):
 `hostStaleDtachReaper` on `GET /api/health`.
 
-Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
-`skippedUnderBound`, `skippedRateLimited`, `totalHostStaleDtachReaped`,
-`lastDtachCount`, `lastUnderPressure`, `dryRun`.
+Key counters: `lastHostStaleDtachReaped`, `lastReapedAlways`,
+`lastReapedUnderPressure`, `skippedLiveAttached`, `skippedUnderBound`,
+`skippedRateLimited`, `totalHostStaleDtachReaped`, `lastDtachCount`,
+`lastUnderPressure`, `dryRun`.
 
 **Operator knobs** (see [environment-variables.md](./environment-variables.md)):
 
@@ -404,7 +407,7 @@ Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
 | --- | --- |
 | `KOOKR_HOST_STALE_DTACH_REAP` | Master enable (on by default; `0`/`off` disables) |
 | `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1` | Observe would-reap decisions without signalling |
-| `KOOKR_HOST_STALE_DTACH_REAP_SOFT_BOUND` | Pressure gate (default 20) |
+| `KOOKR_HOST_STALE_DTACH_REAP_SOFT_BOUND` | Reserved for future pressure-gated classes (default 20); `missing_socket_aged` always selects (#2384) |
 | `KOOKR_HOST_STALE_DTACH_REAP_MAX_PER_SWEEP` | Rate limit (default 5) |
 | `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES=0` | Disable the timer |
 
@@ -419,8 +422,10 @@ Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
 3. If continuous investigation is wanted and `resourceWatchdog.enabled` is
    false, enable `KOOKR_RESOURCE_WATCHDOG=1` and restart (section 5) — that path
    briefs an investigation task; it does not replace the host-stale reaper.
-4. If `skippedUnderBound` is high and count is just below the soft bound, wait
-   for more accumulation or lower soft bound only with intent.
+4. `missing_socket_aged` always selects even under the soft bound (#2384).
+   `skippedUnderBound` only rises for future pressure-gated classes; if
+   `lastEligibleCount` is high but `lastHostStaleDtachReaped` stays 0, check
+   `skippedRateLimited` / `skippedLiveAttached` / dry-run first.
 5. If `skippedLiveAttached` is high, do **not** kill those pids — they are still
    backend live sessions; use the session reaper / task terminal path instead.
 6. For a safe observation pass before kills: set
