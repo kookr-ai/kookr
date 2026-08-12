@@ -48,6 +48,7 @@ export type {
   FindingEvidenceObservationSource,
   FindingEvidenceVerdict,
 } from './contracts/anomalies.js';
+export { ANOMALY_TYPES } from './contracts/anomalies.js';
 export type {
   ActivityDisclosure,
   ActivityItem,

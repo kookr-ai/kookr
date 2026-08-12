@@ -20,6 +20,37 @@ export type AnomalyType =
   | 'budget_exceeded';
 
 /**
+ * Runtime list of every {@link AnomalyType}. Lives in the shared contract so
+ * frontend code can enumerate the union at runtime without importing `src/core`
+ * (forbidden by the boundary guard in `protocol-boundary.test.ts`). Kept in
+ * lockstep with `ANOMALY_TYPES` in `src/core/anomaly-types.ts` — a parity test
+ * in `anomaly-types.test.ts` fails if the two arrays diverge.
+ *
+ * The two compile-time guards below keep this array in step with the union:
+ * - `satisfies readonly AnomalyType[]` rejects typos or extra entries.
+ * - the `_AssertNever` alias rejects any union member missing from the array.
+ */
+export const ANOMALY_TYPES = [
+  'needs_input',
+  'permission_blocked',
+  'repeated_error',
+  'merge_conflict',
+  'stale_agent',
+  'hook_disconnected',
+  'hook_missing',
+  'hook_parse_degraded',
+  'backend_unreachable',
+  'api_error',
+  'budget_exceeded',
+] as const satisfies readonly AnomalyType[];
+
+// Fails to compile if a member is added to AnomalyType but not to ANOMALY_TYPES.
+type _AssertAnomalyTypesExhaustive = _AssertNever<
+  Exclude<AnomalyType, (typeof ANOMALY_TYPES)[number]>
+>;
+type _AssertNever<T extends never> = T;
+
+/**
  * Deprecated wire/persistence aliases for {@link AnomalyType}.
  *
  * Kept so consumers and on-disk records that still emit the pre-rename symbol

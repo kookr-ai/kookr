@@ -32,6 +32,7 @@ import { TaskPriorityButton } from './TaskPriorityButton.js';
 import { RalphLoopControls } from './RalphLoopControls.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
 import { FindingTranscriptContext } from './FindingTranscriptContext.js';
+import { recommendedResponseFor } from './recommendedResponses.js';
 
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
@@ -45,6 +46,7 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
+  const recommended = agent.anomaly ? recommendedResponseFor(agent.anomaly.type) : undefined;
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const waitStartedAt = findingWaitStartedAt(agent);
   const waitAge = formatAge(waitStartedAt);
@@ -197,6 +199,12 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
         )}
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
+        )}
+        {agent.anomaly && recommended && (
+          <div className="finding-recommended" data-testid="finding-recommended" title={recommended}>
+            <span className="finding-recommended-label">Recommended:</span>{' '}
+            {recommended}
+          </div>
         )}
         {(agent.anomaly?.type === 'stale_agent' || agent.anomaly?.type === 'hook_disconnected') && agent.sessionHealth && (
           <div className="finding-health-evidence">

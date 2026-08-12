@@ -969,6 +969,21 @@ kbd {
   border-radius: 2px;
   color: var(--blue);
 }
+/* One-line, catalog-derived "what to do next" under the explanation (#2396).
+   Muted and clamped to a single line so the card never grows taller than useful. */
+.finding-recommended {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.finding-recommended-label {
+  font-weight: 600;
+  color: var(--text);
+}
 .finding-transcript-context {
   margin: 0 0 8px;
   padding: 7px 8px;
