@@ -1286,7 +1286,13 @@ describe('diagnostics routes', () => {
         generatedAt: '2026-08-12T00:00:00.000Z',
       });
       // Counts only — no full entry arrays on the compact health surface.
-      expect(body.startupRecovery).not.toHaveProperty('relaunchedEntries');
+      expect(Object.keys(body.startupRecovery!).sort()).toEqual([
+        'crashLoopSkips',
+        'failed',
+        'generatedAt',
+        'relaunched',
+        'skipped',
+      ]);
     });
 
     test('prefers the live getter over the static summary field', async () => {

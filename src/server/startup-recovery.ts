@@ -93,10 +93,11 @@ export async function runStartupRecoveryPhase({
   staleOpenLaunchTaskIds = [],
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
-  // Tracks crash-recovery's own outcome (distinct from `startupRecoverySummary`,
-  // which is only set when there's something worth surfacing to the caller) so
-  // the post-recovery audit below can see it even on a boot with nothing to
-  // report. Populated only when the block below actually runs.
+  // Tracks crash-recovery's own outcome so the post-recovery audit below can
+  // see it even on a boot with nothing to relaunch/fail. Populated whenever
+  // recoverCrashedSessions actually runs. `startupRecoverySummary` is now
+  // always assigned that same result (including skip-only boots) so health
+  // can project counts (issue #2351); interaction-log noise stays gated.
   let crashRecoveryResult: CrashRecoveryResult | null = null;
 
   if (process.env.KOOKR_AUTO_RELAUNCH === 'false') {

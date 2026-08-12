@@ -118,6 +118,42 @@ afterEach(() => {
   else process.env[AUTO_RELAUNCH_ENV] = prevAutoRelaunch;
 });
 
+describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => {
+  test('returns skip-only recovery results (including crash-loop) without interaction-log noise', async () => {
+    const skipOnly = crashRecoveryResult({
+      skipped: [
+        {
+          taskId: 't-loop',
+          sessionId: 's-loop',
+          reason: 'rapid crash-loop (relaunched 8s ago, window is 60s)',
+        },
+        {
+          taskId: 't-cwd',
+          sessionId: 's-cwd',
+          reason: 'CWD does not exist: /gone',
+        },
+      ],
+    });
+    mockRecoverCrashedSessions.mockResolvedValue(skipOnly);
+    const deps = fakeDeps();
+
+    const returned = await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({
+        markedCompleted: ['s-loop', 's-cwd'],
+        tasksTerminated: ['t-loop', 't-cwd'],
+      }),
+      dispositionLedgerPath: ledgerPath,
+      staleOpenLaunchTaskIds: [],
+    });
+
+    // Health needs skip-only boots retained so crashLoopSkips is visible.
+    expect(returned).toEqual(skipOnly);
+    // Interaction log stays gated to relaunched/failed material outcomes.
+    expect(deps.spies.interactionLog.append).not.toHaveBeenCalled();
+  });
+});
+
 describe('runStartupRecoveryPhase — disposition ledger wiring (issue #1540)', () => {
   test('writes respawned/needs-human/needs-human entries for a relaunch + a skip + a failure', async () => {
     mockRecoverCrashedSessions.mockResolvedValue(

@@ -9,15 +9,7 @@ import type { CrashRecoveryResult } from '../crash-recovery.js';
 
 function mkApp(startupRecoverySummary: CrashRecoveryResult | null): Hono {
   const app = new Hono();
-  registerDiagnosticsRoutes(app, {
-    startupRecoverySummary,
-    // Minimal deps so /api/health can also be exercised from this suite.
-    taskStore: { viewTasks: () => [], listTasks: () => [] },
-    queue: {
-      getDepth: () => 0,
-      getOldestFindingAgeMs: () => null,
-    },
-  } as unknown as RouteDeps);
+  registerDiagnosticsRoutes(app, { startupRecoverySummary } as unknown as RouteDeps);
   return app;
 }
 
