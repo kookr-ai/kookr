@@ -5,15 +5,21 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDoctorJsonReport,
+  DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND,
+  DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND,
+  formatDoctorBytes,
   formatDoctorReport,
   GITHUB_SCANNER_BACKOFF_WARN_MS,
+  HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE,
   HOST_STALE_DTACH_MISMATCH_CODE,
   isOpenPrFailsafeDominatedLastPass,
   parseHookIngestionLagDiagnosticsBody,
+  parseHookReplayCheckpointsHealthBody,
   parseHostStaleDtachHealthBody,
   parseHungSuspectReclaimHealthBody,
   runDoctorCli,
   type HookIngestionLagProbeSnapshot,
+  type HookReplayCheckpointsProbeSnapshot,
   type HostStaleDtachProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
 } from './kookr-doctor.js';
@@ -39,6 +45,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'ops.hung-reclaim',
   'hooks.ingestion-lag',
   'ops.host-stale-dtach',
+  'hooks.replay-checkpoints',
   'ops.prod-smoke-tick',
   'ops.maintenance-prune',
 ] as const;
@@ -55,6 +62,7 @@ const hermeticOps = {
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
   probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
   probeHostStaleDtach: async () => null as HostStaleDtachProbeSnapshot | null,
+  probeHookReplayCheckpoints: async () => null as HookReplayCheckpointsProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
@@ -67,6 +75,16 @@ function hostStaleSnap(
     dtachCount: 0,
     lastOrphanCount: 0,
     lastTerminalLeakCount: 0,
+    ...partial,
+  };
+}
+
+function hookReplaySnap(
+  partial: Partial<HookReplayCheckpointsProbeSnapshot> = {},
+): HookReplayCheckpointsProbeSnapshot {
+  return {
+    sessionCount: 0,
+    fileBytes: 0,
     ...partial,
   };
 }
@@ -163,6 +181,7 @@ describe('kookr doctor --json', () => {
       'ops.hung-reclaim',
       'hooks.ingestion-lag',
       'ops.host-stale-dtach',
+      'hooks.replay-checkpoints',
       'ops.prod-smoke-tick',
       'ops.maintenance-prune',
     ]));
@@ -187,6 +206,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'ops.host-stale-dtach')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -638,6 +662,191 @@ describe('kookr doctor --json', () => {
     expect(check?.detail).toContain('lastHostStaleDtachReaped=5');
     expect(check?.detail).toContain('skippedLiveAttached=1');
     expect(check?.detail).toContain('skippedUnderBound=0');
+  });
+
+  it('WARNs on hooks.replay-checkpoints when sessionCount exceeds soft bound (issue #2387)', async () => {
+    const run = commandRunner(happyFixtures());
+    // Live ops observation from the issue: sessionCount=5893, fileBytes≈21MB.
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: 5893,
+        fileBytes: 21_000_000,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'hooks.replay-checkpoints');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+    });
+    expect(check?.summary).toContain(HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE);
+    expect(check?.summary).toContain('sessionCount=5893');
+    expect(check?.summary).toContain('fileBytes=21000000');
+    expect(check?.summary).toContain(`bounds sessions=${DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND}`);
+    expect(check?.summary).toContain(`fileBytes=${DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND}`);
+    expect(check?.detail).toContain(`code=${HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE}`);
+    expect(check?.detail).toContain('sessionCount=5893');
+    expect(check?.recommendedAction).toContain('hookReplayCheckpoints');
+    expect(check?.recommendedAction).toContain('do not drop');
+    // Advisory only — report stays ok:true (required fails alone flip ok).
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('WARNs on hooks.replay-checkpoints when only fileBytes exceeds soft bound (issue #2387)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: 50, // well under session soft bound
+        fileBytes: DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'hooks.replay-checkpoints');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain(HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE);
+    expect(check?.summary).toContain(`fileBytes=${DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND}`);
+    expect(check?.detail).toContain('fileBytes=');
+  });
+
+  it('WARNs on hooks.replay-checkpoints when only sessionCount exceeds soft bound (issue #2387)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND,
+        fileBytes: 1024, // well under file soft bound
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'hooks.replay-checkpoints');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain(`sessionCount=${DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND}`);
+    expect(check?.detail).toContain(`sessionCount=${DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND}`);
+  });
+
+  it('keeps hooks.replay-checkpoints green when under bounds or probe offline (issue #2387)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const healthy = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: 12,
+        fileBytes: 4096,
+      }),
+    });
+    expect(healthy.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('sessionCount=12'),
+    });
+    expect(healthy.checks.find((c) => c.id === 'hooks.replay-checkpoints')?.summary)
+      .toContain('fileBytes=4096');
+
+    // At soft-bound - 1 on both dimensions stays green.
+    const justUnder = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND - 1,
+        fileBytes: DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND - 1,
+      }),
+    });
+    expect(justUnder.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
+      status: 'ok',
+      required: false,
+    });
+
+    // Custom soft bounds on the snapshot are honored (configurable).
+    const customBoundOk = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: 5000,
+        fileBytes: 10_000_000,
+        sessionSoftBound: 10_000,
+        fileBytesSoftBound: 20_000_000,
+      }),
+    });
+    expect(customBoundOk.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
+      status: 'ok',
+      required: false,
+    });
+
+    // softBound <= 0 disables that dimension.
+    const disabledBounds = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => hookReplaySnap({
+        sessionCount: 99_999,
+        fileBytes: 99_999_999,
+        sessionSoftBound: 0,
+        fileBytesSoftBound: 0,
+      }),
+    });
+    expect(disabledBounds.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
+      status: 'ok',
+      required: false,
+    });
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookReplayCheckpoints: async () => null,
+    });
+    expect(offline.checks.find((c) => c.id === 'hooks.replay-checkpoints')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('parseHookReplayCheckpointsHealthBody extracts gauges from health snapshot (issue #2387)', () => {
+    expect(parseHookReplayCheckpointsHealthBody({
+      hookReplayCheckpoints: { sessionCount: 5893, fileBytes: 21_000_000 },
+    })).toEqual({
+      sessionCount: 5893,
+      fileBytes: 21_000_000,
+    });
+    // Floors fractional / clamps negative.
+    expect(parseHookReplayCheckpointsHealthBody({
+      hookReplayCheckpoints: { sessionCount: 12.7, fileBytes: 4096.9 },
+    })).toEqual({ sessionCount: 12, fileBytes: 4096 });
+    // null block (feature disabled) and missing/invalid → skip.
+    expect(parseHookReplayCheckpointsHealthBody({ hookReplayCheckpoints: null })).toBeNull();
+    expect(parseHookReplayCheckpointsHealthBody({})).toBeNull();
+    expect(parseHookReplayCheckpointsHealthBody(null)).toBeNull();
+    expect(parseHookReplayCheckpointsHealthBody({
+      hookReplayCheckpoints: { sessionCount: 'x', fileBytes: 1 },
+    })).toBeNull();
+  });
+
+  it('formatDoctorBytes humanizes sizes used in replay-checkpoint summaries (issue #2387)', () => {
+    expect(formatDoctorBytes(0)).toBe('0 B');
+    expect(formatDoctorBytes(500)).toBe('500 B');
+    expect(formatDoctorBytes(1536)).toBe('1.5 KB');
+    expect(formatDoctorBytes(5 * 1024 * 1024)).toBe('5.0 MB');
+    expect(formatDoctorBytes(21_000_000)).toBe('20.0 MB');
   });
 
   it('WARNs on ops.hung-reclaim when residual + reclaimedTotal=0 + open_pr last-pass dominance (issue #2231)', async () => {

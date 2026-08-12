@@ -33,6 +33,22 @@ type DoctorCategory = 'runtime' | 'launch-dependency' | 'agent' | 'github' | 'op
 /** Stable doctor/diagnostic code for the host-stale dtach mismatch (issue #2348). */
 export const HOST_STALE_DTACH_MISMATCH_CODE = 'host_stale_dtach_mismatch';
 
+/** Stable doctor/diagnostic code for oversized hook-replay checkpoints (issue #2387). */
+export const HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE = 'hook_replay_checkpoints_oversize';
+
+/**
+ * Default soft bound for hook-replay checkpoint map session entries (issue #2387).
+ * Live ops has observed multi-thousand session maps (~21 MB); 2000 is a soft
+ * preflight threshold — never a hard fail.
+ */
+export const DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND = 2000;
+
+/**
+ * Default soft bound for hook-replay checkpoint map file size in bytes (issue #2387).
+ * 5 MiB — far below the multi-MB live observation while still catching growth early.
+ */
+export const DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND = 5 * 1024 * 1024;
+
 export interface DoctorCheck {
   id: string;
   label: string;
@@ -150,6 +166,31 @@ type HostStaleDtachProbe = (
 ) => Promise<HostStaleDtachProbeSnapshot | null>;
 
 /**
+ * Live probe of hookReplayCheckpoints gauges from GET /api/health (issue #2387).
+ * null = unreachable / unknown / block absent or disabled — doctor stays green.
+ */
+export interface HookReplayCheckpointsProbeSnapshot {
+  sessionCount: number;
+  fileBytes: number;
+  /**
+   * Soft bound for session map entries (defaults to
+   * {@link DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND}). `<= 0` disables the
+   * session dimension.
+   */
+  sessionSoftBound?: number;
+  /**
+   * Soft bound for on-disk file size in bytes (defaults to
+   * {@link DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND}). `<= 0` disables the
+   * file-size dimension.
+   */
+  fileBytesSoftBound?: number;
+}
+
+type HookReplayCheckpointsProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<HookReplayCheckpointsProbeSnapshot | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -203,6 +244,12 @@ interface RunDoctorDeps {
    * KOOKR_PORT is set. null = unreachable / skip.
    */
   probeHostStaleDtach?: HostStaleDtachProbe;
+  /**
+   * Optional override for the live /api/health hookReplayCheckpoints probe
+   * (issue #2387). Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or
+   * KOOKR_PORT is set. null = unreachable / skip.
+   */
+  probeHookReplayCheckpoints?: HookReplayCheckpointsProbe;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -225,6 +272,7 @@ ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
+hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/fileBytes exceed soft bounds),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 `;
@@ -327,6 +375,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
   checks.push(await checkHostStaleDtach(env, deps.probeHostStaleDtach));
+  checks.push(await checkHookReplayCheckpoints(env, deps.probeHookReplayCheckpoints));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 
@@ -824,6 +873,86 @@ async function checkHostStaleDtach(
       `sessionReaper.lastOrphanCount=${snap.lastOrphanCount} ` +
       `lastTerminalLeakCount=${snap.lastTerminalLeakCount} ` +
       `(hostExcess=${hostExcess} < softBound=${softBound})`,
+    false,
+  );
+}
+
+/**
+ * Advisory ops check (issue #2387): WARN when live hook-replay checkpoint map
+ * exceeds soft bounds on sessionCount and/or fileBytes.
+ *
+ * Live ops has observed sessionCount≈5893 / fileBytes≈21 MB without preflight
+ * surfacing it; doctor already live-probes adjacent gauges (hook-ingestion lag,
+ * host-stale dtach). Soft-skip when the server is unreachable or the health
+ * block is absent/disabled so hermetic offline doctor stays green.
+ * Never required:fail — advisory only.
+ */
+async function checkHookReplayCheckpoints(
+  env: NodeJS.ProcessEnv,
+  probe: HookReplayCheckpointsProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHookReplayCheckpoints;
+  let snap: HookReplayCheckpointsProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'hooks.replay-checkpoints',
+      'Hook replay checkpoints',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, health unreachable, or block disabled)',
+      false,
+    );
+  }
+
+  const sessionSoftBound = snap.sessionSoftBound ?? DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND;
+  const fileBytesSoftBound = snap.fileBytesSoftBound ?? DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND;
+  const overSessions = sessionSoftBound > 0 && snap.sessionCount >= sessionSoftBound;
+  const overBytes = fileBytesSoftBound > 0 && snap.fileBytes >= fileBytesSoftBound;
+
+  if (overSessions || overBytes) {
+    const breached: string[] = [];
+    if (overSessions) {
+      breached.push(`sessionCount=${snap.sessionCount} ≥ softBound=${sessionSoftBound}`);
+    }
+    if (overBytes) {
+      breached.push(
+        `fileBytes=${snap.fileBytes} (≥ softBound=${fileBytesSoftBound}, ${formatDoctorBytes(snap.fileBytes)})`,
+      );
+    }
+    return {
+      id: 'hooks.replay-checkpoints',
+      label: 'Hook replay checkpoints',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        `${HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE}: sessionCount=${snap.sessionCount} ` +
+        `fileBytes=${snap.fileBytes} (${formatDoctorBytes(snap.fileBytes)}; ` +
+        `bounds sessions=${sessionSoftBound} fileBytes=${fileBytesSoftBound})`,
+      detail:
+        `code=${HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE} GET /api/health ` +
+        `hookReplayCheckpoints sessionCount=${snap.sessionCount} fileBytes=${snap.fileBytes} ` +
+        `(${formatDoctorBytes(snap.fileBytes)}). Breached: ${breached.join('; ')}. ` +
+        'Oversized checkpoint maps raise RSS/disk pressure; doctor does not drop entries.',
+      recommendedAction:
+        'Inspect GET /api/health hookReplayCheckpoints and the on-disk checkpoint map under ' +
+        'the Kookr data dir. Prefer maintenance/prune of checkpoints for sessions no longer ' +
+        'watched; do not drop entries for live sessions. Serialize any prune with checkpoint writes.',
+    };
+  }
+
+  return okCheck(
+    'hooks.replay-checkpoints',
+    'Hook replay checkpoints',
+    'ops',
+    `sessionCount=${snap.sessionCount} fileBytes=${snap.fileBytes} ` +
+      `(${formatDoctorBytes(snap.fileBytes)}; under bounds sessions=${sessionSoftBound} ` +
+      `fileBytes=${fileBytesSoftBound})`,
     false,
   );
 }
@@ -1460,6 +1589,64 @@ export function parseHostStaleDtachHealthBody(
     ...(skippedLiveAttached !== null ? { skippedLiveAttached } : {}),
     ...(skippedUnderBound !== null ? { skippedUnderBound } : {}),
   };
+}
+
+/**
+ * Best-effort live probe of hookReplayCheckpoints gauges from GET /api/health
+ * (issue #2387). Same base-URL gate as other health probes — hermetic offline
+ * doctor stays green without scanning default ports.
+ */
+async function defaultProbeHookReplayCheckpoints(
+  env: NodeJS.ProcessEnv,
+): Promise<HookReplayCheckpointsProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseHookReplayCheckpointsHealthBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `hookReplayCheckpoints` from /api/health JSON.
+ * Returns null when the block is absent, null (disabled), or not a valid object.
+ */
+export function parseHookReplayCheckpointsHealthBody(
+  body: unknown,
+): HookReplayCheckpointsProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as { hookReplayCheckpoints?: unknown };
+  const block = root.hookReplayCheckpoints;
+  // Health publishes `null` when the feature is disabled — treat as skip.
+  if (block == null || typeof block !== 'object') return null;
+
+  const rec = block as { sessionCount?: unknown; fileBytes?: unknown };
+  const sessionCount = nonNegInt(rec.sessionCount);
+  const fileBytes = nonNegInt(rec.fileBytes);
+  if (sessionCount === null || fileBytes === null) return null;
+
+  return { sessionCount, fileBytes };
+}
+
+/** Compact human byte size for doctor summaries (binary units, one decimal). */
+export function formatDoctorBytes(bytes: number): string {
+  const n = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+  if (n < 1024) return `${Math.floor(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function resolveOptionalHealthBase(env: NodeJS.ProcessEnv): string | null {
