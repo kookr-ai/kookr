@@ -1,11 +1,12 @@
 import type { Task } from './task-read-model.js';
 import type { TurnState } from '../shared/contracts/task-status.js';
 import { classifyFaaRootCause } from './faa-root-cause.js';
+import { capacityHasResidualPhantomPressure } from './capacity-ledger.js';
 
 /**
  * finishedAwaitingAck TTL reclaim (issue #1884) + meta/playbook auto-complete
  * (issue #2070) + capacity-pressure soft TTL for `awaiting_poll` phantoms
- * (issue #2355).
+ * (issues #2355 / #2357 residual under idle_capacity).
  *
  * `finishedAwaitingAck` is a CAPACITY CLASS (see `core/capacity-ledger.ts`
  * `classifyTaskCapacity`), not a task status: a task is finishedAwaitingAck
@@ -46,6 +47,11 @@ import { classifyFaaRootCause } from './faa-root-cause.js';
  * pending queue is empty, `awaiting_poll` FAA may reclaim at a shorter soft TTL
  * so nominal-full fleets stop under-driving real work. Soft path never applies
  * to `manual_review_gate` / `auto_close_disabled` / `ack_sweep_backlog`.
+ *
+ * Issue #2357 residual: also fire soft path when
+ * {@link capacityHasResidualPhantomPressure} matches idle_capacity + multi-slot
+ * phantom hold (e.g. util=75%, phantom=3) that the #2355 util/phantom bounds
+ * alone still skipped.
  */
 
 /** Default hard TTL (issue #1884): 15 minutes. */
@@ -269,21 +275,30 @@ export function effectiveFinishedAwaitingAckSoftTtlMs(opts: {
 }
 
 /**
- * Capacity gate for soft `awaiting_poll` FAA reclaim (issue #2355).
+ * Capacity gate for soft `awaiting_poll` FAA reclaim (issues #2355 / #2357).
  *
  * Fires only when the pending queue is empty (no work waiting on free slots
  * that would already drain phantoms via normal spawn pressure) AND either:
  * - effective utilization is below threshold (nominal-full / effective-idle), or
- * - phantomActive is at or above the occupancy bound.
+ * - phantomActive is at or above the #2355 occupancy bound, or
+ * - residual idle_capacity pressure (issue #2357): idleEffectiveSlots > 0 and
+ *   phantomActive ≥ 2 — the live residual util=75%/phantom=3 shape that
+ *   capacityThroughputVerdict already labels idle_capacity.
  *
- * Complements (does not replace) the provider_paused soft gate (#2225), which
- * requires free general-source headroom — FAA pressure is the inverse shape
- * (nominal full, productive holes).
+ * Complements (does not replace) the provider_paused soft gate (#2225 / #2357),
+ * which also keys residual pressure on idle effective slots.
  */
 export function capacityAllowsFinishedAwaitingAckEarlyReclaim(input: {
   effectiveUtilizationPct: number;
   phantomActive: number;
   pendingQueueDepth: number;
+  /**
+   * Productive free slots (issue #2357). Same key as
+   * capacityThroughputVerdict.idleEffectiveSlots — when present, residual
+   * multi-phantom hold under idle_capacity enables soft reclaim even if util
+   * is at the #2355 threshold and phantomActive is under the #2355 bound of 4.
+   */
+  idleEffectiveSlots?: number;
   /** Default {@link DEFAULT_FAA_CAPACITY_PRESSURE_EFFECTIVE_UTIL_PCT}. */
   effectiveUtilThresholdPct?: number;
   /** Default {@link DEFAULT_FAA_CAPACITY_PRESSURE_PHANTOM_BOUND}. */
@@ -291,6 +306,19 @@ export function capacityAllowsFinishedAwaitingAckEarlyReclaim(input: {
 }): boolean {
   const pending = input.pendingQueueDepth;
   if (!Number.isFinite(pending) || pending > 0) return false;
+
+  // Residual idle_capacity + multi-phantom (issue #2357) — agree with
+  // capacityThroughputVerdict so soft reclaim fires on the residual shape.
+  if (
+    input.idleEffectiveSlots !== undefined
+    && capacityHasResidualPhantomPressure({
+      idleEffectiveSlots: input.idleEffectiveSlots,
+      phantomActive: input.phantomActive,
+      pendingQueueDepth: pending,
+    })
+  ) {
+    return true;
+  }
 
   const utilThreshold =
     input.effectiveUtilThresholdPct ?? DEFAULT_FAA_CAPACITY_PRESSURE_EFFECTIVE_UTIL_PCT;

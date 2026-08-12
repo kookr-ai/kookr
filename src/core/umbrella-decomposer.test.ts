@@ -19,6 +19,7 @@ import {
   curatedLeafPlan,
   evaluateQueueFeeder,
   formatQueueFeederLine,
+  effectiveFreeForSpawnBudget,
   isFeederTriggered,
   isHarnessUmbrella,
   normalizeLeafPlan,
@@ -79,6 +80,26 @@ describe('isFeederTriggered', () => {
 
   it('honours a custom threshold', () => {
     expect(isFeederTriggered({ free: 2, pendingQueueDepth: 0 }, { freeSlotsThreshold: 2 })).toBe(true);
+  });
+
+  it('issue #2357: keys on freeForGeneralSources so free=0 with effective free still refills', () => {
+    // Residual shape: nominal full (free=0) while idleEffectiveSlots / freeForGeneral=4.
+    expect(
+      isFeederTriggered({
+        free: 0,
+        freeForGeneralSources: 4,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+    expect(
+      effectiveFreeForSpawnBudget({
+        free: 0,
+        freeForGeneralSources: 4,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(4);
+    // Nominal free alone still blocks without effective free.
+    expect(isFeederTriggered({ free: 0, pendingQueueDepth: 0 })).toBe(false);
   });
 });
 

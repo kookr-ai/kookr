@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   buildCapacityLedger,
   buildVettedIdeaRunwayReport,
+  capacityHasResidualPhantomPressure,
   classifyTaskCapacity,
   computeVettedIdeaRunwayDays,
   evaluateCapacityThroughputVerdict,
@@ -9,6 +10,7 @@ import {
   evaluateIdleCapacityFinding,
   isReservedSlotLaunch,
   resolveIdleCapacitySignalInputs,
+  DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND,
   DEFAULT_VETTED_IDEA_RUNWAY_FLOOR_DAYS,
   HUNG_SUSPECT_CAPACITY_FINDING_CODE,
   IDLE_CAPACITY_FINDING_CODE,
@@ -848,5 +850,70 @@ describe('effective vs nominal utilization (issue #2169)', () => {
     });
     expect(ledger.utilizationPct).toBe(0);
     expect(ledger.effectiveUtilizationPct).toBe(0);
+  });
+});
+
+describe('capacityHasResidualPhantomPressure (issue #2357)', () => {
+  test('live residual: idle_capacity + multi-phantom fires', () => {
+    // Reflection snapshot shape: idleEffectiveSlots=4/2, phantomActive=6/3.
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: 4,
+        phantomActive: 6,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: 2,
+        phantomActive: 3,
+        providerPausedCount: 5,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+  });
+
+  test('agrees with capacityThroughputVerdict: no idle slots → no residual pressure', () => {
+    const full = evaluateCapacityThroughputVerdict({
+      maxActiveTasks: 16,
+      active: 16,
+      effectiveWorking: 16,
+      phantomActive: 0,
+      utilizationPct: 100,
+      effectiveUtilizationPct: 100,
+    });
+    expect(full.verdict).toBe('healthy_throughput');
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: full.idleEffectiveSlots,
+        phantomActive: 6,
+      }),
+    ).toBe(false);
+  });
+
+  test('occupancy bound defaults to 2; single squatter under idle does not fire', () => {
+    expect(DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND).toBe(2);
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: 4,
+        phantomActive: 1,
+      }),
+    ).toBe(false);
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: 4,
+        phantomActive: 2,
+      }),
+    ).toBe(true);
+  });
+
+  test('pending queue blocks residual pressure', () => {
+    expect(
+      capacityHasResidualPhantomPressure({
+        idleEffectiveSlots: 4,
+        phantomActive: 6,
+        pendingQueueDepth: 2,
+      }),
+    ).toBe(false);
   });
 });

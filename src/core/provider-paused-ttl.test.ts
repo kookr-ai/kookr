@@ -293,18 +293,55 @@ describe('capacity-aware soft TTL (issue #2225)', () => {
         freeForGeneralSources: 3,
       }),
     ).toBe(true);
+    // Issue #2357 residual: free=2 with multi-slot hold now fires (was false under #2225 freeBound=3).
     expect(
       capacityAllowsProviderPausedEarlyReclaim({
         phantomActive: 7,
         providerPausedCount: 5,
         freeForGeneralSources: 2,
       }),
+    ).toBe(true);
+    // Live residual shape: free=2, phantom=3, paused=5 under idle_capacity.
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 3,
+        providerPausedCount: 5,
+        freeForGeneralSources: 2,
+        pendingQueueDepth: 0,
+      }),
+    ).toBe(true);
+    // Occupancy under residual bound (phantom+paused < 2) still false.
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 0,
+        providerPausedCount: 1,
+        freeForGeneralSources: 2,
+      }),
     ).toBe(false);
+    // Pending queue blocks residual path even with multi-slot hold.
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 3,
+        providerPausedCount: 5,
+        freeForGeneralSources: 2,
+        pendingQueueDepth: 1,
+      }),
+    ).toBe(false);
+    // Residual path (#2357): free≥1 + occupancy≥2 fires even when under the
+    // #2225 occupancyBound of 4 (was false under freeBound/occupancyBound alone).
     expect(
       capacityAllowsProviderPausedEarlyReclaim({
         phantomActive: 1,
         providerPausedCount: 1,
         freeForGeneralSources: 7,
+      }),
+    ).toBe(true);
+    // Still false with zero free headroom (healthy full productive fleet).
+    expect(
+      capacityAllowsProviderPausedEarlyReclaim({
+        phantomActive: 1,
+        providerPausedCount: 1,
+        freeForGeneralSources: 0,
       }),
     ).toBe(false);
   });

@@ -1,4 +1,5 @@
 import type { Task } from './task-read-model.js';
+import { capacityHasResidualPhantomPressure } from './capacity-ledger.js';
 
 /**
  * provider_paused occupancy bound + hard TTL (issue #2079).
@@ -241,24 +242,45 @@ export function effectiveProviderPausedTtlMs(opts: {
 }
 
 /**
- * Capacity gate for soft provider_paused reclaim (issue #2225 AC3).
+ * Capacity gate for soft provider_paused reclaim (issues #2225 AC3 / #2357).
  *
- * Fires when the fleet has free general-source headroom AND sustained
- * phantom/paused occupancy — the live shape where hard-TTL under-TTL skips
- * dominate while product work could still launch into free slots.
+ * Fires when either:
+ * 1. **Steady soft path (#2225):** free general-source headroom ≥ freeBound
+ *    (default 3) AND phantom+paused occupancy ≥ occupancyBound (default 4).
+ * 2. **Residual idle_capacity pressure (#2357):** freeForGeneralSources (idle
+ *    effective slots) > 0 AND multi-slot phantom/pause occupancy ≥ 2, with
+ *    empty pending queue when provided — the live residual free=2 / phantom=3
+ *    / paused=5 shape that capacityThroughputVerdict already labels
+ *    idle_capacity while the #2225 freeBound=3 gate stayed off.
  */
 export function capacityAllowsProviderPausedEarlyReclaim(input: {
   phantomActive: number;
   providerPausedCount: number;
   freeForGeneralSources: number;
-  /** Minimum free general slots (default 3). */
+  /** When set and > 0, residual path stays off (work already queued). */
+  pendingQueueDepth?: number;
+  /** Minimum free general slots for the #2225 path (default 3). */
   freeBound?: number;
-  /** Minimum phantom+paused occupancy (default 4). */
+  /** Minimum phantom+paused occupancy for the #2225 path (default 4). */
   occupancyBound?: number;
 }): boolean {
+  const free = input.freeForGeneralSources;
+  // Residual idle_capacity + multi-slot pause/phantom (issue #2357). freeForGeneral
+  // is the same key capacityThroughputVerdict uses for idleEffectiveSlots.
+  if (
+    Number.isFinite(free)
+    && capacityHasResidualPhantomPressure({
+      idleEffectiveSlots: free,
+      phantomActive: input.phantomActive,
+      providerPausedCount: input.providerPausedCount,
+      pendingQueueDepth: input.pendingQueueDepth,
+    })
+  ) {
+    return true;
+  }
+
   const freeBound = input.freeBound ?? 3;
   const occupancyBound = input.occupancyBound ?? 4;
-  const free = input.freeForGeneralSources;
   if (!Number.isFinite(free) || free < freeBound) return false;
   const occupancy =
     Math.max(0, input.phantomActive) + Math.max(0, input.providerPausedCount);
