@@ -36,6 +36,7 @@ import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js'
 import { OpenPrFailsafeReasonMetrics } from '../../core/open-pr-hold.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import { OssAttemptStore } from '../../core/oss-attempt-store.js';
+import { MaintenancePruneHealth } from '../maintenance-prune-schedule.js';
 import type { RouteDeps } from './shared.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -1154,9 +1155,9 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /api/health — maintenancePrune block (issue #2344)
+  // GET /api/health — maintenancePrune block (issues #2344 + #2345)
   // ---------------------------------------------------------------------------
-  describe('GET /api/health maintenancePrune block (issue #2344)', () => {
+  describe('GET /api/health maintenancePrune block (issues #2344 + #2345)', () => {
     test('omits maintenancePrune when getMaintenancePruneHealth is not wired', async () => {
       const res = await mkApp({
         taskStore: new TaskStore(),
@@ -1168,58 +1169,110 @@ describe('diagnostics routes', () => {
       expect(body.maintenancePrune).toBeUndefined();
     });
 
-    test('projects emergency prune counters from the getter', async () => {
+    test('projects combined schedule + emergency counters from the getter', async () => {
       const res = await mkApp({
         taskStore: new TaskStore(),
         queue: new AttentionQueue(),
         buildInfo: {} as never,
         getMaintenancePruneHealth: () => ({
+          enabled: true,
+          intervalHours: 24,
+          lastRunAt: '2026-08-12T01:00:00.000Z',
+          lastReclaimedBytes: 2048,
+          lastRemovedCount: 3,
+          lastError: null,
           emergencyPruneTriggeredTotal: 2,
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
-          lastReclaimedBytes: 4096,
+          lastEmergencyReclaimedBytes: 4096,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
       expect(res.status).toBe(200);
-      const body = await res.json() as {
-        maintenancePrune: {
-          emergencyPruneTriggeredTotal: number;
-          lastEmergencyPruneAt: string | null;
-          lastReclaimedBytes: number | null;
-          throttleMs: number;
-        };
-      };
+      const body = await res.json() as { maintenancePrune: Record<string, unknown> };
       expect(body.maintenancePrune).toEqual({
+        enabled: true,
+        intervalHours: 24,
+        lastRunAt: '2026-08-12T01:00:00.000Z',
+        lastReclaimedBytes: 2048,
+        lastRemovedCount: 3,
+        lastError: null,
         emergencyPruneTriggeredTotal: 2,
         lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
-        lastReclaimedBytes: 4096,
+        lastEmergencyReclaimedBytes: 4096,
         throttleMs: 3_600_000,
       });
     });
 
-    test('projects zero / null counters before any emergency edge', async () => {
+    test('reports enabled=false when intervalHours=0 (issue #2345)', async () => {
       const res = await mkApp({
         taskStore: new TaskStore(),
         queue: new AttentionQueue(),
         buildInfo: {} as never,
         getMaintenancePruneHealth: () => ({
+          enabled: false,
+          intervalHours: 0,
+          lastRunAt: null,
+          lastReclaimedBytes: null,
+          lastRemovedCount: null,
+          lastError: null,
           emergencyPruneTriggeredTotal: 0,
           lastEmergencyPruneAt: null,
-          lastReclaimedBytes: null,
+          lastEmergencyReclaimedBytes: null,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
       expect(res.status).toBe(200);
       const body = await res.json() as {
         maintenancePrune: {
-          emergencyPruneTriggeredTotal: number;
-          lastEmergencyPruneAt: string | null;
+          enabled: boolean;
+          intervalHours: number;
+          lastRunAt: string | null;
           lastReclaimedBytes: number | null;
+          lastRemovedCount: number | null;
+          lastError: string | null;
+          emergencyPruneTriggeredTotal: number;
         };
       };
-      expect(body.maintenancePrune.emergencyPruneTriggeredTotal).toBe(0);
-      expect(body.maintenancePrune.lastEmergencyPruneAt).toBeNull();
+      expect(body.maintenancePrune.enabled).toBe(false);
+      expect(body.maintenancePrune.intervalHours).toBe(0);
+      expect(body.maintenancePrune.lastRunAt).toBeNull();
       expect(body.maintenancePrune.lastReclaimedBytes).toBeNull();
+      expect(body.maintenancePrune.lastRemovedCount).toBeNull();
+      expect(body.maintenancePrune.lastError).toBeNull();
+      expect(body.maintenancePrune.emergencyPruneTriggeredTotal).toBe(0);
+    });
+
+    test('MaintenancePruneHealth recordSuccess / recordFailure feed schedule fields', async () => {
+      let tick = 0;
+      const schedule = new MaintenancePruneHealth(6, () => {
+        tick += 1;
+        return tick === 1 ? '2026-08-12T04:00:00.000Z' : '2026-08-12T05:00:00.000Z';
+      });
+      schedule.recordSuccess({ reclaimedBytes: 100, removed: [{ path: 'x' } as never] });
+      schedule.recordFailure(new Error('disk exploded'));
+      const snap = schedule.getSnapshot();
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaintenancePruneHealth: () => ({
+          ...snap,
+          emergencyPruneTriggeredTotal: 0,
+          lastEmergencyPruneAt: null,
+          lastEmergencyReclaimedBytes: null,
+          throttleMs: 3_600_000,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { maintenancePrune: Record<string, unknown> };
+      expect(body.maintenancePrune).toMatchObject({
+        enabled: true,
+        intervalHours: 6,
+        lastRunAt: '2026-08-12T05:00:00.000Z',
+        lastReclaimedBytes: 100,
+        lastRemovedCount: 1,
+        lastError: 'disk exploded',
+      });
     });
   });
 

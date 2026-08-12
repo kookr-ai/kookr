@@ -662,8 +662,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // snapshot bytes. Same numbers already logged at boot/prune; health makes
       // them glanceable for operators and `kookr status` without grepping logs.
       ...(deps.getPayloadDietStats ? { payloadDiet: deps.getPayloadDietStats() } : {}),
-      // Emergency maintenance prune (issue #2344): disk-critical edge counters.
+      // Maintenance prune (issues #2344 emergency + #2345 schedule): schedule
+      // enabled/interval + last-run counters, plus emergency edge counters.
       // Cheap in-memory read only — never starts a reclaim on this path.
+      // Bootstrap always wires the getter (intervalHours=0 → enabled:false).
       ...(() => {
         const maintenancePrune = deps.getMaintenancePruneHealth?.();
         return maintenancePrune ? { maintenancePrune } : {};

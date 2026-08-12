@@ -1456,6 +1456,25 @@ describe('runScheduledMaintenancePrune', () => {
     expect(logSpy.mock.calls.flat().join(' ')).toMatch(/reclaimed 4096 byte/);
   });
 
+  test('records success on the optional health tracker (issue #2345)', async () => {
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 2048, removed: [{} as never, {} as never] }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const health = {
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+    };
+    await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run,
+      health,
+    });
+    expect(health.recordSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({ reclaimedBytes: 2048, removed: expect.any(Array) }),
+    );
+    expect(health.recordFailure).not.toHaveBeenCalled();
+  });
+
   test('never throws — a failing sweep is logged and returns null', async () => {
     const run = vi.fn(async () => {
       throw new Error('disk exploded');
@@ -1464,6 +1483,20 @@ describe('runScheduledMaintenancePrune', () => {
     const result = await runScheduledMaintenancePrune({ dataDir: '/tmp/data', intervalHours: 24, run });
     expect(result).toBeNull();
     expect(errSpy.mock.calls.flat().join(' ')).toMatch(/scheduled sweep failed/);
+  });
+
+  test('records failure on the optional health tracker (issue #2345)', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('disk exploded');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const health = {
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn(),
+    };
+    await runScheduledMaintenancePrune({ dataDir: '/tmp/data', intervalHours: 24, run, health });
+    expect(health.recordFailure).toHaveBeenCalledWith(expect.any(Error));
+    expect(health.recordSuccess).not.toHaveBeenCalled();
   });
 
   test('runs the task-record prune leg on the same tick and fires onTaskRecordsPruned (issue #1526 C2)', async () => {
