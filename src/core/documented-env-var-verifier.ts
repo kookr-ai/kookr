@@ -86,6 +86,9 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_SPEAK',
   'KOOKR_USER_PLAYBOOKS_DIR',
   'KOOKR_KB_CONTEXT_INJECT',
+  // bin/kb-spool-shim.js recursion depth counter — set only by the shim on
+  // child env, never operator-configured. Aborts peer-shim chains at depth≥3.
+  'KOOKR_KB_SHIM_DEPTH',
   'KOOKR_CANARY_SUBMIT_READY_MS',
   'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE',
   // Experimental peer-to-peer collaboration feature (not user-configurable yet).
