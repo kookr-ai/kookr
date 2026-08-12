@@ -332,15 +332,24 @@ export class ScheduleRunner {
     this.refreshPlaybookResolution();
     this.deps.service.recordRunnerStarted(catchUpMode);
 
-    if (catchUpMode === 'auto') {
-      this.trackBackgroundWork('Catch-up', this.catchUp());
-    } else if (catchUpMode === 'manual') {
-      console.log('[schedule] Automatic catch-up disabled; missed runs are recorded for manual Run Now recovery');
-      this.trackBackgroundWork('Catch-up', this.catchUp({ manualOnly: true }));
-    } else {
-      console.log('[schedule] Catch-up disabled (KOOKR_NO_CATCHUP)');
-      this.trackBackgroundWork('Catch-up', this.catchUp({ suppressOnly: true }));
-    }
+    // Fail-closed auto-pause (issue #2353) MUST complete before catch-up so a
+    // schedule already at consecutiveFailures ≥ N cannot re-dispatch on the
+    // first post-deploy catch-up pass. Enforce is awaited inside the same
+    // background work unit as catch-up (start itself stays sync).
+    // Label stays "Catch-up" (trackBackgroundWork union); enforce runs first
+    // so pre-existing thrash schedules cannot fire on the catch-up pass.
+    this.trackBackgroundWork('Catch-up', (async () => {
+      await this.deps.service.enforceFailureAutoPauses();
+      if (catchUpMode === 'auto') {
+        await this.catchUp();
+      } else if (catchUpMode === 'manual') {
+        console.log('[schedule] Automatic catch-up disabled; missed runs are recorded for manual Run Now recovery');
+        await this.catchUp({ manualOnly: true });
+      } else {
+        console.log('[schedule] Catch-up disabled (KOOKR_NO_CATCHUP)');
+        await this.catchUp({ suppressOnly: true });
+      }
+    })());
 
     this.tickInterval = setInterval(() => {
       this.trackBackgroundWork('Tick', this.tick());

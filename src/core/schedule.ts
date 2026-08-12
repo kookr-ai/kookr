@@ -1141,8 +1141,14 @@ function isValidRemainingTriggers(value: unknown): value is number {
  * True when the schedule was auto-disabled by hitting its trigger budget.
  * Exhaustion markers are the only auto-exhaust signal (no separate operator flag);
  * either marker alone counts so partial persisted state still re-arms.
+ *
+ * A consecutive-failure pause (issue #2353) is NEVER treated as budget
+ * exhaustion: operator re-enable via setEnabled is the only recovery path.
+ * Without this guard, raising/clearing maxTriggers would re-arm a thrashing
+ * schedule that still holds consecutiveFailures ≥ threshold.
  */
 function wasAutoExhausted(existing: Pick<Schedule, 'stopReason' | 'exhaustedAt'>): boolean {
+  if (existing.stopReason === 'consecutive_failures') return false;
   return existing.stopReason === 'trigger_limit_reached' || existing.exhaustedAt !== undefined;
 }
 
@@ -1181,12 +1187,16 @@ function computeUpdatedTriggerState(
     };
   }
 
+  // Preserve a consecutive-failure pause across budget edits (issue #2353).
+  const failurePaused = existing.stopReason === 'consecutive_failures';
+
   if (nextMaxTriggers === null) {
-    // Unlimited budget — re-enable only if previously auto-exhausted (not operator-disabled).
+    // Unlimited budget — re-enable only if previously auto-exhausted (not
+    // operator-disabled and not fail-closed-paused).
     return {
       maxTriggers: undefined,
       remainingTriggers: undefined,
-      stopReason: undefined,
+      stopReason: failurePaused ? 'consecutive_failures' : undefined,
       exhaustedAt: undefined,
       ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
     };
@@ -1200,17 +1210,21 @@ function computeUpdatedTriggerState(
     return {
       maxTriggers: nextMaxTriggers,
       remainingTriggers,
-      stopReason: 'trigger_limit_reached',
+      // Failure pause wins over budget exhaustion for stopReason; exhaustedAt
+      // still records the budget hit so wasAutoExhausted stays accurate once
+      // the operator re-enables and clears the failure pause.
+      stopReason: failurePaused ? 'consecutive_failures' : 'trigger_limit_reached',
       exhaustedAt: existing.exhaustedAt ?? now,
       enabled: false,
     };
   }
 
-  // Fresh budget — re-enable only if previously auto-exhausted (not operator-disabled).
+  // Fresh budget — re-enable only if previously auto-exhausted (not
+  // operator-disabled and not fail-closed-paused).
   return {
     maxTriggers: nextMaxTriggers,
     remainingTriggers,
-    stopReason: undefined,
+    stopReason: failurePaused ? 'consecutive_failures' : undefined,
     exhaustedAt: undefined,
     ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
   };

@@ -75,6 +75,15 @@ export interface AgentLifecycleDeps {
    * must isolate their own failures so lifecycle transitions cannot be blocked.
    */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /**
+   * Notify the schedule service when a task reaches a terminal outcome so
+   * consecutiveFailures / auto-pause stay accurate (issue #2353). Optional —
+   * absent in tests / minimal wirings. Must not throw into the lifecycle path.
+   */
+  recordScheduleTaskTerminal?: (
+    taskId: string,
+    status: 'completed' | 'cancelled',
+  ) => void | Promise<void>;
 }
 
 /**
@@ -259,6 +268,16 @@ export interface LifecycleDeps {
    * must isolate their own failures so lifecycle transitions cannot be blocked.
    */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /**
+   * Notify the schedule service on terminal task outcomes so consecutiveFailures
+   * / auto-pause stay accurate for live terminate paths (timeout reaper,
+   * issue #2353). Optional — absent in tests / minimal wirings. Must not throw
+   * into the lifecycle path (wrapped by the caller).
+   */
+  recordScheduleTaskTerminal?: (
+    taskId: string,
+    status: 'completed' | 'cancelled',
+  ) => void | Promise<void>;
   /**
    * Durable terminal-tail store (rfc-task-tail-retrieval). When set, live
    * sessions are snapshotted before `adapter.stop` so completed tasks remain
@@ -718,6 +737,18 @@ export async function terminateTask(
   // Release issue-ownership claims — dead sessions = confirmed-dead reclaim (RFC R9/R12)
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'dead_reclaim');
   notifyTaskOutcome(deps, taskId, { kind: 'failed' });
+
+  // Live terminate (timeout reaper, session death) must count toward schedule
+  // consecutiveFailures so thrashing loops fail-closed-pause (issue #2353).
+  // Count as cancelled (non-success); never block terminate on schedule I/O.
+  try {
+    await deps.recordScheduleTaskTerminal?.(taskId, 'cancelled');
+  } catch (err) {
+    console.warn(
+      `[lifecycle] recordScheduleTaskTerminal failed for ${taskId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});

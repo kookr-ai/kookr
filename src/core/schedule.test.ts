@@ -452,6 +452,32 @@ describe('ScheduleStore', () => {
     expect(rearmed.exhaustedAt).toBeUndefined();
   });
 
+  it('does not re-arm a consecutive_failures pause when clearing maxTriggers (issue #2353)', () => {
+    const schedule = store.create({
+      name: 'Failure paused',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 3,
+    });
+
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 0,
+      stopReason: 'consecutive_failures',
+      exhaustedAt: '2026-01-01T00:05:00.000Z',
+      consecutiveFailures: 5,
+      operatorHold: true,
+    });
+
+    const cleared = store.updateDefinition(schedule.id, { maxTriggers: null });
+    expect(cleared.enabled).toBe(false);
+    expect(cleared.stopReason).toBe('consecutive_failures');
+    expect(cleared.consecutiveFailures).toBe(5);
+    expect(cleared.maxTriggers).toBeUndefined();
+  });
+
   it('toggles enabled state', () => {
     const schedule = store.create({
       name: 'Test',

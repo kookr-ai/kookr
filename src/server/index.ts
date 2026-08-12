@@ -2897,6 +2897,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // Coalesced + load-shed path: timer ticks must never force full snapshots.
       requestSnapshotBroadcast,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
+      // Live terminate (hung reaper) → schedule consecutiveFailures (issue #2353).
+      scheduleService,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       // issue #1896: when the reaper detects a provider_paused task, register
       // its issue for auto-re-dispatch at the quota reset and tell the reaper

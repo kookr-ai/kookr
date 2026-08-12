@@ -377,10 +377,6 @@ export class ScheduleService {
     this.catchUpMode = catchUpMode;
     this.catchUpEnabled = catchUpMode === 'auto';
     this.lastError = undefined;
-    // Fail-closed: park any schedule that already sits at/over the failure
-    // threshold before the first tick can re-dispatch it (issue #2353). Fire-
-    // and-forget — persist errors surface via the runner's own error path.
-    void this.enforceFailureAutoPauses();
     this.broadcastSchedules();
   }
 
@@ -398,11 +394,10 @@ export class ScheduleService {
       const count = schedule.consecutiveFailures ?? 0;
       if (!shouldAutoPauseForConsecutiveFailures(count, threshold, schedule.enabled)) continue;
       const now = new Date().toISOString();
+      const patch = this.autoPausePatch(schedule, count);
       this.store.replace({
         ...schedule,
-        enabled: false,
-        stopReason: 'consecutive_failures',
-        operatorHold: true,
+        ...patch,
         updatedAt: now,
       });
       // Synthesize a priorCount just under threshold so the edge alert fires
