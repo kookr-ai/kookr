@@ -12,9 +12,10 @@
  */
 
 import { createHash } from 'node:crypto';
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { atomicWriteFile } from './persistence-utils.js';
 
 export const LESSON_WRITE_SPOOL_SCHEMA = 'lesson-write-spool.v1' as const;
 export const DEFAULT_LESSON_KB = 'agent-task-lessons';
@@ -228,12 +229,11 @@ export async function drainLessonSpool(opts: {
 async function rewritePending(spoolDir: string, entries: LessonWriteEntry[]): Promise<void> {
   await mkdir(spoolDir, { recursive: true });
   const path = pendingPath(spoolDir);
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   const body = entries.length === 0
     ? ''
     : `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
-  await writeFile(tmp, body, 'utf8');
-  await rename(tmp, path);
+  // atomicWriteFile: write temp → fsync → rename (parity with other durable paths).
+  await atomicWriteFile(path, body);
 }
 
 export function emptySpoolState(): LessonSpoolState {
@@ -276,9 +276,8 @@ export async function readSpoolState(spoolDir: string): Promise<LessonSpoolState
 export async function writeSpoolState(spoolDir: string, state: LessonSpoolState): Promise<void> {
   await mkdir(spoolDir, { recursive: true });
   const path = statePath(spoolDir);
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  await rename(tmp, path);
+  // atomicWriteFile: write temp → fsync → rename (parity with other durable paths).
+  await atomicWriteFile(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /** Default prolonged-degradation threshold: 2 hours (issue #1519). */
