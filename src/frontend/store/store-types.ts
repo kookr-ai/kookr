@@ -541,6 +541,14 @@ export interface PipelineStarvationRepoStatus {
   updatedAt?: string;
 }
 
+/** Invent-class mix from queue-feeder ledger (issue #2358). */
+export interface InventPriorityClassStatus {
+  product: number;
+  micro: number;
+  other: number;
+  windowHours: number;
+}
+
 /**
  * Slim projection of `GET /api/health.pipelineStarvation` for the Diagnostics
  * panel (issue #2259). Full health block is retained so elevated rows can be
@@ -549,6 +557,7 @@ export interface PipelineStarvationRepoStatus {
 export interface PipelineStarvationStatus {
   schemaVersion: 'pipeline-starvation.v1';
   repos: Record<string, PipelineStarvationRepoStatus>;
+  inventByPriorityClass?: InventPriorityClassStatus;
 }
 
 /**

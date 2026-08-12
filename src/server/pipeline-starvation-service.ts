@@ -64,6 +64,7 @@ import {
   loadPipelineStarvationState,
   savePipelineStarvationState,
 } from '../core/pipeline-starvation-state.js';
+import { starvationInventExtraInstruction } from '../core/starvation-invent-policy.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
@@ -300,7 +301,11 @@ export class PipelineStarvationService {
 
     if (decision.spawnScout) {
       try {
-        const launch = await this.spawnIdeaScout(input, nowMs);
+        const launch = await this.spawnIdeaScout(
+          input,
+          nowMs,
+          decision.consecutiveBlockedEmpty,
+        );
         spawnedScoutTaskId = launch.task.id;
         scoutQueued = launch.queued === true;
         this.deps.log?.(
@@ -829,6 +834,7 @@ export class PipelineStarvationService {
   private async spawnIdeaScout(
     input: HandleBatchOutcomeInput,
     nowMs: number,
+    consecutiveBlockedEmpty = 0,
   ): Promise<LaunchResult<Task>> {
     const { outcome } = input;
     const localPath = input.localPath?.trim() || outcome.localPath?.trim() || '';
@@ -840,6 +846,16 @@ export class PipelineStarvationService {
     // Prefer an existing checkout path; fall back to ~/git/<owner-repo> which
     // matches the idea-scout playbook's default REPO_SLUG layout.
     const taskTargetCwd = localPath || defaultCheckoutGuess(outcome.repo);
+
+    // Issue #2358: under elevated drought, steer scout invent toward dual-
+    // priority product leaves and away from micro-hardening ops polish.
+    const extraInstruction =
+      starvationInventExtraInstruction({
+        consecutiveBlockedEmpty,
+        runKey: outcome.runKey,
+        disqualifierSummary: summarizeDisqualifiers(outcome.disqualified),
+      })
+      + ` provenance=${STARVATION_TRIGGER_PROVENANCE}.`;
 
     const prepared = await preparePlaybookLaunchWithMetadata({
       // cwd is required by normalizePlaybookLaunchInput even for plugin-scope
@@ -859,11 +875,7 @@ export class PipelineStarvationService {
         publishBehavior: 'publish-safe',
         minimumIssueScan: '100',
         useKnowledgeBase: 'auto',
-        extraInstruction:
-          `On-demand refill triggered by parallel-issue-batch blocked-empty `
-          + `(runKey=${outcome.runKey}, provenance=${STARVATION_TRIGGER_PROVENANCE}). `
-          + `Prior open issues were all disqualified: ${summarizeDisqualifiers(outcome.disqualified)}. `
-          + `Prefer single-PR-safe leaves, not umbrella/tracking issues.`,
+        extraInstruction,
       },
       taskTargetCwd,
       taskTargetCwdExplicit: true,

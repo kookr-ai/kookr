@@ -746,6 +746,152 @@ describe('evaluateQueueFeeder — invent-product-wave (#2069)', () => {
   });
 });
 
+describe('evaluateQueueFeeder — starvation invent priority (#2358)', () => {
+  it('under high consecutiveBlockedEmpty + open product umbrella, invents product before micro secondary', () => {
+    // Live residual shape from workflow reflection 2026-08-12: drought depth
+    // elevated, dual-priority umbrella open with no curated plan, idea-scout
+    // micro leaves available — must invent product, not emit micro.
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 1587,
+          title: 'Umbrella: acquisition redundancy & failover',
+          labels: ['acquisition', 'umbrella'],
+          openChildrenCount: 0,
+        }),
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 2713,
+          title: 'Umbrella: control-room UX density',
+          labels: ['product-surface-ux', 'umbrella'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      consecutiveBlockedEmpty: 10,
+      readyIssues: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 2718,
+          title: 'chore: detection-rollup retention path',
+          labels: ['idea-scout', 'micro-hardening'],
+          assignees: [],
+        },
+        {
+          repo: 'jeanibarz/lucy',
+          number: 2719,
+          title: 'chore: detection-rollup doctor path',
+          labels: ['idea-scout'],
+          assignees: [],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('invent-product-wave');
+    expect(decision.inventPriorityClass).toBe('product');
+    expect(decision.selected?.number).toBe(1587);
+    expect(decision.secondaryEmitted).toHaveLength(0);
+    expect(
+      decision.skipped.some((s) => /micro-hardening demoted under invent pressure/.test(s.reason)),
+    ).toBe(true);
+  });
+
+  it('invents under product-surface-ux umbrella when curated plan exhausted', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 6, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'jeanibarz/lucy',
+          number: 2713,
+          title: 'control-room UX density residual',
+          labels: ['product-surface-ux'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      consecutiveBlockedEmpty: 3,
+      readyIssues: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 2720,
+          title: 'micro-hardening ops polish',
+          labels: ['micro-hardening', 'idea-scout'],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('invent-product-wave');
+    expect(decision.selected?.productMetricBlocking).toBe(true);
+    expect(decision.inventPriorityClass).toBe('product');
+    expect(decision.secondaryEmitted).toHaveLength(0);
+  });
+
+  it('ranks product ready issues before micro when secondary emit is the only path', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          number: 2047,
+          title: 'Umbrella: idea-scout residual — docs',
+          labels: ['docs'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 0,
+      consecutiveBlockedEmpty: 0,
+      readyIssues: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 10,
+          title: 'chore: detection-rollup retention path',
+          labels: ['idea-scout', 'micro-hardening'],
+        },
+        {
+          repo: 'jeanibarz/lucy',
+          number: 11,
+          title: 'feat(acquisition): probe fails closed',
+          labels: ['idea-scout', 'acquisition'],
+        },
+      ],
+      resolveLeaves: () => undefined,
+    });
+    expect(decision.action).toBe('emit-secondary');
+    expect(decision.secondaryEmitted[0]?.number).toBe(11);
+    expect(decision.inventPriorityClass).toBe('product');
+  });
+
+  it('suppresses pure micro secondary under pressure when product ready exists', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      candidates: [],
+      openProductMetricIssues: 0,
+      consecutiveBlockedEmpty: 5,
+      readyIssues: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 20,
+          title: 'micro-hardening doctor path',
+          labels: ['micro-hardening', 'idea-scout'],
+        },
+        {
+          repo: 'jeanibarz/lucy',
+          number: 21,
+          title: 'feat: acquisition failover residual',
+          labels: ['acquisition', 'idea-scout'],
+        },
+      ],
+    });
+    expect(decision.action).toBe('emit-secondary');
+    expect(decision.secondaryEmitted.map((i) => i.number)).toEqual([21]);
+    expect(
+      decision.skipped.some((s) => /micro-hardening demoted under invent pressure/.test(s.reason)),
+    ).toBe(true);
+    expect(decision.inventPriorityClass).toBe('product');
+  });
+});
+
 describe('lucy#1588 canonical decomposition (AC5) + idempotency (AC2)', () => {
   it('has a vetted 3-leaf plan registered, each leaf well-formed', () => {
     const plan = curatedLeafPlan('jeanibarz/lucy#1588');

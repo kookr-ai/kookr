@@ -52,6 +52,14 @@ import {
   DEFAULT_PRODUCT_METRIC_LABELS,
   isProductMetricBlocking,
 } from './value-density-governor.js';
+import {
+  classifyInventPriority,
+  hasProductInventRunway,
+  inventPriorityScore,
+  isInventPressure,
+  shouldSuppressMicroInvent,
+  type InventPriorityClass,
+} from './starvation-invent-policy.js';
 
 export const QUEUE_FEEDER_SCHEMA = 'queue-feeder.v1' as const;
 
@@ -331,6 +339,12 @@ export interface QueueFeederDecision {
    * this fire (1–{@link DEFAULT_MAX_INVENT_LEAVES}). Null otherwise.
    */
   inventLeafCap: number | null;
+  /**
+   * Invent priority class for this decision (issue #2358). Product for
+   * shred/invent-product-wave of dual-priority work; micro/other for secondary
+   * emit mix. Null when not-triggered.
+   */
+  inventPriorityClass: InventPriorityClass | null;
   /** Always true here — this module never performs side effects. */
   dryRun: true;
 }
@@ -381,21 +395,39 @@ export function readyIssueSkipReason(issue: ReadyIssue): string | null {
   return null;
 }
 
+export interface SelectReadyIssuesOptions {
+  config?: Partial<QueueFeederConfig>;
+  /**
+   * When true (starvation invent pressure + product runway, issue #2358),
+   * micro-hardening ready issues are skipped rather than merely demoted.
+   */
+  suppressMicro?: boolean;
+}
+
 /**
  * Rank + cap ready issues for secondary emit. Skips assigned / closed / already
- * emitted; prefers idea-scout / ready labels; stable input order as final key.
- * Cap defaults to {@link DEFAULT_MAX_SECONDARY_PER_FIRE}.
+ * emitted; ranks dual-priority product invent first and micro-hardening last
+ * (issue #2358); prefers idea-scout / ready labels within a class; stable input
+ * order as final key. Cap defaults to {@link DEFAULT_MAX_SECONDARY_PER_FIRE}.
  */
 export function selectReadyIssues(
   issues: readonly ReadyIssue[] | undefined,
-  config?: Partial<QueueFeederConfig>,
+  configOrOpts?: Partial<QueueFeederConfig> | SelectReadyIssuesOptions,
 ): { selected: SecondaryEmitItem[]; skipped: SkippedUmbrella[] } {
-  const cfg = mergeQueueFeederConfig(config);
+  // Back-compat: callers historically passed Partial<QueueFeederConfig> directly.
+  const opts: SelectReadyIssuesOptions =
+    configOrOpts && ('config' in configOrOpts || 'suppressMicro' in configOrOpts)
+      ? (configOrOpts as SelectReadyIssuesOptions)
+      : { config: configOrOpts as Partial<QueueFeederConfig> | undefined };
+  const cfg = mergeQueueFeederConfig(opts.config);
+  const suppressMicro = opts.suppressMicro === true;
   if (!issues || issues.length === 0) {
     return { selected: [], skipped: [] };
   }
   const preferred = new Set(cfg.readyIssueLabels.map(normalizeLabel));
-  const eligible: Array<SecondaryEmitItem & { score: number; index: number }> = [];
+  const eligible: Array<
+    SecondaryEmitItem & { score: number; inventScore: number; index: number; inventClass: InventPriorityClass }
+  > = [];
   const skipped: SkippedUmbrella[] = [];
 
   issues.forEach((issue, index) => {
@@ -405,20 +437,37 @@ export function selectReadyIssues(
       return;
     }
     const labels = (issue.labels ?? []).map((l) => String(l));
+    const inventClass = classifyInventPriority(issue.title, labels);
+    if (suppressMicro && inventClass === 'micro') {
+      skipped.push({
+        ref: readyIssueRef(issue),
+        reason:
+          'micro-hardening demoted under invent pressure while product runway remains (#2358)',
+      });
+      return;
+    }
     const hasPreferred = labels.some((l) => preferred.has(normalizeLabel(l)));
-    // Preferred labels rank above unlabeled/other; within tier keep input order.
+    // inventScore dominates (product >> other >> micro); preferred labels next;
+    // within tier keep input order.
     eligible.push({
       ref: readyIssueRef(issue),
       repo: issue.repo.trim(),
       number: issue.number,
       title: issue.title,
       labels,
+      inventClass,
+      inventScore: inventPriorityScore(inventClass),
       score: hasPreferred ? 10 : 0,
       index,
     });
   });
 
-  eligible.sort((a, b) => b.score - a.score || a.index - b.index);
+  eligible.sort(
+    (a, b) =>
+      b.inventScore - a.inventScore
+      || b.score - a.score
+      || a.index - b.index,
+  );
   const selected = eligible.slice(0, cfg.maxSecondaryPerFire).map(({ ref, repo, number, title, labels }) => ({
     ref,
     repo,
@@ -632,6 +681,12 @@ export interface QueueFeederInput {
    */
   openProductMetricIssues?: number;
   /**
+   * Consecutive product blocked-empty depth for invent pressure (issue #2358).
+   * When ≥ threshold, micro-hardening secondary emit is suppressed while product
+   * invent runway remains.
+   */
+  consecutiveBlockedEmpty?: number;
+  /**
    * Resolve the curated / authored leaf plan for a selected umbrella. Defaults
    * to {@link curatedLeafPlan} (the built-in vetted registry). Return undefined
    * when no plan exists yet — the umbrella is still selected but flagged
@@ -639,6 +694,19 @@ export interface QueueFeederInput {
    */
   resolveLeaves?: (candidate: UmbrellaCandidate) => readonly LeafSpec[] | undefined;
   config?: Partial<QueueFeederConfig>;
+}
+
+/** Dominant invent class for a set of ready issues (product if any product). */
+function dominantInventClass(
+  items: readonly { title: string; labels?: readonly string[] }[],
+): InventPriorityClass {
+  let sawOther = false;
+  for (const item of items) {
+    const klass = classifyInventPriority(item.title, item.labels);
+    if (klass === 'product') return 'product';
+    if (klass === 'other') sawOther = true;
+  }
+  return sawOther ? 'other' : 'micro';
 }
 
 function toSelected(
@@ -669,6 +737,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
   const cfg = mergeQueueFeederConfig(input.config);
   const capacity = input.capacity;
   const resolve = input.resolveLeaves ?? ((c: UmbrellaCandidate) => curatedLeafPlan(umbrellaRef(c)));
+  const freeSlots = effectiveFreeForSpawnBudget(capacity);
 
   const triggered = isFeederTriggered(capacity, cfg);
   const reason = triggerReason(capacity, cfg);
@@ -686,6 +755,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
       skipped: [],
       leafCount: 0,
       inventLeafCap: null,
+      inventPriorityClass: null,
       dryRun: true,
     };
   }
@@ -699,6 +769,27 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
     ranked,
     plan: normalizeLeafPlan(resolve(ranked.candidate), cfg),
   }));
+
+  // Issue #2358 invent pressure: drought depth or empty product belt + free slots.
+  const inventPressure = isInventPressure({
+    consecutiveBlockedEmpty: input.consecutiveBlockedEmpty,
+    openProductMetricIssues: input.openProductMetricIssues,
+    freeSlots,
+    freeSlotsThreshold: cfg.freeSlotsThreshold,
+  });
+  const productUmbrellaEligible = resolved.some(
+    (r) => r.ranked.classification.productMetricBlocking,
+  );
+  const productReadyCount = (input.readyIssues ?? []).filter(
+    (issue) =>
+      readyIssueSkipReason(issue) === null
+      && classifyInventPriority(issue.title, issue.labels) === 'product',
+  ).length;
+  const productRunway = hasProductInventRunway({
+    productUmbrellaEligible,
+    productReadyCount,
+  });
+  const suppressMicro = shouldSuppressMicroInvent(inventPressure, productRunway);
 
   // --- Primary: shred a plan-ready umbrella (product-metric preferred by rank)
   const shreddable = resolved.find((r) => r.plan.ok);
@@ -723,6 +814,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
       skipped: [...skipped, ...rest],
       leafCount: shreddable.plan.leaves.length,
       inventLeafCap: null,
+      inventPriorityClass: selected.productMetricBlocking ? 'product' : 'other',
       dryRun: true,
     };
   }
@@ -743,6 +835,8 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
   // bounded next leaf batch (cap maxInventLeaves). Prefer over idea-scout
   // residual secondary emit so idle capacity refills the product belt first.
   // Open children already filtered by rankUmbrellas (use those leaves instead).
+  // Issue #2358: product-surface-ux / control-room dual co-priority umbrellas
+  // classify as productMetricBlocking via value-density labels.
   if (productInventoryEmpty) {
     const inventCandidate = resolved.find(
       (r) => r.ranked.classification.productMetricBlocking && !r.plan.ok,
@@ -758,7 +852,10 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
             `for invent-product-wave, one umbrella per run)`,
         }));
       const selected = toSelected(winner, inventCandidate.plan);
-      const readySkipped = selectReadyIssues(input.readyIssues, cfg).skipped;
+      const readySkipped = selectReadyIssues(input.readyIssues, {
+        config: cfg,
+        suppressMicro,
+      }).skipped;
       return {
         schemaVersion: QUEUE_FEEDER_SCHEMA,
         triggered: true,
@@ -772,14 +869,20 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
         // Playbook authors leaves; decision only authorizes invent + cap.
         leafCount: 0,
         inventLeafCap: cfg.maxInventLeaves,
+        inventPriorityClass: 'product',
         dryRun: true,
       };
     }
   }
 
   // --- Secondary #1: open unassigned idea-scout / ready issues (#2044)
+  // Under invent pressure with product runway, micro-hardening is suppressed
+  // so sideways ops polish does not fill the belt (#2358).
   if (productInventoryEmpty) {
-    const ready = selectReadyIssues(input.readyIssues, cfg);
+    const ready = selectReadyIssues(input.readyIssues, {
+      config: cfg,
+      suppressMicro,
+    });
     if (ready.selected.length > 0) {
       // Still surface the top needsAuthoring umbrella for observability, but
       // the action is secondary emit — the playbook spawns ready issues, not invent.
@@ -805,6 +908,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
         skipped: [...skipped, ...residualSkip, ...ready.skipped],
         leafCount: ready.selected.length,
         inventLeafCap: null,
+        inventPriorityClass: dominantInventClass(ready.selected),
         dryRun: true,
       };
     }
@@ -816,7 +920,10 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
 
   if (eligible.length === 0) {
     // No umbrellas and no ready issues → honest skip-invent (or empty fire).
-    const readyEmpty = selectReadyIssues(input.readyIssues, cfg);
+    const readyEmpty = selectReadyIssues(input.readyIssues, {
+      config: cfg,
+      suppressMicro,
+    });
     return {
       schemaVersion: QUEUE_FEEDER_SCHEMA,
       triggered: true,
@@ -829,6 +936,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
       skipped: [...skipped, ...readyEmpty.skipped],
       leafCount: 0,
       inventLeafCap: null,
+      inventPriorityClass: null,
       dryRun: true,
     };
   }
@@ -841,7 +949,10 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
     reason: `not selected this run (${umbrellaRef(top.ranked.candidate)} ranked higher, one umbrella per run)`,
   }));
   const selected = toSelected(top.ranked, top.plan);
-  const readySkipped = selectReadyIssues(input.readyIssues, cfg).skipped;
+  const readySkipped = selectReadyIssues(input.readyIssues, {
+    config: cfg,
+    suppressMicro,
+  }).skipped;
   return {
     schemaVersion: QUEUE_FEEDER_SCHEMA,
     triggered: true,
@@ -854,6 +965,7 @@ export function evaluateQueueFeeder(input: QueueFeederInput): QueueFeederDecisio
     skipped: [...skipped, ...rest, ...readySkipped],
     leafCount: 0,
     inventLeafCap: null,
+    inventPriorityClass: selected.productMetricBlocking ? 'product' : null,
     dryRun: true,
   };
 }
@@ -908,6 +1020,11 @@ export interface QueueFeederRecord {
   secondaryEmitted: string[];
   /** Invent cap when action=invent-product-wave (#2069); null otherwise. */
   inventLeafCap: number | null;
+  /**
+   * Invent priority class for this fire (issue #2358) — product / micro / other.
+   * Null when not-triggered or skip with no class.
+   */
+  inventPriorityClass: InventPriorityClass | null;
   skippedCount: number;
   skipped: SkippedUmbrella[];
   dryRun: boolean;
@@ -940,6 +1057,7 @@ export function buildQueueFeederRecord(
     leafTitles: secondaryTitles,
     secondaryEmitted: decision.secondaryEmitted.map((i) => i.ref),
     inventLeafCap: decision.inventLeafCap,
+    inventPriorityClass: decision.inventPriorityClass,
     skippedCount: decision.skipped.length,
     skipped: decision.skipped,
     dryRun: opts.dryRun ?? true,

@@ -165,6 +165,41 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(decision.spawnSkipReason).toMatch(/already running/i);
   });
 
+  test('arms kickBatchWhenScoutCompletes when scout already in flight under empty belt (#2358)', () => {
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'run-arm' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: true,
+      prior: null,
+      capacity: { free: 7, pendingQueueDepth: 0 },
+    });
+    expect(decision.spawnScout).toBe(false);
+    expect(decision.spawnSkipReason).toMatch(/already running/i);
+    expect(decision.armKickBatchWhenScoutCompletes).toBe(true);
+
+    const state = nextPipelineStarvationState('jeanibarz/lucy', null, decision, {
+      nowMs: NOW,
+    });
+    expect(state.kickBatchWhenScoutCompletes).toBe(true);
+    expect(state.kickBatchWhenScoutCompletesAt).toBe(new Date(NOW).toISOString());
+  });
+
+  test('arms kickBatchWhenScoutCompletes when scout in flight at consecutive≥2 (#2358)', () => {
+    const firstAt = new Date(NOW - 60 * 60 * 1000).toISOString();
+    const decision = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'run-arm-2' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: true,
+      prior: prior({
+        blockedEmptyAt: [firstAt],
+        handledRunKeys: ['run-1'],
+      }),
+      capacity: { free: 0, pendingQueueDepth: 0 },
+    });
+    expect(decision.consecutiveBlockedEmpty).toBe(2);
+    expect(decision.armKickBatchWhenScoutCompletes).toBe(true);
+  });
+
   test('skips spawn when successful ideation ran recently', () => {
     const decision = evaluatePipelineStarvationRefill(blockedEmpty(), {
       nowMs: NOW,

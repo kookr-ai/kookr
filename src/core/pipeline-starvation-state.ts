@@ -15,6 +15,12 @@ import {
   pipelineStarvationStatePath,
   type PipelineStarvationRepoState,
 } from './pipeline-starvation.js';
+import {
+  accumulateInventPriorityCount,
+  emptyInventPriorityCounts,
+  type InventPriorityClass,
+} from './starvation-invent-policy.js';
+import { queueFeederLedgerPath } from './umbrella-decomposer.js';
 
 /** Compact health/projection row for one repo (RFC overnight-throughput PR1/PR4). */
 export interface PipelineStarvationHealthRepo {
@@ -40,6 +46,95 @@ export interface PipelineStarvationHealthRepo {
    */
   effectiveScoutCooldownMs: number;
   updatedAt: string;
+}
+
+/** Rolling invent-class mix for the starvation card (issue #2358). */
+export interface InventPriorityClassHealth {
+  product: number;
+  micro: number;
+  other: number;
+  /** Lookback window used for the rollup (hours). */
+  windowHours: number;
+}
+
+/** Default lookback for invent-class health rollup from the queue-feeder ledger. */
+export const INVENT_PRIORITY_HEALTH_WINDOW_HOURS = 24;
+
+/**
+ * Roll invent-class counts from the queue-feeder decisions ledger (issue #2358).
+ * Soft-fails missing/corrupt files; only counts invent/shred/secondary emits
+ * that carry inventPriorityClass (or infers product for invent-product-wave).
+ */
+export async function loadInventPriorityClassHealth(
+  opts: {
+    kookrDir?: string;
+    nowMs?: number;
+    windowHours?: number;
+  } = {},
+): Promise<InventPriorityClassHealth> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const windowHours = opts.windowHours ?? INVENT_PRIORITY_HEALTH_WINDOW_HOURS;
+  const windowMs = Math.max(1, windowHours) * 3_600_000;
+  const cutoff = nowMs - windowMs;
+  const counts = emptyInventPriorityCounts();
+  const kookrDir = opts.kookrDir ?? join(
+    process.env.HOME ?? process.env.USERPROFILE ?? '',
+    '.kookr',
+  );
+  const path = queueFeederLedgerPath(kookrDir);
+  try {
+    const raw = await readFile(path, 'utf-8');
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let row: Record<string, unknown>;
+      try {
+        row = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const ts = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      const action = typeof row.action === 'string' ? row.action : '';
+      if (
+        action !== 'shred'
+        && action !== 'invent-product-wave'
+        && action !== 'emit-secondary'
+      ) {
+        continue;
+      }
+      let klass: InventPriorityClass | null = null;
+      if (
+        row.inventPriorityClass === 'product'
+        || row.inventPriorityClass === 'micro'
+        || row.inventPriorityClass === 'other'
+      ) {
+        klass = row.inventPriorityClass;
+      } else if (action === 'invent-product-wave') {
+        klass = 'product';
+      } else if (action === 'shred' && row.productMetricBlocking === true) {
+        klass = 'product';
+      } else if (action === 'emit-secondary') {
+        klass = 'other';
+      }
+      if (!klass) continue;
+      const n =
+        typeof row.leafCount === 'number' && Number.isFinite(row.leafCount) && row.leafCount > 0
+          ? Math.floor(row.leafCount)
+          : 1;
+      Object.assign(counts, accumulateInventPriorityCount(counts, klass, n));
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // Soft-fail corrupt/missing ledger — health still returns zeros.
+    }
+  }
+  return {
+    product: counts.product,
+    micro: counts.micro,
+    other: counts.other,
+    windowHours,
+  };
 }
 
 /**

@@ -217,6 +217,8 @@ interface QueueFeederSnapshot {
   candidates: UmbrellaCandidate[];
   readyIssues: ReadyIssue[];
   openProductMetricIssues?: number;
+  /** Drought depth for invent pressure (#2358). */
+  consecutiveBlockedEmpty?: number;
 }
 
 function parseReadyIssues(raw: unknown): ReadyIssue[] {
@@ -290,6 +292,12 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
   });
   const openProductMetricIssues =
     typeof obj.openProductMetricIssues === 'number' ? obj.openProductMetricIssues : undefined;
+  const consecutiveBlockedEmpty =
+    typeof obj.consecutiveBlockedEmpty === 'number'
+    && Number.isFinite(obj.consecutiveBlockedEmpty)
+    && obj.consecutiveBlockedEmpty >= 0
+      ? Math.floor(obj.consecutiveBlockedEmpty)
+      : undefined;
   return {
     capacity: {
       free: cap.free,
@@ -304,6 +312,7 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
     candidates,
     readyIssues: parseReadyIssues(obj.readyIssues),
     openProductMetricIssues,
+    consecutiveBlockedEmpty,
   };
 }
 
@@ -524,6 +533,7 @@ function runPlan(
     candidates: snapshot.candidates,
     readyIssues: snapshot.readyIssues,
     openProductMetricIssues: snapshot.openProductMetricIssues,
+    consecutiveBlockedEmpty: snapshot.consecutiveBlockedEmpty,
     config: { freeSlotsThreshold: args.freeThreshold },
   };
 

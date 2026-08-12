@@ -77,6 +77,8 @@ import {
 } from '../../core/retro-verify-queue.js';
 import {
   listPipelineStarvationHealth,
+  loadInventPriorityClassHealth,
+  type InventPriorityClassHealth,
   type PipelineStarvationHealthRepo,
 } from '../../core/pipeline-starvation-state.js';
 import { defaultPipelineStarvationStateDir } from '../../core/pipeline-starvation.js';
@@ -408,16 +410,34 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
     // Pipeline starvation projection (RFC overnight-throughput PR1 / #1715).
     // Small per-repo JSON under playbook-state; soft-omit on failure.
+    // Issue #2358: inventByPriorityClass rolls product vs micro invent mix.
     let pipelineStarvationBlock:
-      | { schemaVersion: 'pipeline-starvation.v1'; repos: Record<string, PipelineStarvationHealthRepo> }
+      | {
+          schemaVersion: 'pipeline-starvation.v1';
+          repos: Record<string, PipelineStarvationHealthRepo>;
+          inventByPriorityClass?: InventPriorityClassHealth;
+        }
       | undefined;
     try {
       const stateDir = deps.kookrDir
         ? `${deps.kookrDir}/playbook-state/pipeline-starvation`
         : defaultPipelineStarvationStateDir();
       const repos = await listPipelineStarvationHealth({ stateDir });
-      if (Object.keys(repos).length > 0) {
-        pipelineStarvationBlock = { schemaVersion: 'pipeline-starvation.v1', repos };
+      const inventByPriorityClass = await loadInventPriorityClassHealth({
+        kookrDir: deps.kookrDir,
+      });
+      if (
+        Object.keys(repos).length > 0
+        || inventByPriorityClass.product
+          + inventByPriorityClass.micro
+          + inventByPriorityClass.other
+          > 0
+      ) {
+        pipelineStarvationBlock = {
+          schemaVersion: 'pipeline-starvation.v1',
+          repos,
+          inventByPriorityClass,
+        };
       }
     } catch {
       pipelineStarvationBlock = undefined;
