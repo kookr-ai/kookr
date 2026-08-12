@@ -154,6 +154,51 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - **Load `codex-claude-compatibility` skill before Codex fork work** — Before modifying, building, or deploying `~/git/codex`, load the skill first. It documents the exact build command, install path, version scheme, branch policy, and verification workflow.
 
 - **RFC workflow** — When generating an RFC or design document, follow the iterative review pattern: draft in worktree → run parallel critic subagents → incorporate feedback → repeat (default 3 rounds) → present to user and wait for approval before committing or implementing. See `rfc-iterative-review` skill.
+- **Technical prose for humans** — PR bodies, changelogs, status updates, and similar summaries follow **Technical writing** below. Do not ship telegraphic identifier dumps as the only explanation.
+
+## Technical writing (PRs, changelogs, summaries, status updates)
+
+Audience: a competent teammate who last touched this area **weeks ago** — not the agent that just wrote the code, and not someone who has the full subsystem mental model loaded.
+
+**Concise ≠ cryptic.** Cut filler, hedging, and repetition. Do **not** cut the explanations a cold reader needs. A clear longer paragraph beats a short opaque one. Density is not professionalism.
+
+### Required shape
+
+For any multi-concept change (new metrics, multi-file features, non-obvious bug fixes):
+
+1. **Intent first (2–4 plain-language sentences).** What problem exists? What changes in product/ops terms? Why does it matter? No function names, constants, or file paths in this block yet.
+2. **Define domain terms on first use.** Project-specific or compound jargon gets a short gloss once — e.g. *free-surface share* (fraction of armed tickers still covered by free-surface data rather than EDGAR-only fallback).
+3. **Technical details next.** Exact names, thresholds (constant **and** natural language), wiring, order, file paths (repo-relative), design tradeoffs.
+4. **Verification last.** Commands run and outcomes — not a substitute for intent.
+
+Tiny single-file / one-line fixes may stay shorter, but still open with **one** plain-language sentence of intent before the symbol list.
+
+### Hard rules
+
+- Prefer full sentences and short paragraphs over telegraphic noun stacks.
+- Do **not** pack multiple new concepts, thresholds, and identifiers into one sentence.
+- Restate thresholds in words next to the constant (`PRODUCT_METRIC_FOO_MIN = 0.50` → "alert when share falls below 50%").
+- Symbol lists (`evaluateX + extractY + …`) belong in the technical section only — never as the summary.
+- Do not paste issue titles as the explanation; restate the change in your own words.
+- Use repo-relative paths in shared text (`docs/foo.md`), not machine-local absolutes (`/home/…`).
+- Never sacrifice technical accuracy. Identifiers and numbers stay — they follow the plain-language layer; they do not replace it.
+
+### Anti-patterns (reject these)
+
+- Leading with "Adds X wired through A / B / C matching D and E patterns."
+- A bullet that is only function or constant names.
+- One sentence that stacks metric id + threshold + sample floor + routing path + purpose.
+- Assuming the reader already knows the subsystem vocabulary.
+
+### Self-check (before shipping the text)
+
+Could a smart engineer who last saw this code a month ago understand **what changed and why it matters** after one careful read — without opening the diff first? If not, rewrite the intent block.
+
+### Mini example
+
+**Bad:** `Adds freeSurfaceShare — weekly free-surface share of armed tickers below 50% (armed ≥ 3) pages when free-surface collapses into EDGAR-only.`
+
+**Good:** We now alert when free data coverage collapses. *Free-surface share* is the fraction of armed tickers that still have free-surface coverage rather than falling back to EDGAR-only sources. If that share drops below 50% while at least three tickers are armed, we fire a product-metric alert on the existing Discord/digest path. Implementation: `evaluateFreeSurfaceShareAlert` via `PRODUCT_METRIC_FREE_SURFACE_SHARE_MIN` (0.50) and `_MIN_ARMED` (3).
 
 ## KB-First Task Policy
 
