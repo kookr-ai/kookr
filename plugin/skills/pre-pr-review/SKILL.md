@@ -205,7 +205,7 @@ Before `gh pr create`, draft the PR body with the `clear-technical-writing` skil
 1. **Intent first** (2–4 plain sentences; 1 for tiny fixes) — problem, change, why. No symbol dump in the Summary.
 2. **Gloss jargon** on first use; put identifiers/thresholds/paths in Changes or a technical section.
 3. **Mark** `<!-- kookr:check:prose -->` when the Summary would pass a one-month-cold-reader self-check. Strike with a one-line reason only for pure typo / formatting / mechanical renames.
-4. **Optional second pass** for multi-concept or dense drafts: spawn `kookr-toolkit:clear-writing-reviewer` with the draft body and fix any `BLOCK` / `NEEDS_REWRITE` findings before opening the PR.
+4. **Second pass — required for any non-trivial PR body.** Spawn `kookr-toolkit:clear-writing-reviewer` with the draft body and fix every `BLOCK` / `NEEDS_REWRITE` finding before opening the PR. "Non-trivial" = anything past a one-line tiny fix: multi-concept, dense, or introducing new vocabulary. Skip **only** for pure typo / formatting / mechanical-rename PRs whose Summary is a single plain sentence — and when you skip, say so in one line (e.g. "prose reviewer skipped — one-line rename").
 
 Do not treat "be concise" as permission to ship telegraphic identifier stacks. Concise means no filler; clarity still wins.
 
@@ -451,7 +451,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - diff review: done
 - scope guard: clean / flagged (with fix or PR-body justification)
 - portability check: clean / flagged (with reason or fix) / skipped
-- PR prose (cold-reader): drafted via clear-technical-writing / skipped (tiny only) / rewrite applied after clear-writing-reviewer
+- PR prose (cold-reader): drafted via clear-technical-writing; clear-writing-reviewer pass run (required for non-trivial bodies) with findings fixed / reviewer skipped (state the one-line tiny-only reason)
 - reviewer specialists: run / skipped, with reason — record the exact `SPECIALISTS=…` selection, whether `--force` was used, and the per-specialist gating `rationale:` block from `select-specialists.sh`
 - docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale; note whether the docs-drift concern was `active` or dormant per the gating decision
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
