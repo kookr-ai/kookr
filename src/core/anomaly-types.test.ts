@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { ANOMALY_TYPES } from './anomaly-types.js';
 import {
+  ANOMALY_TYPES as SHARED_ANOMALY_TYPES,
   canonicalizeAnomalyTypeKey,
   DEPRECATED_ANOMALY_TYPE_ALIASES,
 } from '../shared/contracts/anomalies.js';
@@ -48,6 +49,17 @@ describe('findings reference catalog', () => {
   test('has a section heading for every type and no undocumented extras', () => {
     const documented = [...doc.matchAll(/^## `([a-z_]+)`$/gm)].map((m) => m[1]);
     expect([...documented].sort()).toEqual([...ANOMALY_TYPES].sort());
+  });
+});
+
+describe('core/shared ANOMALY_TYPES parity', () => {
+  // The wire contract (src/shared/contracts/anomalies.ts) carries its own runtime
+  // ANOMALY_TYPES so frontend code can enumerate the union without importing
+  // src/core (forbidden by protocol-boundary.test.ts). The two arrays are
+  // hand-maintained in lockstep; this guard fails if they drift — same order and
+  // membership required.
+  test('core and shared arrays are identical', () => {
+    expect([...SHARED_ANOMALY_TYPES]).toEqual([...ANOMALY_TYPES]);
   });
 });
 

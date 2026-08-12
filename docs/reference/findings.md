@@ -7,7 +7,13 @@ determines how it is grouped, prioritized, and explained in the dashboard.
 This page is the canonical catalog for every anomaly type: what it means, what
 triggers it, the recommended developer response, and how to suppress or tune it.
 The runtime explanation shown on a finding card is per-instance; this catalog is
-the complete set.
+the complete set. Each card also surfaces a one-line **Recommended:** action
+distilled from the **Recommended response.** paragraph of the finding's type,
+sourced from
+[`recommendedResponses.ts`](../../src/frontend/components/FindingsPanel/recommendedResponses.ts).
+When you edit a **Recommended response.** paragraph here, update the matching
+string there — the copy is hand-maintained (a unit test guards that every type
+has one, but there is no automated text-equality check).
 
 The source-of-truth union is
 [`AnomalyType` in `src/core/anomaly-types.ts`](../../src/core/anomaly-types.ts).
