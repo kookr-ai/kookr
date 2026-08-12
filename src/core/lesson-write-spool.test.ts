@@ -232,6 +232,28 @@ describe('spool state persistence', () => {
     expect(loaded).toEqual(state);
   });
 
+  test('state overwrite round-trips cleanly (durable rewrite path)', async () => {
+    const spoolDir = await tempSpoolDir();
+    const first = {
+      ...emptySpoolState(),
+      kbDegradedSince: '2026-07-22T10:08:00.000Z',
+      lastProbeStatus: 'degraded' as const,
+      lastProbeAt: '2026-07-23T10:00:00.000Z',
+      lastPendingCount: 2,
+    };
+    await writeSpoolState(spoolDir, first);
+    expect(await readSpoolState(spoolDir)).toEqual(first);
+
+    const second = {
+      ...emptySpoolState(),
+      lastProbeStatus: 'healthy' as const,
+      lastProbeAt: '2026-07-23T12:00:00.000Z',
+      lastPendingCount: 0,
+    };
+    await writeSpoolState(spoolDir, second);
+    expect(await readSpoolState(spoolDir)).toEqual(second);
+  });
+
   test('missing state file returns empty state', async () => {
     const spoolDir = await tempSpoolDir();
     expect(await readSpoolState(spoolDir)).toEqual(emptySpoolState());
@@ -241,6 +263,36 @@ describe('spool state persistence', () => {
     const spoolDir = await tempSpoolDir();
     await writeFile(join(spoolDir, 'state.json'), 'not-json{', 'utf8');
     expect(await readSpoolState(spoolDir)).toEqual(emptySpoolState());
+  });
+});
+
+describe('rewritePending durability (via drain)', () => {
+  test('partial drain rewrites remaining entries so they re-read intact', async () => {
+    const spoolDir = await tempSpoolDir();
+    const keep = buildLessonEntry({ title: 'keep-me', body: 'survives rewrite\n' });
+    const drop = buildLessonEntry({ title: 'drop-me', body: 'drained away\n' });
+    await appendLessonWrite(spoolDir, keep);
+    await appendLessonWrite(spoolDir, drop);
+
+    await drainLessonSpool({
+      spoolDir,
+      write: async (entry) => {
+        if (entry.title === 'drop-me') return { ok: true };
+        return { ok: false, error: 'still degraded' };
+      },
+    });
+
+    const remaining = await readPendingLessons(spoolDir);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.title).toBe('keep-me');
+    expect(remaining[0]!.body).toBe(keep.body);
+    expect(remaining[0]!.lastError).toBe('still degraded');
+
+    // On-disk JSONL is a single rewritten line (not append-only residue of both).
+    const raw = await readFile(pendingPath(spoolDir), 'utf8');
+    const lines = raw.trim().split('\n').filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!).title).toBe('keep-me');
   });
 });
 
