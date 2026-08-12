@@ -93,10 +93,11 @@ export async function runStartupRecoveryPhase({
   staleOpenLaunchTaskIds = [],
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
-  // Tracks crash-recovery's own outcome (distinct from `startupRecoverySummary`,
-  // which is only set when there's something worth surfacing to the caller) so
-  // the post-recovery audit below can see it even on a boot with nothing to
-  // report. Populated only when the block below actually runs.
+  // Tracks crash-recovery's own outcome so the post-recovery audit below can
+  // see it even on a boot with nothing to relaunch/fail. Populated whenever
+  // recoverCrashedSessions actually runs. `startupRecoverySummary` is now
+  // always assigned that same result (including skip-only boots) so health
+  // can project counts (issue #2351); interaction-log noise stays gated.
   let crashRecoveryResult: CrashRecoveryResult | null = null;
 
   if (process.env.KOOKR_AUTO_RELAUNCH === 'false') {
@@ -130,8 +131,11 @@ export async function runStartupRecoveryPhase({
 
     await writeCrashRecoveryDispositions(recoveryResult, restartEpoch, dispositionLedgerPath);
 
+    // Always retain the structured result so /api/health can project skip
+    // counts (including crash-loop) even when nothing relaunched/failed
+    // (issue #2351). Interaction-log noise stays gated to material outcomes.
+    startupRecoverySummary = recoveryResult;
     if (recoveryResult.relaunched.length > 0 || recoveryResult.failed.length > 0) {
-      startupRecoverySummary = recoveryResult;
       await interactionLog.append({
         type: 'crash_recovery',
         relaunched: recoveryResult.relaunched.length,
@@ -145,6 +149,11 @@ export async function runStartupRecoveryPhase({
       console.log(
         `[crash-recovery] Recovery complete: ${resumedCount} resumed, ${freshCount} fresh, `
         + `${recoveryResult.skipped.length} skipped, ${recoveryResult.failed.length} failed`,
+      );
+    } else if (recoveryResult.skipped.length > 0) {
+      console.log(
+        `[crash-recovery] Recovery complete: 0 relaunched, `
+        + `${recoveryResult.skipped.length} skipped, 0 failed`,
       );
     }
   }
