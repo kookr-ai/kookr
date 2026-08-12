@@ -33,6 +33,7 @@ import { RalphLoopControls } from './RalphLoopControls.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
 import { FindingTranscriptContext } from './FindingTranscriptContext.js';
 import { recommendedResponseFor } from './recommendedResponses.js';
+import { CopyExplanationButton } from './CopyExplanationButton.js';
 
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
@@ -198,7 +199,10 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
           </div>
         )}
         {agent.anomaly && (
-          <div className="finding-explanation">{agent.anomaly.explanation}</div>
+          <div className="finding-explanation-row">
+            <div className="finding-explanation">{agent.anomaly.explanation}</div>
+            <CopyExplanationButton text={agent.anomaly.explanation} />
+          </div>
         )}
         {agent.anomaly && recommended && (
           <div className="finding-recommended" data-testid="finding-recommended" title={recommended}>

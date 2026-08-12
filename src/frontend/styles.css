@@ -999,6 +999,28 @@ kbd {
   border-radius: 2px;
   color: var(--blue);
 }
+.finding-explanation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.finding-explanation-row .finding-explanation {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.copy-explanation.btn-icon {
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+.copy-explanation.btn-icon:hover {
+  opacity: 1;
+}
+.copy-explanation.btn-icon.copied {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+  opacity: 1;
+}
 /* One-line, catalog-derived "what to do next" under the explanation (#2396).
    Muted and clamped to a single line so the card never grows taller than useful. */
 .finding-recommended {
