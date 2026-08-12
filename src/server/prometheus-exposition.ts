@@ -98,6 +98,8 @@ export interface PrometheusExpositionSnapshot {
     reclaimedTotal: number;
     reclaimAttempted?: number;
     reclaimSucceeded?: number;
+    /** Soft-TTL capacity-pressure reclaim subset of reclaimedTotal (issue #2355). */
+    capacityPressureEarlyReclaimedTotal?: number;
     skippedBadRaisedAt?: number;
     skippedOpenPrFailsafe?: number;
     skippedOpenPrConfirmed?: number;
@@ -562,6 +564,7 @@ function appendFinishedAwaitingAckReclaimMetrics(
         reclaimedTotal: number;
         reclaimAttempted?: number;
         reclaimSucceeded?: number;
+        capacityPressureEarlyReclaimedTotal?: number;
         skippedBadRaisedAt?: number;
         skippedOpenPrFailsafe?: number;
         skippedOpenPrConfirmed?: number;
@@ -593,6 +596,18 @@ function appendFinishedAwaitingAckReclaimMetrics(
       {},
       snapshot.reclaimSucceeded ?? snapshot.reclaimedTotal,
     ),
+    '# HELP kookr_finished_awaiting_ack_capacity_pressure_early_reclaimed_total finishedAwaitingAck tasks reclaimed under capacity-pressure soft TTL (issue #2355; subset of reclaimed_total).',
+    '# TYPE kookr_finished_awaiting_ack_capacity_pressure_early_reclaimed_total counter',
+    metricLine(
+      'kookr_finished_awaiting_ack_capacity_pressure_early_reclaimed_total',
+      {},
+      snapshot.capacityPressureEarlyReclaimedTotal ?? 0,
+    ),
+  );
+
+  // Keep the skip-reason block contiguous; the capacity-pressure counter sits
+  // above it so hard vs soft reclaim is scannable next to reclaimed_total.
+  lines.push(
     '# HELP kookr_finished_awaiting_ack_ttl_reclaim_skipped_total FinishedAwaitingAck TTL reclaim skips by reason (cumulative since process start; issue #2084 / #2228).',
     '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_skipped_total counter',
     metricLine(

@@ -1,9 +1,11 @@
 import type { Task } from './task-read-model.js';
 import type { TurnState } from '../shared/contracts/task-status.js';
+import { classifyFaaRootCause } from './faa-root-cause.js';
 
 /**
  * finishedAwaitingAck TTL reclaim (issue #1884) + meta/playbook auto-complete
- * (issue #2070).
+ * (issue #2070) + capacity-pressure soft TTL for `awaiting_poll` phantoms
+ * (issue #2355).
  *
  * `finishedAwaitingAck` is a CAPACITY CLASS (see `core/capacity-ledger.ts`
  * `classifyTaskCapacity`), not a task status: a task is finishedAwaitingAck
@@ -23,7 +25,8 @@ import type { TurnState } from '../shared/contracts/task-status.js';
  * Force-complete, not cancel: cancelling a task that already finished its work
  * would inflate `cancelled_delta` noise for no benefit (lucy #1995 lesson) —
  * the work is done, only the ack is missing. The wiring layer force-completes
- * with reason `finished_awaiting_ack_ttl` instead.
+ * with reason `finished_awaiting_ack_ttl` (hard path) or
+ * `finished_awaiting_ack_capacity_pressure` (soft path under pressure).
  *
  * Stranded-PR exemption: a finishedAwaitingAck task that still holds an open,
  * unmerged PR (the `merge_required` delivery path) must NEVER be force-completed
@@ -38,10 +41,28 @@ import type { TurnState } from '../shared/contracts/task-status.js';
  * strict fail-safe (`isHoldingOpenPr !== false`) then exempts them forever.
  * {@link listMetaFinishedAwaitingAckAutoCompleteTasks} is the allowlisted
  * drain that only blocks on a *confirmed-open* PR and defers live turns.
+ *
+ * Issue #2355: when effective utilization is low (or phantoms dominate) and the
+ * pending queue is empty, `awaiting_poll` FAA may reclaim at a shorter soft TTL
+ * so nominal-full fleets stop under-driving real work. Soft path never applies
+ * to `manual_review_gate` / `auto_close_disabled` / `ack_sweep_backlog`.
  */
 
-/** Default TTL (issue #1884): 15 minutes. */
+/** Default hard TTL (issue #1884): 15 minutes. */
 export const DEFAULT_FINISHED_AWAITING_ACK_TTL_MS = 15 * 60_000;
+
+/**
+ * Soft TTL for capacity-pressure early reclaim of `awaiting_poll` FAA
+ * (issue #2355): 5 minutes. Used only when
+ * {@link capacityAllowsFinishedAwaitingAckEarlyReclaim} is true.
+ */
+export const DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS = 5 * 60_000;
+
+/**
+ * Floor for soft TTL (issue #2355): 2 minutes — never race a just-raised
+ * completion_ready that is still within one poll cadence.
+ */
+export const MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS = 2 * 60_000;
 
 /**
  * Default age gate for meta/playbook FAA auto-complete (issue #2070): 12
@@ -58,6 +79,20 @@ export const DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS = 12 * 60_000;
  * so any caller that bypasses settings (tests, scripts) can enforce the same cap.
  */
 export const MAX_FINISHED_AWAITING_ACK_TTL_MS = 30 * 60_000;
+
+/**
+ * Default effective-utilization ceiling for FAA capacity-pressure soft reclaim
+ * (issue #2355). Below this percentage of productive occupancy, soft TTL may
+ * apply (when the pending queue is empty).
+ */
+export const DEFAULT_FAA_CAPACITY_PRESSURE_EFFECTIVE_UTIL_PCT = 75;
+
+/**
+ * Default phantomActive bound for FAA capacity-pressure soft reclaim
+ * (issue #2355). With an empty pending queue, phantom occupancy at or above
+ * this bound also enables the soft path (even if effective util is high).
+ */
+export const DEFAULT_FAA_CAPACITY_PRESSURE_PHANTOM_BOUND = 4;
 
 /**
  * Substring patterns matched against `playbookId` (and as a fallback, `name`)
@@ -83,6 +118,12 @@ export interface ExpiredFinishedAwaitingAckEntry {
   task: Task;
   /** How long the completion_ready signal has sat unacknowledged (now − pendingSignal.raisedAt). */
   ageMs: number;
+  /**
+   * True when selected under the capacity-pressure soft TTL (issue #2355) —
+   * age is past soft but may still be under the hard TTL. Hard-path reclaim
+   * leaves this false/undefined.
+   */
+  capacityPressureEarlyReclaim?: boolean;
 }
 
 /**
@@ -140,13 +181,19 @@ export function finishedAwaitingAckOpenPrFailsafeSkipTotal(
 
 /**
  * One finishedAwaitingAck candidate's fate on a single strict-path selection
- * pass (issue #2084). Answers why residual FAA occupancy stays high when
+ * pass (issue #2084 / #2355). Answers why residual FAA occupancy stays high when
  * `reclaimedTotal` is flat.
  */
 export interface FinishedAwaitingAckReclaimCandidateOutcome {
   taskId: string;
-  /** Selected for reclaim, or the skip reason that applied. */
-  outcome: 'selected' | FinishedAwaitingAckReclaimSkipReason;
+  /**
+   * Selected for reclaim (`selected` = hard TTL; `capacity_pressure_early_reclaim`
+   * = soft TTL under capacity pressure, issue #2355), or the skip reason.
+   */
+  outcome:
+    | 'selected'
+    | 'capacity_pressure_early_reclaim'
+    | FinishedAwaitingAckReclaimSkipReason;
   /** Present when age was computed (not for bad raisedAt). */
   ageMs?: number;
 }
@@ -168,7 +215,26 @@ export interface FinishedAwaitingAckReclaimSelection {
 
 export interface ListExpiredFinishedAwaitingAckTasksOpts {
   now?: Date;
+  /** Hard TTL (default {@link DEFAULT_FINISHED_AWAITING_ACK_TTL_MS}). */
   ttlMs?: number;
+  /**
+   * Soft TTL for capacity-pressure early reclaim of `awaiting_poll` FAA
+   * (issue #2355). Used only when {@link capacityAllowsEarlyReclaim} is true
+   * and the candidate classifies as `awaiting_poll`. Defaults to
+   * {@link DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS}.
+   */
+  softTtlMs?: number;
+  /**
+   * When true, `awaiting_poll` candidates may select once age reaches the soft
+   * TTL instead of waiting for the hard bound (issue #2355). Wire from the
+   * capacity ledger via {@link capacityAllowsFinishedAwaitingAckEarlyReclaim}.
+   */
+  capacityAllowsEarlyReclaim?: boolean;
+  /**
+   * Stale-completion threshold for FAA root-cause classification (soft-path
+   * cause filter). Defaults match {@link classifyFaaRootCause}.
+   */
+  staleThresholdMs?: number;
   /**
    * Stranded-PR / `merge_required` exemption predicate (issue #1884). Injected
    * so this selector stays pure and I/O-free — the wiring layer supplies a
@@ -190,22 +256,80 @@ export interface ListExpiredFinishedAwaitingAckTasksOpts {
 }
 
 /**
- * Pure selection of finishedAwaitingAck tasks past the TTL, with skip-reason
- * breakdown (issue #2084). Mirrors {@link selectExpiredHungSuspectTasks}.
+ * Soft TTL clamp for one FAA selection pass (issue #2355). Soft is always at
+ * or below hard and never below {@link MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS}.
+ */
+export function effectiveFinishedAwaitingAckSoftTtlMs(opts: {
+  ttlMs?: number;
+  softTtlMs?: number;
+}): number {
+  const hard = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
+  const soft = opts.softTtlMs ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
+  return Math.min(hard, Math.max(MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS, soft));
+}
+
+/**
+ * Capacity gate for soft `awaiting_poll` FAA reclaim (issue #2355).
+ *
+ * Fires only when the pending queue is empty (no work waiting on free slots
+ * that would already drain phantoms via normal spawn pressure) AND either:
+ * - effective utilization is below threshold (nominal-full / effective-idle), or
+ * - phantomActive is at or above the occupancy bound.
+ *
+ * Complements (does not replace) the provider_paused soft gate (#2225), which
+ * requires free general-source headroom — FAA pressure is the inverse shape
+ * (nominal full, productive holes).
+ */
+export function capacityAllowsFinishedAwaitingAckEarlyReclaim(input: {
+  effectiveUtilizationPct: number;
+  phantomActive: number;
+  pendingQueueDepth: number;
+  /** Default {@link DEFAULT_FAA_CAPACITY_PRESSURE_EFFECTIVE_UTIL_PCT}. */
+  effectiveUtilThresholdPct?: number;
+  /** Default {@link DEFAULT_FAA_CAPACITY_PRESSURE_PHANTOM_BOUND}. */
+  phantomBound?: number;
+}): boolean {
+  const pending = input.pendingQueueDepth;
+  if (!Number.isFinite(pending) || pending > 0) return false;
+
+  const utilThreshold =
+    input.effectiveUtilThresholdPct ?? DEFAULT_FAA_CAPACITY_PRESSURE_EFFECTIVE_UTIL_PCT;
+  const phantomBound =
+    input.phantomBound ?? DEFAULT_FAA_CAPACITY_PRESSURE_PHANTOM_BOUND;
+
+  const util = input.effectiveUtilizationPct;
+  if (Number.isFinite(util) && util < utilThreshold) return true;
+
+  const phantoms = input.phantomActive;
+  return Number.isFinite(phantoms) && phantoms >= phantomBound;
+}
+
+/**
+ * Pure selection of finishedAwaitingAck tasks past the (hard or soft) TTL,
+ * with skip-reason breakdown (issues #2084 / #2355). Mirrors
+ * {@link selectExpiredHungSuspectTasks}.
  *
  * Age is measured from `task.pendingSignal.raisedAt` (ISO string) — the same
  * field `buildCapacityLedger` uses for `oldestFinishedAwaitingAckAgeMs`, so
  * "past the TTL" here agrees with what the capacity ledger already reports.
- * Boundary is inclusive: `ageMs >= ttlMs` selects. Guards (evaluation order
- * for a finishedAwaitingAck candidate):
+ * Boundary is inclusive: `ageMs >= effectiveTtlMs` selects.
+ *
+ * Effective TTL per candidate (issue #2355):
+ * - hard TTL by default;
+ * - soft TTL only when `capacityAllowsEarlyReclaim` AND the task classifies as
+ *   `awaiting_poll` (never soft-reclaim `manual_review_gate` /
+ *   `auto_close_disabled` / `ack_sweep_backlog`).
+ *
+ * Guards (evaluation order for a finishedAwaitingAck candidate):
  *
  * - only `status === 'inProgress'` with `pendingSignal?.kind === 'completion_ready'`
  *   counts as a candidate — matches `classifyTaskCapacity` exactly;
  * - missing / unparseable `raisedAt` → `skipped_bad_raised_at`;
- * - age under TTL → `skipped_under_ttl`;
+ * - age under effective TTL → `skipped_under_ttl`;
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
- * - otherwise selected.
+ * - otherwise selected (`capacity_pressure_early_reclaim` when soft path and
+ *   age still under hard TTL; `selected` for hard-path reclaim).
  *
  * Invariant: `candidatesConsidered === expired.length + sum(skips.*)`.
  */
@@ -214,7 +338,12 @@ export function selectExpiredFinishedAwaitingAckTasks(
   opts: ListExpiredFinishedAwaitingAckTasksOpts = {},
 ): FinishedAwaitingAckReclaimSelection {
   const nowMs = (opts.now ?? new Date()).getTime();
-  const ttlMs = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
+  const hardTtlMs = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
+  const softTtlMs = effectiveFinishedAwaitingAckSoftTtlMs({
+    ttlMs: hardTtlMs,
+    softTtlMs: opts.softTtlMs,
+  });
+  const capacityEarly = opts.capacityAllowsEarlyReclaim === true;
   const out: ExpiredFinishedAwaitingAckEntry[] = [];
   const skips = emptyFinishedAwaitingAckReclaimSkipCounts();
   const outcomes: FinishedAwaitingAckReclaimCandidateOutcome[] = [];
@@ -235,7 +364,25 @@ export function selectExpiredFinishedAwaitingAckTasks(
     }
 
     const ageMs = nowMs - raisedAtMs;
-    if (ageMs < ttlMs) {
+
+    // Soft path only for awaiting_poll under capacity pressure (issue #2355).
+    // Other causes keep the hard TTL so manual_review_gate / auto_close_disabled
+    // never get an accelerated reclaim window. Also exclude ask-first delivery:
+    // under production defaults (stale 60m, hard 15m) ask-first stays classified
+    // as awaiting_poll for the entire soft window — accelerating it would collapse
+    // the human review hold before hard TTL / manual_review_gate classification.
+    let useSoftPath = false;
+    if (capacityEarly && task.deliveryAuthorization !== 'ask-first') {
+      const cause = classifyFaaRootCause(task, {
+        now: nowMs,
+        staleThresholdMs: opts.staleThresholdMs,
+        ttlMs: hardTtlMs,
+      });
+      useSoftPath = cause === 'awaiting_poll';
+    }
+    const effectiveTtlMs = useSoftPath ? softTtlMs : hardTtlMs;
+
+    if (ageMs < effectiveTtlMs) {
       skips.skipped_under_ttl += 1;
       outcomes.push({ taskId: task.id, outcome: 'skipped_under_ttl', ageMs });
       continue;
@@ -264,8 +411,17 @@ export function selectExpiredFinishedAwaitingAckTasks(
       continue;
     }
 
-    out.push({ task, ageMs });
-    outcomes.push({ taskId: task.id, outcome: 'selected', ageMs });
+    // Soft-path selection under hard TTL → capacity_pressure_early_reclaim;
+    // at or past hard TTL the reclaim is normal hard-path (even if soft applied).
+    const capacityPressureEarlyReclaim = useSoftPath && ageMs < hardTtlMs;
+    out.push({ task, ageMs, capacityPressureEarlyReclaim });
+    outcomes.push({
+      taskId: task.id,
+      outcome: capacityPressureEarlyReclaim
+        ? 'capacity_pressure_early_reclaim'
+        : 'selected',
+      ageMs,
+    });
   }
 
   return {

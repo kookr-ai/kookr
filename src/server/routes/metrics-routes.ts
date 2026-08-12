@@ -67,6 +67,8 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               reclaimedTotal: finishedAwaitingAckReclaim.reclaimedTotal,
               reclaimAttempted: finishedAwaitingAckReclaim.reclaimAttempted,
               reclaimSucceeded: finishedAwaitingAckReclaim.reclaimSucceeded,
+              capacityPressureEarlyReclaimedTotal:
+                finishedAwaitingAckReclaim.capacityPressureEarlyReclaimedTotal,
               skippedBadRaisedAt: finishedAwaitingAckReclaim.skippedBadRaisedAt,
               skippedOpenPrFailsafe: finishedAwaitingAckReclaim.skippedOpenPrFailsafe,
               skippedOpenPrConfirmed: finishedAwaitingAckReclaim.skippedOpenPrConfirmed,
