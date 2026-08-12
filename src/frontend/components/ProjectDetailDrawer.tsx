@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { ProjectSummary, ClientMessage, TaskSummary } from '../../shared/protocol.js';
+import { formatCost } from '../presentation.js';
 
 interface Props {
   project: ProjectSummary;
@@ -58,6 +59,11 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
 
   const atLimit = project.dailyLimit !== undefined && project.todayPrCount >= project.dailyLimit;
   const limitPct = project.dailyLimit ? Math.min(100, Math.round((project.todayPrCount / project.dailyLimit) * 100)) : 0;
+
+  const budgetThreshold = project.budgetWarnUsd !== undefined && project.budgetWarnUsd > 0 ? project.budgetWarnUsd : undefined;
+  const spendUsd = project.costUsd;
+  const showSpend = spendUsd !== undefined || budgetThreshold !== undefined;
+  const overBudget = budgetThreshold !== undefined && (spendUsd ?? 0) > budgetThreshold;
 
   function handleSave() {
     const limit = parseInt(dailyLimit, 10);
@@ -194,6 +200,21 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
           <StatRow label="This week" value={project.weekPrCount} />
           <StatRow label="Open contribution attempts" value={project.openContributionAttempts} />
           <StatRow label="Active agents" value={project.activeAgents} />
+          {showSpend && (
+            <div
+              className={`project-drawer-stat-row${overBudget ? ' at-limit' : ''}`}
+              data-testid="project-spend-row"
+              aria-label={`Spend ${formatCost(spendUsd ?? 0)}${budgetThreshold !== undefined ? ` of ${formatCost(budgetThreshold)}` : ''}${overBudget ? ' (over threshold)' : ''}`}
+            >
+              <span className="project-drawer-stat-label">Spend</span>
+              <span className="project-drawer-stat-value" data-testid="project-spend-value">
+                {formatCost(spendUsd ?? 0)}
+                {budgetThreshold !== undefined && (
+                  <span className="project-drawer-stat-hint"> / {formatCost(budgetThreshold)}</span>
+                )}
+              </span>
+            </div>
+          )}
           {repoHealth && Number.isFinite(repoHealth.openIssues) && (
             <a
               className="project-drawer-stat-row project-drawer-stat-row-link"

@@ -120,6 +120,37 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].findingCount).toBe(2);
   });
 
+  test('sums accumulated cost across a project\'s agents', () => {
+    const agents: AgentState[] = [
+      makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/repo',
+        taskStatus: 'inProgress',
+        taskId: 'task-1',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1.25 },
+      }),
+      makeAgent({
+        agentId: 'a2',
+        projectId: 'github.com/org/repo',
+        taskStatus: 'completed',
+        taskId: 'task-2',
+        tokenUsage: { inputTokens: 200, outputTokens: 80, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 2.75 },
+      }),
+      // Agent with no recorded token usage contributes nothing.
+      makeAgent({ agentId: 'a3', projectId: 'github.com/org/repo', taskStatus: 'inProgress', taskId: 'task-3' }),
+    ];
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+    expect(summaries[0].costUsd).toBeCloseTo(4.0, 5);
+  });
+
+  test('omits costUsd when the project has no agent spend', () => {
+    const agents: AgentState[] = [
+      makeAgent({ agentId: 'a1', projectId: 'github.com/org/repo', taskStatus: 'inProgress', taskId: 'task-1' }),
+    ];
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+    expect(summaries[0].costUsd).toBeUndefined();
+  });
+
   test('includes projects from config store even with no agents', () => {
     configStore.setConfig('github.com/org/orphan', { dailyPrLimit: 3 });
     const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });

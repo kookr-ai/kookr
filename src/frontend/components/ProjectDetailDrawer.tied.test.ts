@@ -88,6 +88,64 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
       config: expect.objectContaining({ budgetWarnUsd: null }),
     }));
   });
+  test('shows accumulated spend against the cost-warning threshold', () => {
+    renderDrawer(baseProject({ costUsd: 3.2, budgetWarnUsd: 7.5 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('$3.20');
+    expect(row.textContent).toContain('$7.50');
+    expect(row.classList.contains('at-limit')).toBe(false);
+  });
+
+  test('highlights spend that exceeds the cost-warning threshold', () => {
+    renderDrawer(baseProject({ costUsd: 9.1, budgetWarnUsd: 7.5 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row.classList.contains('at-limit')).toBe(true);
+  });
+
+  test('does not highlight spend that exactly equals the threshold', () => {
+    renderDrawer(baseProject({ costUsd: 7.5, budgetWarnUsd: 7.5 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row.classList.contains('at-limit')).toBe(false);
+  });
+
+  test('treats a zero threshold as disabled — spend shown without a comparison', () => {
+    renderDrawer(baseProject({ costUsd: 3.2, budgetWarnUsd: 0 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('$3.20');
+    expect(row.textContent).not.toContain('/');
+    expect(row.classList.contains('at-limit')).toBe(false);
+  });
+
+  test('shows spend with no threshold hint when only spend is present', () => {
+    renderDrawer(baseProject({ costUsd: 3.2 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row.textContent).toContain('$3.20');
+    expect(row.textContent).not.toContain('/');
+  });
+
+  test('shows a zero spend against a set threshold before any agent cost lands', () => {
+    renderDrawer(baseProject({ budgetWarnUsd: 7.5 }));
+    const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;
+
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('$0.00');
+    expect(row.textContent).toContain('$7.50');
+    expect(row.classList.contains('at-limit')).toBe(false);
+  });
+
+  test('omits the spend row when there is neither spend nor a threshold', () => {
+    renderDrawer(baseProject());
+
+    expect(container.querySelector('[data-testid="project-spend-row"]')).toBeNull();
+  });
+
   test('renders contribution-attempt count with the renamed label', () => {
     renderDrawer(baseProject({ openContributionAttempts: 2 }));
 

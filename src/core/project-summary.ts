@@ -48,6 +48,15 @@ export interface ProjectSummary {
   /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
   budgetWarnUsd?: number;
   /**
+   * Accumulated agent spend for this project in USD, summed from each of the
+   * project's agents' `tokenUsage.costUsd`. Surfaced next to `budgetWarnUsd` for
+   * at-a-glance context. Note `budgetWarnUsd` is a *per-task* threshold, so this
+   * project-wide total is a reference figure, not the value the per-task budget
+   * alert compares against. Omitted when the project has no agents with a
+   * recorded cost.
+   */
+  costUsd?: number;
+  /**
    * Contribution attempts currently in the `pr_open` state in Kookr's OSS
    * attempt ledger. This is scoped to agent attempts, not repo-wide GitHub PRs;
    * use `repoHealth.openPullRequests` for the repository denominator.
@@ -306,6 +315,9 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       (a) => a.anomaly !== null && !a.snoozedUntil && a.taskStatus !== 'pending',
     ).length;
 
+    // Accumulated project spend: sum each agent's already-computed cost.
+    const costUsd = agentList.reduce((sum, a) => sum + (a.tokenUsage?.costUsd ?? 0), 0);
+
     const recentTasks: TaskSummary[] = agentList
       .filter((a) => a.taskId)
       .map((a) => ({
@@ -334,6 +346,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       weekPrCount: weekCount,
       dailyLimit: effectiveLimit ?? config?.dailyPrLimit,
       budgetWarnUsd: config?.budgetWarnUsd,
+      costUsd: costUsd > 0 ? costUsd : undefined,
       openContributionAttempts,
       lastContribution: lastContrib,
       recentTasks,
