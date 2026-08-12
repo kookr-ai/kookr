@@ -134,7 +134,12 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
     ...(task.criteria ? { criteria: task.criteria } : {}),
     ...(task.name ? { name: task.name } : {}),
     ...(task.playbookId ? { playbookId: task.playbookId } : {}),
-    ...(task.playbookParameterValues ? { playbookParameterValues: task.playbookParameterValues } : {}),
+    // Detach from the source record (issue #2413): callers may pass a live
+    // store ref (non-cloning views), and this LaunchOpts is retained by the
+    // scheduler until the provider reset — potentially days.
+    ...(task.playbookParameterValues
+      ? { playbookParameterValues: structuredClone(task.playbookParameterValues) }
+      : {}),
     ...(task.projectId ? { projectId: task.projectId } : {}),
     ...(task.agentType ? { agentType: task.agentType } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },

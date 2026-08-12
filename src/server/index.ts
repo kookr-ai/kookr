@@ -841,7 +841,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // deferred every terminal actor is the owner, so it is inert until viewers
   // land — but it makes the gate real the moment they do.
   const isActorAllowedTerminalSession = createTerminalScopeChecker(
-    (sessionName) => taskStore.findTaskBySession(sessionName)?.projectId,
+    // Non-cloning read (issue #2413): the checker only needs projectId and runs
+    // on terminal WS upgrades + per-tick revocation sweeps.
+    (sessionName) => taskStore.viewTaskBySession(sessionName)?.projectId,
   );
 
   // Payload-diet observability (issue #1526 Phase C / C2): remember the size
@@ -1652,7 +1654,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getReservedSlotSources,
     getCapacityLedger: () => {
       const now = Date.now();
-      return buildCapacityLedger(taskStore.listTasks(), {
+      return buildCapacityLedger(taskStore.viewTasks(), {
         now,
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
@@ -1789,7 +1791,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (remoteLaunchFeatureEnabled()) {
       remoteLaunchBroker = createRemoteLaunchBrokerFromEnv({
         launchTask: (opts) => launchTask(launchServiceDeps, opts),
-        getActiveLaunchCount: ({ projectId, agentType }) => taskStore.listTasks().filter((task) => (
+        getActiveLaunchCount: ({ projectId, agentType }) => taskStore.viewTasks().filter((task) => (
           (task.status === 'open' || task.status === 'pending' || task.status === 'inProgress')
           && task.projectId === projectId
           && task.agentType === agentType
@@ -2068,7 +2070,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   ): boolean => {
     try {
       const now = Date.now();
-      const capacity = buildCapacityLedger(taskStore.listTasks(), {
+      const capacity = buildCapacityLedger(taskStore.viewTasks(), {
         now,
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
@@ -2103,7 +2105,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const getCapacityAllowsFinishedAwaitingAckEarlyReclaim = (): boolean => {
     try {
       const now = Date.now();
-      const capacity = buildCapacityLedger(taskStore.listTasks(), {
+      const capacity = buildCapacityLedger(taskStore.viewTasks(), {
         now,
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
@@ -2193,7 +2195,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
     countActiveRefineryTasks: () =>
       taskStore
-        .listTasks()
+        .viewTasks()
         .filter((task) => !isTerminalStatus(task.status) && task.metadata?.launchSource === 'idle-refinery')
         .length,
     resolveLaunch: () => resolveUmbrellaDecomposeLaunch(serverCwd),

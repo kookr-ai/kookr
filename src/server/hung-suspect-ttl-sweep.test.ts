@@ -46,6 +46,7 @@ function makeHungTask(overrides: Partial<Task> = {}): Task {
 function makeMockTaskStore(tasks: Task[]) {
   return {
     listTasks: vi.fn(() => tasks),
+    viewTasks: vi.fn(() => tasks),
     getTask: vi.fn((id: string) => tasks.find((t) => t.id === id)),
     terminateTask: vi.fn(),
     updateSession: vi.fn(),

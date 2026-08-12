@@ -36,7 +36,7 @@ describe('createHookRuntime', () => {
         adapter,
         httpPushTracker: new HttpPushTracker(),
         taskStore: {
-          findTaskBySession: () => undefined,
+          findTaskIdBySession: () => undefined,
         },
         onParseDegradation: (args) => degradations.push(args),
       });

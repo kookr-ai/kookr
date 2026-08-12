@@ -19,7 +19,7 @@ export interface HookRuntimeDeps {
   hooksDir: string;
   adapter: HookEventInjector;
   httpPushTracker: HttpPushTracker;
-  taskStore: Pick<TaskStore, 'findTaskBySession'>;
+  taskStore: Pick<TaskStore, 'findTaskIdBySession'>;
   onParseDegradation: (args: {
     event: HookParseDegradationEvent;
     evaluation: HookParseDegradationEvaluation;

@@ -60,7 +60,7 @@ export interface HookIngestionDeps {
    *  (parent / child / malformed / duplicate) gets a row appended. */
   activityLedger?: ActivityLedger;
   /** Used to resolve `taskId` for ledger envelopes; optional in tests. */
-  taskStore?: Pick<TaskStore, 'findTaskBySession'>;
+  taskStore?: Pick<TaskStore, 'findTaskIdBySession'>;
   /**
    * Dedup TTL window. Defaults to 5 seconds — comfortably covers both
    * arrival orderings: the file watcher's 3s poll backup, and the
@@ -227,7 +227,7 @@ export class HookIngestion implements HookEventInjector {
   private adapter: HookEventInjector;
   private httpPushTracker?: HttpPushTracker;
   private activityLedger?: ActivityLedger;
-  private taskStore?: Pick<TaskStore, 'findTaskBySession'>;
+  private taskStore?: Pick<TaskStore, 'findTaskIdBySession'>;
   private dedupTtlMs: number;
   private now: () => number;
   private onParseDegradation?: (event: HookParseDegradationEvent) => void;
@@ -461,7 +461,7 @@ export class HookIngestion implements HookEventInjector {
       projection: ledgerProjection(result),
     });
     const observedAt = new Date(now).toISOString();
-    const taskId = this.taskStore?.findTaskBySession(kookrSessionId)?.id;
+    const taskId = this.taskStore?.findTaskIdBySession(kookrSessionId);
     this.appendCoordinatorAuditTail({
       ...(taskId ? { taskId } : {}),
       observedAt,
@@ -818,7 +818,7 @@ export class HookIngestion implements HookEventInjector {
     projection: ActivityLedgerRow['projection'];
   }): void {
     if (!this.activityLedger) return;
-    const taskId = this.taskStore?.findTaskBySession(args.kookrSessionId)?.id;
+    const taskId = this.taskStore?.findTaskIdBySession(args.kookrSessionId);
     const envelope: HookEnvelopeV1 = {
       schemaVersion: 'hook-envelope.v1',
       kookrSessionId: args.kookrSessionId,

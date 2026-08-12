@@ -324,7 +324,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
 
   // Issue #2084 / #2355: accumulate skip-reason counts every pass so /api/health
   // can explain residual finishedAwaitingAck when reclaimedTotal stays flat.
-  const selection = selectExpiredFinishedAwaitingAckTasks(deps.taskStore.listTasks(), {
+  const selection = selectExpiredFinishedAwaitingAckTasks(deps.taskStore.viewTasks(), {
     now,
     ttlMs: opts.ttlMs,
     softTtlMs,
@@ -388,7 +388,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
 
   // Issue #2070: meta/playbook FAA auto-complete for the unfetched-PR-ref residual.
   const alreadyHandled = new Set(reclaimedTaskIds);
-  const metaEntries = listMetaFinishedAwaitingAckAutoCompleteTasks(deps.taskStore.listTasks(), {
+  const metaEntries = listMetaFinishedAwaitingAckAutoCompleteTasks(deps.taskStore.viewTasks(), {
     now,
     ttlMs: opts.metaAutoCompleteTtlMs ?? DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
     isHoldingOpenPr: deps.isHoldingOpenPr,
