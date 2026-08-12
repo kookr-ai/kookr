@@ -132,7 +132,9 @@ import {
   resolveReclaimScheduleConfig,
 } from './scheduled-worktree-reclaim-runner.js';
 import {
+  EmergencyMaintenancePruneController,
   formatPayloadDietLogLine,
+  resolveEmergencyPruneThrottleMs,
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './maintenance-prune-schedule.js';
@@ -2394,6 +2396,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // service (created later) feeds it on every sample tick.
   const diskAdmissionConfig = readDiskAdmissionConfigFromEnv();
   const diskAdmissionTracker = new DataDirectoryDiskAdmissionTracker();
+  // Emergency maintenance prune (issue #2344): holder filled after takePredelete
+  // is defined; /api/health reads via the getter so createRoutes can close over
+  // the live instance without delaying route construction.
+  let emergencyMaintenancePrune: EmergencyMaintenancePruneController | undefined;
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
@@ -2510,6 +2516,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sessionReaper,
     hostStaleDtachReaper,
     getPayloadDietStats,
+    getMaintenancePruneHealth: () => emergencyMaintenancePrune?.getHealthSnapshot(),
     getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
@@ -2724,6 +2731,40 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           `(503, Retry-After ${diskAdmissionConfig.retryAfterSeconds}s)`
       : '[admission] Data-directory disk admission disabled (set KOOKR_ALERT_DATA_DIR_FREE_* or KOOKR_ADMISSION_DATA_DIR_FREE_* to enable)',
   );
+
+  // Shared maintenance-prune config (scheduled interval + emergency edge, #2344).
+  // Emergency runs even when KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is 0 so
+  // disk-critical admission can self-heal without requiring opt-in scheduling.
+  const maintenancePruneConfig = {
+    dataDir: kookrDir,
+    intervalHours: resolveMaintenancePruneIntervalHours(process.env),
+    pruneTaskRecords: () => pruneAgedTaskRecords({
+      taskStore,
+      monitor,
+      takePredeleteSnapshot,
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+    }),
+    onTaskRecordsPruned: () => {
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        relationTaskStore: taskStore,
+      }));
+    },
+    getPayloadDietStats,
+  };
+  const emergencyPruneThrottleMs = resolveEmergencyPruneThrottleMs(process.env);
+  emergencyMaintenancePrune = new EmergencyMaintenancePruneController({
+    pruneConfig: maintenancePruneConfig,
+    throttleMs: emergencyPruneThrottleMs,
+  });
+  console.log(
+    `[maintenance-prune] emergency sweep armed on disk-critical admission edge ` +
+      `(throttleMs=${emergencyPruneThrottleMs})`,
+  );
+
   const resourceStatusService = createResourceStatusService({
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
@@ -2738,8 +2779,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       realtime.noteEventLoopDelaySample(delayMs);
       nonCriticalTimerPauseGate.noteSample(delayMs);
     },
-    // #1992: advance disk-critical admission sustain samples on every tick.
+    // #1992 / #2344: advance disk-critical admission sustain samples on every
+    // tick; on the false→true edge fire a throttled emergency prune (async,
+    // never blocks this sample path or launch admission).
     onResourceStatusSample: (status) => {
+      const wasCritical = diskAdmissionTracker.isCritical();
       diskAdmissionTracker.observe(
         {
           diskFreePercent: status.host.dataDirectory.diskFreePercent,
@@ -2749,6 +2793,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         diskAdmissionConfig,
       );
+      if (!wasCritical && diskAdmissionTracker.isCritical()) {
+        void emergencyMaintenancePrune?.maybeRunOnDiskCriticalEdge();
+      }
     },
   });
   // Issue #1995: bind the live resource sample for ops-status free-disk fields.
@@ -3093,30 +3140,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       taskStateSaveScheduler,
       // Scheduled data-directory prune (idea-scout rank 4). Off unless
       // KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is set to a positive number.
-      maintenancePrune: {
-        dataDir: kookrDir,
-        intervalHours: resolveMaintenancePruneIntervalHours(process.env),
-        // Aged terminal task-record prune (issue #1526 Phase C / C2): runs on
-        // the same tick; the shrunken store persists on the next periodic save.
-        pruneTaskRecords: () => pruneAgedTaskRecords({
-          taskStore,
-          monitor,
-          takePredeleteSnapshot,
-          auditLogPath: join(kookrDir, 'audit.jsonl'),
-        }),
-        onTaskRecordsPruned: () => {
-          // Push a fresh snapshot so dashboards drop the pruned rows now
-          // rather than on the next tick broadcast.
-          broadcastToAll(createSnapshotMessage({
-            monitor,
-            serverCwd,
-            activityMetaProvider: hookIngestion,
-            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
-            relationTaskStore: taskStore,
-          }));
-        },
-        getPayloadDietStats,
-      },
+      // Config is shared with the emergency edge path (issue #2344) so both
+      // legs reclaim the same stores / task-record window.
+      maintenancePrune: maintenancePruneConfig,
       // Mid-process server.log size-cap rotation (issue #1991). ON by default
       // (50 MiB / 3 generations / 60s). Disables when maxBytes, generations, or
       // interval is 0. Reopens stdout/stderr after rename so live redirects do

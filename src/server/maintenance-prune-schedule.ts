@@ -12,6 +12,9 @@ export interface RelayOrphanSweepScheduleConfig {
   run?: typeof runRelayOrphanSweep;
 }
 
+/** Default min gap between emergency prune runs (issue #2344). */
+export const DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS = 60 * 60 * 1000;
+
 export interface MaintenancePruneScheduleConfig {
   /** Absolute path to the Kookr data directory to sweep. */
   dataDir: string;
@@ -47,6 +50,136 @@ export interface MaintenancePruneScheduleConfig {
    * working. Bootstrap also logs the same line once at boot.
    */
   getPayloadDietStats?: () => PayloadDietStats;
+}
+
+/**
+ * Health projection for emergency maintenance prune (issue #2344).
+ * Served under `GET /api/health.maintenancePrune`.
+ */
+export interface EmergencyMaintenancePruneHealthSnapshot {
+  emergencyPruneTriggeredTotal: number;
+  lastEmergencyPruneAt: string | null;
+  lastReclaimedBytes: number | null;
+  /** Configured min gap between emergency runs (ms). */
+  throttleMs: number;
+}
+
+export type EmergencyPruneOutcome = 'ran' | 'throttled' | 'in_flight' | 'failed';
+
+export interface EmergencyMaintenancePruneControllerOptions {
+  /**
+   * Prune config reused by the emergency path. `intervalHours` is ignored —
+   * emergency runs are edge-triggered, not interval-scheduled.
+   */
+  pruneConfig: MaintenancePruneScheduleConfig;
+  /**
+   * Min gap between emergency runs. Defaults to
+   * {@link DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS} (1 hour).
+   */
+  throttleMs?: number;
+  /** Injectable clock (tests). */
+  now?: () => number;
+}
+
+/**
+ * Edge-triggered, rate-limited emergency data-directory prune (issue #2344).
+ *
+ * When disk-critical launch admission first engages, call
+ * {@link EmergencyMaintenancePruneController.maybeRunOnDiskCriticalEdge} once.
+ * At most one sweep runs per throttle window so a sustained critical state
+ * cannot thrash the disk. Reuses {@link runScheduledMaintenancePrune} so the
+ * disk + optional task-record legs stay identical to the opt-in schedule.
+ *
+ * Never blocks the launch path: production wiring fire-and-forgets the
+ * promise. Failures are logged inside the shared prune runner.
+ */
+export class EmergencyMaintenancePruneController {
+  private readonly throttleMs: number;
+  private readonly now: () => number;
+  private emergencyPruneTriggeredTotal = 0;
+  private lastEmergencyPruneAt: string | null = null;
+  private lastReclaimedBytes: number | null = null;
+  /** Epoch-ms of the last started run, or `null` before the first. */
+  private lastRunStartedAtMs: number | null = null;
+  private inFlight = false;
+
+  constructor(private readonly options: EmergencyMaintenancePruneControllerOptions) {
+    this.throttleMs = Math.max(
+      0,
+      Math.floor(options.throttleMs ?? DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS),
+    );
+    this.now = options.now ?? Date.now;
+  }
+
+  getHealthSnapshot(): EmergencyMaintenancePruneHealthSnapshot {
+    return {
+      emergencyPruneTriggeredTotal: this.emergencyPruneTriggeredTotal,
+      lastEmergencyPruneAt: this.lastEmergencyPruneAt,
+      lastReclaimedBytes: this.lastReclaimedBytes,
+      throttleMs: this.throttleMs,
+    };
+  }
+
+  /**
+   * Attempt one emergency prune for a disk-critical edge. Safe to call on
+   * every edge (and even on non-edges) — throttle / in-flight gates drop
+   * redundant invocations. Awaits the sweep for tests; production should
+   * `void` the promise so admission never waits on reclaim.
+   */
+  async maybeRunOnDiskCriticalEdge(): Promise<EmergencyPruneOutcome> {
+    if (this.inFlight) return 'in_flight';
+    const nowMs = this.now();
+    if (
+      this.lastRunStartedAtMs != null
+      && this.throttleMs > 0
+      && nowMs - this.lastRunStartedAtMs < this.throttleMs
+    ) {
+      return 'throttled';
+    }
+
+    this.inFlight = true;
+    this.lastRunStartedAtMs = nowMs;
+    this.emergencyPruneTriggeredTotal += 1;
+    this.lastEmergencyPruneAt = new Date(nowMs).toISOString();
+
+    try {
+      console.log(
+        `[maintenance-prune] emergency sweep triggered by data-directory disk-critical ` +
+          `(total=${this.emergencyPruneTriggeredTotal}, throttleMs=${this.throttleMs})`,
+      );
+      const result = await runScheduledMaintenancePrune(this.options.pruneConfig);
+      if (result) {
+        this.lastReclaimedBytes = result.reclaimedBytes;
+        return 'ran';
+      }
+      // Failed attempt: do not leave a prior success's reclaim figure as if it
+      // belonged to this run (health couples lastAt with lastReclaimedBytes).
+      this.lastReclaimedBytes = null;
+      return 'failed';
+    } catch (err) {
+      // runScheduledMaintenancePrune already catches; this is belt-and-braces.
+      console.error('[maintenance-prune] emergency sweep failed:', err);
+      this.lastReclaimedBytes = null;
+      return 'failed';
+    } finally {
+      this.inFlight = false;
+    }
+  }
+}
+
+/**
+ * Resolve the emergency-prune throttle (ms) from the environment.
+ * Default 1 hour; `0` disables the throttle (every edge may run — tests only).
+ * Invalid / blank values fall back to the default.
+ */
+export function resolveEmergencyPruneThrottleMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.KOOKR_EMERGENCY_PRUNE_THROTTLE_MS?.trim();
+  if (!raw) return DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS;
+  return Math.floor(value);
 }
 
 /** Snapshot of the payload-diet health counters (issue #1526 Phase C / C2). */

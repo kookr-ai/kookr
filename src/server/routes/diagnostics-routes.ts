@@ -662,6 +662,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // snapshot bytes. Same numbers already logged at boot/prune; health makes
       // them glanceable for operators and `kookr status` without grepping logs.
       ...(deps.getPayloadDietStats ? { payloadDiet: deps.getPayloadDietStats() } : {}),
+      // Emergency maintenance prune (issue #2344): disk-critical edge counters.
+      // Cheap in-memory read only — never starts a reclaim on this path.
+      ...(() => {
+        const maintenancePrune = deps.getMaintenancePruneHealth?.();
+        return maintenancePrune ? { maintenancePrune } : {};
+      })(),
       // Hook replay-checkpoint gauges (issue #2281): session count + on-disk
       // file size. Cheap in-memory + stat; never a full JSON parse of the
       // multi-MB checkpoint store. Null when checkpoints are disabled.
