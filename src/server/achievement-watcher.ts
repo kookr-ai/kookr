@@ -183,7 +183,9 @@ export async function loadAchievements(filePath: string): Promise<AchievementFil
 
 async function saveAchievements(data: AchievementFile, filePath: string): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
-  const json = JSON.stringify(data, null, 2);
+  // Compact JSON (issue #2339): operators do not hand-edit this file; pretty-print
+  // multiplies CPU and IO on every unlock/counter tick for no operational gain.
+  const json = JSON.stringify(data);
   const tempPath = join(dirname(filePath), `.achievements-${randomUUID()}.tmp`);
   const fh = await open(tempPath, 'w');
   try {
