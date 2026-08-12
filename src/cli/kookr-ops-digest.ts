@@ -402,16 +402,14 @@ export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
     lines.push(`server: ${parts.join('  ')}`);
   }
 
-  // Always surface the two AC-required field paths when present on health,
-  // even if they did not become "warnings" (e.g. phantomActive=0 is quiet).
-  // When they ARE warnings they still appear in the list below with the same path.
+  // When the AC-required fields are present but not elevated, print a quiet
+  // zero-line so pasteable digests still show the field path. Elevated values
+  // already appear in the warnings list below with the same paths.
   const s = snap.signals;
-  if (s.pressureWhileDisabled === true) {
-    // already in warnings; skip duplicate preamble
-  } else if (s.pressureWhileDisabled === false) {
+  if (s.pressureWhileDisabled === false) {
     lines.push('resourceWatchdog.pressureWhileDisabled=false');
   }
-  if (s.phantomActive !== null && s.phantomActive === 0) {
+  if (s.phantomActive === 0) {
     lines.push('capacity.phantomActive=0');
   }
 
@@ -557,25 +555,11 @@ export async function runOpsDigestCli(
     return EXIT_SERVER_ERROR;
   }
 
-  // Ready: accept 200/503 JSON bodies. Other statuses (404/502) → treat as not ready
-  // when body has ready=false, else server error if completely unusable.
+  // Ready contract: 200 + ready:true → ok; anything else (503, body ready:false,
+  // or unexpected status) → not ready for supervisors. Still print health warnings.
   const readyParsed = parseReadyBody(readyResponse.body);
-  const readyOk =
-    readyResponse.status === 200 && readyParsed.ready === true
-      ? true
-      : readyResponse.status === 503 || readyParsed.ready === false
-        ? false
-        : readyResponse.status === 200
-          ? readyParsed.ready
-          : false;
-
-  // If ready endpoint is completely broken (e.g. 404 HTML), still surface health
-  // warnings but exit 1 (not ready for supervisors).
   const readyHttpStatus = readyResponse.status;
-  const ready =
-    readyHttpStatus === 200 || readyHttpStatus === 503
-      ? readyOk
-      : false;
+  const ready = readyHttpStatus === 200 && readyParsed.ready === true;
 
   const collected = collectOpsDigestWarnings(healthResponse.body);
   const snap: OpsDigestSnapshot = {

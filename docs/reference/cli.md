@@ -759,7 +759,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | Phantom active capacity | `capacity.phantomActive` | `> 0` |
 | Hung residual | `capacity.byClass.hungSuspect` | `> 0` |
 | Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
-| Low data-dir disk | `dataDirectory.diskFreePercent` | free percent known and ≤15% |
+| Low data-dir disk | `dataDirectory.diskFreePercent` (or nested host/sampler aliases) | free percent present on health body and ≤15% (often absent today — live free space lives on `ops-status.json`) |
 
 Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).
 
