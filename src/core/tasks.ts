@@ -740,65 +740,74 @@ export class TaskStore {
    * load-bearing here — do NOT swap in {@link viewTasks}).
    * Without a cutoff this is exactly {@link getAllTasks}.
    *
-   * INVARIANT (`protectSessionIds`): the snapshot projection builds its
-   * session-suppression index from the tasks it receives — a live monitor
-   * state whose owning task is absent leaks into the client snapshot as an
-   * unattributed "ghost" agent instead of being suppressed. Callers MUST
-   * protect every task owning a session that can appear in the monitor
-   * snapshot; the age cutoff governs synthetic terminal entries only, never
-   * the suppression index. `Monitor.getTaskSnapshot` wires this from its live
-   * agent map.
+   * The clone set is bounded strictly by age + count (issue #2408). Tasks
+   * owning a live monitor session are NOT exempted from the bounds here: the
+   * old `protectSessionIds` exemption deep-cloned nearly the whole terminal
+   * fleet on high-throughput days (its purpose was only to keep the
+   * projection's session-suppression index complete), yet the projection
+   * re-applied the same cutoff/cap and dropped those tasks from the payload
+   * anyway. Ghost-agent suppression now runs off `droppedTerminalSessions`:
+   * pass a `Set` and this call fills it, during the same walk, with the
+   * `tmuxSession`s of the terminal tasks it dropped — the projection uses that
+   * as `suppressSessionIds`, with no clones and no second scan.
    */
   listTasksForSnapshot(opts?: {
     excludeTerminalBeforeMs?: number;
     /**
-     * Cap on non-protected terminal tasks kept after the age cutoff. Most
-     * recent first (by {@link taskSnapshotRecencyMs}). Live/non-terminal tasks
-     * and protected terminal owners are never capped. When unset, no count cap
-     * is applied (raw/debug path).
+     * Cap on terminal tasks kept after the age cutoff. Most recent first (by
+     * {@link taskSnapshotRecencyMs}). Live/non-terminal tasks are never capped.
+     * When unset, no count cap is applied (raw/debug path).
      */
     maxTerminalTasks?: number;
-    /** Session ids (`tmuxSession`) whose owning tasks are kept regardless of age. */
-    protectSessionIds?: ReadonlySet<string>;
+    /**
+     * Ghost-agent guard collector (issue #2408). When provided, the `tmuxSession`
+     * of every terminal task this call DROPS (aged past the cutoff, or capped
+     * out) is added here during the same walk — no second scan. The snapshot
+     * projection uses it as `suppressSessionIds` so a live monitor state whose
+     * owning terminal task was dropped is suppressed instead of leaking as an
+     * unattributed "ghost" agent. Filled with dropped ids only; kept tasks are
+     * never added (their sessions are already in the projection's index).
+     */
+    droppedTerminalSessions?: Set<string>;
   }): Task[] {
     const cutoff = opts?.excludeTerminalBeforeMs;
-    const protect = opts?.protectSessionIds;
     const maxTerminal = opts?.maxTerminalTasks;
+    const dropped = opts?.droppedTerminalSessions;
     const applyTerminalCap =
       maxTerminal !== undefined
       && Number.isFinite(maxTerminal)
       && maxTerminal >= 0;
 
-    // Fast path: no count cap → previous single-pass clone (age + protect only).
+    const recordDropped = (task: Task): void => {
+      if (!dropped) return;
+      for (const s of task.sessions) dropped.add(s.tmuxSession);
+    };
+
+    // Fast path: no count cap → single-pass clone (age filter only).
     if (!applyTerminalCap) {
       const out: Task[] = [];
       for (const task of this.tasks.values()) {
-        if (
-          cutoff !== undefined
-          && isAgedTerminalTask(task, cutoff)
-          && !(protect && task.sessions.some((s) => protect.has(s.tmuxSession)))
-        ) continue;
+        if (cutoff !== undefined && isAgedTerminalTask(task, cutoff)) {
+          recordDropped(task);
+          continue;
+        }
         out.push(cloneTask(task));
       }
       return out;
     }
 
-    // Count-capped path: keep all live/pending + protected terminal owners, then
-    // the most recent N non-protected terminals that survive the age cutoff.
-    // Cloning only the retained set avoids the ~hundreds-of-MB transient cost of
-    // cloning every same-day terminal task on high-throughput hosts.
+    // Count-capped path: keep all live/pending, then the most recent N
+    // terminals that survive the age cutoff. Cloning only the retained set
+    // avoids the ~hundreds-of-MB transient cost of cloning every same-day
+    // terminal task on high-throughput hosts.
     const always: Task[] = [];
     const terminalCandidates: Task[] = [];
     for (const task of this.tasks.values()) {
-      const isProtected = Boolean(
-        protect && task.sessions.some((s) => protect.has(s.tmuxSession)),
-      );
       if (isTerminalStatus(task.status)) {
-        if (isProtected) {
-          always.push(task);
+        if (cutoff !== undefined && isAgedTerminalTask(task, cutoff)) {
+          recordDropped(task);
           continue;
         }
-        if (cutoff !== undefined && isAgedTerminalTask(task, cutoff)) continue;
         terminalCandidates.push(task);
         continue;
       }
@@ -808,9 +817,11 @@ export class TaskStore {
     const terminalCap = Math.floor(maxTerminal as number);
     let terminals = terminalCandidates;
     if (terminalCandidates.length > terminalCap) {
-      terminals = [...terminalCandidates]
-        .sort((a, b) => taskSnapshotRecencyMs(b) - taskSnapshotRecencyMs(a))
-        .slice(0, terminalCap);
+      const sorted = [...terminalCandidates]
+        .sort((a, b) => taskSnapshotRecencyMs(b) - taskSnapshotRecencyMs(a));
+      terminals = sorted.slice(0, terminalCap);
+      // Terminals beyond the cap are dropped too — record them for the guard.
+      for (const task of sorted.slice(terminalCap)) recordDropped(task);
     }
 
     return [...always, ...terminals].map((task) => cloneTask(task));
