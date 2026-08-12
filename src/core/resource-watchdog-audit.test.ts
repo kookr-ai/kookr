@@ -129,4 +129,20 @@ describe('resource-watchdog prompt templates', () => {
     expect(prompt).not.toContain('sessionid=abc123def456ghi789');
     expect(prompt).not.toMatch(/Bearer\s+super-secret/i);
   });
+
+  test('meta-reflection prompt scrubs recentAuditTail secrets (issue #2346)', () => {
+    const bearer = ['audit-bearer-secret-value', '-aabbccddeeff0011'].join('');
+    const prompt = buildResourceWatchdogPrompt({
+      kind: 'meta_reflection',
+      sample,
+      triggers: [{ reason: 'process_ceiling', detail: 'claude high', observed: 50, threshold: 40 }],
+      spawnsInWindow: 4,
+      spawnBudget24h: 4,
+      recentAuditTail: `spawn ok\nAuthorization: Bearer ${bearer}\n`,
+    });
+    expect(prompt).toContain('## Recent watchdog audit lines');
+    expect(prompt).toContain('spawn ok');
+    expect(prompt).toContain('[REDACTED]');
+    expect(prompt).not.toContain(bearer);
+  });
 });

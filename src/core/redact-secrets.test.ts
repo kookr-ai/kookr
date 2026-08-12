@@ -83,10 +83,11 @@ describe('redactSecrets', () => {
     expect(redactSecrets(text)).toBe(text);
   });
 
-  it('redacts Authorization Bearer headers (generic and known-prefix tokens)', () => {
+  it('redacts Authorization headers (Bearer, Basic, and known-prefix tokens)', () => {
     const generic = secretFixture('super-secret-bearer-value', '-0123456789abcdef');
     expect(redactSecrets(`Authorization: Bearer ${generic}`)).toBe('[REDACTED]');
     expect(redactSecrets(`authorization: Bearer ${generic}`)).toBe('[REDACTED]');
+    expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz')).toBe('[REDACTED]');
 
     const gh = secretFixture('ghp', '_0123456789abcdefghij');
     const out = redactSecrets(`curl -H "Authorization: Bearer ${gh}"`);
