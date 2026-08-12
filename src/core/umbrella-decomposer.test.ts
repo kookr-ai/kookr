@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): pre-arm issuer ir_url HTTP health probe fails closed on 404/5xx',
-      'feat(acquisition): stealth tier inherits remaining armed-window budget when free tiers are cooled',
-      'feat(metrics): alert when verification_reject miss share exceeds configurable threshold',
+      'feat(acquisition): soft-disable chronic zero-success search backends from live fan-out',
+      'feat(acquisition): early-promote issuer_feed when issuer page is access_denied or tier_blocked',
+      'feat(metrics): alert when a configured search backend has chronic zero-success share',
     ]);
   });
 
