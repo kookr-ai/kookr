@@ -10,7 +10,7 @@ import { realpathSync } from 'node:fs';
 import {
   firstRestartIntentAcrossPorts,
   describeUnreachableCause,
-  classifyRestartIntent,
+  restartIntentJson,
   readRestartIntent,
   resolveKookrDir,
 } from './kookr-restart-intent.js';
@@ -1410,7 +1410,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}. ${cause}`,
         details: {
           ports: PORTS_TO_TRY,
-          restartIntent: { state: classifyRestartIntent(intent).state, ...(intent ? { reason: intent.reason, startedAt: intent.startedAt } : {}) },
+          restartIntent: restartIntentJson(intent),
         },
       });
     }
@@ -1452,7 +1452,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           port,
           resolvedKind: resolved.kind,
           error: msg,
-          restartIntent: { state: classifyRestartIntent(intent).state, ...(intent ? { reason: intent.reason, startedAt: intent.startedAt } : {}) },
+          restartIntent: restartIntentJson(intent),
         },
       });
     }

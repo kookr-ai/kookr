@@ -5,6 +5,7 @@
 export const RESTART_INTENT_SCHEMA_VERSION: 'restart-intent.v1';
 export const RESTART_INTENT_FILENAME: 'restart-intent.json';
 export const RESTART_INTENT_STALE_MS: number;
+export const RESTART_INTENT_EXPIRY_MS: number;
 
 export interface RestartIntent {
   schemaVersion: string | null;
@@ -13,6 +14,7 @@ export interface RestartIntent {
   startedAtMs: number;
   initiator: string | null;
   pid: number | null;
+  staleAfterMs: number | null;
   host: string | null;
 }
 
@@ -36,6 +38,7 @@ export function writeRestartIntent(options: {
   reason?: string | null;
   initiator?: string | null;
   pid?: number | null;
+  staleAfterMs?: number | null;
   now?: number;
   host?: string | null;
 }): {
@@ -44,10 +47,11 @@ export function writeRestartIntent(options: {
   startedAt: string;
   initiator: string;
   pid: number | null;
+  staleAfterMs: number | null;
   host: string | null;
 };
 
-export function clearRestartIntent(kookrDir: string): void;
+export function clearRestartIntent(kookrDir: string, options?: { expectStartedAt?: string | null }): void;
 export function readRestartIntent(kookrDir: string): RestartIntent | null;
 
 export function classifyRestartIntent(
@@ -58,6 +62,15 @@ export function classifyRestartIntent(
 export function formatAge(ms: number): string;
 export function describeRestartIntent(intent: RestartIntent | null, now?: number): string | null;
 export function describeUnreachableCause(intent: RestartIntent | null, now?: number): string;
+
+export interface RestartIntentJson {
+  state: RestartIntentState;
+  ageMs: number;
+  reason: string | null;
+  startedAt: string | null;
+}
+
+export function restartIntentJson(intent: RestartIntent | null, now?: number): RestartIntentJson;
 
 export function readUnreachableCause(options?: {
   dir?: string | null;

@@ -38,6 +38,8 @@ RESTART_SCRIPT_DIR="$(
 # Reason recorded in the planned-restart marker (issue #2410). prod-update.sh
 # overrides this to "prod:update"; a bare `pnpm prod:restart` keeps the default.
 RESTART_INTENT_REASON="${KOOKR_RESTART_INTENT_REASON:-prod:restart}"
+# startedAt of the marker we wrote, captured so clear only deletes OUR marker.
+RESTART_INTENT_STARTED_AT=""
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 SYSTEMD_ENV_FILE="${HOME}/.config/kookr/kookr.env"
 
@@ -108,16 +110,35 @@ RESTART_INTENT_HELPER="${RESTART_SCRIPT_DIR}/../bin/kookr-restart-intent.js"
 write_restart_intent() {
   [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  node "$RESTART_INTENT_HELPER" write \
+  local started_at=""
+  # Stamp the deploy's own give-up budget so the CLI only reads "failed deploy"
+  # once the restart outlives the time this deploy actually allowed itself.
+  local stale_after_ms=$(( STARTUP_TIMEOUT_SECONDS * 1000 ))
+  if started_at="$(node "$RESTART_INTENT_HELPER" write \
     --dir "$KOOKR_DIR" \
     --reason "$RESTART_INTENT_REASON" \
-    --initiator "$(basename "${BASH_SOURCE[0]}")" >/dev/null 2>&1 || true
+    --initiator "$(basename "${BASH_SOURCE[0]}")" \
+    --pid "$$" \
+    --stale-after-ms "$stale_after_ms" 2>/dev/null)"; then
+    RESTART_INTENT_STARTED_AT="$started_at"
+    echo "Recorded planned-restart marker (${RESTART_INTENT_REASON}) in ${KOOKR_DIR}"
+  else
+    echo "WARN: could not record planned-restart marker in ${KOOKR_DIR}; CLI outage messages will be generic" >&2
+  fi
 }
 
 clear_restart_intent() {
   [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  node "$RESTART_INTENT_HELPER" clear --dir "$KOOKR_DIR" >/dev/null 2>&1 || true
+  # Ownership-checked: only delete the marker we wrote, so a concurrent restart's
+  # in-flight marker is never erased out from under it.
+  if node "$RESTART_INTENT_HELPER" clear \
+    --dir "$KOOKR_DIR" \
+    --expect-started-at "$RESTART_INTENT_STARTED_AT" >/dev/null 2>&1; then
+    :
+  else
+    echo "WARN: could not clear planned-restart marker in ${KOOKR_DIR}; a stale marker may linger" >&2
+  fi
 }
 
 validate_log_generations() {
@@ -1010,9 +1031,12 @@ if systemd_unit_active; then
   # (measurement caveat for apiBlackoutSeconds on the systemd path, #1972).
   PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
   wait_for_systemd_health
-  # Healthy again: clear the marker so the CLI stops reporting a restart. If the
-  # health gate above fails the script exits first, leaving the marker to age
-  # into the "failed deploy" reading.
+  # API reachable again: clear the marker. Cleared here (after the readiness
+  # gate) rather than after the smoke suite on purpose — the marker only exists
+  # to explain an UNREACHABLE API to the CLI, and the API is reachable now, so a
+  # later smoke failure is a deploy-quality signal, not an outage the marker
+  # should keep flagging. A failed readiness gate exits the script before this
+  # line, leaving the marker to age into the "failed deploy" reading.
   clear_restart_intent
   run_post_restart_checks
   run_post_deploy_smoke systemd
@@ -1045,9 +1069,9 @@ PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
 echo "Port ${PORT} free at +${PHASE_PORT_FREE_S}s"
 start_server
 wait_for_health
-# Healthy again: clear the marker so the CLI stops reporting a restart. A failed
-# wait_for_health exits the script before this line, leaving the marker to age
-# into the "failed deploy" reading for the CLI.
+# API reachable again: clear the marker (see the systemd path above for why this
+# is done at the readiness gate, not after smoke). A failed wait_for_health exits
+# the script first, leaving the marker to age into the "failed deploy" reading.
 clear_restart_intent
 run_post_restart_checks
 run_post_deploy_smoke script

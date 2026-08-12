@@ -28,13 +28,28 @@ export const RESTART_INTENT_SCHEMA_VERSION = 'restart-intent.v1';
 export const RESTART_INTENT_FILENAME = 'restart-intent.json';
 
 /**
- * A planned restart is only "in progress" for a short window. Past this age
- * with no recovery the marker most likely belongs to a FAILED deploy — the new
- * server never came back to clear it — so consumers flip their copy from
- * "restarting, back shortly" to "restart has not come back — likely a failed
- * deploy". Kept generous so a slow `prod:update` still reads as planned.
+ * Fallback "in progress" window used ONLY when a marker carries no explicit
+ * `staleAfterMs` deadline. Past this age with no recovery the marker most likely
+ * belongs to a FAILED deploy, so consumers flip from "restarting" to "likely a
+ * failed deploy". In production `prod-restart.sh` always stamps the deploy's own
+ * `KOOKR_STARTUP_TIMEOUT_SECONDS` budget into the marker (see writeRestartIntent
+ * `staleAfterMs`), so this default only covers hand-written / legacy markers.
+ * Kept generous (10 min) because this repo has observed legitimately-slow
+ * recoveries — a ~10.5 min startup on a 727-task instance drove
+ * KOOKR_STARTUP_TIMEOUT_SECONDS up to 1800s (issue #1721); a 3-minute default
+ * would have called that healthy deploy "failed".
  */
-export const RESTART_INTENT_STALE_MS = 3 * 60_000;
+export const RESTART_INTENT_STALE_MS = 10 * 60_000;
+
+/**
+ * Absolute ceiling past which a marker is treated as `none` (ignored), not
+ * `stale`. A marker orphaned by a killed deploy script, a reboot mid-deploy, or
+ * a manual/systemd recovery that bypassed `prod-restart.sh`'s clear survives on
+ * disk indefinitely; without this ceiling an ancient marker would attach
+ * "failed deploy from 3 weeks ago" context to a fresh, unrelated outage and
+ * muddy the diagnosis (issue #2410 operability review).
+ */
+export const RESTART_INTENT_EXPIRY_MS = 12 * 60 * 60_000;
 
 function safeHostname() {
   try {
@@ -62,7 +77,7 @@ export function restartIntentPath(kookrDir) {
   return join(kookrDir, RESTART_INTENT_FILENAME);
 }
 
-export function writeRestartIntent({ kookrDir, reason, initiator, pid, now = Date.now(), host } = {}) {
+export function writeRestartIntent({ kookrDir, reason, initiator, pid, staleAfterMs, now = Date.now(), host } = {}) {
   const record = {
     schemaVersion: RESTART_INTENT_SCHEMA_VERSION,
     reason: reason !== undefined && reason !== null && String(reason).trim() !== '' ? String(reason) : 'restart',
@@ -72,6 +87,10 @@ export function writeRestartIntent({ kookrDir, reason, initiator, pid, now = Dat
         ? String(initiator)
         : 'unknown',
     pid: Number.isInteger(pid) ? pid : null,
+    // The deploy's own give-up deadline (KOOKR_STARTUP_TIMEOUT_SECONDS), so the
+    // reader flips to "failed deploy" when the restart outlives the budget the
+    // deploy actually allowed itself — not an arbitrary constant.
+    staleAfterMs: Number.isFinite(staleAfterMs) && staleAfterMs > 0 ? Math.floor(staleAfterMs) : null,
     host: host !== undefined ? host : safeHostname(),
   };
   mkdirSync(kookrDir, { recursive: true });
@@ -84,8 +103,18 @@ export function writeRestartIntent({ kookrDir, reason, initiator, pid, now = Dat
   return record;
 }
 
-export function clearRestartIntent(kookrDir) {
+/**
+ * Remove the marker. When `expectStartedAt` is given, only remove it if the
+ * on-disk marker's `startedAt` still matches — so a restart that finishes first
+ * cannot delete a *different*, still-in-flight restart's marker out from under
+ * it (overlapping deploys, issue #2410 operability review).
+ */
+export function clearRestartIntent(kookrDir, { expectStartedAt } = {}) {
   try {
+    if (expectStartedAt !== undefined && expectStartedAt !== null && String(expectStartedAt).trim() !== '') {
+      const current = readRestartIntent(kookrDir);
+      if (!current || current.startedAt !== String(expectStartedAt)) return;
+    }
     rmSync(restartIntentPath(kookrDir), { force: true });
   } catch {
     // Best-effort: a leftover marker only ever produces a stale (failed-deploy)
@@ -122,6 +151,8 @@ export function readRestartIntent(kookrDir) {
     startedAtMs,
     initiator: typeof parsed.initiator === 'string' ? parsed.initiator : null,
     pid: Number.isInteger(parsed.pid) ? parsed.pid : null,
+    staleAfterMs:
+      Number.isFinite(parsed.staleAfterMs) && parsed.staleAfterMs > 0 ? Math.floor(parsed.staleAfterMs) : null,
     host: typeof parsed.host === 'string' ? parsed.host : null,
   };
 }
@@ -133,7 +164,14 @@ export function readRestartIntent(kookrDir) {
 export function classifyRestartIntent(intent, now = Date.now()) {
   if (!intent) return { state: 'none', ageMs: 0 };
   const ageMs = Math.max(0, now - intent.startedAtMs);
-  return { state: ageMs > RESTART_INTENT_STALE_MS ? 'stale' : 'in-progress', ageMs };
+  // Past the absolute ceiling the marker is an orphan from some earlier deploy,
+  // not context for the current outage — ignore it entirely.
+  if (ageMs > RESTART_INTENT_EXPIRY_MS) return { state: 'none', ageMs };
+  const staleAfterMs =
+    Number.isFinite(intent.staleAfterMs) && intent.staleAfterMs > 0
+      ? intent.staleAfterMs
+      : RESTART_INTENT_STALE_MS;
+  return { state: ageMs > staleAfterMs ? 'stale' : 'in-progress', ageMs };
 }
 
 export function formatAge(ms) {
@@ -160,7 +198,22 @@ export function describeRestartIntent(intent, now = Date.now()) {
   if (state === 'stale') {
     return `a kookr restart (${intent.reason}) started ${age} ago but the API has not come back — this looks like a failed deploy, not a routine restart.`;
   }
-  return `kookr is restarting (${intent.reason} started ${age} ago); the API should return within a few seconds.`;
+  return `kookr is restarting (${intent.reason} started ${age} ago); the API should return once the redeploy finishes.`;
+}
+
+/**
+ * One machine-readable `restartIntent` shape shared by every `--json` CLI
+ * surface (kookr status, kookr signal) so a programmatic consumer sees the same
+ * fields regardless of which command it called.
+ */
+export function restartIntentJson(intent, now = Date.now()) {
+  const { state, ageMs } = classifyRestartIntent(intent, now);
+  return {
+    state,
+    ageMs,
+    reason: state === 'none' ? null : intent.reason,
+    startedAt: state === 'none' ? null : intent.startedAt,
+  };
 }
 
 /**
@@ -224,6 +277,12 @@ function parseFlags(argv) {
       case '--pid':
         flags.pid = Number(argv[++i]);
         break;
+      case '--stale-after-ms':
+        flags.staleAfterMs = Number(argv[++i]);
+        break;
+      case '--expect-started-at':
+        flags.expectStartedAt = argv[++i];
+        break;
       default:
         break;
     }
@@ -232,24 +291,28 @@ function parseFlags(argv) {
 }
 
 const USAGE =
-  'usage: kookr-restart-intent <write|clear|show> [--reason R] [--initiator I] [--port P] [--dir D] [--pid N]';
+  'usage: kookr-restart-intent <write|clear|show> [--reason R] [--initiator I] [--port P] [--dir D] [--pid N] [--stale-after-ms MS] [--expect-started-at ISO]';
 
 export async function main(argv = process.argv.slice(2), { out = process.stdout, err = process.stderr } = {}) {
   const [command, ...rest] = argv;
   const flags = parseFlags(rest);
   const kookrDir = resolveKookrDir({ dir: flags.dir, port: flags.port });
   switch (command) {
-    case 'write':
-      writeRestartIntent({
+    case 'write': {
+      const record = writeRestartIntent({
         kookrDir,
         reason: flags.reason,
         initiator: flags.initiator,
         pid: flags.pid,
+        staleAfterMs: flags.staleAfterMs,
       });
-      out.write(`${restartIntentPath(kookrDir)}\n`);
+      // Emit the marker's startedAt so the caller (prod-restart.sh) can pass it
+      // back to `clear --expect-started-at` for an ownership-checked delete.
+      out.write(`${record.startedAt}\n`);
       return 0;
+    }
     case 'clear':
-      clearRestartIntent(kookrDir);
+      clearRestartIntent(kookrDir, { expectStartedAt: flags.expectStartedAt });
       return 0;
     case 'show':
       out.write(`${JSON.stringify(readRestartIntent(kookrDir))}\n`);

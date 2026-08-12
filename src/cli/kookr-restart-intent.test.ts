@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   RESTART_INTENT_SCHEMA_VERSION,
   RESTART_INTENT_STALE_MS,
+  RESTART_INTENT_EXPIRY_MS,
   resolveKookrDir,
   restartIntentPath,
   writeRestartIntent,
@@ -18,6 +19,7 @@ import {
   formatAge,
   describeRestartIntent,
   describeUnreachableCause,
+  restartIntentJson,
   readUnreachableCause,
   firstRestartIntentAcrossPorts,
   main,
@@ -93,6 +95,29 @@ describe('write/read/clear roundtrip', () => {
     expect(() => clearRestartIntent(dir)).not.toThrow();
     expect(readRestartIntent(dir)).toBeNull();
   });
+
+  it('persists and reads back the staleAfterMs deadline', async () => {
+    const dir = await makeDir();
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', staleAfterMs: 1_800_000 });
+    expect(readRestartIntent(dir)?.staleAfterMs).toBe(1_800_000);
+  });
+});
+
+describe('ownership-checked clear', () => {
+  it('only clears when expectStartedAt matches the on-disk marker', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started });
+    const startedAt = new Date(started).toISOString();
+
+    // Mismatch (a different restart owns the marker now) → left in place.
+    clearRestartIntent(dir, { expectStartedAt: new Date(started + 1).toISOString() });
+    expect(readRestartIntent(dir)).not.toBeNull();
+
+    // Match → removed.
+    clearRestartIntent(dir, { expectStartedAt: startedAt });
+    expect(readRestartIntent(dir)).toBeNull();
+  });
 });
 
 describe('readRestartIntent defensive parsing', () => {
@@ -131,6 +156,41 @@ describe('classifyRestartIntent', () => {
 
     const stale = classifyRestartIntent(intent, started + RESTART_INTENT_STALE_MS + 1);
     expect(stale.state).toBe('stale');
+  });
+
+  it('honours the per-marker staleAfterMs deadline over the default', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    // A generous 30-minute deploy budget: still in-progress well past the
+    // default 10-minute constant (regression guard for issue #1721 slow deploys).
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started, staleAfterMs: 1_800_000 });
+    const intent = readRestartIntent(dir);
+
+    expect(classifyRestartIntent(intent, started + RESTART_INTENT_STALE_MS + 60_000).state).toBe('in-progress');
+    expect(classifyRestartIntent(intent, started + 1_800_000 + 1).state).toBe('stale');
+  });
+
+  it('treats a marker past the absolute expiry ceiling as none (orphan)', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started });
+    const intent = readRestartIntent(dir);
+    expect(classifyRestartIntent(intent, started + RESTART_INTENT_EXPIRY_MS + 1).state).toBe('none');
+    expect(describeRestartIntent(intent, started + RESTART_INTENT_EXPIRY_MS + 1)).toBeNull();
+  });
+});
+
+describe('restartIntentJson', () => {
+  it('emits a uniform shape with nulls when no marker', () => {
+    expect(restartIntentJson(null)).toEqual({ state: 'none', ageMs: 0, reason: null, startedAt: null });
+  });
+
+  it('carries reason + startedAt for a live marker', async () => {
+    const dir = await makeDir();
+    const started = 1_700_000_000_000;
+    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started });
+    const json = restartIntentJson(readRestartIntent(dir), started + 4_000);
+    expect(json).toEqual({ state: 'in-progress', ageMs: 4_000, reason: 'prod:update', startedAt: new Date(started).toISOString() });
   });
 });
 
@@ -190,18 +250,33 @@ describe('readUnreachableCause / firstRestartIntentAcrossPorts', () => {
 });
 
 describe('main() CLI', () => {
-  it('write then clear via the CLI surface, honouring --dir', async () => {
+  it('write prints startedAt and stamps staleAfterMs; clear --expect-started-at is ownership-checked', async () => {
     const dir = await makeDir();
     const lines: string[] = [];
     const out = { write: (s: string) => lines.push(s) };
     const err = { write: () => {} };
 
-    const writeCode = await main(['write', '--dir', dir, '--reason', 'prod:update'], { out, err });
+    const writeCode = await main(
+      ['write', '--dir', dir, '--reason', 'prod:update', '--stale-after-ms', '1800000', '--pid', '4242'],
+      { out, err },
+    );
     expect(writeCode).toBe(0);
     expect(existsSync(restartIntentPath(dir))).toBe(true);
-    expect(readRestartIntent(dir)?.reason).toBe('prod:update');
+    const intent = readRestartIntent(dir);
+    expect(intent?.reason).toBe('prod:update');
+    expect(intent?.staleAfterMs).toBe(1_800_000);
+    expect(intent?.pid).toBe(4242);
+    // stdout carries the startedAt so the caller can pass it back to clear.
+    const printed = lines.join('').trim();
+    expect(printed).toBe(intent?.startedAt);
 
-    const clearCode = await main(['clear', '--dir', dir], { out, err });
+    // A non-matching startedAt must NOT delete the marker.
+    const noClear = await main(['clear', '--dir', dir, '--expect-started-at', '1999-01-01T00:00:00.000Z'], { out, err });
+    expect(noClear).toBe(0);
+    expect(existsSync(restartIntentPath(dir))).toBe(true);
+
+    // The matching startedAt clears it.
+    const clearCode = await main(['clear', '--dir', dir, '--expect-started-at', printed], { out, err });
     expect(clearCode).toBe(0);
     expect(existsSync(restartIntentPath(dir))).toBe(false);
   });
