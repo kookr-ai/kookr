@@ -148,7 +148,10 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const taskStore = new TaskStore();
   const worktreeRegistry = new WorktreeRegistry();
   const queue = new AttentionQueue({
-    taskIdFor: (agentId) => taskStore.findTaskBySession(agentId)?.id ?? null,
+    // Id-only, non-cloning lookup (issue #2413): snooze keys resolve on every
+    // AttentionQueue.peek/enqueue — the cloning findTaskBySession here cost a
+    // ~50 KB structuredClone per call on the status/capacity hot path.
+    taskIdFor: (agentId) => taskStore.findTaskIdBySession(agentId) ?? null,
   });
   const suppressionTracker = new SnoozeSuppressionTracker();
   const monitor = new Monitor(taskStore, queue, {

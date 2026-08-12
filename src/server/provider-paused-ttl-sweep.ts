@@ -355,7 +355,7 @@ export async function reclaimAgedProviderPausedTasks(
     softTtlMs,
     capacityAllowsEarlyReclaim,
   });
-  const tasks = deps.taskStore.listTasks();
+  const tasks = deps.taskStore.viewTasks();
 
   const getPauseStartedAtMs = deps.pauseStartTracker.observeAll(
     tasks,
@@ -478,7 +478,7 @@ export async function reclaimAgedProviderPausedTasks(
 
   // Recompute occupancy after reclaim so health reflects freed slots this tick.
   if (reclaimedTaskIds.length > 0) {
-    const postTasks = deps.taskStore.listTasks();
+    const postTasks = deps.taskStore.viewTasks();
     const postOccupancy = summarizeProviderPausedOccupancy(postTasks, {
       now,
       isProviderPaused: deps.isProviderPaused,

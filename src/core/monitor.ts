@@ -1096,7 +1096,7 @@ export class Monitor {
 
   private deriveLatestCompletionSignalForAgent(agentId: string, events: AgentEvent[]): LatestCompletionSignal | undefined {
     return deriveLatestCompletionSignal({
-      taskId: this.taskStore.findTaskBySession(agentId)?.id ?? agentId,
+      taskId: this.taskStore.findTaskIdBySession(agentId) ?? agentId,
       agentId,
       taskStatus: 'inProgress',
       events,

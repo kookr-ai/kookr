@@ -109,7 +109,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: () => ({ id: 'task-1' }) as never,
+        findTaskIdBySession: () => 'task-1',
       },
       now: () => Date.parse('2026-05-21T12:00:00.000Z'),
     });
@@ -145,7 +145,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: (sessionId: string) => ({ id: sessionId === 'kookr-keep' ? 'task-keep' : `task-${sessionId}` }) as never,
+        findTaskIdBySession: (sessionId: string) => (sessionId === 'kookr-keep' ? 'task-keep' : `task-${sessionId}`),
       },
       now: () => clock,
     });
@@ -180,7 +180,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: () => ({ id: 'task-1' }) as never,
+        findTaskIdBySession: () => 'task-1',
       },
       now: () => Date.parse('2026-05-21T12:00:00.000Z'),
     });
@@ -211,7 +211,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: () => ({ id: 'task-1' }) as never,
+        findTaskIdBySession: () => 'task-1',
       },
       now: () => Date.parse('2026-05-21T12:00:00.000Z'),
     });
@@ -242,7 +242,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: (sessionId: string) => ({ id: `task-${sessionId}` }) as never,
+        findTaskIdBySession: (sessionId: string) => `task-${sessionId}`,
       },
       now: () => clock,
     });
@@ -280,7 +280,7 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const ingestion = new HookIngestion({
       adapter,
       taskStore: {
-        findTaskBySession: () => ({ id: 'task-1' }) as never,
+        findTaskIdBySession: () => 'task-1',
       },
       now: () => Date.parse('2026-05-21T12:00:00.000Z'),
     });

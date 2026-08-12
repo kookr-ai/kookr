@@ -1365,12 +1365,36 @@ export class TaskStore {
 
   /** Find the task that owns a given tmux session name. O(n) scan. */
   findTaskBySession(tmuxSessionName: string): Task | undefined {
+    const task = this.viewTaskBySession(tmuxSessionName);
+    return task === undefined ? undefined : cloneTask(task);
+  }
+
+  /**
+   * Non-cloning {@link findTaskBySession} (issue #2413). Returns the live
+   * store object — read-only contract same as {@link viewTasks}. Hot paths
+   * that only *read* owner fields (attention signals, hung-task evaluation,
+   * scope checks) MUST use this or {@link findTaskIdBySession}: the cloning
+   * variant `structuredClone`s a ~50 KB task record per call, and per-tick /
+   * per-event callers were a dominant main-thread cost on high-throughput
+   * hosts (event-loop p95 ~2s → terminal stream stutter).
+   */
+  viewTaskBySession(tmuxSessionName: string): Task | undefined {
     for (const task of this.tasks.values()) {
       if (task.sessions.some((s) => s.tmuxSession === tmuxSessionName)) {
-        return cloneTask(task);
+        return task;
       }
     }
     return undefined;
+  }
+
+  /**
+   * Id-only {@link findTaskBySession} (issue #2413) — no clone, no object
+   * handed out. The cheapest owner lookup for callers that only need the task
+   * id (attention-queue snooze keys, hook ingestion attribution, monitor
+   * event attribution).
+   */
+  findTaskIdBySession(tmuxSessionName: string): string | undefined {
+    return this.viewTaskBySession(tmuxSessionName)?.id;
   }
 
   /**

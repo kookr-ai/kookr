@@ -246,7 +246,7 @@ export async function reclaimAgedHungSuspectTasks(
 
   const now = opts.now ?? new Date();
   const ttlMs = opts.ttlMs ?? DEFAULT_HUNG_SUSPECT_TTL_MS;
-  const selection = selectExpiredHungSuspectTasks(deps.taskStore.listTasks(), {
+  const selection = selectExpiredHungSuspectTasks(deps.taskStore.viewTasks(), {
     now,
     ttlMs,
     isHungSuspect: deps.isHungSuspect,

@@ -1713,11 +1713,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           // use; a second observeAll inside the sweep is idempotent.
           const prePauseNow = Date.now();
           const preGetPauseStart = deps.providerPausedStartTracker.observeAll(
-            taskStore.listTasks(),
+            taskStore.viewTasks(),
             isTaskProviderPaused,
             prePauseNow,
           );
-          const preOccupancy = summarizeProviderPausedOccupancy(taskStore.listTasks(), {
+          const preOccupancy = summarizeProviderPausedOccupancy(taskStore.viewTasks(), {
             now: new Date(prePauseNow),
             isProviderPaused: isTaskProviderPaused,
             getPauseStartedAtMs: (task) => preGetPauseStart(task),

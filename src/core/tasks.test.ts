@@ -352,6 +352,30 @@ describe('TaskStore', () => {
       expect(dropped3.size).toBe(0);
     });
 
+    test('viewTaskBySession returns the live record; findTaskIdBySession returns only the id (issue #2413)', () => {
+      const task = store.createTask('Owned work', '/cwd');
+      store.startTask(task.id);
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-owned-session',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+
+      // Non-cloning: identity with the store's own live view.
+      const viewed = store.viewTaskBySession('kookr-owned-session');
+      expect(viewed).toBe(store.viewTasks().find((t) => t.id === task.id));
+      expect(store.viewTaskBySession('kookr-unknown')).toBeUndefined();
+
+      expect(store.findTaskIdBySession('kookr-owned-session')).toBe(task.id);
+      expect(store.findTaskIdBySession('kookr-unknown')).toBeUndefined();
+
+      // The cloning variant still detaches.
+      const cloned = store.findTaskBySession('kookr-owned-session')!;
+      expect(cloned).not.toBe(viewed);
+      expect(cloned.id).toBe(task.id);
+    });
+
     test('listSessionHealthRefs is live-only by default and returns plain value objects', () => {
       const live = store.createTask('Live work', '/cwd');
       store.startTask(live.id);

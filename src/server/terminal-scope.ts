@@ -26,7 +26,7 @@ export type IsActorAllowedTerminalSession = (actor: Actor, sessionName: string) 
 /**
  * Build the terminal scope predicate. `resolveSessionProjectId` maps a terminal
  * session name to the `projectId` of its owning task (production wires
- * `taskStore.findTaskBySession(name)?.projectId`); it returns `undefined` when no
+ * `taskStore.viewTaskBySession(name)?.projectId`); it returns `undefined` when no
  * task owns the session or the task is unassigned to a project — both of which
  * are denied for a `projects`-scoped viewer.
  */

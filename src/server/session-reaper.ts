@@ -138,7 +138,7 @@ export interface SessionReaperHealthSnapshot {
 /** Build a `session id -> ownership` lookup from the current TaskStore snapshot. */
 function buildOwnershipMap(taskStore: TaskStore): Map<SessionId, SessionOwnership> {
   const map = new Map<SessionId, SessionOwnership>();
-  for (const task of taskStore.listTasks()) {
+  for (const task of taskStore.viewTasks()) {
     for (const session of task.sessions) {
       map.set(session.tmuxSession, {
         kind: 'owned',
