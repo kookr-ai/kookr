@@ -342,6 +342,37 @@ describe('kookr signal main', () => {
     expect(await readPendingSignals(spoolDir)).toHaveLength(1);
   });
 
+  it('does NOT apply the outage verdict when multiple servers are reachable (ambiguous) (#2410)', async () => {
+    const { out, err, logs, errs } = mkConsole();
+    // Both candidate ports answer /api/health with a valid shape → resolveBaseUrl
+    // returns `ambiguous` (reachable, can't pick) — NOT an outage.
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const href = typeof url === 'string' ? url : url.href;
+      if (href.endsWith('/api/health')) {
+        return new Response(JSON.stringify({ serverStartedAt: new Date().toISOString() }), { status: 200 });
+      }
+      throw new Error(`unexpected ${href}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { exit } = await runSignal({
+      argv: ['completion-ready', '--json'],
+      env: { KOOKR_TASK_ID: 't-1' }, // no BASE_URL / PORT → auto-sweep → both up → ambiguous
+      out,
+      err,
+    });
+    expect(exit).toHaveBeenCalledWith(EXIT_OK);
+    expect(errs).toEqual([]);
+    const envelope = JSON.parse(logs[0] ?? '{}') as {
+      code: string;
+      message: string;
+      details: Record<string, unknown>;
+    };
+    expect(envelope.code).toBe('SPOOLED');
+    expect(envelope.message).toContain('multiple Kookr servers reachable');
+    expect(envelope.message).not.toContain('unexpected outage');
+    expect(envelope.details.restartIntent).toBeUndefined();
+  });
+
   it('exits 0 and spools when resolveBaseUrl finds no server', async () => {
     const { out, logs } = mkConsole();
     // No KOOKR_API_BASE_URL and an unused high port → resolveBaseUrl returns none.

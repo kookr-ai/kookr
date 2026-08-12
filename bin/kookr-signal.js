@@ -407,15 +407,20 @@ async function main({
 
   // No server / ambiguous: signal is already spooled → exit 0 (not 3).
   if (resolved.kind === 'ambiguous' || resolved.kind === 'none') {
-    // Issue #2410: tell the agent WHY the daemon is unreachable — a planned
-    // redeploy (marker present) vs an unexpected outage (no marker). No explicit
-    // port was resolved here, so scan the same ports the base-URL sweep would
-    // (mirrors `kookr status`) rather than assuming 4800.
-    const found = firstRestartIntentAcrossPorts(RESTART_INTENT_PORTS, { env });
-    const intent = found?.intent ?? null;
-    const cause = describeUnreachableCause(intent);
-    const message =
-      `no Kookr server reachable; signal durably spooled for delivery on reconnect. ${cause}`;
+    // Issue #2410: the planned-vs-unexpected-outage verdict only applies to a
+    // genuine outage (`none` — no server answered on any candidate port).
+    // `ambiguous` means MULTIPLE servers answered and we couldn't pick one, so
+    // the API is reachable, not down — spool without an outage verdict. No
+    // explicit port was resolved, so scan the same ports the base-URL sweep
+    // would (mirrors `kookr status`) rather than assuming 4800.
+    const intent = resolved.kind === 'none'
+      ? (firstRestartIntentAcrossPorts(RESTART_INTENT_PORTS, { env })?.intent ?? null)
+      : null;
+    const cause = resolved.kind === 'none' ? describeUnreachableCause(intent) : null;
+    const baseMessage = resolved.kind === 'ambiguous'
+      ? 'multiple Kookr servers reachable; could not pick one — signal durably spooled for delivery on reconnect.'
+      : 'no Kookr server reachable; signal durably spooled for delivery on reconnect.';
+    const message = cause ? `${baseMessage} ${cause}` : baseMessage;
     if (args.json) {
       return exitJson({
         out,
@@ -429,12 +434,12 @@ async function main({
           signalId,
           spooled: true,
           spoolDir,
-          restartIntent: restartIntentJson(intent),
+          ...(resolved.kind === 'none' ? { restartIntent: restartIntentJson(intent) } : {}),
         },
       });
     }
     out.log(
-      `✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.\n  ${cause}`,
+      `✓ Signal spooled (${kind}) for task ${taskId} — ${resolved.kind === 'ambiguous' ? 'multiple servers reachable' : 'daemon unreachable'}; will deliver on reconnect.${cause ? `\n  ${cause}` : ''}`,
     );
     return exit(EXIT_OK);
   }
