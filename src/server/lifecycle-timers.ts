@@ -1773,6 +1773,34 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
       }
 
+      // Schedule consecutiveFailures (issue #2353): reconcile() uses raw
+      // TaskStore terminal transitions and bypasses agent-lifecycle
+      // terminateTask/completeTask, so live session-death would never advance
+      // the streak without this additive path. Terminated → cancelled (failure);
+      // completed → completed (reset). Best-effort — never block the liveness tick.
+      if (deps.scheduleService) {
+        for (const id of result.tasksCompleted) {
+          try {
+            await deps.scheduleService.recordTaskTerminalOutcome(id, 'completed');
+          } catch (err) {
+            console.warn(
+              `[liveness] schedule terminal completed notify failed for ${id}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+        for (const id of result.tasksTerminated) {
+          try {
+            await deps.scheduleService.recordTaskTerminalOutcome(id, 'cancelled');
+          } catch (err) {
+            console.warn(
+              `[liveness] schedule terminal cancelled notify failed for ${id}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      }
+
       // Clean up resources for dead sessions via centralized lifecycle
       for (const tmuxName of result.markedCompleted) {
         await cleanupSessionResources(tmuxName, lifecycleDeps);
