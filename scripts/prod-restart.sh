@@ -38,8 +38,8 @@ RESTART_SCRIPT_DIR="$(
 # Reason recorded in the planned-restart marker (issue #2410). prod-update.sh
 # overrides this to "prod:update"; a bare `pnpm prod:restart` keeps the default.
 RESTART_INTENT_REASON="${KOOKR_RESTART_INTENT_REASON:-prod:restart}"
-# startedAt of the marker we wrote, captured so clear only deletes OUR marker.
-RESTART_INTENT_STARTED_AT=""
+# Unique token of the marker we wrote, captured so clear only deletes OUR marker.
+RESTART_INTENT_TOKEN=""
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 SYSTEMD_ENV_FILE="${HOME}/.config/kookr/kookr.env"
 
@@ -110,17 +110,17 @@ RESTART_INTENT_HELPER="${RESTART_SCRIPT_DIR}/../bin/kookr-restart-intent.js"
 write_restart_intent() {
   [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  local started_at=""
+  local token=""
   # Stamp the deploy's own give-up budget so the CLI only reads "failed deploy"
   # once the restart outlives the time this deploy actually allowed itself.
   local stale_after_ms=$(( STARTUP_TIMEOUT_SECONDS * 1000 ))
-  if started_at="$(node "$RESTART_INTENT_HELPER" write \
+  if token="$(node "$RESTART_INTENT_HELPER" write \
     --dir "$KOOKR_DIR" \
     --reason "$RESTART_INTENT_REASON" \
     --initiator "$(basename "${BASH_SOURCE[0]}")" \
     --pid "$$" \
     --stale-after-ms "$stale_after_ms" 2>/dev/null)"; then
-    RESTART_INTENT_STARTED_AT="$started_at"
+    RESTART_INTENT_TOKEN="$token"
     echo "Recorded planned-restart marker (${RESTART_INTENT_REASON}) in ${KOOKR_DIR}"
   else
     echo "WARN: could not record planned-restart marker in ${KOOKR_DIR}; CLI outage messages will be generic" >&2
@@ -130,15 +130,15 @@ write_restart_intent() {
 clear_restart_intent() {
   [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
   command -v node >/dev/null 2>&1 || return 0
-  # If write failed (no startedAt captured) there is no marker of OURS to clear;
+  # If write failed (no token captured) there is no marker of OURS to clear;
   # skip entirely rather than force-remove whatever is on disk — a concurrent
   # deploy's live marker must not be erased by us.
-  [[ -n "$RESTART_INTENT_STARTED_AT" ]] || return 0
-  # Ownership-checked: only delete the marker we wrote, so a concurrent restart's
-  # in-flight marker is never erased out from under it.
+  [[ -n "$RESTART_INTENT_TOKEN" ]] || return 0
+  # Ownership-checked: only delete the marker whose unique token we wrote, so a
+  # concurrent restart's in-flight marker is never erased out from under it.
   if node "$RESTART_INTENT_HELPER" clear \
     --dir "$KOOKR_DIR" \
-    --expect-started-at "$RESTART_INTENT_STARTED_AT" >/dev/null 2>&1; then
+    --expect-token "$RESTART_INTENT_TOKEN" >/dev/null 2>&1; then
     :
   else
     echo "WARN: could not clear planned-restart marker in ${KOOKR_DIR}; a stale marker may linger" >&2

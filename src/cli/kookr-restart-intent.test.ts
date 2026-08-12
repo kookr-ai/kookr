@@ -111,19 +111,29 @@ describe('write/read/clear roundtrip', () => {
 });
 
 describe('ownership-checked clear', () => {
-  it('only clears when expectStartedAt matches the on-disk marker', async () => {
+  it('only clears when expectToken matches the on-disk marker', async () => {
     const dir = await makeDir();
-    const started = 1_700_000_000_000;
-    writeRestartIntent({ kookrDir: dir, reason: 'prod:update', now: started });
-    const startedAt = new Date(started).toISOString();
+    const written = writeRestartIntent({ kookrDir: dir, reason: 'prod:update' });
+    expect(typeof written.token).toBe('string');
+    expect(written.token.length).toBeGreaterThan(0);
 
     // Mismatch (a different restart owns the marker now) → left in place.
-    clearRestartIntent(dir, { expectStartedAt: new Date(started + 1).toISOString() });
+    clearRestartIntent(dir, { expectToken: 'some-other-token' });
     expect(readRestartIntent(dir)).not.toBeNull();
 
     // Match → removed.
-    clearRestartIntent(dir, { expectStartedAt: startedAt });
+    clearRestartIntent(dir, { expectToken: written.token });
     expect(readRestartIntent(dir)).toBeNull();
+  });
+
+  it('a same-millisecond second write gets a distinct token (collision-proof)', async () => {
+    const dir1 = await makeDir();
+    const dir2 = await makeDir();
+    const now = 1_700_000_000_000;
+    const a = writeRestartIntent({ kookrDir: dir1, reason: 'prod:update', now });
+    const b = writeRestartIntent({ kookrDir: dir2, reason: 'prod:update', now });
+    expect(a.startedAt).toBe(b.startedAt); // identical ms timestamp
+    expect(a.token).not.toBe(b.token); // but distinct ownership tokens
   });
 });
 
@@ -311,7 +321,7 @@ describe('readUnreachableCause / firstRestartIntentAcrossPorts', () => {
 });
 
 describe('main() CLI', () => {
-  it('write prints startedAt and stamps staleAfterMs; clear --expect-started-at is ownership-checked', async () => {
+  it('write prints the token and stamps staleAfterMs; clear --expect-token is ownership-checked', async () => {
     const dir = await makeDir();
     const lines: string[] = [];
     const out = { write: (s: string) => lines.push(s) };
@@ -327,17 +337,18 @@ describe('main() CLI', () => {
     expect(intent?.reason).toBe('prod:update');
     expect(intent?.staleAfterMs).toBe(1_800_000);
     expect(intent?.pid).toBe(4242);
-    // stdout carries the startedAt so the caller can pass it back to clear.
+    // stdout carries the unique token so the caller can pass it back to clear.
     const printed = lines.join('').trim();
-    expect(printed).toBe(intent?.startedAt);
+    expect(printed).toBe(intent?.token);
+    expect(printed.length).toBeGreaterThan(0);
 
-    // A non-matching startedAt must NOT delete the marker.
-    const noClear = await main(['clear', '--dir', dir, '--expect-started-at', '1999-01-01T00:00:00.000Z'], { out, err });
+    // A non-matching token must NOT delete the marker.
+    const noClear = await main(['clear', '--dir', dir, '--expect-token', 'not-the-token'], { out, err });
     expect(noClear).toBe(0);
     expect(existsSync(restartIntentPath(dir))).toBe(true);
 
-    // The matching startedAt clears it.
-    const clearCode = await main(['clear', '--dir', dir, '--expect-started-at', printed], { out, err });
+    // The matching token clears it.
+    const clearCode = await main(['clear', '--dir', dir, '--expect-token', printed], { out, err });
     expect(clearCode).toBe(0);
     expect(existsSync(restartIntentPath(dir))).toBe(false);
   });

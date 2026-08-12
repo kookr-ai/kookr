@@ -23,6 +23,7 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 export const RESTART_INTENT_SCHEMA_VERSION = 'restart-intent.v1';
 export const RESTART_INTENT_FILENAME = 'restart-intent.json';
@@ -77,11 +78,15 @@ export function restartIntentPath(kookrDir) {
   return join(kookrDir, RESTART_INTENT_FILENAME);
 }
 
-export function writeRestartIntent({ kookrDir, reason, initiator, pid, staleAfterMs, now = Date.now(), host } = {}) {
+export function writeRestartIntent({ kookrDir, reason, initiator, pid, staleAfterMs, token, now = Date.now(), host } = {}) {
   const record = {
     schemaVersion: RESTART_INTENT_SCHEMA_VERSION,
     reason: reason !== undefined && reason !== null && String(reason).trim() !== '' ? String(reason) : 'restart',
     startedAt: new Date(now).toISOString(),
+    // Collision-proof ownership token so a clear only ever removes the marker it
+    // wrote — startedAt alone is millisecond-granular and two same-ms writes
+    // could otherwise let one deploy delete another's marker (issue #2410).
+    token: typeof token === 'string' && token.trim() !== '' ? token : randomUUID(),
     initiator:
       initiator !== undefined && initiator !== null && String(initiator).trim() !== ''
         ? String(initiator)
@@ -107,16 +112,16 @@ export function writeRestartIntent({ kookrDir, reason, initiator, pid, staleAfte
 }
 
 /**
- * Remove the marker. When `expectStartedAt` is given, only remove it if the
- * on-disk marker's `startedAt` still matches — so a restart that finishes first
- * cannot delete a *different*, still-in-flight restart's marker out from under
- * it (overlapping deploys, issue #2410 operability review).
+ * Remove the marker. When `expectToken` is given, only remove it if the on-disk
+ * marker's `token` still matches — so a restart that finishes first cannot
+ * delete a *different*, still-in-flight restart's marker out from under it, even
+ * if both started in the same millisecond (overlapping deploys, issue #2410).
  */
-export function clearRestartIntent(kookrDir, { expectStartedAt } = {}) {
+export function clearRestartIntent(kookrDir, { expectToken } = {}) {
   try {
-    if (expectStartedAt !== undefined && expectStartedAt !== null && String(expectStartedAt).trim() !== '') {
+    if (expectToken !== undefined && expectToken !== null && String(expectToken).trim() !== '') {
       const current = readRestartIntent(kookrDir);
-      if (!current || current.startedAt !== String(expectStartedAt)) return;
+      if (!current || current.token !== String(expectToken)) return;
     }
     rmSync(restartIntentPath(kookrDir), { force: true });
   } catch {
@@ -152,6 +157,7 @@ export function readRestartIntent(kookrDir) {
       typeof parsed.reason === 'string' && parsed.reason.trim() !== '' ? parsed.reason : 'restart',
     startedAt: new Date(startedAtMs).toISOString(),
     startedAtMs,
+    token: typeof parsed.token === 'string' && parsed.token.trim() !== '' ? parsed.token : null,
     initiator: typeof parsed.initiator === 'string' ? parsed.initiator : null,
     pid: Number.isInteger(parsed.pid) ? parsed.pid : null,
     staleAfterMs:
@@ -290,8 +296,8 @@ function parseFlags(argv) {
       case '--stale-after-ms':
         flags.staleAfterMs = Number(argv[++i]);
         break;
-      case '--expect-started-at':
-        flags.expectStartedAt = argv[++i];
+      case '--expect-token':
+        flags.expectToken = argv[++i];
         break;
       default:
         break;
@@ -301,7 +307,7 @@ function parseFlags(argv) {
 }
 
 const USAGE =
-  'usage: kookr-restart-intent <write|clear|show> [--reason R] [--initiator I] [--port P] [--dir D] [--pid N] [--stale-after-ms MS] [--expect-started-at ISO]';
+  'usage: kookr-restart-intent <write|clear|show> [--reason R] [--initiator I] [--port P] [--dir D] [--pid N] [--stale-after-ms MS] [--expect-token TOKEN]';
 
 export async function main(argv = process.argv.slice(2), { out = process.stdout, err = process.stderr } = {}) {
   const [command, ...rest] = argv;
@@ -316,13 +322,13 @@ export async function main(argv = process.argv.slice(2), { out = process.stdout,
         pid: flags.pid,
         staleAfterMs: flags.staleAfterMs,
       });
-      // Emit the marker's startedAt so the caller (prod-restart.sh) can pass it
-      // back to `clear --expect-started-at` for an ownership-checked delete.
-      out.write(`${record.startedAt}\n`);
+      // Emit the marker's unique token so the caller (prod-restart.sh) can pass
+      // it back to `clear --expect-token` for a collision-proof ownership check.
+      out.write(`${record.token}\n`);
       return 0;
     }
     case 'clear':
-      clearRestartIntent(kookrDir, { expectStartedAt: flags.expectStartedAt });
+      clearRestartIntent(kookrDir, { expectToken: flags.expectToken });
       return 0;
     case 'show':
       out.write(`${JSON.stringify(readRestartIntent(kookrDir))}\n`);

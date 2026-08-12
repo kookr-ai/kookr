@@ -12,6 +12,7 @@ export interface RestartIntent {
   reason: string;
   startedAt: string;
   startedAtMs: number;
+  token: string | null;
   initiator: string | null;
   pid: number | null;
   staleAfterMs: number | null;
@@ -39,19 +40,21 @@ export function writeRestartIntent(options: {
   initiator?: string | null;
   pid?: number | null;
   staleAfterMs?: number | null;
+  token?: string | null;
   now?: number;
   host?: string | null;
 }): {
   schemaVersion: string;
   reason: string;
   startedAt: string;
+  token: string;
   initiator: string;
   pid: number | null;
   staleAfterMs: number | null;
   host: string | null;
 };
 
-export function clearRestartIntent(kookrDir: string, options?: { expectStartedAt?: string | null }): void;
+export function clearRestartIntent(kookrDir: string, options?: { expectToken?: string | null }): void;
 export function readRestartIntent(kookrDir: string): RestartIntent | null;
 
 export function classifyRestartIntent(
