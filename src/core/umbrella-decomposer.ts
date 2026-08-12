@@ -1183,125 +1183,133 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Waves 1–7 residual leaves
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–8 residual leaves
  * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553, #2609–#2611,
  * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS;
  * invent wave 5 #2669–#2671 eventDetected/contentStatus, late content-upgrade,
  * identityCorroboration stamp; invent wave 6 #2682–#2684 multi-source body
  * preference, total-miss→corrected brief, event_seen_no_content alert; invent
  * wave 7 #2701–#2703 mid-window host-cooling re-arm, SEC early-promote, IR-over-
- * EDGAR recapture preference) shipped and are title-exhausted. Invent wave 8
- * (queue-feeder 2026-08-12, invent-product-wave #2069) continues acquisition
- * hit-rate residual under the same umbrella: pre-arm ir_url hard-dead probe,
- * stealth remaining-window budget when free tiers are cooled, and
- * verification_reject miss-share product-metric alert. Live GitHub leaves
- * #2728–#2730. Title idempotency prevents re-emit once live leaves exist.
+ * EDGAR recapture preference; invent wave 8 #2728–#2730 pre-arm ir_url probe,
+ * stealth remaining-window budget, verification_reject miss-share alert) shipped
+ * and are title-exhausted. Invent wave 9 (queue-feeder 2026-08-12,
+ * invent-product-wave #2069) continues acquisition hit-rate residual from W33
+ * scoreboard evidence: soft-disable chronic zero-success search backends from
+ * live fan-out, early-promote issuer_feed when issuer page is access_denied /
+ * tier_blocked, and alert on configured backends with chronic zero-success
+ * share. Live GitHub leaves #2778–#2780. Title idempotency prevents re-emit
+ * once live leaves exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): pre-arm issuer ir_url HTTP health probe fails closed on 404/5xx',
+      'feat(acquisition): soft-disable chronic zero-success search backends from live fan-out',
     goal:
-      'Close a residual hit-rate hole under umbrella #1587: when an armed ticker\'s cached ' +
-      'ir_url is already 404/5xx (or hard-dead) before the publish window opens, the pipeline ' +
-      'must fail closed at pre-arm / schedule-readiness instead of burning the full armed ' +
-      'window on a known-dead issuer surface and falling through to slower fallbacks only ' +
-      'after wasted polls.',
+      'Close a residual failover hole under umbrella #1587: weekly search-backend metrics ' +
+      'show configured backends can sit at chronic zero-success (e.g. Perplexity 0/59 in W33) ' +
+      'while still being included in live webSearch fan-out. That burns latency budget on a ' +
+      'known-dead backend during armed windows and delays usable results from healthy peers ' +
+      '(Tavily/Brave). Soft-disable zero-success backends from the live fan-out until they recover.',
     acceptanceCriteria: [
-      'Pre-arm / schedule-readiness (or equivalent arm gate) performs a cheap HTTP health ' +
-        'probe of the ticker\'s configured issuer ir_url (HEAD or bounded GET) and marks the ' +
-        'issuer free-surface unhealthy when the probe returns 404/410/5xx or a hard network ' +
-        'failure — the arming path surfaces this as a degraded free-surface signal, not silent success.',
-      'Tickers whose ir_url probes healthy (2xx/3xx within timeout) are unchanged; probe ' +
-        'failures do not open durable host circuits for transient 429/403 soft blocks that ' +
-        'already have their own cooling path.',
-      'Unit/fixture tests cover: (a) 404/5xx ir_url → pre-arm degraded / not treated as ' +
-        'healthy free-surface; (b) 200 ir_url → healthy; (c) probe timeout/network error is ' +
-        'classified without crashing arm; (d) soft 403/429 does not take the hard-dead ' +
-        'fail-closed path.',
+      'Live web-search fan-out (or search-provider router) can exclude a backend whose recent ' +
+        'success share is below a documented threshold for a documented lookback (rolling window ' +
+        'or last N attempts from search-provider-outcomes / equivalent), while backends above ' +
+        'the floor still participate.',
+      'Soft-disable is temporary and self-healing: after a cooldown or a successful ' +
+        'probe/attempt, the backend is eligible again; config-doctor / status surfaces which ' +
+        'backends are currently soft-disabled with reason + sample size (no silent permanent ' +
+        'drop of a configured key).',
+      'Unit/fixture tests cover: (a) backend with chronic zero-success + n≥floor → excluded ' +
+        'from fan-out; (b) backend above threshold → included; (c) n below floor → not ' +
+        'soft-disabled (avoid flapping on tiny samples); (d) recovery path re-includes after ' +
+        'success/cooldown.',
     ],
     fileHints: [
-      'src/acquisition/',
-      'src/acquisition/tiers/issuer.js',
-      'src/acquisition/issuer-url-resolver.js',
-      'src/acquisition/schedule-readiness.js',
-      'src/scheduler-active-window-poll.js',
+      'src/search/',
+      'src/search-backend-metrics.js',
+      'src/llm-tools.js',
+      'src/acquisition/status.js',
+      'src/config-doctor.js',
     ],
     testHints: [
-      'unit: ir_url 404 → pre-arm free-surface unhealthy',
-      'unit: ir_url 200 → healthy',
-      'unit: soft 403/429 ≠ hard-dead fail-closed',
-      'unit: probe error does not crash arm',
+      'unit: zero-success share + n≥floor → excluded from fan-out',
+      'unit: healthy backend still included',
+      'unit: n below floor → no soft-disable',
+      'unit: recovery re-includes backend',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): stealth tier inherits remaining armed-window budget when free tiers are cooled',
+      'feat(acquisition): early-promote issuer_feed when issuer page is access_denied or tier_blocked',
     goal:
-      'Close a residual failover hole under umbrella #1587: when free non-SEC tiers ' +
-      '(issuer/newswire/search) are host_cooling_down or tier_blocked mid-window and only ' +
-      'stealth remains as a free-surface path, stealth must inherit the remaining armed-window ' +
-      'budget (or an explicit remaining-budget share) instead of starting with a full default ' +
-      'latency budget that can overshoot the decision window and miss content that was still available.',
+      'Close a residual hit-rate hole under umbrella #1587: W33 shows issuer page tier at 0% ' +
+      'win rate with access_denied / verification_reject and tier_blocked_all_window cooling, ' +
+      'while issuer_feed delivered 100% of source wins. When the issuer HTML surface is blocked ' +
+      'or cooling, acquisition must early-promote issuer_feed (and peer feed surfaces) before ' +
+      'burning remaining window on classic/stealth-only paths that cannot recover the report ' +
+      'as quickly.',
     acceptanceCriteria: [
-      'When readiness shows free non-SEC channels cooled/blocked and stealth is eligible for ' +
-        'an armed ticker with no usable retained content, stealth is scheduled with a ' +
-        'remaining-window-aware budget (deadline ≤ window end minus a documented decision-latency ' +
-        'floor) rather than an independent full default budget that can extend past window end.',
-      'When ≥1 free non-SEC channel is healthy, existing stealth scheduling is unchanged (no ' +
-        'premature stealth-only path that starves issuer/newswire).',
-      'Unit/fixture tests cover: (a) all free non-SEC cooled + stealth eligible + remaining ' +
-        'budget → stealth inherits remaining budget; (b) one free non-SEC healthy → no stealth ' +
-        'budget override; (c) window already past decision floor → stealth does not launch a ' +
-        'doomed full-budget run.',
+      'Mid-window (or same-poll) path: when issuer page outcome is access_denied, sticky host ' +
+        'circuit, or tier_blocked / host_cooling for the issuer host, and the ticker has a ' +
+        'configured/discoverable issuer_feed (or equivalent feed URL), the pipeline schedules ' +
+        'or elevates issuer_feed before treating free non-SEC as exhausted into stealth-only residual.',
+      'Tickers without a usable feed URL are unchanged (no fake feed promote); healthy issuer ' +
+        'page path is unchanged when not blocked.',
+      'Unit/fixture tests cover: (a) issuer access_denied + feed present → feed early-promote / ' +
+        'elevated order; (b) issuer healthy → no premature feed-only skip of page; (c) no feed ' +
+        'URL → no promote, existing failover chain; (d) tier_blocked issuer host + feed → feed ' +
+        'attempted within remaining window budget.',
     ],
     fileHints: [
       'src/acquisition/acquire.js',
+      'src/acquisition/tiers/issuer.js',
       'src/acquisition/tiers/',
       'src/acquisition/schedule-readiness.js',
       'src/scheduler-active-window-poll.js',
-      'src/stealth/',
     ],
     testHints: [
-      'unit: free tiers cooled → stealth remaining-budget inherit',
-      'unit: free tier healthy → no override',
-      'unit: past decision floor → no doomed full-budget stealth',
+      'unit: issuer access_denied + feed → early-promote feed',
+      'unit: issuer healthy → page path unchanged',
+      'unit: no feed URL → no promote',
+      'unit: tier_blocked + feed → feed within window',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(metrics): alert when verification_reject miss share exceeds configurable threshold',
+      'feat(metrics): alert when a configured search backend has chronic zero-success share',
     goal:
-      'Make verification_reject miss share loud under umbrella #1587: weekly scoreboard and ' +
-      'scorecard already count verification_reject, but operators still lack a thresholded ' +
-      'product-metric alert when that miss class dominates product watch outcomes — chronic ' +
-      'verification_reject looks like normal pre-publish noise until hit rate is already lost.',
+      'Make chronic search-backend death loud under umbrella #1587: weekly scoreboard already ' +
+      'folds per-backend success share (#2520), but operators still lack a thresholded ' +
+      'product-metric alert when a configured backend has chronic zero- or near-zero success ' +
+      'share at adequate sample size (W33: Perplexity 0% on 59 attempts). Without an alert, ' +
+      'dead keys look like normal multi-backend noise until fan-out latency and discovery ' +
+      'quality degrade.',
     acceptanceCriteria: [
-      'product-metric alerts (or a sibling pure evaluator) emit a durable verification_reject ' +
-        'miss-share alert when that cause\'s share of product watch-outcome misses is above a ' +
-        'documented threshold AND the miss sample size is above a documented floor; pure ' +
-        'host_cooling / no_source-heavy fixtures without elevated verification_reject do not trigger it.',
-      'Control-room acquisition/retrieval health (or product-metric badge strip) surfaces ' +
-        'verification_reject miss share or count with denominator when measurable, and an ' +
-        'explicit data-gap / hidden state when n is below the floor — no fabricated rate.',
-      'Unit/fixture tests cover: (a) high verification_reject share + n≥floor → alert; (b) ' +
-        'share below threshold or n below floor → no alert; (c) fixture without elevated ' +
-        'verification_reject → no false alert; (d) control-room projection shows rate+denominator ' +
-        'or gap, never a crash on missing fold.',
+      'product-metric alerts (or sibling pure evaluator) emit a durable alert when any ' +
+        'configured search backend has success share below a documented threshold AND attempt ' +
+        'count ≥ documented floor over the weekly (or rolling) window; backends with no ' +
+        'attempts stay unmeasurable (no false zero-rate alert).',
+      'Control-room acquisition/search health (or product-metric badge strip) surfaces ' +
+        'per-backend success share with denominator when measurable, and flags the alerting ' +
+        'backend(s); data-gap when outcomes log missing — no fabricated rates.',
+      'Unit/fixture tests cover: (a) backend 0% + n≥floor → alert; (b) share above threshold → ' +
+        'no alert; (c) n below floor → no alert; (d) unconfigured backend absent from alert ' +
+        'set; (e) control-room projection shows rate+denominator or gap.',
     ],
     fileHints: [
       'src/product-metric-alerts.js',
-      'src/detection-scorecard.js',
-      'src/control-room-snapshot-compose.js',
-      'src/control-room/retrieval-health-panel.js',
+      'src/search-backend-metrics.js',
       'src/acquisition/weekly-scoreboard.js',
+      'src/control-room-snapshot-compose.js',
+      'src/acquisition/status.js',
     ],
     testHints: [
-      'unit: high verification_reject share + n≥floor → alert',
-      'unit: below threshold / below floor → no alert',
-      'unit: control-room gap vs rate+denominator projection',
+      'unit: zero-success backend + n≥floor → alert',
+      'unit: healthy share → no alert',
+      'unit: n below floor → no alert',
+      'unit: control-room gap vs rate+denominator',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
