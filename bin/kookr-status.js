@@ -44,12 +44,43 @@ function apiAuthHeaders(env = process.env) {
 }
 
 async function fetchJson(url, timeoutMs = 2000) {
-  const res = await fetch(url, {
-    headers: apiAuthHeaders(),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: apiAuthHeaders(),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    // fetch() itself rejected → a connection-level failure (refused / timeout /
+    // DNS): the server never answered. Tag it so callers can distinguish this
+    // from an HTTP-status error or a malformed body, where the server WAS
+    // reached and the planned-vs-outage marker verdict must NOT be applied
+    // (issue #2410).
+    throw Object.assign(new Error(e instanceof Error ? e.message : String(e)), {
+      unreachable: true,
+      cause: e,
+    });
+  }
+  // Reached: an HTTP-status error or a bad JSON body are NOT tagged unreachable.
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   return res.json();
+}
+
+/**
+ * True only for a connection-level failure (the server never answered), by
+ * reading the `unreachable` tag fetchJson attaches — never by pattern-matching
+ * error text. An HTTP 4xx/5xx or a malformed body means the API is reachable, so
+ * this returns false and the outage verdict is not applied.
+ */
+function isUnreachableError(err) {
+  let e = err;
+  const seen = new Set();
+  while (e && typeof e === 'object' && !seen.has(e)) {
+    if (e.unreachable === true) return true;
+    seen.add(e);
+    e = e.cause;
+  }
+  return false;
 }
 
 function parsePortEnv(raw) {
@@ -66,13 +97,19 @@ async function resolvePort(env = process.env) {
   const parsed = parsePortEnv(env.KOOKR_PORT);
   if (parsed.kind === 'invalid') return { kind: 'invalid', raw: parsed.raw };
   if (parsed.kind === 'valid') return { kind: 'explicit', port: parsed.port };
+  // Track whether any probe REACHED a server (HTTP error / bad body) vs every
+  // port being connection-refused, so the 'none' path only claims an outage
+  // when the ports were genuinely unreachable (issue #2410).
+  let anyReached = false;
   for (const port of PORTS_TO_TRY) {
     try {
       await fetchJson(`http://127.0.0.1:${port}/api/health`, 500);
       return { kind: 'auto', port };
-    } catch {}
+    } catch (e) {
+      if (!isUnreachableError(e)) anyReached = true;
+    }
   }
-  return { kind: 'none' };
+  return { kind: 'none', anyReached };
 }
 
 function formatUptime(ms) {
@@ -1394,11 +1431,13 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     return exit(1);
   }
   if (resolved.kind === 'none') {
-    // Issue #2410: distinguish a planned redeploy from an unexpected outage by
-    // reading the local restart-intent marker written by prod-restart.sh.
-    const found = firstRestartIntentAcrossPorts(PORTS_TO_TRY, { env });
+    // Issue #2410: only claim a planned-vs-unexpected-outage verdict when the
+    // ports were genuinely unreachable. If a port answered with an HTTP error /
+    // bad body (resolved.anyReached), the server IS up — don't read the marker.
+    const reached = resolved.anyReached === true;
+    const found = reached ? null : firstRestartIntentAcrossPorts(PORTS_TO_TRY, { env });
     const intent = found?.intent ?? null;
-    const cause = describeUnreachableCause(intent);
+    const cause = reached ? null : describeUnreachableCause(intent);
     if (args.json) {
       return exitJson({
         out,
@@ -1406,16 +1445,16 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         exitCode: 1,
         ok: false,
         code: 'NO_SERVER',
-        message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}. ${cause}`,
+        message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.${cause ? ` ${cause}` : ''}`,
         details: {
           ports: PORTS_TO_TRY,
-          restartIntent: restartIntentJson(intent),
+          ...(reached ? {} : { restartIntent: restartIntentJson(intent) }),
         },
       });
     }
     out.error(
       `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.\n` +
-      `${cause}\n` +
+      `${cause ? `${cause}\n` : ''}` +
       `Set KOOKR_PORT if using a non-default port.`,
     );
     return exit(1);
@@ -1427,20 +1466,21 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   let agents;
   try {
     [health, agents] = await Promise.all([
-      fetchJson(`${base}/api/health`).catch((e) => { throw new Error(`/api/health: ${e.message}`); }),
-      fetchJson(`${base}/api/snapshot`).catch((e) => { throw new Error(`/api/snapshot: ${e.message}`); }),
+      // Preserve the `unreachable` tag through the label rewrap so the catch can
+      // tell a connection-level failure from an HTTP/bad-body error (issue #2410).
+      fetchJson(`${base}/api/health`).catch((e) => { throw Object.assign(new Error(`/api/health: ${e.message}`), { unreachable: isUnreachableError(e) }); }),
+      fetchJson(`${base}/api/snapshot`).catch((e) => { throw Object.assign(new Error(`/api/snapshot: ${e.message}`), { unreachable: isUnreachableError(e) }); }),
     ]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Issue #2410: the planned-vs-unexpected-outage verdict only applies when
-    // the API is actually DOWN. A wrapped `HTTP <status>` message means the
-    // server WAS reached and simply returned an error (or malformed body), so
-    // it is neither a planned restart nor a crash — do not attach the marker
-    // verdict to it. Only connection-level failures (refused / timeout / DNS)
+    // the API is actually DOWN. An HTTP-status error or a malformed body means
+    // the server WAS reached, so it is neither a planned restart nor a crash —
+    // do not attach the marker verdict. Only connection-level failures
+    // (refused / timeout / DNS), detected positively via the `unreachable` tag,
     // get enriched.
-    const serverReached = /HTTP \d{3}/.test(msg);
     const now = Date.now();
-    const cause = serverReached ? null : readUnreachableCause({ port, env, now });
+    const cause = isUnreachableError(err) ? readUnreachableCause({ port, env, now }) : null;
     const causeSuffix = cause ? ` ${cause.message}` : '';
     if (args.json) {
       return exitJson({

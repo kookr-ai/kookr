@@ -2798,6 +2798,40 @@ describe('kookr-status main (integration-style)', () => {
     expect(envelope.details.restartIntent).toBeUndefined();
   });
 
+  it('does NOT attach the outage verdict on explicit-port HTTP-200 malformed JSON (#2410)', async () => {
+    // Server answered 200 with a bad body → reached, not an outage.
+    globalThis.fetch = vi.fn(async () => new Response('not json{', { status: 200 })) as typeof fetch;
+    const deps = makeDeps({ KOOKR_PORT: '9999' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs) as {
+      code: string;
+      message: string;
+      details: Record<string, unknown>;
+    };
+    expect(deps.exits).toEqual([1]);
+    expect(envelope.code).toBe('SERVER_ERROR');
+    expect(envelope.message).not.toContain('unexpected outage');
+    expect(envelope.message).not.toContain('restarting');
+    expect(envelope.details.restartIntent).toBeUndefined();
+  });
+
+  it('auto-detect: a reachable server returning HTTP 500 is not labeled an outage (#2410)', async () => {
+    // No KOOKR_PORT → auto-detect probes /api/health; a 500 means UP, so the
+    // NO_SERVER path must not claim "unexpected outage" or emit restartIntent.
+    globalThis.fetch = vi.fn(async () => new Response('boom', { status: 500 })) as typeof fetch;
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs) as {
+      code: string;
+      message: string;
+      details: Record<string, unknown>;
+    };
+    expect(deps.exits).toEqual([1]);
+    expect(envelope.code).toBe('NO_SERVER');
+    expect(envelope.message).not.toContain('unexpected outage');
+    expect(envelope.details.restartIntent).toBeUndefined();
+  });
+
   it('prints a report on the happy path', async () => {
     const snapshotBody = [
       {
@@ -3768,9 +3802,16 @@ describe('kookr-status resolvePort', () => {
     expect(result).toEqual({ kind: 'auto', port: 4801 });
   });
 
-  it('returns none when both ports are unreachable', async () => {
+  it('returns none (no port reached) when both ports are connection-refused', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('down')) as typeof fetch;
     const result = await resolvePort({});
-    expect(result).toEqual({ kind: 'none' });
+    expect(result).toEqual({ kind: 'none', anyReached: false });
+  });
+
+  it('returns none with anyReached=true when a port answers with an HTTP error (#2410)', async () => {
+    // fetch resolves (server reached) but with 500 → not a connection failure.
+    globalThis.fetch = vi.fn(async () => new Response('boom', { status: 500 })) as typeof fetch;
+    const result = await resolvePort({});
+    expect(result).toEqual({ kind: 'none', anyReached: true });
   });
 });
