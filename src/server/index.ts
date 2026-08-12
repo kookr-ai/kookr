@@ -10,7 +10,7 @@ import {
 import type { TaskSqliteStore } from '../core/task-sqlite-store.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
-import { createCachedStaleDtachCountReader } from './stale-dtach-pressure.js';
+import { createStaleProcessSummaryCache } from './stale-dtach-pressure.js';
 import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv } from './config.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
@@ -45,11 +45,7 @@ import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
 import { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
-import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
-import {
-  scanStaleProcesses,
-  summarizeStaleProcesses,
-} from '../core/orphan-process-scanner.js';
+
 import {
   ProviderPausedOccupancyMetrics,
   ProviderPausedStartTracker,
@@ -1211,10 +1207,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // convention. Wired here (rather than constructed inline at each call site)
   // so start.ts, the boot sweep below, and the periodic liveness tick in
   // lifecycle-timers.ts all share one instance's audit trail + health counters.
-  // Issue #2081: host-wide staleProcesses.dtach.count (TTL-cached) drives the
-  // pressure-adaptive orphan age. When /proc is unavailable the reaper falls
-  // back to this sweep's live session count (see SessionReaperService.runSweep).
-  const getStaleDtachCount = createCachedStaleDtachCountReader();
+  // Issues #2081 / #2350: one shared TTL-cached /proc summary serves
+  // session-reaper pressure, resource-watchdog disabled-under-pressure, and
+  // GET /api/health `staleProcesses`. When /proc is unavailable the reaper
+  // falls back to this sweep's live session count (see SessionReaperService).
+  const staleProcessSummaryCache = createStaleProcessSummaryCache();
+  const getStaleDtachCount = () => staleProcessSummaryCache.getDtachCount();
   // Host-stale dtach reaper (issue #2356): process-table GC for masters that
   // are not live-attached and whose socket is gone, gated on soft pressure.
   // Distinct from session reaper (backend live sessions only).
@@ -1775,19 +1773,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Byte-capped tail only — never readFileSync the whole server.log under
     // pressure (issue #1553 lesson; prod logs can be multi-GB).
     readServerLogTail: () => readTrailingFileBytes(join(kookrDir, 'server.log'), 32 * 1024),
-    // Same gauge as /api/health resourceWatchdog.pressureWhileDisabled (#2039).
-    // Only consulted while the actuator is off; cadence is the watchdog interval.
-    getStaleDtachCount: () => {
-      try {
-        const procs = scanStaleProcesses({
-          listProcesses: listProcessSnapshots,
-          now: Date.now(),
-        });
-        return summarizeStaleProcesses(procs).dtach.count;
-      } catch {
-        return null;
-      }
-    },
+    // Same shared cache as /api/health staleProcesses + reaper pressure
+    // (issues #2039 / #2350). Only consulted while the actuator is off.
+    getStaleDtachCount,
     pressureWhileDisabledAlerter: {
       evaluate: (input) => {
         watchdogDisabledPressureAlerterHolder.current?.evaluate(input);
@@ -2543,6 +2531,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     firstHookMissMetrics,
     providerPausedOccupancyMetrics,
     resourceWatchdog: resourceWatchdogService,
+    staleProcessSummaryCache,
     ...(prodSmokeTick ? { prodSmokeTick } : {}),
     deliveryTrace,
     coordinatorSuppressions,
