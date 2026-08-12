@@ -7,11 +7,14 @@ import {
   buildDoctorJsonReport,
   formatDoctorReport,
   GITHUB_SCANNER_BACKOFF_WARN_MS,
+  HOST_STALE_DTACH_MISMATCH_CODE,
   isOpenPrFailsafeDominatedLastPass,
   parseHookIngestionLagDiagnosticsBody,
+  parseHostStaleDtachHealthBody,
   parseHungSuspectReclaimHealthBody,
   runDoctorCli,
   type HookIngestionLagProbeSnapshot,
+  type HostStaleDtachProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
 } from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
@@ -35,6 +38,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'ops.resource-watchdog',
   'ops.hung-reclaim',
   'hooks.ingestion-lag',
+  'ops.host-stale-dtach',
   'ops.prod-smoke-tick',
   'ops.maintenance-prune',
 ] as const;
@@ -50,10 +54,22 @@ const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
   probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
+  probeHostStaleDtach: async () => null as HostStaleDtachProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
 };
+
+function hostStaleSnap(
+  partial: Partial<HostStaleDtachProbeSnapshot> = {},
+): HostStaleDtachProbeSnapshot {
+  return {
+    dtachCount: 0,
+    lastOrphanCount: 0,
+    lastTerminalLeakCount: 0,
+    ...partial,
+  };
+}
 
 function hungReclaimSnap(
   partial: Partial<HungSuspectReclaimProbeSnapshot> = {},
@@ -146,6 +162,7 @@ describe('kookr doctor --json', () => {
       'ops.resource-watchdog',
       'ops.hung-reclaim',
       'hooks.ingestion-lag',
+      'ops.host-stale-dtach',
       'ops.prod-smoke-tick',
       'ops.maintenance-prune',
     ]));
@@ -165,6 +182,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.host-stale-dtach')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -413,6 +435,139 @@ describe('kookr doctor --json', () => {
     });
     expect(parseHookIngestionLagDiagnosticsBody({})).toBeNull();
     expect(parseHookIngestionLagDiagnosticsBody(null)).toBeNull();
+  });
+
+  it('WARNs on ops.host-stale-dtach when dtach far exceeds reaper orphans (issue #2348)', async () => {
+    const run = commandRunner(happyFixtures());
+    // Live prod pattern from the issue: dtach=23, reaper orphans+leaks=0.
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+      ...hermeticOps,
+      probeHostStaleDtach: async () => hostStaleSnap({
+        dtachCount: 23,
+        lastOrphanCount: 0,
+        lastTerminalLeakCount: 0,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'ops.host-stale-dtach');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+    });
+    expect(check?.summary).toContain(HOST_STALE_DTACH_MISMATCH_CODE);
+    expect(check?.summary).toContain('staleProcesses.dtach.count=23');
+    expect(check?.summary).toContain('sessionReaper.lastOrphanCount=0');
+    expect(check?.summary).toContain('lastTerminalLeakCount=0');
+    expect(check?.detail).toContain(`code=${HOST_STALE_DTACH_MISMATCH_CODE}`);
+    expect(check?.detail).toContain('staleProcesses.dtach.count=23');
+    expect(check?.detail).toContain('sessionReaper.lastOrphanCount=0');
+    expect(check?.recommendedAction).toContain('KOOKR_RESOURCE_WATCHDOG');
+  });
+
+  it('WARNs on ops.host-stale-dtach when hostExcess stays at soft bound with partial reaper visibility (issue #2348)', async () => {
+    const run = commandRunner(happyFixtures());
+    // dtach=25, reaper sees 5 → hostExcess=20 ≥ soft bound 20.
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHostStaleDtach: async () => hostStaleSnap({
+        dtachCount: 25,
+        lastOrphanCount: 3,
+        lastTerminalLeakCount: 2,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'ops.host-stale-dtach');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain('hostExcess=20');
+    expect(check?.summary).toContain('staleProcesses.dtach.count=25');
+    expect(check?.summary).toContain('sessionReaper.lastOrphanCount=3');
+  });
+
+  it('keeps ops.host-stale-dtach green when gauges align or probe offline (issue #2348)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const healthy = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHostStaleDtach: async () => hostStaleSnap({
+        dtachCount: 12,
+        lastOrphanCount: 4,
+        lastTerminalLeakCount: 1,
+      }),
+    });
+    expect(healthy.checks.find((c) => c.id === 'ops.host-stale-dtach')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('staleProcesses.dtach.count=12'),
+    });
+    expect(healthy.checks.find((c) => c.id === 'ops.host-stale-dtach')?.summary)
+      .toContain('sessionReaper.lastOrphanCount=4');
+
+    // High dtach but reaper sees almost all of it → hostExcess below soft bound.
+    const reaperCovers = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHostStaleDtach: async () => hostStaleSnap({
+        dtachCount: 25,
+        lastOrphanCount: 10,
+        lastTerminalLeakCount: 5,
+      }),
+    });
+    expect(reaperCovers.checks.find((c) => c.id === 'ops.host-stale-dtach')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('hostExcess=10'),
+    });
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHostStaleDtach: async () => null,
+    });
+    expect(offline.checks.find((c) => c.id === 'ops.host-stale-dtach')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('parseHostStaleDtachHealthBody extracts both gauges from health snapshot (issue #2348)', () => {
+    expect(parseHostStaleDtachHealthBody({
+      staleProcesses: {
+        dtach: { count: 23, rssBytes: 1_000_000 },
+        relayServer: { count: 0, rssBytes: 0 },
+      },
+      sessionReaper: {
+        enabled: true,
+        lastOrphanCount: 0,
+        lastTerminalLeakCount: 0,
+        totalSessionsReaped: 2,
+      },
+    })).toEqual({
+      dtachCount: 23,
+      lastOrphanCount: 0,
+      lastTerminalLeakCount: 0,
+    });
+    // Missing either block → null (no false WARN on partial payloads).
+    expect(parseHostStaleDtachHealthBody({
+      staleProcesses: { dtach: { count: 23 } },
+    })).toBeNull();
+    expect(parseHostStaleDtachHealthBody({
+      sessionReaper: { lastOrphanCount: 0, lastTerminalLeakCount: 0 },
+    })).toBeNull();
+    expect(parseHostStaleDtachHealthBody({})).toBeNull();
+    expect(parseHostStaleDtachHealthBody(null)).toBeNull();
   });
 
   it('WARNs on ops.hung-reclaim when residual + reclaimedTotal=0 + open_pr last-pass dominance (issue #2231)', async () => {
