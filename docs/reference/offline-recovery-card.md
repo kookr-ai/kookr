@@ -131,7 +131,50 @@ print("resourceWatchdog", h.get("resourceWatchdog"))
 
 Re-enable per current env docs (`docs/reference/environment-variables.md` — resource watchdog keys). Restart the prod instance after changing env: `pnpm prod:restart` from the main checkout (with changes deployed), or your systemd unit.
 
-## 5. Discord webhook smoke test
+## 5. Host-stale dtach vs session reaper (issue #2349)
+
+**Symptom.** Host dtach process count is high while the session reaper reports almost no orphans — often misread as “reaper is broken.”
+
+```bash
+curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+import json,sys
+h=json.load(sys.stdin)
+dtach=(h.get("staleProcesses") or {}).get("dtach") or {}
+reaper=h.get("sessionReaper") or {}
+host=h.get("hostStaleDtachReaper") or {}
+print("staleProcesses.dtach.count", dtach.get("count"))
+print("sessionReaper.lastOrphanCount", reaper.get("lastOrphanCount"))
+print("sessionReaper.lastTerminalLeakCount", reaper.get("lastTerminalLeakCount"))
+print("sessionReaper.totalSessionsReaped", reaper.get("totalSessionsReaped"))
+print("hostStaleDtachReaper", {k: host.get(k) for k in (
+  "enabled","lastDtachCount","lastUnderPressure",
+  "lastHostStaleDtachReaped","skippedLiveAttached","skippedUnderBound","dryRun",
+)})
+print("resourceWatchdog.enabled", (h.get("resourceWatchdog") or {}).get("enabled"))
+'
+
+# Doctor advisory (code host_stale_dtach_mismatch) when host excess ≥ soft bound
+kookr doctor --json 2>/dev/null | python3 -c '
+import json,sys
+r=json.load(sys.stdin)
+for c in r.get("checks",[]):
+  if c.get("id")=="ops.host-stale-dtach":
+    print(c.get("status"), c.get("summary")); print(c.get("recommendedAction") or "")
+'
+```
+
+**How to read the mismatch**
+
+| Observation | Meaning | Action |
+| --- | --- | --- |
+| High `staleProcesses.dtach.count`, low `sessionReaper.lastOrphanCount` + `lastTerminalLeakCount` | Host-stale class: process-table masters **outside** TaskStore / live-session inventory | **Not** a broken session reaper — #1720 only sees backend live sessions |
+| Doctor WARN `ops.host-stale-dtach` / `host_stale_dtach_mismatch` | Host excess ≥ soft bound (default 20) | Prefer `hostStaleDtachReaper` counters; enable continuous investigation via `KOOKR_RESOURCE_WATCHDOG=1` if off |
+| `hostStaleDtachReaper.lastUnderPressure` / rising `lastHostStaleDtachReaped` | Bounded host-stale reaper (#2356) is acting under soft pressure | Wait for sweeps; use dry-run only when deliberately observing |
+| High `skippedLiveAttached` | Those pids are still live-attached sessions | Do **not** kill; use task/session terminal paths |
+
+**Do not** invent kill logic from doctor, assume `sessionReaper` is broken, or reboot solely because dtach count is high with orphan gauges near zero. Full procedure: [unattended-recovery-runbook.md](./unattended-recovery-runbook.md) §6.
+
+## 6. Discord webhook smoke test
 
 If remote paging is configured, verify the webhook still works (operator offline recovery often depends on it).
 
@@ -148,7 +191,7 @@ kookr signal --help 2>/dev/null | head -40
 
 Confirm you receive the message in the ops channel. If silent: check env vars, Discord app permissions, and recent operational-alert sink logs under `~/.kookr/`.
 
-## 6. When to reboot the host
+## 7. When to reboot the host
 
 Reboot only after the card above fails to restore a **ready** engine and you still see:
 
@@ -167,7 +210,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4800/api/ready
 
 ## Related
 
-- Symptom → health field → action (SAFE MODE, disk-critical, hung residual, smoke tick, resource watchdog): [unattended-recovery-runbook.md](./unattended-recovery-runbook.md)
+- Symptom → health field → action (SAFE MODE, disk-critical, hung residual, smoke tick, resource watchdog, host-stale dtach): [unattended-recovery-runbook.md](./unattended-recovery-runbook.md)
 - Deploy / blackout probe recipe: [api-blackout-probe.md](./api-blackout-probe.md) (when present)
 - Health fields and capacity: `GET /api/health`, `GET /api/ready`
 - Resource watchdog / doctor: `kookr doctor`, env reference

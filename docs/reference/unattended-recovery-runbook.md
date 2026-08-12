@@ -37,9 +37,9 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
-| `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `hostStaleDtachReaper` + `staleProcesses.dtach` | Bounded host-stale reaper should reclaim missing-socket masters when count ≥ soft bound — [host-stale dtach](#6-host-stale-dtach-reaper) |
+| `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
-| Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §5 |
+| Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
@@ -337,17 +337,44 @@ task may replace another investigation. Details:
 
 ---
 
-## 6. Host-stale dtach reaper
+## 6. Host-stale dtach (vs TaskStore / session reaper)
 
-**Symptom.** `staleProcesses.dtach.count` is high (often ≥ soft bound 20) while
-`sessionReaper.lastOrphanCount` / `lastTerminalLeakCount` stay near zero and
-`totalSessionsReaped` does not climb. Doctor may WARN on `ops.host-stale-dtach`
-(`host_stale_dtach_mismatch`). These are process-table masters outside the
-session reaper’s live-session inventory — usually missing sockets after a hard
-kill or crashed server generation.
+**Symptom (issue #2349).** `staleProcesses.dtach.count` is high (often ≥ soft
+bound 20) while `sessionReaper.lastOrphanCount` / `lastTerminalLeakCount` stay
+near zero and `totalSessionsReaped` does not climb. Doctor may WARN on
+`ops.host-stale-dtach` (`host_stale_dtach_mismatch`).
 
-**What the reaper does (issue #2356).** A bounded periodic sweep (default every
-5 minutes, plus ~45s after boot) plans candidates with the pure
+**Do not assume the session reaper is broken.** These are process-table masters
+**outside** the session reaper’s live-session / TaskStore inventory — usually
+missing sockets after a hard kill or crashed server generation. The #1720
+session reaper only reaps backend-reported live sessions; host-stale masters are
+a different class (see also [offline-recovery-card.md](./offline-recovery-card.md)
+§5).
+
+**Diagnosis (health fields only):**
+
+```bash
+python3 - <<'PY'
+import json
+h=json.load(open("/tmp/kookr-health.json"))
+dtach=(h.get("staleProcesses") or {}).get("dtach") or {}
+reaper=h.get("sessionReaper") or {}
+print("staleProcesses.dtach.count", dtach.get("count"))
+print("sessionReaper.lastOrphanCount", reaper.get("lastOrphanCount"))
+print("sessionReaper.lastTerminalLeakCount", reaper.get("lastTerminalLeakCount"))
+print("sessionReaper.totalSessionsReaped", reaper.get("totalSessionsReaped"))
+print("hostStaleDtachReaper", h.get("hostStaleDtachReaper"))
+print("resourceWatchdog.enabled", (h.get("resourceWatchdog") or {}).get("enabled"))
+PY
+```
+
+Interpret mismatch: if `staleProcesses.dtach.count` is elevated while reaper
+orphan gauges stay ~0, treat as **host-stale class** — not session-reaper
+failure. Prefer `hostStaleDtachReaper` counters next; enable resource watchdog
+(section 5) when you want briefed auto-investigation.
+
+**What the host-stale reaper does (issue #2356).** A bounded periodic sweep
+(default every 5 minutes, plus ~45s after boot) plans candidates with the pure
 `planHostStaleDtachReap` policy:
 
 1. Never select a master whose session id is still live-attached.
@@ -359,15 +386,7 @@ kill or crashed server generation.
    pids only** — no unbounded `kill -9` of unknown processes.
 
 **Health field** (cheap last-sweep counters; never a `/proc` scan on this path):
-
-```bash
-python3 - <<'PY'
-import json
-h=json.load(open("/tmp/kookr-health.json"))
-print(json.dumps(h.get("hostStaleDtachReaper"), indent=2, default=str))
-print("staleProcesses.dtach", (h.get("staleProcesses") or {}).get("dtach"))
-PY
-```
+`hostStaleDtachReaper` on `GET /api/health`.
 
 Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
 `skippedUnderBound`, `skippedRateLimited`, `totalHostStaleDtachReaped`,
@@ -378,24 +397,30 @@ Key counters: `lastHostStaleDtachReaped`, `skippedLiveAttached`,
 | Env | Role |
 | --- | --- |
 | `KOOKR_HOST_STALE_DTACH_REAP` | Master enable (on by default; `0`/`off` disables) |
-| `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1` | Log would-reap pids without signalling |
+| `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1` | Observe would-reap decisions without signalling |
 | `KOOKR_HOST_STALE_DTACH_REAP_SOFT_BOUND` | Pressure gate (default 20) |
 | `KOOKR_HOST_STALE_DTACH_REAP_MAX_PER_SWEEP` | Rate limit (default 5) |
 | `KOOKR_HOST_STALE_DTACH_REAP_INTERVAL_MINUTES=0` | Disable the timer |
 
 **Actions (ordered):**
 
-1. Confirm the mismatch on health / `kookr doctor` (`ops.host-stale-dtach`).
-2. Prefer letting the automatic reaper clear pressure when enabled and not
-   dry-run. Check logs for `[host-stale-dtach-reaper] reaped pid=…`.
-3. If `skippedUnderBound` is high and count is just below the soft bound, wait
+1. Confirm the mismatch on health / `kookr doctor` (`ops.host-stale-dtach`)
+   using the field names above — do **not** treat flat session-reaper orphans as
+   a reaper outage.
+2. Prefer letting the automatic host-stale reaper clear pressure when enabled
+   and not dry-run. Watch `hostStaleDtachReaper.lastHostStaleDtachReaped` /
+   `totalHostStaleDtachReaped` advance across sweeps.
+3. If continuous investigation is wanted and `resourceWatchdog.enabled` is
+   false, enable `KOOKR_RESOURCE_WATCHDOG=1` and restart (section 5) — that path
+   briefs an investigation task; it does not replace the host-stale reaper.
+4. If `skippedUnderBound` is high and count is just below the soft bound, wait
    for more accumulation or lower soft bound only with intent.
-4. If `skippedLiveAttached` is high, do **not** kill those pids — they are still
+5. If `skippedLiveAttached` is high, do **not** kill those pids — they are still
    backend live sessions; use the session reaper / task terminal path instead.
-5. For a safe observation pass before kills: set
-   `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1`, restart, read
-   `hostStaleDtachReaper.lastHostStaleDtachReaped` + dry-run log lines, then
-   clear dry-run.
+6. For a safe observation pass before kills: set
+   `KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1`, restart, re-read
+   `hostStaleDtachReaper` (`dryRun`, `lastHostStaleDtachReaped`, skip counters),
+   then clear dry-run.
 
 This reaper is **not** a substitute for enabling the resource watchdog (section
 5) when you want briefed investigation tasks — it only reclaims host-stale
@@ -407,14 +432,15 @@ dtach masters under the documented selection policy.
 
 | Doc | Use when |
 | --- | --- |
-| [offline-recovery-card.md](./offline-recovery-card.md) | Brief SSH return: ready, disk free, hung residual, Discord smoke, reboot |
+| [offline-recovery-card.md](./offline-recovery-card.md) | Brief SSH return: ready, disk free, hung residual, host-stale dtach, Discord smoke, reboot |
 | [backpressure.md](./backpressure.md) | 429/503 admission codes, disk-critical semantics |
 | [data-directory.md](./data-directory.md) | `ops-status.json`, layout under `~/.kookr` |
-| [environment-variables.md](./environment-variables.md) | Watchdog, smoke tick, admission floors |
+| [environment-variables.md](./environment-variables.md) | Watchdog, host-stale reaper, smoke tick, admission floors |
 | [low-downtime-redeploy.md](../runbooks/low-downtime-redeploy.md) | Redeploy + hungSuspect TTL across restarts |
 | [api.md](./api.md) | Full `/api/health` / `/api/ready` contract |
 
 No webhook URLs, tokens, or private paths belong in this runbook. Keep edits
 tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hungSuspectTtlReclaim`, `prodSmokeTick`, `resourceWatchdog`,
-`hostStaleDtachReaper`, `staleProcesses`, `data_directory_disk_critical`).
+`hostStaleDtachReaper`, `staleProcesses`, `sessionReaper`,
+`data_directory_disk_critical`).
