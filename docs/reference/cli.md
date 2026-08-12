@@ -1074,6 +1074,47 @@ successful restart does **not** require `kookr resume`. See
 [Redeploy resilience](#redeploy-resilience) and the
 [low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md).
 
+## `kookr migrate`
+
+Continue **interrupted** tasks under a **different** agent — e.g. move stalled
+Grok Build tasks to Claude Code when a provider's weekly quota is exhausted. A
+thin HTTP client against the running server's `/api/tasks/migratable` +
+`/api/tasks/migrate` routes.
+
+```bash
+kookr migrate --to <agent> --all [--from <agent>] [OPTIONS]   # batch
+kookr migrate --to <agent> <taskId...> [OPTIONS]              # explicit ids
+```
+
+Migration creates a **linked continuation task** under the target agent (in the
+interrupted task's checkout) rather than forking the original — the source task
+keeps its own agent and is linked to its successor, so cost/outcome ledgers stay
+truthful. Cross-vendor conversation state is not portable, so the continuation
+gets a reconstructed brief (the task's intent + progress digest + current
+working-tree state), not a conversation transplant.
+
+| Flag | Meaning |
+|---|---|
+| `--to <agent>` | Target agent: `claude-code`, `codex-cli`, `grok-build` (required) |
+| `--from <agent>` | Source-agent filter (only meaningful with `--all`) |
+| `--all` | Migrate every migratable task (optionally filtered by `--from`) |
+| `--include-cancelled` | Also consider user-cancelled tasks (batch scope; naming an id already opts it in) |
+| `--set-default` | On success, set `<agent>` as the server's default agent for new launches |
+| `--only-isolated` | Only tasks whose checkout is a dedicated worktree (not a shared checkout) |
+| `--effort <level>` | Reasoning effort for the continuation task (re-validated against the target agent) |
+| `--dry-run` | Print the plan and exit without launching |
+| `--yes`, `-y` | Skip the confirmation prompt |
+
+Exit codes: `0` migrated/queued (or dry-run found candidates), `1` declined at
+the prompt, `2` bad flags, `3` no server found, `4` server error, `5` every
+candidate blocked.
+
+```bash
+# Move all interrupted Grok tasks to Claude Code and make Claude the new default
+kookr migrate --to claude-code --from grok-build --all --set-default --dry-run
+kookr migrate --to claude-code --from grok-build --all --set-default --yes
+```
+
 ## Redeploy resilience
 
 How CLI and related client surfaces behave across an intentional production

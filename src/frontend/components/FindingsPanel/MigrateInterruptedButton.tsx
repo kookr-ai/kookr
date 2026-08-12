@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AVAILABLE_AGENT_TYPES, type AgentType } from '../../../shared/protocol.js';
+import { type AgentType } from '../../../shared/protocol.js';
 import { useKookrStore } from '../../store/useStore.js';
 import { ConfirmDialog } from '../ConfirmDialog.js';
 import { AgentTypeSelector, type AgentTypeSelectorValue } from '../AgentTypeSelector.js';
@@ -133,7 +133,7 @@ export function MigrateInterruptedButton() {
             <span>Only from</span>
             <select value={fromAgent} onChange={(e) => setFromAgent(e.target.value as AgentType | '')}>
               <option value="">Any agent</option>
-              {AVAILABLE_AGENT_TYPES.map((a) => (
+              {availableAgentTypes.map((a) => (
                 <option key={a.type} value={a.type}>{a.label}</option>
               ))}
             </select>

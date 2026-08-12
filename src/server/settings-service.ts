@@ -2,11 +2,14 @@
  * Shared settings-mutation helper (RFC: rfc-cross-agent-task-migration).
  *
  * The `PUT /api/settings` route owns the canonical validate → update → audit →
- * broadcast sequence for a settings change. Cross-agent migration's "set as
- * default" toggle needs the SAME sequence (not just `settings.update()`, which
- * skips the audit trail and the snapshot broadcast). This helper factors the
- * default-agent write so both callers keep validation, the settings-mutation
- * audit, and the live snapshot broadcast.
+ * broadcast sequence for a whole-settings change. Cross-agent migration's "set
+ * as default" toggle is a server-side (non-route) caller that needs the SAME
+ * sequence for the single `defaultAgentType` field — calling `settings.update()`
+ * directly would skip the audit trail and the snapshot broadcast. This helper
+ * reproduces that sequence for the migrate path. (The `PUT /api/settings` route
+ * keeps its own inline sequence, since it validates the entire settings object,
+ * not just this field; a future refactor could route its default-agent write
+ * through here too.)
  */
 
 import type { AgentType } from '../shared/contracts/agent-types.js';

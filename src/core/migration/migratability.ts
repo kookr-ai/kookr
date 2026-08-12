@@ -73,7 +73,7 @@ export interface MigratableResult {
 }
 
 /** Statuses whose work can be continued under a new agent. */
-function isMigratableStatus(task: Task, allowCancelled: boolean): boolean {
+export function isMigratableStatus(task: Task, allowCancelled: boolean): boolean {
   switch (task.status) {
     case 'terminated':
       return true;

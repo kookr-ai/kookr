@@ -2,7 +2,7 @@ import { describe, test, expect, vi } from 'vitest';
 import { migrateTasks, resolveMigratable, type MigrateTasksDeps } from './migrate-tasks.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
-import { PendingQueueFullError } from '../launch-service.js';
+import { PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -69,8 +69,72 @@ describe('migrateTasks', () => {
     expect(launchArg.priorAgentSubstitutions).toEqual([
       { reason: 'task_migrate', from: 'grok-build', to: 'claude-code' },
     ]);
-    expect(launchArg.idempotencyKey).toBe('migrate:t1:claude-code');
+    // No deterministic idempotency key — a fixed key would let the 24h ledger
+    // replay a dead successor and falsely report `migrated` (correctness #2).
+    expect(launchArg.idempotencyKey).toBeUndefined();
     expect(launchArg.prompt).toContain('do the thing');
+  });
+
+  test('re-migrating after the prior continuation died launches fresh (not deduped)', async () => {
+    // Source already has a successor, but that successor is terminal (died).
+    const source = task({ id: 's', migratedToTaskId: 'dead' });
+    const dead = task({ id: 'dead', status: 'terminated', agentType: 'claude-code' });
+    const store = fakeStore([source, dead]);
+    const deps = baseDeps(store);
+    const res = await migrateTasks(deps, {
+      scope: { kind: 'ids', taskIds: ['s'] },
+      targetAgent: 'claude-code',
+    });
+    // alreadyMigrated is false (successor terminal) → a NEW continuation launches.
+    expect(res.results[0].outcome).toBe('migrated');
+    expect(store.links['s']).not.toBe('dead');
+    expect((deps.launchTask as ReturnType<typeof vi.fn>).mock.calls[0][0].idempotencyKey).toBeUndefined();
+  });
+
+  test('a LIVE successor blocks re-migration (already_migrated)', async () => {
+    const source = task({ id: 's', migratedToTaskId: 'live' });
+    const live = task({ id: 'live', status: 'inProgress', agentType: 'claude-code' });
+    const store = fakeStore([source, live]);
+    const res = await migrateTasks(baseDeps(store), {
+      scope: { kind: 'ids', taskIds: ['s'] },
+      targetAgent: 'claude-code',
+    });
+    expect(res.results[0]).toMatchObject({ outcome: 'blocked', reason: 'already_migrated' });
+  });
+
+  test('a queued continuation reports outcome "queued"', async () => {
+    const store = fakeStore([task()]);
+    const deps = baseDeps(store, {
+      launchTask: vi.fn(async () => ({ task: { id: 'q1' }, queued: true })) as unknown as MigrateTasksDeps['launchTask'],
+    });
+    const res = await migrateTasks(deps, { scope: { kind: 'ids', taskIds: ['t1'] }, targetAgent: 'claude-code' });
+    expect(res.results[0]).toMatchObject({ outcome: 'queued', newTaskId: 'q1' });
+  });
+
+  test('spawn_burst and launch_failed map to bounded blocked outcomes', async () => {
+    const store = fakeStore([task()]);
+    const burst = baseDeps(store, {
+      launchTask: vi.fn(async () => { throw new SpawnBurstLimitError(5); }) as unknown as MigrateTasksDeps['launchTask'],
+    });
+    expect((await migrateTasks(burst, { scope: { kind: 'ids', taskIds: ['t1'] }, targetAgent: 'claude-code' })).results[0]).toMatchObject({ outcome: 'blocked', reason: 'spawn_burst' });
+    const failed = baseDeps(store, {
+      launchTask: vi.fn(async () => { throw new Error('boom'); }) as unknown as MigrateTasksDeps['launchTask'],
+    });
+    expect((await migrateTasks(failed, { scope: { kind: 'ids', taskIds: ['t1'] }, targetAgent: 'claude-code' })).results[0]).toMatchObject({ outcome: 'blocked', reason: 'launch_failed' });
+  });
+
+  test('a blocked (queue_full) migrate does NOT terminate an inProgress source', async () => {
+    const src = task({ id: 'ip', status: 'inProgress' });
+    const store = fakeStore([src]);
+    const terminateTask = vi.fn(async () => {});
+    const deps = baseDeps(store, {
+      hasLiveSession: () => false,
+      terminateTask,
+      launchTask: vi.fn(async () => { throw new PendingQueueFullError(24); }) as unknown as MigrateTasksDeps['launchTask'],
+    });
+    const res = await migrateTasks(deps, { scope: { kind: 'ids', taskIds: ['ip'] }, targetAgent: 'claude-code' });
+    expect(res.results[0]).toMatchObject({ outcome: 'blocked', reason: 'queue_full' });
+    expect(terminateTask).not.toHaveBeenCalled(); // source not quiesced on a retryable failure
   });
 
   test('all + fromAgent filter migrates only that agent\'s interrupted tasks', async () => {
@@ -85,6 +149,9 @@ describe('migrateTasks', () => {
     });
     const migrated = res.results.filter((r) => r.outcome === 'migrated').map((r) => r.taskId);
     expect(migrated).toEqual(['g1']); // g2 completed→blocked, c1 filtered out
+    const byId = Object.fromEntries(res.results.map((r) => [r.taskId, r]));
+    expect(byId['g2']).toMatchObject({ outcome: 'blocked', reason: 'status_not_migratable' });
+    expect(byId['c1']).toBeUndefined(); // filtered out by fromAgent, not in results
   });
 
   test('per-worktree dedup: two tasks in one cwd → one migrates, one contended', async () => {

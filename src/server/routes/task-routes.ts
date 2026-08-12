@@ -891,7 +891,13 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (scopeObj.taskIds.length > MAX_BATCH_ABORT_TASKS) {
         return c.json({ error: `cannot migrate more than ${MAX_BATCH_ABORT_TASKS} tasks in one request` }, 400);
       }
-      scope = { kind: 'ids', taskIds: (scopeObj.taskIds as string[]).filter((id) => !isSharedTaskId(id)) };
+      const localIds = (scopeObj.taskIds as string[]).filter((id) => !isSharedTaskId(id));
+      // Re-check after dropping remote-owned SharedTask ids so an all-shared
+      // request gets a clear 400 rather than a silent empty-results 200.
+      if (localIds.length === 0) {
+        return c.json({ error: 'scope.taskIds contained only remote-owned SharedTask ids' }, 400);
+      }
+      scope = { kind: 'ids', taskIds: localIds };
     } else if (scopeObj.kind === 'all') {
       const fromAgent =
         typeof scopeObj.fromAgent === 'string' && isAgentType(scopeObj.fromAgent) ? scopeObj.fromAgent : undefined;

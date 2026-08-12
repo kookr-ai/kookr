@@ -20,6 +20,7 @@ import type { Task, TaskStore } from '../../core/tasks.js';
 import { isTerminalStatus } from '../../core/task-status.js';
 import {
   classifyMigration,
+  isMigratableStatus,
   type MigrationProbe,
   type NotMigratableReason,
 } from '../../core/migration/migratability.js';
@@ -109,9 +110,17 @@ async function defaultIsGitRepo(cwd: string): Promise<boolean> {
   return (await gitIn(cwd, 'rev-parse', '--is-inside-work-tree')) === 'true';
 }
 
-/** Advisory: the checkout is shared by other tasks or is not a dedicated worktree. */
-function computeWorktreeShared(task: Task, cwd: string, cwdCounts: Map<string, number>): boolean {
-  const sharedByOthers = (cwdCounts.get(cwd) ?? 0) > 1;
+/**
+ * Advisory: is this checkout shared / not a dedicated per-task worktree? Counts
+ * only LIVE (non-terminal) peer tasks toward "shared", excluding the candidate
+ * itself, so a dedicated worktree reused across a chain of now-completed tasks
+ * is not spuriously flagged (which would make `--only-isolated` over-exclude it).
+ * A non-worktree checkout is still treated as shared for brief honesty.
+ */
+function computeWorktreeShared(task: Task, cwd: string, liveCwdCounts: Map<string, number>): boolean {
+  const liveHere = liveCwdCounts.get(cwd) ?? 0;
+  const selfCounted = isTerminalStatus(task.status) ? 0 : 1;
+  const sharedByOthers = liveHere - selfCounted > 0;
   const dedicatedWorktree = newestSession(task)?.gitIsWorktree === true;
   return sharedByOthers || !dedicatedWorktree;
 }
@@ -129,27 +138,51 @@ interface Candidate {
 }
 
 /**
+ * Cheap, I/O-free pre-gate mirroring the non-filesystem checks of
+ * {@link classifyMigration} in the same priority order. Lets the caller reject
+ * the bulk of the store (completed/open/pending/ralph/same-agent/already-
+ * migrated/unavailable-target) WITHOUT running any git subprocess or backend
+ * liveness probe. This matters because `GET /api/tasks/migratable` runs over the
+ * whole store and the dialog refetches it on every filter change — the expensive
+ * probes must never fan out across hundreds of terminal tasks on the request
+ * path (issue #1553 "never scan on the request path").
+ */
+function cheapBlockReason(
+  task: Task,
+  ctx: { allowCancelled: boolean; targetAvailable: boolean; targetAgent: AgentType; store: TaskStore },
+): NotMigratableReason | null {
+  if (!isMigratableStatus(task, ctx.allowCancelled)) return 'status_not_migratable';
+  if (task.ralphLoop) return 'workflow_owner_unsupported';
+  if (successorIsLive(task, ctx.store)) return 'already_migrated';
+  if (ctx.targetAgent === task.agentType) return 'same_agent_use_restore';
+  if (!ctx.targetAvailable) return 'target_agent_unavailable';
+  return null;
+}
+
+/**
  * Build the migratability probe for one task/target pair (does the I/O the pure
- * classifier depends on).
+ * classifier depends on). Only called for tasks that already passed
+ * {@link cheapBlockReason}, so the git/liveness probes never run for the
+ * rejected bulk. `targetAvailable` is passed in (hoisted, computed once).
  */
 async function buildProbe(
   deps: MigrateTasksDeps,
   task: Task,
   targetAgent: AgentType,
-  cwdCounts: Map<string, number>,
+  targetAvailable: boolean,
+  liveCwdCounts: Map<string, number>,
   includeCancelled: boolean,
 ): Promise<{ probe: MigrationProbe; cwd?: string }> {
   const cwd = taskCwd(task);
   const cwdExists = deps.cwdExists ?? existsSync;
   const isGitRepo = deps.isGitRepo ?? defaultIsGitRepo;
-  const available = deps.availableAgentTypes().includes(targetAgent);
   const hasCwd = !!cwd;
   const exists = hasCwd ? cwdExists(cwd!) : false;
   const gitUsable = exists ? await isGitRepo(cwd!) : false;
-  const worktreeShared = hasCwd ? computeWorktreeShared(task, cwd!, cwdCounts) : true;
+  const worktreeShared = hasCwd ? computeWorktreeShared(task, cwd!, liveCwdCounts) : true;
   const probe: MigrationProbe = {
     targetAgent,
-    targetAvailable: available,
+    targetAvailable,
     hasCwd,
     cwdExists: exists,
     gitUsable,
@@ -162,9 +195,11 @@ async function buildProbe(
   return { probe, ...(cwd ? { cwd } : {}) };
 }
 
-function countCwds(tasks: Task[]): Map<string, number> {
+/** Count LIVE (non-terminal) tasks per cwd — the ones that could actually contend. */
+function countLiveCwds(tasks: Task[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const t of tasks) {
+    if (isTerminalStatus(t.status)) continue;
     const cwd = taskCwd(t);
     if (cwd) counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
   }
@@ -181,7 +216,10 @@ export async function resolveMigratable(
   opts: { fromAgent?: AgentType; includeCancelled?: boolean; onlyIsolated?: boolean; taskIds?: string[] } = {},
 ): Promise<{ eligible: Candidate[]; blocked: MigrateTaskResult[] }> {
   const all = deps.taskStore.getAllTasks();
-  const cwdCounts = countCwds(all);
+  const liveCwdCounts = countLiveCwds(all);
+  // Hoisted once — not recomputed per task (correctness review #1).
+  const targetAvailable = deps.availableAgentTypes().includes(targetAgent);
+  const allowCancelled = opts.includeCancelled ?? false;
   const pool = opts.taskIds
     ? opts.taskIds.map((id) => deps.taskStore.getTask(id)).filter((t): t is Task => !!t)
     : all.filter((t) => (opts.fromAgent ? t.agentType === opts.fromAgent : true));
@@ -197,7 +235,16 @@ export async function resolveMigratable(
   }
 
   for (const task of pool) {
-    const { probe, cwd } = await buildProbe(deps, task, targetAgent, cwdCounts, opts.includeCancelled ?? false);
+    // Cheap gate first: reject completed/open/pending/ralph/same-agent/etc.
+    // with zero git or liveness I/O, so the request path never fans subprocesses
+    // across the terminal-task bulk.
+    const cheap = cheapBlockReason(task, { allowCancelled, targetAvailable, targetAgent, store: deps.taskStore });
+    if (cheap) {
+      blocked.push({ taskId: task.id, outcome: 'blocked', reason: cheap });
+      continue;
+    }
+    // Survivor → now the (bounded) I/O probe is worth running.
+    const { probe, cwd } = await buildProbe(deps, task, targetAgent, targetAvailable, liveCwdCounts, allowCancelled);
     const verdict = classifyMigration(task, probe);
     if (!verdict.migratable) {
       blocked.push({ taskId: task.id, outcome: 'blocked', reason: verdict.reason, worktreeShared: verdict.worktreeShared });
@@ -236,16 +283,18 @@ async function migrateOne(
   }
   inFlight.add(task.id);
   try {
-    // Quiesce an interrupted-but-not-terminal source so no ghost session survives.
-    if (task.status === 'inProgress' && deps.terminateTask) {
-      await deps.terminateTask(task.id);
-    }
     const readWorktree = deps.readWorktree ?? readWorktreeState;
     const worktree = await readWorktree(cwd, worktreeShared);
     const brief = buildContinuationBrief({ task, targetAgent, worktree });
     const hop: AgentSubstitutionHop = { reason: 'task_migrate', from: task.agentType, to: targetAgent };
     const effectiveEffort = effort && isValidEffortForAgent(targetAgent, effort) ? effort : undefined;
 
+    // No deterministic idempotency key (correctness review #2): the migrate path
+    // deliberately allows RE-continuing a source once its prior continuation has
+    // died (`alreadyMigrated` = live-successor only). A fixed
+    // `migrate:<src>:<agent>` key would let the 24h idempotency ledger replay the
+    // dead successor and report a false `migrated`. Concurrency is covered by the
+    // in-process `inFlight` set; a live successor is covered by `alreadyMigrated`.
     const opts: LaunchOpts = {
       prompt: brief,
       cwd,
@@ -254,7 +303,6 @@ async function migrateOne(
       name: task.name ? `Continue: ${task.name}` : undefined,
       migratedFromTaskId: task.id,
       priorAgentSubstitutions: [hop],
-      idempotencyKey: `migrate:${task.id}:${targetAgent}`,
       launchSource: 'api',
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
     };
@@ -276,6 +324,14 @@ async function migrateOne(
       } else {
         return { taskId: task.id, outcome: 'blocked', reason: 'launch_failed', worktreeShared };
       }
+    }
+
+    // Quiesce an interrupted-but-not-terminal source ONLY after a continuation
+    // actually launched (correctness review #4): a transient queue_full/
+    // spawn_burst rejection must not leave the source terminated under a failed,
+    // retryable request. The classifier already guaranteed no live session.
+    if (task.status === 'inProgress' && deps.terminateTask) {
+      await deps.terminateTask(task.id);
     }
 
     // Link source → successor (source keeps its own agentType/ledgers).

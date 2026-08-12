@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
+import { gitExecEnv } from '../../core/git-helpers.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import type { TaskRouteDeps } from './shared.js';
@@ -18,14 +19,28 @@ vi.mock('../launch-service.js', async (importActual) => {
 import { launchTask } from '../launch-service.js';
 import { registerTaskRoutes } from './task-routes.js';
 
+// gitExecEnv() strips inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/…
+// (NESTED_GIT_ENV_VARS) that a git HOOK exports — otherwise `git commit` in a
+// temp dir gets redirected onto the REAL worktree during the pre-push hook's
+// test run. Identity via ENV only; global/system config nulled. Cannot touch
+// or leak into the real repo.
+const GIT_ENV = {
+  ...gitExecEnv(),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+  GIT_AUTHOR_NAME: 'test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid',
+};
+
 function tempGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'kookr-migrate-'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 't'], { cwd: dir });
+  const opts = { cwd: dir, env: GIT_ENV, stdio: 'ignore' as const };
+  execFileSync('git', ['init', '-q'], opts);
   writeFileSync(join(dir, 'f.txt'), 'hi');
-  execFileSync('git', ['add', '.'], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: dir });
+  execFileSync('git', ['add', '.'], opts);
+  execFileSync('git', ['commit', '-q', '-m', 'init'], opts);
   return dir;
 }
 

@@ -101,14 +101,15 @@ function classify(task, target) {
   return { migratable: true };
 }
 
-function gitSummary(cwd, branch) {
+function gitSummary(cwd) {
   try {
     const opts = { cwd, encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] };
-    const log = execFileSync('git', ['log', '--oneline', '-n', '8', ...(branch ? [branch] : [])], opts).trim();
+    // Only current working-tree state — the honest, attributable signal. Commit
+    // history is deliberately NOT read: on a shared checkout it is the branch's
+    // history, not this task's work (consensus-attack fix).
     const stat = execFileSync('git', ['diff', '--stat', '--no-color'], opts).trim();
     const status = execFileSync('git', ['status', '--porcelain'], opts).trim();
     return {
-      recentCommits: log ? log.split('\n') : [],
       dirtyFiles: status ? status.split('\n').length : 0,
       diffStatTail: stat ? stat.split('\n').slice(-1)[0] : '(clean)',
     };
@@ -195,7 +196,7 @@ function main() {
     if (!hit) console.log(`\n(no migratable task id starts with ${args.showBrief})`);
     else {
       const cwd = hit.task.cwd || newestSession(hit.task)?.cwd;
-      const git = args.git ? gitSummary(cwd, newestSession(hit.task)?.gitBranch) : null;
+      const git = args.git ? gitSummary(cwd) : null;
       console.log(`\n## Reconstructed continuation brief for ${hit.task.id?.slice(0, 8)}\n`);
       console.log('```');
       console.log(buildBrief(hit.task, args.to, git));

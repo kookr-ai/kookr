@@ -400,13 +400,22 @@ features agree instead of duplicating the check.
   `migratedToTaskId`.
 - `src/core/tasks.ts` — set/read lineage links; `createTask` accepts the lineage
   + `migratedFromAgentType`.
-- `src/server/use-cases/task-lifecycle-commands.ts` — `migrateTask` +
-  `migrateTasks` (batch) next to `batchAbortTasks`.
-- `src/server/settings-service.ts` (or extract from `settings-routes.ts`) —
-  shared `applyDefaultAgentUpdate` (validate + persist + audit + broadcast).
+- `src/server/use-cases/migrate-tasks.ts` — `migrateTasks` (batch) +
+  `resolveMigratable` + per-task `migrateOne`. **As implemented** this landed as
+  a focused new use-case module rather than methods inside
+  `task-lifecycle-commands.ts` (the batch/scope-resolution + probe surface was
+  cleaner standalone; it still avoids a god-service and reuses the launch path).
+- `src/server/settings-service.ts` — shared `applyDefaultAgentUpdate`
+  (validate + persist + audit + broadcast). **As implemented** this is a new
+  helper the migrate path calls; the `PUT /api/settings` route keeps its own
+  inline sequence (it validates the whole settings object), so the route was not
+  refactored in this PR.
 - `src/server/routes/task-routes.ts` — `POST /api/tasks/migrate`,
-  `GET /api/tasks/migratable`.
-- `bin/kookr.js` + `src/cli/kookr-migrate.ts` — CLI command.
+  `GET /api/tasks/migratable` (the GET is registered before `/api/tasks/:id` to
+  avoid param shadowing).
+- `bin/kookr.js` + `bin/kookr-migrate.js` — CLI command. **As implemented** the
+  CLI is a plain-JS `bin/` module (matching sibling `bin/kookr-spawn.js` /
+  `bin/kookr-drain.js` that share its dispatch), not `src/cli/kookr-migrate.ts`.
 - `src/frontend/components/FindingsPanel.tsx` — Migrate dialog + button.
 - `src/frontend/components/DetailPanel.tsx` — per-task "Migrate to…".
 - `docs/architecture.md`, `docs/features.md` — document migration.
