@@ -582,12 +582,35 @@ export interface LaunchDependenciesStatus {
   dependencies: LaunchDependencyStatusRow[];
 }
 
+/** Decision-bucket counts from `GET /api/health.lessonYield` (lesson-yield.v2). */
+export interface LessonYieldBucketCounts {
+  wroteLesson: number;
+  explicitSkip: number;
+  searchOnly: number;
+  noKbActivity: number;
+}
+
+/**
+ * Slim projection of `GET /api/health.lessonYield` for the Diagnostics card
+ * (issue #2395). Mirrors the always-on `kookr status` gauge (issue #2305) —
+ * yield rate, decided/completed denominator, and decision buckets — without
+ * the heavy `byCompletionPath` tree.
+ */
+export interface LessonYieldStatus {
+  windowDays: number;
+  yieldRate: number;
+  decided: number;
+  completedInWindow: number;
+  buckets: LessonYieldBucketCounts;
+}
+
 export interface OpsHealthPayload {
   prodSmokeTick?: ProdSmokeTickStatus | null;
   resourceWatchdog?: ResourceWatchdogStatus | null;
   capacityResidual?: CapacityResidualStatus | null;
   pipelineStarvation?: PipelineStarvationStatus | null;
   launchDependencies?: LaunchDependenciesStatus | null;
+  lessonYield?: LessonYieldStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -603,9 +626,11 @@ export interface SystemStatusSlice {
   pipelineStarvation: PipelineStarvationStatus | null;
   /** Launch-dependency degradation from `/api/health.launchDependencies` (issue #2364). */
   launchDependencies: LaunchDependenciesStatus | null;
+  /** Lesson-authoring yield projection from `/api/health.lessonYield` (issue #2395). */
+  lessonYield: LessonYieldStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / lesson-yield projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

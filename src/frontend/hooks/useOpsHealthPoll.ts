@@ -4,6 +4,7 @@ import type {
   CapacityResidualStatus,
   LaunchDependenciesStatus,
   LaunchDependencyStatusRow,
+  LessonYieldStatus,
   PipelineStarvationRepoStatus,
   PipelineStarvationStatus,
   ProdSmokeTickStatus,
@@ -182,12 +183,67 @@ export function parsePipelineStarvation(value: unknown): PipelineStarvationStatu
   return { schemaVersion: 'pipeline-starvation.v1', repos };
 }
 
+function nonNegIntFloor(value: unknown): number {
+  const num = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.floor(num);
+}
+
+/**
+ * Parse `GET /api/health.lessonYield` for the Diagnostics card (issue #2395).
+ * Guards on schemaVersion (`lesson-yield.v2`) and requires numeric decided +
+ * completedInWindow (the yield denominator). Buckets default to zero; a missing
+ * `yieldRate` is recomputed from the documented `decided / completedInWindow`
+ * definition. Drops the heavy `byCompletionPath` tree — parity with the compact
+ * `kookr status` gauge (issue #2305).
+ */
+export function parseLessonYield(value: unknown): LessonYieldStatus | null {
+  const rec = asRecord(value);
+  if (!rec || rec.schemaVersion !== 'lesson-yield.v2') return null;
+
+  const decidedRaw = rec.decided;
+  if (typeof decidedRaw !== 'number' || !Number.isFinite(decidedRaw) || decidedRaw < 0) {
+    return null;
+  }
+  const completedRaw = rec.completedInWindow;
+  if (typeof completedRaw !== 'number' || !Number.isFinite(completedRaw) || completedRaw < 0) {
+    return null;
+  }
+  const decided = Math.floor(decidedRaw);
+  const completedInWindow = Math.floor(completedRaw);
+
+  const yieldRaw = rec.yieldRate;
+  const yieldRate =
+    typeof yieldRaw === 'number' && Number.isFinite(yieldRaw) && yieldRaw >= 0
+      ? yieldRaw
+      : completedInWindow === 0
+        ? 0
+        : decided / completedInWindow;
+
+  const windowRaw = rec.windowDays;
+  const windowDays =
+    typeof windowRaw === 'number' && Number.isFinite(windowRaw) && windowRaw > 0
+      ? Math.floor(windowRaw)
+      : 1;
+
+  const bucketsRec = asRecord(rec.buckets);
+  const buckets = {
+    wroteLesson: nonNegIntFloor(bucketsRec?.wroteLesson),
+    explicitSkip: nonNegIntFloor(bucketsRec?.explicitSkip),
+    searchOnly: nonNegIntFloor(bucketsRec?.searchOnly),
+    noKbActivity: nonNegIntFloor(bucketsRec?.noKbActivity),
+  };
+
+  return { windowDays, yieldRate, decided, completedInWindow, buckets };
+}
+
 /**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
  * enablement, capacity FAA residual, pipeline-starvation drought state, and
- * launch-dependency degradation, and push the slim projections into the store
- * for status-bar pills and the Diagnostics panel (issues #2037, #2082, #2259,
- * #2364). Soft-fails on network/parse errors so the dashboard stays up.
+ * launch-dependency degradation, and lesson-authoring yield, and push the slim
+ * projections into the store for status-bar pills and the Diagnostics panel
+ * (issues #2037, #2082, #2259, #2364, #2395). Soft-fails on network/parse errors
+ * so the dashboard stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
   const handleOpsHealth = useKookrStore((s) => s.handleOpsHealth);
@@ -210,6 +266,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           capacityResidual: parseCapacityResidual(rec.capacity),
           pipelineStarvation: parsePipelineStarvation(rec.pipelineStarvation),
           launchDependencies: parseLaunchDependencies(rec.launchDependencies),
+          lessonYield: parseLessonYield(rec.lessonYield),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.

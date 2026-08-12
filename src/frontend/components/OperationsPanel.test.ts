@@ -226,6 +226,8 @@ describe('OperationsPanel', () => {
     expect(el.textContent).toContain('Review candidates');
     expect(el.textContent).toContain('Pipeline Starvation');
     expect(el.textContent).toContain('No elevated pipeline starvation.');
+    expect(el.textContent).toContain('Lesson Yield');
+    expect(el.textContent).toContain('No lesson yield data yet.');
     expect(el.textContent).toContain('No circuit breakers reported yet');
     expect(dialog?.getAttribute('role')).toBe('dialog');
     expect(dialog?.getAttribute('aria-modal')).toBe('true');

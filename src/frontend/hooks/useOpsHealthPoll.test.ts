@@ -7,6 +7,7 @@ import React from 'react';
 import {
   parseCapacityResidual,
   parseLaunchDependencies,
+  parseLessonYield,
   parsePipelineStarvation,
   useOpsHealthPoll,
 } from './useOpsHealthPoll.js';
@@ -102,6 +103,20 @@ describe('useOpsHealthPoll', () => {
           ],
           categories: [],
         },
+        lessonYield: {
+          schemaVersion: 'lesson-yield.v2',
+          windowDays: 1,
+          yieldRate: 0.75,
+          decided: 3,
+          completedInWindow: 4,
+          buckets: {
+            wroteLesson: 2,
+            explicitSkip: 1,
+            searchOnly: 0,
+            noKbActivity: 1,
+          },
+          byCompletionPath: { agent: { wroteLesson: 2 } },
+        },
       }),
     });
 
@@ -152,6 +167,20 @@ describe('useOpsHealthPoll', () => {
     });
     // Slim projection must not carry affectedTaskIds.
     expect(JSON.stringify(useKookrStore.getState().launchDependencies)).not.toContain('affectedTaskIds');
+    expect(useKookrStore.getState().lessonYield).toEqual({
+      windowDays: 1,
+      yieldRate: 0.75,
+      decided: 3,
+      completedInWindow: 4,
+      buckets: {
+        wroteLesson: 2,
+        explicitSkip: 1,
+        searchOnly: 0,
+        noKbActivity: 1,
+      },
+    });
+    // Slim projection must not carry the heavy byCompletionPath tree.
+    expect(JSON.stringify(useKookrStore.getState().lessonYield)).not.toContain('byCompletionPath');
   });
 
   test('soft-fails on network error without throwing', async () => {
@@ -170,6 +199,82 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().capacityResidual).toBeNull();
     expect(useKookrStore.getState().pipelineStarvation).toBeNull();
     expect(useKookrStore.getState().launchDependencies).toBeNull();
+    expect(useKookrStore.getState().lessonYield).toBeNull();
+  });
+});
+
+describe('parseLessonYield (issue #2395)', () => {
+  test('returns null for missing or wrong schemaVersion', () => {
+    expect(parseLessonYield(null)).toBeNull();
+    expect(parseLessonYield(undefined)).toBeNull();
+    expect(parseLessonYield('x')).toBeNull();
+    expect(parseLessonYield({ decided: 1, completedInWindow: 1 })).toBeNull();
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v1', decided: 1, completedInWindow: 1 })).toBeNull();
+  });
+
+  test('returns null when decided or completedInWindow are non-numeric', () => {
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v2', completedInWindow: 4 })).toBeNull();
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v2', decided: 3 })).toBeNull();
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v2', decided: '3', completedInWindow: 4 })).toBeNull();
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v2', decided: -1, completedInWindow: 4 })).toBeNull();
+    expect(parseLessonYield({ schemaVersion: 'lesson-yield.v2', decided: Number.NaN, completedInWindow: 4 })).toBeNull();
+  });
+
+  test('parses a full block, flooring buckets and dropping byCompletionPath', () => {
+    expect(parseLessonYield({
+      schemaVersion: 'lesson-yield.v2',
+      windowDays: 7,
+      yieldRate: 0.666,
+      decided: 3.9,
+      completedInWindow: 4.9,
+      buckets: {
+        wroteLesson: 1.7,
+        explicitSkip: 1,
+        searchOnly: -3,
+        noKbActivity: 0,
+      },
+      byCompletionPath: { agent: { wroteLesson: 2 } },
+    })).toEqual({
+      windowDays: 7,
+      yieldRate: 0.666,
+      decided: 3,
+      completedInWindow: 4,
+      buckets: {
+        wroteLesson: 1,
+        explicitSkip: 1,
+        searchOnly: 0,
+        noKbActivity: 0,
+      },
+    });
+  });
+
+  test('defaults missing buckets to zero, windowDays to 1, and recomputes yieldRate when omitted', () => {
+    expect(parseLessonYield({
+      schemaVersion: 'lesson-yield.v2',
+      decided: 3,
+      completedInWindow: 4,
+    })).toEqual({
+      windowDays: 1,
+      yieldRate: 0.75,
+      decided: 3,
+      completedInWindow: 4,
+      buckets: { wroteLesson: 0, explicitSkip: 0, searchOnly: 0, noKbActivity: 0 },
+    });
+  });
+
+  test('recomputes yieldRate as zero when the denominator is zero', () => {
+    expect(parseLessonYield({
+      schemaVersion: 'lesson-yield.v2',
+      decided: 0,
+      completedInWindow: 0,
+      yieldRate: 'bad',
+    })).toEqual({
+      windowDays: 1,
+      yieldRate: 0,
+      decided: 0,
+      completedInWindow: 0,
+      buckets: { wroteLesson: 0, explicitSkip: 0, searchOnly: 0, noKbActivity: 0 },
+    });
   });
 });
 

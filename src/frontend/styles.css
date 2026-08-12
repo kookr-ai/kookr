@@ -4019,6 +4019,7 @@ button.section-header.detection-stats-header:focus-visible {
 .operations-panel-body .live-calibration-section,
 .operations-panel-body .finding-evidence-section,
 .operations-panel-body .pipeline-starvation-section,
+.operations-panel-body .lesson-yield-section,
 .operations-panel-body .circuit-breaker-section {
   border-top: 0;
   border-bottom: 1px solid var(--border-dim);
@@ -9459,6 +9460,55 @@ button.project-drawer-link:focus-visible {
   gap: 8px;
   font-size: 10px;
   color: var(--text-muted);
+}
+
+/* --- Lesson Yield Panel (issue #2395) --- */
+.lesson-yield-section {
+  border-top: 1px solid var(--border-dim);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lesson-yield-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
+.lesson-yield-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.lesson-yield-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px;
+}
+.lesson-yield-section .diagnostic-muted {
+  color: var(--text-secondary);
+}
+.lesson-yield-row-main,
+.lesson-yield-buckets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.lesson-yield-metric {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
 
 /* --- Circuit Breaker Panel --- */
