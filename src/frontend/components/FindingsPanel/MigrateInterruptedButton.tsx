@@ -24,9 +24,6 @@ export function MigrateInterruptedButton() {
   const [countLoading, setCountLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Cross-agent migration needs at least two launchable agent types.
-  if (availableAgentTypes.length < 2) return null;
-
   const openDialog = (e: React.MouseEvent) => {
     e.stopPropagation();
     setTarget(availableAgentTypes[0]?.type ?? '');
@@ -107,6 +104,14 @@ export function MigrateInterruptedButton() {
       setOpen(false);
     }
   }
+
+  // Cross-agent migration needs at least two launchable agent types. This gate
+  // MUST come after every hook above (Rules of Hooks): an early return placed
+  // between useState and useEffect changes the hook count when
+  // availableAgentTypes updates over the websocket (empty → populated), which
+  // crashes the whole panel with React error #310. The useEffect is a safe
+  // no-op while the dialog is closed, so always calling it costs nothing.
+  if (availableAgentTypes.length < 2) return null;
 
   return (
     <>

@@ -67,6 +67,33 @@ describe('FindingsPanel — batch migrate (RFC: rfc-cross-agent-task-migration)'
     expect(queryButtonByText('Migrate interrupted…')).toBeUndefined();
   });
 
+  test('survives availableAgentTypes toggling across the <2 threshold while mounted (no hook-count crash)', () => {
+    // Regression for React error #310: the button's `if (< 2) return null` gate
+    // MUST sit after every hook. When it sat between useState and useEffect, the
+    // hook count changed as availableAgentTypes updated over the websocket
+    // (empty → populated → …), crashing the whole panel. This mounts once and
+    // re-renders across the threshold in both directions; the old code threw.
+    syncGlobalStore([
+      { type: 'claude-code', label: 'Claude Code' },
+      { type: 'grok-build', label: 'Grok Build' },
+    ]);
+    root = renderPanel(container, vi.fn());
+    expect(queryButtonByText('Migrate interrupted…')).toBeDefined();
+
+    // 2 → 1: the button and its useEffect drop out; must not throw.
+    act(() => syncGlobalStore([{ type: 'claude-code', label: 'Claude Code' }]));
+    expect(queryButtonByText('Migrate interrupted…')).toBeUndefined();
+
+    // 1 → 2: back again; must not throw and the button returns.
+    act(() =>
+      syncGlobalStore([
+        { type: 'claude-code', label: 'Claude Code' },
+        { type: 'grok-build', label: 'Grok Build' },
+      ]),
+    );
+    expect(queryButtonByText('Migrate interrupted…')).toBeDefined();
+  });
+
   test('opening the dialog fetches the migratable count, and confirming posts the batch migrate request', async () => {
     syncGlobalStore([
       { type: 'claude-code', label: 'Claude Code' },

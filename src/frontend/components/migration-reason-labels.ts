@@ -12,7 +12,7 @@ const MIGRATION_REASON_LABELS: Record<string, string> = {
   already_migrated: 'Already has an active migration',
   same_agent_use_restore: 'Same agent — use Restore instead',
   target_agent_unavailable: "Target agent isn't available right now",
-  live_session_exists: 'Task has a live session',
+  live_session_exists: 'Task is still running — stop it first, then migrate',
   missing_cwd: 'No working directory on record',
   cwd_gone: 'Working directory no longer exists',
   git_unavailable: "Working directory isn't a usable git repo",

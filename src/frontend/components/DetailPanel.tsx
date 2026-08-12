@@ -1050,11 +1050,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
               <button className="action-btn action-btn--neutral" onClick={handleRelaunch}>Relaunch</button>
             </>
           )}
-          {/* Cross-agent migration (RFC: rfc-cross-agent-task-migration): terminated,
-              cancelled, or inProgress-but-interrupted tasks — not completed, and not
-              actively running (the server rejects a live session with a clear reason). */}
+          {/* Cross-agent migration (RFC: rfc-cross-agent-task-migration): offered
+              only for terminated / cancelled tasks (a dead process). An actively
+              inProgress task almost always has a live session, which the server
+              refuses to migrate — so we don't offer the control there and avoid a
+              confusing "live session" rejection; stop the task first, then migrate.
+              inProgress-with-a-dead-session is reconciled to terminated quickly,
+              at which point the control appears, and the batch dialog covers it. */}
           {agent.taskId
-            && (agent.taskStatus === 'terminated' || agent.taskStatus === 'cancelled' || agent.taskStatus === 'inProgress') && (
+            && (agent.taskStatus === 'terminated' || agent.taskStatus === 'cancelled') && (
             <MigrateTaskControl taskId={agent.taskId} currentAgentType={agent.agentType} />
           )}
         </div>
