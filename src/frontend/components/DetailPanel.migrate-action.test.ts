@@ -98,12 +98,14 @@ describe('DetailPanel migrate action (RFC: rfc-cross-agent-task-migration)', () 
     expect(openButton).toBeInstanceOf(HTMLButtonElement);
     act(() => openButton!.click());
 
-    const goButton = Array.from(container.querySelectorAll('button'))
-      .find((b) => b.textContent === 'Go') as HTMLButtonElement | undefined;
-    expect(goButton).toBeInstanceOf(HTMLButtonElement);
+    // The control now opens a centered confirm dialog; its confirm button is
+    // labelled "Migrate" (not an inline "Go").
+    const confirmButton = Array.from(container.querySelectorAll('button'))
+      .find((b) => b.textContent === 'Migrate') as HTMLButtonElement | undefined;
+    expect(confirmButton).toBeInstanceOf(HTMLButtonElement);
 
     await act(async () => {
-      goButton!.click();
+      confirmButton!.click();
       await Promise.resolve();
       await Promise.resolve();
     });

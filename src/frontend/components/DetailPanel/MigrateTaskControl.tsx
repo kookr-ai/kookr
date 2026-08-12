@@ -1,18 +1,21 @@
 import React, { useState } from 'react';
 import type { AgentType } from '../../../shared/protocol.js';
 import { useKookrStore } from '../../store/useStore.js';
+import { ConfirmDialog } from '../ConfirmDialog.js';
 import { AgentTypeSelector, type AgentTypeSelectorValue } from '../AgentTypeSelector.js';
 import { migrateTasks } from '../../api/tasks.js';
 import { migrationReasonLabel } from '../migration-reason-labels.js';
 
 /**
- * Per-task "Migrate to…" action (RFC: rfc-cross-agent-task-migration). Shown
- * for a task whose work can plausibly be continued under a different agent —
- * terminated, cancelled, or an inProgress task whose session died (the server
- * is the authority on the live-session check; a click on an actually-running
- * task simply comes back `blocked: live_session_exists`). Picks a target agent
- * (excluding the task's own current agent — same-agent continuation is
- * Restore, not Migrate) and POSTs a single-task `scope: {kind:'ids'}` request.
+ * Per-task "Migrate to…" action (RFC: rfc-cross-agent-task-migration). Shown for
+ * a task whose work can be continued under a different agent — a terminated or
+ * cancelled task (dead process). Actively-running (inProgress) tasks are
+ * deliberately NOT offered this control by the DetailPanel, because a live
+ * session cannot be migrated (the server would reject it) — stop the task first.
+ *
+ * Opens a small CENTERED confirmation dialog (not an inline reveal), consistent
+ * with the batch "Migrate interrupted…" dialog, so the picker is a proper modal
+ * rather than a cramped popover in the panel corner.
  */
 export function MigrateTaskControl({
   taskId,
@@ -26,22 +29,17 @@ export function MigrateTaskControl({
   const [target, setTarget] = useState<AgentTypeSelectorValue>('');
   const [busy, setBusy] = useState(false);
 
+  // Same-agent continuation is Restore, not Migrate — exclude the task's own agent.
   const options = availableAgentTypes.filter((a) => a.type !== currentAgentType);
   if (options.length === 0) return null;
 
-  function openPicker(e: React.MouseEvent) {
+  function openDialog(e: React.MouseEvent) {
     e.stopPropagation();
     setTarget(options[0]?.type ?? '');
     setOpen(true);
   }
 
-  function cancel(e: React.MouseEvent) {
-    e.stopPropagation();
-    setOpen(false);
-  }
-
-  async function confirm(e: React.MouseEvent) {
-    e.stopPropagation();
+  async function confirm() {
     if (!target || busy) return;
     setBusy(true);
     try {
@@ -59,7 +57,11 @@ export function MigrateTaskControl({
           handleAlert('', `Migrate blocked: ${migrationReasonLabel(result?.reason)}`, 'error');
         } else {
           const queuedNote = result.outcome === 'queued' ? ' (queued)' : '';
-          handleAlert('', `Migrated to ${target}${result.newTaskId ? ` — ${result.newTaskId}` : ''}${queuedNote}`, 'info');
+          handleAlert(
+            '',
+            `Migrated to ${target}${result.newTaskId ? ` — ${result.newTaskId}` : ''}${queuedNote}`,
+            'info',
+          );
         }
       }
     } catch (err) {
@@ -70,28 +72,28 @@ export function MigrateTaskControl({
     }
   }
 
-  if (!open) {
-    return (
+  return (
+    <>
       <button
         type="button"
         className="action-btn action-btn--neutral"
         title="Continue this task's work under a different agent"
-        onClick={openPicker}
+        onClick={openDialog}
       >
         Migrate to…
       </button>
-    );
-  }
-
-  return (
-    <span className="detail-migrate-control" onClick={(e) => e.stopPropagation()}>
-      <AgentTypeSelector value={target} onChange={setTarget} options={options} label="Migrate to" compact />
-      <button type="button" className="action-btn action-btn--success" disabled={busy || !target} onClick={confirm}>
-        {busy ? 'Migrating…' : 'Go'}
-      </button>
-      <button type="button" className="action-btn action-btn--neutral" disabled={busy} onClick={cancel}>
-        Cancel
-      </button>
-    </span>
+      {open && (
+        <ConfirmDialog
+          title="Migrate this task"
+          message="Continue this task's work under a different agent. The original task is kept as an immutable record and a linked continuation is launched in the same checkout."
+          confirmLabel={busy ? 'Migrating…' : 'Migrate'}
+          confirmClass="btn-primary"
+          onConfirm={confirm}
+          onClose={() => setOpen(false)}
+        >
+          <AgentTypeSelector value={target} onChange={setTarget} options={options} label="Migrate to" />
+        </ConfirmDialog>
+      )}
+    </>
   );
 }
