@@ -790,9 +790,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): mid-window host-cooling expiry re-arms cooled issuer hosts for open windows',
-      'feat(acquisition): SEC/EDGAR early-promote when all free non-SEC channels are cooled or tier_blocked',
-      'feat(acquisition): already-published recapture prefers issuer IR over EDGAR when both resolve',
+      'feat(acquisition): pre-arm issuer ir_url HTTP health probe fails closed on 404/5xx',
+      'feat(acquisition): stealth tier inherits remaining armed-window budget when free tiers are cooled',
+      'feat(metrics): alert when verification_reject miss share exceeds configurable threshold',
     ]);
   });
 

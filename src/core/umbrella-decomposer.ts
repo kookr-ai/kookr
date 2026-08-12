@@ -1026,115 +1026,125 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * lucy#1587 "acquisition redundancy & failover". Waves 1–6 residual leaves
+ * lucy#1587 "acquisition redundancy & failover". Waves 1–7 residual leaves
  * (#2082–#2085, #2351–#2354, #2422–#2424, #2518–#2520, #2551–#2553, #2609–#2611,
  * #2621–#2623 quiet-hours redelivery / EDGAR-only share / newswire RSS;
  * invent wave 5 #2669–#2671 eventDetected/contentStatus, late content-upgrade,
  * identityCorroboration stamp; invent wave 6 #2682–#2684 multi-source body
- * preference, total-miss→corrected brief, event_seen_no_content alert) shipped
- * and are title-exhausted. Invent wave 7 (queue-feeder 2026-08-11/12,
- * invent-product-wave #2069) continues acquisition hit-rate residual under the
- * same umbrella: mid-window host-cooling re-arm, SEC early-promote when free
- * non-SEC channels are dead, and already-published recapture prefers issuer IR
- * over EDGAR when both resolve. Live GitHub leaves #2701–#2703.
- * Title idempotency prevents re-emit once live leaves exist.
+ * preference, total-miss→corrected brief, event_seen_no_content alert; invent
+ * wave 7 #2701–#2703 mid-window host-cooling re-arm, SEC early-promote, IR-over-
+ * EDGAR recapture preference) shipped and are title-exhausted. Invent wave 8
+ * (queue-feeder 2026-08-12, invent-product-wave #2069) continues acquisition
+ * hit-rate residual under the same umbrella: pre-arm ir_url hard-dead probe,
+ * stealth remaining-window budget when free tiers are cooled, and
+ * verification_reject miss-share product-metric alert. Live GitHub leaves
+ * #2728–#2730. Title idempotency prevents re-emit once live leaves exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): mid-window host-cooling expiry re-arms cooled issuer hosts for open windows',
+      'feat(acquisition): pre-arm issuer ir_url HTTP health probe fails closed on 404/5xx',
     goal:
-      'Close a residual hit-rate hole under umbrella #1587: when an issuer (or newswire) host ' +
-      'enters host_cooling_down early in an armed window and the cooldown expires while the ' +
-      'window is still open with no usable content, the pipeline must re-arm that host and ' +
-      'retry fetch instead of staying cooled until the next calendar window — cooled hosts ' +
-      'that recover mid-window are free acquisition capacity we currently leave idle.',
+      'Close a residual hit-rate hole under umbrella #1587: when an armed ticker\'s cached ' +
+      'ir_url is already 404/5xx (or hard-dead) before the publish window opens, the pipeline ' +
+      'must fail closed at pre-arm / schedule-readiness instead of burning the full armed ' +
+      'window on a known-dead issuer surface and falling through to slower fallbacks only ' +
+      'after wasted polls.',
     acceptanceCriteria: [
-      'Given an armed window with no usable retained content and a host whose cooling expires ' +
-        'before window end, the acquisition loop schedules at least one post-expiry retry ' +
-        'against that host (or its tier) without requiring a new arming event.',
-      'Hosts still inside their cooling window are not re-probed (no cooldown-bypass storm); ' +
-        'tickers that already have usable content do not trigger wasteful re-fetches solely ' +
-        'because cooling expired.',
-      'Unit/fixture tests cover: (a) cooling expires mid-window + still no content → retry ' +
-        'fires; (b) still-cooling → no retry; (c) content already retained → no forced ' +
-        're-fetch on cooling expiry.',
+      'Pre-arm / schedule-readiness (or equivalent arm gate) performs a cheap HTTP health ' +
+        'probe of the ticker\'s configured issuer ir_url (HEAD or bounded GET) and marks the ' +
+        'issuer free-surface unhealthy when the probe returns 404/410/5xx or a hard network ' +
+        'failure — the arming path surfaces this as a degraded free-surface signal, not silent success.',
+      'Tickers whose ir_url probes healthy (2xx/3xx within timeout) are unchanged; probe ' +
+        'failures do not open durable host circuits for transient 429/403 soft blocks that ' +
+        'already have their own cooling path.',
+      'Unit/fixture tests cover: (a) 404/5xx ir_url → pre-arm degraded / not treated as ' +
+        'healthy free-surface; (b) 200 ir_url → healthy; (c) probe timeout/network error is ' +
+        'classified without crashing arm; (d) soft 403/429 does not take the hard-dead ' +
+        'fail-closed path.',
     ],
     fileHints: [
       'src/acquisition/',
-      'src/acquisition/host-cooling.js',
+      'src/acquisition/tiers/issuer.js',
+      'src/acquisition/issuer-url-resolver.js',
+      'src/acquisition/schedule-readiness.js',
       'src/scheduler-active-window-poll.js',
-      'src/acquisition/tiers/',
     ],
     testHints: [
-      'unit: mid-window cooling expiry + no content → host re-armed/retry',
-      'unit: still cooling → no retry',
-      'unit: content already retained → no forced re-fetch',
+      'unit: ir_url 404 → pre-arm free-surface unhealthy',
+      'unit: ir_url 200 → healthy',
+      'unit: soft 403/429 ≠ hard-dead fail-closed',
+      'unit: probe error does not crash arm',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): SEC/EDGAR early-promote when all free non-SEC channels are cooled or tier_blocked',
+      'feat(acquisition): stealth tier inherits remaining armed-window budget when free tiers are cooled',
     goal:
-      'Under umbrella #1587, when every free non-SEC channel (issuer/newswire/search) is ' +
-      'host_cooling_down or tier_blocked for an armed ticker, do not burn the full remaining ' +
-      'window waiting for those channels — early-promote the SEC/EDGAR tier (or equivalent ' +
-      'last-resort path) so already-published and live filings still have a chance inside ' +
-      'the decision latency budget.',
+      'Close a residual failover hole under umbrella #1587: when free non-SEC tiers ' +
+      '(issuer/newswire/search) are host_cooling_down or tier_blocked mid-window and only ' +
+      'stealth remains as a free-surface path, stealth must inherit the remaining armed-window ' +
+      'budget (or an explicit remaining-budget share) instead of starting with a full default ' +
+      'latency budget that can overshoot the decision window and miss content that was still available.',
     acceptanceCriteria: [
-      'When readiness/runtime health shows zero healthy free non-SEC channels for an armed ' +
-        'ticker and SEC/EDGAR is available, the pipeline promotes SEC/EDGAR (or starts it ' +
-        'without waiting for the normal late-fallback delay) while the window is still open.',
-      'When ≥1 free non-SEC channel is healthy, existing race/fallback ordering is unchanged ' +
-        '(no premature EDGAR-only path that starves issuer/newswire).',
-      'Unit/fixture tests cover: (a) all free non-SEC cooled/blocked + SEC healthy → early ' +
-        'promote; (b) one free non-SEC healthy → no early promote; (c) SEC also unavailable ' +
-        '→ no crash, ordinary miss/degraded path.',
+      'When readiness shows free non-SEC channels cooled/blocked and stealth is eligible for ' +
+        'an armed ticker with no usable retained content, stealth is scheduled with a ' +
+        'remaining-window-aware budget (deadline ≤ window end minus a documented decision-latency ' +
+        'floor) rather than an independent full default budget that can extend past window end.',
+      'When ≥1 free non-SEC channel is healthy, existing stealth scheduling is unchanged (no ' +
+        'premature stealth-only path that starves issuer/newswire).',
+      'Unit/fixture tests cover: (a) all free non-SEC cooled + stealth eligible + remaining ' +
+        'budget → stealth inherits remaining budget; (b) one free non-SEC healthy → no stealth ' +
+        'budget override; (c) window already past decision floor → stealth does not launch a ' +
+        'doomed full-budget run.',
     ],
     fileHints: [
       'src/acquisition/acquire.js',
       'src/acquisition/tiers/',
       'src/acquisition/schedule-readiness.js',
       'src/scheduler-active-window-poll.js',
+      'src/stealth/',
     ],
     testHints: [
-      'unit: all non-SEC cooled + SEC ok → early promote',
-      'unit: one non-SEC healthy → no early promote',
-      'unit: SEC unavailable → clean degraded path',
+      'unit: free tiers cooled → stealth remaining-budget inherit',
+      'unit: free tier healthy → no override',
+      'unit: past decision floor → no doomed full-budget stealth',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): already-published recapture prefers issuer IR over EDGAR when both resolve',
+      'feat(metrics): alert when verification_reject miss share exceeds configurable threshold',
     goal:
-      'Raise retained-report quality under umbrella #1587 for the already-published ' +
-      'recapture path (#2518): when both an issuer IR report URL and an EDGAR filing resolve ' +
-      'for the same ticker+date identity, prefer the issuer IR body (richer tables / ' +
-      'operator-facing HTML) over EDGAR-only content so backtest and forward retained bars ' +
-      'are not locked to the thinner SEC copy when a free issuer surface is available.',
+      'Make verification_reject miss share loud under umbrella #1587: weekly scoreboard and ' +
+      'scorecard already count verification_reject, but operators still lack a thresholded ' +
+      'product-metric alert when that miss class dominates product watch outcomes — chronic ' +
+      'verification_reject looks like normal pre-publish noise until hit rate is already lost.',
     acceptanceCriteria: [
-      'On already-published / no_source recapture (or equivalent post-window content capture), ' +
-        'if issuer IR and EDGAR both return usable content for the same identity, the ' +
-        'retained/delivered body prefers issuer IR per an explicit documented preference rule.',
-      'EDGAR-only successes remain deliverable when issuer IR is missing or unusable; ' +
-        'identity conflicts do not silently merge bodies.',
-      'Unit/fixture tests cover: (a) both resolve → issuer preferred; (b) issuer missing → ' +
-        'EDGAR retained; (c) live first-hit race outside recapture path is not regressed ' +
-        'into always-issuer-only.',
+      'product-metric alerts (or a sibling pure evaluator) emit a durable verification_reject ' +
+        'miss-share alert when that cause\'s share of product watch-outcome misses is above a ' +
+        'documented threshold AND the miss sample size is above a documented floor; pure ' +
+        'host_cooling / no_source-heavy fixtures without elevated verification_reject do not trigger it.',
+      'Control-room acquisition/retrieval health (or product-metric badge strip) surfaces ' +
+        'verification_reject miss share or count with denominator when measurable, and an ' +
+        'explicit data-gap / hidden state when n is below the floor — no fabricated rate.',
+      'Unit/fixture tests cover: (a) high verification_reject share + n≥floor → alert; (b) ' +
+        'share below threshold or n below floor → no alert; (c) fixture without elevated ' +
+        'verification_reject → no false alert; (d) control-room projection shows rate+denominator ' +
+        'or gap, never a crash on missing fold.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js',
-      'src/acquisition/acquire.js',
-      'src/acquisition/tiers/issuer.js',
-      'src/acquisition/tiers/',
-      'src/earnings-source.js',
+      'src/product-metric-alerts.js',
+      'src/detection-scorecard.js',
+      'src/control-room-snapshot-compose.js',
+      'src/control-room/retrieval-health-panel.js',
+      'src/acquisition/weekly-scoreboard.js',
     ],
     testHints: [
-      'unit: issuer+EDGAR recapture → issuer preferred',
-      'unit: EDGAR-only → retained',
-      'unit: live first-hit path unchanged when not in recapture mode',
+      'unit: high verification_reject share + n≥floor → alert',
+      'unit: below threshold / below floor → no alert',
+      'unit: control-room gap vs rate+denominator projection',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
