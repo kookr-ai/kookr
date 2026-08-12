@@ -58,6 +58,24 @@ describe('parseSnapshot', () => {
     expect(snap.candidates).toHaveLength(2);
   });
 
+  it('issue #2357: preserves freeForGeneralSources from health-shaped snapshots', () => {
+    const raw = JSON.stringify({
+      capacity: { free: 0, pendingQueueDepth: 0, freeForGeneralSources: 4 },
+      candidates: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'anchor truth — SEC acceptance anchors',
+          openChildrenCount: 0,
+        },
+      ],
+    });
+    const snap = parseSnapshot(raw);
+    expect(snap.capacity.free).toBe(0);
+    expect(snap.capacity.freeForGeneralSources).toBe(4);
+    expect(snap.capacity.pendingQueueDepth).toBe(0);
+  });
+
   it('rejects malformed input', () => {
     expect(() => parseSnapshot('not json')).toThrow(QueueFeederUsageError);
     expect(() => parseSnapshot('{"capacity":{}}')).toThrow(QueueFeederUsageError);
@@ -69,6 +87,58 @@ describe('parseSnapshot', () => {
   it('rejects a null candidate element as a usage error (not a raw TypeError)', () => {
     const bad = '{"capacity":{"free":1,"pendingQueueDepth":0},"candidates":[null]}';
     expect(() => parseSnapshot(bad)).toThrow(QueueFeederUsageError);
+  });
+});
+
+describe('runQueueFeederCli plan — residual freeForGeneral (issue #2357)', () => {
+  it('triggers plan when free=0 but freeForGeneralSources meets threshold', async () => {
+    const residualSnap = JSON.stringify({
+      capacity: { free: 0, pendingQueueDepth: 0, freeForGeneralSources: 4 },
+      candidates: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'anchor truth — SEC acceptance anchors',
+          openChildrenCount: 0,
+        },
+      ],
+    });
+    const c = capture();
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--json'], {
+      ...c,
+      readInput: () => residualSnap,
+      runGh: () => '',
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    // Residual effective free should refill — not blocked by nominal free=0.
+    expect(payload.decision.triggered).toBe(true);
+    expect(payload.decision.action).not.toBe('not-triggered');
+  });
+
+  it('does not treat freeForGeneral under threshold as idle capacity', async () => {
+    const underSnap = JSON.stringify({
+      capacity: { free: 0, pendingQueueDepth: 0, freeForGeneralSources: 2 },
+      candidates: [
+        {
+          repo: 'jeanibarz/lucy',
+          number: 1588,
+          title: 'anchor truth — SEC acceptance anchors',
+          openChildrenCount: 0,
+        },
+      ],
+    });
+    const c = capture();
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--json'], {
+      ...c,
+      readInput: () => underSnap,
+      runGh: () => '',
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.triggered).toBe(false);
+    expect(payload.decision.action).toBe('not-triggered');
+    expect(payload.decision.triggerReason).toMatch(/effectiveFree=2/);
   });
 });
 

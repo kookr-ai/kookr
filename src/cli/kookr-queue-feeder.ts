@@ -291,7 +291,16 @@ export function parseSnapshot(raw: string): QueueFeederSnapshot {
   const openProductMetricIssues =
     typeof obj.openProductMetricIssues === 'number' ? obj.openProductMetricIssues : undefined;
   return {
-    capacity: { free: cap.free, pendingQueueDepth: cap.pendingQueueDepth },
+    capacity: {
+      free: cap.free,
+      pendingQueueDepth: cap.pendingQueueDepth,
+      // Issue #2357: preserve effective free from /api/health snapshots so
+      // feeder idle decisions agree with capacityThroughputVerdict.
+      ...(typeof cap.freeForGeneralSources === 'number'
+        && Number.isFinite(cap.freeForGeneralSources)
+        ? { freeForGeneralSources: cap.freeForGeneralSources }
+        : {}),
+    },
     candidates,
     readyIssues: parseReadyIssues(obj.readyIssues),
     openProductMetricIssues,
@@ -502,6 +511,12 @@ function runPlan(
   const capacity: CapacitySignal = {
     free: args.free ?? snapshot.capacity.free,
     pendingQueueDepth: args.pending ?? snapshot.capacity.pendingQueueDepth,
+    // Issue #2357: prefer ledger effective free so feeder agrees with
+    // capacityThroughputVerdict.idleEffectiveSlots under residual phantoms.
+    ...(typeof snapshot.capacity.freeForGeneralSources === 'number'
+      && Number.isFinite(snapshot.capacity.freeForGeneralSources)
+      ? { freeForGeneralSources: snapshot.capacity.freeForGeneralSources }
+      : {}),
   };
 
   const baseInput: QueueFeederInput = {

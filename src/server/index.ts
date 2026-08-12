@@ -2092,6 +2092,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         phantomActive: capacity.phantomActive,
         providerPausedCount,
         freeForGeneralSources,
+        // Issue #2357: residual path keys on idle effective + multi-slot hold
+        // with empty queue — same pending depth as /api/health.
+        pendingQueueDepth: capacity.pendingQueueDepth,
       });
     } catch (err) {
       console.warn(
@@ -2102,8 +2105,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   };
 
-  // Capacity gate for soft awaiting_poll FAA reclaim (issue #2355). Same ledger
-  // as /api/health so soft-TTL pressure and capacityThroughputVerdict agree.
+  // Capacity gate for soft awaiting_poll FAA reclaim (issues #2355 / #2357).
+  // Same ledger as /api/health so soft-TTL pressure and capacityThroughputVerdict
+  // agree (including residual idle_capacity + multi-phantom).
   const getCapacityAllowsFinishedAwaitingAckEarlyReclaim = (): boolean => {
     try {
       const now = Date.now();
@@ -2116,10 +2120,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
+      const idleEffectiveSlots =
+        capacity.freeForGeneralSources
+        ?? Math.max(0, capacity.maxActiveTasks - capacity.effectiveWorking);
       return capacityAllowsFinishedAwaitingAckEarlyReclaim({
         effectiveUtilizationPct: capacity.effectiveUtilizationPct,
         phantomActive: capacity.phantomActive,
         pendingQueueDepth: capacity.pendingQueueDepth,
+        // Issue #2357: residual path — util=75/phantom=3 under idle_capacity.
+        idleEffectiveSlots,
       });
     } catch (err) {
       console.warn(

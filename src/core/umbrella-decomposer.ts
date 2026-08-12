@@ -154,8 +154,36 @@ export const DEFAULT_QUEUE_FEEDER_CONFIG: Readonly<QueueFeederConfig> = Object.f
 
 /** The idle-capacity signal, sourced from `core/capacity-ledger.ts`. */
 export interface CapacitySignal {
+  /**
+   * Nominal free slots (`maxActive - active`). Real launch admission still keys
+   * on this / live active count — a still-resident phantom cannot be over-booked.
+   */
   free: number;
   pendingQueueDepth: number;
+  /**
+   * Effective free slots for general sources (issue #2357 / #1935). When present,
+   * feeder idle-capacity decisions key on this (same number as
+   * capacityThroughputVerdict.idleEffectiveSlots) rather than nominal `free`, so
+   * phantom-held slots do not suppress refill while reclaim drains them.
+   * Absent → fall back to {@link free}.
+   */
+  freeForGeneralSources?: number;
+}
+
+/**
+ * Free-slot budget for general-source spawn / feeder decisions (issue #2357).
+ * Prefers effective free when the ledger publishes it; otherwise nominal free.
+ * Real concurrent launch admission still uses live active count and must not
+ * over-admit into still-resident phantoms.
+ */
+export function effectiveFreeForSpawnBudget(capacity: CapacitySignal): number {
+  if (
+    typeof capacity.freeForGeneralSources === 'number'
+    && Number.isFinite(capacity.freeForGeneralSources)
+  ) {
+    return Math.max(0, capacity.freeForGeneralSources);
+  }
+  return Math.max(0, capacity.free);
 }
 
 /** An open umbrella issue that may be decomposed into leaves. */
@@ -448,23 +476,34 @@ export function classifyUmbrella(
  * Idle-capacity gate. Fires when there is genuine slack (≥ threshold free
  * slots) AND nothing already queued — exactly the `idle_capacity` warn shape
  * (free≥3, pendingQueueDepth==0) the velocity probe reports.
+ *
+ * Issue #2357: when `freeForGeneralSources` is present, key on that effective
+ * free budget so nominal free=0 with idleEffectiveSlots>0 still refills while
+ * pressure-TTL reclaim drains phantoms. Nominal free alone would incorrectly
+ * block general spawn budgets under residual phantom hold.
  */
 export function isFeederTriggered(
   capacity: CapacitySignal,
   config?: Partial<QueueFeederConfig>,
 ): boolean {
   const cfg = mergeQueueFeederConfig(config);
-  return capacity.free >= cfg.freeSlotsThreshold && capacity.pendingQueueDepth === 0;
+  const free = effectiveFreeForSpawnBudget(capacity);
+  return free >= cfg.freeSlotsThreshold && capacity.pendingQueueDepth === 0;
 }
 
 function triggerReason(capacity: CapacitySignal, cfg: QueueFeederConfig): string {
   if (capacity.pendingQueueDepth > 0) {
     return `queue not empty (pendingQueueDepth=${capacity.pendingQueueDepth}) — no refill needed`;
   }
-  if (capacity.free < cfg.freeSlotsThreshold) {
-    return `only ${capacity.free} free slot(s) (< threshold ${cfg.freeSlotsThreshold}) — no idle capacity`;
+  const free = effectiveFreeForSpawnBudget(capacity);
+  const freeLabel =
+    capacity.freeForGeneralSources !== undefined
+      ? `effectiveFree=${free} (nominal free=${capacity.free})`
+      : `free=${free}`;
+  if (free < cfg.freeSlotsThreshold) {
+    return `only ${freeLabel} slot(s) (< threshold ${cfg.freeSlotsThreshold}) — no idle capacity`;
   }
-  return `idle capacity: free=${capacity.free} (≥ ${cfg.freeSlotsThreshold}) and queue empty`;
+  return `idle capacity: ${freeLabel} (≥ ${cfg.freeSlotsThreshold}) and queue empty`;
 }
 
 /**

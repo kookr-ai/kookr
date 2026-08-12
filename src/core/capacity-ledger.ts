@@ -415,6 +415,61 @@ export function evaluateCapacityThroughputVerdict(
 }
 
 // ---------------------------------------------------------------------------
+// Residual phantom pressure under idle_capacity (issue #2357)
+//
+// After #2265 / #2355 soft-TTL reclaim, fleets still showed full-nominal /
+// idle-effective with 2–6 non-working slots while soft gates stayed off:
+// - FAA soft needed phantomActive ≥ 4 or effective util < 75 (live residual
+//   was util=75, phantom=3 → soft off while capacityThroughputVerdict said
+//   idle_capacity)
+// - provider_paused soft needed freeForGeneralSources ≥ 3 (live residual free=2)
+//
+// This gate aligns soft-TTL reclaim with {@link evaluateCapacityThroughputVerdict}:
+// when productive headroom exists and multi-slot non-working occupancy holds,
+// FAA awaiting_poll and provider_paused may use their pressure soft TTLs.
+// Open-PR failsafe stays in the selectors — this only shortens age bounds for
+// already-non-working classes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum phantom / pause-zombie occupancy that, with idle effective slots,
+ * enables pressure-aware soft TTL (issue #2357). Lower than the #2355
+ * phantom-only bound of 4 so residual 2–3 squatters under idle_capacity reclaim.
+ */
+export const DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND = 2;
+
+/**
+ * True when the fleet is in residual phantom pressure (issue #2357):
+ * `idle_capacity`-shaped productive headroom with multi-slot non-working hold.
+ *
+ * - Requires `idleEffectiveSlots > 0` (same key as capacityThroughputVerdict).
+ * - Requires occupancy `phantomActive + providerPausedCount ≥ bound` (default 2).
+ * - When `pendingQueueDepth` is provided and > 0, returns false — queued work
+ *   already pressures free slots without accelerated reclaim.
+ */
+export function capacityHasResidualPhantomPressure(input: {
+  idleEffectiveSlots: number;
+  phantomActive: number;
+  /** Optional; included in occupancy pressure (provider_paused soft path). */
+  providerPausedCount?: number;
+  /** When set and > 0, pressure soft path stays off. */
+  pendingQueueDepth?: number;
+  /** Default {@link DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND}. */
+  occupancyBound?: number;
+}): boolean {
+  const pending = input.pendingQueueDepth;
+  if (typeof pending === 'number' && Number.isFinite(pending) && pending > 0) {
+    return false;
+  }
+  const idle = input.idleEffectiveSlots;
+  if (!Number.isFinite(idle) || idle <= 0) return false;
+  const bound = input.occupancyBound ?? DEFAULT_RESIDUAL_PHANTOM_PRESSURE_BOUND;
+  const occupancy =
+    Math.max(0, input.phantomActive) + Math.max(0, input.providerPausedCount ?? 0);
+  return Number.isFinite(occupancy) && occupancy >= bound;
+}
+
+// ---------------------------------------------------------------------------
 // Supply-aware capacity signal (issue #2143)
 //
 // The orchestration supervisor kept flagging "sideways-on-capacity-fill": idle
