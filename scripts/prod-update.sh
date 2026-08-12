@@ -48,4 +48,6 @@ fi
 git switch --detach origin/main
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 pnpm build
-bash "${ROOT_DIR}/scripts/prod-restart.sh"
+# Tag the restart marker so the CLI reports "prod:update" (issue #2410).
+KOOKR_RESTART_INTENT_REASON="${KOOKR_RESTART_INTENT_REASON:-prod:update}" \
+  bash "${ROOT_DIR}/scripts/prod-restart.sh"

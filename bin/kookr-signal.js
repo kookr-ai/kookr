@@ -44,6 +44,26 @@ import {
   EXIT_SERVER_ERROR,
   CLI_VERSION,
 } from './kookr-spawn.js';
+import {
+  readUnreachableCause,
+  firstRestartIntentAcrossPorts,
+  describeUnreachableCause,
+  restartIntentJson,
+} from './kookr-restart-intent.js';
+
+// Ports `kookr-status` and `resolveBaseUrl` sweep when no explicit port is set.
+const RESTART_INTENT_PORTS = [4800, 4801];
+
+/** Best-effort port from a resolved base URL (e.g. http://127.0.0.1:4801). */
+function portFromBaseUrl(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.port) return Number(parsed.port);
+  } catch {
+    // fall through
+  }
+  return undefined;
+}
 
 const POST_TIMEOUT_MS = 10_000;
 const here = dirname(fileURLToPath(import.meta.url));
@@ -387,8 +407,15 @@ async function main({
 
   // No server / ambiguous: signal is already spooled → exit 0 (not 3).
   if (resolved.kind === 'ambiguous' || resolved.kind === 'none') {
+    // Issue #2410: tell the agent WHY the daemon is unreachable — a planned
+    // redeploy (marker present) vs an unexpected outage (no marker). No explicit
+    // port was resolved here, so scan the same ports the base-URL sweep would
+    // (mirrors `kookr status`) rather than assuming 4800.
+    const found = firstRestartIntentAcrossPorts(RESTART_INTENT_PORTS, { env });
+    const intent = found?.intent ?? null;
+    const cause = describeUnreachableCause(intent);
     const message =
-      'no Kookr server reachable; signal durably spooled for delivery on reconnect.';
+      `no Kookr server reachable; signal durably spooled for delivery on reconnect. ${cause}`;
     if (args.json) {
       return exitJson({
         out,
@@ -397,10 +424,18 @@ async function main({
         ok: true,
         code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
+        details: {
+          subcommand: 'signal',
+          signalId,
+          spooled: true,
+          spoolDir,
+          restartIntent: restartIntentJson(intent),
+        },
       });
     }
-    out.log(`✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.`);
+    out.log(
+      `✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.\n  ${cause}`,
+    );
     return exit(EXIT_OK);
   }
 
@@ -410,10 +445,14 @@ async function main({
   try {
     result = await postSignal({ baseUrl, taskId, kind, note, signalId });
   } catch (e) {
-    // Transient network/timeout: leave in spool, exit 0.
+    // Transient network/timeout: leave in spool, exit 0. Issue #2410: enrich
+    // with the planned-restart-vs-unexpected-outage verdict, reading the marker
+    // for the port we actually targeted (from resolved.baseUrl), not a guess.
+    const now = Date.now();
+    const { intent, message: cause } = readUnreachableCause({ port: portFromBaseUrl(baseUrl), env, now });
     const message =
       `daemon unreachable (${e instanceof Error ? e.message : String(e)}); `
-      + 'signal durably spooled for delivery on reconnect.';
+      + `signal durably spooled for delivery on reconnect. ${cause}`;
     if (args.json) {
       return exitJson({
         out,
@@ -422,7 +461,13 @@ async function main({
         ok: true,
         code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
+        details: {
+          subcommand: 'signal',
+          signalId,
+          spooled: true,
+          spoolDir,
+          restartIntent: restartIntentJson(intent, now),
+        },
       });
     }
     out.log(`✓ Signal spooled (${kind}) for task ${taskId} — ${message}`);

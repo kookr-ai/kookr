@@ -10,7 +10,7 @@ import {
   saveDeployIntent,
 } from '../store/deploy-intent-storage.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { ConnectionBanner } from './ConnectionBanner.js';
+import { ConnectionBanner, formatElapsed } from './ConnectionBanner.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -135,6 +135,79 @@ describe('ConnectionBanner', () => {
     expect(sessionStorage.getItem('kookr.deploying')).toBeNull();
     expect(container.textContent).toContain('Reconnecting');
     expect(container.textContent).not.toContain('Redeploying production');
+  });
+
+  test('shows "started Xs ago" while a redeploy is in flight (#2410)', () => {
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now: t0 });
+    syncGlobalStore();
+    useKookrStore.setState({ connected: false, deploying: true });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+
+    // Advance well within the stalled threshold: still calm redeploy copy, now
+    // carrying the elapsed-time suffix.
+    act(() => {
+      vi.advanceTimersByTime(15_000);
+    });
+    expect(container.textContent).toContain('Redeploying');
+    expect(container.textContent).toContain('started 15s ago');
+    expect(container.textContent).not.toContain('failed deploy');
+  });
+
+  test('does NOT render a failed-deploy verdict in the browser (#2410)', () => {
+    // The browser can't see the server's real restart deadline and the sticky
+    // window is capped at 2 min, so the UI must never claim "failed deploy" —
+    // that verdict lives on the CLI. It stays calm redeploy copy until #1982's
+    // TTL clears it back to generic reconnect copy.
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now: t0 });
+    syncGlobalStore();
+    useKookrStore.setState({ connected: false, deploying: true });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+    act(() => {
+      vi.advanceTimersByTime(100_000); // well past a naive "stalled" threshold
+    });
+
+    expect(container.textContent).not.toContain('failed deploy');
+    expect(container.textContent).toContain('Redeploying');
+  });
+
+  test('elapsed counter is aria-hidden so the 1s tick does not flood the live region (#2410)', () => {
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    saveDeployIntent(true, { preDeployCommit: 'abc123d', now: t0 });
+    syncGlobalStore();
+    useKookrStore.setState({ connected: false, deploying: true });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+    act(() => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    const elapsed = container.querySelector('.connection-banner__elapsed');
+    expect(elapsed).not.toBeNull();
+    expect(elapsed?.getAttribute('aria-hidden')).toBe('true');
+    expect(elapsed?.textContent).toContain('started 15s ago');
+  });
+
+  test('formatElapsed renders compact labels', () => {
+    expect(formatElapsed(0)).toBe('0s');
+    expect(formatElapsed(12_000)).toBe('12s');
+    expect(formatElapsed(65_000)).toBe('1m 5s');
+    expect(formatElapsed(120_000)).toBe('2m');
   });
 
   test('re-stamp mid-window re-arms the TTL instead of clearing early (#1982)', () => {

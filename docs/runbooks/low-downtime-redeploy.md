@@ -148,6 +148,33 @@ Independent blackout measurement:
 
 ---
 
+## Planned-restart marker (`restart-intent.json`)
+
+While the API is down, agents (`kookr status`, `kookr signal`) can't tell a
+planned redeploy from an unexpected crash — the port is simply refused either
+way. To disambiguate, `prod-restart.sh` writes `${KOOKR_DIR}/restart-intent.json`
+(e.g. `~/.kookr/restart-intent.json`) **before** killing the old server and
+clears it once the new server passes its readiness gate (issue #2410). The
+marker records the reason (`prod:update` / `prod:restart`), `startedAt`, and the
+deploy's own `staleAfterMs` deadline (`KOOKR_STARTUP_TIMEOUT_SECONDS`). The CLI
+reads it locally and enriches its connection-refused message:
+
+- marker present, within the deadline → "kookr is restarting (prod:update started 12s ago); the API should return once the redeploy finishes."
+- marker present, past the deadline → "a kookr restart (prod:update) started 40m ago but the API has not come back — this looks like a failed deploy, not a routine restart."
+- no marker → "no planned restart is in progress — this looks like an unexpected outage (crash, OOM, or port conflict)."
+
+The clear is ownership-checked (it only deletes the marker whose `startedAt` it
+wrote), and any marker older than 12h is treated as an expired orphan and
+ignored. If a killed script or a reboot mid-deploy leaves a stuck marker,
+inspect or force-clear it directly:
+
+```bash
+node bin/kookr-restart-intent.js show  --dir ~/.kookr    # inspect
+node bin/kookr-restart-intent.js clear --dir ~/.kookr    # force-clear
+```
+
+---
+
 ## Client contracts during redeploy (orchestrator policy)
 
 Summarized so agents **do not invent incident work** for intentional restarts.

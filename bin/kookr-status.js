@@ -7,6 +7,12 @@
 
 import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
+import {
+  firstRestartIntentAcrossPorts,
+  describeUnreachableCause,
+  restartIntentJson,
+  readUnreachableCause,
+} from './kookr-restart-intent.js';
 
 const PORTS_TO_TRY = [4800, 4801];
 const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
@@ -1388,6 +1394,11 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     return exit(1);
   }
   if (resolved.kind === 'none') {
+    // Issue #2410: distinguish a planned redeploy from an unexpected outage by
+    // reading the local restart-intent marker written by prod-restart.sh.
+    const found = firstRestartIntentAcrossPorts(PORTS_TO_TRY, { env });
+    const intent = found?.intent ?? null;
+    const cause = describeUnreachableCause(intent);
     if (args.json) {
       return exitJson({
         out,
@@ -1395,12 +1406,16 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         exitCode: 1,
         ok: false,
         code: 'NO_SERVER',
-        message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.`,
-        details: { ports: PORTS_TO_TRY },
+        message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}. ${cause}`,
+        details: {
+          ports: PORTS_TO_TRY,
+          restartIntent: restartIntentJson(intent),
+        },
       });
     }
     out.error(
       `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.\n` +
+      `${cause}\n` +
       `Set KOOKR_PORT if using a non-default port.`,
     );
     return exit(1);
@@ -1417,6 +1432,11 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     ]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Issue #2410: an explicit-port fetch failure is also an "API unreachable"
+    // case — read the marker for this port to tell a planned redeploy apart
+    // from an unexpected outage.
+    const now = Date.now();
+    const { intent, message: cause } = readUnreachableCause({ port, env, now });
     if (args.json) {
       return exitJson({
         out,
@@ -1425,18 +1445,24 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ok: false,
         code: 'SERVER_ERROR',
         message: resolved.kind === 'explicit'
-          ? `Failed to reach Kookr on port ${port} (${msg}).`
-          : `Failed to reach Kookr on port ${port}: ${msg}`,
-        details: { port, resolvedKind: resolved.kind, error: msg },
+          ? `Failed to reach Kookr on port ${port} (${msg}). ${cause}`
+          : `Failed to reach Kookr on port ${port}: ${msg}. ${cause}`,
+        details: {
+          port,
+          resolvedKind: resolved.kind,
+          error: msg,
+          restartIntent: restartIntentJson(intent, now),
+        },
       });
     }
     if (resolved.kind === 'explicit') {
       out.error(
         `Failed to reach Kookr on port ${port} (${msg}).\n` +
+        `${cause}\n` +
         `Is Kookr running? KOOKR_PORT=${port}.`,
       );
     } else {
-      out.error(`Failed to reach Kookr on port ${port}: ${msg}`);
+      out.error(`Failed to reach Kookr on port ${port}: ${msg}.\n${cause}`);
     }
     return exit(1);
   }
