@@ -58,6 +58,24 @@ export interface StaleProcessSummary {
 }
 
 /**
+ * True when `cmdline` is a kookr-dtach *master* (`dtach -n` / `-N`), not an
+ * attach client (`dtach -a`).
+ *
+ * Both masters and attach clients carry the `kookr-dtach` socket path in argv.
+ * Counting both doubled `staleProcesses.dtach` under healthy concurrent load
+ * and false-triggered the soft bound of 20 (issue #2383). Master resolution
+ * elsewhere already keys on `-n` (see `findDtachMasterPidSync`).
+ */
+export function isKookrDtachMasterCmdline(cmdline: string): boolean {
+  if (!cmdline || !cmdline.includes('dtach') || !cmdline.includes('kookr-dtach')) {
+    return false;
+  }
+  // Space-joined cmdline (ProcessSnapshot) — match argv tokens, not substrings.
+  const tokens = cmdline.split(/\s+/);
+  return tokens.includes('-n') || tokens.includes('-N');
+}
+
+/**
  * Classify a process by its command line, or return null when it is neither a
  * relay server nor a kookr dtach master. Conservative substring matching so a
  * grep for `relay/server` in an unrelated editor/argv does not misclassify — we
@@ -72,9 +90,9 @@ export function classifyProcess(cmdline: string): StaleProcessClass | null {
   ) {
     return 'relay-server';
   }
-  // dtach masters carry the kookr socket ring path in argv (#1720). Require the
-  // kookr-specific segment so unrelated dtach usage is never swept.
-  if (cmdline.includes('dtach') && cmdline.includes('kookr-dtach')) {
+  // Masters only (#1720 visibility + #2383 pressure accuracy). Attach clients
+  // are owned by the attach reaper, not this host-wide count.
+  if (isKookrDtachMasterCmdline(cmdline)) {
     return 'dtach';
   }
   return null;

@@ -344,6 +344,12 @@ bound 20) while `sessionReaper.lastOrphanCount` / `lastTerminalLeakCount` stay
 near zero and `totalSessionsReaped` does not climb. Doctor may WARN on
 `ops.host-stale-dtach` (`host_stale_dtach_mismatch`).
 
+**Count semantics (issue #2383).** `staleProcesses.dtach.count` is **masters
+only** (`dtach -n` / `-N` under `kookr-dtach`). Live `dtach -a` attach clients
+are excluded so a healthy fleet near `maxActiveTasks` does not false-trip the
+soft bound. If you still see count ≥ 20 with reaper orphans ~0, treat it as
+real host-stale pressure, not normal attach occupancy.
+
 **Do not assume the session reaper is broken.** These are process-table masters
 **outside** the session reaper’s live-session / TaskStore inventory — usually
 missing sockets after a hard kill or crashed server generation. The #1720

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   classifyProcess,
   evaluateRelayOrphanBound,
+  isKookrDtachMasterCmdline,
   isTestRunnerSpawnedRelayEnviron,
   isTestSpawnedRelayEnviron,
   resolveRelayOrphanBound,
@@ -32,10 +33,27 @@ describe('classifyProcess', () => {
     expect(classifyProcess('node /opt/relay/server')).toBe('relay-server');
   });
 
-  it('classifies kookr dtach masters', () => {
+  it('classifies kookr dtach masters (-n and -N)', () => {
     expect(
       classifyProcess('dtach -n /tmp/kookr-dtach/1000/port-4800/sess.sock -E claude'),
     ).toBe('dtach');
+    expect(classifyProcess('dtach -N /tmp/kookr-dtach/1000/port-4800/s1.sock')).toBe('dtach');
+    expect(
+      classifyProcess(
+        'setsid -f /repo/vendor/dtach/dtach -n /tmp/kookr-dtach/1000/port-4800/k.sock -r winch -E claude',
+      ),
+    ).toBe('dtach');
+  });
+
+  it('does not classify kookr-dtach attach clients as dtach (issue #2383)', () => {
+    expect(
+      classifyProcess('dtach -a /tmp/kookr-dtach/1000/port-4800/sess.sock -E'),
+    ).toBeNull();
+    expect(
+      classifyProcess('/repo/vendor/dtach/dtach -a /tmp/kookr-dtach/1000/port-4800/k.sock -E'),
+    ).toBeNull();
+    expect(isKookrDtachMasterCmdline('dtach -a /tmp/kookr-dtach/x.sock -E')).toBe(false);
+    expect(isKookrDtachMasterCmdline('dtach -n /tmp/kookr-dtach/x.sock -E claude')).toBe(true);
   });
 
   it('does not misclassify unrelated processes', () => {
@@ -166,6 +184,32 @@ describe('summarizeStaleProcesses', () => {
       relayServer: { count: 0, rssBytes: 0 },
       dtach: { count: 0, rssBytes: 0 },
     });
+  });
+
+  it('counts masters only when N masters + N attachers are present (issue #2383)', () => {
+    const n = 11;
+    const processes: ProcessSnapshot[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const sock = `/tmp/kookr-dtach/1000/port-4800/kookr-sess-${i}.sock`;
+      processes.push(
+        proc({
+          pid: 1000 + i,
+          cmdline: `dtach -n ${sock} -r winch -E claude`,
+          rssBytes: 10,
+        }),
+        proc({
+          pid: 2000 + i,
+          cmdline: `dtach -a ${sock} -E`,
+          rssBytes: 5,
+        }),
+      );
+    }
+    // Pre-#2383 this would have been 22; softBound 20 false-triggered under healthy load.
+    const scanned = scanStaleProcesses({ now: 0, listProcesses: () => processes });
+    const summary = summarizeStaleProcesses(scanned);
+    expect(scanned).toHaveLength(n);
+    expect(summary.dtach).toEqual({ count: n, rssBytes: n * 10 });
+    expect(summary.dtach.count).toBeLessThan(20); // softBound stays a real leak ceiling
   });
 });
 
