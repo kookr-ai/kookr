@@ -24,10 +24,14 @@ import {
   parseGithubStatusBody,
   type GithubStatusSnapshot,
 } from './kookr-github.js';
+import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eval.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
 type DoctorCategory = 'runtime' | 'launch-dependency' | 'agent' | 'github' | 'ops';
+
+/** Stable doctor/diagnostic code for the host-stale dtach mismatch (issue #2348). */
+export const HOST_STALE_DTACH_MISMATCH_CODE = 'host_stale_dtach_mismatch';
 
 export interface DoctorCheck {
   id: string;
@@ -107,6 +111,28 @@ type HookIngestionLagProbe = (
 ) => Promise<HookIngestionLagProbeSnapshot | null>;
 
 /**
+ * Live probe of host-stale dtach vs session-reaper gauges from GET /api/health
+ * (issue #2348). null = unreachable / unknown / gauges absent — doctor stays green.
+ */
+export interface HostStaleDtachProbeSnapshot {
+  /** Host-wide `staleProcesses.dtach.count` from the health /proc cache. */
+  dtachCount: number;
+  /** Last session-reaper sweep orphan count (`sessionReaper.lastOrphanCount`). */
+  lastOrphanCount: number;
+  /** Last session-reaper sweep terminal-leak count. */
+  lastTerminalLeakCount: number;
+  /**
+   * Soft bound for host excess (defaults to {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND}).
+   * `<= 0` disables the check.
+   */
+  softBound?: number;
+}
+
+type HostStaleDtachProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<HostStaleDtachProbeSnapshot | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -154,6 +180,12 @@ interface RunDoctorDeps {
    * when KOOKR_API_BASE_URL or KOOKR_PORT is set. null = unreachable / skip.
    */
   probeHookIngestionLag?: HookIngestionLagProbe;
+  /**
+   * Optional override for the live /api/health host-stale dtach mismatch probe
+   * (issue #2348). Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or
+   * KOOKR_PORT is set. null = unreachable / skip.
+   */
+  probeHostStaleDtach?: HostStaleDtachProbe;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -175,6 +207,7 @@ github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is act
 ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
+ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
 `;
@@ -276,6 +309,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
+  checks.push(await checkHostStaleDtach(env, deps.probeHostStaleDtach));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 
@@ -632,6 +666,86 @@ async function checkHookIngestionLag(
     snap.sessionCount === 0
       ? 'no tracked sessions (idle)'
       : `notableLagCount=0 across ${snap.sessionCount} session(s)`,
+    false,
+  );
+}
+
+/**
+ * Advisory ops check (issue #2348): WARN when host-wide `staleProcesses.dtach`
+ * far exceeds what the session reaper reports as orphans/leaks.
+ *
+ * Live prod pattern: `staleProcesses.dtach.count=23` while
+ * `sessionReaper.lastOrphanCount=0` and `lastTerminalLeakCount=0` — host-stale
+ * masters accumulate outside TaskStore; reaper (#1720) cannot see them, and
+ * doctor previously stayed green.
+ *
+ * WARN when `hostExcess = dtachCount - (lastOrphanCount + lastTerminalLeakCount)`
+ * is ≥ soft bound (default {@link DEFAULT_DTACH_PRESSURE_SOFT_BOUND}). Soft-skip
+ * when the server is unreachable so hermetic offline doctor stays green.
+ * Never required:fail. Does not enable kill/spawn paths.
+ */
+async function checkHostStaleDtach(
+  env: NodeJS.ProcessEnv,
+  probe: HostStaleDtachProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHostStaleDtach;
+  let snap: HostStaleDtachProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'ops.host-stale-dtach',
+      'Host-stale dtach',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or health unreachable)',
+      false,
+    );
+  }
+
+  const softBound = snap.softBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
+  const reaperVisible = snap.lastOrphanCount + snap.lastTerminalLeakCount;
+  const hostExcess = Math.max(0, snap.dtachCount - reaperVisible);
+  const mismatch = softBound > 0 && hostExcess >= softBound;
+
+  if (mismatch) {
+    return {
+      id: 'ops.host-stale-dtach',
+      label: 'Host-stale dtach',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        `${HOST_STALE_DTACH_MISMATCH_CODE}: staleProcesses.dtach.count=${snap.dtachCount} ` +
+        `sessionReaper.lastOrphanCount=${snap.lastOrphanCount} ` +
+        `lastTerminalLeakCount=${snap.lastTerminalLeakCount} ` +
+        `(hostExcess=${hostExcess} ≥ softBound=${softBound})`,
+      detail:
+        `code=${HOST_STALE_DTACH_MISMATCH_CODE} GET /api/health ` +
+        `staleProcesses.dtach.count=${snap.dtachCount} while ` +
+        `sessionReaper.lastOrphanCount=${snap.lastOrphanCount} + ` +
+        `lastTerminalLeakCount=${snap.lastTerminalLeakCount} ` +
+        `(reaper-visible=${reaperVisible}, hostExcess=${hostExcess}, softBound=${softBound}). ` +
+        'Host-stale dtach masters accumulate outside TaskStore; session reaper cannot see them.',
+      recommendedAction:
+        'Enable KOOKR_RESOURCE_WATCHDOG=1 for host-pressure auto-investigation; ' +
+        'inspect GET /api/health staleProcesses and sessionReaper; ' +
+        'consider a host-stale janitor for masters not owned by TaskStore. ' +
+        'Restart only as last resort — do not invent kill logic from doctor.',
+    };
+  }
+
+  return okCheck(
+    'ops.host-stale-dtach',
+    'Host-stale dtach',
+    'ops',
+    `staleProcesses.dtach.count=${snap.dtachCount} ` +
+      `sessionReaper.lastOrphanCount=${snap.lastOrphanCount} ` +
+      `lastTerminalLeakCount=${snap.lastTerminalLeakCount} ` +
+      `(hostExcess=${hostExcess} < softBound=${softBound})`,
     false,
   );
 }
@@ -1154,6 +1268,73 @@ export function parseHookIngestionLagDiagnosticsBody(
     sessionCount,
     notableLagCount,
     lagWarningThresholdMs: lagWarningThresholdMs ?? 2000,
+  };
+}
+
+/**
+ * Best-effort live probe of host-stale dtach vs sessionReaper gauges from
+ * GET /api/health (issue #2348). Same base-URL gate as other health probes —
+ * hermetic offline doctor stays green without scanning default ports.
+ */
+async function defaultProbeHostStaleDtach(
+  env: NodeJS.ProcessEnv,
+): Promise<HostStaleDtachProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseHostStaleDtachHealthBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `staleProcesses.dtach` + `sessionReaper` orphan gauges from /api/health.
+ * Requires both blocks so a partial payload does not false-WARN.
+ */
+export function parseHostStaleDtachHealthBody(
+  body: unknown,
+): HostStaleDtachProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as {
+    staleProcesses?: { dtach?: { count?: unknown } };
+    sessionReaper?: {
+      lastOrphanCount?: unknown;
+      lastTerminalLeakCount?: unknown;
+    };
+  };
+
+  const dtach = root.staleProcesses?.dtach;
+  const reaper = root.sessionReaper;
+  if (!dtach || typeof dtach !== 'object') return null;
+  if (!reaper || typeof reaper !== 'object') return null;
+
+  const dtachCount = nonNegInt(dtach.count);
+  const lastOrphanCount = nonNegInt(reaper.lastOrphanCount);
+  const lastTerminalLeakCount = nonNegInt(reaper.lastTerminalLeakCount);
+  if (
+    dtachCount === null
+    || lastOrphanCount === null
+    || lastTerminalLeakCount === null
+  ) {
+    return null;
+  }
+
+  return {
+    dtachCount,
+    lastOrphanCount,
+    lastTerminalLeakCount,
   };
 }
 
