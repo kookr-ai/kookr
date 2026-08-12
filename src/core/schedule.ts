@@ -78,7 +78,14 @@ export function normalizeScheduleLoopConfig(raw: unknown): ScheduleLoopConfig | 
   return out;
 }
 
-export type ScheduleStopReason = 'trigger_limit_reached';
+/**
+ * Why a schedule is auto-disabled.
+ * - `trigger_limit_reached` — finite `maxTriggers` budget exhausted.
+ * - `consecutive_failures` — fail-closed pause after N consecutive non-success
+ *   terminal runs (issue #2353). Cleared when an operator re-enables the
+ *   schedule.
+ */
+export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
@@ -393,9 +400,10 @@ export interface Schedule {
    * Count of consecutive non-`completed` terminal runs (issue #1665). Bumped
    * whenever `lastRunStatus` is written to anything other than `completed` (a
    * `failed` dispatch/skip outcome or a `cancelled` run) and reset to 0 on a
-   * `completed` run. Drives the per-schedule failure alert (see
-   * `ScheduleService`) and surfaces schedule health without hand-reading the
-   * store. Absent until the schedule has recorded its first terminal run.
+   * `completed` run. Drives the per-schedule failure alert and the fail-closed
+   * auto-pause (issue #2353 — see `ScheduleService`) and surfaces schedule
+   * health without hand-reading the store. Absent until the schedule has
+   * recorded its first terminal run.
    */
   consecutiveFailures?: number;
   /** Cron watermark — used for cadence computation, not UI status. */
@@ -460,6 +468,17 @@ export interface ScheduleStatusSnapshot {
     escalated: boolean;
     class?: 'auth_expired';
   };
+  /**
+   * Schedules currently auto-paused after consecutive failures (issue #2353).
+   * Absent or empty when none are parked this way. Surfaced on
+   * `GET /api/health` / schedule status so reflection and sentinels can see
+   * fail-closed pauses without scanning every schedule row.
+   */
+  schedulesPausedByFailure?: Array<{
+    id: string;
+    name: string;
+    consecutiveFailures: number;
+  }>;
 }
 
 export interface ScheduleListResponse {
@@ -1070,9 +1089,26 @@ function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | und
   };
 }
 
+function normalizeStopReason(value: unknown): ScheduleStopReason | undefined {
+  if (value === 'trigger_limit_reached' || value === 'consecutive_failures') return value;
+  return undefined;
+}
+
 function normalizeTriggerState(candidate: Partial<Schedule>): Pick<Schedule, 'maxTriggers' | 'remainingTriggers' | 'stopReason' | 'exhaustedAt'> {
   const maxTriggers = isValidMaxTriggers(candidate.maxTriggers) ? candidate.maxTriggers : undefined;
+  const stopReason = normalizeStopReason(candidate.stopReason);
+  // consecutive_failures pause is independent of a trigger budget (issue #2353)
+  // — preserve it even when maxTriggers is absent so a reload does not re-arm
+  // a fail-closed schedule.
   if (maxTriggers === undefined) {
+    if (stopReason === 'consecutive_failures') {
+      return {
+        maxTriggers: undefined,
+        remainingTriggers: undefined,
+        stopReason: 'consecutive_failures',
+        exhaustedAt: undefined,
+      };
+    }
     return {
       maxTriggers: undefined,
       remainingTriggers: undefined,
@@ -1087,7 +1123,12 @@ function normalizeTriggerState(candidate: Partial<Schedule>): Pick<Schedule, 'ma
   return {
     maxTriggers,
     remainingTriggers,
-    stopReason: candidate.stopReason === 'trigger_limit_reached' ? candidate.stopReason : undefined,
+    // Prefer an explicit consecutive_failures pause over trigger-limit markers.
+    stopReason: stopReason === 'consecutive_failures'
+      ? 'consecutive_failures'
+      : stopReason === 'trigger_limit_reached'
+        ? 'trigger_limit_reached'
+        : undefined,
     exhaustedAt: typeof candidate.exhaustedAt === 'string' ? candidate.exhaustedAt : undefined,
   };
 }
@@ -1100,8 +1141,14 @@ function isValidRemainingTriggers(value: unknown): value is number {
  * True when the schedule was auto-disabled by hitting its trigger budget.
  * Exhaustion markers are the only auto-exhaust signal (no separate operator flag);
  * either marker alone counts so partial persisted state still re-arms.
+ *
+ * A consecutive-failure pause (issue #2353) is NEVER treated as budget
+ * exhaustion: operator re-enable via setEnabled is the only recovery path.
+ * Without this guard, raising/clearing maxTriggers would re-arm a thrashing
+ * schedule that still holds consecutiveFailures ≥ threshold.
  */
 function wasAutoExhausted(existing: Pick<Schedule, 'stopReason' | 'exhaustedAt'>): boolean {
+  if (existing.stopReason === 'consecutive_failures') return false;
   return existing.stopReason === 'trigger_limit_reached' || existing.exhaustedAt !== undefined;
 }
 
@@ -1140,12 +1187,16 @@ function computeUpdatedTriggerState(
     };
   }
 
+  // Preserve a consecutive-failure pause across budget edits (issue #2353).
+  const failurePaused = existing.stopReason === 'consecutive_failures';
+
   if (nextMaxTriggers === null) {
-    // Unlimited budget — re-enable only if previously auto-exhausted (not operator-disabled).
+    // Unlimited budget — re-enable only if previously auto-exhausted (not
+    // operator-disabled and not fail-closed-paused).
     return {
       maxTriggers: undefined,
       remainingTriggers: undefined,
-      stopReason: undefined,
+      stopReason: failurePaused ? 'consecutive_failures' : undefined,
       exhaustedAt: undefined,
       ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
     };
@@ -1159,17 +1210,21 @@ function computeUpdatedTriggerState(
     return {
       maxTriggers: nextMaxTriggers,
       remainingTriggers,
-      stopReason: 'trigger_limit_reached',
+      // Failure pause wins over budget exhaustion for stopReason; exhaustedAt
+      // still records the budget hit so wasAutoExhausted stays accurate once
+      // the operator re-enables and clears the failure pause.
+      stopReason: failurePaused ? 'consecutive_failures' : 'trigger_limit_reached',
       exhaustedAt: existing.exhaustedAt ?? now,
       enabled: false,
     };
   }
 
-  // Fresh budget — re-enable only if previously auto-exhausted (not operator-disabled).
+  // Fresh budget — re-enable only if previously auto-exhausted (not
+  // operator-disabled and not fail-closed-paused).
   return {
     maxTriggers: nextMaxTriggers,
     remainingTriggers,
-    stopReason: undefined,
+    stopReason: failurePaused ? 'consecutive_failures' : undefined,
     exhaustedAt: undefined,
     ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
   };

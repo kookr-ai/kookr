@@ -413,6 +413,15 @@ export interface TimerDeps {
     getSnapshot(sessionId: string): UserInputDeliverySnapshot[];
   };
   /**
+   * Schedule service for live terminate → consecutiveFailures (issue #2353).
+   * When present, hung-task reaps notify the schedule so timeout thrash
+   * increments the failure streak and can auto-pause. Absent in tests /
+   * minimal wirings.
+   */
+  scheduleService?: {
+    recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void>;
+  };
+  /**
    * Optional server-side scheduled data-directory prune (idea-scout rank 4).
    * Off unless `intervalHours > 0` (default resolved from
    * `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS`). Runs {@link planAndPruneMaintenance}
@@ -1281,6 +1290,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.auditLogPath ? { auditLogPath: deps.auditLogPath } : {}),
     ...(deps.providerTransientRetry ? { providerTransientRetry: deps.providerTransientRetry } : {}),
     ...(deps.providerTransientAlert ? { providerTransientAlert: deps.providerTransientAlert } : {}),
+    // Live terminate → schedule consecutiveFailures (issue #2353).
+    ...(deps.scheduleService
+      ? {
+          recordScheduleTaskTerminal: (taskId, status) =>
+            deps.scheduleService!.recordTaskTerminalOutcome(taskId, status),
+        }
+      : {}),
   };
 
   // Re-entrancy guard (issue #1526 Phase A review fix) — same rationale as
@@ -1753,6 +1769,34 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             onTaskOutcome(id, { kind: 'failed' });
           } catch (err) {
             console.warn('[liveness] onTaskOutcome threw:', err);
+          }
+        }
+      }
+
+      // Schedule consecutiveFailures (issue #2353): reconcile() uses raw
+      // TaskStore terminal transitions and bypasses agent-lifecycle
+      // terminateTask/completeTask, so live session-death would never advance
+      // the streak without this additive path. Terminated → cancelled (failure);
+      // completed → completed (reset). Best-effort — never block the liveness tick.
+      if (deps.scheduleService) {
+        for (const id of result.tasksCompleted) {
+          try {
+            await deps.scheduleService.recordTaskTerminalOutcome(id, 'completed');
+          } catch (err) {
+            console.warn(
+              `[liveness] schedule terminal completed notify failed for ${id}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+        for (const id of result.tasksTerminated) {
+          try {
+            await deps.scheduleService.recordTaskTerminalOutcome(id, 'cancelled');
+          } catch (err) {
+            console.warn(
+              `[liveness] schedule terminal cancelled notify failed for ${id}:`,
+              err instanceof Error ? err.message : err,
+            );
           }
         }
       }

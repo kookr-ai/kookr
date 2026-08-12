@@ -7,6 +7,7 @@ import { TaskStore } from '../core/tasks.js';
 import {
   deriveLedgerEnrichment,
   nextConsecutiveFailures,
+  shouldAutoPauseForConsecutiveFailures,
   ScheduleService,
   type ScheduleLedgerEnrichment,
 } from './schedule-service.js';
@@ -835,6 +836,16 @@ describe('nextConsecutiveFailures', () => {
   });
 });
 
+describe('shouldAutoPauseForConsecutiveFailures (issue #2353)', () => {
+  it('pauses only when enabled and streak is at/over a positive threshold', () => {
+    expect(shouldAutoPauseForConsecutiveFailures(3, 3, true)).toBe(true);
+    expect(shouldAutoPauseForConsecutiveFailures(2, 3, true)).toBe(false);
+    expect(shouldAutoPauseForConsecutiveFailures(5, 3, false)).toBe(false);
+    expect(shouldAutoPauseForConsecutiveFailures(5, 0, true)).toBe(false);
+    expect(shouldAutoPauseForConsecutiveFailures(5, -1, true)).toBe(false);
+  });
+});
+
 describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
   function alertServiceHarness(threshold: number): {
     service: ScheduleService;
@@ -1052,8 +1063,174 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       }
       // Counter still maintained even without an alert sink.
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(5);
+      // Auto-pause (issue #2353) still applies with the default threshold of 3.
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-pauses the schedule when consecutiveFailures reaches the threshold (issue #2353)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'AutoPauseSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+      expect(store.get(schedule.id)!.stopReason).toBeUndefined();
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:10:00.000Z');
+      const paused = store.get(schedule.id)!;
+      expect(paused.enabled).toBe(false);
+      expect(paused.stopReason).toBe('consecutive_failures');
+      expect(paused.operatorHold).toBe(true);
+      expect(paused.consecutiveFailures).toBe(3);
+
+      const status = service.getStatusSnapshot();
+      expect(status.schedulesPausedByFailure).toEqual([
+        {
+          id: schedule.id,
+          name: 'AutoPauseSchedule',
+          consecutiveFailures: 3,
+        },
+      ]);
+
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).toContain('auto-paused');
+      expect(fired[0].details).toContain('stopReason=consecutive_failures');
+
+      // Further failures while paused do not re-alert and do not re-enable.
+      await failOnce(service, store, schedule.id, '2026-01-01T09:15:00.000Z');
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(4);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('re-enable clears the consecutive-failure counter and stopReason (issue #2353)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'ReenableSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
+
+      const resumed = await service.setEnabled(schedule.id, true);
+      expect(resumed.enabled).toBe(true);
+      expect(resumed.stopReason).toBeUndefined();
+      expect(resumed.consecutiveFailures).toBe(0);
+      expect(resumed.operatorHold).toBeUndefined();
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
+
+      // A single new failure after re-enable starts the streak over (does not
+      // immediately re-pause at the old counter).
+      await failOnce(service, store, schedule.id, '2026-01-01T09:10:00.000Z');
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('persists consecutive_failures stopReason across store reload (issue #2353)', async () => {
+    const { service, store, dir, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'PersistPause',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      await store.persist();
+
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      const row = reloaded.get(schedule.id)!;
+      expect(row.enabled).toBe(false);
+      expect(row.stopReason).toBe('consecutive_failures');
+      expect(row.consecutiveFailures).toBe(2);
+      expect(row.operatorHold).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('enforceFailureAutoPauses parks schedules already over the threshold (issue #2353)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'PreExistingThrash',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Simulate a pre-#2353 persisted streak that never auto-paused.
+      store.replace({
+        ...store.get(schedule.id)!,
+        consecutiveFailures: 7,
+        lastRunStatus: 'failed',
+      });
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+
+      const paused = await service.enforceFailureAutoPauses();
+      expect(paused).toBe(1);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+      expect(store.get(schedule.id)!.operatorHold).toBe(true);
+      expect(alerts.some((a) => a.summary.includes('auto-paused'))).toBe(true);
+
+      // Idempotent: second enforce does nothing.
+      expect(await service.enforceFailureAutoPauses()).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reconcile maps terminated (timeout) tasks to cancelled so the streak increments (issue #2353)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      taskStore.terminateTask(task.id, { reason: 'timeout', detail: 'hung' });
+
+      const schedule = store.create({
+        name: 'TimeoutReconcile',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+
+      await service.reconcileOnStartup(taskStore);
+
+      const after = store.get(schedule.id)!;
+      expect(after.lastRunStatus).toBe('cancelled');
+      expect(after.consecutiveFailures).toBe(1);
+      expect(after.latestExecution?.outcome).toBe('cancelled');
+    } finally {
+      cleanup();
     }
   });
 });

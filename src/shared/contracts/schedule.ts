@@ -13,7 +13,13 @@ export interface SchedulePlaybook {
   scope?: PlaybookScope;
 }
 
-export type ScheduleStopReason = 'trigger_limit_reached';
+/**
+ * Why a schedule is auto-disabled. Mirrors `core/schedule`.
+ * - `trigger_limit_reached` — finite `maxTriggers` budget exhausted.
+ * - `consecutive_failures` — fail-closed pause after N consecutive non-success
+ *   runs (issue #2353).
+ */
+export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
@@ -197,8 +203,8 @@ export interface Schedule {
   /**
    * Count of consecutive non-`completed` terminal runs (issue #1665). Mirrors
    * the `core/schedule` definition — reset to 0 on a `completed` run,
-   * incremented otherwise. Drives the per-schedule failure alert and surfaces
-   * schedule health at a glance.
+   * incremented otherwise. Drives the per-schedule failure alert and the
+   * fail-closed auto-pause (issue #2353).
    */
   consecutiveFailures?: number;
   lastScheduledFor?: string;
@@ -240,6 +246,15 @@ export interface ScheduleStatusSnapshot {
     escalated: boolean;
     class?: 'auth_expired';
   };
+  /**
+   * Schedules auto-paused after consecutive failures (issue #2353). Absent or
+   * empty when none. Mirrors `core/schedule`.
+   */
+  schedulesPausedByFailure?: Array<{
+    id: string;
+    name: string;
+    consecutiveFailures: number;
+  }>;
 }
 
 export interface ScheduleListResponse {
