@@ -44,6 +44,7 @@ import {
   EXIT_SERVER_ERROR,
   CLI_VERSION,
 } from './kookr-spawn.js';
+import { readUnreachableCause } from './kookr-restart-intent.js';
 
 const POST_TIMEOUT_MS = 10_000;
 const here = dirname(fileURLToPath(import.meta.url));
@@ -387,8 +388,11 @@ async function main({
 
   // No server / ambiguous: signal is already spooled → exit 0 (not 3).
   if (resolved.kind === 'ambiguous' || resolved.kind === 'none') {
+    // Issue #2410: tell the agent WHY the daemon is unreachable — a planned
+    // redeploy (marker present) vs an unexpected outage (no marker).
+    const cause = readUnreachableCause({ env });
     const message =
-      'no Kookr server reachable; signal durably spooled for delivery on reconnect.';
+      `no Kookr server reachable; signal durably spooled for delivery on reconnect. ${cause.message}`;
     if (args.json) {
       return exitJson({
         out,
@@ -397,10 +401,18 @@ async function main({
         ok: true,
         code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
+        details: {
+          subcommand: 'signal',
+          signalId,
+          spooled: true,
+          spoolDir,
+          restartIntent: { state: cause.classification.state, ageMs: cause.classification.ageMs },
+        },
       });
     }
-    out.log(`✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.`);
+    out.log(
+      `✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.\n  ${cause.message}`,
+    );
     return exit(EXIT_OK);
   }
 
@@ -410,10 +422,12 @@ async function main({
   try {
     result = await postSignal({ baseUrl, taskId, kind, note, signalId });
   } catch (e) {
-    // Transient network/timeout: leave in spool, exit 0.
+    // Transient network/timeout: leave in spool, exit 0. Issue #2410: enrich
+    // with the planned-restart-vs-unexpected-outage verdict from the marker.
+    const cause = readUnreachableCause({ env });
     const message =
       `daemon unreachable (${e instanceof Error ? e.message : String(e)}); `
-      + 'signal durably spooled for delivery on reconnect.';
+      + `signal durably spooled for delivery on reconnect. ${cause.message}`;
     if (args.json) {
       return exitJson({
         out,
@@ -422,7 +436,13 @@ async function main({
         ok: true,
         code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
+        details: {
+          subcommand: 'signal',
+          signalId,
+          spooled: true,
+          spoolDir,
+          restartIntent: { state: cause.classification.state, ageMs: cause.classification.ageMs },
+        },
       });
     }
     out.log(`✓ Signal spooled (${kind}) for task ${taskId} — ${message}`);

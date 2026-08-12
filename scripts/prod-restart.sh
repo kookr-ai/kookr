@@ -31,6 +31,13 @@ CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-0.2}"
 # /api/health defeats STARTUP_TIMEOUT_SECONDS and wedges the deploy forever.
 HEALTH_CURL_MAX_TIME_SECONDS="${KOOKR_HEALTH_CURL_MAX_TIME_SECONDS:-10}"
 APP_DIR="$(pwd -P)"
+RESTART_SCRIPT_DIR="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null
+  pwd -P
+)"
+# Reason recorded in the planned-restart marker (issue #2410). prod-update.sh
+# overrides this to "prod:update"; a bare `pnpm prod:restart` keeps the default.
+RESTART_INTENT_REASON="${KOOKR_RESTART_INTENT_REASON:-prod:restart}"
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 SYSTEMD_ENV_FILE="${HOME}/.config/kookr/kookr.env"
 
@@ -91,6 +98,27 @@ load_systemd_env_file() {
 }
 
 configure_port_derived_values
+
+# Planned-restart marker (issue #2410). Written BEFORE the old server is killed
+# and cleared once the new server is healthy, so the local `kookr` CLI can tell
+# a planned redeploy apart from an unexpected crash while the API is down. Both
+# helpers are best-effort: a marker failure must never block or fail a deploy.
+RESTART_INTENT_HELPER="${RESTART_SCRIPT_DIR}/../bin/kookr-restart-intent.js"
+
+write_restart_intent() {
+  [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  node "$RESTART_INTENT_HELPER" write \
+    --dir "$KOOKR_DIR" \
+    --reason "$RESTART_INTENT_REASON" \
+    --initiator "$(basename "${BASH_SOURCE[0]}")" >/dev/null 2>&1 || true
+}
+
+clear_restart_intent() {
+  [[ -f "$RESTART_INTENT_HELPER" ]] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  node "$RESTART_INTENT_HELPER" clear --dir "$KOOKR_DIR" >/dev/null 2>&1 || true
+}
 
 validate_log_generations() {
   if [[ ! "$LOG_GENERATIONS" =~ ^[0-9]+$ ]]; then
@@ -972,6 +1000,8 @@ if systemd_unit_active; then
   load_systemd_env_file
   configure_port_derived_values
   capture_predeploy_log_activity systemd
+  # Record planned-restart intent before the API goes dark (issue #2410).
+  write_restart_intent
   # Drain before systemctl restart so launches in the pre-kill window get 503
   # rather than ECONNREFUSED while the old unit is still listening (#1971).
   enter_drain_before_stop
@@ -980,6 +1010,10 @@ if systemd_unit_active; then
   # (measurement caveat for apiBlackoutSeconds on the systemd path, #1972).
   PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
   wait_for_systemd_health
+  # Healthy again: clear the marker so the CLI stops reporting a restart. If the
+  # health gate above fails the script exits first, leaving the marker to age
+  # into the "failed deploy" reading.
+  clear_restart_intent
   run_post_restart_checks
   run_post_deploy_smoke systemd
   PHASE_SMOKE_S=$((SECONDS - RESTART_T0))
@@ -1003,12 +1037,18 @@ capture_predeploy_log_activity script
 # Drain before SIGTERM so warm-restart launches hit 503/draining while the old
 # process is still up, not only ECONNREFUSED after kill (#1971). Drain state is
 # in-memory and cleared by process exit — no post-restart resume needed.
+# Record planned-restart intent before the API goes dark (issue #2410).
+write_restart_intent
 enter_drain_before_stop
 stop_existing_server
 PHASE_PORT_FREE_S=$((SECONDS - RESTART_T0))
 echo "Port ${PORT} free at +${PHASE_PORT_FREE_S}s"
 start_server
 wait_for_health
+# Healthy again: clear the marker so the CLI stops reporting a restart. A failed
+# wait_for_health exits the script before this line, leaving the marker to age
+# into the "failed deploy" reading for the CLI.
+clear_restart_intent
 run_post_restart_checks
 run_post_deploy_smoke script
 PHASE_SMOKE_S=$((SECONDS - RESTART_T0))
