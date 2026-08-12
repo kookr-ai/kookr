@@ -10,6 +10,7 @@ import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 import {
   evaluateResourceWatchdog,
   evaluatePressureWhileDisabled,
+  evaluateDisabledPressureAutoEnable,
   DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
   countSpawnsInWindow,
 } from '../core/resource-watchdog-eval.js';
@@ -29,6 +30,7 @@ import {
 } from '../core/resource-watchdog-state.js';
 import type {
   ResourceWatchdogConfig,
+  ResourceWatchdogDecision,
   ResourceWatchdogHealthSnapshot,
   ResourceWatchdogPersistedState,
   ResourceWatchdogSample,
@@ -124,9 +126,16 @@ export class ResourceWatchdogService {
           `proc≥${config.processCeiling}, orphans≥${config.orphanCeiling}, ` +
           `throttle=${config.throttleMs}ms, budget24h=${config.spawnBudget24h})`,
       );
+    } else if (config.autoEnableOnPressure) {
+      this.logger.info(
+        '[resource-watchdog] disabled with auto-enable-on-pressure ' +
+          '(set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring; ' +
+          'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)',
+      );
     } else {
       this.logger.info(
-        '[resource-watchdog] disabled (set KOOKR_RESOURCE_WATCHDOG=1 to enable)',
+        '[resource-watchdog] disabled page-only ' +
+          '(set KOOKR_RESOURCE_WATCHDOG=1 to enable; auto-enable is off)',
       );
     }
     void this.tick();
@@ -172,7 +181,14 @@ export class ResourceWatchdogService {
       enabled: config.enabled,
       dtachCount: opts?.staleDtachCount ?? null,
       softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+      autoEnableOnPressure: config.autoEnableOnPressure,
     });
+    // When master is off, surface the real lastDecision (spawn / suppress /
+    // auto_enable / disabled) so health never permanently lies as silent
+    // `disabled` under pressure (issue #2354).
+    const lastDecision = config.enabled
+      ? this.lastDecision
+      : (this.lastDecision ?? 'disabled');
     return {
       enabled: config.enabled,
       lastSampleAt: this.lastSample?.sampledAt ?? null,
@@ -194,9 +210,10 @@ export class ResourceWatchdogService {
       spawnsIn24h,
       throttleOpen,
       throttleRemainingMs,
-      lastDecision: config.enabled ? this.lastDecision : 'disabled',
+      lastDecision,
       pressureWhileDisabled: pressure.pressureWhileDisabled,
       pressureWhileDisabledReason: pressure.pressureWhileDisabledReason,
+      autoEnableOnPressure: config.autoEnableOnPressure,
     };
   }
 
@@ -232,11 +249,11 @@ export class ResourceWatchdogService {
       const config = this.getConfig();
       // Page when disabled-under-pressure stays true (issue #2078). Runs on
       // every tick — including the enabled path, which clears the episode.
-      // Page-only: never enables the actuator and never spawns.
+      // Page-only alerter: never itself enables the actuator.
       this.evaluateDisabledPressureAlert(config);
 
       if (!config.enabled) {
-        this.lastDecision = 'disabled';
+        await this.evaluateDisabledAutoEnable(config);
         return;
       }
 
@@ -270,121 +287,224 @@ export class ResourceWatchdogService {
       }
 
       if (decision.action === 'suppress_throttled') {
-        this.state = recordTriggerOnly({
-          state: this.state,
-          nowIso: this.nowIso(),
-          triggerReasons: decision.triggers.map((t) => t.reason),
-        });
-        this.persistState();
-        this.auditSink.append(buildAuditRecord({
-          action: 'suppress_throttled',
-          timestamp: this.nowIso(),
-          sample,
-          triggers: decision.triggers,
-          throttleRemainingMs: decision.throttleRemainingMs,
-          spawnsInWindow: countSpawnsInWindow(
-            this.state.spawnTimestamps,
-            this.nowMs(),
-            config.spawnBudgetWindowMs,
-          ),
-        }));
-        this.logger.warn(
-          `[resource-watchdog] pressure detected but throttled ` +
-            `(${decision.throttleRemainingMs}ms remaining): ` +
-            decision.triggers.map((t) => t.reason).join(','),
-        );
+        await this.handleSuppressThrottled(config, sample, decision);
         return;
       }
 
       // action === 'spawn'
+      await this.handleSpawn(config, sample, decision, { autoEnabled: false });
+    } finally {
+      this.tickInFlight = false;
+    }
+  }
+
+  /**
+   * Issue #2354: when the master switch is off but soft-bound pressure is
+   * already tripping, auto-enable one rate-limited investigation cycle
+   * instead of permanent silent `lastDecision: disabled`.
+   */
+  private async evaluateDisabledAutoEnable(
+    config: ResourceWatchdogConfig,
+  ): Promise<void> {
+    const dtachCount = this.getStaleDtachCount?.() ?? null;
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: config.autoEnableOnPressure,
+      dtachCount,
+      softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+      state: this.state,
+      throttleMs: config.throttleMs,
+      spawnBudget24h: config.spawnBudget24h,
+      spawnBudgetWindowMs: config.spawnBudgetWindowMs,
+      nowMs: this.nowMs(),
+    });
+
+    if (decision.action === 'stay_disabled') {
+      this.lastDecision = 'disabled';
+      return;
+    }
+
+    const sample = this.syntheticPressureSample(dtachCount ?? 0);
+
+    if (decision.action === 'suppress_throttled') {
+      this.lastDecision = 'suppress_throttled';
+      await this.handleSuppressThrottled(config, sample, {
+        action: 'suppress_throttled',
+        sample,
+        triggers: decision.triggers,
+        throttleRemainingMs: decision.throttleRemainingMs,
+        lastSpawnAt: decision.lastSpawnAt,
+      });
+      return;
+    }
+
+    // action === 'spawn' — record auto_enable then shared spawn path
+    this.lastDecision = 'auto_enable';
+    this.auditSink.append(buildAuditRecord({
+      action: 'auto_enable',
+      timestamp: this.nowIso(),
+      sample,
+      triggers: decision.triggers,
+      kind: decision.kind,
+      spawnsInWindow: decision.spawnsInWindow,
+    }));
+    this.logger.warn(
+      `[resource-watchdog] auto-enable under pressure ` +
+        `(dtach=${dtachCount ?? 'n/a'} ≥ soft bound ${DEFAULT_DTACH_PRESSURE_SOFT_BOUND}); ` +
+        `attempting ${decision.kind} spawn`,
+    );
+    this.lastDecision = 'spawn';
+    await this.handleSpawn(
+      config,
+      sample,
+      {
+        action: 'spawn',
+        sample,
+        triggers: decision.triggers,
+        kind: decision.kind,
+        spawnsInWindow: decision.spawnsInWindow,
+      },
+      { autoEnabled: true },
+    );
+  }
+
+  /** Minimal sample for auto-enable audits when the full sampler is off. */
+  private syntheticPressureSample(dtachCount: number): ResourceWatchdogSample {
+    const sample: ResourceWatchdogSample = {
+      sampledAt: this.nowIso(),
+      swapUsedPercent: null,
+      memAvailableMb: null,
+      oomKillTotal: null,
+      processCounts: { claude: 0, grok: 0, codex: 0, dtach: dtachCount },
+      orphanSessionCount: 0,
+      terminalLeakCount: 0,
+      topConsumers: [],
+    };
+    this.lastSample = sample;
+    return sample;
+  }
+
+  private async handleSuppressThrottled(
+    config: ResourceWatchdogConfig,
+    sample: ResourceWatchdogSample,
+    decision: Extract<ResourceWatchdogDecision, { action: 'suppress_throttled' }>,
+  ): Promise<void> {
+    this.state = recordTriggerOnly({
+      state: this.state,
+      nowIso: this.nowIso(),
+      triggerReasons: decision.triggers.map((t) => t.reason),
+    });
+    this.persistState();
+    this.auditSink.append(buildAuditRecord({
+      action: 'suppress_throttled',
+      timestamp: this.nowIso(),
+      sample,
+      triggers: decision.triggers,
+      throttleRemainingMs: decision.throttleRemainingMs,
+      spawnsInWindow: countSpawnsInWindow(
+        this.state.spawnTimestamps,
+        this.nowMs(),
+        config.spawnBudgetWindowMs,
+      ),
+    }));
+    this.logger.warn(
+      `[resource-watchdog] pressure detected but throttled ` +
+        `(${decision.throttleRemainingMs}ms remaining): ` +
+        decision.triggers.map((t) => t.reason).join(','),
+    );
+  }
+
+  private async handleSpawn(
+    config: ResourceWatchdogConfig,
+    sample: ResourceWatchdogSample,
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>,
+    opts: { autoEnabled: boolean },
+  ): Promise<void> {
+    this.auditSink.append(buildAuditRecord({
+      action: 'trigger',
+      timestamp: this.nowIso(),
+      sample,
+      triggers: decision.triggers,
+      kind: decision.kind,
+      spawnsInWindow: decision.spawnsInWindow,
+    }));
+
+    // Arm throttle *before* launch so a crash mid-launch or a capacity
+    // rejection cannot re-fire every intervalMs under pressure. taskId is
+    // patched in on success.
+    const nowMs = this.nowMs();
+    const nowIso = this.nowIso();
+    const retainMs = Math.max(config.throttleMs, config.spawnBudgetWindowMs);
+    this.state = recordSpawn({
+      state: this.state,
+      nowIso,
+      nowMs,
+      kind: decision.kind,
+      taskId: null,
+      triggerReasons: decision.triggers.map((t) => t.reason),
+      retainMs,
+    });
+    this.persistState();
+
+    const prompt = buildResourceWatchdogPrompt({
+      kind: decision.kind,
+      sample,
+      triggers: decision.triggers,
+      spawnsInWindow: decision.spawnsInWindow,
+      spawnBudget24h: config.spawnBudget24h,
+      serverLogTail: this.readServerLogTail() ?? undefined,
+      recentAuditTail: this.readAuditTail() ?? undefined,
+    });
+
+    try {
+      const result = await this.launchTask({
+        prompt,
+        cwd: config.taskCwd,
+        name: resourceWatchdogTaskName(decision.kind),
+        disableDedup: true,
+        // 'api' source participates in spawn-burst budgets; actor 'kookr'
+        // may consume reserved self-maintenance slots (#1564 default).
+        launchSource: 'api',
+        launchActorId: 'kookr',
+        unattended: true,
+        autoCloseOnSignal: true,
+      });
+      const taskId = result.task.id;
+      this.state = {
+        ...this.state,
+        lastSpawnTaskId: taskId,
+      };
+      this.persistState();
+      this.logger.warn(
+        `[resource-watchdog] spawned ${decision.kind} task ${taskId}` +
+          (result.queued ? ' (queued)' : '') +
+          (opts.autoEnabled ? ' (auto-enable)' : '') +
+          ` — triggers: ${decision.triggers.map((t) => t.reason).join(',')}`,
+      );
       this.auditSink.append(buildAuditRecord({
-        action: 'trigger',
+        action: 'spawn',
         timestamp: this.nowIso(),
         sample,
         triggers: decision.triggers,
         kind: decision.kind,
+        taskId,
         spawnsInWindow: decision.spawnsInWindow,
       }));
-
-      // Arm throttle *before* launch so a crash mid-launch or a capacity
-      // rejection cannot re-fire every intervalMs under pressure. taskId is
-      // patched in on success.
-      const nowMs = this.nowMs();
-      const nowIso = this.nowIso();
-      const retainMs = Math.max(config.throttleMs, config.spawnBudgetWindowMs);
-      this.state = recordSpawn({
-        state: this.state,
-        nowIso,
-        nowMs,
-        kind: decision.kind,
-        taskId: null,
-        triggerReasons: decision.triggers.map((t) => t.reason),
-        retainMs,
-      });
-      this.persistState();
-
-      const prompt = buildResourceWatchdogPrompt({
-        kind: decision.kind,
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[resource-watchdog] spawn failed: ${message}`);
+      // Throttle already armed above — do not clear it. A host under
+      // pressure that rejects launches must quiet for throttleMs, not retry
+      // every sample interval.
+      this.auditSink.append(buildAuditRecord({
+        action: 'spawn_failed',
+        timestamp: this.nowIso(),
         sample,
         triggers: decision.triggers,
+        kind: decision.kind,
+        error: message,
         spawnsInWindow: decision.spawnsInWindow,
-        spawnBudget24h: config.spawnBudget24h,
-        serverLogTail: this.readServerLogTail() ?? undefined,
-        recentAuditTail: this.readAuditTail() ?? undefined,
-      });
-
-      let taskId: string | null = null;
-      try {
-        const result = await this.launchTask({
-          prompt,
-          cwd: config.taskCwd,
-          name: resourceWatchdogTaskName(decision.kind),
-          disableDedup: true,
-          // 'api' source participates in spawn-burst budgets; actor 'kookr'
-          // may consume reserved self-maintenance slots (#1564 default).
-          launchSource: 'api',
-          launchActorId: 'kookr',
-          unattended: true,
-          autoCloseOnSignal: true,
-        });
-        taskId = result.task.id;
-        this.state = {
-          ...this.state,
-          lastSpawnTaskId: taskId,
-        };
-        this.persistState();
-        this.logger.warn(
-          `[resource-watchdog] spawned ${decision.kind} task ${taskId}` +
-            (result.queued ? ' (queued)' : '') +
-            ` — triggers: ${decision.triggers.map((t) => t.reason).join(',')}`,
-        );
-        this.auditSink.append(buildAuditRecord({
-          action: 'spawn',
-          timestamp: this.nowIso(),
-          sample,
-          triggers: decision.triggers,
-          kind: decision.kind,
-          taskId,
-          spawnsInWindow: decision.spawnsInWindow,
-        }));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`[resource-watchdog] spawn failed: ${message}`);
-        // Throttle already armed above — do not clear it. A host under
-        // pressure that rejects launches must quiet for throttleMs, not retry
-        // every sample interval.
-        this.auditSink.append(buildAuditRecord({
-          action: 'spawn_failed',
-          timestamp: this.nowIso(),
-          sample,
-          triggers: decision.triggers,
-          kind: decision.kind,
-          error: message,
-          spawnsInWindow: decision.spawnsInWindow,
-        }));
-      }
-    } finally {
-      this.tickInFlight = false;
+      }));
     }
   }
 
@@ -416,6 +536,7 @@ export class ResourceWatchdogService {
         enabled: config.enabled,
         dtachCount,
         softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+        autoEnableOnPressure: config.autoEnableOnPressure,
       });
       this.pressureWhileDisabledAlerter.evaluate({
         pressureWhileDisabled: pressure.pressureWhileDisabled,
@@ -439,6 +560,7 @@ export function createResourceWatchdogService(
 
 export function defaultResourceWatchdogHealthSnapshot(
   enabled = false,
+  autoEnableOnPressure = true,
 ): ResourceWatchdogHealthSnapshot {
   return {
     enabled,
@@ -455,6 +577,7 @@ export function defaultResourceWatchdogHealthSnapshot(
     lastDecision: enabled ? null : 'disabled',
     pressureWhileDisabled: false,
     pressureWhileDisabledReason: null,
+    autoEnableOnPressure,
   };
 }
 

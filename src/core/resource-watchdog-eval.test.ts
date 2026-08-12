@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   collectTriggers,
   countSpawnsInWindow,
+  evaluateDisabledPressureAutoEnable,
   evaluatePressureWhileDisabled,
   evaluateResourceWatchdog,
   pruneSpawnTimestamps,
@@ -336,7 +337,7 @@ describe('spawn window helpers + recordSpawn', () => {
   });
 });
 
-describe('evaluatePressureWhileDisabled (issue #2039)', () => {
+describe('evaluatePressureWhileDisabled (issue #2039 / #2354)', () => {
   test('true when disabled and dtach count meets soft bound', () => {
     expect(
       evaluatePressureWhileDisabled({ enabled: false, dtachCount: 21, softBound: 20 }),
@@ -352,6 +353,19 @@ describe('evaluatePressureWhileDisabled (issue #2039)', () => {
     expect(hit.pressureWhileDisabled).toBe(true);
     expect(hit.pressureWhileDisabledReason).toContain('soft bound 40');
     expect(hit.pressureWhileDisabledReason).toContain('KOOKR_RESOURCE_WATCHDOG=1');
+    expect(hit.pressureWhileDisabledReason).toContain('auto-enable');
+  });
+
+  test('page-only reason when autoEnableOnPressure is false', () => {
+    const hit = evaluatePressureWhileDisabled({
+      enabled: false,
+      dtachCount: 25,
+      softBound: 20,
+      autoEnableOnPressure: false,
+    });
+    expect(hit.pressureWhileDisabled).toBe(true);
+    expect(hit.pressureWhileDisabledReason).toContain('will not spawn');
+    expect(hit.pressureWhileDisabledReason).toContain('AUTO_ENABLE=0');
   });
 
   test('false when enabled even with high dtach', () => {
@@ -373,5 +387,173 @@ describe('evaluatePressureWhileDisabled (issue #2039)', () => {
     expect(
       evaluatePressureWhileDisabled({ enabled: false, dtachCount: 100, softBound: 0 }),
     ).toEqual({ pressureWhileDisabled: false, pressureWhileDisabledReason: null });
+  });
+});
+
+describe('evaluateDisabledPressureAutoEnable (issue #2354)', () => {
+  const nowMs = Date.parse('2026-08-12T12:00:00.000Z');
+  const throttleMs = 30 * 60 * 1000;
+  const spawnBudgetWindowMs = 24 * 60 * 60 * 1000;
+
+  test('stay_disabled when master enabled, auto-enable off, or no pressure', () => {
+    expect(
+      evaluateDisabledPressureAutoEnable({
+        enabled: true,
+        autoEnableOnPressure: true,
+        dtachCount: 99,
+        state: emptyResourceWatchdogState(),
+        throttleMs,
+        spawnBudget24h: 4,
+        spawnBudgetWindowMs,
+        nowMs,
+      }),
+    ).toEqual({ action: 'stay_disabled' });
+
+    expect(
+      evaluateDisabledPressureAutoEnable({
+        enabled: false,
+        autoEnableOnPressure: false,
+        dtachCount: 99,
+        state: emptyResourceWatchdogState(),
+        throttleMs,
+        spawnBudget24h: 4,
+        spawnBudgetWindowMs,
+        nowMs,
+      }),
+    ).toEqual({ action: 'stay_disabled' });
+
+    expect(
+      evaluateDisabledPressureAutoEnable({
+        enabled: false,
+        autoEnableOnPressure: true,
+        dtachCount: 5,
+        state: emptyResourceWatchdogState(),
+        throttleMs,
+        spawnBudget24h: 4,
+        spawnBudgetWindowMs,
+        nowMs,
+      }),
+    ).toEqual({ action: 'stay_disabled' });
+  });
+
+  test('spawns investigation when soft-bound pressure trips and budget open', () => {
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: true,
+      dtachCount: 33,
+      softBound: 20,
+      state: emptyResourceWatchdogState(),
+      throttleMs,
+      spawnBudget24h: 4,
+      spawnBudgetWindowMs,
+      nowMs,
+    });
+    expect(decision).toMatchObject({
+      action: 'spawn',
+      kind: 'investigation',
+      spawnsInWindow: 0,
+    });
+    if (decision.action === 'spawn') {
+      expect(decision.triggers[0]?.reason).toBe('dtach_soft_bound');
+      expect(decision.triggers[0]?.observed).toBe(33);
+    }
+  });
+
+  test('suppress_throttled when a recent spawn is inside throttle window', () => {
+    const lastSpawnAt = new Date(nowMs - 5 * 60 * 1000).toISOString();
+    const state = recordSpawn({
+      state: emptyResourceWatchdogState(),
+      nowIso: lastSpawnAt,
+      nowMs: nowMs - 5 * 60 * 1000,
+      kind: 'investigation',
+      taskId: 't-prev',
+      triggerReasons: ['dtach_soft_bound'],
+      retainMs: spawnBudgetWindowMs,
+    });
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: true,
+      dtachCount: 40,
+      state,
+      throttleMs,
+      spawnBudget24h: 4,
+      spawnBudgetWindowMs,
+      nowMs,
+    });
+    expect(decision.action).toBe('suppress_throttled');
+    if (decision.action === 'suppress_throttled') {
+      expect(decision.throttleRemainingMs).toBeGreaterThan(0);
+      expect(decision.triggers[0]?.reason).toBe('dtach_soft_bound');
+    }
+  });
+
+  test('meta_reflection when 24h spawn budget is exhausted', () => {
+    let state = emptyResourceWatchdogState();
+    for (let i = 0; i < 4; i += 1) {
+      const t = nowMs - (i + 1) * 60 * 60 * 1000;
+      state = recordSpawn({
+        state,
+        nowIso: new Date(t).toISOString(),
+        nowMs: t,
+        kind: 'investigation',
+        taskId: `t-${i}`,
+        triggerReasons: ['dtach_soft_bound'],
+        retainMs: spawnBudgetWindowMs,
+      });
+    }
+    // Advance past throttle from the most recent spawn.
+    const afterThrottle = nowMs + throttleMs + 1;
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: true,
+      dtachCount: 50,
+      state,
+      throttleMs,
+      spawnBudget24h: 4,
+      spawnBudgetWindowMs,
+      nowMs: afterThrottle,
+    });
+    expect(decision).toMatchObject({
+      action: 'spawn',
+      kind: 'meta_reflection',
+      spawnsInWindow: 4,
+    });
+  });
+
+  test('suppresses further meta thrash once meta_reflection is already in window', () => {
+    let state = emptyResourceWatchdogState();
+    for (let i = 0; i < 4; i += 1) {
+      const t = nowMs - (i + 2) * 60 * 60 * 1000;
+      state = recordSpawn({
+        state,
+        nowIso: new Date(t).toISOString(),
+        nowMs: t,
+        kind: 'investigation',
+        taskId: `t-${i}`,
+        triggerReasons: ['dtach_soft_bound'],
+        retainMs: spawnBudgetWindowMs,
+      });
+    }
+    const metaAt = nowMs - throttleMs - 1;
+    state = recordSpawn({
+      state,
+      nowIso: new Date(metaAt).toISOString(),
+      nowMs: metaAt,
+      kind: 'meta_reflection',
+      taskId: 't-meta',
+      triggerReasons: ['dtach_soft_bound'],
+      retainMs: spawnBudgetWindowMs,
+    });
+    const decision = evaluateDisabledPressureAutoEnable({
+      enabled: false,
+      autoEnableOnPressure: true,
+      dtachCount: 55,
+      state,
+      throttleMs,
+      spawnBudget24h: 4,
+      spawnBudgetWindowMs,
+      nowMs,
+    });
+    expect(decision.action).toBe('suppress_throttled');
   });
 });

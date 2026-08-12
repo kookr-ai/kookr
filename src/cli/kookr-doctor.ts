@@ -55,8 +55,21 @@ interface CommandRunner {
   (file: string, args: readonly string[], options?: { timeoutMs?: number }): Promise<DependencyCommandResult>;
 }
 
-/** Live probe of resourceWatchdog.enabled from /api/health. null = unreachable / unknown. */
-type ResourceWatchdogEnabledProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | null>;
+/**
+ * Live probe of resourceWatchdog from /api/health (issues #1988 / #2354).
+ * null = unreachable / unknown. Boolean form kept for older test injectors.
+ */
+export interface ResourceWatchdogProbeSnapshot {
+  enabled: boolean;
+  pressureWhileDisabled?: boolean;
+  pressureWhileDisabledReason?: string | null;
+  lastDecision?: string | null;
+  autoEnableOnPressure?: boolean;
+}
+
+type ResourceWatchdogEnabledProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<boolean | ResourceWatchdogProbeSnapshot | null>;
 
 /**
  * Live probe of hungSuspect residual + hungSuspectTtlReclaim from /api/health
@@ -204,7 +217,7 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
-ops.resource-watchdog (advisory warn when host-pressure auto-investigation is off),
+ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
@@ -563,10 +576,21 @@ async function checkGithubScannerBackoff(
   );
 }
 
+function normalizeResourceWatchdogProbe(
+  value: boolean | ResourceWatchdogProbeSnapshot | null,
+): ResourceWatchdogProbeSnapshot | null {
+  if (value === null) return null;
+  if (typeof value === 'boolean') return { enabled: value };
+  if (typeof value.enabled === 'boolean') return value;
+  return null;
+}
+
 /**
- * Advisory ops check (issue #1988): surface that host-pressure auto-investigation
- * is off by default. Prefer live /api/health when reachable; otherwise env flag.
- * Never fails required checks — warn only.
+ * Advisory ops check (issue #1988 / #2354): surface that continuous host-pressure
+ * monitoring is off by default, and elevate when live health shows
+ * pressureWhileDisabled / lastDecision under auto-enable. Prefer live
+ * /api/health when reachable; otherwise env flag. Never fails required checks —
+ * warn only.
  */
 async function checkResourceWatchdog(
   env: NodeJS.ProcessEnv,
@@ -574,24 +598,58 @@ async function checkResourceWatchdog(
 ): Promise<DoctorCheck> {
   const envEnabled = isTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG);
   const probeFn = probe ?? defaultProbeResourceWatchdogEnabled;
-  let liveEnabled: boolean | null = null;
+  let live: ResourceWatchdogProbeSnapshot | null = null;
   try {
-    liveEnabled = await probeFn(env);
+    live = normalizeResourceWatchdogProbe(await probeFn(env));
   } catch {
-    liveEnabled = null;
+    live = null;
   }
 
-  const enabled = liveEnabled ?? envEnabled;
+  const enabled = live?.enabled ?? envEnabled;
   if (enabled) {
     return okCheck(
       'ops.resource-watchdog',
       'Resource watchdog',
       'ops',
-      liveEnabled === true
+      live?.enabled === true
         ? 'enabled (GET /api/health resourceWatchdog.enabled=true)'
         : 'enabled (KOOKR_RESOURCE_WATCHDOG is truthy)',
       false,
     );
+  }
+
+  const underPressure = live?.pressureWhileDisabled === true;
+  const lastDecision = live?.lastDecision ?? null;
+  const autoEnable = live?.autoEnableOnPressure;
+  const reason = live?.pressureWhileDisabledReason?.trim() || null;
+
+  if (underPressure) {
+    const decisionNote = lastDecision ? ` lastDecision=${lastDecision}.` : '';
+    const autoNote =
+      autoEnable === false
+        ? ' Auto-enable is off (page-only).'
+        : autoEnable === true
+          ? ' Auto-enable-on-pressure is armed (rate-limited investigation may spawn).'
+          : '';
+    return {
+      id: 'ops.resource-watchdog',
+      label: 'Resource watchdog',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        'resourceWatchdog disabled under host pressure (pressureWhileDisabled=true)',
+      detail:
+        (reason
+          ? `GET /api/health resourceWatchdog.pressureWhileDisabled: ${reason}.`
+          : 'GET /api/health reports resourceWatchdog.enabled=false with pressureWhileDisabled=true.') +
+        decisionNote +
+        autoNote,
+      recommendedAction:
+        'Set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring, or keep auto-enable ' +
+        '(default) for rate-limited investigation spawns under soft-bound pressure. ' +
+        'Set KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 only for deliberate page-only mode.',
+    };
   }
 
   return {
@@ -600,12 +658,15 @@ async function checkResourceWatchdog(
     category: 'ops',
     status: 'warn',
     required: false,
-    summary: 'host-pressure auto-investigation is disabled',
-    detail: liveEnabled === false
+    summary: 'host-pressure continuous monitoring is disabled',
+    detail: live?.enabled === false
       ? 'GET /api/health reports resourceWatchdog.enabled=false'
-      : 'KOOKR_RESOURCE_WATCHDOG is unset or not truthy (disabled by default)',
+      : 'KOOKR_RESOURCE_WATCHDOG is unset or not truthy (disabled by default; ' +
+        'auto-enable-on-pressure still arms rate-limited investigation under soft-bound pressure)',
     recommendedAction:
-      'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server to enable host-pressure auto-investigation.',
+      'Set KOOKR_RESOURCE_WATCHDOG=1 (or true/yes/on) and restart the server for continuous ' +
+      'host-pressure monitoring. Soft-bound pressure still auto-enables a rate-limited ' +
+      'investigation by default (KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE).',
   };
 }
 
@@ -1030,7 +1091,9 @@ function isTruthyEnvFlag(raw: string | undefined): boolean {
  * at a server (`KOOKR_API_BASE_URL` or numeric `KOOKR_PORT`) — no auto 4800/4801
  * scan, so hermetic unit tests with empty env stay offline.
  */
-async function defaultProbeResourceWatchdogEnabled(env: NodeJS.ProcessEnv): Promise<boolean | null> {
+async function defaultProbeResourceWatchdogEnabled(
+  env: NodeJS.ProcessEnv,
+): Promise<ResourceWatchdogProbeSnapshot | null> {
   const base = resolveOptionalHealthBase(env);
   if (!base) return null;
 
@@ -1044,11 +1107,32 @@ async function defaultProbeResourceWatchdogEnabled(env: NodeJS.ProcessEnv): Prom
       signal: AbortSignal.timeout(500),
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { resourceWatchdog?: { enabled?: unknown } };
-    if (typeof body?.resourceWatchdog?.enabled === 'boolean') {
-      return body.resourceWatchdog.enabled;
-    }
-    return null;
+    const body = (await res.json()) as {
+      resourceWatchdog?: {
+        enabled?: unknown;
+        pressureWhileDisabled?: unknown;
+        pressureWhileDisabledReason?: unknown;
+        lastDecision?: unknown;
+        autoEnableOnPressure?: unknown;
+      };
+    };
+    const rw = body?.resourceWatchdog;
+    if (typeof rw?.enabled !== 'boolean') return null;
+    return {
+      enabled: rw.enabled,
+      ...(typeof rw.pressureWhileDisabled === 'boolean'
+        ? { pressureWhileDisabled: rw.pressureWhileDisabled }
+        : {}),
+      ...(typeof rw.pressureWhileDisabledReason === 'string' || rw.pressureWhileDisabledReason === null
+        ? { pressureWhileDisabledReason: rw.pressureWhileDisabledReason as string | null }
+        : {}),
+      ...(typeof rw.lastDecision === 'string' || rw.lastDecision === null
+        ? { lastDecision: rw.lastDecision as string | null }
+        : {}),
+      ...(typeof rw.autoEnableOnPressure === 'boolean'
+        ? { autoEnableOnPressure: rw.autoEnableOnPressure }
+        : {}),
+    };
   } catch {
     return null;
   }

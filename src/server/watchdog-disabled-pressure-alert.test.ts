@@ -33,12 +33,12 @@ describe('buildWatchdogDisabledPressureAlert / clear (issue #2078)', () => {
       metric: WATCHDOG_DISABLED_PRESSURE_METRIC,
       state: 'fired',
     });
-    expect(alert.summary).toContain('resourceWatchdog disabled under pressure');
+    expect(alert.summary).toContain('resourceWatchdog master off under pressure');
     expect(alert.details).toContain('staleProcesses.dtach.count=32');
-    expect(alert.details).toContain('Page only');
-    expect(alert.details).toContain('enable remains an operator decision');
-    // Page-only: never claims to spawn or enable the actuator.
-    expect(alert.details).not.toMatch(/spawned|auto-enabl/i);
+    expect(alert.details).toContain('KOOKR_RESOURCE_WATCHDOG=1');
+    expect(alert.details).toContain('AUTO_ENABLE=0');
+    // Alert pages the gap; spawn is owned by the service auto-enable path (#2354).
+    expect(alert.details).toMatch(/auto-enable/i);
   });
 
   it('builds a recovered clear', () => {

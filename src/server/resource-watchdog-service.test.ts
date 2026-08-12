@@ -18,6 +18,7 @@ import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 function baseConfig(overrides: Partial<ResourceWatchdogConfig> = {}): ResourceWatchdogConfig {
   return {
     enabled: true,
+    autoEnableOnPressure: true,
     intervalMs: 60_000,
     swapUsedPercentThreshold: 50,
     memAvailableMbFloor: 512,
@@ -102,24 +103,32 @@ describe('ResourceWatchdogService', () => {
     return { service, audit, statePath, config };
   }
 
-  test('does not spawn when disabled', async () => {
-    const { service, audit } = makeService({ config: { enabled: false } });
+  test('does not spawn when disabled without pressure', async () => {
+    const { service, audit } = makeService({
+      config: { enabled: false },
+      getStaleDtachCount: () => 3,
+    });
     await service.runOnce();
     expect(launches).toHaveLength(0);
     expect(service.getHealthSnapshot().enabled).toBe(false);
     expect(service.getHealthSnapshot().lastDecision).toBe('disabled');
+    expect(service.getHealthSnapshot().autoEnableOnPressure).toBe(true);
     expect(audit.records).toHaveLength(0);
   });
 
   test('pressureWhileDisabled true when disabled + high dtach (issue #2039)', async () => {
-    const { service } = makeService({ config: { enabled: false } });
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: false },
+      getStaleDtachCount: () => 21,
+    });
     await service.runOnce();
-    // Still no spawn — visibility only.
+    // Page-only: no spawn when auto-enable is off.
     expect(launches).toHaveLength(0);
     const underPressure = service.getHealthSnapshot({ staleDtachCount: 21 });
     expect(underPressure.pressureWhileDisabled).toBe(true);
     expect(underPressure.pressureWhileDisabledReason).toContain('staleProcesses.dtach.count=21');
     expect(underPressure.enabled).toBe(false);
+    expect(underPressure.autoEnableOnPressure).toBe(false);
 
     const lowPressure = service.getHealthSnapshot({ staleDtachCount: 3 });
     expect(lowPressure.pressureWhileDisabled).toBe(false);
@@ -145,7 +154,8 @@ describe('ResourceWatchdogService', () => {
     const evaluate = vi.fn();
     const getStaleDtachCount = vi.fn(() => 32);
     const { service } = makeService({
-      config: { enabled: false },
+      // Page-only so alerter path is isolated from auto-enable spawn.
+      config: { enabled: false, autoEnableOnPressure: false },
       getStaleDtachCount,
       pressureWhileDisabledAlerter: { evaluate },
     });
@@ -179,18 +189,57 @@ describe('ResourceWatchdogService', () => {
     });
   });
 
-  test('disabled-under-pressure alerter never spawns investigation (issue #2078)', async () => {
+  test('page-only mode never spawns investigation under pressure (issue #2078 / #2354)', async () => {
     const evaluate = vi.fn();
     const { service } = makeService({
-      config: { enabled: false },
+      config: { enabled: false, autoEnableOnPressure: false },
       getStaleDtachCount: () => 100,
       pressureWhileDisabledAlerter: { evaluate },
     });
     await service.runOnce();
     await service.runOnce();
     expect(launches).toHaveLength(0);
+    expect(service.getHealthSnapshot().lastDecision).toBe('disabled');
     expect(evaluate).toHaveBeenCalledTimes(2);
     expect(evaluate.mock.calls.every((c) => c[0].pressureWhileDisabled === true)).toBe(true);
+  });
+
+  test('auto-enables rate-limited investigation under pressure (issue #2354)', async () => {
+    const audit = new MemoryResourceWatchdogAuditSink();
+    const evaluate = vi.fn();
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => 33,
+      audit,
+      pressureWhileDisabledAlerter: { evaluate },
+    });
+    await service.runOnce();
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.name).toBe('Resource watchdog investigation');
+    expect(launches[0]?.unattended).toBe(true);
+    expect(launches[0]?.prompt).toContain('dtach_soft_bound');
+    expect(audit.records.map((r) => r.action)).toEqual(['auto_enable', 'trigger', 'spawn']);
+    // Default path pages AND auto-spawns — alerter is not page-only gated.
+    expect(evaluate).toHaveBeenCalledWith({
+      pressureWhileDisabled: true,
+      reason: expect.stringContaining('staleProcesses.dtach.count=33'),
+      dtachCount: 33,
+    });
+    const snap = service.getHealthSnapshot({ staleDtachCount: 33 });
+    expect(snap.enabled).toBe(false);
+    expect(snap.pressureWhileDisabled).toBe(true);
+    expect(snap.lastDecision).toBe('spawn');
+    expect(snap.spawnsIn24h).toBe(1);
+    expect(snap.autoEnableOnPressure).toBe(true);
+
+    // Second tick within throttle does not storm.
+    nowMs += 5 * 60 * 1000;
+    await service.runOnce();
+    expect(launches).toHaveLength(1);
+    expect(service.getHealthSnapshot({ staleDtachCount: 33 }).lastDecision).toBe(
+      'suppress_throttled',
+    );
+    expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
   test('spawns investigation with hard-rules prompt on pressure', async () => {

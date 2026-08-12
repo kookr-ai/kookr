@@ -241,24 +241,26 @@ export function metaReflectionInWindow(
 
 /**
  * Default soft bound for `staleProcesses.dtach.count` on the
- * `pressureWhileDisabled` health signal (issue #2039). Lower than the
- * agent-family process ceiling (40) because a live prod observation fired at
- * ~21 dtach processes while the actuator was off — visibility should catch
- * that class of pressure without auto-enabling the watchdog.
+ * `pressureWhileDisabled` health signal (issue #2039) and the disabled-path
+ * auto-enable trigger (issue #2354). Lower than the agent-family process
+ * ceiling (40) because a live prod observation fired at ~21 dtach processes
+ * while continuous monitoring was off.
  */
 export const DEFAULT_DTACH_PRESSURE_SOFT_BOUND = 20;
 
 /**
- * Visibility-only pressure signal when the actuator is off (issue #2039).
+ * Pressure signal when the actuator master switch is off (issue #2039 / #2354).
  *
- * When `KOOKR_RESOURCE_WATCHDOG` is unset the service never samples and never
- * spawns, so host pressure can sit silently on `/api/health`. This pure helper
- * folds an already-cached external gauge (`staleProcesses.dtach`) into the
- * resourceWatchdog health block so operators/sentinel see
- * `pressureWhileDisabled=true` without changing the opt-in default.
+ * When `KOOKR_RESOURCE_WATCHDOG` is unset the full sampler stays off, so host
+ * pressure can sit on `/api/health` without continuous monitoring. This pure
+ * helper folds an already-cached external gauge (`staleProcesses.dtach`) into
+ * the resourceWatchdog health block so operators/sentinel see
+ * `pressureWhileDisabled=true`.
  *
  * Soft-bound semantics match other watchdog thresholds: `softBound <= 0`
- * disables the check. Does not enable, sample, or spawn.
+ * disables the check. With `autoEnableOnPressure` (default true) the service
+ * may still take a rate-limited investigation spawn — see
+ * {@link evaluateDisabledPressureAutoEnable}.
  */
 export function evaluatePressureWhileDisabled(input: {
   enabled: boolean;
@@ -270,6 +272,11 @@ export function evaluatePressureWhileDisabled(input: {
    * `0` disables the check.
    */
   softBound?: number;
+  /**
+   * Whether disabled-under-pressure auto-enable is armed. Affects the reason
+   * string only (visibility). Defaults to true to match config default.
+   */
+  autoEnableOnPressure?: boolean;
 }): { pressureWhileDisabled: boolean; pressureWhileDisabledReason: string | null } {
   const softBound = input.softBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
   if (input.enabled) {
@@ -281,11 +288,129 @@ export function evaluatePressureWhileDisabled(input: {
   if (input.dtachCount < softBound) {
     return { pressureWhileDisabled: false, pressureWhileDisabledReason: null };
   }
+  const autoEnable = input.autoEnableOnPressure !== false;
+  const actionHint = autoEnable
+    ? 'auto-enable will attempt a rate-limited investigation spawn '
+      + '(set KOOKR_RESOURCE_WATCHDOG=1 for continuous monitoring, or '
+      + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)'
+    : 'host-pressure auto-investigation will not spawn '
+      + '(set KOOKR_RESOURCE_WATCHDOG=1 to enable, or leave '
+      + 'KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0 for page-only)';
   return {
     pressureWhileDisabled: true,
     pressureWhileDisabledReason:
       `staleProcesses.dtach.count=${input.dtachCount} ≥ soft bound ${softBound} ` +
-      'while resourceWatchdog is disabled; host-pressure auto-investigation will not spawn ' +
-      '(set KOOKR_RESOURCE_WATCHDOG=1 to enable)',
+      `while resourceWatchdog is disabled; ${actionHint}`,
+  };
+}
+
+/** Build the synthetic trigger used when soft-bound dtach pressure fires auto-enable. */
+export function buildDtachSoftBoundTrigger(
+  dtachCount: number,
+  softBound: number = DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+): ResourceWatchdogTrigger {
+  return {
+    reason: 'dtach_soft_bound',
+    detail:
+      `staleProcesses.dtach.count=${dtachCount} ≥ soft bound ${softBound} ` +
+      'while resourceWatchdog master switch is off (auto-enable path, issue #2354)',
+    observed: dtachCount,
+    threshold: softBound,
+  };
+}
+
+/**
+ * Decision table when the master switch is off (issue #2354).
+ *
+ * Order:
+ * 1. auto-enable off or no soft-bound pressure → stay_disabled
+ * 2. within throttle → suppress_throttled (still records an explicit decision)
+ * 3. 24h budget exhausted → meta_reflection once, else suppress
+ * 4. else spawn investigation (rate-limited)
+ *
+ * Pure: no I/O. Caller arms throttle/state and launches on `spawn`.
+ */
+export type DisabledPressureAutoEnableDecision =
+  | { action: 'stay_disabled' }
+  | {
+      action: 'suppress_throttled';
+      triggers: ResourceWatchdogTrigger[];
+      throttleRemainingMs: number;
+      lastSpawnAt: string | null;
+    }
+  | {
+      action: 'spawn';
+      triggers: ResourceWatchdogTrigger[];
+      kind: ResourceWatchdogSpawnKind;
+      spawnsInWindow: number;
+    };
+
+export function evaluateDisabledPressureAutoEnable(input: {
+  enabled: boolean;
+  autoEnableOnPressure: boolean;
+  dtachCount: number | null;
+  softBound?: number;
+  state: ResourceWatchdogPersistedState;
+  throttleMs: number;
+  spawnBudget24h: number;
+  spawnBudgetWindowMs: number;
+  nowMs: number;
+}): DisabledPressureAutoEnableDecision {
+  if (input.enabled || !input.autoEnableOnPressure) {
+    return { action: 'stay_disabled' };
+  }
+  const softBound = input.softBound ?? DEFAULT_DTACH_PRESSURE_SOFT_BOUND;
+  const pressure = evaluatePressureWhileDisabled({
+    enabled: false,
+    dtachCount: input.dtachCount,
+    softBound,
+    autoEnableOnPressure: true,
+  });
+  if (!pressure.pressureWhileDisabled || input.dtachCount === null) {
+    return { action: 'stay_disabled' };
+  }
+
+  const triggers = [buildDtachSoftBoundTrigger(input.dtachCount, softBound)];
+  const lastSpawnMs = input.state.lastSpawnAt ? Date.parse(input.state.lastSpawnAt) : NaN;
+  if (Number.isFinite(lastSpawnMs)) {
+    const elapsed = input.nowMs - lastSpawnMs;
+    if (elapsed < input.throttleMs) {
+      return {
+        action: 'suppress_throttled',
+        triggers,
+        throttleRemainingMs: Math.max(0, input.throttleMs - elapsed),
+        lastSpawnAt: input.state.lastSpawnAt,
+      };
+    }
+  }
+
+  const spawnsInWindow = countSpawnsInWindow(
+    input.state.spawnTimestamps,
+    input.nowMs,
+    input.spawnBudgetWindowMs,
+  );
+
+  if (spawnsInWindow >= input.spawnBudget24h) {
+    if (metaReflectionInWindow(input.state, input.nowMs, input.spawnBudgetWindowMs)) {
+      return {
+        action: 'suppress_throttled',
+        triggers,
+        throttleRemainingMs: input.throttleMs,
+        lastSpawnAt: input.state.lastSpawnAt,
+      };
+    }
+    return {
+      action: 'spawn',
+      triggers,
+      kind: 'meta_reflection',
+      spawnsInWindow,
+    };
+  }
+
+  return {
+    action: 'spawn',
+    triggers,
+    kind: 'investigation',
+    spawnsInWindow,
   };
 }

@@ -59,7 +59,9 @@ export type ResourceWatchdogTriggerReason =
   | 'mem_available'
   | 'oom_kill_delta'
   | 'process_ceiling'
-  | 'orphan_ceiling';
+  | 'orphan_ceiling'
+  /** Soft-bound dtach pressure while the actuator is opt-in disabled (issue #2354). */
+  | 'dtach_soft_bound';
 
 export interface ResourceWatchdogTrigger {
   reason: ResourceWatchdogTriggerReason;
@@ -98,6 +100,12 @@ export type ResourceWatchdogDecision =
 export interface ResourceWatchdogConfig {
   /** Master enable. Default false — operator must opt in. */
   enabled: boolean;
+  /**
+   * When the master switch is off, still allow a rate-limited investigation
+   * spawn if soft-bound host pressure is already tripping (issue #2354).
+   * Default true. Set `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only.
+   */
+  autoEnableOnPressure: boolean;
   /** Sampler cadence. Default 60s. */
   intervalMs: number;
   /** Swap used % at/above which we trigger. Default 50. `0` disables. */
@@ -147,7 +155,9 @@ export type ResourceWatchdogAuditAction =
   | 'suppress_throttled'
   | 'spawn'
   | 'spawn_failed'
-  | 'disabled_skip';
+  | 'disabled_skip'
+  /** Actuator was off; soft-bound pressure auto-enabled one investigation cycle (#2354). */
+  | 'auto_enable';
 
 export interface ResourceWatchdogAuditRecord {
   schemaVersion: typeof RESOURCE_WATCHDOG_AUDIT_SCHEMA_VERSION;
@@ -189,13 +199,20 @@ export interface ResourceWatchdogHealthSnapshot {
   spawnsIn24h: number;
   throttleOpen: boolean;
   throttleRemainingMs: number;
-  lastDecision: ResourceWatchdogDecision['action'] | 'disabled' | null;
+  lastDecision: ResourceWatchdogDecision['action'] | 'disabled' | 'auto_enable' | null;
   /**
-   * Issue #2039: true when the watchdog is intentionally disabled *and* a
+   * Issue #2039 / #2354: true when the watchdog master switch is off *and* a
    * host-pressure gauge (currently `staleProcesses.dtach`) exceeds its soft
-   * bound. Visibility only — never auto-enables the actuator.
+   * bound. When `autoEnableOnPressure` is true the service may still spawn a
+   * rate-limited investigation; this flag stays true so operators see the
+   * opt-in gap until they set `KOOKR_RESOURCE_WATCHDOG=1`.
    */
   pressureWhileDisabled: boolean;
   /** Human-readable detail when `pressureWhileDisabled` is true; else null. */
   pressureWhileDisabledReason: string | null;
+  /**
+   * Issue #2354: whether disabled-under-pressure auto-enable is armed.
+   * Mirrors config so `/api/health` / doctor can show page-only vs actuator.
+   */
+  autoEnableOnPressure: boolean;
 }

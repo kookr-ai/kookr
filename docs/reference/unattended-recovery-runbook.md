@@ -276,8 +276,11 @@ Env: `KOOKR_PROD_SMOKE_TICK` in [environment-variables.md](./environment-variabl
 
 **Symptom.** Host pressure (high dtach/orphan counts, swap, OOM growth) with no
 auto-investigation task. Doctor warns on `ops.resource-watchdog`. Health may
-show `resourceWatchdog.pressureWhileDisabled: true` (visibility only — issue
-#2039; does **not** auto-enable).
+show `resourceWatchdog.pressureWhileDisabled: true` (issue #2039). By default
+(`KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE` on) soft-bound pressure also triggers a
+rate-limited investigation spawn without continuous sampling (issue #2354);
+set `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only, or
+`KOOKR_RESOURCE_WATCHDOG=1` for continuous monitoring.
 
 **Health field:**
 

@@ -199,12 +199,14 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
 
   const watchdogTitle = showWatchdog
     ? [
-        'Resource watchdog is disabled — host-pressure auto-investigation will not spawn',
+        resourceWatchdog?.pressureWhileDisabled
+          ? 'Resource watchdog continuous monitoring is off under host pressure'
+          : 'Resource watchdog continuous monitoring is off',
         resourceWatchdog?.lastDecision ? `lastDecision=${resourceWatchdog.lastDecision}` : null,
         resourceWatchdog?.pressureWhileDisabled && resourceWatchdog.pressureWhileDisabledReason
           ? resourceWatchdog.pressureWhileDisabledReason
           : null,
-        'Set KOOKR_RESOURCE_WATCHDOG=1 to enable · GET /api/health.resourceWatchdog',
+        'Set KOOKR_RESOURCE_WATCHDOG=1 for continuous sampling · GET /api/health.resourceWatchdog',
       ].filter(Boolean).join(' · ')
     : '';
 
