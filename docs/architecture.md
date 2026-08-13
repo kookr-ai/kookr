@@ -136,8 +136,8 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 - Reads structured hook events for each agent; transcript JSONL is parsed separately for token/cost and freshness tracking
 - Feeds normalized events to the supervisor agent
 - Receives anomaly detections + explanations from the supervisor
-- **Stores task metadata** locally: task description (the launch prompt), optional completion criteria, agent ID, timestamps. Stored in a JSON file on disk (`~/.kookr/tasks.json`) — lightweight, no database needed for V1. Data directory is `~/.kookr/` for the default port (4800) or `~/.kookr-{port}/` for non-default ports, enabling isolated dev/production instances
-- **Persists agent session state** inline in `~/.kookr/tasks.json` alongside task metadata. On startup, reconciles session data with live dtach sessions the backend reports in its manifest to recover after crashes. Hook output files are written to `~/.kookr/hooks/` as append-only JSONL
+- **Stores task metadata** locally: task description (the launch prompt), optional completion criteria, agent ID, timestamps. Persisted in an embedded **SQLite** database (`~/.kookr/tasks.sqlite`, WAL) by default since #1755; a pre-existing `~/.kookr/tasks.json` is imported once on first boot and renamed to a `.pre-sqlite-*` backup. `KOOKR_TASK_STORE=json` selects the legacy JSON-file path. Data directory is `~/.kookr/` for the default port (4800) or `~/.kookr-{port}/` for non-default ports, enabling isolated dev/production instances
+- **Persists agent session state** inline with each task record (a per-task JSON blob in `tasks.sqlite`, or inline in `tasks.json` under the legacy backend). On startup, reconciles session data with live dtach sessions the backend reports in its manifest to recover after crashes. Hook output files are written to `~/.kookr/hooks/` as append-only JSONL
 - Serves the frontend SPA
 - Pushes real-time updates + supervisor insights via WebSocket
 
@@ -201,6 +201,8 @@ stateDiagram-v2
 
     Completed --> [*]
 ```
+
+> **Diagram is conceptual, not a live enum.** The states above are a mental model, not an executable `AgentStatus` state machine. In code, `AgentStatus` is retained only as `SessionInfo.lastStatus` metadata; live agent state is expressed through `AgentState.anomaly` / `AgentState.snoozedUntil` in `monitor.ts` (there is no `Stuck` status — a `repeated_error` anomaly stands in), and `TurnState` (see below) is the separate current-turn dimension. See [`docs/system-models/05-state-machine-catalog.md`](system-models/05-state-machine-catalog.md#2-agent-session-lifecycle) for the authoritative discussion of what is and isn't implemented.
 
 > **Note:** `AskUserQuestion` is blocking in interactive mode — the agent waits for input naturally. This makes it a reliable "needs input" signal: when an agent emits a question and stops producing output, the supervisor can detect this as an attention-needed event. The developer can respond via Kookr's GUI (which sends keystrokes to the terminal session) or by attaching to the session directly. See [ADR-007](adr/007-managed-terminal-sessions.md).
 
@@ -293,20 +295,21 @@ listener serves.
 
 ### `tasks.json` snapshots
 
-The task-persistence layer writes two kinds of on-disk snapshot alongside `tasks.json`:
+The task-persistence layer writes two kinds of JSON recovery snapshot alongside the primary task store (`tasks.sqlite` by default; these snapshots remain `tasks.json.*`-named regardless of backend):
 
 - `tasks.json.daily.YYYYMMDD` — first successful save of each local day, 7-day retention.
 - `tasks.json.predelete.YYYYMMDDTHHMMSS` — taken immediately before `clearCompleted` deletes any task, last 5 retained.
 
-Snapshots run after a successful `saveTasks()` from the durable file, so a failed save never overwrites a snapshot with stale content. Snapshot errors are logged at warn level and swallowed — the primary save path must never fail because of a snapshot error.
+Under the SQLite backend the snapshot is a JSON export of the live task store written after a successful flush (under the legacy JSON backend it is copied from the durable file), so a failed save never overwrites a snapshot with stale content. Snapshot errors are logged at warn level and swallowed — the primary save path must never fail because of a snapshot error.
 
-**Restore procedure** (server must be stopped first):
+**Restore procedure** (server must be stopped first). Because the one-shot `tasks.json → tasks.sqlite` import only runs when `tasks.sqlite` is **absent**, restoring a JSON snapshot under the default SQLite backend requires moving the live DB aside first (or run with `KOOKR_TASK_STORE=json` to read the JSON directly):
 
 ```
 ls -lt ~/.kookr/tasks.json.daily.* ~/.kookr/tasks.json.predelete.*
-# Pick the desired snapshot
+# Pick the desired snapshot, then (SQLite default backend):
+mv ~/.kookr/tasks.sqlite ~/.kookr/tasks.sqlite.bak   # also *.sqlite-wal / *.sqlite-shm if present
 cp ~/.kookr/tasks.json.predelete.YYYYMMDDTHHMMSS ~/.kookr/tasks.json
-# Restart the server
+# Restart the server — the snapshot is re-imported into a fresh tasks.sqlite
 ```
 
 **Rollback caveat:** rolling back the backend to a pre-RFC version with persisted `'terminated'` tasks leaves them un-actionable by the old code. Prefer forward-fix or restore from a pre-upgrade `tasks.json.daily.*` over a `jq` status rewrite, because the rewrite replays the original data-loss pipeline on the rolled-back codebase.
@@ -322,6 +325,8 @@ cp ~/.kookr/tasks.json.predelete.YYYYMMDDTHHMMSS ~/.kookr/tasks.json
 > **Drift-reconcile 2026-05-09** refreshed the grouped inventory for Ralph loops, checkpoint cycling, workspace cleanup, Telegram/STT integration, frontend onboarding/effective-hooks controls, and shared contract modules. The tree remains capability-grouped; it is not an exhaustive file manifest.
 >
 > **Drift-reconcile 2026-05-19** added the remote session-sharing module, newer route/event-processor files, dtach manifest/ring stores, frontend audio/task-sharing controls, and removed stale component/file names that no longer exist (`ralph-stop.ts`, `LaunchDialog`, `AgentExecutionConfig`, `CapacityGauge`).
+>
+> **Drift-reconcile 2026-08-13** relocated the LLM provider clients (Anthropic/Google/Groq/OpenRouter + new Baseten/OpenAI-compatible/Requesty) to `src/adapters/llm/` where they now live (core keeps only the neutral interface + fallback policy), and added grouped entries for major subsystems that were live in code but absent from the tree: the **task coordinator** (`src/server/coordinator/`), the **operator signal-delivery** outbox (`src/observability/signal-delivery/`), the **collaboration** cluster (`src/server/collaboration-*.ts`), the **CLI** surface (`src/cli/`), the **PR-checklist** engine (`src/pr-checklist/`), the **webhook** integration (`src/integrations/webhook/`), and the **core ports** seam (`src/core/ports/`). The tree remains capability-grouped; it is not an exhaustive file manifest (~950 `.ts` files) — use the source tree as the authoritative list.
 
 ```
 kookr/
@@ -381,6 +386,10 @@ kookr/
 │   │   │                                  #   permission quick actions/alerts,
 │   │   │                                  #   response assist, session activity,
 │   │   │                                  #   stop-token scanning, token accounting
+│   │   ├── coordinator/                    # Cross-task coordination detectors (parallel to
+│   │   │   ├── detectors.ts                #   the per-agent supervisor): declared_edge / stale /
+│   │   │   └── suppression-store.ts        #   duplicate / done_not_cleared → coordinator.snapshot WS
+│   │   ├── collaboration-*.ts              # Real-time collaboration pairing/share/audit/poller
 │   │   ├── event-projection.ts            # Strip transport-unused AgentEvent fields
 │   │   ├── oss-attempts-snapshot.ts       # Serialize OSS attempts for WS snapshot
 │   │   ├── hook-watcher.ts                # Tail per-session hook JSONL files
@@ -433,9 +442,12 @@ kookr/
 │   │   ├── activity-summary.ts            # Activity summarizer + tool categorization (frontend-facing)
 │   │   ├── completion-digest.ts           # Task completion summary
 │   │   ├── build-info.ts                  # Build metadata (commit, branch, timestamp)
+│   │   ├── ports/                         # Ports-and-adapters interfaces owned by core:
+│   │   │                                  #   agent-interaction, terminal-input-writer, terminal-session-stream
 │   │   # Tasks + sessions
 │   │   ├── tasks.ts                       # In-memory task store + state machine
-│   │   ├── task-persistence.ts            # Atomic JSON file persistence
+│   │   ├── task-persistence.ts            # Task store open/migrate (sqlite default, json legacy)
+│   │   ├── task-sqlite-store.ts           # Default SQLite (WAL) task backend (#1755)
 │   │   ├── task-read-model.ts             # Read DTOs for tasks
 │   │   ├── task-status.ts                 # TaskStatus / AgentStatus / TurnState unions
 │   │   ├── session-read-model.ts          # Session DTOs
@@ -474,13 +486,10 @@ kookr/
 │   │   ├── interaction-log.ts             # User interaction event log (F8, ADR-010)
 │   │   ├── friction-analyzer.ts           # Rule-based friction pattern detection (F8)
 │   │   ├── reflection-recommendation.ts   # Recommendations emitted by reflection
-│   │   # LLM clients
-│   │   ├── llm-client.ts                  # Provider-agnostic LLM interface + fallback
-│   │   ├── anthropic-client.ts            # Anthropic SDK implementation
-│   │   ├── google-client.ts               # Google Gemini implementation
-│   │   ├── groq-client.ts                 # Groq implementation
-│   │   ├── openrouter-client.ts           # OpenRouter (OpenAI-compatible) implementation
-│   │   ├── llm-factory.ts                 # Provider selection
+│   │   # LLM clients (core = provider-neutral interface + policy;
+│   │   #   provider implementations live in src/adapters/llm/ — see below)
+│   │   ├── llm-client.ts                  # Provider-agnostic LLM interface (re-export shim)
+│   │   ├── llm-factory.ts                 # Fallback / audit / diagnostics policy for LLM clients
 │   │   ├── llm-types.ts                   # Provider DTOs
 │   │   ├── circuit-breaker.ts             # Generic circuit-breaker primitive
 │   │   ├── circuit-breaker-llm-client.ts  # LLM client wrapped in a breaker
@@ -551,6 +560,16 @@ kookr/
 │   │   ├── file-based-agents.ts           # File-backed agent inventory helpers
 │   │   ├── probe-agent-binary.ts          # Agent binary probe helpers
 │   │   ├── quota-adapter.ts               # Usage-quota surface for LLM providers
+│   │   ├── llm/                           # LLM provider implementations + selection:
+│   │   │   ├── factory.ts                 #   env-driven provider construction/selection
+│   │   │   ├── anthropic-client.ts        #   Anthropic SDK implementation
+│   │   │   ├── google-client.ts           #   Google Gemini implementation
+│   │   │   ├── groq-client.ts             #   Groq implementation
+│   │   │   ├── openrouter-client.ts       #   OpenRouter implementation
+│   │   │   ├── openai-compatible-client.ts #   Shared OpenAI-compatible base client
+│   │   │   ├── baseten-client.ts          #   Baseten implementation
+│   │   │   └── requesty-client.ts         #   Requesty gateway implementation
+│   │   ├── grok-build-instrumentation/    # Grok Build monitoring-hook instrumentation
 │   │   ├── github-fetcher.ts              # `gh` CLI wrapper (REST + GraphQL)
 │   │   ├── circuit-breaker-github-fetcher.ts    # Circuit-breaker wrapper
 │   │   ├── git-info.ts                    # Git branch/commit from filesystem
@@ -559,6 +578,7 @@ kookr/
 │   │   └── worktree-marker.ts             # Protected-worktree markers
 │   │
 │   ├── integrations/                      # Optional integration surfaces
+│   │   ├── webhook/                       # Outbound finding-delivery webhook (WebhookNotifier → KOOKR_WEBHOOK_URL)
 │   │   └── telegram/                      # Telegram voice/text ingestion and STT bridge
 │   │       ├── index.ts                   # Integration entrypoint
 │   │       ├── api-client.ts              # Telegram API wrapper
@@ -586,6 +606,14 @@ kookr/
 │   │   ├── projections.ts                 # Public/private projections
 │   │   ├── push.ts                        # Push transport helpers
 │   │   └── stream-events.ts               # Remote stream event contracts
+│   │
+│   ├── cli/                               # `kookr` operator CLI surface (doctor, signal-emit,
+│   │                                      #   queue-feeder, pr-checklist, github, lesson, logs, …)
+│   ├── pr-checklist/                      # PR Checklist Contract engine (rfc-pr-checklist-contract)
+│   │   └── adapters/                      #   gh/git adapters for the checklist engine
+│   ├── observability/                     # Cross-cutting observability
+│   │   └── signal-delivery/               #   Operator-signal outbox → Discord/Telegram push (issue #1716)
+│   ├── test-utils/                        # Shared test helpers (e.g. dtach reaper)
 │   │
 │   └── frontend/                          # SPA (React + Vite — ADR-002)
 │       ├── App.tsx                        # Root component with keyboard shortcuts
