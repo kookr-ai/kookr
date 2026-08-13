@@ -15,6 +15,7 @@ import { Monitor } from '../../core/monitor.js';
 import { Watchdog } from '../../core/watchdog.js';
 import {
   registerDiagnosticsRoutes,
+  HEALTH_BODY_CACHE_MS,
   SCHEDULER_TICK_STALE_INTERVALS,
   checkSchedulerTickReadiness,
   checkHookIngestionReadiness,
@@ -1042,12 +1043,14 @@ describe('diagnostics routes', () => {
     test('serves lessonYield stale-while-revalidate without awaiting a scan (issue #1553)', async () => {
       const kookrDir = join(tempDir, 'health-yield');
       mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+      let nowMs = Date.now();
       const taskStore = new TaskStore();
       const app = mkApp({
         taskStore,
         queue: new AttentionQueue(),
         buildInfo: {} as never,
         kookrDir,
+        nowMs: () => nowMs,
       });
       // Cold cache: the response returns immediately WITHOUT the block — the
       // request path never awaits a hook-log scan — and triggers a bounded
@@ -1056,15 +1059,20 @@ describe('diagnostics routes', () => {
       expect(first.status).toBe(200);
       const firstBody = await first.json() as { lessonYield?: unknown };
       expect(firstBody.lessonYield).toBeUndefined();
-      // Once the background scan lands, later polls serve the cached block.
+      // Wait for the background scan via the uncached diagnostics route,
+      // then expire the 1s health-body cache so /api/health re-reads it.
       await vi.waitFor(async () => {
-        const res = await app.request('/api/health');
+        const res = await app.request('/api/diagnostics/lesson-yield?days=1');
         expect(res.status).toBe(200);
-        const body = await res.json() as { lessonYield?: unknown };
-        expect(body.lessonYield).toMatchObject({
-          schemaVersion: 'lesson-yield.v2',
-          windowDays: 1,
-        });
+        expect(await res.json()).toMatchObject({ schemaVersion: 'lesson-yield.v2' });
+      });
+      nowMs += HEALTH_BODY_CACHE_MS + 1;
+      const res = await app.request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { lessonYield?: unknown };
+      expect(body.lessonYield).toMatchObject({
+        schemaVersion: 'lesson-yield.v2',
+        windowDays: 1,
       });
     });
   });
@@ -2659,6 +2667,74 @@ describe('diagnostics routes', () => {
         dependencies: [],
         categories: [],
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — 1s stale-while-revalidate body cache (issue #2429)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health body cache (issue #2429)', () => {
+    test('overlapping requests share one assembly', async () => {
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      });
+
+      const [first, second] = await Promise.all([
+        app.request('/api/health'),
+        app.request('/api/health'),
+      ]);
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+      expect(await first.json()).toEqual(await second.json());
+    });
+
+    test('a request after the TTL expires gets a fresh assembly', async () => {
+      let nowMs = 1_700_000_000_000;
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        nowMs: () => nowMs,
+      });
+
+      const first = await app.request('/api/health');
+      expect(first.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+
+      const cached = await app.request('/api/health');
+      expect(cached.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+
+      nowMs += HEALTH_BODY_CACHE_MS + 1;
+      const fresh = await app.request('/api/health');
+      expect(fresh.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(2);
+    });
+
+    test('GET /api/ready stays uncached and does not walk the health assembly', async () => {
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      const started = Date.now();
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+      const elapsedMs = Date.now() - started;
+
+      expect(res.status).toBe(200);
+      expect((await res.json() as { ready: boolean }).ready).toBe(true);
+      expect(viewSpy).not.toHaveBeenCalled();
+      expect(elapsedMs).toBeLessThan(200);
     });
   });
 

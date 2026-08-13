@@ -902,6 +902,18 @@ The system SHALL handle SIGINT/SIGTERM gracefully.
 
 **Evidence:** `src/server/index.ts` (signal handlers, cleanup logic).
 
+### R6.8: Cache GET /api/health Assembly [#2429] — SHALL — `done`
+
+The system SHALL reuse one assembled `GET /api/health` JSON body for about one second, and while a rebuild is already in flight, so overlapping diagnosis probes do not each walk the task list and capacity ledger.
+
+**Acceptance criteria:**
+- Two overlapping `GET /api/health` requests share one assembly (the second returns the cached or in-flight body)
+- A request after the 1-second TTL (`HEALTH_BODY_CACHE_MS`) expires gets a fresh assembly
+- `GET /api/ready` stays uncached and does not wait on the health walk
+- Health gauges in a cached body may be up to 1 second stale; that staleness is documented
+
+**Evidence:** `src/server/routes/diagnostics-routes.ts` (`HEALTH_BODY_CACHE_MS`, `getCachedHealthBody`), `src/server/routes/diagnostics-routes.test.ts` (`GET /api/health body cache`), `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1225,6 +1237,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R6.5 | arch | SHALL | done | server/index |
 | R6.6 | features | SHALL | partial | tested on Linux only |
 | R6.7 | arch | SHALL | done | server/index |
+| R6.8 | #2429 | SHALL | done | diagnostics-routes health body cache |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
