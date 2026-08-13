@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createLogger } from './logger.js';
 
@@ -81,17 +81,26 @@ export interface DispositionAuditResult {
 
 /**
  * Append one disposition entry to the JSONL ledger at `ledgerPath`. Creates
- * the parent directory if needed. Unlike `audit-log.ts`'s `appendAuditRow`
- * (which swallows write failures because the audit row is supplementary),
- * this does NOT swallow: a disposition entry IS the primary evidence AC1
- * requires, so losing one silently would recreate exactly the failure mode
- * issue #1540 exists to close. Callers that must not let a ledger-write
- * failure block the recovery action itself (e.g. the hung-task reaper mid-
- * termination) should catch and log loudly rather than let this swallow.
+ * the parent directory if needed. Opens the file append-only, writes the
+ * JSONL line, fsyncs the handle, then closes — a successful resolve means
+ * the entry is durable on disk (a crash after resolve cannot drop it).
+ * Unlike `audit-log.ts`'s `appendAuditRow` (which swallows write failures
+ * because the audit row is supplementary), this does NOT swallow: a
+ * disposition entry IS the primary evidence AC1 requires, so losing one
+ * silently would recreate exactly the failure mode issue #1540 exists to
+ * close. Callers that must not let a ledger-write failure block the recovery
+ * action itself (e.g. the hung-task reaper mid-termination) should catch and
+ * log loudly rather than let this swallow.
  */
 export async function appendDispositionEntry(ledgerPath: string, entry: DispositionEntry): Promise<void> {
   await mkdir(dirname(ledgerPath), { recursive: true });
-  await appendFile(ledgerPath, `${JSON.stringify(entry)}\n`, 'utf-8');
+  const fh = await open(ledgerPath, 'a');
+  try {
+    await fh.writeFile(`${JSON.stringify(entry)}\n`, 'utf-8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Read every entry from the ledger. Missing file reads as empty (nothing has been recorded yet). */
