@@ -15,11 +15,9 @@
 import type { ScheduleStatusSnapshot } from '../shared/contracts/schedule.js';
 
 /** One row of `ScheduleStatusSnapshot.schedulesPausedByFailure`. */
-export interface PausedByFailureRow {
-  id: string;
-  name: string;
-  consecutiveFailures: number;
-}
+export type PausedByFailureRow = NonNullable<
+  ScheduleStatusSnapshot['schedulesPausedByFailure']
+>[number];
 
 export interface MakePausedByFailureSnapshotOptions {
   /**

@@ -16,13 +16,19 @@ describe('makePausedByFailureSnapshot', () => {
       { id: 'sched-2', name: 'deploy-conv', consecutiveFailures: DEFAULT_PAUSED_CONSECUTIVE_FAILURES },
       { id: 'sched-3', name: 'sentinel', consecutiveFailures: DEFAULT_PAUSED_CONSECUTIVE_FAILURES },
     ]);
-    expect(snapshot.schedulesPausedByFailure).toHaveLength(3);
     expect(snapshot).toMatchObject({
       timezone: 'UTC',
       catchUpMode: 'manual',
       catchUpEnabled: false,
       schedulerHealthy: true,
     });
+  });
+
+  it('generates default names when only count is provided', () => {
+    expect(makePausedByFailureSnapshot({ count: 2 }).schedulesPausedByFailure).toEqual([
+      { id: 'sched-1', name: 'paused-schedule-1', consecutiveFailures: DEFAULT_PAUSED_CONSECUTIVE_FAILURES },
+      { id: 'sched-2', name: 'paused-schedule-2', consecutiveFailures: DEFAULT_PAUSED_CONSECUTIVE_FAILURES },
+    ]);
   });
 
   it('fills missing names and ignores extras', () => {
@@ -53,15 +59,30 @@ describe('makePausedByFailureSnapshot', () => {
   it('emits an empty array when count is 0 or names is empty', () => {
     expect(makePausedByFailureSnapshot({ count: 0 }).schedulesPausedByFailure).toEqual([]);
     expect(makePausedByFailureSnapshot({ names: [] }).schedulesPausedByFailure).toEqual([]);
+    expect(
+      makePausedByFailureSnapshot({ count: 0, names: ['ignored'] }).schedulesPausedByFailure,
+    ).toEqual([]);
   });
 
   it('omits schedulesPausedByFailure when count and names are undefined', () => {
     const omitted = makePausedByFailureSnapshot();
     expect(omitted).not.toHaveProperty('schedulesPausedByFailure');
     expect(omitted.schedulesPausedByFailure).toBeUndefined();
+    expect(omitted).toMatchObject({
+      timezone: 'UTC',
+      catchUpMode: 'manual',
+      catchUpEnabled: false,
+      schedulerHealthy: true,
+    });
 
     const explicitUndefined = makePausedByFailureSnapshot({});
     expect(explicitUndefined).not.toHaveProperty('schedulesPausedByFailure');
+    expect(explicitUndefined).toMatchObject({
+      timezone: 'UTC',
+      catchUpMode: 'manual',
+      catchUpEnabled: false,
+      schedulerHealthy: true,
+    });
   });
 
   it('rejects a non-integer or negative count', () => {
