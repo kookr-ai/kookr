@@ -1,8 +1,9 @@
-import { constants, mkdtempSync, writeFileSync } from 'node:fs';
+import { constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { GROK_DEFAULT_AUTH_SCOPE } from '../adapters/grok-auth-preflight.js';
 import {
   buildDoctorJsonReport,
   DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND,
@@ -41,6 +42,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.claude',
   'agent.codex',
   'agent.codex-plugin-dir',
+  'agent.grok-auth',
   'ops.resource-watchdog',
   'ops.hung-reclaim',
   'hooks.ingestion-lag',
@@ -125,6 +127,42 @@ function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: stri
     const result = fixtures[key];
     if (!result) return { stdout: '', stderr: `missing fixture for ${key}`, exitCode: 1 };
     return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
+  });
+}
+
+function usableGrokAuthJson(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    [GROK_DEFAULT_AUTH_SCOPE]: {
+      key: 'must-not-leak-access',
+      auth_mode: 'oidc',
+      create_time: '2026-07-01T00:00:00Z',
+      user_id: 'test-user',
+      expires_at: '2099-01-01T00:00:00Z',
+      refresh_token: 'must-not-leak-refresh',
+      ...overrides,
+    },
+  });
+}
+
+function grokOnPathFixtures() {
+  return {
+    ...happyFixtures(),
+    [JSON.stringify(['grok', ['--version']])]: { stdout: '1.0.0\n' },
+  };
+}
+
+function writeGrokAuthFixture(home: string, contents: string): void {
+  mkdirSync(join(home, '.grok'), { recursive: true });
+  writeFileSync(join(home, '.grok', 'auth.json'), contents);
+}
+
+async function doctorWithGrokHome(home: string, extraEnv: NodeJS.ProcessEnv = {}) {
+  return buildDoctorJsonReport({
+    env: { ...opsOkEnv, HOME: home, ...extraEnv },
+    commandRunner: commandRunner(grokOnPathFixtures()),
+    access: async () => {},
+    now: () => new Date('2026-08-13T12:00:00.000Z'),
+    ...hermeticOps,
   });
 }
 
@@ -1527,6 +1565,106 @@ describe('kookr doctor --json', () => {
 
     expect(code).toBe(1);
     expect(JSON.parse(logs[0]!)).toMatchObject({ ok: false, status: 'fail' });
+  });
+
+  it('WARNs on agent.grok-auth when grok is present but auth.json is missing (issue #2451)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-grok-missing-'));
+    const report = await doctorWithGrokHome(home);
+    const check = report.checks.find((c) => c.id === 'agent.grok-auth');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'Grok authentication is missing',
+    });
+    expect(check?.recommendedAction).toContain('grok login --device-code');
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('WARNs on agent.grok-auth when grok is present but auth.json is expired (issue #2451)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-grok-expired-'));
+    writeGrokAuthFixture(home, usableGrokAuthJson({ expires_at: '2026-08-13T11:00:00Z' }));
+    const report = await doctorWithGrokHome(home);
+    const check = report.checks.find((c) => c.id === 'agent.grok-auth');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'Grok authentication is expired (2026-08-13T11:00:00Z)',
+    });
+    expect(check?.recommendedAction).toContain('grok login --device-code');
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-access');
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-refresh');
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('WARNs on agent.grok-auth when grok is present but auth.json is invalid (issue #2451)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-grok-invalid-'));
+    writeGrokAuthFixture(home, usableGrokAuthJson({ expires_at: 'not-a-date' }));
+    const report = await doctorWithGrokHome(home);
+    const check = report.checks.find((c) => c.id === 'agent.grok-auth');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: 'Grok authentication is invalid',
+    });
+    expect(check?.recommendedAction).toContain('grok login --device-code');
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-access');
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-refresh');
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('reports agent.grok-auth ok when grok is present and auth.json is usable (issue #2451)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-grok-ok-'));
+    writeGrokAuthFixture(home, usableGrokAuthJson());
+    const report = await doctorWithGrokHome(home);
+    const check = report.checks.find((c) => c.id === 'agent.grok-auth');
+    expect(check).toMatchObject({
+      status: 'ok',
+      required: false,
+    });
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-access');
+    expect(JSON.stringify(check)).not.toContain('must-not-leak-refresh');
+    expect(report.status).toBe('ok');
+  });
+
+  it('omits agent.grok-auth when grok is not on PATH and KOOKR_GROK_BIN is unset (issue #2451)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+
+    expect(report.checks.find((c) => c.id === 'agent.grok-auth')).toBeUndefined();
+  });
+
+  it('FAILs agent.grok-auth when KOOKR_GROK_BIN is set and auth.json is missing (issue #2451)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-grok-fail-'));
+    const run = commandRunner({
+      ...happyFixtures(),
+      [JSON.stringify(['/opt/grok', ['--version']])]: { stdout: '1.0.0\n' },
+    });
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: home, KOOKR_GROK_BIN: '/opt/grok' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+    });
+
+    const check = report.checks.find((c) => c.id === 'agent.grok-auth');
+    expect(check).toMatchObject({
+      status: 'fail',
+      required: true,
+      summary: 'Grok authentication is missing',
+    });
+    expect(check?.recommendedAction).toContain('grok login --device-code');
+    expect(report.ok).toBe(false);
+    expect(report.status).toBe('fail');
   });
 
   it('documents every doctor check id in docs/reference/cli.md (anti-drift)', async () => {
