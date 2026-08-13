@@ -1206,129 +1206,151 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * #2069) #2890–#2892 (classic fetch_error / omit aborted-after-winner /
  * lengthen half-open probe cooldown) shipped and are title-exhausted.
  * Invent wave 14 (queue-feeder 2026-08-13, invent-product-wave #2069)
- * continues W33 residual after wave 13: issuer_feed already early-promotes
- * after issuer-page verification_reject (#2855/#2863) but newswire page is
- * still fetched after the same gate reject (tier-health newswire=dead,
- * 192 verification_reject); search backends page on chronic zero-success
- * (#2780) but free-surface tiers do not (stealth 0/603, newswire_feed
- * 0/604); durable-dead page surfaces still fetch every poll instead of a
- * half-open probe. Title idempotency prevents re-emit once those exist.
+ * #2915–#2917 (newswire_feed early-promote after page verification_reject /
+ * free-surface chronic-zero alert / half-open probe durable-dead pages)
+ * shipped and are title-exhausted. Invent wave 15 (queue-feeder 2026-08-13,
+ * invent-product-wave #2069) #2922–#2924 (half-open probe chronic-zero
+ * degraded stealth/feeds / treat those surfaces as obstructed for SEC
+ * early-promote / omit stealth cache-miss from live attempt folds) shipped
+ * and are title-exhausted. Invent wave 16 (queue-feeder 2026-08-13,
+ * invent-product-wave #2069) continues W33 residual after wave 15:
+ * window_too_short is 29/85 product misses (34.1%) with no product-metric
+ * page; #2518 already-published recapture only arms no_source (2 misses)
+ * so recapture.events stay 0; #2551 dual-session cover only stretches
+ * unproven sessions, so a confirmed BMO/AMC that dies window_too_short
+ * never tries the complementary half. Live GitHub leaves
+ * jeanibarz/lucy#2944–#2946. Title idempotency prevents re-emit once those
+ * exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): early-promote newswire_feed and skip newswire page after page verification_reject',
+      'feat(metrics): alert when weekly window_too_short miss share exceeds threshold',
     goal:
-      'Stop burning the armed window on a dead newswire PAGE under umbrella #1587. ' +
-      'Issuer HTML already early-promotes issuer_feed and skips the page after ' +
-      'verification_reject (#2855 / #2863). Newswire has no sibling: live ' +
-      'acquisition-tier-health.json marks newswire dead (blocked all 192 attempts, ' +
-      'verification_reject) while newswire_feed still races. W33 weekly newswire is ' +
-      '2 attempts / 0 ok / 1 blocked verification_reject. Mirror the issuer-feed ' +
-      'decision: when the page surface is verification_reject / access_denied / ' +
-      'tier_blocked / possible_gate_miss, skip further newswire page fetches and ' +
-      'elevate newswire_feed. Do not invent a new failureCode.',
+      'Page when window-too-short misses dominate the live Goal-1 miss mix under ' +
+      'umbrella #1587. The rolling detection scorecard (same bag #2730 already ' +
+      'reads) attributes 29 of 85 product misses (34.1%) to cause ' +
+      'window_too_short — the largest miss cause — while the product-metric pager ' +
+      'stays green. #2000 already auto-extends lagging AMC windows; #2730 already ' +
+      'pages on verification_reject miss share. Pin the rolling missRateByCause ' +
+      'bag, not the ISO-week acquisition scoreboard. Do not invent a 0% rate for ' +
+      'an unmeasurable mix.',
     acceptanceCriteria: [
-      'After a newswire PAGE outcome with verification_reject (or access_denied / ' +
-        'tier_blocked / possible_gate_miss), residual polls skip the newswire page ' +
-        'tier and keep newswire_feed in the race. A first-poll verification_reject ' +
-        'still records that named code (do not hide the observation).',
-      'When newswire_feed is itself free-channel obstructed (host_cooling_down / ' +
-        'tier_blocked), do not fake-promote it. Other free surfaces and SEC/classic ' +
-        'keep their existing failover. verification_reject on the page still does ' +
-        'not open a host circuit (#1583).',
-      'Unit/fixture tests cover: (a) page verification_reject + eligible feed → ' +
-        'skipTiers includes newswire, elevateTiers includes newswire_feed; (b) page ' +
-        'healthy → action normal, no skip; (c) page blocked and feed also obstructed ' +
-        '→ no elevate; (d) no new failureCode string.',
+      'A rolling product miss mix with misses at or above a documented sample ' +
+        'floor and window_too_short / misses at or above a documented threshold ' +
+        'produces one alert of a new kind (e.g. windowTooShortShare) naming the ' +
+        'count, share, and threshold. Misses === 0 or missing miss-by-cause bag ' +
+        'do not page (unmeasurable, not 0%). Do not require the cause to be the ' +
+        'unique top cause.',
+      'verificationRejectShare (#2730), eventSeenNoContent (#2684), and ' +
+        'recaptureZeroAttempts (#2876) stay on their existing kinds. Read the ' +
+        'same rolling detection-scorecard / missRateByCause bag as #2730 — not ' +
+        'acquisition-weekly-scoreboard.json. .env.example documents floor / share ' +
+        'overrides.',
+      'Unit/fixture tests cover: (a) 29/85 window_too_short pages; (b) 0/85 does ' +
+        'not; (c) misses === 0 does not; (d) missing bag does not; (e) a 29/85 ' +
+        'mix still pages even if another cause is slightly larger.',
     ],
     fileHints: [
-      'src/acquisition/issuer-feed-early-promote.js (sibling pattern)',
-      'src/scheduler-active-window-poll.js',
-      'src/acquisition/tiers/newswire.js',
-    ],
-    testHints: [
-      'unit: page verification_reject elevates newswire_feed and skips newswire page',
-      'unit: healthy newswire page does not skip',
-      'unit: obstructed newswire_feed is not fake-promoted',
-      'unit: no new failureCode for the skip',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(metrics): alert when a free-surface acquisition tier has chronic zero-success',
-    goal:
-      'Page when a configured free acquisition surface is chronically useless under ' +
-      'umbrella #1587. Search backends already page on chronic zero-success (#2780 / ' +
-      'evaluateSearchBackendSuccessShareAlerts). Free-surface tiers do not: live ' +
-      'tier-health is stealth 0/603 and newswire_feed 0/604, W33 weekly stealth ' +
-      '3/0 and newswire_feed 3/0, and the product-metric pager stays green. ' +
-      'Operators only see the control-room badge. Add a sibling evaluator on the ' +
-      'weekly per-tier bag (attempts / ok). Do not invent a 0% rate for untried tiers.',
-    acceptanceCriteria: [
-      'A weekly per-tier row with attempts ≥ a documented sample floor and ' +
-        'ok/attempts below a documented threshold (zero or near-zero) produces one ' +
-        'alert of a new kind (e.g. tierSuccessShare) naming that tier. Missing / ' +
-        'empty bag and attempts === 0 do not page (unmeasurable, not 0%).',
-      'Search-backend alerts (#2780) stay on evaluateSearchBackendSuccessShareAlerts. ' +
-        'Issuer cooling / tier_blocked_all_window alerts stay on their existing ' +
-        'kinds. A healthy issuer_feed 3/3 week does not page. .env.example documents ' +
-        'floor / share overrides.',
-      'Unit/fixture tests cover: (a) stealth 603/0 pages; (b) newswire_feed 604/0 ' +
-        'pages; (c) issuer_feed 3/3 does not; (d) attempts === 0 does not; (e) ' +
-        'missing bag does not.',
-    ],
-    fileHints: [
-      'src/product-metric-alerts.js',
-      'src/acquisition/weekly-scoreboard.js',
+      'src/product-metric-alerts.js (evaluateVerificationRejectShareAlert sibling)',
+      'src/detection-scorecard.js (miss-by-cause bag)',
       '.env.example',
     ],
     testHints: [
-      'unit: stealth 603 attempts / 0 ok pages tierSuccessShare',
-      'unit: newswire_feed 604/0 pages',
-      'unit: issuer_feed 3/3 does not page',
-      'unit: attempts===0 and missing bag do not page',
+      'unit: 29/85 window_too_short pages',
+      'unit: 0/85 does not page',
+      'unit: misses === 0 / missing bag do not page',
+      'unit: 29/85 still pages when a sibling cause is 30/85',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): half-open probe durable-dead page tiers instead of fetching every poll',
+      'feat(acquisition): recapture already-published when window ends with window_too_short',
     goal:
-      'Stop fetching a durable-dead PAGE surface on every 1s poll under umbrella ' +
-      '#1587. acquisition-tier-health.json already records newswire=dead (192 ' +
-      'verification_reject) and issuer=dead (603 verification_reject) across ' +
-      'restarts (#2424), but acquire() still runs those page tiers every poll. ' +
-      'Search backends already park + half-open probe (#2778 / #2892). Apply the ' +
-      'same cadence to page surfaces whose durable state is dead: skip the fetch, ' +
-      'probe at most once per documented cooldown, restore on success. Never skip ' +
-      'the last remaining healthy free surface or SEC/classic. Feeds stay in the race.',
+      'Arm already-published recapture when a live window expires without a hit, ' +
+      'not only when the terminal row is missClass=no_source, under umbrella ' +
+      '#1587. missClassForWindow never returns window_too_short — that string is ' +
+      'a scorecard cause (mode fallback on watch_expired_* / watchdog-timeout) ' +
+      'or a mid-window watchdog stamp. Gating recapture on ' +
+      'missClass=window_too_short ∩ terminal resolution matches ~0 live rows. ' +
+      'Reuse detectNow / grace / source-blocklist. Keep the existing double-fire ' +
+      'key without missClass. Do not invent a new missClass.',
     acceptanceCriteria: [
-      'When durable tier-health for issuer or newswire is dead, residual polls skip ' +
-        'that PAGE fetch except for a half-open probe after the documented cooldown ' +
-        '(reuse the existing search-backend 15-minute base unless a sibling constant ' +
-        'is already defined). issuer_feed / newswire_feed / classic are not skipped.',
-      'A successful probe or live page hit restores the durable state toward ' +
-        'healthy/degraded and resumes normal racing. Consecutive probe failures stay ' +
-        'dead and re-arm cooldown. The last remaining healthy free surface is never ' +
-        'parked. SEC/classic is never parked by this path.',
-      'Unit/fixture tests cover: (a) dead newswire page skipped on the next poll; ' +
-        '(b) after cooldown a probe fetch runs once; (c) probe success resumes racing; ' +
-        '(d) issuer_feed / newswire_feed / classic still run while the page is parked; ' +
-        '(e) last remaining healthy free surface is never skipped.',
+      'When a live armed window is over and produced no hit, and the row’s ' +
+        'scorecard cause is window_too_short (mode in watch_expired_without_detection ' +
+        '/ watch_expired_resolution / detect_now_time_budget / detect_now_exhausted, ' +
+        'or empty missClass + those modes), arm one already-published recapture via ' +
+        'the same detectNow worker as #2518. Operator-aborted, disabled, ' +
+        'source-blocklisted, and outside-grace rows still refuse. A mid-window ' +
+        'watchdog throw that has not ended the window does not recapture.',
+      'no_source recapture (#2518) is unchanged. The double-fire key stays ' +
+        '${jobId}|${ticker}|${date} (no missClass) so a watchdog row and a later ' +
+        'terminal no_source on the same job cannot both fire detectNow. ' +
+        'Recapture-source jobs stay excluded. Do not widen missClassForWindow to ' +
+        'start returning window_too_short.',
+      'Unit/fixture tests cover: (a) terminal window-expired row (empty missClass ' +
+        '+ watch_expired_without_detection) → recapture armed; (b) terminal ' +
+        'no_source still arms only the #2518 path and shares the same key; (c) ' +
+        'mid-window watchdog missClass=window_too_short without window end refuses; ' +
+        '(d) operator-aborted and source-blocklisted refuse; (e) two rows for the ' +
+        'same job/ticker/date with different missClasses schedule at most one ' +
+        'detectNow.',
     ],
     fileHints: [
-      'src/acquisition/tier-health.js',
-      'src/acquisition/acquire.js',
-      'src/scheduler-active-window-poll.js',
-      'src/search-backend-soft-disable.js (cadence sibling)',
+      'src/scheduler-no-source-recapture.js (shouldScheduleNoSourceRecapture, noSourceRecaptureKey)',
+      'src/scheduler-runner.js (scheduleNoSourceRecapture)',
+      'src/detection-scorecard.js (WINDOW_TOO_SHORT_MODES / classifyMissCause)',
+      'src/scheduler-active-window-poll.js (missClassForWindow — do not widen)',
     ],
     testHints: [
-      'unit: dead newswire page is skipped until cooldown',
-      'unit: cooldown expiry issues exactly one probe fetch',
-      'unit: probe success resumes racing',
-      'unit: feeds and classic still run while the page is parked',
+      'unit: window-expired untyped row arms one detectNow recapture',
+      'unit: no_source still uses the existing #2518 gate and the same key',
+      'unit: mid-window watchdog without window end refuses',
+      'unit: two rows same job/ticker/date → one recapture',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): dual-session cover after confirmed BMO/AMC window_too_short',
+    goal:
+      'After a confirmed BMO window dies without a hit, start a new complementary ' +
+      'AMC job — do not extend the in-flight deadline — under umbrella #1587. ' +
+      '#2551 only stretches unproven/unknown sessions (shouldDualSessionCover → ' +
+      'isUnprovenSessionJob) at arm time. Confirmed high-confidence BMO/AMC stay ' +
+      'single-session so a live first half is not double-polled. That must stay ' +
+      'true. Do not change shouldDualSessionCover. Do not invent a new missClass.',
+    acceptanceCriteria: [
+      'When a confirmed BMO job is terminal with no hit, start one new ' +
+        'complementary AMC cover job for the same ticker/date if that AMC half is ' +
+        'still in the future. Kill-switch default off (env flag). Unproven/unknown ' +
+        'jobs stay on the existing #2551 live-window path — do not widen ' +
+        'shouldDualSessionCover or isUnprovenSessionJob.',
+      'Complementary cover must not start while the first session is still inside ' +
+        'its poll deadline. A confirmed session that hits, is operator-aborted, or ' +
+        'is already a recapture-source job does not arm a new job. Confirmed ' +
+        'AMC→BMO on the same calendar day is a documented skip. Stamp ' +
+        'dualSessionAttempted=true on the new complementary job when armed, and ' +
+        'false (not omitted) on the original terminal row when skipped. Do not ' +
+        'treat the current 0/158 stamp rate as proof that cover was skipped.',
+      'Unit/fixture tests cover: (a) confirmed BMO terminal miss → new AMC job ' +
+        'armed, shouldDualSessionCover still false for confirmed BMO; (b) first ' +
+        'session still polling → no new job; (c) confirmed BMO hit → no new job; ' +
+        '(d) unproven job still uses #2551 only; (e) confirmed AMC terminal miss ' +
+        'same day → skip + stamp false on the original row.',
+    ],
+    fileHints: [
+      'src/scheduler-runner.js (post-terminal re-arm; new helper next to scheduleNoSourceRecapture)',
+      'src/scheduler-active-window-poll.js (shouldDualSessionCover / isUnprovenSessionJob — do not widen)',
+      'src/detection-scorecard.js (dualSessionAttempted bag — new rows only)',
+    ],
+    testHints: [
+      'unit: confirmed BMO terminal miss starts one new AMC job; arm-time dual-cover stays false',
+      'unit: in-deadline first session does not start a new job',
+      'unit: confirmed hit does not start a new job',
+      'unit: unproven job is unchanged (#2551 only)',
+      'unit: same-day confirmed AMC skip + stamp false',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
