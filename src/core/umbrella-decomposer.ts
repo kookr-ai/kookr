@@ -1203,119 +1203,132 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * (newswire search feed_no_match / persist identityCorroborated=false /
  * split half-open probes out of weekly live fan-out) shipped and are
  * title-exhausted. Invent wave 13 (queue-feeder 2026-08-13, invent-product-wave
- * #2069) continues W33 residual after wave 12: stamp fetch_error when classic
- * detectEarnings swallows a thrown fetch (the unnamed-miss class #2856/#2857
- * left on classic), omit aborted-after-winner sibling tiers from weekly
- * attempt folds (W33 newswire_feed 3/0 is abort-not-try), and lengthen
- * half-open probe cooldown after consecutive chronic-zero failures so
- * Perplexity is not probed every 15 minutes. Live GitHub leaves #2890–#2892.
- * Title idempotency prevents re-emit once those exist.
+ * #2069) #2890–#2892 (classic fetch_error / omit aborted-after-winner /
+ * lengthen half-open probe cooldown) shipped and are title-exhausted.
+ * Invent wave 14 (queue-feeder 2026-08-13, invent-product-wave #2069)
+ * continues W33 residual after wave 13: issuer_feed already early-promotes
+ * after issuer-page verification_reject (#2855/#2863) but newswire page is
+ * still fetched after the same gate reject (tier-health newswire=dead,
+ * 192 verification_reject); search backends page on chronic zero-success
+ * (#2780) but free-surface tiers do not (stealth 0/603, newswire_feed
+ * 0/604); durable-dead page surfaces still fetch every poll instead of a
+ * half-open probe. Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): stamp fetch_error when classic detectEarnings fetch throws',
+      'feat(acquisition): early-promote newswire_feed and skip newswire page after page verification_reject',
     goal:
-      'Make classic fetch exceptions loud under umbrella #1587. W33 classic is 3 attempts / ' +
-      '0 ok / empty byFailureCode. The three live rows are genuine "no earnings 8-K" ' +
-      '(clean-empty is correct). The remaining class hole is the url-template catch in ' +
-      'src/earnings-source.js: it returns {ok:false, reason: err.message} with no ' +
-      'failureCode. isCleanEmptyAcquireResult treats a miss without failureCode as ' +
-      'clean-empty (RFC-012 §5.4 residual at acquire.js). Same class as #2856/#2857. ' +
-      'Reuse fetch_error (already used by acquisition-commands.js). Do not invent ' +
-      'collector_exception. Idea-scout #2872 is the same class — this is the write-path leaf.',
+      'Stop burning the armed window on a dead newswire PAGE under umbrella #1587. ' +
+      'Issuer HTML already early-promotes issuer_feed and skips the page after ' +
+      'verification_reject (#2855 / #2863). Newswire has no sibling: live ' +
+      'acquisition-tier-health.json marks newswire dead (blocked all 192 attempts, ' +
+      'verification_reject) while newswire_feed still races. W33 weekly newswire is ' +
+      '2 attempts / 0 ok / 1 blocked verification_reject. Mirror the issuer-feed ' +
+      'decision: when the page surface is verification_reject / access_denied / ' +
+      'tier_blocked / possible_gate_miss, skip further newswire page fetches and ' +
+      'elevate newswire_feed. Do not invent a new failureCode.',
     acceptanceCriteria: [
-      'When the classic detectEarnings url-template catch fires (fetchDocument or ' +
-        'equivalent throws), the returned object sets failureCode: fetch_error. Do not ' +
-        'invent collector_exception / classic_throw. Genuine no-8-K / no-6-K not-found ' +
-        'stays without fetch_error so it remains clean-empty.',
-      'isCleanEmptyAcquireResult is false when classic\'s only miss is fetch_error. ' +
-        'isNamedNotFoundFailureCode(fetch_error) === false. verification_reject / ' +
-        'access_denied / feed_no_match keep their existing codes. A successful ' +
-        'url-template hit stays ok=true with no fetch_error.',
-      'Unit/fixture tests cover: (a) thrown fetch → failureCode fetch_error; (b) genuine ' +
-        'no 8-K → no fetch_error and still clean-empty when sibling tiers agree; (c) ok ' +
-        'hit has no fetch_error; (d) isCleanEmptyAcquireResult(false) when classic is ' +
-        'fetch_error.',
+      'After a newswire PAGE outcome with verification_reject (or access_denied / ' +
+        'tier_blocked / possible_gate_miss), residual polls skip the newswire page ' +
+        'tier and keep newswire_feed in the race. A first-poll verification_reject ' +
+        'still records that named code (do not hide the observation).',
+      'When newswire_feed is itself free-channel obstructed (host_cooling_down / ' +
+        'tier_blocked), do not fake-promote it. Other free surfaces and SEC/classic ' +
+        'keep their existing failover. verification_reject on the page still does ' +
+        'not open a host circuit (#1583).',
+      'Unit/fixture tests cover: (a) page verification_reject + eligible feed → ' +
+        'skipTiers includes newswire, elevateTiers includes newswire_feed; (b) page ' +
+        'healthy → action normal, no skip; (c) page blocked and feed also obstructed ' +
+        '→ no elevate; (d) no new failureCode string.',
     ],
     fileHints: [
-      'src/earnings-source.js',
-      'src/acquisition/acquire.js',
-      'src/acquisition/scoreboard.js',
+      'src/acquisition/issuer-feed-early-promote.js (sibling pattern)',
+      'src/scheduler-active-window-poll.js',
+      'src/acquisition/tiers/newswire.js',
     ],
     testHints: [
-      'unit: thrown fetchDocument → failureCode fetch_error',
-      'unit: genuine no 8-K stays unnamed not-found / clean-empty',
-      'unit: ok hit has no fetch_error',
-      'unit: isCleanEmptyAcquireResult is false for fetch_error',
+      'unit: page verification_reject elevates newswire_feed and skips newswire page',
+      'unit: healthy newswire page does not skip',
+      'unit: obstructed newswire_feed is not fake-promoted',
+      'unit: no new failureCode for the skip',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): omit aborted-after-winner sibling tiers from weekly attempt folds',
+      'feat(metrics): alert when a free-surface acquisition tier has chronic zero-success',
     goal:
-      'Keep the weekly per-tier attempt bag honest under umbrella #1587. W33 newswire_feed ' +
-      'is 3 attempts / 0 ok / empty byFailureCode / null msAvg. All three live hits ' +
-      '(CAH / SMCI / CSCO) recorded newswire_feed as reason "aborted after verified ' +
-      'acquisition winner selected" after issuer_feed already won. markAbortedLoserTiers ' +
-      'already sets abortedAfterWinner / outcome aborted_after_winner with no failureCode. ' +
-      'foldTierOutcomes still increments attempts (#2857 only omits stealth cache-miss). ' +
-      'Sibling abort is not a try — omit it from the weekly fold the same way.',
+      'Page when a configured free acquisition surface is chronically useless under ' +
+      'umbrella #1587. Search backends already page on chronic zero-success (#2780 / ' +
+      'evaluateSearchBackendSuccessShareAlerts). Free-surface tiers do not: live ' +
+      'tier-health is stealth 0/603 and newswire_feed 0/604, W33 weekly stealth ' +
+      '3/0 and newswire_feed 3/0, and the product-metric pager stays green. ' +
+      'Operators only see the control-room badge. Add a sibling evaluator on the ' +
+      'weekly per-tier bag (attempts / ok). Do not invent a 0% rate for untried tiers.',
     acceptanceCriteria: [
-      'A tier outcome with abortedAfterWinner === true (or outcome === ' +
-        "'aborted_after_winner') is omitted from foldTierOutcomes attempts / ok / blocked / " +
-        'ms. Do not invent a new failureCode for abort.',
-      'A real newswire_feed miss (no matching item, feed_no_match from #2856) still counts ' +
-        'as an attempt. A real newswire verification_reject still counts. The winning ' +
-        'issuer_feed ok still counts.',
-      'Unit/fixture tests cover: (a) aborted_after_winner → attempts unchanged; (b) ' +
-        'feed_no_match newswire_feed → attempts+1; (c) verification_reject newswire → ' +
-        'attempts+1 blocked+1; (d) no new failureCode string is introduced for abort.',
+      'A weekly per-tier row with attempts ≥ a documented sample floor and ' +
+        'ok/attempts below a documented threshold (zero or near-zero) produces one ' +
+        'alert of a new kind (e.g. tierSuccessShare) naming that tier. Missing / ' +
+        'empty bag and attempts === 0 do not page (unmeasurable, not 0%).',
+      'Search-backend alerts (#2780) stay on evaluateSearchBackendSuccessShareAlerts. ' +
+        'Issuer cooling / tier_blocked_all_window alerts stay on their existing ' +
+        'kinds. A healthy issuer_feed 3/3 week does not page. .env.example documents ' +
+        'floor / share overrides.',
+      'Unit/fixture tests cover: (a) stealth 603/0 pages; (b) newswire_feed 604/0 ' +
+        'pages; (c) issuer_feed 3/3 does not; (d) attempts === 0 does not; (e) ' +
+        'missing bag does not.',
     ],
     fileHints: [
-      'src/acquisition/scoreboard.js',
-      'src/acquisition/acquire.js',
+      'src/product-metric-alerts.js',
       'src/acquisition/weekly-scoreboard.js',
+      '.env.example',
     ],
     testHints: [
-      'unit: aborted_after_winner does not increment attempts',
-      'unit: feed_no_match newswire_feed still counts',
-      'unit: verification_reject newswire still counts',
-      'unit: no new abort failureCode',
+      'unit: stealth 603 attempts / 0 ok pages tierSuccessShare',
+      'unit: newswire_feed 604/0 pages',
+      'unit: issuer_feed 3/3 does not page',
+      'unit: attempts===0 and missing bag do not page',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): lengthen half-open probe cooldown after consecutive chronic-zero failures',
+      'feat(acquisition): half-open probe durable-dead page tiers instead of fetching every poll',
     goal:
-      'Stop probe-spamming a chronic-zero search backend under umbrella #1587. Soft-disable ' +
-      '(#2778) parks Perplexity, but a failed half-open probe re-arms the same 15-minute ' +
-      'DEFAULT_SOFT_DISABLE_COOLDOWN_MS (search-backend-soft-disable.js). W33 Perplexity is ' +
-      '0/59 while softDisabled=true. Wave 12 / #2884 splits probes out of the weekly live ' +
-      'fold but does not change the probe cadence. Lengthen cooldown on consecutive ' +
-      'half-open failures (cap 4–6h). Success resets. Never blank the fan-out. Idea-scout ' +
-      '#2873 is the same class — this is the write-path leaf.',
+      'Stop fetching a durable-dead PAGE surface on every 1s poll under umbrella ' +
+      '#1587. acquisition-tier-health.json already records newswire=dead (192 ' +
+      'verification_reject) and issuer=dead (603 verification_reject) across ' +
+      'restarts (#2424), but acquire() still runs those page tiers every poll. ' +
+      'Search backends already park + half-open probe (#2778 / #2892). Apply the ' +
+      'same cadence to page surfaces whose durable state is dead: skip the fetch, ' +
+      'probe at most once per documented cooldown, restore on success. Never skip ' +
+      'the last remaining healthy free surface or SEC/classic. Feeds stay in the race.',
     acceptanceCriteria: [
-      'N consecutive half-open probe failures produce a strictly longer cooldown up to a ' +
-        'documented cap (4–6 hours). The first trip still uses the existing 15-minute base.',
-      'A successful probe or live attempt resets to the base cooldown and closed phase. ' +
-        'The existing never-disable-all-backends safety is unchanged.',
-      'Unit/fixture tests cover: (a) first half-open failure re-arms at base cooldown; ' +
-        '(b) Nth consecutive failure has cooldown > previous and ≤ cap; (c) success resets ' +
-        'to base / closed; (d) the last remaining healthy backend is never parked.',
+      'When durable tier-health for issuer or newswire is dead, residual polls skip ' +
+        'that PAGE fetch except for a half-open probe after the documented cooldown ' +
+        '(reuse the existing search-backend 15-minute base unless a sibling constant ' +
+        'is already defined). issuer_feed / newswire_feed / classic are not skipped.',
+      'A successful probe or live page hit restores the durable state toward ' +
+        'healthy/degraded and resumes normal racing. Consecutive probe failures stay ' +
+        'dead and re-arm cooldown. The last remaining healthy free surface is never ' +
+        'parked. SEC/classic is never parked by this path.',
+      'Unit/fixture tests cover: (a) dead newswire page skipped on the next poll; ' +
+        '(b) after cooldown a probe fetch runs once; (c) probe success resumes racing; ' +
+        '(d) issuer_feed / newswire_feed / classic still run while the page is parked; ' +
+        '(e) last remaining healthy free surface is never skipped.',
     ],
     fileHints: [
-      'src/search-backend-soft-disable.js',
-      'src/search-backend-metrics.js',
-      'src/retrieval-health.js',
+      'src/acquisition/tier-health.js',
+      'src/acquisition/acquire.js',
+      'src/scheduler-active-window-poll.js',
+      'src/search-backend-soft-disable.js (cadence sibling)',
     ],
     testHints: [
-      'unit: first half-open failure uses base cooldown',
-      'unit: consecutive failures lengthen cooldown up to cap',
-      'unit: success resets to base / closed',
-      'unit: last remaining backend is never parked',
+      'unit: dead newswire page is skipped until cooldown',
+      'unit: cooldown expiry issues exactly one probe fetch',
+      'unit: probe success resumes racing',
+      'unit: feeds and classic still run while the page is parked',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
