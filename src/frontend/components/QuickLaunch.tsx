@@ -4,6 +4,8 @@ import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
+import { optionalLaunchPins } from './launch-effort-model.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
 
@@ -34,6 +36,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
     return store.defaultAgentType ?? 'claude-code';
   });
+  const [effort, setEffort] = useState('');
+  const [model, setModel] = useState('');
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -84,6 +88,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     inputRef.current?.focus();
   }, []);
 
+  // Selected-task / last-used effects can change the agent without the
+  // picker onChange. Drop pins that would no longer match the resolved type.
+  useEffect(() => {
+    setEffort('');
+    setModel('');
+  }, [agentType]);
+
   function handleSubmit() {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd) return;
@@ -94,6 +105,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       prompt: trimmed,
       cwd,
       agentType,
+      ...optionalLaunchPins(effort, model),
     });
     if (sent) {
       saveLastAgentType(agentType);
@@ -131,9 +143,21 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
       <AgentTypeSelector
         value={agentType}
-        onChange={setAgentType}
+        onChange={(next) => {
+          setAgentType(next);
+          setEffort('');
+          setModel('');
+        }}
         options={agentOptions}
         label="Agent"
+        compact
+      />
+      <LaunchEffortModelPickers
+        agentType={agentType}
+        effort={effort}
+        model={model}
+        onEffortChange={setEffort}
+        onModelChange={setModel}
         compact
       />
       <input

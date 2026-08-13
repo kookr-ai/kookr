@@ -4446,6 +4446,20 @@ textarea::-webkit-resizer { background: transparent; }
   font-size: 12px;
 }
 
+.launch-effort-model-pickers {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.launch-effort-model-pickers .agent-type-select {
+  flex: 1;
+  margin-bottom: 0;
+}
+.launch-effort-model-pickers.compact {
+  margin-bottom: 0;
+  gap: 8px;
+}
+
 .detail-migrate-control {
   display: inline-flex;
   align-items: center;
@@ -4998,6 +5012,9 @@ label.task-share-row {
 }
 
 .quick-launch-bar .agent-type-select {
+  flex-shrink: 0;
+}
+.quick-launch-bar .launch-effort-model-pickers {
   flex-shrink: 0;
 }
 

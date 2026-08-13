@@ -1353,8 +1353,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                             Reasoning-effort level new {label} tasks launch at. "Agent default" leaves
                             effort unset so the agent CLI / model uses its own native default
                             {type === 'codex-cli' ? ' (Codex model defaults to gpt-5.6-sol; override with KOOKR_CODEX_MODEL)' : ''}.
-                            A per-task override (via the task API or <code>kookr-spawn --effort</code>)
-                            wins over this default.
+                            A per-task override on the Launch dialog (or via the task API /
+                            <code>kookr-spawn --effort</code>) wins over this default.
                           </span>
                         </div>
                         <div className="settings-agent-select">

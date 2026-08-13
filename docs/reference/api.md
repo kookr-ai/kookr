@@ -262,7 +262,8 @@ Omitting `effort` falls back to the per-agent-type setting. For `codex-cli`,
 missing or empty `agentEffort` maps pass no effort override (model-native
 default). Codex model selection defaults to `gpt-5.6-sol` and can be overridden
 with `KOOKR_CODEX_MODEL`. The `kookr-spawn --effort <level>` flag maps to this
-field.
+field. The dashboard Launch dialog and Quick Launch send the same field
+when the operator picks an effort there.
 
 `model` (optional, string) pins the model for *this one task* (#1518). Validated
 against the **resolved** agent's known-model allowlist after any `round-robin`
@@ -277,8 +278,10 @@ no silent fallback. Allowed base ids for `claude-code`:
 `codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
 `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
-field. Resolution order for both `effort` and `model`: **per-task override →
-per-schedule value → global agent-type default → unset**.
+field. The dashboard Launch dialog and Quick Launch send the same field
+when the operator picks a model there. Resolution order for both `effort`
+and `model`: **per-task override → per-schedule value → global agent-type
+default → unset**.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*

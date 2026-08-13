@@ -528,7 +528,18 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
+  | {
+      type: 'launch';
+      prompt: string;
+      cwd: string;
+      criteria?: string;
+      agentType?: AgentSelection;
+      dependencies?: LaunchDependency[];
+      /** Optional per-task reasoning-effort pin (#2448). Omitted ⇒ server default. */
+      effort?: string;
+      /** Optional per-task model pin (#2448). Omitted ⇒ agent CLI / env default. */
+      model?: string;
+    }
   | {
       type: 'completeTask';
       taskId: string;

@@ -144,6 +144,30 @@ describe('ClientMessageSchema — happy path sanity', () => {
     if (result.success) expect(result.data.agentType).toBe('grok-build');
   });
 
+  test('accepts a launch message with optional effort and model pins (#2448)', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({ effort: 'max', model: 'claude-fable-5' });
+    }
+  });
+
+  test('rejects empty effort or model strings on launch (omit the field instead)', () => {
+    expect(ClientMessageSchema.safeParse({
+      type: 'launch', prompt: 'hi', cwd: '/tmp', effort: '',
+    }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({
+      type: 'launch', prompt: 'hi', cwd: '/tmp', model: '',
+    }).success).toBe(false);
+  });
+
   test('accepts a relaunch message with the Grok Build agent selection', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'relaunch',
@@ -420,7 +444,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'skipAll', agentIds: ['agent-1', 'agent-2'] }),
   clientMessageCase({ type: 'snooze', agentId: 'agent-1', taskId: 'task-1', durationMs: 60000, reason: 'later', resumeMonitoring: true }),
   clientMessageCase({ type: 'cancelSnooze', agentId: 'agent-1', taskId: 'task-1' }),
-  clientMessageCase({ type: 'launch', prompt: 'build it', cwd: '/tmp/project', criteria: 'tests pass', agentType: 'round-robin', dependencies: ['kb', 'evolution-config'] }),
+  clientMessageCase({ type: 'launch', prompt: 'build it', cwd: '/tmp/project', criteria: 'tests pass', agentType: 'round-robin', dependencies: ['kb', 'evolution-config'], effort: 'max', model: 'claude-fable-5' }),
   clientMessageCase({
     type: 'completeTask',
     taskId: 'task-1',

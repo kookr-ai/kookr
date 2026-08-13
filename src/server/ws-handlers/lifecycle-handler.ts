@@ -183,6 +183,8 @@ export class LifecycleHandler {
             criteria: msg.criteria,
             agentType: msg.agentType,
             dependencies: msg.dependencies,
+            ...(msg.effort ? { effort: msg.effort } : {}),
+            ...(msg.model ? { model: msg.model } : {}),
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

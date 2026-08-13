@@ -144,6 +144,8 @@ const ClientMessageSchemaImpl = z.union([
     criteria: z.string().optional(),
     agentType: agentSelection.optional(),
     dependencies: z.array(launchDependency).optional(),
+    effort: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal('completeTask'),
