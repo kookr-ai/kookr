@@ -860,7 +860,8 @@ function allowRemoteChatCodex(): boolean {
 
 /**
  * Check if an active task with the same prompt hash and canonical cwd already
- * exists. Returns the existing task if found, undefined otherwise.
+ * exists. Uses the live-task view so a large completed-task pile is not cloned
+ * on every spawn. Returns the existing task if found, undefined otherwise.
  *
  * Dedup key is (promptHash, agentType, canonicalCwd). Two launches with the
  * same prompt in different directories are different tasks; two launches with
@@ -876,7 +877,9 @@ export function checkSubmission(
 ): Task | undefined {
   const hash = hashPrompt(prompt);
   const canonicalIncoming = canonicalizeCwd(cwd);
-  for (const task of taskStore.listTasks()) {
+  // Live objects only — do not mutate. listTasks() would clone every historical
+  // record on the spawn admission path (issue #2435).
+  for (const task of taskStore.viewLiveTasks()) {
     if (!ACTIVE_STATUSES.has(task.status)) continue;
     if (task.agentType !== agentType) continue;
     if (hashPrompt(task.prompt) !== hash) continue;
