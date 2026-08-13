@@ -9,8 +9,10 @@
  * isolated, owned `GROK_HOME` directory for one managed session:
  *
  *   <grokHome>/
- *     hooks/kookr-monitoring.json   ← Kookr's monitoring instrumentation
+ *     hooks/kookr-monitoring.json          ← Kookr's monitoring instrumentation
+ *     hooks/kookr-writing-review-nudge.json ← soft gh-pr-create reminder (#2455)
  *     plugins/<name> -> <real>/plugins/<name>   ← toolkit discovery (read-only links)
+ *     plugins/kookr-toolkit -> <resolved plugin dir>  ← fallback when ~/.grok/plugins is empty
  *
  * Credentials are NOT copied into the session home. Copying `auth.json` clones
  * a rotating OIDC refresh token into N private files; the first agent refresh
@@ -34,6 +36,10 @@ import {
   buildGrokMonitoringHooksConfig,
   type BuildGrokMonitoringHooksOptions,
 } from './grok-build-instrumentation/monitoring-hooks.js';
+import {
+  GROK_WRITING_REVIEW_NUDGE_FILENAME,
+  buildGrokWritingReviewNudgeConfig,
+} from './grok-build-instrumentation/writing-review-nudge.js';
 
 /** Filesystem seam so composition is unit-testable without touching a real home. */
 export interface GrokHomeFs {
@@ -53,8 +59,10 @@ const defaultFs: GrokHomeFs = {
 };
 
 export const GROK_MONITORING_HOOKS_FILENAME = 'kookr-monitoring.json';
+export { GROK_WRITING_REVIEW_NUDGE_FILENAME };
 /** File name of the shared OIDC/session credential store inside a Grok home. */
 export const GROK_AUTH_FILENAME = 'auth.json';
+export const GROK_TOOLKIT_PLUGIN_NAME = 'kookr-toolkit';
 
 export interface ComposeGrokHomeOptions {
   /** Absolute path of the per-session directory to populate as GROK_HOME. */
@@ -63,6 +71,12 @@ export interface ComposeGrokHomeOptions {
   sourceGrokHome: string;
   /** Monitoring-hook wiring (session id, hook file, writer path, port). */
   monitoring: BuildGrokMonitoringHooksOptions;
+  /**
+   * Plugin directory to symlink when the operator's ~/.grok/plugins has no
+   * kookr-toolkit. Isolated Grok sessions cannot take `--plugin-dir`, so we
+   * reuse the same tree Claude already resolved.
+   */
+  toolkitPluginDir?: string;
   fs?: Partial<GrokHomeFs>;
 }
 
@@ -123,11 +137,28 @@ export async function composeGrokHome(opts: ComposeGrokHomeOptions): Promise<Com
   const hooksPath = join(hooksDir, GROK_MONITORING_HOOKS_FILENAME);
   await fs.writeFile(hooksPath, JSON.stringify(hooksConfig, null, 2));
 
+  // 1b. Soft writing/review reminder on gh pr create (issue #2455). Omitted
+  // when the bundled script is missing so composition still succeeds.
+  const nudgeConfig = buildGrokWritingReviewNudgeConfig();
+  if (nudgeConfig) {
+    await fs.writeFile(
+      join(hooksDir, GROK_WRITING_REVIEW_NUDGE_FILENAME),
+      JSON.stringify(nudgeConfig, null, 2),
+    );
+  }
+
   // 2. Resolve shared auth path (no copy — OIDC RT must have a single writer).
   const authPath = await resolveSharedGrokAuthPath(opts.sourceGrokHome, fs);
 
   // 3. Link toolkit plugins from the real home for discovery (read-only links).
   const linkedPlugins = await linkPlugins(fs, opts.sourceGrokHome, pluginsDir);
+
+  // 3b. When ~/.grok/plugins is empty or lacks kookr-toolkit, fall back to the
+  // same resolved plugin tree Claude already injects via --plugin-dir.
+  if (!linkedPlugins.includes(GROK_TOOLKIT_PLUGIN_NAME) && opts.toolkitPluginDir) {
+    const linked = await linkToolkitFallback(fs, opts.toolkitPluginDir, pluginsDir);
+    if (linked) linkedPlugins.push(GROK_TOOLKIT_PLUGIN_NAME);
+  }
 
   return {
     grokHome: opts.grokHome,
@@ -157,4 +188,27 @@ async function linkPlugins(fs: GrokHomeFs, sourceGrokHome: string, destPluginsDi
     }
   }
   return linked;
+}
+
+/**
+ * If the operator's ~/.grok/plugins has no toolkit, symlink the plugin
+ * directory Claude already found. Fail-open: a missing or unlinkable tree
+ * leaves linkedPlugins unchanged.
+ */
+async function linkToolkitFallback(
+  fs: GrokHomeFs,
+  toolkitPluginDir: string,
+  destPluginsDir: string,
+): Promise<boolean> {
+  try {
+    await fs.access(join(toolkitPluginDir, '.claude-plugin', 'plugin.json'));
+  } catch {
+    return false;
+  }
+  try {
+    await fs.symlink(toolkitPluginDir, join(destPluginsDir, GROK_TOOLKIT_PLUGIN_NAME));
+    return true;
+  } catch {
+    return false;
+  }
 }

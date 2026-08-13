@@ -30,6 +30,16 @@ export function resolveStopNudgePath(baseDir: string = moduleDir): string | unde
 }
 
 /**
+ * Soft writing/review reminder used by isolated Grok sessions on `gh pr create`
+ * (issue #2455). Returns `undefined` when the script is absent so composition
+ * can omit the nudge rather than wire a broken command.
+ */
+export function resolveWritingReviewNudgePath(baseDir: string = moduleDir): string | undefined {
+  const candidate = resolve(baseDir, '..', '..', 'bin', 'kookr-writing-review-nudge.sh');
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+/**
  * Resolve the `bin/` directory to prepend to a spawned agent's `PATH` so a bare
  * `kookr` command resolves (issue #786). Agents are told to run `kookr signal
  * completion-ready`, but the inherited PATH has no extensionless `kookr` — only
