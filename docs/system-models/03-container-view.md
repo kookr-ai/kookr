@@ -15,7 +15,7 @@ flowchart LR
     Term2[Terminal Session #2<br/>dtach]
     CC[Claude Code<br/>interactive mode]
     Codex[Codex CLI<br/>interactive mode]
-    TasksFile[(tasks.json\ntasks + session metadata)]
+    TasksFile[(tasks.sqlite\ntasks + session metadata)]
     StateFiles[(~/.kookr/*.json\nsettings + schedules + OSS/workspace state)]
     HooksDir[(~/.kookr/hooks/\nper-session JSONL)]
     STT[TTS/STT helpers<br/>optional local services]
@@ -54,7 +54,7 @@ flowchart LR
 | **Terminal Session** | dtach (ADR-014, sole backend post-V8) | Managed terminal hosting a single agent process. A persistent dtach master owns the child PTY; `SessionBridge` attaches a byte-transparent `dtach -a -E` client per browser viewer. One session per agent |
 | **Claude Code (managed)** | External CLI process | Interactive agent execution inside a managed terminal session. Selected by `agentType: 'claude-code'` |
 | **Codex CLI (managed)** | External CLI process (forked, see project `CLAUDE.md`) | Interactive agent execution inside a managed terminal session. Selected by `agentType: 'codex-cli'`. Advertises its supported hook subset via `codexHookCapabilities` on `session_start` |
-| **tasks.json** | JSON file on disk | Task lifecycle state, description, completion criteria, and inline agent session metadata (dtach session name — field still historically named `tmuxSession`, agent type, transcript path, hook output path, last known status) per task (ADR-008 — persistence layer now dtach per ADR-014) |
+| **tasks.sqlite** | Embedded SQLite DB on disk (WAL) | Task lifecycle state, description, completion criteria, and inline agent session metadata (dtach session name — field still historically named `tmuxSession`, agent type, transcript path, hook output path, last known status) per task (ADR-008 — persistence layer now dtach per ADR-014). Default backend since #1755; a pre-existing `tasks.json` is imported once and renamed `.pre-sqlite-*`. `KOOKR_TASK_STORE=json` selects the legacy JSON file |
 | **~/.kookr state files** | JSON files on disk | Settings, schedules, OSS contribution attempts, workspace attempt records, snoozed findings, and related operational state owned by the backend |
 | **hooks/** | Per-session JSONL files (`~/.kookr/hooks/`) | Append-only hook output from the active agent (Claude Code or Codex CLI). Full `HookEventName` set — see `src/core/hook-events.ts` — one file per agent session (ADR-008) |
 | **Speech / Telegram helpers** | Optional local service + integration modules | STT/TTS managers and Telegram integration support voice/text task ingress when configured; they are not required for the core attention-router loop |
@@ -64,8 +64,8 @@ flowchart LR
 - **Backend owns** all agent lifecycle operations (create terminal session, send keystrokes, kill) and supervisor logic
 - **Backend serves** the SPA as static files and pushes updates via WebSocket
 - **SPA owns** UI state and rendering; sends commands (respond, skip, snooze, navigate, getNext) to backend
-- **No database** in the local deployment — task/session metadata and operational state are file-backed JSON stores under `~/.kookr/`; active queue state remains in-memory with persisted snooze snapshots
-- **Core (tasks.ts) owns** tasks.json including inline session metadata; adapter writes hook output to `~/.kookr/hooks/` (ADR-008)
+- **Embedded database, no server** in the local deployment — task/session state lives in an embedded SQLite DB (`~/.kookr/tasks.sqlite`, default since #1755; `KOOKR_TASK_STORE=json` for the legacy file-backed JSON path), and other operational state (settings, schedules, OSS/workspace attempts) remains file-backed JSON under `~/.kookr/`. No separate database *process/server* is run; active queue state remains in-memory with persisted snooze snapshots
+- **Core (tasks.ts) owns** the task store (`tasks.sqlite` by default, legacy `tasks.json`) including inline session metadata; adapter writes hook output to `~/.kookr/hooks/` (ADR-008)
 - **Remote/session-sharing modules** publish policy-filtered projections and supervised commands; they do not own task lifecycle or terminal process lifecycle
 - **No discovery** in V1 — Kookr only shows agents it launched itself
 

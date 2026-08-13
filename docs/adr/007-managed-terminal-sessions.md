@@ -2,7 +2,9 @@
 
 ## Status
 
-**Superseded by [ADR-014](014-local-dtach-backend.md)** (2026-04-22). The managed-interactive-session principle stands; ADR-014 documents the backend switch from tmux to dtach (V8 tmux removal). The original `rfc-v8-tmux-removal.md` was archived when `docs/rfc/` was reset for the kookr cutover; ADR-014 now carries the load-bearing decision record.
+**Accepted — persistence layer superseded by [ADR-014](014-local-dtach-backend.md)** (2026-04-22). The core decision (agents run in managed, persistent, interactive terminal sessions) still stands and is in force in the code; only the terminal-persistence *backend* changed — ADR-014 documents the switch from tmux to dtach (V8 tmux removal). The original `rfc-v8-tmux-removal.md` was archived when `docs/rfc/` was reset for the kookr cutover; ADR-014 now carries the load-bearing decision record.
+
+<!-- Updated 2026-08-13: reconciled this header with the README index and ADR-014's "(persistence layer only)" scope — the previous blunt "Superseded by ADR-014" contradicted this ADR's own body ("the managed-interactive-session principle stands"). -->
 
 *Original status:* **Accepted** (2026-03-24, by Jean Ibarz) — superseded ADR-004's "headless-only for V1" decision.
 

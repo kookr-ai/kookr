@@ -217,6 +217,27 @@ stateDiagram-v2
 
 **Implementation note (updated 2026-05-19):** Snooze does **not** pause supervisor monitoring. Hook events and watchdog verdicts continue flowing through `Monitor`; `AttentionQueue.enqueue()` updates the stored snoozed anomaly and keeps it out of the active queue until expiry/manual wake/purge. Production snoozes are task-keyed when possible, so `purge(agentId)` intentionally preserves snooze state while `purgeTask(taskId)` removes it when the task lifecycle ends.
 
+### 5. Turn State
+
+A third stateful dimension on the agent, deliberately orthogonal to `TaskStatus` and `AgentStatus` (issue #358). Defined at `src/shared/contracts/task-status.ts:105-110`; it is a **pure derivation** over the agent's recent event window (`src/core/turn-state.ts`, `deriveTurnStateDetails`), not a stored/mutated field — so there is no "illegal transition", only a mapping from the last effective event.
+
+States: `running`, `waiting_for_input`, `completed_turn`, `blocked`, `unknown`.
+
+It is load-bearing for correctness: `reconciliation.ts` treats a dead session whose `lastTurnState === 'completed_turn'` as a clean-finish auto-complete candidate; `crash-recovery.ts`, `session-health-service.ts`, `event-pipeline.ts`, and the frontend consume it for live status.
+
+Derivation (trailing `notification`/`subagent_stop` events are trimmed first so they don't mask the real last state):
+
+| Last effective event | → TurnState |
+|---|---|
+| `stop` with active background tasks/crons | `running` (parked on its own background work) |
+| `stop` otherwise | `completed_turn` |
+| `stop_failure` | `blocked` (API error killed the turn) |
+| `permission_request` where tool is `AskUserQuestion` | `waiting_for_input` |
+| `permission_request` otherwise | `blocked` |
+| `tool_use` where tool is `AskUserQuestion` | `waiting_for_input` |
+| `tool_use` otherwise, and most other events | `running` |
+| `session_end`, or no events | `unknown` |
+
 ### Additional Operational State Machines
 
 | Entity | States | Owner | Notes |
@@ -227,7 +248,9 @@ stateDiagram-v2
 | Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |
 | Watchdog verdict | `healthy`, `grace_period`, `needs_input`, `permission_blocked`, `tool_running`, `quiet_working`, `mcp_starting`, `stale_agent`, `hook_disconnected` | `src/core/watchdog.ts` | Verdict union is converted into queue anomalies by `Monitor.applyWatchdogVerdict()` when actionable |
 | Delivery watchdog | `unflagged`, `flagged` (hysteresis: N consecutive no-progress samples to engage, M consecutive progress samples to clear) | `src/core/loop-delivery-watchdog.ts`, sampled per iteration in `src/server/ralph-loop-service.ts` | Judges a Ralph loop on positive delivery progress (branch commits / PRs opened / PRs merged), not liveness — silence never flags. Observability-only (one warn line per transition); disabled at threshold 0 (issue #1902) |
-| Provider-reset resume | per issue-claim: `tracked` → `{ resumed \| deduped \| deferred \| rate-limited \| dropped }` | `src/server/provider-reset-scheduler.ts`, recorded by the reaper's `provider_paused` branch in `src/server/lifecycle-timers.ts`, swept once per schedule-runner tick | Auto-resumes a `provider_paused` issue at its quota reset instead of requiring manual re-dispatch (issue #1896 / #1699 WS1.4). Jittered + token-bucket-bounded; dedup keyed on the issue-claim relaunch lease (not the 24h launch ledger). The reaper stops holding the paused slot at reset and reaps it, freeing the lease so the resume hands off to a fresh task |
+| Provider-reset resume | per issue-claim `ProviderResetEvent`: `record` → `resume` → `{ resume_failed \| (success) }`, or `deduped` / `dropped` | `src/server/provider-reset-scheduler.ts`, recorded by the reaper's `provider_paused` branch in `src/server/lifecycle-timers.ts`, swept once per schedule-runner tick | Auto-resumes a `provider_paused` issue at its quota reset instead of requiring manual re-dispatch (issue #1896 / #1699 WS1.4). Emitted events are `record` (tracked), `resume` (launch replayed), `resume_failed` (replay rejected — the operationally distinct outcome), `deduped`, `dropped` (`ProviderResetEvent` union, `provider-reset-scheduler.ts:193-198`); `deferred`/`rate-limited` are sweep-level *summary counters*, not per-claim events. Jittered + token-bucket-bounded; dedup keyed on the issue-claim relaunch lease (not the 24h launch ledger). The reaper stops holding the paused slot at reset and reaps it, freeing the lease so the resume hands off to a fresh task |
+| Circuit breaker | `closed`, `open`, `half-open` | `src/core/circuit-breaker.ts`, `src/shared/contracts/circuit-breaker.ts` | Generic breaker gating the LLM, STT, TTS, and GitHub-fetcher adapters. `closed → open` at the failure threshold; `open → half-open` when the reset timer fires; `half-open → closed` after enough consecutive successes; `half-open → open` on any failure; `* → closed` via manual `rearm()` (dashboard action). While `open`, `call()` short-circuits and throws |
+| Relay connection | `localOnly`, `configured`, `connecting`, `connected`, `backingOff`, `stopped`, `authFailed`, `error` | `src/shared/contracts/relay-connection.ts`, `src/server/relay-connection-manager.ts` | Hosted-relay session-sharing link state. Nested: the manager's own `state` is authoritative only while no runtime exists; once a runtime is attached, the published `connectionState` is whatever the runtime's `RemoteNodeStatus` reports (mapped via `statusFromNodeState()`) — a known footgun when debugging status changes not triggered by this module. `authFailed`/`error` split by whether credential validation failed with an auth code; `forget()` returns to `localOnly` |
 
 ## Transition Ownership Table
 
