@@ -1,4 +1,4 @@
-import { open, readFile, rename } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import {
   DEFAULT_AGENT_TYPE,
   normalizeAgentSelection,
@@ -19,6 +19,7 @@ import {
   DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
   clampFaaAckReapDeadlineMinutes,
 } from './finished-awaiting-ack-reaper.js';
+import { atomicWriteFile } from './persistence-utils.js';
 import {
   validateShortcutBindingOverrides,
   type PlatformShortcutBindingOverrides,
@@ -1054,29 +1055,18 @@ export async function loadSettings(
   }
 }
 
-/** Monotonic counter feeding {@link saveSettings} unique temp filenames. */
-let saveSeq = 0;
-
 /**
- * Save settings to a JSON file. Uses write-to-temp + fsync + rename for crash
- * safety (same durability pattern as atomicWriteFile / schedule persist).
+ * Persist settings with write-to-temp + fsync + rename, owner-only.
  *
- * The temp filename is unique per call (pid + sequence) rather than a fixed
- * `.tmp` suffix: round-robin launches persist the rotation cursor through this
- * function, so a per-launch write can race a concurrent settings-PUT write —
- * a shared temp path would let them corrupt each other's partial JSON.
+ * settings.json holds the automation kill-switch (SAFE MODE). A default umask
+ * would leave it world-readable, so we force owner-only bits via the shared
+ * atomic writer (unique temp name, fsync before rename, fchmod).
  */
 export async function saveSettings(filePath: string, settings: KookrSettings): Promise<void> {
-  const tmpPath = `${filePath}.${process.pid}.${++saveSeq}.tmp`;
-  const data = JSON.stringify(settings, null, 2) + '\n';
-  const fh = await open(tmpPath, 'w');
-  try {
-    await fh.writeFile(data, 'utf-8');
-    // Durability: flush temp contents before rename so a power loss / kernel
-    // crash cannot leave settings.json as a successfully renamed empty/partial file.
-    await fh.sync();
-  } finally {
-    await fh.close();
-  }
-  await rename(tmpPath, filePath);
+  // Kill-switch / SAFE MODE is operator control — match sibling secret stores.
+  await atomicWriteFile(
+    filePath,
+    JSON.stringify(settings, null, 2) + '\n',
+    { mode: 0o600 },
+  );
 }
