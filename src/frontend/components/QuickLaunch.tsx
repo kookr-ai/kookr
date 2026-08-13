@@ -5,7 +5,11 @@ import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
-import { optionalLaunchPins } from './launch-effort-model.js';
+import {
+  effortOptionsForSelection,
+  modelOptionsForSelection,
+  optionalLaunchPins,
+} from './launch-effort-model.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
 
@@ -143,23 +147,25 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
       <AgentTypeSelector
         value={agentType}
-        onChange={(next) => {
-          setAgentType(next);
-          setEffort('');
-          setModel('');
-        }}
+        onChange={setAgentType}
         options={agentOptions}
         label="Agent"
         compact
       />
-      <LaunchEffortModelPickers
-        agentType={agentType}
-        effort={effort}
-        model={model}
-        onEffortChange={setEffort}
-        onModelChange={setModel}
-        compact
-      />
+      {(effortOptionsForSelection(agentType).length > 0
+        || modelOptionsForSelection(agentType).length > 0) && (
+        <details className="quick-launch-pins">
+          <summary>Pins</summary>
+          <LaunchEffortModelPickers
+            agentType={agentType}
+            effort={effort}
+            model={model}
+            onEffortChange={setEffort}
+            onModelChange={setModel}
+            compact
+          />
+        </details>
+      )}
       <input
         ref={inputRef}
         type="text"

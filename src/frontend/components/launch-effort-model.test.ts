@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
+  CLAUDE_CODE_EFFORT_LEVELS,
+  CLAUDE_CODE_MODEL_IDS,
+  CODEX_CLI_EFFORT_LEVELS,
+} from '../../shared/contracts/agent-types.js';
+import {
   effortOptionsForSelection,
   modelOptionsForSelection,
   optionalLaunchPins,
@@ -23,12 +28,12 @@ describe('optionalLaunchPins', () => {
 
 describe('picker options follow the resolved agent allowlist', () => {
   test('claude-code exposes effort and model', () => {
-    expect(effortOptionsForSelection('claude-code')).toContain('max');
-    expect(modelOptionsForSelection('claude-code')).toContain('claude-fable-5');
+    expect(effortOptionsForSelection('claude-code')).toEqual(CLAUDE_CODE_EFFORT_LEVELS);
+    expect(modelOptionsForSelection('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
   });
 
   test('codex-cli exposes effort and hides model', () => {
-    expect(effortOptionsForSelection('codex-cli').length).toBeGreaterThan(0);
+    expect(effortOptionsForSelection('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
     expect(modelOptionsForSelection('codex-cli')).toEqual([]);
   });
 

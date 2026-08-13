@@ -1247,6 +1247,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
+| R4b.9 | F4.1 | SHALL | done | LaunchTaskDialog, QuickLaunch, LaunchEffortModelPickers, messages, lifecycle-handler |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

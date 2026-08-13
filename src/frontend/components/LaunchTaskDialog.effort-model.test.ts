@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import {
+  CLAUDE_CODE_EFFORT_LEVELS,
+  CLAUDE_CODE_MODEL_IDS,
+} from '../../shared/contracts/agent-types.js';
 import type { AgentSelection, ClientMessage } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
@@ -121,6 +125,8 @@ describe('LaunchTaskDialog effort and model pickers (#2448)', () => {
     const model = getModelSelect(container);
     expect(effort).not.toBeNull();
     expect(model).not.toBeNull();
+    expect([...effort!.options].map((o) => o.value)).toEqual(['', ...CLAUDE_CODE_EFFORT_LEVELS]);
+    expect([...model!.options].map((o) => o.value)).toEqual(['', ...CLAUDE_CODE_MODEL_IDS]);
     await act(async () => { setSelectValue(effort!, 'max'); });
     await act(async () => { setSelectValue(model!, 'claude-fable-5'); });
     await submitManualLaunch(container);

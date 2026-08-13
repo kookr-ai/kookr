@@ -883,8 +883,9 @@ with no effort override (model-native default). Override the model with
 `KOOKR_CODEX_MODEL` (for example `gpt-5.6-luna`). If `agentEffort` is missing,
 empty, or lacks a `codex-cli` entry, no effort flag is passed. An explicit
 `ultra` request always selects the Sol model because Luna does not advertise
-`ultra`. A per-task `effort` on `POST /api/tasks` (or `kookr-spawn --effort`)
-overrides the settings default for one launch. Schedules may also pin
+`ultra`. A per-task `effort` on `POST /api/tasks`, the dashboard Launch dialog /
+Quick Launch, or `kookr-spawn --effort` overrides the settings default
+for one launch. Schedules may also pin
 `effort` / `model` on create/update; those values are forwarded into each
 spawned task. Resolution order: per-task override → per-schedule value →
 per-agent-type setting → unset (CLI/model default). Stock binaries skip
