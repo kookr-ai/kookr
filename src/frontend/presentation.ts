@@ -228,11 +228,10 @@ export function taskStatusLabel(status: string | undefined): string {
 }
 
 /**
- * Human-readable label for a finding's action/type. Mirrors the findings rail
- * wording so navigation surfaces describe the same condition consistently.
+ * Human-readable label for an anomaly type, without per-agent turn-state
+ * nuance. Used by the findings-rail type-filter chips so one type is one chip.
  */
-export function findingTypeLabel(agent: AgentState): string {
-  const anomalyType = agent.anomaly?.type;
+export function anomalyTypeLabel(anomalyType: string): string {
   switch (anomalyType) {
     case 'permission_blocked': return 'Permission';
     case 'repeated_error': return 'Repeated Error';
@@ -244,12 +243,22 @@ export function findingTypeLabel(agent: AgentState): string {
     case 'backend_unreachable': return 'Backend Unreachable';
     case 'api_error': return 'API Error';
     case 'budget_exceeded': return 'Budget Exceeded';
-    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
-    // is reserved for an explicit mid-turn question. See issue #358.
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
-    case undefined: return '';
+    case 'needs_input': return 'Needs Input';
     default: return anomalyType.replace(/_/g, ' ');
   }
+}
+
+/**
+ * Human-readable label for a finding's action/type. Mirrors the findings rail
+ * wording so navigation surfaces describe the same condition consistently.
+ */
+export function findingTypeLabel(agent: AgentState): string {
+  const anomalyType = agent.anomaly?.type;
+  if (anomalyType === undefined) return '';
+  // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
+  // is reserved for an explicit mid-turn question. See issue #358.
+  if (anomalyType === 'needs_input' && agent.turnState === 'completed_turn') return 'Signaled Complete';
+  return anomalyTypeLabel(anomalyType);
 }
 
 /**

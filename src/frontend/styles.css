@@ -519,9 +519,16 @@ kbd {
   letter-spacing: 0.8px;
   color: var(--text-muted);
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.findings-header-main {
+  display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 .findings-header-title {
   min-width: 0;
@@ -535,6 +542,41 @@ kbd {
   gap: 8px;
   min-width: 0;
   flex-shrink: 0;
+}
+.findings-type-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.findings-type-chip {
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.findings-type-chip:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.findings-type-chip.selected {
+  background: rgba(120, 200, 255, 0.18);
+  border-color: rgba(120, 200, 255, 0.45);
+  color: var(--text-primary);
+}
+.findings-type-chip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 .findings-collapse-all-button {
   border: 1px solid var(--border-dim);
