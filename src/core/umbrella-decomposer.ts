@@ -1196,121 +1196,134 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * early-promote on access_denied|tier_blocked / chronic zero-success alert) and
  * invent wave 10 (#2832–#2834 persist soft-disable deadline, park heartbeat,
  * warm-start recovery tests) shipped and are title-exhausted. Invent wave 11
- * (queue-feeder 2026-08-13, invent-product-wave #2069) continues W33 residual:
- * promote issuer_feed after issuer-page verification_reject (the hole #2779
- * left), stamp a named failureCode when newswire_feed returns no item, and
- * stamp failureCode on sub-100ms stealth attempts that return no document.
- * Live GitHub leaves #2855–#2857. Title idempotency prevents re-emit once
- * live leaves exist.
+ * (queue-feeder 2026-08-13, invent-product-wave #2069) #2855–#2857
+ * (issuer_feed after verification_reject / newswire_feed feed_no_match /
+ * stealth cache-miss omit) shipped and are title-exhausted. Invent wave 12
+ * (queue-feeder 2026-08-13, invent-product-wave #2069) continues W33 residual
+ * after wave 11: stamp feed_no_match on the search-backed newswire path (the
+ * hole #2856 left), persist identityCorroborated=false so issuer_feed-only
+ * hits are single-source not unstamped, and split half-open search-backend
+ * probes out of the weekly live fan-out fold so Perplexity 59/0 does not look
+ * like live failover. Live GitHub leaves #2882–#2884. Title idempotency
+ * prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): early-promote issuer_feed after issuer-page verification_reject',
+      'feat(acquisition): stamp feed_no_match when newswire search discovery finds no wire URL',
     goal:
-      'When the issuer page just returned verification_reject and the ticker has a real ' +
-      'issuer_feed URL, try that feed on the same poll (or the next poll without waiting for ' +
-      'access_denied / tier_blocked). W33 still shows issuer HTML 0% with 2/3 ' +
-      'verification_reject while issuer_feed took 100% of source wins. This elevates the feed; ' +
-      'it must not abandon the page. #2779 / ISSUER_PAGE_OBSTRUCTION_CODES intentionally omit ' +
-      'verification_reject (#1583: a gate reject is pre-publish mix, not a bot-wall).',
+      'Make empty search-backed newswire attempts loud under umbrella #1587. W33 newswire ' +
+      'shows 2 attempts, 0 ok, 1 verification_reject, and 1 unnamed miss. Wave 11 / #2856 ' +
+      'stamped feed_no_match on newswire_feed only. collectNewswire still returns ' +
+      "reason: 'no newswire result' with no failureCode when search finds no wire URL " +
+      '(src/acquisition/tiers/newswire.js). Reuse feed_no_match (already in ' +
+      'STRUCTURAL_FAILURE_CODES / isNamedNotFoundFailureCode) so clean-empty bail-out ' +
+      'still fires. Do not invent no_wire / no_result.',
     acceptanceCriteria: [
-      'Same-poll / next-poll: issuer page verification_reject + configured/discoverable ' +
-        'feed_url → issuer_feed is attempted. Do not wait for access_denied / tier_blocked / ' +
-        'host_cooling_down before trying the feed.',
-      'Do not add verification_reject to ISSUER_PAGE_OBSTRUCTION_CODES. Do not set ' +
-        "skipTiers: ['issuer'] (or otherwise stop later issuer-HTML polls) because of " +
-        'verification_reject. #1583 host-circuit behavior stays: verification_reject does not ' +
-        'open the issuer host circuit.',
-      'No feed URL → no invented feed. Healthy issuer-page path unchanged. #2779 ' +
-        'access_denied / tier_blocked promote stays intact. Tests: (a) verification_reject + ' +
-        'feed → feed attempted same/next poll; (b) issuer HTML still eligible later; (c) no ' +
-        "feed URL → no promote; (d) isIssuerPageObstructionCode('verification_reject') === false.",
-    ],
-    fileHints: [
-      'src/acquisition/issuer-feed-early-promote.js',
-      'src/acquisition/acquire.js',
-      'src/acquisition/tiers/issuer.js',
-      'src/scheduler-active-window-poll.js',
-    ],
-    testHints: [
-      'unit: verification_reject + feed → feed attempted; issuer HTML not skipped',
-      "unit: isIssuerPageObstructionCode('verification_reject') === false",
-      'unit: access_denied still uses the #2779 obstruction path',
-      'unit: no feed URL → no promote',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): stamp a named failureCode when newswire_feed returns no matching item',
-    goal:
-      'Make empty newswire-feed attempts loud under umbrella #1587: W33 newswire_feed shows 3 ' +
-      'attempts, 0 ok, an empty byFailureCode histogram, and null msAvg. newswire.js already ' +
-      "returns reason: 'no matching newswire feed item' with no failureCode. Stamp the reserved " +
-      'structural code feed_no_match (already in STRUCTURAL_FAILURE_CODES) rather than inventing ' +
-      'no_item / empty_feed.',
-    acceptanceCriteria: [
-      'When newswire_feed runs and produces no matching item (empty feed, no ticker/date ' +
-        'match, or zero usable entries), the tier outcome sets failureCode: feed_no_match. ' +
-        'Do not invent no_item / empty_feed or any other new code.',
-      'feed_no_match stays on STRUCTURAL_FAILURE_CODES (not a publication obstruction). Weekly ' +
-        'failureCodeByTier includes it for newswire_feed. A successful item match stays ok=true ' +
-        'with no such code. Transport/auth errors keep their existing codes.',
-      'Unit/fixture tests cover: (a) empty feed → feed_no_match; (b) matching item → ok; ' +
-        '(c) transport/auth error keeps existing code; (d) isStructuralFailureCode(feed_no_match) ' +
-        '=== true and isPublicationObstructionCode(feed_no_match) === false.',
+      "When the search-backed newswire path finishes with reason 'no newswire result' " +
+        '(no recorded wire, no search hit, no candidate page), the tier outcome sets ' +
+        'failureCode: feed_no_match. Do not invent no_wire / no_result / empty_search.',
+      'feed_no_match stays a named not-found: isNamedNotFoundFailureCode(true), ' +
+        'isPublicationObstructionCode(false). isCleanEmptyAcquireResult still treats a ' +
+        'poll whose only miss is this code as clean-empty (RFC-012 §5.4). A matching ' +
+        'wire URL stays ok=true with no such code. verification_reject / access_denied / ' +
+        'search-unavailable keep their existing codes. #2856 newswire_feed path stays intact.',
+      'Unit/fixture tests cover: (a) search finds no wire URL → feed_no_match; (b) ' +
+        'matching wire → ok, no feed_no_match; (c) verification_reject on a fetched wire ' +
+        'page keeps verification_reject; (d) search-unavailable miss does not become ' +
+        'feed_no_match; (e) isNamedNotFoundFailureCode(feed_no_match) === true.',
     ],
     fileHints: [
       'src/acquisition/tiers/newswire.js',
       'src/acquisition/scoreboard.js',
-      'src/document-assessment.js',
-      'src/acquisition/weekly-scoreboard.js',
+      'src/acquisition/acquire.js',
     ],
     testHints: [
-      'unit: empty newswire_feed → failureCode feed_no_match',
-      'unit: matching item → ok',
-      'unit: transport error keeps existing code',
-      'unit: feed_no_match is structural, not a publication obstruction',
+      'unit: no newswire result → failureCode feed_no_match',
+      'unit: matching wire URL → ok',
+      'unit: verification_reject on a wire page keeps verification_reject',
+      'unit: search-unavailable miss is not feed_no_match',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): stamp failureCode on sub-100ms stealth attempts that return no document',
+      'feat(acquisition): persist identityCorroborated=false on single-source detection rows',
     goal:
-      'W33 stealth shows 3 attempts, 0 ok, 48ms average, and an empty failureCode histogram. ' +
-      'That is collectStealth in stealth-queue.js: a non-blocking cache read. Sub-100ms empty ' +
-      "(reason: 'no fresh stealth render') is the designed cache-miss, not a failed render. " +
-      'Do not stamp a failureCode on that path (unknown codes become publication obstructions ' +
-      'and any failureCode increments blocked). Fix the inflated denominator by omitting ' +
-      'cache-miss collectStealth from the stealth attempt fold.',
+      'Close the stamp-path hole under umbrella #1587: W33 identityCorroboration is 1 ' +
+      'corroborated / 0 singleSource / 2 unstamped on 3 issuer_feed wins. #2671 requires ' +
+      'single-source hits to stamp identityCorroborated=false (deliverable, not legacy-absent). ' +
+      'scheduler-active-window-poll.js coerces the stamp with `=== true` and some persist ' +
+      'paths omit a false boolean, so weekly fold counts those rows as unstamped. #2875 is ' +
+      'only an alert; this leaf writes the false stamp.',
     acceptanceCriteria: [
-      'A collectStealth cache-miss (ok: false, reason no fresh stealth render / no-url, no ' +
-        'document, no in-flight render consumed) is omitted from stealth tierOutcomes (or ' +
-        'otherwise does not increment stealth attempts in foldTierOutcomes).',
-      'Do not add stealth_noop / not_rendered / any new failureCode on the cache-miss path. ' +
-        'Do not treat cache-miss as stealth_failed or as a publication obstruction. A real ' +
-        'stealth cache hit still counts; a real stealth render failure still counts with its ' +
-        'existing code.',
-      'Unit/fixture tests cover: (a) cache-miss collectStealth → stealth attempts unchanged; ' +
-        '(b) stealth ok with document → attempts+1 / ok+1; (c) real stealth_failed → ' +
-        'attempts+1 / blocked+1 with existing code; (d) no new failureCode string for cache-miss.',
+      'Every detected:true row written by the armed-window / catch-up persist path sets ' +
+        'identityCorroborated to a boolean. issuer_feed-only (or any single independent ' +
+        'surface) wins write false with identityCorroboration.surfaceCount === 1. Do not ' +
+        'omit the key when the value is false. Do not coerce undefined to omitted.',
+      'withIdentityCorroboration still computes the stamp (true only when ≥2 independent ' +
+        'surfaces agree). Multi-source true stays true. Conflicting surfaces stay false + ' +
+        'conflict. Weekly identityCorroborationStats then counts those issuer_feed-only ' +
+        'hits as singleSource, not unstamped. #2875 alert (100% unstamped) is unchanged.',
+      'Unit/fixture tests cover: (a) issuer_feed-only hit → identityCorroborated === false ' +
+        'on the persisted detection object (key present); (b) two agreeing surfaces → true; ' +
+        '(c) weekly fold of (a) increments singleSource, not unstamped; (d) compact/serialize ' +
+        'does not drop false.',
     ],
     fileHints: [
-      'src/acquisition/stealth-queue.js',
-      'src/acquisition/acquire.js',
-      'src/acquisition/scoreboard.js',
+      'src/scheduler-active-window-poll.js',
+      'src/scheduler-runner.js',
+      'src/scheduled-detection-persistence.js',
+      'src/acquisition/identity-corroboration.js',
+      'src/detection-scorecard.js',
     ],
     testHints: [
-      'unit: cache-miss collectStealth omitted from stealth attempts',
-      'unit: stealth document hit still counted',
-      'unit: stealth_failed after a real render still counted',
-      'unit: no new failureCode on cache-miss',
+      'unit: issuer_feed-only persist keeps identityCorroborated false',
+      'unit: two agreeing surfaces persist true',
+      'unit: weekly fold counts false as singleSource',
+      'unit: compact/serialize retains false',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(metrics): split half-open search-backend probes out of weekly live fan-out',
+    goal:
+      'Keep the #2520 weekly search-backend failover metric honest under umbrella #1587. ' +
+      'W33 Perplexity shows 59 attempts / 0 successes while soft-disable is already true; ' +
+      '43.5% of fan-outs look single-backend. Heartbeats are correctly excluded (no `ok`), ' +
+      'but half-open probes still write providerOutcome rows and fold into live success-share. ' +
+      '#2873 lengthens cooldown and #2874 fixes the status count — neither splits the weekly ' +
+      'fold. Tag probe attempts and report them beside, not inside, live fan-out.',
+    acceptanceCriteria: [
+      'appendSearchProviderOutcome records when the attempt was a half-open probe ' +
+        '(probeEligible / phase halfOpen). Parked-in-cooldown backends still emit no live ' +
+        'providerOutcome (existing #2778 / #2833 contract). Heartbeats still have no `ok`.',
+      'Weekly searchBackends.perBackend live attempts/successes exclude probe-tagged rows. ' +
+        'A probe-only backend (59 half-open failures, 0 live) shows live attempts 0 / ' +
+        'unmeasurable rate (null, not 0%), with probe attempts counted in a separate ' +
+        'probeAttempts (or equivalent) field. Brave/Tavily live shares are unchanged. ' +
+        'Fan-out multi/single/zero-healthy uses live eligibility, not probe membership.',
+      'Unit/fixture tests cover: (a) live failure increments live attempts; (b) probe-tagged ' +
+        'failure increments probeAttempts only; (c) probe-only backend successShare is null; ' +
+        '(d) heartbeat rows still do not increment either denominator.',
+    ],
+    fileHints: [
+      'src/search-backend-metrics.js',
+      'src/search-backend-soft-disable.js',
+      'src/retrieval-health.js',
+      'src/acquisition/weekly-scoreboard.js',
+    ],
+    testHints: [
+      'unit: live failure counts as live attempt',
+      'unit: probe-tagged failure is excluded from live success-share',
+      'unit: probe-only backend rate is null not 0%',
+      'unit: heartbeat still ignored',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
 ]);
+
 
 /**
  * lucy#1590 "headline metrics in tested code". Wave-1 residual leaves
