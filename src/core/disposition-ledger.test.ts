@@ -1,7 +1,7 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, open, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   appendDispositionEntry,
   auditRecoveryDispositions,
@@ -57,6 +57,24 @@ describe('appendDispositionEntry / readDispositionEntries', () => {
 
   test('reading a ledger that was never written to returns an empty array', async () => {
     await expect(readDispositionEntries(ledgerPath)).resolves.toEqual([]);
+  });
+
+  test('fsyncs the ledger handle before resolving so a crash cannot drop the last line', async () => {
+    // Probe a real handle so we can spy FileHandle.prototype.sync without
+    // mocking the whole node:fs/promises module (still used for open/readFile/rm).
+    const probe = await open(join(dir, '.sync-probe'), 'a');
+    const proto = Object.getPrototypeOf(probe);
+    await probe.close();
+    const syncSpy = vi.spyOn(proto, 'sync');
+
+    try {
+      await appendDispositionEntry(ledgerPath, entry({ taskId: 'task-1' }));
+      expect(syncSpy).toHaveBeenCalled();
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    await expect(readDispositionEntries(ledgerPath)).resolves.toEqual([entry({ taskId: 'task-1' })]);
   });
 });
 
