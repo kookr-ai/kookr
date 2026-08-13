@@ -395,8 +395,13 @@ describe('SessionReaperService.runSweep', () => {
     expect(thresholdCalls()).toHaveLength(2);
     expect(thresholdCalls()[1]).toContain('underPressure=true');
     expect(thresholdCalls()[1]).toContain('dtachCount=32');
+    const lastEmitAt = now;
 
-    now += DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS;
+    now += 1_000;
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(2);
+
+    now = lastEmitAt + DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS;
     await reaper.runSweep();
     expect(thresholdCalls()).toHaveLength(3);
     expect(thresholdCalls()[2]).toBe(thresholdCalls()[1]);
@@ -439,6 +444,45 @@ describe('SessionReaperService.runSweep', () => {
       String(args[0] ?? '').includes('reaped unowned session kookr-orphan'),
     )).toBe(true);
   });
+
+  it('still logs a killSession error immediately when the identical threshold line is suppressed (issue #2428)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession(spec('kookr-orphan'));
+    let now = 10_000;
+    backend.setSessionStartedAt('kookr-orphan', now - 25 * HOUR_MS);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ({ ...ENABLED_CONFIG, thresholdLogIntervalMs: HOUR_MS }),
+      now: () => now,
+    });
+
+    await reaper.runSweep();
+    expect(await backend.isAlive('kookr-orphan')).toBe(false);
+    expect(log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    )).toHaveLength(1);
+
+    await backend.createSession(spec('kookr-orphan-2'));
+    backend.setSessionStartedAt('kookr-orphan-2', now - 25 * HOUR_MS);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (backend as any).killSession = async () => {
+      throw new Error('dtach kill failed (simulated)');
+    };
+    now += 1_000;
+    await reaper.runSweep();
+
+    expect(log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    )).toHaveLength(1);
+    expect(warn.mock.calls.some((args) =>
+      String(args[0] ?? '').includes('killSession failed for kookr-orphan-2'),
+    )).toBe(true);
+  });
 });
 
 const STEADY_SNAPSHOT: SweepThresholdSnapshot = {
@@ -451,10 +495,6 @@ const STEADY_SNAPSHOT: SweepThresholdSnapshot = {
 };
 
 describe('shouldLogSweepThreshold', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it('always logs the first snapshot', () => {
     const line = formatSweepThresholdLine(STEADY_SNAPSHOT);
     expect(shouldLogSweepThreshold({
