@@ -262,6 +262,73 @@ function TaskCountBadge({ taskLoad, pendingCount = 0 }: { taskLoad: TaskLoad; pe
   );
 }
 
+/**
+ * Decide whether a sidebar project row should stay visible for a typed query.
+ *
+ * Empty or whitespace-only queries match everything. Otherwise we do a
+ * case-insensitive substring check against the project's display name and,
+ * when present, its local checkout path — the two labels operators already
+ * recognize in a dense multi-repo rail.
+ */
+export function projectMatchesSidebarFilter(
+  summary: Pick<ProjectSummary, 'displayName' | 'localPath'>,
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return true;
+  if (summary.displayName.toLowerCase().includes(needle)) return true;
+  const localPath = summary.localPath;
+  return typeof localPath === 'string' && localPath.toLowerCase().includes(needle);
+}
+
+function ProjectSidebarFilter({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}): React.ReactElement {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [focused, setFocused] = useState(false);
+  const [anchor, setAnchor] = useState({ top: 0, left: 0 });
+
+  function syncAnchor(): void {
+    const rect = inputRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setAnchor({ top: rect.top, left: rect.left });
+  }
+
+  return (
+    <label className={`project-sidebar-filter${value.trim() ? ' has-query' : ''}`}>
+      <span className="sr-only">Filter projects</span>
+      <input
+        ref={inputRef}
+        type="search"
+        className="project-sidebar-filter-input"
+        data-testid="project-sidebar-filter"
+        aria-label="Filter projects"
+        placeholder="Filter"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        style={focused ? { position: 'fixed', top: anchor.top, left: anchor.left } : undefined}
+        onChange={(event) => onChange(event.target.value)}
+        onFocus={() => {
+          syncAnchor();
+          setFocused(true);
+        }}
+        onBlur={() => setFocused(false)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          onChange('');
+          event.currentTarget.blur();
+        }}
+      />
+    </label>
+  );
+}
+
 function OrganizerButton({ onManage }: { onManage: () => void }) {
   return (
     <Tooltip text="Organize projects">
@@ -337,6 +404,9 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
+  // Session-only: sidebar prefs have no filter key, and the issue allows
+  // keeping the query out of persisted sidebar state.
+  const [filterQuery, setFilterQuery] = useState('');
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const visibleRowMap = useMemo(() => {
     const rowMap = new Map<string, (typeof projectSidebarRows)[number]>();
@@ -353,6 +423,14 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const unpinnedSummaries = useMemo(
     () => visibleProjectSummaries.filter((summary) => !visibleRowMap.get(summary.project)?.pinned),
     [visibleProjectSummaries, visibleRowMap],
+  );
+  const filteredPinnedSummaries = useMemo(
+    () => pinnedSummaries.filter((summary) => projectMatchesSidebarFilter(summary, filterQuery)),
+    [pinnedSummaries, filterQuery],
+  );
+  const filteredUnpinnedSummaries = useMemo(
+    () => unpinnedSummaries.filter((summary) => projectMatchesSidebarFilter(summary, filterQuery)),
+    [unpinnedSummaries, filterQuery],
   );
   const allTaskLoad = useMemo(() => {
     return projectSummaries.reduce(
@@ -573,17 +651,24 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
         </button>
       </Tooltip>
 
+      <ProjectSidebarFilter value={filterQuery} onChange={setFilterQuery} />
+      {filterQuery.trim() !== '' && (
+        <span className="sr-only" role="status">
+          {filteredPinnedSummaries.length + filteredUnpinnedSummaries.length} of {visibleProjectSummaries.length} projects
+        </span>
+      )}
+
       <div className="project-sidebar-section">
-        {pinnedSummaries.map((summary) => renderProject(summary, true))}
+        {filteredPinnedSummaries.map((summary) => renderProject(summary, true))}
         {renderSectionDropZone(true)}
       </div>
 
-      {pinnedSummaries.length > 0 && unpinnedSummaries.length > 0 && (
+      {filteredPinnedSummaries.length > 0 && filteredUnpinnedSummaries.length > 0 && (
         <div className="project-sidebar-divider" />
       )}
 
       <div className="project-sidebar-section">
-        {unpinnedSummaries.map((summary) => renderProject(summary, false))}
+        {filteredUnpinnedSummaries.map((summary) => renderProject(summary, false))}
         {renderSectionDropZone(false)}
       </div>
 

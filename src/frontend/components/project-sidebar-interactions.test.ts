@@ -4,7 +4,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ProjectSidebar } from './ProjectSidebar.js';
+import { ProjectSidebar, projectMatchesSidebarFilter } from './ProjectSidebar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetProjectNotificationMuteForTests } from '../hooks/useProjectNotificationMute.js';
 
@@ -350,6 +350,127 @@ describe('ProjectSidebar interactions', () => {
       // cappedCount stays 4/10 (unchanged, matches the server's `active` count)
       // but the breakdown now says WHY, instead of implying 4 tasks are working.
       expect(allIcon?.getAttribute('aria-label')).toBe('All Projects, 4/10 of cap, 2 awaiting ack, 1 hung?');
+    });
+  });
+
+  describe('project rail filter (issue #2444)', () => {
+    function setFilterValue(input: HTMLInputElement, value: string): void {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    test('projectMatchesSidebarFilter matches displayName and localPath case-insensitively', () => {
+      const summary = { displayName: 'grafana/grafana', localPath: '/work/Grafana' };
+      expect(projectMatchesSidebarFilter(summary, '')).toBe(true);
+      expect(projectMatchesSidebarFilter(summary, '   ')).toBe(true);
+      expect(projectMatchesSidebarFilter(summary, 'GRAF')).toBe(true);
+      expect(projectMatchesSidebarFilter(summary, 'work/graf')).toBe(true);
+      expect(projectMatchesSidebarFilter(summary, 'kookr')).toBe(false);
+      expect(projectMatchesSidebarFilter({ displayName: 'acme/widgets' }, 'work')).toBe(false);
+    });
+
+    test('filter hides non-matching rows and keeps the All-projects row', async () => {
+      useKookrStore.getState().handleProjectSummaries([
+        {
+          project: 'github.com/grafana/grafana',
+          displayName: 'grafana/grafana',
+          color: 1,
+          activeAgents: 1,
+          findingCount: 0,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+          localPath: '/work/grafana',
+        },
+        {
+          project: 'github.com/kookr-ai/kookr',
+          displayName: 'kookr-ai/kookr',
+          color: 2,
+          activeAgents: 0,
+          findingCount: 1,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+          localPath: '/work/kookr',
+        },
+      ]);
+
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const filter = container.querySelector<HTMLInputElement>('[data-testid="project-sidebar-filter"]');
+      expect(filter).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-all"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/grafana/grafana"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/kookr-ai/kookr"]')).not.toBeNull();
+
+      await act(async () => {
+        setFilterValue(filter!, 'grafana');
+      });
+      await flush();
+
+      expect(container.querySelector('[data-testid="project-icon-all"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/grafana/grafana"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/kookr-ai/kookr"]')).toBeNull();
+    });
+
+    test('filter matches localPath and empty query restores every row', async () => {
+      useKookrStore.getState().handleProjectSummaries([
+        {
+          project: 'github.com/acme/widgets',
+          displayName: 'acme/widgets',
+          color: 1,
+          activeAgents: 0,
+          findingCount: 0,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+          localPath: '/checkouts/widgets',
+        },
+        {
+          project: 'github.com/acme/gears',
+          displayName: 'acme/gears',
+          color: 2,
+          activeAgents: 0,
+          findingCount: 0,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+          localPath: '/srv/gears',
+        },
+      ]);
+
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const filter = container.querySelector<HTMLInputElement>('[data-testid="project-sidebar-filter"]');
+      expect(filter).not.toBeNull();
+
+      await act(async () => {
+        setFilterValue(filter!, 'checkouts');
+      });
+      await flush();
+
+      expect(container.querySelector('[data-testid="project-icon-all"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/widgets"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/gears"]')).toBeNull();
+
+      await act(async () => {
+        setFilterValue(filter!, '');
+      });
+      await flush();
+
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/widgets"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/gears"]')).not.toBeNull();
     });
   });
 });
