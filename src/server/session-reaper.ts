@@ -52,6 +52,54 @@ import {
 } from '../adapters/dtach-attach-reaper.js';
 import { existsSync } from 'node:fs';
 
+/** Minimum gap between identical sweep-threshold log lines (issue #2428). 5 minutes. */
+export const DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Fields that appear on the per-sweep threshold line. A change in any field
+ * is a new snapshot and always logs; an identical snapshot is rate-limited.
+ */
+export type SweepThresholdSnapshot = {
+  effectiveOrphanAgeMs: number;
+  underPressure: boolean;
+  dtachCount: number;
+  softBound: number;
+  steadyStateOrphanAgeMs: number;
+  underPressureOrphanAgeMs: number;
+};
+
+/** Format the operator-facing sweep-threshold line (issue #2081 / #2428). */
+export function formatSweepThresholdLine(snapshot: SweepThresholdSnapshot): string {
+  return (
+    `[session-reaper] sweep thresholds: effectiveOrphanAgeMs=${snapshot.effectiveOrphanAgeMs}` +
+    ` underPressure=${snapshot.underPressure}` +
+    ` dtachCount=${snapshot.dtachCount}` +
+    ` softBound=${snapshot.softBound}` +
+    ` steadyStateOrphanAgeMs=${snapshot.steadyStateOrphanAgeMs}` +
+    ` underPressureOrphanAgeMs=${snapshot.underPressureOrphanAgeMs}`
+  );
+}
+
+/**
+ * Decide whether to emit a sweep-threshold line.
+ *
+ * First line always logs. A changed snapshot always logs (pressure flips must
+ * not wait for the interval). An identical line logs again only after
+ * `intervalMs` so unchanged `underPressure=false` sweeps do not dominate
+ * `server.log`.
+ */
+export function shouldLogSweepThreshold(args: {
+  lastLine: string | null;
+  lastLoggedAtMs: number | null;
+  nextLine: string;
+  nowMs: number;
+  intervalMs: number;
+}): boolean {
+  if (args.lastLine === null || args.lastLoggedAtMs === null) return true;
+  if (args.lastLine !== args.nextLine) return true;
+  return args.nowMs - args.lastLoggedAtMs >= args.intervalMs;
+}
+
 /**
  * Env/base reaper config plus the under-pressure orphan age (issue #2081).
  * `orphanAgeThresholdMs` is the steady-state (default 24h) value; the service
@@ -63,6 +111,11 @@ export type SessionReaperBaseConfig = SessionReapConfig & {
    * (default 2h). Omitted → same as `orphanAgeThresholdMs` (no pressure adapt).
    */
   orphanAgeUnderPressureMs?: number;
+  /**
+   * Minimum gap between identical sweep-threshold log lines (issue #2428).
+   * A field change always logs immediately. Default 5 minutes.
+   */
+  thresholdLogIntervalMs?: number;
 };
 
 export interface SessionReaperDeps {
@@ -178,6 +231,8 @@ export class SessionReaperService {
   private lastStaleAttacherSweepAt: string | null = null;
   private lastEffectiveOrphanAgeMs: number | null = null;
   private lastUnderPressure = false;
+  private lastThresholdLogLine: string | null = null;
+  private lastThresholdLoggedAtMs: number | null = null;
 
   constructor(private readonly deps: SessionReaperDeps) {}
 
@@ -216,14 +271,30 @@ export class SessionReaperService {
     );
     this.lastEffectiveOrphanAgeMs = effectiveOrphanAgeMs;
     this.lastUnderPressure = underPressure;
-    console.log(
-      `[session-reaper] sweep thresholds: effectiveOrphanAgeMs=${effectiveOrphanAgeMs}` +
-      ` underPressure=${underPressure}` +
-      ` dtachCount=${dtachCount}` +
-      ` softBound=${softBound}` +
-      ` steadyStateOrphanAgeMs=${base.orphanAgeThresholdMs}` +
-      ` underPressureOrphanAgeMs=${underPressureAgeMs}`,
-    );
+    const thresholdSnapshot: SweepThresholdSnapshot = {
+      effectiveOrphanAgeMs,
+      underPressure,
+      dtachCount,
+      softBound,
+      steadyStateOrphanAgeMs: base.orphanAgeThresholdMs,
+      underPressureOrphanAgeMs: underPressureAgeMs,
+    };
+    const thresholdLine = formatSweepThresholdLine(thresholdSnapshot);
+    const thresholdLogIntervalMs =
+      base.thresholdLogIntervalMs ?? DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS;
+    if (
+      shouldLogSweepThreshold({
+        lastLine: this.lastThresholdLogLine,
+        lastLoggedAtMs: this.lastThresholdLoggedAtMs,
+        nextLine: thresholdLine,
+        nowMs: now,
+        intervalMs: thresholdLogIntervalMs,
+      })
+    ) {
+      console.log(thresholdLine);
+      this.lastThresholdLogLine = thresholdLine;
+      this.lastThresholdLoggedAtMs = now;
+    }
 
     const config: SessionReapConfig = {
       enabled: base.enabled,

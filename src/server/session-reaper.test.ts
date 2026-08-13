@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,13 @@ import { TaskStore } from '../core/tasks.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import type { SessionSpec } from '../adapters/terminal-backend.js';
 import type { SessionReapConfig } from '../core/session-reap-policy.js';
-import { SessionReaperService } from './session-reaper.js';
+import {
+  DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+  formatSweepThresholdLine,
+  SessionReaperService,
+  shouldLogSweepThreshold,
+  type SweepThresholdSnapshot,
+} from './session-reaper.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -40,6 +46,10 @@ async function readAuditRows(auditLogPath: string): Promise<Record<string, unkno
 }
 
 describe('SessionReaperService.runSweep', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('runs the monitor aged-agent sweep on every sweep and survives its failure (issue #1761)', async () => {
     const taskStore = new TaskStore();
     const backend = new FakeTerminalBackend();
@@ -349,6 +359,186 @@ describe('SessionReaperService.runSweep', () => {
     expect(result.reaped).toEqual([]);
     expect(reaper.getHealthSnapshot().underPressure).toBe(false);
     expect(reaper.getHealthSnapshot().effectiveOrphanAgeMs).toBe(24 * HOUR_MS);
+  });
+
+  it('rate-limits identical sweep-threshold lines and logs immediately when a field changes (issue #2428)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    let now = 1_000;
+    let dtachCount = 5;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      now: () => now,
+      getStaleDtachCount: () => dtachCount,
+    });
+
+    const thresholdCalls = (): string[] =>
+      log.mock.calls
+        .map((args) => String(args[0] ?? ''))
+        .filter((line) => line.startsWith('[session-reaper] sweep thresholds:'));
+
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(1);
+    expect(thresholdCalls()[0]).toContain('underPressure=false');
+    expect(thresholdCalls()[0]).toContain('dtachCount=5');
+
+    now += 1_000;
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(1);
+
+    dtachCount = 32;
+    now += 1_000;
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(2);
+    expect(thresholdCalls()[1]).toContain('underPressure=true');
+    expect(thresholdCalls()[1]).toContain('dtachCount=32');
+    const lastEmitAt = now;
+
+    now += 1_000;
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(2);
+
+    now = lastEmitAt + DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS;
+    await reaper.runSweep();
+    expect(thresholdCalls()).toHaveLength(3);
+    expect(thresholdCalls()[2]).toBe(thresholdCalls()[1]);
+  });
+
+  it('still logs a reap immediately when the identical threshold line is suppressed (issue #2428)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession(spec('kookr-orphan'));
+    let now = 10_000;
+    backend.setSessionStartedAt('kookr-orphan', now - 1_000);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ({ ...ENABLED_CONFIG, thresholdLogIntervalMs: HOUR_MS }),
+      now: () => now,
+    });
+
+    await reaper.runSweep();
+    expect(await backend.isAlive('kookr-orphan')).toBe(true);
+    const firstThresholds = log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    );
+    expect(firstThresholds).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+
+    now += 1_000;
+    backend.setSessionStartedAt('kookr-orphan', now - 25 * HOUR_MS);
+    await reaper.runSweep();
+
+    expect(await backend.isAlive('kookr-orphan')).toBe(false);
+    const laterThresholds = log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    );
+    expect(laterThresholds).toHaveLength(1);
+    expect(warn.mock.calls.some((args) =>
+      String(args[0] ?? '').includes('reaped unowned session kookr-orphan'),
+    )).toBe(true);
+  });
+
+  it('still logs a killSession error immediately when the identical threshold line is suppressed (issue #2428)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await backend.createSession(spec('kookr-orphan'));
+    let now = 10_000;
+    backend.setSessionStartedAt('kookr-orphan', now - 25 * HOUR_MS);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ({ ...ENABLED_CONFIG, thresholdLogIntervalMs: HOUR_MS }),
+      now: () => now,
+    });
+
+    await reaper.runSweep();
+    expect(await backend.isAlive('kookr-orphan')).toBe(false);
+    expect(log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    )).toHaveLength(1);
+
+    await backend.createSession(spec('kookr-orphan-2'));
+    backend.setSessionStartedAt('kookr-orphan-2', now - 25 * HOUR_MS);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (backend as any).killSession = async () => {
+      throw new Error('dtach kill failed (simulated)');
+    };
+    now += 1_000;
+    await reaper.runSweep();
+
+    expect(log.mock.calls.filter((args) =>
+      String(args[0] ?? '').startsWith('[session-reaper] sweep thresholds:'),
+    )).toHaveLength(1);
+    expect(warn.mock.calls.some((args) =>
+      String(args[0] ?? '').includes('killSession failed for kookr-orphan-2'),
+    )).toBe(true);
+  });
+});
+
+const STEADY_SNAPSHOT: SweepThresholdSnapshot = {
+  effectiveOrphanAgeMs: 24 * HOUR_MS,
+  underPressure: false,
+  dtachCount: 4,
+  softBound: 20,
+  steadyStateOrphanAgeMs: 24 * HOUR_MS,
+  underPressureOrphanAgeMs: 2 * HOUR_MS,
+};
+
+describe('shouldLogSweepThreshold', () => {
+  it('always logs the first snapshot', () => {
+    const line = formatSweepThresholdLine(STEADY_SNAPSHOT);
+    expect(shouldLogSweepThreshold({
+      lastLine: null,
+      lastLoggedAtMs: null,
+      nextLine: line,
+      nowMs: 0,
+      intervalMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+    })).toBe(true);
+  });
+
+  it('suppresses an identical snapshot inside the interval', () => {
+    const line = formatSweepThresholdLine(STEADY_SNAPSHOT);
+    expect(shouldLogSweepThreshold({
+      lastLine: line,
+      lastLoggedAtMs: 0,
+      nextLine: line,
+      nowMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS - 1,
+      intervalMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+    })).toBe(false);
+  });
+
+  it('logs again when any field changes, even inside the interval', () => {
+    const previous = formatSweepThresholdLine(STEADY_SNAPSHOT);
+    const next = formatSweepThresholdLine({ ...STEADY_SNAPSHOT, underPressure: true, dtachCount: 32 });
+    expect(previous).not.toBe(next);
+    expect(shouldLogSweepThreshold({
+      lastLine: previous,
+      lastLoggedAtMs: 0,
+      nextLine: next,
+      nowMs: 1,
+      intervalMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+    })).toBe(true);
+  });
+
+  it('re-emits an identical snapshot once the interval elapses', () => {
+    const line = formatSweepThresholdLine(STEADY_SNAPSHOT);
+    expect(shouldLogSweepThreshold({
+      lastLine: line,
+      lastLoggedAtMs: 0,
+      nextLine: line,
+      nowMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+      intervalMs: DEFAULT_SWEEP_THRESHOLD_LOG_INTERVAL_MS,
+    })).toBe(true);
   });
 });
 
