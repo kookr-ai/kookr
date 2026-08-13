@@ -631,7 +631,7 @@ export interface OpsHealthPayload {
   capacityResidual?: CapacityResidualStatus | null;
   pipelineStarvation?: PipelineStarvationStatus | null;
   launchDependencies?: LaunchDependenciesStatus | null;
-  schedules?: SchedulesStatus | null;
+  pausedSchedules?: SchedulesStatus | null;
   lessonYield?: LessonYieldStatus | null;
 }
 
@@ -648,8 +648,12 @@ export interface SystemStatusSlice {
   pipelineStarvation: PipelineStarvationStatus | null;
   /** Launch-dependency degradation from `/api/health.launchDependencies` (issue #2364). */
   launchDependencies: LaunchDependenciesStatus | null;
-  /** Fail-closed paused schedules from `/api/health.schedules` (issue #2432). */
-  schedules: SchedulesStatus | null;
+  /**
+   * Fail-closed paused schedules from `/api/health.schedules` (issue #2432).
+   * Named `pausedSchedules` so it does not collide with the existing
+   * `schedules: ScheduleResponse[]` list used by ScheduleSection.
+   */
+  pausedSchedules: SchedulesStatus | null;
   /** Lesson-authoring yield projection from `/api/health.lessonYield` (issue #2395). */
   lessonYield: LessonYieldStatus | null;
 

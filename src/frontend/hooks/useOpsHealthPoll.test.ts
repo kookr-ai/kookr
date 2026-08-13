@@ -176,14 +176,14 @@ describe('useOpsHealthPoll', () => {
     });
     // Slim projection must not carry affectedTaskIds.
     expect(JSON.stringify(useKookrStore.getState().launchDependencies)).not.toContain('affectedTaskIds');
-    expect(useKookrStore.getState().schedules).toEqual({
+    expect(useKookrStore.getState().pausedSchedules).toEqual({
       schedulesPausedByFailure: [
         { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
         { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
       ],
     });
     // Slim projection must not carry timezone / runner internals.
-    expect(JSON.stringify(useKookrStore.getState().schedules)).not.toContain('timezone');
+    expect(JSON.stringify(useKookrStore.getState().pausedSchedules)).not.toContain('timezone');
     expect(useKookrStore.getState().lessonYield).toEqual({
       windowDays: 1,
       yieldRate: 0.75,
@@ -216,7 +216,7 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().capacityResidual).toBeNull();
     expect(useKookrStore.getState().pipelineStarvation).toBeNull();
     expect(useKookrStore.getState().launchDependencies).toBeNull();
-    expect(useKookrStore.getState().schedules).toBeNull();
+    expect(useKookrStore.getState().pausedSchedules).toBeNull();
     expect(useKookrStore.getState().lessonYield).toBeNull();
   });
 });

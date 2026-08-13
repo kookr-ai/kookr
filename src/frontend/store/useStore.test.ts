@@ -137,7 +137,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().capacityResidual).toBeNull();
     expect(store.getState().pipelineStarvation).toBeNull();
     expect(store.getState().launchDependencies).toBeNull();
-    expect(store.getState().schedules).toBeNull();
+    expect(store.getState().pausedSchedules).toBeNull();
     expect(store.getState().lessonYield).toBeNull();
 
     store.getState().handleOpsHealth({
@@ -161,7 +161,7 @@ describe('Kookr Zustand Store', () => {
           { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
         ],
       },
-      schedules: {
+      pausedSchedules: {
         schedulesPausedByFailure: [
           { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
         ],
@@ -196,7 +196,7 @@ describe('Kookr Zustand Store', () => {
         { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
       ],
     });
-    expect(store.getState().schedules).toEqual({
+    expect(store.getState().pausedSchedules).toEqual({
       schedulesPausedByFailure: [
         { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
       ],
@@ -218,8 +218,10 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().capacityResidual?.finishedAwaitingAck).toBe(7);
     expect(store.getState().pipelineStarvation?.repos['kookr-ai/kookr']?.consecutiveBlockedEmpty).toBe(2);
     expect(store.getState().launchDependencies?.totalDegradedTasks).toBe(8);
-    expect(store.getState().schedules?.schedulesPausedByFailure).toHaveLength(1);
+    expect(store.getState().pausedSchedules?.schedulesPausedByFailure).toHaveLength(1);
     expect(store.getState().lessonYield?.yieldRate).toBe(0.75);
+    // Must not collide with the ScheduleResponse[] list used by ScheduleSection.
+    expect(Array.isArray(store.getState().schedules)).toBe(true);
   });
 
   test('handleUpdate updates single agent', () => {

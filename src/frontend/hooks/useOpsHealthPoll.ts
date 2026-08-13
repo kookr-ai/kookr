@@ -300,7 +300,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           capacityResidual: parseCapacityResidual(rec.capacity),
           pipelineStarvation: parsePipelineStarvation(rec.pipelineStarvation),
           launchDependencies: parseLaunchDependencies(rec.launchDependencies),
-          schedules: parseSchedules(rec.schedules),
+          pausedSchedules: parseSchedules(rec.schedules),
           lessonYield: parseLessonYield(rec.lessonYield),
         });
       } catch {

@@ -187,7 +187,7 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
   const capacityResidual = useKookrStore((s) => s.capacityResidual);
   const launchDependencies = useKookrStore((s) => s.launchDependencies);
-  const schedules = useKookrStore((s) => s.schedules);
+  const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
@@ -196,7 +196,7 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const faaAgeMs = capacityResidual?.oldestFinishedAwaitingAckAgeMs ?? null;
   const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
   const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
-  const showPausedSchedules = shouldShowPausedSchedulesPill(schedules);
+  const showPausedSchedules = shouldShowPausedSchedulesPill(pausedSchedules);
 
   if (!showSmoke && !showWatchdog && !showFaa && !showLaunchDeps && !showPausedSchedules) return null;
 
@@ -245,9 +245,9 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
     showLaunchDeps && launchDependencies ? formatLaunchDepsTitle(launchDependencies) : '';
 
   const pausedSchedulesLabel =
-    showPausedSchedules && schedules ? formatPausedSchedulesLabel(schedules) : '';
+    showPausedSchedules && pausedSchedules ? formatPausedSchedulesLabel(pausedSchedules) : '';
   const pausedSchedulesTitle =
-    showPausedSchedules && schedules ? formatPausedSchedulesTitle(schedules) : '';
+    showPausedSchedules && pausedSchedules ? formatPausedSchedulesTitle(pausedSchedules) : '';
 
   return (
     <span className="ops-health-pills" data-testid="ops-health-pills">

@@ -83,7 +83,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
       resourceWatchdog: { enabled: true, lastDecision: 'idle' },
       capacityResidual: { finishedAwaitingAck: 0, oldestFinishedAwaitingAckAgeMs: null },
       launchDependencies: { totalDegradedTasks: 0, totalFindings: 0, dependencies: [] },
-      schedules: { schedulesPausedByFailure: [] },
+      pausedSchedules: { schedulesPausedByFailure: [] },
     });
 
     await renderStatusBar(root);
@@ -290,7 +290,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
 
   test('hides paused-schedules pill when the array is empty (issue #2432)', async () => {
     useKookrStore.getState().handleOpsHealth({
-      schedules: { schedulesPausedByFailure: [] },
+      pausedSchedules: { schedulesPausedByFailure: [] },
     });
 
     await renderStatusBar(root);
@@ -301,7 +301,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
 
   test('shows N schedules paused when fail-closed pauses exist (issue #2432)', async () => {
     useKookrStore.getState().handleOpsHealth({
-      schedules: {
+      pausedSchedules: {
         schedulesPausedByFailure: [
           { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
           { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
@@ -326,7 +326,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
   test('shows singular 1 schedule paused without disturbing other pills (issue #2432)', async () => {
     useKookrStore.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
-      schedules: {
+      pausedSchedules: {
         schedulesPausedByFailure: [
           { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
         ],
