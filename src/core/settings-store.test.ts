@@ -779,8 +779,19 @@ describe('loadSettings / saveSettings', () => {
     expect((await stat(filePath)).mode & 0o777).toBe(0o600);
   });
 
+  it('rewrites an existing world-readable settings.json to 0o600 (issue #2430)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    await saveSettings(filePath, DEFAULT_SETTINGS);
+    await chmod(filePath, 0o644);
+    expect((await stat(filePath)).mode & 0o777).toBe(0o644);
+    await saveSettings(filePath, DEFAULT_SETTINGS);
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+  });
+
   it('forces 0o600 even when umask would leave the file world-readable (issue #2430)', async () => {
-    // 0o000 would yield 0o666 from a default open() without fchmod.
+    // Without an explicit mode, open('w') is 0o666 masked by umask; 0o000
+    // would leave 0o666. This asserts saveSettings passes a mode. fchmod
+    // itself is covered in persistence-utils.test.ts (0o640 + umask 0o077).
     const previousUmask = process.umask(0o000);
     try {
       const filePath = join(tmpDir, 'settings.json');

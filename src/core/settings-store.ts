@@ -1056,23 +1056,17 @@ export async function loadSettings(
 }
 
 /**
- * Owner-only bits for settings.json. The file holds the automation kill-switch
- * (SAFE MODE); a default umask would otherwise leave it world-readable.
- */
-const SETTINGS_FILE_MODE = 0o600;
-
-/**
  * Persist settings with write-to-temp + fsync + rename, owner-only.
  *
- * settings.json holds the automation kill-switch. We reuse {@link atomicWriteFile}
- * so durability stays in one place: unique temp name (concurrent launch + PUT
- * writers cannot share a `.tmp` path), fsync before rename, then fchmod so
- * umask cannot strip the 0o600 bits.
+ * settings.json holds the automation kill-switch (SAFE MODE). A default umask
+ * would leave it world-readable, so we force owner-only bits via the shared
+ * atomic writer (unique temp name, fsync before rename, fchmod).
  */
 export async function saveSettings(filePath: string, settings: KookrSettings): Promise<void> {
+  // Kill-switch / SAFE MODE is operator control — match sibling secret stores.
   await atomicWriteFile(
     filePath,
     JSON.stringify(settings, null, 2) + '\n',
-    { mode: SETTINGS_FILE_MODE },
+    { mode: 0o600 },
   );
 }
