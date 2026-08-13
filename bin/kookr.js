@@ -53,13 +53,18 @@ const DOCTOR_HELP_TEXT = `kookr doctor — run launch preflight checks.
 Usage:
   kookr doctor
   kookr doctor --json
+  kookr doctor --strict
 
 Options:
   --json       Print one JSON report to stdout (machine-readable).
+  --strict     Exit non-zero when any advisory WARN is present (default: only
+               required FAIL checks fail the process).
   -h, --help   Show this help.
 
 Without --json, prints a human-readable table of each check (status, summary,
-recommended action) covering runtime tools, gh auth, kb, and agent binaries.
+recommended action) covering runtime tools, gh auth, kb, agent binaries,
+and agent.grok-auth (advisory WARN when grok is on PATH; required FAIL when
+KOOKR_GROK_BIN is set and launch-scoped auth is missing, invalid, or expired).
 `;
 
 async function main({

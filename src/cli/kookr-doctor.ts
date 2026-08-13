@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   classifyKbDoctorCommandResult,
@@ -13,6 +14,13 @@ import {
   probeBinaryFlagSupport,
   type ProbeExecRunner,
 } from '../adapters/probe-agent-binary.js';
+import {
+  formatGrokAuthPreflightFailure,
+  inspectGrokAuthFile,
+  type GrokAuthPreflightResult,
+} from '../adapters/grok-auth-preflight.js';
+import { sharedGrokAuthPath } from '../adapters/grok-home-composer.js';
+import { GROK_AGENT_BIN_ENV } from '../adapters/grok-launch-args.js';
 import {
   readAlertArtifact,
   type AlertArtifact,
@@ -274,7 +282,9 @@ hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0)
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
 hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/fileBytes exceed soft bounds),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
-and ops.maintenance-prune (advisory warn when scheduled data-dir prune is off).
+ops.maintenance-prune (advisory warn when scheduled data-dir prune is off),
+and agent.grok-auth (advisory WARN when grok is on PATH; required FAIL when
+KOOKR_GROK_BIN is set and launch-scoped auth is missing, invalid, or expired).
 `;
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
@@ -370,7 +380,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
-  checks.push(...await checkAgentBinaries(env, run));
+  checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date())));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
@@ -1681,7 +1691,11 @@ async function checkKbLaunchDependency(run: CommandRunner): Promise<DoctorCheck[
   }];
 }
 
-async function checkAgentBinaries(env: NodeJS.ProcessEnv, run: CommandRunner): Promise<DoctorCheck[]> {
+async function checkAgentBinaries(
+  env: NodeJS.ProcessEnv,
+  run: CommandRunner,
+  now: () => Date,
+): Promise<DoctorCheck[]> {
   const probeExec = probeExecFromRunner(run);
   const checks: DoctorCheck[] = [];
   checks.push(await checkAgentBinary({
@@ -1721,7 +1735,70 @@ async function checkAgentBinaries(env: NodeJS.ProcessEnv, run: CommandRunner): P
       recommendedAction: hasPluginDir ? undefined : 'Run `pnpm codex:rebuild` if Codex-launched agents should see kookr-toolkit.',
     });
   }
+
+  const grokAuth = await checkGrokAuth(env, probeExec, now);
+  if (grokAuth) checks.push(grokAuth);
   return checks;
+}
+
+/**
+ * Launch-scoped Grok auth preflight (issue #2451). Reuses the same offline
+ * inspectGrokAuthFile path that grok-build launch already runs, so doctor
+ * cannot stay green while every grok-build spawn will fail preflight.
+ *
+ * Omitted when grok is not on PATH and KOOKR_GROK_BIN is unset (optional
+ * agent, same skip rule as not probing Codex extras). Missing / invalid /
+ * expired credentials WARN unless KOOKR_GROK_BIN is set, then FAIL.
+ */
+async function checkGrokAuth(
+  env: NodeJS.ProcessEnv,
+  probeExec: ProbeExecRunner,
+  now: () => Date,
+): Promise<DoctorCheck | undefined> {
+  const grokBin = env[GROK_AGENT_BIN_ENV] || 'grok';
+  const explicitlyConfigured = Boolean(env[GROK_AGENT_BIN_ENV]);
+  const probe = await probeAgentBinary(grokBin, {
+    exec: probeExec,
+    timeoutMs: AGENT_PROBE_TIMEOUT_MS,
+    versionTimeoutMs: AGENT_PROBE_TIMEOUT_MS,
+  });
+  if (probe.kind !== 'ok' && !explicitlyConfigured) return undefined;
+
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const authPath = sharedGrokAuthPath(join(home, '.grok'));
+  const result = await inspectGrokAuthFile(authPath, { now: now() });
+  if (result.kind === 'ok') {
+    return {
+      id: 'agent.grok-auth',
+      label: 'Grok authentication',
+      category: 'agent',
+      status: 'ok',
+      required: explicitlyConfigured,
+      summary: `Grok credentials at ${authPath} are usable (${result.authMode})`,
+    };
+  }
+
+  return {
+    id: 'agent.grok-auth',
+    label: 'Grok authentication',
+    category: 'agent',
+    status: explicitlyConfigured ? 'fail' : 'warn',
+    required: explicitlyConfigured,
+    summary: grokAuthFailureSummary(result),
+    detail: formatGrokAuthPreflightFailure(authPath, result),
+    recommendedAction: 'Run `grok login --device-code`.',
+  };
+}
+
+function grokAuthFailureSummary(result: Exclude<GrokAuthPreflightResult, { kind: 'ok' }>): string {
+  switch (result.kind) {
+    case 'missing':
+      return 'Grok authentication is missing';
+    case 'invalid':
+      return 'Grok authentication is invalid';
+    case 'expired':
+      return `Grok authentication is expired (${result.expiresAt})`;
+  }
 }
 
 async function checkAgentBinary(args: {
