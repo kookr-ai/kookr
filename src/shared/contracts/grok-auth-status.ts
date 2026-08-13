@@ -74,12 +74,22 @@ export function shouldShowGrokAuthBanner(
   return grokAuthAffectsSelection(selection, available, roundRobinIndex);
 }
 
-/** Disable Launch only when the server would refuse this selection. */
+/**
+ * Disable Launch only when the server would refuse this selection.
+ *
+ * An explicit `grok-build` pick is refused when preflight fails. Round-robin
+ * is not: the launch service already drops Grok from the rotation (#2194)
+ * and starts a remaining agent. RR is disabled only when that filter would
+ * leave nothing launchable.
+ */
 export function shouldDisableLaunchForGrokAuth(
   selection: AgentSelection,
   launchWouldRefuse: boolean,
   available: readonly AgentType[],
-  roundRobinIndex: number,
+  _roundRobinIndex: number,
 ): boolean {
-  return launchWouldRefuse && grokAuthAffectsSelection(selection, available, roundRobinIndex);
+  if (!launchWouldRefuse) return false;
+  if (selection === 'grok-build') return true;
+  if (selection !== 'round-robin') return false;
+  return available.filter((type) => type !== 'grok-build').length === 0;
 }

@@ -17,7 +17,7 @@ import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
-import { GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { launchLoopedPlaybook, replaceRalphLoopWithNew } from '../api/index.js';
 import { FilterableSelect } from './FilterableSelect.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -284,6 +284,19 @@ export function PlaybookBrowser({
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
+  );
+  const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
+  const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
+    agentType,
+    grokAuth?.launchWouldRefuse === true,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  );
+  const showGrokAuthBanner = shouldShowGrokAuthBanner(
+    agentType,
+    grokAuth?.status,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
@@ -607,12 +620,7 @@ export function PlaybookBrowser({
     if (launchMode === 'looped' && (!selected.tags.includes('loopable') || !selected.effectiveLoop || selected.loopValidationError)) {
       return false;
     }
-    if (shouldDisableLaunchForGrokAuth(
-      agentType,
-      grokAuth?.launchWouldRefuse === true,
-      availableAgentTypes.map((entry) => entry.type),
-      grokAuth?.roundRobinIndex ?? 0,
-    )) {
+    if (grokAuthBlocksLaunch) {
       return false;
     }
     return selected.parameters
@@ -868,12 +876,7 @@ export function PlaybookBrowser({
           onChange={setAgentType}
           options={agentOptions}
         />
-        {shouldShowGrokAuthBanner(
-          agentType,
-          grokAuth?.status,
-          availableAgentTypes.map((entry) => entry.type),
-          grokAuth?.roundRobinIndex ?? 0,
-        ) && grokAuth?.message && (
+        {showGrokAuthBanner && grokAuth?.message && (
           <GrokAuthPreflightBanner message={grokAuth.message} />
         )}
 
@@ -956,7 +959,12 @@ export function PlaybookBrowser({
           <button type="button" className="btn-secondary" onClick={handleBack}>
             Cancel
           </button>
-          <button type="submit" className="btn-primary" disabled={!canLaunch() || conflict !== null}>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={!canLaunch() || conflict !== null}
+            aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+          >
             {launchMode === 'looped' ? 'Launch Looped' : 'Launch Playbook'}
           </button>
         </div>

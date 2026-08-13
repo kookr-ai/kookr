@@ -122,6 +122,7 @@ capacity).
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
+| `GET /api/grok-auth-status` | Offline Grok credential-cache verdict for the Launch dialog. Returns `{ status: "ok" \| "missing" \| "expired" \| "invalid", loginCommand, message, launchWouldRefuse, roundRobinIndex }`. Secret-free (no access tokens, refresh tokens, or API keys). `launchWouldRefuse` is true when an explicit `grok-build` launch would be refused before a terminal exists. `loginCommand` is `grok login --device-code`. The SPA fails open: a missing verdict must not disable Launch. |
 
 ### Task id field naming
 

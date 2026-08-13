@@ -22,6 +22,19 @@ async function flush() {
   await act(async () => { await Promise.resolve(); });
 }
 
+function setInputValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function getPromptEl(container: HTMLElement): HTMLTextAreaElement {
+  const el = container.querySelector('textarea');
+  if (!el) throw new Error('textarea not rendered');
+  return el as HTMLTextAreaElement;
+}
+
 function getAgentSelectEl(container: HTMLElement): HTMLSelectElement {
   const el = container.querySelector('.agent-type-select select');
   if (!el) throw new Error('agent select not rendered');
@@ -105,6 +118,8 @@ describe('LaunchTaskDialog Grok auth preflight banner', () => {
 
     const { root } = renderDialog(container, 'grok-build');
     await flush();
+    await act(async () => { setInputValue(getPromptEl(container), 'Fix the auth bug'); });
+    await flush();
 
     const banner = container.querySelector('[data-testid="grok-auth-banner"]');
     expect(banner).not.toBeNull();
@@ -124,8 +139,11 @@ describe('LaunchTaskDialog Grok auth preflight banner', () => {
 
     const { root } = renderDialog(container, 'grok-build');
     await flush();
+    await act(async () => { setInputValue(getPromptEl(container), 'Fix the auth bug'); });
+    await flush();
 
     expect(container.querySelector('[data-testid="grok-auth-banner"]')).toBeNull();
+    expect(getLaunchButton(container).disabled).toBe(false);
     act(() => root.unmount());
   });
 
@@ -138,11 +156,17 @@ describe('LaunchTaskDialog Grok auth preflight banner', () => {
       roundRobinIndex: 2,
     });
 
-    const { root } = renderDialog(container, 'claude-code');
+    const { root, sent } = renderDialog(container, 'claude-code');
+    await flush();
+    await act(async () => { setInputValue(getPromptEl(container), 'Fix the auth bug'); });
     await flush();
 
     expect(container.querySelector('[data-testid="grok-auth-banner"]')).toBeNull();
     expect(getAgentSelectEl(container).value).toBe('claude-code');
+    expect(getLaunchButton(container).disabled).toBe(false);
+    await act(async () => { getLaunchButton(container).click(); });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.type).toBe('launch');
     act(() => root.unmount());
   });
 
@@ -158,11 +182,14 @@ describe('LaunchTaskDialog Grok auth preflight banner', () => {
 
     const { root } = renderDialog(container, 'round-robin');
     await flush();
+    await act(async () => { setInputValue(getPromptEl(container), 'Fix the auth bug'); });
+    await flush();
 
     expect(getAgentSelectEl(container).value).toBe('round-robin');
     const banner = container.querySelector('[data-testid="grok-auth-banner"]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain('grok login');
+    expect(getLaunchButton(container).disabled).toBe(false);
     act(() => root.unmount());
   });
 });

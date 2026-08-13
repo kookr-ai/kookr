@@ -23,7 +23,7 @@ import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
-import { GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
@@ -537,7 +537,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               <button type="button" className="btn-secondary" onClick={() => { track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current }); onClose(); }}>
                 Cancel
               </button>
-              <button type="submit" className="btn-primary" disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch}>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch}
+                aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+              >
                 {submitting ? 'Launching...' : 'Launch'}
               </button>
             </div>

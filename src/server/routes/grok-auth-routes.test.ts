@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { GROK_DEFAULT_AUTH_SCOPE } from '../../adapters/grok-auth-preflight.js';
-import { GROK_AUTH_STATUS_PATH, GROK_LOGIN_COMMAND } from '../../shared/contracts/grok-auth-status.js';
+import { GROK_LOGIN_COMMAND } from '../../shared/contracts/grok-auth-status.js';
+
+const GROK_AUTH_STATUS_PATH = '/api/grok-auth-status';
 import { registerGrokAuthRoutes } from './grok-auth-routes.js';
 
 const NOW_ISO = '2026-06-01T00:00:00.000Z';

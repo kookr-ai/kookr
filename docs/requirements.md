@@ -419,14 +419,12 @@ For `grok-build` launches, the system SHALL validate the launch-scoped `auth.jso
 
 The system SHALL show operators the Grok credential-cache verdict in the Launch dialog before they submit, using the same offline `inspectGrokAuthFile` preflight the adapter already runs, without exposing secrets or changing launch billing or API-key auth.
 
-**Requirement:** The Launch dialog shall report Grok auth status as `ok`, `missing`, `expired`, or `invalid` when Grok Build is selected or would be next in round-robin, and shall disable Launch only when the server would refuse that launch.
-
-**Acceptance Criteria:**
-- [ ] Given Grok Build is selected (or would be the next round-robin pick) and the shared credential cache is missing, expired, or invalid, when the Launch dialog is open, then a banner is visible and contains `grok login`
-- [ ] Given the same cache is usable (`ok`), when the Launch dialog is open, then no Grok auth banner is shown
-- [ ] Given a failing preflight, when the operator would launch `grok-build`, then Launch is disabled; other agent selections stay launchable
-- [ ] The status payload never includes access tokens, refresh tokens, API keys, or other credential values
-- [ ] Existing CLI and `POST /api/tasks` launch defaults stay unchanged
+**Acceptance criteria:**
+- Given Grok Build is selected (or would be the next round-robin pick) and the shared credential cache is missing, expired, or invalid, when the Launch dialog is open, then a banner is visible and contains `grok login`
+- Given the same cache is usable (`ok`), when the Launch dialog is open, then no Grok auth banner is shown
+- Given a failing preflight, when the operator would launch `grok-build`, then Launch is disabled; other agent selections (including round-robin, which skips Grok) stay launchable
+- The status payload never includes access tokens, refresh tokens, API keys, or other credential values
+- Existing CLI and `POST /api/tasks` launch defaults stay unchanged
 
 **Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
 

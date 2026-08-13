@@ -63,8 +63,10 @@ describe('Launch-dialog Grok auth helpers', () => {
     expect(shouldDisableLaunchForGrokAuth('grok-build', true, ALL, 0)).toBe(true);
     expect(shouldDisableLaunchForGrokAuth('grok-build', false, ALL, 0)).toBe(false);
     expect(shouldDisableLaunchForGrokAuth('claude-code', true, ALL, 2)).toBe(false);
-    expect(shouldDisableLaunchForGrokAuth('round-robin', true, ALL, 2)).toBe(true);
+    // Round-robin still launches Claude/Codex when Grok auth is unusable (#2194).
+    expect(shouldDisableLaunchForGrokAuth('round-robin', true, ALL, 2)).toBe(false);
     expect(shouldDisableLaunchForGrokAuth('round-robin', true, ALL, 0)).toBe(false);
+    expect(shouldDisableLaunchForGrokAuth('round-robin', true, ['grok-build'], 0)).toBe(true);
   });
 
   it('treats a direct grok-build pick as affected regardless of rotation', () => {
