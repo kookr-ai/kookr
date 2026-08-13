@@ -1484,6 +1484,44 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
     }
   });
 
+  it('skips an exhausted leftover hold without aborting the rest of the scan', async () => {
+    const { service, store, cleanup } = rearmHarness();
+    try {
+      const exhausted = store.create({
+        name: 'Exhausted leftover',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+        maxTriggers: 1,
+      });
+      const eligible = store.create({
+        name: 'Eligible leftover',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      for (const id of [exhausted.id, eligible.id]) {
+        for (const at of ['2026-08-12T12:30:00.000Z', '2026-08-12T12:45:00.000Z', '2026-08-12T13:00:00.000Z']) {
+          const receipt = await service.reserveExecution(store.get(id)!, 'cron', at);
+          await service.markExecutionOutcome(id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
+        }
+        stampLastEvaluatedAt(store, id, '2026-08-12T13:00:00.000Z');
+      }
+      store.replace({
+        ...store.get(exhausted.id)!,
+        remainingTriggers: 0,
+        stopReason: 'consecutive_failures',
+      });
+
+      const result = await service.rearmTransientFailureHolds(true, '2026-08-13T08:34:00.000Z');
+      expect(result.rearmed.map((row) => row.id)).toEqual([eligible.id]);
+      expect(store.get(exhausted.id)!.enabled).toBe(false);
+      expect(store.get(eligible.id)!.enabled).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('does not re-arm when getDaemonHealthy is false and no override is passed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'schedule-rearm-unhealthy-'));
     try {

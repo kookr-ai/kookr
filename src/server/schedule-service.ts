@@ -471,7 +471,19 @@ export class ScheduleService {
         ready,
       );
       if (!decision.rearm) continue;
-      await this.setEnabled(schedule.id, true);
+      // A pause that also exhausted maxTriggers cannot be re-enabled; isolate
+      // that throw so one exhausted leftover cannot abort the rest of the scan.
+      if (isTriggerLimitExhausted(schedule)) continue;
+      try {
+        await this.setEnabled(schedule.id, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[schedule] transient-failure re-arm failed for "${schedule.name}" `
+          + `(${schedule.id}): ${message}`,
+        );
+        continue;
+      }
       rearmed.push({
         id: schedule.id,
         name: schedule.name,
