@@ -221,7 +221,12 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().pausedSchedules?.schedulesPausedByFailure).toHaveLength(1);
     expect(store.getState().lessonYield?.yieldRate).toBe(0.75);
     // Must not collide with the ScheduleResponse[] list used by ScheduleSection.
-    expect(Array.isArray(store.getState().schedules)).toBe(true);
+    expect(store.getState().schedules).toEqual([]);
+
+    // Missing health.schedules parses to null and must clear a prior projection.
+    store.getState().handleOpsHealth({ pausedSchedules: null });
+    expect(store.getState().pausedSchedules).toBeNull();
+    expect(store.getState().schedules).toEqual([]);
   });
 
   test('handleUpdate updates single agent', () => {

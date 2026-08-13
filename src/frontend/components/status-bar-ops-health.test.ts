@@ -131,6 +131,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
     expect(smoke?.getAttribute('title')).toContain('version-probe');
     expect(smoke?.getAttribute('title')).toContain('2026-07-28T15:45:37.810Z');
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
   });
 
   test('shows Watchdog: off when resourceWatchdog is disabled', async () => {
