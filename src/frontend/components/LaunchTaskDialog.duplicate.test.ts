@@ -156,7 +156,7 @@ describe('LaunchTaskDialog active-duplicate warning', () => {
   });
 
   test('Open existing selects the live task and closes without sending', async () => {
-    const { root, sent } = renderDialog(container);
+    const rendered = renderDialog(container);
     await flush();
     await act(async () => { setInputValue(getPromptEl(container), 'Fix the auth bug'); });
     await flush();
@@ -164,9 +164,10 @@ describe('LaunchTaskDialog active-duplicate warning', () => {
     const open = container.querySelector('[data-testid="launch-duplicate-open-existing"]') as HTMLButtonElement;
     await act(async () => { open.click(); });
 
-    expect(sent).toHaveLength(0);
+    expect(rendered.sent).toHaveLength(0);
+    expect(rendered.closed).toBe(1);
     expect(useKookrStore.getState().selectedTaskId).toBe('task-live');
     expect(useKookrStore.getState().selectedAgentId).toBe('sess-live');
-    act(() => root.unmount());
+    act(() => rendered.root.unmount());
   });
 });

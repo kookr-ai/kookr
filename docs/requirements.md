@@ -434,7 +434,7 @@ The system SHALL warn in the Launch dialog and Quick Launch bar before submit wh
 
 **Acceptance criteria:**
 - Given two in-memory active tasks and a matching prompt + cwd + agent, when the Launch dialog or Quick Launch bar is open, then a warning banner is visible with Open existing and Launch anyway
-- Given the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadata.intent` `keep_as_duplicate`
+- Given the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadataIntent` `keep_as_duplicate`
 - Given a non-matching prompt, when the operator clicks Launch, then the payload is sent without those duplicate-preserving fields
 - Existing CLI (`kookr spawn --dedupe`) and `POST /api/tasks` defaults stay unchanged
 
@@ -1228,6 +1228,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
+| R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |

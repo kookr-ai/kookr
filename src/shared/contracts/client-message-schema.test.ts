@@ -142,6 +142,10 @@ describe('ClientMessageSchema — happy path sanity', () => {
       metadataIntent: 'keep_as_duplicate',
     });
     expect(result.success).toBe(true);
+    if (result.success && result.data.type === 'launch') {
+      expect(result.data.disableDedup).toBe(true);
+      expect(result.data.metadataIntent).toBe('keep_as_duplicate');
+    }
   });
 
   test('rejects disableDedup without keep_as_duplicate intent', () => {
@@ -150,6 +154,16 @@ describe('ClientMessageSchema — happy path sanity', () => {
       prompt: 'hi',
       cwd: '/tmp',
       disableDedup: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects keep_as_duplicate intent without disableDedup', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      metadataIntent: 'keep_as_duplicate',
     });
     expect(result.success).toBe(false);
   });

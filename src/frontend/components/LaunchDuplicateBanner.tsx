@@ -13,31 +13,36 @@ interface Props {
  * Same interrupt the CLI documents for `kookr spawn --dedupe=warn`.
  */
 export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway }: Props) {
-  const existingLabel = taskName?.trim() ? `Open existing (${taskName.trim()})` : 'Open existing';
+  const trimmedName = taskName?.trim();
+  const existingLabel = trimmedName ? `Open existing (${trimmedName})` : 'Open existing';
   return (
     <div
-      id={LAUNCH_DUPLICATE_BANNER_ID}
       className="launch-duplicate-banner"
-      role="status"
-      aria-live="polite"
       data-testid="launch-duplicate-banner"
     >
-      <p className="launch-duplicate-banner__copy">
+      <p
+        id={LAUNCH_DUPLICATE_BANNER_ID}
+        className="launch-duplicate-banner__copy"
+        role="status"
+        aria-live="polite"
+      >
         An active task already uses this prompt, working directory, and agent.
         Open it, or launch anyway as an intentional duplicate.
       </p>
-      <div className="launch-duplicate-banner__actions">
+      <div className="launch-duplicate-banner__actions" role="group" aria-label="Duplicate launch warning">
         <button
           type="button"
-          className="btn-secondary"
+          className="btn-secondary launch-duplicate-banner__open"
           onClick={onOpenExisting}
+          title={trimmedName ? `Open existing task: ${trimmedName}` : 'Open existing task'}
+          aria-label={trimmedName ? `Open existing task: ${trimmedName}` : 'Open existing'}
           data-testid="launch-duplicate-open-existing"
         >
           {existingLabel}
         </button>
         <button
           type="button"
-          className="btn-primary"
+          className="btn-secondary"
           onClick={onLaunchAnyway}
           data-testid="launch-duplicate-launch-anyway"
         >

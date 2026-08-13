@@ -61,6 +61,7 @@ describe('taskMatchesLaunchDuplicate', () => {
     const task = { id: 't1', status: 'completed', cwd: '/repo/x', userPrompt: 'do the thing' };
     expect(taskMatchesLaunchDuplicate(task, spawn)).toBe(false);
     expect(taskMatchesLaunchDuplicate({ ...task, status: undefined, taskStatus: 'cancelled' }, spawn)).toBe(false);
+    expect(taskMatchesLaunchDuplicate({ ...task, status: 'terminated' }, spawn)).toBe(false);
   });
 
   it('does not match a different cwd', () => {

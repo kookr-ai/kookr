@@ -4037,6 +4037,12 @@ button.section-header.detection-stats-header:focus-visible {
   gap: 8px;
 }
 
+.launch-duplicate-banner__open {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .cwd-label-row {
   display: flex;
   justify-content: space-between;

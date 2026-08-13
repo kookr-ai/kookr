@@ -4,7 +4,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
-import { LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
+import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
 import { findActiveLaunchDuplicate } from '../../shared/launch-duplicate.js';
@@ -135,11 +135,12 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && e.target === inputRef.current) {
       e.preventDefault();
       handleSubmit();
     }
     if (e.key === 'Escape') {
+      e.stopPropagation();
       onClose();
     }
   }
@@ -153,7 +154,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }
 
   return (
-    <div className="quick-launch-bar" onBlur={handleBlur}>
+    <div className="quick-launch-bar" onBlur={handleBlur} onKeyDown={handleKeyDown}>
       <div className="quick-launch-row">
         <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
         <AgentTypeSelector
@@ -170,7 +171,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           placeholder="Task prompt... (Enter to launch, Esc to cancel)"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={handleKeyDown}
+          aria-describedby={activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : undefined}
         />
         {sttUrl && (
           <Suspense fallback={null}>

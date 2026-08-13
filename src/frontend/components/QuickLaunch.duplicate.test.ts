@@ -120,4 +120,44 @@ describe('QuickLaunch active-duplicate warning', () => {
     });
     act(() => root.unmount());
   });
+
+  test('a non-matching prompt does not show the banner and Enter sends without disableDedup', async () => {
+    const { root, sent } = renderQuickLaunch(container);
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'A brand new prompt'); });
+    await flush();
+
+    expect(container.querySelector('[data-testid="launch-duplicate-banner"]')).toBeNull();
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      prompt: 'A brand new prompt',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+    });
+    expect(sent[0]).not.toHaveProperty('disableDedup');
+    act(() => root.unmount());
+  });
+
+  test('Open existing selects the live task without sending', async () => {
+    const { root, sent } = renderQuickLaunch(container);
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Fix the auth bug'); });
+    await flush();
+
+    const open = container.querySelector('[data-testid="launch-duplicate-open-existing"]') as HTMLButtonElement;
+    await act(async () => { open.click(); });
+
+    expect(sent).toHaveLength(0);
+    expect(useKookrStore.getState().selectedTaskId).toBe('task-live');
+    expect(useKookrStore.getState().selectedAgentId).toBe('sess-live');
+    act(() => root.unmount());
+  });
 });
