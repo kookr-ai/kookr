@@ -24,9 +24,12 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
+import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
+import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -90,6 +93,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const playbooksLastFetchedCwd = useKookrStore((s) => s.playbooksLastFetchedCwd);
   const hostCapabilities = useKookrStore((s) => s.hostCapabilities);
   const projectSummaries = useKookrStore((s) => s.projectSummaries);
+  const agents = useKookrStore((s) => s.agents);
+  const launchCwds = useLaunchTaskCwds();
+  const duplicateCandidates = useMemo(
+    () => withLaunchTaskCwds(agents, launchCwds),
+    [agents, launchCwds],
+  );
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const grokAuth = useGrokAuthStatus();
   // Relaunch paths drive the form from props. In that mode we neither read
@@ -248,10 +257,21 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     );
   }, [cwd, allCwdSuggestions]);
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  const activeDuplicate = useMemo(
+    () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
+    [duplicateCandidates, prompt, cwd, agentType],
+  );
+
+  function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch) return;
+    if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, {
+      prompt: trimmed,
+      cwd: cwd.trim(),
+      agentType,
+    })) {
+      return;
+    }
 
     setSubmitting(true);
     recentPaths.add(cwd.trim());
@@ -267,6 +287,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       cwd: cwd.trim(),
       criteria: criteria.trim() || undefined,
       agentType,
+      ...(keepAsDuplicate
+        ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
+        : {}),
     });
     if (sent) {
       // Set the ref *before* marking so any pending save-effect re-run sees
@@ -287,6 +310,21 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
         'error',
       );
     }
+    onClose();
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitLaunch(false);
+  }
+
+  function openExistingDuplicate() {
+    if (!activeDuplicate) return;
+    const agentId = activeDuplicate.agentId;
+    if (agentId) {
+      useKookrStore.getState().selectAgent(agentId, activeDuplicate.taskId ?? activeDuplicate.id ?? null);
+    }
+    track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current });
     onClose();
   }
 
@@ -517,6 +555,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             {showGrokAuthBanner && grokAuth?.message && (
               <GrokAuthPreflightBanner message={grokAuth.message} />
             )}
+            {activeDuplicate && (
+              <LaunchDuplicateBanner
+                taskName={activeDuplicate.taskName ?? undefined}
+                onOpenExisting={openExistingDuplicate}
+                onLaunchAnyway={() => submitLaunch(true)}
+              />
+            )}
             <label>
               Completion criteria (optional)
               <div className="input-with-voice">
@@ -540,8 +585,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               <button
                 type="submit"
                 className="btn-primary"
-                disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch}
-                aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+                disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch || Boolean(activeDuplicate)}
+                aria-describedby={[
+                  showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
+                  activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
+                ].filter(Boolean).join(' ') || undefined}
               >
                 {submitting ? 'Launching...' : 'Launch'}
               </button>

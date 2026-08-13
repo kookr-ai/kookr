@@ -238,6 +238,30 @@ describe('LifecycleHandler lifecycle commands', () => {
       severity: 'warning',
     }));
   });
+
+  test('launch forwards disableDedup and keep_as_duplicate intent to launchTask', async () => {
+    const taskStore = new TaskStore();
+    const launchTask = vi.fn(async () => ({ task: { id: 't1' }, queued: false }));
+    const { deps } = makeDeps(taskStore, { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({
+      type: 'launch',
+      prompt: 'Fix the auth bug',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+    });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'Fix the auth bug',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+    }));
+  });
 });
 
 describe('worktree:inspectCleanup', () => {
