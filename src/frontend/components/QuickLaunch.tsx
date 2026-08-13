@@ -7,7 +7,8 @@ import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
-import { findActiveLaunchDuplicate } from '../../shared/launch-duplicate.js';
+import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
+import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -24,6 +25,11 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType } = useKookrStore();
+  const launchCwds = useLaunchTaskCwds();
+  const duplicateCandidates = useMemo(
+    () => withLaunchTaskCwds(agents, launchCwds),
+    [agents, launchCwds],
+  );
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
   // agent type (effect) → last-used → server default → 'claude-code'.
@@ -87,14 +93,14 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }, []);
 
   const activeDuplicate = useMemo(
-    () => findActiveLaunchDuplicate(agents, { prompt, cwd, agentType }),
-    [agents, prompt, cwd, agentType],
+    () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
+    [duplicateCandidates, prompt, cwd, agentType],
   );
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd) return;
-    if (!keepAsDuplicate && findActiveLaunchDuplicate(agents, { prompt: trimmed, cwd, agentType })) {
+    if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
     recentPaths.add(cwd);

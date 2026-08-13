@@ -28,7 +28,8 @@ import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDupli
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
-import { findActiveLaunchDuplicate } from '../../shared/launch-duplicate.js';
+import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
+import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -93,6 +94,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const hostCapabilities = useKookrStore((s) => s.hostCapabilities);
   const projectSummaries = useKookrStore((s) => s.projectSummaries);
   const agents = useKookrStore((s) => s.agents);
+  const launchCwds = useLaunchTaskCwds();
+  const duplicateCandidates = useMemo(
+    () => withLaunchTaskCwds(agents, launchCwds),
+    [agents, launchCwds],
+  );
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const grokAuth = useGrokAuthStatus();
   // Relaunch paths drive the form from props. In that mode we neither read
@@ -252,14 +258,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   }, [cwd, allCwdSuggestions]);
 
   const activeDuplicate = useMemo(
-    () => findActiveLaunchDuplicate(agents, { prompt, cwd, agentType }),
-    [agents, prompt, cwd, agentType],
+    () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
+    [duplicateCandidates, prompt, cwd, agentType],
   );
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch) return;
-    if (!keepAsDuplicate && findActiveLaunchDuplicate(agents, {
+    if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, {
       prompt: trimmed,
       cwd: cwd.trim(),
       agentType,

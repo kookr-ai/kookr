@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   cwdEquivalent,
+  expandLaunchPromptPaths,
   findActiveLaunchDuplicate,
   taskMatchesLaunchDuplicate,
+  withLaunchTaskCwds,
 } from './launch-duplicate.js';
 
 describe('cwdEquivalent', () => {
@@ -74,6 +76,20 @@ describe('taskMatchesLaunchDuplicate', () => {
     expect(taskMatchesLaunchDuplicate(task, spawn)).toBe(false);
   });
 
+  it('matches a stored absolute file path against a typed relative prompt', () => {
+    const task = {
+      id: 't1',
+      status: 'inProgress',
+      cwd: '/repo/x',
+      userPrompt: 'Fix the crash in /repo/x/src/login.ts',
+    };
+    expect(taskMatchesLaunchDuplicate(task, {
+      prompt: 'Fix the crash in src/login.ts',
+      cwd: '/repo/x',
+      agentType: 'claude-code',
+    })).toBe(true);
+  });
+
   it('filters on agentType only when the spawn pinned a concrete agent', () => {
     const task = {
       id: 't1',
@@ -85,6 +101,13 @@ describe('taskMatchesLaunchDuplicate', () => {
     expect(taskMatchesLaunchDuplicate(task, spawn)).toBe(false);
     expect(taskMatchesLaunchDuplicate(task, { ...spawn, agentType: null })).toBe(true);
     expect(taskMatchesLaunchDuplicate(task, { ...spawn, agentType: 'round-robin' })).toBe(true);
+  });
+});
+
+describe('expandLaunchPromptPaths', () => {
+  it('joins a relative file token to cwd', () => {
+    expect(expandLaunchPromptPaths('Fix src/login.ts please', '/repo/x'))
+      .toBe('Fix /repo/x/src/login.ts please');
   });
 });
 
@@ -113,6 +136,27 @@ describe('findActiveLaunchDuplicate', () => {
       agentType: 'claude-code',
     });
     expect(found?.taskId).toBe('live');
+  });
+
+  it('prefers compact launch cwd over a session/worktree snapshot cwd', () => {
+    const sessionRow = {
+      taskId: 'live',
+      taskStatus: 'inProgress',
+      cwd: '/tmp/kookr-live-wt',
+      agentType: 'claude-code',
+      description: 'Fix the auth bug',
+    };
+    const overlaid = withLaunchTaskCwds([sessionRow], { live: '/tmp/work' });
+    expect(findActiveLaunchDuplicate(overlaid, {
+      prompt: 'Fix the auth bug',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+    })?.taskId).toBe('live');
+    expect(findActiveLaunchDuplicate([sessionRow], {
+      prompt: 'Fix the auth bug',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+    })).toBeUndefined();
   });
 
   it('returns undefined when the form is incomplete', () => {
