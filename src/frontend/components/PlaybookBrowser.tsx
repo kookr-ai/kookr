@@ -1,5 +1,13 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { buildAgentSelectionOptions, type Playbook, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
+import {
+  buildAgentSelectionOptions,
+  shouldDisableLaunchForGrokAuth,
+  shouldShowGrokAuthBanner,
+  type Playbook,
+  type ClientMessage,
+  type AgentSelection,
+  type GrokAuthStatusResponse,
+} from '../../shared/protocol.js';
 import type { LaunchDependency, PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -9,6 +17,7 @@ import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { launchLoopedPlaybook, replaceRalphLoopWithNew } from '../api/index.js';
 import { FilterableSelect } from './FilterableSelect.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -178,6 +187,8 @@ interface Props {
    * cwd. The "Change…" link in the resolved-cwd label invokes this.
    */
   onRequestEditCwd?: () => void;
+  /** Shared Grok preflight from the parent Launch dialog, when already fetched. */
+  grokAuth?: GrokAuthStatusResponse | null;
 }
 
 function ResolvedCwdLabel({
@@ -248,6 +259,7 @@ export function PlaybookBrowser({
   projectContext,
   onTaskTargetCwdChange,
   onRequestEditCwd,
+  grokAuth = null,
 }: Props) {
   const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries, hostCapabilities } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
@@ -272,6 +284,19 @@ export function PlaybookBrowser({
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => usageTracker.getPinned());
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
+  );
+  const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
+  const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
+    agentType,
+    grokAuth?.launchWouldRefuse === true,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  );
+  const showGrokAuthBanner = shouldShowGrokAuthBanner(
+    agentType,
+    grokAuth?.status,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
@@ -595,6 +620,9 @@ export function PlaybookBrowser({
     if (launchMode === 'looped' && (!selected.tags.includes('loopable') || !selected.effectiveLoop || selected.loopValidationError)) {
       return false;
     }
+    if (grokAuthBlocksLaunch) {
+      return false;
+    }
     return selected.parameters
       .filter((p) => p.required)
       .every((p) => (paramValues[p.name] ?? '').trim() !== '');
@@ -848,6 +876,9 @@ export function PlaybookBrowser({
           onChange={setAgentType}
           options={agentOptions}
         />
+        {showGrokAuthBanner && grokAuth?.message && (
+          <GrokAuthPreflightBanner message={grokAuth.message} />
+        )}
 
         {conflict && (
           conflict.kind === 'duplicate_active_loop' ? (
@@ -928,7 +959,12 @@ export function PlaybookBrowser({
           <button type="button" className="btn-secondary" onClick={handleBack}>
             Cancel
           </button>
-          <button type="submit" className="btn-primary" disabled={!canLaunch() || conflict !== null}>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={!canLaunch() || conflict !== null}
+            aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+          >
             {launchMode === 'looped' ? 'Launch Looped' : 'Launch Playbook'}
           </button>
         </div>

@@ -1,5 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
-import { buildAgentSelectionOptions, type ClientMessage, type AgentType, type AgentSelection } from '../../shared/protocol.js';
+import {
+  buildAgentSelectionOptions,
+  shouldDisableLaunchForGrokAuth,
+  shouldShowGrokAuthBanner,
+  type ClientMessage,
+  type AgentType,
+  type AgentSelection,
+} from '../../shared/protocol.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
@@ -16,6 +23,8 @@ import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
@@ -82,6 +91,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const hostCapabilities = useKookrStore((s) => s.hostCapabilities);
   const projectSummaries = useKookrStore((s) => s.projectSummaries);
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
+  const grokAuth = useGrokAuthStatus();
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
@@ -139,6 +149,19 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
+  const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
+  const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
+    agentType,
+    grokAuth?.launchWouldRefuse === true,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  );
+  const showGrokAuthBanner = shouldShowGrokAuthBanner(
+    agentType,
+    grokAuth?.status,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const dialogRef = useRef<HTMLDivElement>(null);
   const playbooksTabRef = useRef<HTMLButtonElement>(null);
@@ -228,7 +251,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = prompt.trim();
-    if (!trimmed || !cwd.trim() || submitting) return;
+    if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch) return;
 
     setSubmitting(true);
     recentPaths.add(cwd.trim());
@@ -491,6 +514,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               onChange={setAgentType}
               options={agentOptions}
             />
+            {showGrokAuthBanner && grokAuth?.message && (
+              <GrokAuthPreflightBanner message={grokAuth.message} />
+            )}
             <label>
               Completion criteria (optional)
               <div className="input-with-voice">
@@ -511,7 +537,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               <button type="button" className="btn-secondary" onClick={() => { track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current }); onClose(); }}>
                 Cancel
               </button>
-              <button type="submit" className="btn-primary" disabled={!prompt.trim() || !cwd.trim() || submitting}>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch}
+                aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+              >
                 {submitting ? 'Launching...' : 'Launch'}
               </button>
             </div>
@@ -520,6 +551,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
           <PlaybookBrowser
             send={send}
             onClose={onClose}
+            grokAuth={grokAuth}
             cwd={getTaskTargetCwd()}
             {...(projectContext
               ? {

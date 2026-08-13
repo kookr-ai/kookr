@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { GROK_LOGIN_COMMAND } from '../shared/contracts/grok-auth-status.js';
 
 /** Minimal filesystem seam for validating the copied launch-scoped auth file. */
 export interface GrokAuthPreflightFs {
@@ -139,7 +140,7 @@ export function formatGrokAuthPreflightFailure(
   path: string,
   result: Exclude<GrokAuthPreflightResult, { kind: 'ok' }>,
 ): string {
-  const remediation = 'Run `grok login --device-code` (or `grok login --oauth`) and retry.';
+  const remediation = `Run \`${GROK_LOGIN_COMMAND}\` (or \`grok login --oauth\`) and retry.`;
   switch (result.kind) {
     case 'missing':
       if (result.reason === 'file_missing') {
