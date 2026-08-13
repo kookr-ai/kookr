@@ -41,6 +41,7 @@ import {
 } from './agent-launch-context.js';
 import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { resolveHookWriterPath } from '../core/hook-writer-paths.js';
+import { resolvePluginDir } from '../core/plugin-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 import { HookParseError } from '../core/hook-parser.js';
 import { extractGrokHookHeader, parseGrokHookEvent, type RawGrokHookHeader } from './grok-hook-decoder.js';
@@ -227,6 +228,13 @@ export interface GrokBuildAdapterOptions {
   bypassAllPermissions?: boolean;
   /** The operator's real Grok home to seed auth + plugins from. Defaults to `~/.grok`. */
   sourceGrokHome?: string;
+  /**
+   * Absolute path of the kookr-toolkit plugin tree. Isolated Grok sessions
+   * cannot take `--plugin-dir`; composeGrokHome links this as a fallback when
+   * `~/.grok/plugins` does not already provide kookr-toolkit (issue #2455).
+   * Resolution order matches Claude: this option > `KOOKR_PLUGIN_DIR` > auto.
+   */
+  pluginDir?: string;
   /** Root directory under which per-session GROK_HOME dirs are created. Defaults to os tmpdir. */
   sessionHomeRoot?: string;
   /** Env source for the feature flag / kill switch / model resolution. */
@@ -364,6 +372,7 @@ export class GrokBuildAdapter implements AgentAdapter {
   private model: string;
   private bypassAllPermissions: boolean;
   private sourceGrokHome: string;
+  private toolkitPluginDir?: string;
   private sessionHomeRoot: string;
   private env: NodeJS.ProcessEnv;
   private probeExec?: ProbeExecRunner;
@@ -392,6 +401,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     this.model = options?.model ?? resolveGrokModel(this.env);
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
     this.sourceGrokHome = options?.sourceGrokHome ?? join(homedir(), '.grok');
+    this.toolkitPluginDir = resolvePluginDir(options?.pluginDir, this.env);
     this.sessionHomeRoot = options?.sessionHomeRoot ?? tmpdir();
     this.probeExec = options?.probeExec;
     this.homeFs = options?.homeFs;
@@ -555,6 +565,7 @@ export class GrokBuildAdapter implements AgentAdapter {
         grokHome,
         sourceGrokHome: this.sourceGrokHome,
         monitoring,
+        toolkitPluginDir: this.toolkitPluginDir,
         fs: this.homeFs,
       });
       const sharedAuthPath = composed.authPath ?? join(this.sourceGrokHome, 'auth.json');

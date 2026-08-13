@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   composeGrokHome,
   GROK_MONITORING_HOOKS_FILENAME,
+  GROK_WRITING_REVIEW_NUDGE_FILENAME,
   sharedGrokAuthPath,
   type GrokHomeFs,
 } from './grok-home-composer.js';
@@ -72,10 +73,23 @@ describe('composeGrokHome', () => {
     expect(fs.mkdir).toHaveBeenCalledWith(join(GROK_HOME, 'hooks'), { recursive: true });
     expect(fs.mkdir).toHaveBeenCalledWith(join(GROK_HOME, 'plugins'), { recursive: true });
 
-    expect(fs.writeFile).toHaveBeenCalledTimes(1);
-    const writeCall = calls.find((c) => c.op === 'writeFile')!;
-    expect(writeCall.args[0]).toBe(join(GROK_HOME, 'hooks', GROK_MONITORING_HOOKS_FILENAME));
-    expect(writeCall.args[1] as string).toContain('"PreToolUse"');
+    const writeCalls = calls.filter((c) => c.op === 'writeFile');
+    expect(writeCalls.map((c) => c.args[0])).toEqual(
+      expect.arrayContaining([
+        join(GROK_HOME, 'hooks', GROK_MONITORING_HOOKS_FILENAME),
+        join(GROK_HOME, 'hooks', GROK_WRITING_REVIEW_NUDGE_FILENAME),
+      ]),
+    );
+    const nudgeWrite = writeCalls.find(
+      (c) => c.args[0] === join(GROK_HOME, 'hooks', GROK_WRITING_REVIEW_NUDGE_FILENAME),
+    );
+    const nudgeJson = JSON.parse(nudgeWrite!.args[1] as string) as {
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }> };
+    };
+    expect(nudgeJson.hooks.PreToolUse[0]?.matcher).toBe('Bash');
+    expect(nudgeJson.hooks.PreToolUse[0]?.hooks[0]?.type).toBe('command');
+    expect(nudgeJson.hooks.PreToolUse[0]?.hooks[0]?.command).toMatch(/^\/bin\/bash /);
+    expect(nudgeJson.hooks.PreToolUse[0]?.hooks[0]?.command).toContain('kookr-writing-review-nudge.sh');
 
     const symlinkTargets = calls.filter((c) => c.op === 'symlink').map((c) => c.args[1]);
     expect(symlinkTargets).toEqual([
@@ -165,5 +179,44 @@ describe('composeGrokHome', () => {
     expect(calls.some((c) => c.op === 'access' && (c.args[0] as string).startsWith(SOURCE_GROK_HOME))).toBe(
       true,
     );
+  });
+
+  it('falls back to the Claude-resolved toolkit tree when ~/.grok/plugins lacks kookr-toolkit', async () => {
+    const toolkitDir = '/prod/kookr/plugin';
+    const { fs, calls } = makeFakeFs({ pluginEntries: ['other-plugin'] });
+
+    const result = await composeGrokHome({
+      grokHome: GROK_HOME,
+      sourceGrokHome: SOURCE_GROK_HOME,
+      monitoring: MONITORING,
+      toolkitPluginDir: toolkitDir,
+      fs,
+    });
+
+    expect(result.linkedPlugins).toEqual(['other-plugin', 'kookr-toolkit']);
+    expect(calls).toContainEqual({
+      op: 'symlink',
+      args: [toolkitDir, join(GROK_HOME, 'plugins', 'kookr-toolkit')],
+    });
+  });
+
+  it('does not double-link kookr-toolkit when ~/.grok/plugins already has it', async () => {
+    const toolkitDir = '/prod/kookr/plugin';
+    const { fs, calls } = makeFakeFs({ pluginEntries: ['kookr-toolkit'] });
+
+    const result = await composeGrokHome({
+      grokHome: GROK_HOME,
+      sourceGrokHome: SOURCE_GROK_HOME,
+      monitoring: MONITORING,
+      toolkitPluginDir: toolkitDir,
+      fs,
+    });
+
+    expect(result.linkedPlugins).toEqual(['kookr-toolkit']);
+    const toolkitSymlinks = calls.filter(
+      (c) => c.op === 'symlink' && String(c.args[1]).endsWith('kookr-toolkit'),
+    );
+    expect(toolkitSymlinks).toHaveLength(1);
+    expect(toolkitSymlinks[0].args[0]).toBe(join(SOURCE_GROK_HOME, 'plugins', 'kookr-toolkit'));
   });
 });

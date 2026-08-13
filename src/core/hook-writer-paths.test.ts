@@ -8,6 +8,7 @@ import {
   resolveAgentLauncherBinDir,
   resolveHookWriterPath,
   resolveStopNudgePath,
+  resolveWritingReviewNudgePath,
 } from './hook-writer-paths.js';
 
 describe('resolveHookWriterPath', () => {
@@ -144,6 +145,34 @@ describe('resolveStopNudgePath', () => {
       const baseDir = join(root, 'dist', 'core');
       mkdirSync(baseDir, { recursive: true });
       expect(resolveStopNudgePath(baseDir)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolveWritingReviewNudgePath', () => {
+  it('finds the nudge script relative to a baseDir two levels under repo root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-writing-nudge-resolve-'));
+    try {
+      mkdirSync(join(root, 'bin'), { recursive: true });
+      writeFileSync(join(root, 'bin', 'kookr-writing-review-nudge.sh'), '#!/bin/bash\n');
+      const baseDir = join(root, 'dist', 'core');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveWritingReviewNudgePath(baseDir)).toBe(
+        join(root, 'bin', 'kookr-writing-review-nudge.sh'),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when the nudge script is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-writing-nudge-missing-'));
+    try {
+      const baseDir = join(root, 'dist', 'core');
+      mkdirSync(baseDir, { recursive: true });
+      expect(resolveWritingReviewNudgePath(baseDir)).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

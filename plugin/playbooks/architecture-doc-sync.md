@@ -34,6 +34,7 @@ checklist:
   - Updated stale state machine documentation
   - Verified updated docs match current code
   - Updated ADR statuses if any are contradicted by code
+  - Loaded the writing skill before rewriting docs, and ran the writing reviewer before opening the PR (including nits that make the prose clearer)
 ---
 
 ## Objective
@@ -91,7 +92,8 @@ Update docs in order of severity. For each update:
 4. **ADR statuses**: Change status to "Superseded" with a note if the code contradicts the decision
 
 **Rules for updating**:
-- Preserve the existing document style and formatting conventions
+- Preserve the existing document *layout* (headings, tables, mermaid). Do not “update” a section by dumping file names and constants in place of what a cold reader can now see or do.
+- **Before rewriting any section**, read the `clear-technical-writing` skill. Lead with what a cold reader can now see or do; park file names and line numbers after that.
 - Add a comment or note when a significant change is made (e.g., "Updated YYYY-MM-DD: added X, removed deprecated Y")
 - If a documented design decision no longer matches code but the new behavior seems intentional, update the doc to match code (code is the source of truth for current behavior)
 - If the mismatch looks like a bug (code diverged unintentionally), flag it in the report but do NOT update the doc — the code should be fixed instead
@@ -102,6 +104,15 @@ After updates:
 - Re-read each updated doc and spot-check 3-4 claims against the code
 - Ensure no broken internal links between architecture docs
 - Verify that subsystem boundary descriptions still make sense with the updated module lists
+
+## Phase 5 — Cold-reader review before the PR
+
+Do this **before** `gh pr create`, not after:
+
+1. Spawn `kookr-toolkit:clear-writing-reviewer` on the new/changed prose (batch by subsystem if the diff is large).
+2. If the PR body is more than a one-line rename, also run the `pre-pr-review` skill (the full writing self-check for the PR description, not the same agent as step 1).
+3. Apply every finding that improves communication — including nits. An edit is cheap; a later agent reconstructing the story from identifiers is not.
+4. Only then open the PR.
 
 ## Idempotency
 
@@ -114,3 +125,5 @@ After updates:
 - Don't add speculative content ("this module will probably..."). Only document what exists now.
 - Don't update ADRs to match code if the code change was clearly unintentional — flag it instead.
 - Don't fabricate doc paths that don't exist in this repo. If `{{adrDir}}` or `{{systemModelsDir}}` is missing, skip those phases.
+- Don't open the PR and *then* run the writing reviewer. Review first.
+- Don't dismiss nits that make the prose clearer. Applying them is cheap.
