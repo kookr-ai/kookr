@@ -599,7 +599,7 @@ export interface PausedScheduleStatusRow {
  * `schedulesPausedByFailure.length >= 1`; an empty array is a valid
  * "none paused" projection when the block is present.
  */
-export interface SchedulesStatus {
+export interface PausedSchedulesStatus {
   schedulesPausedByFailure: PausedScheduleStatusRow[];
 }
 
@@ -631,7 +631,7 @@ export interface OpsHealthPayload {
   capacityResidual?: CapacityResidualStatus | null;
   pipelineStarvation?: PipelineStarvationStatus | null;
   launchDependencies?: LaunchDependenciesStatus | null;
-  pausedSchedules?: SchedulesStatus | null;
+  pausedSchedules?: PausedSchedulesStatus | null;
   lessonYield?: LessonYieldStatus | null;
 }
 
@@ -653,12 +653,12 @@ export interface SystemStatusSlice {
    * Named `pausedSchedules` so it does not collide with the existing
    * `schedules: ScheduleResponse[]` list used by ScheduleSection.
    */
-  pausedSchedules: SchedulesStatus | null;
+  pausedSchedules: PausedSchedulesStatus | null;
   /** Lesson-authoring yield projection from `/api/health.lessonYield` (issue #2395). */
   lessonYield: LessonYieldStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / schedules / lesson-yield projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

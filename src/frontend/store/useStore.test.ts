@@ -131,7 +131,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().resourceStatusReceivedAtMs).toBe(123);
   });
 
-  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, pipeline starvation, launch deps, and schedules projections', () => {
+  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, pipeline starvation, launch deps, and paused-schedules projections', () => {
     expect(store.getState().prodSmokeTick).toBeNull();
     expect(store.getState().resourceWatchdog).toBeNull();
     expect(store.getState().capacityResidual).toBeNull();

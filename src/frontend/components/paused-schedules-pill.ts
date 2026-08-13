@@ -5,13 +5,13 @@
  * This is display only — the pill never resumes a paused schedule.
  */
 
-import type { SchedulesStatus } from '../store/store-types.js';
+import type { PausedSchedulesStatus } from '../store/store-types.js';
 
 /** Max schedule names shown in the tooltip before "+N more". */
 export const PAUSED_SCHEDULES_TITLE_MAX_NAMES = 3;
 
 export function shouldShowPausedSchedulesPill(
-  status: SchedulesStatus | null | undefined,
+  status: PausedSchedulesStatus | null | undefined,
 ): boolean {
   if (status == null) return false;
   const rows = status.schedulesPausedByFailure;
@@ -21,7 +21,7 @@ export function shouldShowPausedSchedulesPill(
 /**
  * Compact label: `1 schedule paused` / `N schedules paused`.
  */
-export function formatPausedSchedulesLabel(status: SchedulesStatus): string {
+export function formatPausedSchedulesLabel(status: PausedSchedulesStatus): string {
   const count = status.schedulesPausedByFailure.length;
   return count === 1 ? '1 schedule paused' : `${count} schedules paused`;
 }
@@ -30,7 +30,7 @@ export function formatPausedSchedulesLabel(status: SchedulesStatus): string {
  * Tooltip listing sampled names with consecutive-failure counts and a
  * pointer at the health block. Does not offer resume.
  */
-export function formatPausedSchedulesTitle(status: SchedulesStatus): string {
+export function formatPausedSchedulesTitle(status: PausedSchedulesStatus): string {
   const rows = status.schedulesPausedByFailure;
   const count = rows.length;
   const parts: string[] = [

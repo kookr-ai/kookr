@@ -10,7 +10,7 @@ import type {
   PipelineStarvationStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
-  SchedulesStatus,
+  PausedSchedulesStatus,
 } from '../store/store-types.js';
 
 /** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps + paused schedules). */
@@ -146,7 +146,7 @@ export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatu
  * array becomes an empty projection — the scheduler is wired, nothing
  * is fail-closed paused.
  */
-export function parseSchedules(value: unknown): SchedulesStatus | null {
+export function parseSchedules(value: unknown): PausedSchedulesStatus | null {
   const rec = asRecord(value);
   if (!rec) return null;
   const raw = rec.schedulesPausedByFailure;
