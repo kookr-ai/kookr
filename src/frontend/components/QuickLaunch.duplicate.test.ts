@@ -40,16 +40,21 @@ function liveTask(overrides: Partial<AgentState> & Pick<AgentState, 'agentId' | 
 
 function renderQuickLaunch(
   container: HTMLElement,
-): { root: Root; sent: ClientMessage[] } {
+  opts: { unmountOnClose?: boolean } = {},
+): { root: Root; sent: ClientMessage[]; closed: number } {
   const sent: ClientMessage[] = [];
+  const state = { closed: 0 };
   const root = createRoot(container);
   act(() => {
     root.render(React.createElement(QuickLaunch, {
       send: (msg: ClientMessage) => { sent.push(msg); return true; },
-      onClose: () => {},
+      onClose: () => {
+        state.closed += 1;
+        if (opts.unmountOnClose) root.unmount();
+      },
     }));
   });
-  return { root, sent };
+  return { root, sent, get closed() { return state.closed; } };
 }
 
 describe('QuickLaunch active-duplicate warning', () => {
@@ -145,7 +150,7 @@ describe('QuickLaunch active-duplicate warning', () => {
   });
 
   test('Open existing selects the live task without sending', async () => {
-    const { root, sent } = renderQuickLaunch(container);
+    const rendered = renderQuickLaunch(container);
     await flush();
 
     const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
@@ -155,9 +160,53 @@ describe('QuickLaunch active-duplicate warning', () => {
     const open = container.querySelector('[data-testid="launch-duplicate-open-existing"]') as HTMLButtonElement;
     await act(async () => { open.click(); });
 
-    expect(sent).toHaveLength(0);
+    expect(rendered.sent).toHaveLength(0);
+    expect(rendered.closed).toBe(1);
     expect(useKookrStore.getState().selectedTaskId).toBe('task-live');
     expect(useKookrStore.getState().selectedAgentId).toBe('sess-live');
-    act(() => root.unmount());
+    act(() => rendered.root.unmount());
+  });
+
+  test('Launch anyway still sends after a Safari-style blur with no relatedTarget', async () => {
+    const { sent } = renderQuickLaunch(container, { unmountOnClose: true });
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Fix the auth bug'); });
+    await flush();
+
+    const bar = container.querySelector('.quick-launch-bar') as HTMLElement;
+    const anyway = container.querySelector('[data-testid="launch-duplicate-launch-anyway"]') as HTMLButtonElement;
+    expect(anyway).toBeTruthy();
+
+    // Same turn as a real click: blur (relatedTarget null) then the button click.
+    await act(async () => {
+      bar.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      anyway.click();
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      prompt: 'Fix the auth bug',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+    });
+  });
+
+  test('a deferred blur still closes Quick Launch when focus leaves the bar', async () => {
+    const rendered = renderQuickLaunch(container);
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    await act(async () => { input.focus(); });
+    expect(rendered.closed).toBe(0);
+    await act(async () => { outside.focus(); });
+    expect(rendered.closed).toBe(0);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(rendered.closed).toBe(1);
+    outside.remove();
+    act(() => rendered.root.unmount());
   });
 });

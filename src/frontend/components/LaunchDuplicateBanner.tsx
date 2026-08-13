@@ -33,6 +33,7 @@ export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway
         <button
           type="button"
           className="btn-secondary launch-duplicate-banner__open"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={onOpenExisting}
           title={trimmedName ? `Open existing task: ${trimmedName}` : 'Open existing task'}
           aria-label={trimmedName ? `Open existing task: ${trimmedName}` : 'Open existing'}
@@ -43,6 +44,7 @@ export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway
         <button
           type="button"
           className="btn-secondary"
+          onMouseDown={(e) => e.preventDefault()}
           onClick={onLaunchAnyway}
           data-testid="launch-duplicate-launch-anyway"
         >

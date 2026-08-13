@@ -156,7 +156,14 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (activeSTTInputId === 'quick-launch') return;
     // Don't close if focus moved to a child element (e.g., mic button)
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    onClose();
+    // Safari: clicking an in-bar button does not focus it, so relatedTarget is
+    // null. Close on the next turn so the click can land before unmount.
+    const bar = e.currentTarget;
+    window.setTimeout(() => {
+      if (!bar.isConnected) return;
+      if (bar.contains(document.activeElement)) return;
+      onClose();
+    }, 0);
   }
 
   return (
