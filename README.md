@@ -12,7 +12,7 @@
 
 ---
 
-You run several Claude Code or Codex CLI agents in parallel. One loops on the same failing test. Another is waiting on a permission question. A third finished and needs review.
+You run several Claude Code, Codex CLI, or Grok Build agents in parallel. One loops on the same failing test. Another is waiting on a permission question. A third finished and needs review.
 
 **Kookr watches the agents, explains what needs attention, and routes you to the most urgent one.**
 
@@ -49,6 +49,8 @@ Use `pnpm dev` only when you are actively developing Kookr and need hot reload o
 Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents.
 
 **Works with Codex CLI** via a maintained fork that adds the Claude-compatible hooks Kookr depends on. See [Codex CLI Setup](docs/codex-cli-setup.md).
+
+**Works with Grok Build** via the official `grok` CLI. Install `@xai-official/grok` and run `grok login --device-code`. See [Getting Started](docs/getting-started.md).
 
 If setup fails, run:
 
@@ -87,7 +89,7 @@ See [CLI Reference](docs/reference/cli.md) for `kookr spawn`, `kookr status`, an
 
 ## Core Features
 
-- Real-time monitoring for Claude Code and Codex CLI agents (Codex CLI requires the maintained [`jeanibarz/codex#feat/claude-compat`](docs/codex-cli-setup.md) fork)
+- Real-time monitoring for Claude Code, Codex CLI, and Grok Build agents (Codex CLI requires the maintained [`jeanibarz/codex#feat/claude-compat`](docs/codex-cli-setup.md) fork)
 - Anomaly detection and prioritized findings
 - Quick replies and response suggestions
 - Live terminal access through xterm.js and dtach
@@ -105,7 +107,7 @@ Running one AI coding agent is simple. Running five creates a new coordination p
 Kookr is built for that supervision loop:
 
 - **Local-first:** no telemetry, no cloud service required, state stored under `~/.kookr/`.
-- **Multi-agent native:** one dashboard for parallel Claude Code and Codex CLI sessions.
+- **Multi-agent native:** one dashboard for parallel Claude Code, Codex CLI, and Grok Build sessions.
 - **Action-oriented:** findings are ordered by urgency and paired with the terminal context you need to respond.
 - **Extensible:** hooks, playbooks, skills, and a Claude Code plugin are part of the repo.
 
@@ -115,7 +117,7 @@ Kookr is built for that supervision loop:
 Browser dashboard
   -> Hono HTTP/WebSocket server
   -> Core monitor, anomaly detector, attention queue, task store
-  -> Local dtach backend plus Claude Code / Codex CLI adapters
+  -> Local dtach backend plus Claude Code / Codex CLI / Grok Build adapters
   -> Managed AI agent sessions
 ```
 

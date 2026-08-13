@@ -24,6 +24,18 @@ Use the dashboard **Launch** button for an interactive start:
 
 Kookr starts the agent in a persistent dtach session. If the server restarts, the dtach master keeps the child process alive and Kookr reconciles state on startup.
 
+Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their CLI is installed and ready. Grok is the one that needs an extra install and login step.
+
+### Grok Build
+
+Grok Build is xAI's coding agent. Kookr can launch it the same way it launches Claude Code and Codex CLI. Install the official `grok` CLI (`npm install -g @xai-official/grok`) so it appears in Launch, then sign in once on the machine that runs Kookr:
+
+```bash
+grok login --device-code
+```
+
+Prefer `--device-code` on the Kookr host; `grok login --oauth` also works on a machine with a browser. If `grok` is not on PATH, point `KOOKR_GROK_BIN` at the binary. Kookr omits Grok from Launch when the binary is missing, and refuses a launch when credentials are missing or expired.
+
 For Ralph loops that look stopped after a crash or show a **Replace with new** recovery dialog, see [Ralph Loop Stopped Or Shows "Replace With New"](troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new).
 
 ### Protecting A Worktree From Automatic Cleanup
