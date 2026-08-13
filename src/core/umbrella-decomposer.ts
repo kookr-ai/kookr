@@ -1199,126 +1199,123 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * (queue-feeder 2026-08-13, invent-product-wave #2069) #2855–#2857
  * (issuer_feed after verification_reject / newswire_feed feed_no_match /
  * stealth cache-miss omit) shipped and are title-exhausted. Invent wave 12
- * (queue-feeder 2026-08-13, invent-product-wave #2069) continues W33 residual
- * after wave 11: stamp feed_no_match on the search-backed newswire path (the
- * hole #2856 left), persist identityCorroborated=false so issuer_feed-only
- * hits are single-source not unstamped, and split half-open search-backend
- * probes out of the weekly live fan-out fold so Perplexity 59/0 does not look
- * like live failover. Live GitHub leaves #2882–#2884. Title idempotency
- * prevents re-emit once those exist.
+ * (queue-feeder 2026-08-13, invent-product-wave #2069) #2882–#2884
+ * (newswire search feed_no_match / persist identityCorroborated=false /
+ * split half-open probes out of weekly live fan-out) shipped and are
+ * title-exhausted. Invent wave 13 (queue-feeder 2026-08-13, invent-product-wave
+ * #2069) continues W33 residual after wave 12: stamp fetch_error when classic
+ * detectEarnings swallows a thrown fetch (the unnamed-miss class #2856/#2857
+ * left on classic), omit aborted-after-winner sibling tiers from weekly
+ * attempt folds (W33 newswire_feed 3/0 is abort-not-try), and lengthen
+ * half-open probe cooldown after consecutive chronic-zero failures so
+ * Perplexity is not probed every 15 minutes. Live GitHub leaves #2890–#2892.
+ * Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): stamp feed_no_match when newswire search discovery finds no wire URL',
+      'feat(acquisition): stamp fetch_error when classic detectEarnings fetch throws',
     goal:
-      'Make empty search-backed newswire attempts loud under umbrella #1587. W33 newswire ' +
-      'shows 2 attempts, 0 ok, 1 verification_reject, and 1 unnamed miss. Wave 11 / #2856 ' +
-      'stamped feed_no_match on newswire_feed only. collectNewswire still returns ' +
-      "reason: 'no newswire result' with no failureCode when search finds no wire URL " +
-      '(src/acquisition/tiers/newswire.js). Reuse feed_no_match (already in ' +
-      'STRUCTURAL_FAILURE_CODES / isNamedNotFoundFailureCode) so clean-empty bail-out ' +
-      'still fires. Do not invent no_wire / no_result.',
+      'Make classic fetch exceptions loud under umbrella #1587. W33 classic is 3 attempts / ' +
+      '0 ok / empty byFailureCode. The three live rows are genuine "no earnings 8-K" ' +
+      '(clean-empty is correct). The remaining class hole is the url-template catch in ' +
+      'src/earnings-source.js: it returns {ok:false, reason: err.message} with no ' +
+      'failureCode. isCleanEmptyAcquireResult treats a miss without failureCode as ' +
+      'clean-empty (RFC-012 §5.4 residual at acquire.js). Same class as #2856/#2857. ' +
+      'Reuse fetch_error (already used by acquisition-commands.js). Do not invent ' +
+      'collector_exception. Idea-scout #2872 is the same class — this is the write-path leaf.',
     acceptanceCriteria: [
-      "When the search-backed newswire path finishes with reason 'no newswire result' " +
-        '(no recorded wire, no search hit, no candidate page), the tier outcome sets ' +
-        'failureCode: feed_no_match. Do not invent no_wire / no_result / empty_search.',
-      'feed_no_match stays a named not-found: isNamedNotFoundFailureCode(true), ' +
-        'isPublicationObstructionCode(false). isCleanEmptyAcquireResult still treats a ' +
-        'poll whose only miss is this code as clean-empty (RFC-012 §5.4). A matching ' +
-        'wire URL stays ok=true with no such code. verification_reject / access_denied / ' +
-        'search-unavailable keep their existing codes. #2856 newswire_feed path stays intact.',
-      'Unit/fixture tests cover: (a) search finds no wire URL → feed_no_match; (b) ' +
-        'matching wire → ok, no feed_no_match; (c) verification_reject on a fetched wire ' +
-        'page keeps verification_reject; (d) search-unavailable miss does not become ' +
-        'feed_no_match; (e) isNamedNotFoundFailureCode(feed_no_match) === true.',
+      'When the classic detectEarnings url-template catch fires (fetchDocument or ' +
+        'equivalent throws), the returned object sets failureCode: fetch_error. Do not ' +
+        'invent collector_exception / classic_throw. Genuine no-8-K / no-6-K not-found ' +
+        'stays without fetch_error so it remains clean-empty.',
+      'isCleanEmptyAcquireResult is false when classic\'s only miss is fetch_error. ' +
+        'isNamedNotFoundFailureCode(fetch_error) === false. verification_reject / ' +
+        'access_denied / feed_no_match keep their existing codes. A successful ' +
+        'url-template hit stays ok=true with no fetch_error.',
+      'Unit/fixture tests cover: (a) thrown fetch → failureCode fetch_error; (b) genuine ' +
+        'no 8-K → no fetch_error and still clean-empty when sibling tiers agree; (c) ok ' +
+        'hit has no fetch_error; (d) isCleanEmptyAcquireResult(false) when classic is ' +
+        'fetch_error.',
     ],
     fileHints: [
-      'src/acquisition/tiers/newswire.js',
+      'src/earnings-source.js',
+      'src/acquisition/acquire.js',
+      'src/acquisition/scoreboard.js',
+    ],
+    testHints: [
+      'unit: thrown fetchDocument → failureCode fetch_error',
+      'unit: genuine no 8-K stays unnamed not-found / clean-empty',
+      'unit: ok hit has no fetch_error',
+      'unit: isCleanEmptyAcquireResult is false for fetch_error',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): omit aborted-after-winner sibling tiers from weekly attempt folds',
+    goal:
+      'Keep the weekly per-tier attempt bag honest under umbrella #1587. W33 newswire_feed ' +
+      'is 3 attempts / 0 ok / empty byFailureCode / null msAvg. All three live hits ' +
+      '(CAH / SMCI / CSCO) recorded newswire_feed as reason "aborted after verified ' +
+      'acquisition winner selected" after issuer_feed already won. markAbortedLoserTiers ' +
+      'already sets abortedAfterWinner / outcome aborted_after_winner with no failureCode. ' +
+      'foldTierOutcomes still increments attempts (#2857 only omits stealth cache-miss). ' +
+      'Sibling abort is not a try — omit it from the weekly fold the same way.',
+    acceptanceCriteria: [
+      'A tier outcome with abortedAfterWinner === true (or outcome === ' +
+        "'aborted_after_winner') is omitted from foldTierOutcomes attempts / ok / blocked / " +
+        'ms. Do not invent a new failureCode for abort.',
+      'A real newswire_feed miss (no matching item, feed_no_match from #2856) still counts ' +
+        'as an attempt. A real newswire verification_reject still counts. The winning ' +
+        'issuer_feed ok still counts.',
+      'Unit/fixture tests cover: (a) aborted_after_winner → attempts unchanged; (b) ' +
+        'feed_no_match newswire_feed → attempts+1; (c) verification_reject newswire → ' +
+        'attempts+1 blocked+1; (d) no new failureCode string is introduced for abort.',
+    ],
+    fileHints: [
       'src/acquisition/scoreboard.js',
       'src/acquisition/acquire.js',
-    ],
-    testHints: [
-      'unit: no newswire result → failureCode feed_no_match',
-      'unit: matching wire URL → ok',
-      'unit: verification_reject on a wire page keeps verification_reject',
-      'unit: search-unavailable miss is not feed_no_match',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): persist identityCorroborated=false on single-source detection rows',
-    goal:
-      'Close the stamp-path hole under umbrella #1587: W33 identityCorroboration is 1 ' +
-      'corroborated / 0 singleSource / 2 unstamped on 3 issuer_feed wins. #2671 requires ' +
-      'single-source hits to stamp identityCorroborated=false (deliverable, not legacy-absent). ' +
-      'scheduler-active-window-poll.js coerces the stamp with `=== true` and some persist ' +
-      'paths omit a false boolean, so weekly fold counts those rows as unstamped. #2875 is ' +
-      'only an alert; this leaf writes the false stamp.',
-    acceptanceCriteria: [
-      'Every detected:true row written by the armed-window / catch-up persist path sets ' +
-        'identityCorroborated to a boolean. issuer_feed-only (or any single independent ' +
-        'surface) wins write false with identityCorroboration.surfaceCount === 1. Do not ' +
-        'omit the key when the value is false. Do not coerce undefined to omitted.',
-      'withIdentityCorroboration still computes the stamp (true only when ≥2 independent ' +
-        'surfaces agree). Multi-source true stays true. Conflicting surfaces stay false + ' +
-        'conflict. Weekly identityCorroborationStats then counts those issuer_feed-only ' +
-        'hits as singleSource, not unstamped. #2875 alert (100% unstamped) is unchanged.',
-      'Unit/fixture tests cover: (a) issuer_feed-only hit → identityCorroborated === false ' +
-        'on the persisted detection object (key present); (b) two agreeing surfaces → true; ' +
-        '(c) weekly fold of (a) increments singleSource, not unstamped; (d) compact/serialize ' +
-        'does not drop false.',
-    ],
-    fileHints: [
-      'src/scheduler-active-window-poll.js',
-      'src/scheduler-runner.js',
-      'src/scheduled-detection-persistence.js',
-      'src/acquisition/identity-corroboration.js',
-      'src/detection-scorecard.js',
-    ],
-    testHints: [
-      'unit: issuer_feed-only persist keeps identityCorroborated false',
-      'unit: two agreeing surfaces persist true',
-      'unit: weekly fold counts false as singleSource',
-      'unit: compact/serialize retains false',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(metrics): split half-open search-backend probes out of weekly live fan-out',
-    goal:
-      'Keep the #2520 weekly search-backend failover metric honest under umbrella #1587. ' +
-      'W33 Perplexity shows 59 attempts / 0 successes while soft-disable is already true; ' +
-      '43.5% of fan-outs look single-backend. Heartbeats are correctly excluded (no `ok`), ' +
-      'but half-open probes still write providerOutcome rows and fold into live success-share. ' +
-      '#2873 lengthens cooldown and #2874 fixes the status count — neither splits the weekly ' +
-      'fold. Tag probe attempts and report them beside, not inside, live fan-out.',
-    acceptanceCriteria: [
-      'appendSearchProviderOutcome records when the attempt was a half-open probe ' +
-        '(probeEligible / phase halfOpen). Parked-in-cooldown backends still emit no live ' +
-        'providerOutcome (existing #2778 / #2833 contract). Heartbeats still have no `ok`.',
-      'Weekly searchBackends.perBackend live attempts/successes exclude probe-tagged rows. ' +
-        'A probe-only backend (59 half-open failures, 0 live) shows live attempts 0 / ' +
-        'unmeasurable rate (null, not 0%), with probe attempts counted in a separate ' +
-        'probeAttempts (or equivalent) field. Brave/Tavily live shares are unchanged. ' +
-        'Fan-out multi/single/zero-healthy uses live eligibility, not probe membership.',
-      'Unit/fixture tests cover: (a) live failure increments live attempts; (b) probe-tagged ' +
-        'failure increments probeAttempts only; (c) probe-only backend successShare is null; ' +
-        '(d) heartbeat rows still do not increment either denominator.',
-    ],
-    fileHints: [
-      'src/search-backend-metrics.js',
-      'src/search-backend-soft-disable.js',
-      'src/retrieval-health.js',
       'src/acquisition/weekly-scoreboard.js',
     ],
     testHints: [
-      'unit: live failure counts as live attempt',
-      'unit: probe-tagged failure is excluded from live success-share',
-      'unit: probe-only backend rate is null not 0%',
-      'unit: heartbeat still ignored',
+      'unit: aborted_after_winner does not increment attempts',
+      'unit: feed_no_match newswire_feed still counts',
+      'unit: verification_reject newswire still counts',
+      'unit: no new abort failureCode',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): lengthen half-open probe cooldown after consecutive chronic-zero failures',
+    goal:
+      'Stop probe-spamming a chronic-zero search backend under umbrella #1587. Soft-disable ' +
+      '(#2778) parks Perplexity, but a failed half-open probe re-arms the same 15-minute ' +
+      'DEFAULT_SOFT_DISABLE_COOLDOWN_MS (search-backend-soft-disable.js). W33 Perplexity is ' +
+      '0/59 while softDisabled=true. Wave 12 / #2884 splits probes out of the weekly live ' +
+      'fold but does not change the probe cadence. Lengthen cooldown on consecutive ' +
+      'half-open failures (cap 4–6h). Success resets. Never blank the fan-out. Idea-scout ' +
+      '#2873 is the same class — this is the write-path leaf.',
+    acceptanceCriteria: [
+      'N consecutive half-open probe failures produce a strictly longer cooldown up to a ' +
+        'documented cap (4–6 hours). The first trip still uses the existing 15-minute base.',
+      'A successful probe or live attempt resets to the base cooldown and closed phase. ' +
+        'The existing never-disable-all-backends safety is unchanged.',
+      'Unit/fixture tests cover: (a) first half-open failure re-arms at base cooldown; ' +
+        '(b) Nth consecutive failure has cooldown > previous and ≤ cap; (c) success resets ' +
+        'to base / closed; (d) the last remaining healthy backend is never parked.',
+    ],
+    fileHints: [
+      'src/search-backend-soft-disable.js',
+      'src/search-backend-metrics.js',
+      'src/retrieval-health.js',
+    ],
+    testHints: [
+      'unit: first half-open failure uses base cooldown',
+      'unit: consecutive failures lengthen cooldown up to cap',
+      'unit: success resets to base / closed',
+      'unit: last remaining backend is never parked',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
