@@ -1123,7 +1123,7 @@ async function checkSchedulesPausedByFailure(
   if (!snap) {
     return okCheck(
       'ops.schedules-paused-by-failure',
-      'Failure-paused schedules',
+      'Paused schedules',
       'ops',
       'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or health unreachable)',
       false,
@@ -1133,7 +1133,7 @@ async function checkSchedulesPausedByFailure(
   if (snap.schedules.length === 0) {
     return okCheck(
       'ops.schedules-paused-by-failure',
-      'Failure-paused schedules',
+      'Paused schedules',
       'ops',
       'no consecutive-failure paused schedules',
       false,
@@ -1149,7 +1149,7 @@ async function checkSchedulesPausedByFailure(
   const extra = count - listed.length;
   return {
     id: 'ops.schedules-paused-by-failure',
-    label: 'Failure-paused schedules',
+    label: 'Paused schedules',
     category: 'ops',
     status: 'warn',
     required: false,

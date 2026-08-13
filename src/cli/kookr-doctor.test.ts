@@ -1119,6 +1119,22 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('no consecutive-failure paused schedules'),
     });
 
+    // Health omits the array when none are paused — same silent OK as empty.
+    const absent = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () =>
+        parseSchedulesPausedByFailureHealthBody({ schedules: { schedulerHealthy: true } }),
+    });
+    expect(absent.status).toBe('ok');
+    expect(absent.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('no consecutive-failure paused schedules'),
+    });
+
     const offline = await buildDoctorJsonReport({
       env: { ...opsOkEnv },
       commandRunner: run,
@@ -1160,6 +1176,8 @@ describe('kookr doctor --json', () => {
         schedulesPausedByFailure: [
           { id: 'sched-a', name: 'Lucy orchestrator', consecutiveFailures: 3 },
           { id: 'sched-b', name: 'Idea scout', consecutiveFailures: 8.9 },
+          { id: 'sched-c', name: '', consecutiveFailures: Number.NaN },
+          { id: 'sched-d' },
           { name: 'missing-id', consecutiveFailures: 1 },
           { id: '', name: 'empty-id' },
           12,
@@ -1169,6 +1187,8 @@ describe('kookr doctor --json', () => {
       schedules: [
         { id: 'sched-a', name: 'Lucy orchestrator', consecutiveFailures: 3 },
         { id: 'sched-b', name: 'Idea scout', consecutiveFailures: 8 },
+        { id: 'sched-c', name: 'sched-c', consecutiveFailures: 0 },
+        { id: 'sched-d', name: 'sched-d', consecutiveFailures: 0 },
       ],
     });
     // Health omits the array when none are paused — treat as empty, not skip.
@@ -1179,6 +1199,10 @@ describe('kookr doctor --json', () => {
     expect(parseSchedulesPausedByFailureHealthBody(null)).toBeNull();
     expect(parseSchedulesPausedByFailureHealthBody({
       schedules: { schedulesPausedByFailure: 'not-an-array' },
+    })).toBeNull();
+    // Malformed schedules block → skip (do not invent a clean fleet).
+    expect(parseSchedulesPausedByFailureHealthBody({
+      schedules: 'not-an-object',
     })).toBeNull();
   });
 
