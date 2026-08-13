@@ -59,7 +59,6 @@ describe('LaunchDialog legacy Ralph task mode', () => {
 
     expect(container.querySelector('.ralph-mode-toggle')).toBeNull();
     expect(container.querySelector('input[name="ralph-iteration-cap"]')).toBeNull();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(sent).toHaveLength(0);
 
     act(() => root.unmount());

@@ -16,19 +16,19 @@ export function useGrokAuthStatus(): GrokAuthStatusResponse | null {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(GROK_AUTH_STATUS_PATH, { signal: controller.signal, cache: 'no-store' })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return response.json() as Promise<unknown>;
-      })
-      .then((body) => {
-        if (controller.signal.aborted) return;
-        const parsed = parseGrokAuthStatusResponse(body);
-        if (parsed) setStatus(parsed);
-      })
-      .catch(() => {
-        // Network, abort, or non-JSON: leave status unknown.
-      });
+    void (async () => {
+      try {
+        const response = await fetch(GROK_AUTH_STATUS_PATH, {
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        if (!response?.ok || controller.signal.aborted) return;
+        const parsed = parseGrokAuthStatusResponse(await response.json());
+        if (parsed && !controller.signal.aborted) setStatus(parsed);
+      } catch {
+        // Network, abort, stubbed fetch, or non-JSON: leave status unknown.
+      }
+    })();
     return () => controller.abort();
   }, []);
 
