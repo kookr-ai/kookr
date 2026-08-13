@@ -158,11 +158,23 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 
 ## Technical writing (PRs, changelogs, summaries, status updates, and code documentation)
 
-Applies to **everything you write**, including documentation embedded in code — docstrings, inline comments, module/API/reference docs — not just human-facing summaries.
+Six weeks from now someone competent — often you, or an agent with no memory
+of this session — will open this PR or docstring because something broke.
+They will see every identifier and still not know what changed for a human.
+That reconstruction is a tax on the *cold reader* — the competent person who
+last touched this weeks ago. Pay it once here, while the context is free.
+A passage you cannot make clear is usually one you have not finished
+understanding.
 
-Audience: a competent teammate who last touched this area **weeks ago** — not the agent that just wrote the code.
+Applies to **everything you write**, including documentation embedded in code
+(docstrings, comments, module/API/reference docs) — not just human-facing
+summaries. There is no "internal, so cryptic" tier.
 
-**Concise ≠ cryptic.** Cut filler and repetition; do **not** cut cold-reader explanations. Density is not professionalism.
+Audience: a competent teammate who last touched this area **weeks ago** — not
+the agent that just wrote the code.
+
+**Concise ≠ cryptic.** Cut filler and repetition; do **not** cut cold-reader
+explanations. Density is not professionalism.
 
 **Full guide (examples, tables, PR workflow):** plugin skill `clear-technical-writing`. **Reviewer:** `kookr-toolkit:clear-writing-reviewer`.
 
