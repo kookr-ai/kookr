@@ -102,6 +102,14 @@ import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
  */
 export const SCHEDULER_TICK_STALE_INTERVALS = 2;
 
+/**
+ * How many paused-schedule names GET `/api/ready` `schedulesPaused.detail`
+ * lists before collapsing the rest to "+N more" (issue #2427). Matches the
+ * doctor / status-bar sample so a cheap probe names the same few schedules
+ * an operator would see on those surfaces.
+ */
+export const PAUSED_SCHEDULES_READY_SAMPLE_LIMIT = 3;
+
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
@@ -729,16 +737,17 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/health', async (c) => c.json(await getCachedHealthBody()));
 
   // Machine-readable readiness verdict for orchestrators / load balancers
-  // (issue #660, extended by #1721 / #1707 / #1870). Unlike /api/health — which
-  // always returns 200 so the dashboard never sees a hard error — /api/ready
+  // (issue #660, extended by #1721 / #1707 / #1870 / #2427). Unlike /api/health —
+  // which always returns 200 so the dashboard never sees a hard error — /api/ready
   // turns 503 when a *critical* subsystem is down or unavailable for new work:
   // startup recovery still in progress, operator drain mode, the terminal/dtach
   // backend in `error` (manifest-corrupt / dtach-unavailable), the persistence
   // directory unwritable, or the schedule-runner tick loop stale beyond N
   // tick-intervals (`schedulerTick`, issue #1707).
-  // Non-critical degradation (terminal `degraded`, hook-ingestion lag) stays
-  // 200/ready so transient blips do not cordon a node out of rotation —
-  // `hookIngestion` (issue #1870) is reported for visibility only.
+  // Non-critical degradation (terminal `degraded`, hook-ingestion lag,
+  // fail-closed paused schedules) stays 200/ready so those signals do not
+  // cordon a node out of rotation — `hookIngestion` (issue #1870) and
+  // `schedulesPaused` (issue #2427) are reported for visibility only.
   // Read-only and unauthenticated by design: probes must reach it without an
   // admin token.
   //
@@ -780,10 +789,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     checks.persistence = checkPersistenceWritable(deps.kookrDir);
 
     // Issue #1707: schedule-runner liveness via lastTickCompletedAt.
-    // Omitted when scheduling is not wired (tests / hermetic boots) so those
-    // contexts stay fail-open.
+    // Issue #2427: non-critical fail-closed pause visibility on the same
+    // snapshot. Omitted when scheduling is not wired (tests / hermetic
+    // boots) so those contexts stay fail-open.
     if (deps.scheduleService) {
-      checks.schedulerTick = checkSchedulerTickReadiness(deps.scheduleService.getStatusSnapshot());
+      const scheduleStatus = deps.scheduleService.getStatusSnapshot();
+      checks.schedulerTick = checkSchedulerTickReadiness(scheduleStatus);
+      checks.schedulesPaused = checkSchedulesPausedReadiness(scheduleStatus);
     }
 
     // Issue #1870: non-critical hook-ingestion lag visibility. Surfaces stalled
@@ -1638,6 +1650,42 @@ export function checkHookIngestionReadiness(
     status: 'stalled',
     reason: 'ingestion-lag',
     detail: `last lag ${worstLagMs}ms exceeds threshold ${thresholdMs}ms across ${stalled.length} session(s)`,
+  };
+}
+
+/**
+ * Non-critical fail-closed pause probe for GET `/api/ready` (issue #2427).
+ *
+ * A consecutive-failure pause is operator-owned: the runner already stopped
+ * firing those schedules so the node is still safe to accept new work. This
+ * check reports the pause on the cheap readiness probe so remote smoke/Lucy
+ * can see a half-dead belt without opening the 14KB health blob. Always
+ * `critical: false` — overall ready stays 200. Never resumes a pause.
+ * Pure for unit tests.
+ */
+export function checkSchedulesPausedReadiness(
+  status: Pick<ScheduleStatusSnapshot, 'schedulesPausedByFailure'>,
+): ReadinessCheck {
+  const paused = status.schedulesPausedByFailure ?? [];
+  if (paused.length === 0) {
+    return {
+      critical: false,
+      ready: true,
+      status: 'ok',
+    };
+  }
+
+  const names = paused.map((schedule) => schedule.name || schedule.id);
+  const shown = names.slice(0, PAUSED_SCHEDULES_READY_SAMPLE_LIMIT);
+  const extra = names.length - shown.length;
+  const sample = extra > 0 ? `${shown.join(', ')} (+${extra} more)` : shown.join(', ');
+  const count = paused.length;
+  return {
+    critical: false,
+    ready: false,
+    status: 'paused',
+    reason: 'consecutive-failures',
+    detail: `${count} schedule${count === 1 ? '' : 's'} paused: ${sample}`,
   };
 }
 

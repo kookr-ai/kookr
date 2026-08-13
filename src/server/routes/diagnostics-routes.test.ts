@@ -17,8 +17,10 @@ import {
   registerDiagnosticsRoutes,
   HEALTH_BODY_CACHE_MS,
   SCHEDULER_TICK_STALE_INTERVALS,
+  PAUSED_SCHEDULES_READY_SAMPLE_LIMIT,
   checkSchedulerTickReadiness,
   checkHookIngestionReadiness,
+  checkSchedulesPausedReadiness,
   buildHookIngestionHealthSummary,
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
@@ -3180,6 +3182,114 @@ describe('diagnostics routes', () => {
         status: 'stalled',
         reason: 'ingestion-lag',
         detail: 'last lag 9000ms exceeds threshold 2000ms across 1 session(s)',
+      });
+    });
+
+    // Issue #2427 — non-critical fail-closed pause visibility on /api/ready
+    function pausedSchedule(overrides: {
+      id?: string;
+      name?: string;
+      consecutiveFailures?: number;
+    } = {}) {
+      return {
+        id: overrides.id ?? 'sched-1',
+        name: overrides.name ?? 'orchestrator',
+        consecutiveFailures: overrides.consecutiveFailures ?? 3,
+      };
+    }
+
+    test('no failure-paused schedules ⇒ 200 ready with non-critical schedulesPaused ok (issue #2427)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        scheduleService: scheduleService({
+          lastTickCompletedAt: new Date().toISOString(),
+        }) as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.schedulesPaused).toEqual({
+        critical: false,
+        ready: true,
+        status: 'ok',
+      });
+    });
+
+    test('N≥1 failure-paused schedules ⇒ check ready:false but overall 200 (non-critical, issue #2427)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        scheduleService: scheduleService({
+          lastTickCompletedAt: new Date().toISOString(),
+          schedulesPausedByFailure: [
+            pausedSchedule({ name: 'orchestrator' }),
+            pausedSchedule({ id: 'sched-2', name: 'smoke tick' }),
+          ],
+        }) as never,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.schedulesPaused).toEqual({
+        critical: false,
+        ready: false,
+        status: 'paused',
+        reason: 'consecutive-failures',
+        detail: '2 schedules paused: orchestrator, smoke tick',
+      });
+      // Critical checks still pass — only schedulesPaused is not-ready.
+      expect(body.checks.schedulerTick.ready).toBe(true);
+      expect(body.checks.terminalBackend.ready).toBe(true);
+      expect(body.checks.persistence.ready).toBe(true);
+    });
+
+    test('no scheduleService wired ⇒ no schedulesPaused check (fail-open, issue #2427)', async () => {
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.checks.schedulesPaused).toBeUndefined();
+    });
+
+    test('checkSchedulesPausedReadiness pure helper: empty, one, sampled names', () => {
+      expect(checkSchedulesPausedReadiness({})).toEqual({
+        critical: false,
+        ready: true,
+        status: 'ok',
+      });
+      expect(checkSchedulesPausedReadiness({ schedulesPausedByFailure: [] })).toEqual({
+        critical: false,
+        ready: true,
+        status: 'ok',
+      });
+
+      expect(
+        checkSchedulesPausedReadiness({
+          schedulesPausedByFailure: [pausedSchedule({ name: 'orchestrator' })],
+        }),
+      ).toEqual({
+        critical: false,
+        ready: false,
+        status: 'paused',
+        reason: 'consecutive-failures',
+        detail: '1 schedule paused: orchestrator',
+      });
+
+      const many = Array.from({ length: PAUSED_SCHEDULES_READY_SAMPLE_LIMIT + 2 }, (_, i) =>
+        pausedSchedule({ id: `s${i}`, name: `sched-${i}` }),
+      );
+      expect(checkSchedulesPausedReadiness({ schedulesPausedByFailure: many })).toEqual({
+        critical: false,
+        ready: false,
+        status: 'paused',
+        reason: 'consecutive-failures',
+        detail: '5 schedules paused: sched-0, sched-1, sched-2 (+2 more)',
       });
     });
   });
