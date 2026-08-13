@@ -144,6 +144,23 @@ const ClientMessageSchemaImpl = z.union([
     criteria: z.string().optional(),
     agentType: agentSelection.optional(),
     dependencies: z.array(launchDependency).optional(),
+    disableDedup: z.boolean().optional(),
+    metadataIntent: z.literal('keep_as_duplicate').optional(),
+  }).superRefine((val, ctx) => {
+    if (val.disableDedup === true && val.metadataIntent !== 'keep_as_duplicate') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'disableDedup requires metadataIntent "keep_as_duplicate"',
+        path: ['metadataIntent'],
+      });
+    }
+    if (val.metadataIntent === 'keep_as_duplicate' && val.disableDedup !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'metadataIntent "keep_as_duplicate" requires disableDedup true',
+        path: ['disableDedup'],
+      });
+    }
   }),
   z.object({
     type: z.literal('completeTask'),

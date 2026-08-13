@@ -16,7 +16,7 @@ import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
 import type { CoordinatorSnapshotState } from './coordinator.js';
-import type { TaskCompletionFeedback, TaskPriorityUpdate } from './task.js';
+import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
@@ -528,7 +528,18 @@ export type ClientMessage =
   | { type: 'skipAll'; agentIds: string[] }
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
-  | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
+  | {
+      type: 'launch';
+      prompt: string;
+      cwd: string;
+      criteria?: string;
+      agentType?: AgentSelection;
+      dependencies?: LaunchDependency[];
+      /** When true, create a new task even if an active duplicate exists. */
+      disableDedup?: boolean;
+      /** Required with disableDedup: marks the launch as an intentional duplicate. */
+      metadataIntent?: TaskMetadataIntent;
+    }
   | {
       type: 'completeTask';
       taskId: string;

@@ -133,6 +133,27 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts a launch message that keeps an intentional duplicate', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test('rejects disableDedup without keep_as_duplicate intent', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      disableDedup: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
   test('accepts a launch message with the Grok Build agent selection', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launch',

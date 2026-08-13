@@ -183,6 +183,8 @@ export class LifecycleHandler {
             criteria: msg.criteria,
             agentType: msg.agentType,
             dependencies: msg.dependencies,
+            disableDedup: msg.disableDedup,
+            metadataIntent: msg.metadataIntent,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

@@ -1,11 +1,13 @@
-import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
 import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 import { getCompactTasks } from '../api/index.js';
+import { findActiveLaunchDuplicate } from '../../shared/launch-duplicate.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -84,9 +86,17 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     inputRef.current?.focus();
   }, []);
 
-  function handleSubmit() {
+  const activeDuplicate = useMemo(
+    () => findActiveLaunchDuplicate(agents, { prompt, cwd, agentType }),
+    [agents, prompt, cwd, agentType],
+  );
+
+  function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd) return;
+    if (!keepAsDuplicate && findActiveLaunchDuplicate(agents, { prompt: trimmed, cwd, agentType })) {
+      return;
+    }
     recentPaths.add(cwd);
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
@@ -94,6 +104,9 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       prompt: trimmed,
       cwd,
       agentType,
+      ...(keepAsDuplicate
+        ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
+        : {}),
     });
     if (sent) {
       saveLastAgentType(agentType);
@@ -105,6 +118,19 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         'error',
       );
     }
+    onClose();
+  }
+
+  function handleSubmit() {
+    submitLaunch(false);
+  }
+
+  function openExistingDuplicate() {
+    if (!activeDuplicate?.agentId) return;
+    useKookrStore.getState().selectAgent(
+      activeDuplicate.agentId,
+      activeDuplicate.taskId ?? activeDuplicate.id ?? null,
+    );
     onClose();
   }
 
@@ -128,27 +154,36 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   return (
     <div className="quick-launch-bar" onBlur={handleBlur}>
-      <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
-      <AgentTypeSelector
-        value={agentType}
-        onChange={setAgentType}
-        options={agentOptions}
-        label="Agent"
-        compact
-      />
-      <input
-        ref={inputRef}
-        type="text"
-        className="quick-launch-input"
-        placeholder="Task prompt... (Enter to launch, Esc to cancel)"
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        onKeyDown={handleKeyDown}
-      />
-      {sttUrl && (
-        <Suspense fallback={null}>
-          <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
-        </Suspense>
+      <div className="quick-launch-row">
+        <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
+        <AgentTypeSelector
+          value={agentType}
+          onChange={setAgentType}
+          options={agentOptions}
+          label="Agent"
+          compact
+        />
+        <input
+          ref={inputRef}
+          type="text"
+          className="quick-launch-input"
+          placeholder="Task prompt... (Enter to launch, Esc to cancel)"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={handleKeyDown}
+        />
+        {sttUrl && (
+          <Suspense fallback={null}>
+            <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
+          </Suspense>
+        )}
+      </div>
+      {activeDuplicate && (
+        <LaunchDuplicateBanner
+          taskName={activeDuplicate.taskName ?? undefined}
+          onOpenExisting={openExistingDuplicate}
+          onLaunchAnyway={() => submitLaunch(true)}
+        />
       )}
     </div>
   );

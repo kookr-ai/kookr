@@ -426,7 +426,19 @@ The system SHALL show operators the Grok credential-cache verdict in the Launch 
 - The status payload never includes access tokens, refresh tokens, API keys, or other credential values
 - Existing CLI and `POST /api/tasks` launch defaults stay unchanged
 
-**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
+**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/GrokAuthPreflightBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
+
+### R4.1c: Warn on Active Duplicate Prompts in the Launch Dialog [F17.4] — SHALL — `done`
+
+The system SHALL warn in the Launch dialog and Quick Launch bar before submit when an active task already uses the same prompt, working directory, and agent type, using the same equality `kookr spawn` uses, without changing CLI or REST defaults.
+
+**Acceptance criteria:**
+- Given two in-memory active tasks and a matching prompt + cwd + agent, when the Launch dialog or Quick Launch bar is open, then a warning banner is visible with Open existing and Launch anyway
+- Given the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadata.intent` `keep_as_duplicate`
+- Given a non-matching prompt, when the operator clicks Launch, then the payload is sent without those duplicate-preserving fields
+- Existing CLI (`kookr spawn --dedupe`) and `POST /api/tasks` defaults stay unchanged
+
+**Evidence:** `src/shared/launch-duplicate.ts`, `src/frontend/components/LaunchDuplicateBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchTaskDialog.duplicate.test.ts`, `src/frontend/components/QuickLaunch.duplicate.test.ts`.
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 

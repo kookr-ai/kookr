@@ -153,7 +153,9 @@ Task edges are stored as `task:<task-id>`. Milestone edges are stored as `milest
 - `--dedupe=block` always blocks a duplicate active prompt with exit code `5`.
 - `--dedupe=skip` bypasses the interrupt and marks the new task as an intentional duplicate so the coordinator does not group it as accidental duplication.
 
-The dashboard duplicate chip is the follow-up surface for active duplicates that already exist. The CLI interrupt prevents many duplicates before they start.
+The Launch dialog and Quick Launch bar show the same warning before submit. You can open the existing task or launch anyway; launch-anyway marks the new task as an intentional duplicate so the coordinator does not group it as accidental. CLI defaults are unchanged.
+
+The dashboard duplicate chip is the follow-up surface for active duplicates that already exist. The CLI interrupt and the launch-form warning prevent many duplicates before they start.
 
 ## Multi-Project Tracking
 
