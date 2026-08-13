@@ -96,7 +96,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F4.1 | **Launch new agent** | Start a new agent from the GUI with a task description (natural-language prompt) and working directory. Launched in a managed terminal session (interactive mode) for full monitoring and developer access. See [ADR-007](adr/007-managed-terminal-sessions.md). |
+| F4.1 | **Launch new agent** | Start a new agent from the GUI with a task description (natural-language prompt) and working directory. Launched in a managed terminal session (interactive mode) for full monitoring and developer access. The command palette (Ctrl/Cmd+K) exposes **Launch task** (manual tab) for the same dialog. See [ADR-007](adr/007-managed-terminal-sessions.md). |
 | F4.2 | **Stop agent** | Terminate a running agent from the GUI. Stopping kills the dtach session, stops the hook file watcher, and marks the agent as stopped in the monitor to prevent resurrection from late-arriving hook events. |
 | F4.3 | **Relaunch agent** | Start another attempt from the same or modified prompt and working directory. User-initiated relaunches create successor tasks for history; crash-recovery and looped-playbook recovery can attach additional sessions to the existing task so attempt history is preserved. |
 | F4.4 | **Task lifecycle management** | Tasks are the unit of work; sessions are attempts attached to a task. A task usually has one live managed session, but may retain multiple historical or recovery sessions. Lifecycle: Open → InProgress → Completed/Cancelled/Terminated. Completing or cancelling a task terminates live sessions. Completing a task opens a cleanup confirmation that names each task-owned worktree and reports whether it can be removed, from the same inspection the cleanup runs; the worktree/branch checkbox defaults from Settings and can be overridden for that task when a worktree is removable, and is disabled with a reason when none is. Tasks and session metadata are persisted locally in JSON. |
@@ -149,7 +149,7 @@ Playbooks are reusable task templates stored as Markdown files in project, user,
 | ID | Feature | Description |
 |----|---------|-------------|
 | F6.1 | **Playbook discovery** | Automatically discover playbooks from `.kookr/playbooks/*.md` in any project CWD, `~/.kookr/playbooks/*.md` for user playbooks, and bundled plugin playbooks. Project playbooks take precedence over user playbooks, which take precedence over plugin playbooks. |
-| F6.2 | **Playbook browser** | Browse available playbooks in a tabbed Launch Dialog (Manual \| Playbooks). Shows name, description, and parameter count. |
+| F6.2 | **Playbook browser** | Browse available playbooks in a tabbed Launch Dialog (Manual \| Playbooks). Shows name, description, and parameter count. The command palette (Ctrl/Cmd+K) exposes **Browse playbooks**, which opens the same dialog on the Playbooks tab. |
 | F6.3 | **Parameterized launch** | Fill in playbook parameters before triggering. Parameters use `{{paramName}}` interpolation in the playbook body. Required parameters are validated. |
 | F6.4 | **Checklist as criteria** | Playbook checklist items become the task's completion criteria. |
 | F6.5 | **Playbook badge** | Tasks launched from playbooks show a "Playbook" badge in the detail header. |

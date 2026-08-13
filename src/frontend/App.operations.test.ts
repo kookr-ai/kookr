@@ -1027,6 +1027,8 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector('[data-action-id="share-viewer"]')).toBeNull();
     expect(container.querySelector('[data-action-id="settings"]')).toBeNull();
     expect(container.querySelector('[data-action-id="schedules"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="launch"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="playbooks"]')).toBeNull();
 
     const input = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
     await act(async () => setInputValue(input, 'api error'));
@@ -1047,6 +1049,66 @@ describe('App operations modal shortcuts', () => {
       projectRow.click();
     });
     expect(useKookrStore.getState().selectedProject).toBe('github.com/kookr-ai/kookr');
+  });
+
+  test('command palette exposes Launch and Playbooks actions for owners and opens the matching tab', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+
+    const launch = await waitForElement<HTMLButtonElement>(container, '[data-action-id="launch"]');
+    const playbooks = await waitForElement<HTMLButtonElement>(container, '[data-action-id="playbooks"]');
+    expect(launch.textContent).toContain('Launch task');
+    expect(playbooks.textContent).toContain('Browse playbooks');
+
+    const paletteInput = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(paletteInput, 'spawn'));
+    const spawnHits = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'))
+      .map((row) => row.dataset.actionId);
+    expect(spawnHits).toEqual(['launch', 'playbooks']);
+
+    const launchAfterFilter = await waitForElement<HTMLButtonElement>(container, '[data-action-id="launch"]');
+    await act(async () => {
+      launchAfterFilter.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+
+    const close = await waitForElement<HTMLButtonElement>(container, '.dialog-close');
+    await act(async () => {
+      close.click();
+    });
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 5_000) {
+      await flush();
+      if (container.querySelector('#launch-task-dialog-title') === null) break;
+    }
+    expect(container.querySelector('#launch-task-dialog-title')).toBeNull();
+
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const playbooksAgain = await waitForElement<HTMLButtonElement>(container, '[data-action-id="playbooks"]');
+    await act(async () => {
+      playbooksAgain.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const launchAgain = await waitForElement<HTMLButtonElement>(container, '[data-action-id="launch"]');
+    await act(async () => {
+      launchAgain.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

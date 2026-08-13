@@ -248,6 +248,23 @@ describe('LaunchTaskDialog projectCwd prop', () => {
   // No-project ("+ Launch") behavior is unchanged: with no typed cwd the catalog
   // falls back to serverCwd. (getPlaybookSourceCwd never special-cased the
   // no-project case, so this guards against regressing the fallback.)
+  test('opening on playbooks without a project lists the server cwd catalog', async () => {
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      initialTab: 'playbooks',
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+
+    expect(sent).toContainEqual({ type: 'listPlaybooks', cwd: '/server/cwd' });
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+
+    act(() => root.unmount());
+  });
+
   test('without a project, switching to playbooks lists the server cwd catalog', async () => {
     const sent: ClientMessage[] = [];
     const { root } = renderDialog(container, {
