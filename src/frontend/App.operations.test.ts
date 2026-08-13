@@ -1066,8 +1066,15 @@ describe('App operations modal shortcuts', () => {
     expect(launch.textContent).toContain('Launch task');
     expect(playbooks.textContent).toContain('Browse playbooks');
 
+    const paletteInput = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(paletteInput, 'spawn'));
+    const spawnHits = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'))
+      .map((row) => row.dataset.actionId);
+    expect(spawnHits).toEqual(['launch', 'playbooks']);
+
+    const launchAfterFilter = await waitForElement<HTMLButtonElement>(container, '[data-action-id="launch"]');
     await act(async () => {
-      launch.click();
+      launchAfterFilter.click();
     });
     await waitForElement(container, '#launch-task-dialog-title');
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
@@ -1092,6 +1099,16 @@ describe('App operations modal shortcuts', () => {
     });
     await waitForElement(container, '#launch-task-dialog-title');
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const launchAgain = await waitForElement<HTMLButtonElement>(container, '[data-action-id="launch"]');
+    await act(async () => {
+      launchAgain.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

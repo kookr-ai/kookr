@@ -74,7 +74,7 @@ interface Props {
   projectContext?: ProjectSummary;
   /** When launched from a selected project, pre-fill cwd with that project's local checkout. */
   projectCwd?: string;
-  /** Controls which launch surface is shown first when both manual and playbook context are valid. */
+  /** Which tab to show first. Palette and project-drawer entry points pass this; relaunch still forces playbooks. */
   initialTab?: Tab;
   sttShortcutBinding?: ShortcutBinding;
 }
