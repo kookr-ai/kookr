@@ -100,6 +100,7 @@ Override agent binaries when they are not on `PATH`:
 ```bash
 KOOKR_AGENT_BIN=claude
 KOOKR_CODEX_BIN=codex
+KOOKR_GROK_BIN=grok
 ```
 
 Kookr injects its toolkit plugin into spawned Claude Code sessions by default. Override or disable that path with:

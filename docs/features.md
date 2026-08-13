@@ -49,7 +49,7 @@ A bottleneck is not necessarily an error — it is a state where human attention
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F1.1 | **Auto-discover running agents** | Deferred for externally-started agents. Current V1 tracks Kookr-launched Claude Code and Codex CLI sessions; discovery/takeover of existing Claude, Codex, or Gemini processes remains future work. |
+| F1.1 | **Auto-discover running agents** | Deferred for externally-started agents. Current V1 tracks Kookr-launched Claude Code, Codex CLI, and Grok Build sessions; discovery/takeover of existing Claude, Codex, Grok, or Gemini processes remains future work. |
 | F1.2 | **Show agent status** | For each agent: running, waiting for input, errored, completed. Updated in real time. |
 | F1.3 | **Show what each agent is doing** | Display the agent's current activity: what file it's reading, what tool it's using, what it last said. Tool calls and activity are available via hooks (real-time) and transcript JSONL (history). |
 | F1.4 | **Show agent metadata** | Agent type, working directory, how long it's been running, session cost (if available). |
@@ -330,12 +330,12 @@ The task coordinator adds relationship-aware supervision on top of the main find
 
 ### V1: Managed Terminal Sessions
 
-V1 supports agents **launched by Kookr** in managed terminal sessions ([ADR-007](adr/007-managed-terminal-sessions.md), [ADR-014](adr/014-local-dtach-backend.md)). Two agent types are supported: **Claude Code** (primary) and **Codex CLI** (via a forked binary — see [PoC 003](poc/003-codex-compatibility-gaps.md)). Agents run in **interactive mode** (their native execution mode) inside a dtach-backed session owned by `LocalDtachBackend`:
-- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<session-id>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag; they are additive to user hooks. `backend.captureBytes` provides ring-buffer snapshots for the GUI display only. Transcript JSONL parsing is used for token/cost and freshness tracking, while transcript-derived anomaly events remain a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
+V1 supports agents **launched by Kookr** in managed terminal sessions ([ADR-007](adr/007-managed-terminal-sessions.md), [ADR-014](adr/014-local-dtach-backend.md)). Three agent types are supported: **Claude Code** (primary), **Codex CLI** (via a forked binary — see [PoC 003](poc/003-codex-compatibility-gaps.md)), and **Grok Build** (xAI's official `grok` CLI — see [PoC 009](poc/009-grok-build-basic-supervision.md)). Agents run in **interactive mode** (their native execution mode) inside a dtach-backed session owned by `LocalDtachBackend`:
+- **Monitoring:** Hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `Notification`, `UserPromptSubmit`, `SessionEnd`, …) are written as JSONL into `~/.kookr/hooks/<session-id>.jsonl` and tailed by the supervisor for anomaly detection. Hooks are configured per agent via the `--settings` flag (Claude Code, Codex CLI) or a per-session `GROK_HOME` (Grok Build); they are additive to user hooks. `backend.captureBytes` provides ring-buffer snapshots for the GUI display only. Transcript JSONL parsing is used for token/cost and freshness tracking, while transcript-derived anomaly events remain a V2 enhancement. No ANSI terminal output parsing is needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
 - **Input delivery:** responses sent as byte-level writes (`backend.write` / `backend.writeSequence`) to the agent's dtach session. Same effect as the developer typing directly.
 - **Crash recovery:** managed dtach sessions survive Kookr crashes. The developer can reattach or restart Kookr without losing agent sessions.
 - **Direct access:** the developer can attach to any agent's dtach session at any time, even outside Kookr (F4.6).
-- **Agent dispatch:** `routing-agent-adapter.ts` dispatches per-session to the correct concrete adapter (`claude-code-adapter.ts` or `codex-cli-adapter.ts`) based on `task.agentType`.
+- **Agent dispatch:** `routing-agent-adapter.ts` dispatches per-session to the correct concrete adapter (`claude-code-adapter.ts`, `codex-cli-adapter.ts`, or `grok-build-adapter.ts`) based on `task.agentType`.
 
 This approach supersedes the headless mode design from [ADR-004](adr/004-agent-communication-protocol.md). Agent discovery via `~/.claude/sessions/` remains deferred — see [ADR-005](adr/005-discovered-agent-degradation.md) for the tiered degradation strategy.
 
@@ -388,6 +388,7 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F15 Self-diagnostics
 - F-Settings Settings UI (was previously marked deferred)
 - Codex CLI adapter (was previously marked deferred) — with caveats tracked in [PoC 003](poc/003-codex-compatibility-gaps.md)
+- Grok Build adapter — official `grok` CLI; supervision caveats in [PoC 009](poc/009-grok-build-basic-supervision.md)
 - Optional session sharing and hosted relay flows (F16)
 - Meta Task Coordinator (F17)
 
@@ -421,3 +422,4 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 | How do we send input to agents? | **Byte-level writes** to the agent's dtach session via `backend.write` / `backend.writeSequence`. Supersedes the `--resume` approach from ADR-004 and the `tmux send-keys` path from earlier ADR-007. | ADR-007 / ADR-014 |
 | Is JSONL streaming required for monitoring? | **No.** Claude Code interactive mode provides **hooks** as the real-time anomaly event source. Transcript JSONL files are used for token/cost and freshness tracking, and remain available for richer future event ingestion. `backend.captureBytes` is used only for GUI display. | PoC / ADR-007 |
 | Does Codex CLI support similar patterns? | **Yes for Kookr-managed sessions.** The forked Codex CLI path is wired through `codex-cli-adapter.ts`, `routing-agent-adapter.ts`, and `codex-config.ts`, with remaining compatibility caveats tracked in [PoC 003](poc/003-codex-compatibility-gaps.md). External Codex session discovery remains deferred. | PoC / ADR-004 |
+| Does Grok Build support similar patterns? | **Yes for Kookr-managed sessions.** The official `grok` CLI is wired through `grok-build-adapter.ts` and `routing-agent-adapter.ts`. The adapter registers when the binary is present and appears in the picker / round-robin. External Grok session discovery remains deferred. | PoC 009 / issue #1339 |
