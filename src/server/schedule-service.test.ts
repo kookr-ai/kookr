@@ -1234,3 +1234,283 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 });
+
+describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', () => {
+  function overlapHarness(): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-overlap-2458-'));
+    const store = new ScheduleStore(dir);
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      getFailureAlertThreshold: () => 3,
+    });
+    return { service, store, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  async function overlapOnce(
+    service: ScheduleService,
+    store: ScheduleStore,
+    scheduleId: string,
+    scheduledFor: string,
+  ): Promise<void> {
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', scheduledFor);
+    await service.markExecutionOutcome(
+      scheduleId,
+      receipt.id,
+      'skipped_active',
+      'previous_run_active',
+      'Previous run still active',
+      { blockingTaskId: 'task-still-running' },
+    );
+  }
+
+  it('three consecutive "Previous run still active" outcomes leave enabled and do not increment', async () => {
+    const { service, store, cleanup } = overlapHarness();
+    try {
+      const schedule = store.create({
+        name: 'Lucy Orchestration Effectiveness',
+        cron: '*/30 * * * *',
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await overlapOnce(service, store, schedule.id, '2026-08-12T10:30:00.000Z');
+      await overlapOnce(service, store, schedule.id, '2026-08-12T11:00:00.000Z');
+      await overlapOnce(service, store, schedule.id, '2026-08-12T11:30:00.000Z');
+
+      const after = store.get(schedule.id)!;
+      expect(after.enabled).toBe(true);
+      expect(after.consecutiveFailures ?? 0).toBe(0);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.lastRunStatus).toBeUndefined();
+      expect(after.latestExecution).toMatchObject({
+        outcome: 'skipped_active',
+        reasonCode: 'previous_run_active',
+        message: 'Previous run still active',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a later cancel of the blocking task does not rewrite the skip as a failure', async () => {
+    const { service, store, cleanup } = overlapHarness();
+    try {
+      const schedule = store.create({
+        name: 'OverlapThenCancel',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      const accepted = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-08-12T10:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, accepted.id, 'task-still-running', false);
+      await overlapOnce(service, store, schedule.id, '2026-08-12T10:30:00.000Z');
+      expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-still-running');
+      expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
+
+      await service.recordTaskTerminalOutcome('task-still-running', 'cancelled');
+
+      const after = store.get(schedule.id)!;
+      expect(after.latestExecution?.outcome).toBe('skipped_active');
+      expect(after.latestExecution?.reasonCode).toBe('previous_run_active');
+      expect(after.latestExecution?.message).toBe('Previous run still active');
+      expect(after.lastRunStatus).not.toBe('cancelled');
+      expect(after.consecutiveFailures ?? 0).toBe(0);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      const ledger = after.executionLedger;
+      expect(ledger.find((row) => row.outcome === 'skipped_active')).toMatchObject({
+        reasonCode: 'previous_run_active',
+        taskId: 'task-still-running',
+      });
+      expect(ledger.find((row) => row.outcome === 'cancelled')).toMatchObject({
+        taskId: 'task-still-running',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('real consecutive dispatch_failed / launch_error still trip the #2353 pause', async () => {
+    const { service, store, cleanup } = overlapHarness();
+    try {
+      const schedule = store.create({
+        name: 'Requirements-Redundancy',
+        cron: '* * * * *',
+        playbook: { path: 'research.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      for (const at of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:05:00.000Z', '2026-08-12T10:10:00.000Z']) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionOutcome(schedule.id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
+      }
+
+      const paused = store.get(schedule.id)!;
+      expect(paused.enabled).toBe(false);
+      expect(paused.stopReason).toBe('consecutive_failures');
+      expect(paused.operatorHold).toBe(true);
+      expect(paused.consecutiveFailures).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+function stampLastEvaluatedAt(store: ScheduleStore, scheduleId: string, evaluatedAt: string): void {
+  const current = store.get(scheduleId)!;
+  store.replace({
+    ...current,
+    latestExecution: current.latestExecution
+      ? { ...current.latestExecution, evaluatedAt }
+      : current.latestExecution,
+  });
+}
+
+describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
+  function rearmHarness(): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-rearm-2459-'));
+    const store = new ScheduleStore(dir);
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      getFailureAlertThreshold: () => 3,
+    });
+    return { service, store, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  async function failLaunch(
+    service: ScheduleService,
+    store: ScheduleStore,
+    scheduleId: string,
+    scheduledFor: string,
+  ): Promise<void> {
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', scheduledFor);
+    await service.markExecutionOutcome(
+      scheduleId,
+      receipt.id,
+      'dispatch_failed',
+      'launch_error',
+      'Initial prompt submission was not confirmed after 3 confirmation attempt(s)',
+    );
+  }
+
+  it('re-arms a launch_error pause when the daemon is healthy', async () => {
+    const { service, store, cleanup } = rearmHarness();
+    try {
+      const schedule = store.create({
+        name: 'Lucy Deploy Convergence',
+        cron: '*/15 * * * *',
+        playbook: { path: 'lucy-deploy-convergence.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failLaunch(service, store, schedule.id, '2026-08-12T12:30:00.000Z');
+      await failLaunch(service, store, schedule.id, '2026-08-12T12:45:00.000Z');
+      await failLaunch(service, store, schedule.id, '2026-08-12T13:00:00.000Z');
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.operatorHold).toBe(true);
+      stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
+
+      const noArg = await service.rearmTransientFailureHolds();
+      expect(noArg.rearmed).toEqual([]);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+
+      const unhealthy = await service.rearmTransientFailureHolds(false, '2026-08-13T08:34:00.000Z');
+      expect(unhealthy.rearmed).toEqual([]);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+
+      const liveStreak = await service.rearmTransientFailureHolds(true, '2026-08-12T10:00:00.000Z');
+      expect(liveStreak.rearmed).toEqual([]);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+
+      const leftover = await service.rearmTransientFailureHolds(true, '2026-08-13T08:34:00.000Z');
+      expect(leftover.rearmed).toEqual([
+        {
+          id: schedule.id,
+          name: 'Lucy Deploy Convergence',
+          reasonCode: 'launch_error',
+        },
+      ]);
+      const after = store.get(schedule.id)!;
+      expect(after.enabled).toBe(true);
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.stopReason).toBeUndefined();
+      expect(after.consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not re-arm a genuine timeout / cancelled streak (#2353)', async () => {
+    const { service, store, cleanup } = rearmHarness();
+    try {
+      const schedule = store.create({
+        name: 'Requirements-Redundancy',
+        cron: '* * * * *',
+        playbook: { path: 'research.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      for (const [i, at] of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:05:00.000Z', '2026-08-12T10:10:00.000Z'].entries()) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionAccepted(schedule.id, receipt.id, `task-timeout-${i}`, false);
+        await service.recordTaskTerminalOutcome(`task-timeout-${i}`, 'cancelled');
+      }
+
+      const paused = store.get(schedule.id)!;
+      expect(paused.enabled).toBe(false);
+      expect(paused.stopReason).toBe('consecutive_failures');
+      expect(paused.consecutiveFailures).toBe(3);
+      expect(paused.latestExecution?.outcome).toBe('cancelled');
+
+      const result = await service.rearmTransientFailureHolds(true);
+      expect(result.rearmed).toEqual([]);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+      expect(store.get(schedule.id)!.operatorHold).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not re-arm when getDaemonHealthy is false and no override is passed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-rearm-unhealthy-'));
+    try {
+      const store = new ScheduleStore(dir);
+      const service = new ScheduleService({
+        store,
+        validator: new ScheduleValidator(),
+        getFailureAlertThreshold: () => 3,
+        getDaemonHealthy: () => false,
+        getReadyAt: () => '2026-08-13T08:34:00.000Z',
+      });
+      const schedule = store.create({
+        name: 'Unhealthy daemon',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      for (const at of ['2026-08-12T12:30:00.000Z', '2026-08-12T12:45:00.000Z', '2026-08-12T13:00:00.000Z']) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionOutcome(schedule.id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
+      }
+      stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
+      const result = await service.rearmTransientFailureHolds();
+      expect(result.rearmed).toEqual([]);
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

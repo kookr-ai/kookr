@@ -588,6 +588,151 @@ Do the test thing.
       expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
     }
     expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+    expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
+    expect(store.get(schedule.id)!.stopReason).toBeUndefined();
+  });
+
+  it('three overlap-skips do not fail-close the schedule (issue #2458)', async () => {
+    const schedule = store.create({
+      name: 'Lucy Orchestration Effectiveness',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+
+    for (let i = 0; i < 3; i++) {
+      replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+      await runner.tick();
+    }
+
+    const after = store.get(schedule.id)!;
+    expect(launched).toHaveLength(1);
+    expect(after.latestExecution?.outcome).toBe('skipped_active');
+    expect(after.latestExecution?.reasonCode).toBe('previous_run_active');
+    expect(after.latestExecution?.message).toBe('Previous run still active');
+    expect(after.consecutiveFailures ?? 0).toBe(0);
+    expect(after.enabled).toBe(true);
+    expect(after.stopReason).toBeUndefined();
+    expect(after.operatorHold).toBeUndefined();
+  });
+
+  it('re-arms a leftover launch_error pause on tick when the daemon is healthy (issue #2459)', async () => {
+    const healthyService = new ScheduleService({
+      store,
+      validator,
+      getFailureAlertThreshold: () => 3,
+      getDaemonHealthy: () => true,
+      getReadyAt: () => '2026-08-13T08:34:00.000Z',
+    });
+    const schedule = store.create({
+      name: 'Lucy Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    for (const at of ['2026-08-12T12:30:00.000Z', '2026-08-12T12:45:00.000Z', '2026-08-12T13:00:00.000Z']) {
+      const receipt = await healthyService.reserveExecution(store.get(schedule.id)!, 'cron', at);
+      await healthyService.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'dispatch_failed',
+        'launch_error',
+        'Initial prompt submission was not confirmed',
+      );
+    }
+    expect(store.get(schedule.id)!.enabled).toBe(false);
+    expect(store.get(schedule.id)!.operatorHold).toBe(true);
+    const paused = store.get(schedule.id)!;
+    store.replace({
+      ...paused,
+      latestExecution: paused.latestExecution
+        ? { ...paused.latestExecution, evaluatedAt: '2026-08-12T13:00:00.000Z' }
+        : paused.latestExecution,
+    });
+
+    const runner = createRunner({ service: healthyService });
+    await runner.tick();
+
+    const after = store.get(schedule.id)!;
+    expect(after.enabled).toBe(true);
+    expect(after.operatorHold).toBeUndefined();
+    expect(after.stopReason).toBeUndefined();
+    expect(after.consecutiveFailures).toBe(0);
+  });
+
+  it('does not re-arm a live launch_error pause that happened after ready (issue #2459 / #2353)', async () => {
+    const healthyService = new ScheduleService({
+      store,
+      validator,
+      getFailureAlertThreshold: () => 3,
+      getDaemonHealthy: () => true,
+      getReadyAt: () => '2026-08-12T08:00:00.000Z',
+    });
+    const schedule = store.create({
+      name: 'Live Launch Error',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    for (const at of ['2026-08-13T12:30:00.000Z', '2026-08-13T12:45:00.000Z', '2026-08-13T13:00:00.000Z']) {
+      const receipt = await healthyService.reserveExecution(store.get(schedule.id)!, 'cron', at);
+      await healthyService.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'dispatch_failed',
+        'launch_error',
+        'Initial prompt submission was not confirmed',
+      );
+    }
+    expect(store.get(schedule.id)!.enabled).toBe(false);
+
+    const runner = createRunner({ service: healthyService });
+    await runner.tick();
+
+    expect(store.get(schedule.id)!.enabled).toBe(false);
+    expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+  });
+
+  it('does not re-arm a cancelled-timeout pause on a healthy tick (issue #2459 / #2353)', async () => {
+    const healthyService = new ScheduleService({
+      store,
+      validator,
+      getFailureAlertThreshold: () => 3,
+      getDaemonHealthy: () => true,
+      getReadyAt: () => '2026-08-13T08:34:00.000Z',
+    });
+    const schedule = store.create({
+      name: 'Requirements-Redundancy',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    for (const [i, at] of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:05:00.000Z', '2026-08-12T10:10:00.000Z'].entries()) {
+      const receipt = await healthyService.reserveExecution(store.get(schedule.id)!, 'cron', at);
+      await healthyService.markExecutionAccepted(schedule.id, receipt.id, `timeout-${i}`, false);
+      await healthyService.recordTaskTerminalOutcome(`timeout-${i}`, 'cancelled');
+    }
+    expect(store.get(schedule.id)!.enabled).toBe(false);
+
+    const runner = createRunner({ service: healthyService });
+    await runner.tick();
+
+    expect(store.get(schedule.id)!.enabled).toBe(false);
+    expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+    expect(store.get(schedule.id)!.operatorHold).toBe(true);
   });
 
   it('fires when previous run is stale (older than threshold)', async () => {

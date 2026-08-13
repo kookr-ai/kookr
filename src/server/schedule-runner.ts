@@ -340,6 +340,10 @@ export class ScheduleRunner {
     // so pre-existing thrash schedules cannot fire on the catch-up pass.
     this.trackBackgroundWork('Catch-up', (async () => {
       await this.deps.service.enforceFailureAutoPauses();
+      // After enforce, lift leftover transient launch_error / overlap holds
+      // once the daemon is healthy (issue #2459). Must run before catch-up
+      // so a recovered residual fuse can fire the missed slot.
+      await this.deps.service.rearmTransientFailureHolds();
       if (catchUpMode === 'auto') {
         await this.catchUp();
       } else if (catchUpMode === 'manual') {
@@ -430,6 +434,16 @@ export class ScheduleRunner {
         }
       } catch (err) {
         console.error('[schedule] dead-man check failed:', err);
+      }
+
+      // Issue #2459: leftover consecutive_failures holds from a transient
+      // launch wedge stay dark after the daemon recovers. Scan each tick
+      // (idempotent) so a long-running healthy process re-arms without a
+      // restart. Wrapped so a re-arm error cannot abort the fire loop.
+      try {
+        await this.deps.service.rearmTransientFailureHolds();
+      } catch (err) {
+        console.error('[schedule] transient-failure re-arm failed:', err);
       }
 
       // Re-queue-after-reset sweep (issue #1896): auto-resume provider-paused

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES,
+  TRANSIENT_FAILURE_REARM_REASON_CODES,
   decideCriticalScheduleRearm,
+  decideTransientFailureRearm,
   isCriticalAllowlistedSchedule,
+  isTransientFailureRearmReason,
   listCriticalSchedulesToRearm,
   playbookBasename,
   type CriticalRearmScheduleView,
+  type TransientFailureRearmView,
 } from './critical-schedule-rearm.js';
 
 function sched(
@@ -130,6 +134,99 @@ describe('decideCriticalScheduleRearm', () => {
         }),
       ),
     ).toEqual({ rearm: false, reason: 'not_allowlisted' });
+  });
+});
+
+describe('decideTransientFailureRearm (issues #2458 / #2459)', () => {
+  const readyAt = '2026-08-13T08:34:00.000Z';
+  const pausedLaunchError: TransientFailureRearmView = {
+    id: 'deploy',
+    name: 'Lucy Deploy Convergence',
+    enabled: false,
+    stopReason: 'consecutive_failures',
+    latestReasonCode: 'launch_error',
+    lastEvaluatedAt: '2026-08-12T12:43:00.000Z',
+  };
+
+  it('rearms a leftover launch_error hold when healthy and last fire predates ready', () => {
+    expect(decideTransientFailureRearm(pausedLaunchError, true, readyAt)).toEqual({ rearm: true });
+  });
+
+  it('rearms leftover overlap-skip holds (previous_run_active / previous_run_pending)', () => {
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: 'previous_run_active' }, true, readyAt),
+    ).toEqual({ rearm: true });
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: 'previous_run_pending' }, true, readyAt),
+    ).toEqual({ rearm: true });
+  });
+
+  it('keeps the reason-code allowlist in lockstep with the predicate', () => {
+    for (const code of TRANSIENT_FAILURE_REARM_REASON_CODES) {
+      expect(isTransientFailureRearmReason(code)).toBe(true);
+      expect(
+        decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: code }, true, readyAt),
+      ).toEqual({ rearm: true });
+    }
+    expect(isTransientFailureRearmReason('none')).toBe(false);
+    expect(isTransientFailureRearmReason(undefined)).toBe(false);
+  });
+
+  it('does not rearm when the daemon is not healthy', () => {
+    expect(decideTransientFailureRearm(pausedLaunchError, false, readyAt)).toEqual({
+      rearm: false,
+      reason: 'health_not_ok',
+    });
+  });
+
+  it('does not rearm a live launch_error streak that happened after ready (#2353)', () => {
+    expect(
+      decideTransientFailureRearm(
+        { ...pausedLaunchError, lastEvaluatedAt: '2026-08-13T12:00:00.000Z' },
+        true,
+        readyAt,
+      ),
+    ).toEqual({ rearm: false, reason: 'failure_after_ready' });
+    expect(decideTransientFailureRearm(pausedLaunchError, true)).toEqual({
+      rearm: false,
+      reason: 'failure_after_ready',
+    });
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, lastEvaluatedAt: undefined }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'failure_after_ready' });
+  });
+
+  it('does not rearm genuine timeout / cancelled streaks (#2353)', () => {
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: 'none' }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'not_transient_reason' });
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: 'reconciled_after_restart' }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'not_transient_reason' });
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: undefined }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'not_transient_reason' });
+  });
+
+  it('does not rearm a non-failure park (trigger limit or already enabled)', () => {
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, enabled: true }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'already_enabled' });
+    expect(
+      decideTransientFailureRearm({
+        ...pausedLaunchError,
+        stopReason: 'trigger_limit_reached',
+      }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'not_failure_pause' });
+    expect(
+      decideTransientFailureRearm({
+        id: 'parked',
+        name: 'Manual park',
+        enabled: false,
+        latestReasonCode: 'launch_error',
+        lastEvaluatedAt: '2026-08-12T12:43:00.000Z',
+      }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'not_failure_pause' });
   });
 });
 

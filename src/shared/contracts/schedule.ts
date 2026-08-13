@@ -177,7 +177,10 @@ export interface Schedule {
   enabled: boolean;
   /**
    * Explicit operator hold (issue #2196). When true, critical-schedule recovery
-   * re-arm will not re-enable this schedule. Mirrors `core/schedule`.
+   * re-arm will not re-enable this schedule. Auto-pause (#2353) also sets this;
+   * leftover consecutive_failures holds from a transient launch_error /
+   * overlap-skip that predates ready may still be lifted (#2459).
+   * Mirrors `core/schedule`.
    */
   operatorHold?: boolean;
   cron: string;
@@ -201,10 +204,10 @@ export interface Schedule {
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';
   /**
-   * Count of consecutive non-`completed` terminal runs (issue #1665). Mirrors
-   * the `core/schedule` definition — reset to 0 on a `completed` run,
-   * incremented otherwise. Drives the per-schedule failure alert and the
-   * fail-closed auto-pause (issue #2353).
+   * Count of consecutive genuine failures (issue #1665). Mirrors the
+   * `core/schedule` definition — reset to 0 on a `completed` run, incremented
+   * on `dispatch_failed` or a cancelled/timeout run. Overlap-skips do not
+   * increment it (issue #2458). Drives the fail-closed auto-pause (issue #2353).
    */
   consecutiveFailures?: number;
   lastScheduledFor?: string;
