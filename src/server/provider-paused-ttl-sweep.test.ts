@@ -349,7 +349,7 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(d.deliveredPr).toBeUndefined();
   });
 
-  it('skips hard TTL when claim-backed recordProviderPause says holdForResume (#1896)', async () => {
+  it('skips under hard TTL when claim-backed recordProviderPause says holdForResume (#1896 / #2423)', async () => {
     const task = makePausedTask({
       issueClaim: { repo: 'kookr-ai/kookr', number: 2079 },
     });
@@ -357,7 +357,44 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     const lifecycleDeps = makeLifecycleDeps(taskStore);
     const metrics = new ProviderPausedOccupancyMetrics();
     const tracker = new ProviderPausedStartTracker();
-    tracker.observe(task, true, NOW.getTime() - (TTL_MS + 60_000));
+    const softTtlMs = DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS;
+    // Past soft TTL so the candidate is eligible, still under hard TTL.
+    tracker.observe(task, true, NOW.getTime() - (softTtlMs + 60_000));
+    const recordProviderPause = vi.fn(() => ({ holdForResume: true }));
+
+    const result = await reclaimAgedProviderPausedTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        isProviderPaused: () => true,
+        pauseStartTracker: tracker,
+        recordProviderPause,
+        isHoldingOpenPr: () => false,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        softTtlMs,
+        capacityAllowsEarlyReclaim: true,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(recordProviderPause).toHaveBeenCalled();
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+  });
+
+  it('reclaims after hard TTL even when holdForResume is still true (#2423)', async () => {
+    const task = makePausedTask({
+      issueClaim: { repo: 'kookr-ai/kookr', number: 2079 },
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new ProviderPausedOccupancyMetrics();
+    const tracker = new ProviderPausedStartTracker();
+    tracker.observe(task, true, NOW.getTime() - TTL_MS);
     const recordProviderPause = vi.fn(() => ({ holdForResume: true }));
 
     const result = await reclaimAgedProviderPausedTasks(
@@ -373,10 +410,13 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
       { now: NOW, ttlMs: TTL_MS },
     );
 
-    expect(result.reclaimedTaskIds).toEqual([]);
-    expect(taskStore.terminateTask).not.toHaveBeenCalled();
-    expect(recordProviderPause).toHaveBeenCalled();
-    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(1);
+    expect(result.reclaimedTaskIds).toEqual(['task-1']);
+    expect(taskStore.terminateTask).toHaveBeenCalled();
+    // After the hard bound the selector must not consult the reset hold —
+    // a missing reset is no longer a reason to keep the slot.
+    expect(recordProviderPause).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().skippedAwaitingProviderReset).toBe(0);
+    expect(result.selection?.outcomes[0]?.outcome).toBe('selected');
   });
 
   it('reclaims after recordProviderPause returns holdForResume false (reset elapsed)', async () => {

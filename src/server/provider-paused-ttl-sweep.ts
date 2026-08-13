@@ -259,9 +259,11 @@ export interface ReclaimProviderPausedTasksDeps {
   /**
    * Provider-reset registration (#1896). Same contract as the hung-task
    * reaper's `recordProviderPause`: returns whether to keep holding for resume.
-   * When holdForResume is true, hard-TTL reclaim skips the task so auto-resume
-   * can fire at reset; when false (reset elapsed), reclaim proceeds and frees
-   * the lease for the scheduled relaunch.
+   * When holdForResume is true, reclaim skips only while pause age is still
+   * under the hard TTL so auto-resume can fire at reset (issue #2423). After
+   * the hard bound, a missing reset no longer occupies the slot. When false
+   * (reset elapsed), reclaim proceeds and frees the lease for the scheduled
+   * relaunch.
    */
   recordProviderPause?: (
     task: Task,

@@ -211,9 +211,12 @@ export interface SelectExpiredProviderPausedTasksOpts {
    */
   getLastActivityAtMs?: (task: Task) => number | undefined;
   /**
-   * Provider-reset hold (#1896). When true, hard-TTL reclaim skips so the
-   * auto-resume scheduler can re-dispatch at reset. When false, reclaim is
-   * allowed (reset elapsed — free the slot/lease). When omitted, no skip.
+   * Provider-reset hold (#1896 / #2423). When true, reclaim skips so the
+   * auto-resume scheduler can re-dispatch at reset — but only while
+   * `pausedForMs` is still under the hard TTL. After the hard bound
+   * (inclusive), a missing reset must not keep the slot phantom-occupied.
+   * When false, reclaim is allowed (reset elapsed — free the slot/lease).
+   * When omitted, no skip.
    */
   isAwaitingProviderReset?: (task: Task) => boolean;
   /**
@@ -319,7 +322,10 @@ export function effectiveProviderPausedStartMs(
  * - `isProviderPaused` must return true;
  * - missing pause start → `skipped_no_pause_start`;
  * - effective pause age under TTL → `skipped_under_ttl`;
- * - awaiting provider reset (#1896) → `skipped_awaiting_provider_reset`;
+ * - awaiting provider reset (#1896) and still under hard TTL →
+ *   `skipped_awaiting_provider_reset` (issue #2423: do not apply this skip
+ *   once `pausedForMs >= hardTtlMs`, or a missing reset occupies the slot
+ *   forever);
  * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
  *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
  * - otherwise selected (oldest-paused first).
@@ -329,8 +335,9 @@ export function selectExpiredProviderPausedTasks(
   opts: SelectExpiredProviderPausedTasksOpts,
 ): ProviderPausedTtlSelection {
   const nowMs = (opts.now ?? new Date()).getTime();
+  const hardTtlMs = opts.ttlMs ?? DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS;
   const ttlMs = effectiveProviderPausedTtlMs({
-    ttlMs: opts.ttlMs,
+    ttlMs: hardTtlMs,
     softTtlMs: opts.softTtlMs,
     capacityAllowsEarlyReclaim: opts.capacityAllowsEarlyReclaim,
   });
@@ -365,7 +372,14 @@ export function selectExpiredProviderPausedTasks(
     }
 
     // #1896: hold until provider reset so auto-resume can re-dispatch.
-    if (opts.isAwaitingProviderReset?.(task) === true) {
+    // #2423: only while under the hard TTL. Soft/capacity reclaim can fire
+    // at 40m; if reset never comes, the 2h hard bound must still free the
+    // slot. Inclusive: pausedForMs >= hardTtlMs falls through to open-PR /
+    // select.
+    if (
+      pausedForMs < hardTtlMs
+      && opts.isAwaitingProviderReset?.(task) === true
+    ) {
       skips.skipped_awaiting_provider_reset += 1;
       outcomes.push({
         taskId: task.id,
