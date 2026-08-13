@@ -384,6 +384,20 @@ The system SHOULD reduce approval-gate load by grouping agents waiting on the sa
 
 **Evidence:** `src/frontend/group-findings.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/group-findings.test.ts`, `src/frontend/components/FindingsPanel.performance.test.tsx`.
 
+### R3.10: Findings Rail Type-Filter Chips [#2445] — SHOULD — `done`
+
+The findings rail SHOULD let the operator show only selected anomaly types with clickable header chips.
+
+**Acceptance criteria:**
+- The rail header renders one chip per anomaly type currently present on the rail
+- Chips are multi-select OR; an empty selection shows every finding
+- Clicking a chip hides cards of other types; clicking it again restores them
+- The selected set persists in `localStorage` (`kookr:findingsPanel.typeFilter`)
+- Existing CLI, API, command-palette, and "N active" count defaults stay unfiltered
+- No new global keyboard shortcut is added
+
+**Evidence:** `src/frontend/finding-type-filter.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/finding-type-filter.test.ts`, `src/frontend/components/FindingsPanel.type-filter.test.ts`.
+
 ---
 
 ## R4: Agent Lifecycle
@@ -1225,6 +1239,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
+| R3.10 | F5.1 | SHOULD | done | finding-type-filter, FindingsPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
