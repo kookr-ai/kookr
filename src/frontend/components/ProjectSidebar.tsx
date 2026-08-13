@@ -298,6 +298,21 @@ function ProjectSidebarFilter({
     setAnchor({ top: rect.top, left: rect.left });
   }
 
+  useEffect(() => {
+    if (!focused) return undefined;
+    function handleViewportChange(): void {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setAnchor({ top: rect.top, left: rect.left });
+    }
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+    return () => {
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [focused]);
+
   return (
     <label className={`project-sidebar-filter${value.trim() ? ' has-query' : ''}`}>
       <span className="sr-only">Filter projects</span>
@@ -306,7 +321,6 @@ function ProjectSidebarFilter({
         type="search"
         className="project-sidebar-filter-input"
         data-testid="project-sidebar-filter"
-        aria-label="Filter projects"
         placeholder="Filter"
         autoComplete="off"
         spellCheck={false}
@@ -321,8 +335,8 @@ function ProjectSidebarFilter({
         onKeyDown={(event) => {
           if (event.key !== 'Escape') return;
           event.preventDefault();
+          event.stopPropagation();
           onChange('');
-          event.currentTarget.blur();
         }}
       />
     </label>
@@ -497,6 +511,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     }
   }
 
+  const filterActive = filterQuery.trim() !== '';
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
   const menuIndex = menuProjectId ? menuSection.findIndex((summary) => summary.project === menuProjectId) : -1;
@@ -553,6 +568,10 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   }
 
   function handleDragStart(projectId: string, event: React.DragEvent<HTMLButtonElement>) {
+    if (filterActive) {
+      event.preventDefault();
+      return;
+    }
     setMenuProjectId(null);
     setDraggingProjectId(projectId);
     event.dataTransfer.effectAllowed = 'move';
@@ -652,11 +671,11 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
       </Tooltip>
 
       <ProjectSidebarFilter value={filterQuery} onChange={setFilterQuery} />
-      {filterQuery.trim() !== '' && (
-        <span className="sr-only" role="status">
-          {filteredPinnedSummaries.length + filteredUnpinnedSummaries.length} of {visibleProjectSummaries.length} projects
-        </span>
-      )}
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {filterQuery.trim() === ''
+          ? ''
+          : `${filteredPinnedSummaries.length + filteredUnpinnedSummaries.length} of ${visibleProjectSummaries.length} projects`}
+      </span>
 
       <div className="project-sidebar-section">
         {filteredPinnedSummaries.map((summary) => renderProject(summary, true))}
@@ -677,8 +696,8 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
 
       {menuProjectId && menuRow && (
         <ProjectContextMenu
-          canMoveDown={menuIndex >= 0 && menuIndex < menuSection.length - 1}
-          canMoveUp={menuIndex > 0}
+          canMoveDown={!filterActive && menuIndex >= 0 && menuIndex < menuSection.length - 1}
+          canMoveUp={!filterActive && menuIndex > 0}
           muted={projectMute.isMuted(menuProjectId)}
           pinned={menuRow.pinned}
           x={menuPosition.x}

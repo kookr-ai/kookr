@@ -7908,6 +7908,7 @@ button.ops-health-pill.ops-health-faa:focus-visible {
 
 .project-sidebar-filter-input:focus {
   width: 168px;
+  z-index: 30;
   outline: 2px solid var(--teal);
   outline-offset: -1px;
 }

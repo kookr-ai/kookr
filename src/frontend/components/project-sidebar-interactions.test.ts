@@ -361,12 +361,13 @@ describe('ProjectSidebar interactions', () => {
     }
 
     test('projectMatchesSidebarFilter matches displayName and localPath case-insensitively', () => {
-      const summary = { displayName: 'grafana/grafana', localPath: '/work/Grafana' };
-      expect(projectMatchesSidebarFilter(summary, '')).toBe(true);
-      expect(projectMatchesSidebarFilter(summary, '   ')).toBe(true);
-      expect(projectMatchesSidebarFilter(summary, 'GRAF')).toBe(true);
-      expect(projectMatchesSidebarFilter(summary, 'work/graf')).toBe(true);
-      expect(projectMatchesSidebarFilter(summary, 'kookr')).toBe(false);
+      const namedOnly = { displayName: 'grafana/grafana' };
+      const pathOnly = { displayName: 'acme/widgets', localPath: '/work/Grafana' };
+      expect(projectMatchesSidebarFilter(namedOnly, '')).toBe(true);
+      expect(projectMatchesSidebarFilter(namedOnly, '   ')).toBe(true);
+      expect(projectMatchesSidebarFilter(namedOnly, 'GRAF')).toBe(true);
+      expect(projectMatchesSidebarFilter(pathOnly, 'work/graf')).toBe(true);
+      expect(projectMatchesSidebarFilter(namedOnly, 'kookr')).toBe(false);
       expect(projectMatchesSidebarFilter({ displayName: 'acme/widgets' }, 'work')).toBe(false);
     });
 
@@ -382,7 +383,7 @@ describe('ProjectSidebar interactions', () => {
           weekPrCount: 0,
           openContributionAttempts: 0,
           recentTasks: [],
-          localPath: '/work/grafana',
+          localPath: '/srv/dashboards',
         },
         {
           project: 'github.com/kookr-ai/kookr',
@@ -471,6 +472,81 @@ describe('ProjectSidebar interactions', () => {
 
       expect(container.querySelector('[data-testid="project-icon-github.com/acme/widgets"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="project-icon-github.com/acme/gears"]')).not.toBeNull();
+    });
+
+    test('filter hides a pinned row while All-projects stays', async () => {
+      useKookrStore.getState().handleProjectSummaries([
+        {
+          project: 'github.com/acme/pinned',
+          displayName: 'acme/pinned',
+          color: 1,
+          activeAgents: 0,
+          findingCount: 0,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+        },
+        {
+          project: 'github.com/acme/other',
+          displayName: 'acme/other',
+          color: 2,
+          activeAgents: 0,
+          findingCount: 0,
+          todayPrCount: 0,
+          weekPrCount: 0,
+          openContributionAttempts: 0,
+          recentTasks: [],
+        },
+      ]);
+      useKookrStore.getState().pinProjectToTop('github.com/acme/pinned');
+
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const filter = container.querySelector<HTMLInputElement>('[data-testid="project-sidebar-filter"]');
+      expect(filter).not.toBeNull();
+
+      await act(async () => {
+        setFilterValue(filter!, 'other');
+      });
+      await flush();
+
+      expect(container.querySelector('[data-testid="project-icon-all"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/other"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/acme/pinned"]')).toBeNull();
+    });
+
+    test('Escape clears the filter without hiding All-projects', async () => {
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const filter = container.querySelector<HTMLInputElement>('[data-testid="project-sidebar-filter"]');
+      expect(filter).not.toBeNull();
+
+      await act(async () => {
+        setFilterValue(filter!, 'owner/a');
+      });
+      await flush();
+      expect(container.querySelector('[data-testid="project-icon-github.com/b"]')).toBeNull();
+
+      await act(async () => {
+        filter!.dispatchEvent(new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          key: 'Escape',
+        }));
+      });
+      await flush();
+
+      expect(filter!.value).toBe('');
+      expect(container.querySelector('[data-testid="project-icon-all"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/a"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="project-icon-github.com/b"]')).not.toBeNull();
     });
   });
 });

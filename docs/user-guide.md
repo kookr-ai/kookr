@@ -91,7 +91,7 @@ Use these controls together before resizing the browser or abandoning the dashbo
 - `Alt+P` toggles the project sidebar.
 - `Alt+T` toggles terminal focus mode on desktop.
 - `Alt+0` returns to all projects.
-- `Alt+4` through `Alt+9` select visible projects in sidebar order.
+- `Alt+4` through `Alt+9` select projects in unfiltered sidebar order.
 - `Alt+J` and `Alt+K` move through all tasks, including healthy tasks.
 - `Alt+1` through `Alt+3` sends that digit to the terminal and moves to the next task, useful for simple agent menus.
 - `?` opens the shortcuts dialog.
