@@ -11,7 +11,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { TaskStore } from '../../core/tasks.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
-import { registerDiagnosticsRoutes, LESSON_YIELD_REQUEST_BUDGET_MS } from './diagnostics-routes.js';
+import { registerDiagnosticsRoutes, HEALTH_BODY_CACHE_MS, LESSON_YIELD_REQUEST_BUDGET_MS } from './diagnostics-routes.js';
 import type { RouteDeps } from './shared.js';
 import {
   computeLessonYield,
@@ -66,7 +66,8 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
   test('health never awaits the scan and single-flights the background refresh', async () => {
     let resolveScan!: (value: LessonYieldSnapshot) => void;
     scanMock.mockImplementation(() => new Promise((resolve) => { resolveScan = resolve; }));
-    const app = mkApp(baseDeps());
+    let nowMs = 1_700_000_000_000;
+    const app = mkApp({ ...baseDeps(), nowMs: () => nowMs });
 
     // Three polls while the scan is still pending: every response returns
     // immediately without the block, and only ONE scan is ever started.
@@ -79,6 +80,11 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
     expect(scanMock).toHaveBeenCalledTimes(1);
 
     resolveScan(snapshot({ decided: 3 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    // The 1s health-body cache (#2429) still holds the first assembly
+    // (no lessonYield). Expire it so the next poll re-reads the warm snapshot.
+    nowMs += HEALTH_BODY_CACHE_MS + 1;
     await vi.waitFor(async () => {
       const res = await app.request('/api/health');
       const body = await res.json() as { lessonYield?: { decided: number } };
@@ -96,11 +102,13 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
       scanMock.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
       const app = mkApp(baseDeps());
 
-      // Warm the cache via the first background scan.
+      // Warm the lesson-yield cache via the first background scan.
       await app.request('/api/health');
       expect(scanMock).toHaveBeenCalledTimes(1);
       resolvers[0](snapshot({ decided: 1 }));
       await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      // Expire the 1s health-body cache so the next poll re-reads the snapshot.
+      vi.setSystemTime(new Date('2026-07-27T00:00:01.001Z'));
       let body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
       expect(body.lessonYield?.decided).toBe(1);
       expect(scanMock).toHaveBeenCalledTimes(1);
@@ -108,16 +116,17 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
       // Expire the 60s TTL: the immediate response must still carry the OLD
       // snapshot (stale-while-revalidate — never undefined, never blocking),
       // with exactly one new background scan started.
-      vi.setSystemTime(new Date('2026-07-27T00:01:01.000Z'));
+      vi.setSystemTime(new Date('2026-07-27T00:01:02.000Z'));
       body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
       expect(body.lessonYield?.decided).toBe(1);
       expect(scanMock).toHaveBeenCalledTimes(2);
       await app.request('/api/health');
       expect(scanMock).toHaveBeenCalledTimes(2);
 
-      // The refresh lands and later polls serve the new snapshot.
+      // The refresh lands; expire the body cache so later polls serve it.
       resolvers[1](snapshot({ decided: 2 }));
       await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      vi.setSystemTime(new Date('2026-07-27T00:01:03.001Z'));
       body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
       expect(body.lessonYield?.decided).toBe(2);
     } finally {

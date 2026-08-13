@@ -139,6 +139,15 @@ const SHADOW_REPORT_CACHE_MS = 60_000;
  * diagnostics latency budget while retries stack (the #1764 crash pattern).
  */
 export const SHADOW_REPORT_REQUEST_BUDGET_MS = 8_000;
+/**
+ * Cache TTL for the assembled GET /api/health JSON body (issue #2429).
+ * Concurrent diagnosis tools were stampeding `viewTasks()` and the rest of
+ * the health walk; a 5s probe timed out with 0 bytes while a retry needed
+ * 4s for 14KB. Gauges in a cached body can be up to this stale. Do not
+ * apply this cache to GET /api/ready — readiness must stay a cheap live
+ * verdict.
+ */
+export const HEALTH_BODY_CACHE_MS = 1_000;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -231,7 +240,17 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return scan;
   }
 
-  app.get('/api/health', async (c) => {
+  // Issue #2429: one assembled health body is reused for ~1s (TTL) and
+  // while a rebuild is already in flight (single-flight). This is not
+  // stale-while-revalidate: after expiry the next caller waits for a
+  // fresh walk. Overlapping probes must not start a second copy.
+  // /api/ready is intentionally uncached — see the route below.
+  let healthBodyCache:
+    | { expiresAtMs: number; body: Record<string, unknown> }
+    | undefined;
+  let healthBodyInFlight: Promise<Record<string, unknown>> | undefined;
+
+  async function assembleHealthBody(): Promise<Record<string, unknown>> {
     const terminalBackend = deps.terminalBackend;
     const backendWriteStats = terminalBackend?.getStats();
     let terminalBackendBlock: object | undefined;
@@ -595,7 +614,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       typeof serverStartedAt === 'string' ? serverStartedAt : undefined,
     );
 
-    return c.json({
+    return {
       status: 'ok',
       agents: tasks.length,
       build: buildInfo,
@@ -682,8 +701,32 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(deps.ossAttemptStore
         ? { ossAttempts: summarizeOssAttemptsForHealth(deps.ossAttemptStore) }
         : {}),
-    });
-  });
+    };
+  }
+
+  function getCachedHealthBody(): Promise<Record<string, unknown>> {
+    const now = deps.nowMs?.() ?? Date.now();
+    if (healthBodyCache !== undefined && healthBodyCache.expiresAtMs > now) {
+      return Promise.resolve(healthBodyCache.body);
+    }
+    if (healthBodyInFlight) return healthBodyInFlight;
+    let pending: Promise<Record<string, unknown>>;
+    pending = assembleHealthBody()
+      .then((body) => {
+        healthBodyCache = {
+          expiresAtMs: (deps.nowMs?.() ?? Date.now()) + HEALTH_BODY_CACHE_MS,
+          body,
+        };
+        return body;
+      })
+      .finally(() => {
+        if (healthBodyInFlight === pending) healthBodyInFlight = undefined;
+      });
+    healthBodyInFlight = pending;
+    return pending;
+  }
+
+  app.get('/api/health', async (c) => c.json(await getCachedHealthBody()));
 
   // Machine-readable readiness verdict for orchestrators / load balancers
   // (issue #660, extended by #1721 / #1707 / #1870). Unlike /api/health — which

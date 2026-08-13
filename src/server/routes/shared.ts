@@ -336,6 +336,12 @@ export interface RouteDeps {
   pluginUpdateBin?: string;
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
+  /**
+   * Optional clock for the GET `/api/health` body-cache TTL (issue #2429).
+   * Production omits this and uses `Date.now()`. Tests inject a controllable
+   * clock so expiry assertions do not depend on real time or leaked fake timers.
+   */
+  nowMs?: () => number;
   frontendDir: string;
   broadcastToAll: (msg: ServerMessage) => void;
   /**
