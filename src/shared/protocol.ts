@@ -38,7 +38,18 @@ export {
   effortLevelsForAgent,
   isAgentType,
   isValidEffortForAgent,
+  resolveRoundRobinAgent,
 } from './contracts/agent-types.js';
+export type { GrokAuthStatus, GrokAuthStatusResponse } from './contracts/grok-auth-status.js';
+export {
+  GROK_AUTH_STATUS_PATH,
+  GROK_AUTH_STATUSES,
+  GROK_LOGIN_COMMAND,
+  grokAuthAffectsSelection,
+  parseGrokAuthStatusResponse,
+  shouldDisableLaunchForGrokAuth,
+  shouldShowGrokAuthBanner,
+} from './contracts/grok-auth-status.js';
 export type { AgentEvent } from './contracts/agent-events.js';
 export type {
   AnomalySeverity,
