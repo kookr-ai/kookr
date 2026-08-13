@@ -5,13 +5,15 @@ import type {
   LaunchDependenciesStatus,
   LaunchDependencyStatusRow,
   LessonYieldStatus,
+  PausedScheduleStatusRow,
   PipelineStarvationRepoStatus,
   PipelineStarvationStatus,
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
+  SchedulesStatus,
 } from '../store/store-types.js';
 
-/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps). */
+/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps + paused schedules). */
 export const OPS_HEALTH_POLL_INTERVAL_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -138,6 +140,37 @@ export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatu
 }
 
 /**
+ * Parse `GET /api/health.schedules` for the status-bar paused-schedules
+ * pill (issue #2432). Returns null when the block is missing or
+ * `schedulesPausedByFailure` is present but not an array. An omitted
+ * array becomes an empty projection — the scheduler is wired, nothing
+ * is fail-closed paused.
+ */
+export function parseSchedules(value: unknown): SchedulesStatus | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  const raw = rec.schedulesPausedByFailure;
+  if (raw == null) return { schedulesPausedByFailure: [] };
+  if (!Array.isArray(raw)) return null;
+
+  const schedulesPausedByFailure: PausedScheduleStatusRow[] = [];
+  for (const entry of raw) {
+    const row = asRecord(entry);
+    if (!row) continue;
+    const id = row.id;
+    if (typeof id !== 'string' || id.length === 0) continue;
+    const name = typeof row.name === 'string' && row.name.length > 0 ? row.name : id;
+    const failsRaw = row.consecutiveFailures;
+    const consecutiveFailures =
+      typeof failsRaw === 'number' && Number.isFinite(failsRaw)
+        ? Math.max(0, Math.floor(failsRaw))
+        : 0;
+    schedulesPausedByFailure.push({ id, name, consecutiveFailures });
+  }
+  return { schedulesPausedByFailure };
+}
+
+/**
  * Parse `GET /api/health.pipelineStarvation` for the Diagnostics card (issue #2259).
  * Guards on schemaVersion; unknown/renamed fields are dropped (optional).
  */
@@ -239,11 +272,12 @@ export function parseLessonYield(value: unknown): LessonYieldStatus | null {
 
 /**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
- * enablement, capacity FAA residual, pipeline-starvation drought state, and
- * launch-dependency degradation, and lesson-authoring yield, and push the slim
- * projections into the store for status-bar pills and the Diagnostics panel
- * (issues #2037, #2082, #2259, #2364, #2395). Soft-fails on network/parse errors
- * so the dashboard stays up.
+ * enablement, capacity FAA residual, pipeline-starvation drought state,
+ * launch-dependency degradation, fail-closed paused schedules, and
+ * lesson-authoring yield, and push the slim projections into the store for
+ * status-bar pills and the Diagnostics panel (issues #2037, #2082, #2259,
+ * #2364, #2432, #2395). Soft-fails on network/parse errors so the dashboard
+ * stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
   const handleOpsHealth = useKookrStore((s) => s.handleOpsHealth);
@@ -266,6 +300,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           capacityResidual: parseCapacityResidual(rec.capacity),
           pipelineStarvation: parsePipelineStarvation(rec.pipelineStarvation),
           launchDependencies: parseLaunchDependencies(rec.launchDependencies),
+          schedules: parseSchedules(rec.schedules),
           lessonYield: parseLessonYield(rec.lessonYield),
         });
       } catch {
