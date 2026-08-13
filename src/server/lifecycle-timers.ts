@@ -1747,9 +1747,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               broadcastToAll: deps.broadcastToAll,
               isProviderPaused: isTaskProviderPaused,
               pauseStartTracker: deps.providerPausedStartTracker,
-              // Same liveness + provider-reset seams as hung reclaim so hard
-              // TTL does not strand #1896 auto-resume or kill sticky-but-live
-              // agents (issue #2079 independent review).
+              // Same liveness + provider-reset seams as hung reclaim so
+              // under-hard-TTL ticks do not strand #1896 auto-resume or kill
+              // sticky-but-live agents (issue #2079). After hard TTL, #2423
+              // stops applying the awaiting-reset skip so a missing reset
+              // cannot occupy the slot forever.
               getLiveness: (task) => hungSuspectSignals(task).liveness,
               recordProviderPause: deps.recordProviderPause,
               isHoldingOpenPr: deps.isTaskHoldingOpenPr,

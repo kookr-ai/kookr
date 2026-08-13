@@ -227,7 +227,41 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
     expect(sel.skips.skipped_under_ttl).toBe(1);
   });
 
-  it('skips while awaiting provider reset (#1896 hold-for-resume)', () => {
+  it('skips awaiting provider reset only while under hard TTL (#1896 / #2423)', () => {
+    const task = pausedTask();
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      softTtlMs: DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS,
+      capacityAllowsEarlyReclaim: true,
+      isProviderPaused: alwaysPaused,
+      // Past soft TTL (so not skipped_under_ttl) but still under hard TTL.
+      getPauseStartedAtMs: startAgo(DEFAULT_PROVIDER_PAUSED_SOFT_TTL_MS + 60_000),
+      isAwaitingProviderReset: () => true,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_awaiting_provider_reset).toBe(1);
+    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+  });
+
+  it('selects after hard TTL even when still awaiting provider reset (#2423)', () => {
+    const task = pausedTask();
+    const sel = selectExpiredProviderPausedTasks([task], {
+      now: NOW,
+      ttlMs: TTL_MS,
+      isProviderPaused: alwaysPaused,
+      getPauseStartedAtMs: startAgo(TTL_MS),
+      isAwaitingProviderReset: () => true,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['paused-1']);
+    expect(sel.outcomes[0].outcome).toBe('selected');
+    expect(sel.outcomes[0].pausedForMs).toBe(TTL_MS);
+    expect(sel.skips.skipped_awaiting_provider_reset).toBe(0);
+  });
+
+  it('preserves open-PR fail-safe after hard TTL while awaiting reset (#2423)', () => {
     const task = pausedTask();
     const sel = selectExpiredProviderPausedTasks([task], {
       now: NOW,
@@ -235,11 +269,12 @@ describe('selectExpiredProviderPausedTasks — skip vs escalate (issue #2079)', 
       isProviderPaused: alwaysPaused,
       getPauseStartedAtMs: startAgo(TTL_MS + 60_000),
       isAwaitingProviderReset: () => true,
-      isHoldingOpenPr: () => false,
+      isHoldingOpenPr: () => true,
     });
     expect(sel.expired).toEqual([]);
-    expect(sel.skips.skipped_awaiting_provider_reset).toBe(1);
-    expect(sel.outcomes[0].outcome).toBe('skipped_awaiting_provider_reset');
+    expect(sel.skips.skipped_awaiting_provider_reset).toBe(0);
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(sel.outcomes[0].outcome).toBe('skipped_open_pr_confirmed');
   });
 
   it('escalates after provider reset elapsed (holdForResume false)', () => {
