@@ -219,6 +219,33 @@ describe('checkSubmission', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('walks viewLiveTasks instead of cloning the full store', () => {
+    const live = store.createTask({ prompt: 'do something', cwd: '/tmp' });
+    store.startTask(live.id);
+    const samePromptDone = store.createTask({ prompt: 'do something', cwd: '/tmp' });
+    store.startTask(samePromptDone.id);
+    store.completeTask(samePromptDone.id);
+    for (let i = 0; i < 24; i++) {
+      const done = store.createTask({ prompt: `completed ${i}`, cwd: '/tmp' });
+      store.startTask(done.id);
+      store.completeTask(done.id);
+    }
+
+    const listSpy = vi.spyOn(store, 'listTasks');
+    const liveSpy = vi.spyOn(store, 'viewLiveTasks');
+    try {
+      const found = checkSubmission(store, 'do something', 'claude-code', '/tmp');
+      expect(found?.id).toBe(live.id);
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(liveSpy).toHaveBeenCalled();
+      const walked = liveSpy.mock.results[0]?.value as { id: string }[] | undefined;
+      expect(walked?.map((task) => task.id)).toEqual([live.id]);
+    } finally {
+      listSpy.mockRestore();
+      liveSpy.mockRestore();
+    }
+  });
 });
 
 describe('launchTask', () => {
