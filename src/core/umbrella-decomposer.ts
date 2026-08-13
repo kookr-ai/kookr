@@ -1192,124 +1192,121 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * wave 7 #2701–#2703 mid-window host-cooling re-arm, SEC early-promote, IR-over-
  * EDGAR recapture preference; invent wave 8 #2728–#2730 pre-arm ir_url probe,
  * stealth remaining-window budget, verification_reject miss-share alert) shipped
- * and are title-exhausted. Invent wave 9 (queue-feeder 2026-08-12,
- * invent-product-wave #2069) continues acquisition hit-rate residual from W33
- * scoreboard evidence: soft-disable chronic zero-success search backends from
- * live fan-out, early-promote issuer_feed when issuer page is access_denied /
- * tier_blocked, and alert on configured backends with chronic zero-success
- * share. Live GitHub leaves #2778–#2780. Title idempotency prevents re-emit
- * once live leaves exist.
+ * and are title-exhausted. Invent wave 9 (#2778–#2780 soft-disable / issuer_feed
+ * early-promote on access_denied|tier_blocked / chronic zero-success alert) and
+ * invent wave 10 (#2832–#2834 persist soft-disable deadline, park heartbeat,
+ * warm-start recovery tests) shipped and are title-exhausted. Invent wave 11
+ * (queue-feeder 2026-08-13, invent-product-wave #2069) continues W33 residual:
+ * promote issuer_feed after issuer-page verification_reject (the hole #2779
+ * left), stamp a named failureCode when newswire_feed returns no item, and
+ * stamp failureCode on sub-100ms stealth attempts that return no document.
+ * Live GitHub leaves #2855–#2857. Title idempotency prevents re-emit once
+ * live leaves exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): soft-disable chronic zero-success search backends from live fan-out',
+      'feat(acquisition): early-promote issuer_feed after issuer-page verification_reject',
     goal:
-      'Close a residual failover hole under umbrella #1587: weekly search-backend metrics ' +
-      'show configured backends can sit at chronic zero-success (e.g. Perplexity 0/59 in W33) ' +
-      'while still being included in live webSearch fan-out. That burns latency budget on a ' +
-      'known-dead backend during armed windows and delays usable results from healthy peers ' +
-      '(Tavily/Brave). Soft-disable zero-success backends from the live fan-out until they recover.',
+      'When the issuer page just returned verification_reject and the ticker has a real ' +
+      'issuer_feed URL, try that feed on the same poll (or the next poll without waiting for ' +
+      'access_denied / tier_blocked). W33 still shows issuer HTML 0% with 2/3 ' +
+      'verification_reject while issuer_feed took 100% of source wins. This elevates the feed; ' +
+      'it must not abandon the page. #2779 / ISSUER_PAGE_OBSTRUCTION_CODES intentionally omit ' +
+      'verification_reject (#1583: a gate reject is pre-publish mix, not a bot-wall).',
     acceptanceCriteria: [
-      'Live web-search fan-out (or search-provider router) can exclude a backend whose recent ' +
-        'success share is below a documented threshold for a documented lookback (rolling window ' +
-        'or last N attempts from search-provider-outcomes / equivalent), while backends above ' +
-        'the floor still participate.',
-      'Soft-disable is temporary and self-healing: after a cooldown or a successful ' +
-        'probe/attempt, the backend is eligible again; config-doctor / status surfaces which ' +
-        'backends are currently soft-disabled with reason + sample size (no silent permanent ' +
-        'drop of a configured key).',
-      'Unit/fixture tests cover: (a) backend with chronic zero-success + n≥floor → excluded ' +
-        'from fan-out; (b) backend above threshold → included; (c) n below floor → not ' +
-        'soft-disabled (avoid flapping on tiny samples); (d) recovery path re-includes after ' +
-        'success/cooldown.',
+      'Same-poll / next-poll: issuer page verification_reject + configured/discoverable ' +
+        'feed_url → issuer_feed is attempted. Do not wait for access_denied / tier_blocked / ' +
+        'host_cooling_down before trying the feed.',
+      'Do not add verification_reject to ISSUER_PAGE_OBSTRUCTION_CODES. Do not set ' +
+        "skipTiers: ['issuer'] (or otherwise stop later issuer-HTML polls) because of " +
+        'verification_reject. #1583 host-circuit behavior stays: verification_reject does not ' +
+        'open the issuer host circuit.',
+      'No feed URL → no invented feed. Healthy issuer-page path unchanged. #2779 ' +
+        'access_denied / tier_blocked promote stays intact. Tests: (a) verification_reject + ' +
+        'feed → feed attempted same/next poll; (b) issuer HTML still eligible later; (c) no ' +
+        "feed URL → no promote; (d) isIssuerPageObstructionCode('verification_reject') === false.",
     ],
     fileHints: [
-      'src/search/',
-      'src/search-backend-metrics.js',
-      'src/llm-tools.js',
-      'src/acquisition/status.js',
-      'src/config-doctor.js',
-    ],
-    testHints: [
-      'unit: zero-success share + n≥floor → excluded from fan-out',
-      'unit: healthy backend still included',
-      'unit: n below floor → no soft-disable',
-      'unit: recovery re-includes backend',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): early-promote issuer_feed when issuer page is access_denied or tier_blocked',
-    goal:
-      'Close a residual hit-rate hole under umbrella #1587: W33 shows issuer page tier at 0% ' +
-      'win rate with access_denied / verification_reject and tier_blocked_all_window cooling, ' +
-      'while issuer_feed delivered 100% of source wins. When the issuer HTML surface is blocked ' +
-      'or cooling, acquisition must early-promote issuer_feed (and peer feed surfaces) before ' +
-      'burning remaining window on classic/stealth-only paths that cannot recover the report ' +
-      'as quickly.',
-    acceptanceCriteria: [
-      'Mid-window (or same-poll) path: when issuer page outcome is access_denied, sticky host ' +
-        'circuit, or tier_blocked / host_cooling for the issuer host, and the ticker has a ' +
-        'configured/discoverable issuer_feed (or equivalent feed URL), the pipeline schedules ' +
-        'or elevates issuer_feed before treating free non-SEC as exhausted into stealth-only residual.',
-      'Tickers without a usable feed URL are unchanged (no fake feed promote); healthy issuer ' +
-        'page path is unchanged when not blocked.',
-      'Unit/fixture tests cover: (a) issuer access_denied + feed present → feed early-promote / ' +
-        'elevated order; (b) issuer healthy → no premature feed-only skip of page; (c) no feed ' +
-        'URL → no promote, existing failover chain; (d) tier_blocked issuer host + feed → feed ' +
-        'attempted within remaining window budget.',
-    ],
-    fileHints: [
+      'src/acquisition/issuer-feed-early-promote.js',
       'src/acquisition/acquire.js',
       'src/acquisition/tiers/issuer.js',
-      'src/acquisition/tiers/',
-      'src/acquisition/schedule-readiness.js',
       'src/scheduler-active-window-poll.js',
     ],
     testHints: [
-      'unit: issuer access_denied + feed → early-promote feed',
-      'unit: issuer healthy → page path unchanged',
+      'unit: verification_reject + feed → feed attempted; issuer HTML not skipped',
+      "unit: isIssuerPageObstructionCode('verification_reject') === false",
+      'unit: access_denied still uses the #2779 obstruction path',
       'unit: no feed URL → no promote',
-      'unit: tier_blocked + feed → feed within window',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(metrics): alert when a configured search backend has chronic zero-success share',
+      'feat(acquisition): stamp a named failureCode when newswire_feed returns no matching item',
     goal:
-      'Make chronic search-backend death loud under umbrella #1587: weekly scoreboard already ' +
-      'folds per-backend success share (#2520), but operators still lack a thresholded ' +
-      'product-metric alert when a configured backend has chronic zero- or near-zero success ' +
-      'share at adequate sample size (W33: Perplexity 0% on 59 attempts). Without an alert, ' +
-      'dead keys look like normal multi-backend noise until fan-out latency and discovery ' +
-      'quality degrade.',
+      'Make empty newswire-feed attempts loud under umbrella #1587: W33 newswire_feed shows 3 ' +
+      'attempts, 0 ok, an empty byFailureCode histogram, and null msAvg. newswire.js already ' +
+      "returns reason: 'no matching newswire feed item' with no failureCode. Stamp the reserved " +
+      'structural code feed_no_match (already in STRUCTURAL_FAILURE_CODES) rather than inventing ' +
+      'no_item / empty_feed.',
     acceptanceCriteria: [
-      'product-metric alerts (or sibling pure evaluator) emit a durable alert when any ' +
-        'configured search backend has success share below a documented threshold AND attempt ' +
-        'count ≥ documented floor over the weekly (or rolling) window; backends with no ' +
-        'attempts stay unmeasurable (no false zero-rate alert).',
-      'Control-room acquisition/search health (or product-metric badge strip) surfaces ' +
-        'per-backend success share with denominator when measurable, and flags the alerting ' +
-        'backend(s); data-gap when outcomes log missing — no fabricated rates.',
-      'Unit/fixture tests cover: (a) backend 0% + n≥floor → alert; (b) share above threshold → ' +
-        'no alert; (c) n below floor → no alert; (d) unconfigured backend absent from alert ' +
-        'set; (e) control-room projection shows rate+denominator or gap.',
+      'When newswire_feed runs and produces no matching item (empty feed, no ticker/date ' +
+        'match, or zero usable entries), the tier outcome sets failureCode: feed_no_match. ' +
+        'Do not invent no_item / empty_feed or any other new code.',
+      'feed_no_match stays on STRUCTURAL_FAILURE_CODES (not a publication obstruction). Weekly ' +
+        'failureCodeByTier includes it for newswire_feed. A successful item match stays ok=true ' +
+        'with no such code. Transport/auth errors keep their existing codes.',
+      'Unit/fixture tests cover: (a) empty feed → feed_no_match; (b) matching item → ok; ' +
+        '(c) transport/auth error keeps existing code; (d) isStructuralFailureCode(feed_no_match) ' +
+        '=== true and isPublicationObstructionCode(feed_no_match) === false.',
     ],
     fileHints: [
-      'src/product-metric-alerts.js',
-      'src/search-backend-metrics.js',
+      'src/acquisition/tiers/newswire.js',
+      'src/acquisition/scoreboard.js',
+      'src/document-assessment.js',
       'src/acquisition/weekly-scoreboard.js',
-      'src/control-room-snapshot-compose.js',
-      'src/acquisition/status.js',
     ],
     testHints: [
-      'unit: zero-success backend + n≥floor → alert',
-      'unit: healthy share → no alert',
-      'unit: n below floor → no alert',
-      'unit: control-room gap vs rate+denominator',
+      'unit: empty newswire_feed → failureCode feed_no_match',
+      'unit: matching item → ok',
+      'unit: transport error keeps existing code',
+      'unit: feed_no_match is structural, not a publication obstruction',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): stamp failureCode on sub-100ms stealth attempts that return no document',
+    goal:
+      'W33 stealth shows 3 attempts, 0 ok, 48ms average, and an empty failureCode histogram. ' +
+      'That is collectStealth in stealth-queue.js: a non-blocking cache read. Sub-100ms empty ' +
+      "(reason: 'no fresh stealth render') is the designed cache-miss, not a failed render. " +
+      'Do not stamp a failureCode on that path (unknown codes become publication obstructions ' +
+      'and any failureCode increments blocked). Fix the inflated denominator by omitting ' +
+      'cache-miss collectStealth from the stealth attempt fold.',
+    acceptanceCriteria: [
+      'A collectStealth cache-miss (ok: false, reason no fresh stealth render / no-url, no ' +
+        'document, no in-flight render consumed) is omitted from stealth tierOutcomes (or ' +
+        'otherwise does not increment stealth attempts in foldTierOutcomes).',
+      'Do not add stealth_noop / not_rendered / any new failureCode on the cache-miss path. ' +
+        'Do not treat cache-miss as stealth_failed or as a publication obstruction. A real ' +
+        'stealth cache hit still counts; a real stealth render failure still counts with its ' +
+        'existing code.',
+      'Unit/fixture tests cover: (a) cache-miss collectStealth → stealth attempts unchanged; ' +
+        '(b) stealth ok with document → attempts+1 / ok+1; (c) real stealth_failed → ' +
+        'attempts+1 / blocked+1 with existing code; (d) no new failureCode string for cache-miss.',
+    ],
+    fileHints: [
+      'src/acquisition/stealth-queue.js',
+      'src/acquisition/acquire.js',
+      'src/acquisition/scoreboard.js',
+    ],
+    testHints: [
+      'unit: cache-miss collectStealth omitted from stealth attempts',
+      'unit: stealth document hit still counted',
+      'unit: stealth_failed after a real render still counted',
+      'unit: no new failureCode on cache-miss',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
