@@ -240,11 +240,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return scan;
   }
 
-  // Issue #2429: one assembled health body is reused for ~1s and while a
-  // rebuild is already in flight. The walk is O(tasks) plus a couple of
-  // small disk reads (ci-blind debt, pipeline starvation); overlapping
-  // probes must not start a second copy. /api/ready is intentionally
-  // uncached — see the route below.
+  // Issue #2429: one assembled health body is reused for ~1s (TTL) and
+  // while a rebuild is already in flight (single-flight). This is not
+  // stale-while-revalidate: after expiry the next caller waits for a
+  // fresh walk. Overlapping probes must not start a second copy.
+  // /api/ready is intentionally uncached — see the route below.
   let healthBodyCache:
     | { expiresAtMs: number; body: Record<string, unknown> }
     | undefined;
@@ -710,17 +710,19 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return Promise.resolve(healthBodyCache.body);
     }
     if (healthBodyInFlight) return healthBodyInFlight;
-    const pending = assembleHealthBody().then((body) => {
-      healthBodyCache = {
-        expiresAtMs: (deps.nowMs?.() ?? Date.now()) + HEALTH_BODY_CACHE_MS,
-        body,
-      };
-      return body;
-    });
+    let pending: Promise<Record<string, unknown>>;
+    pending = assembleHealthBody()
+      .then((body) => {
+        healthBodyCache = {
+          expiresAtMs: (deps.nowMs?.() ?? Date.now()) + HEALTH_BODY_CACHE_MS,
+          body,
+        };
+        return body;
+      })
+      .finally(() => {
+        if (healthBodyInFlight === pending) healthBodyInFlight = undefined;
+      });
     healthBodyInFlight = pending;
-    void pending.finally(() => {
-      if (healthBodyInFlight === pending) healthBodyInFlight = undefined;
-    });
     return pending;
   }
 

@@ -2671,7 +2671,7 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /api/health — 1s stale-while-revalidate body cache (issue #2429)
+  // GET /api/health — 1s TTL + single-flight body cache (issue #2429)
   // ---------------------------------------------------------------------------
   describe('GET /api/health body cache (issue #2429)', () => {
     test('overlapping requests share one assembly', async () => {
@@ -2708,14 +2708,39 @@ describe('diagnostics routes', () => {
       const first = await app.request('/api/health');
       expect(first.status).toBe(200);
       expect(viewSpy).toHaveBeenCalledTimes(1);
+      expect((await first.json() as { agents: number }).agents).toBe(0);
 
+      taskStore.createTask('after-first-assembly', '/repo');
       const cached = await app.request('/api/health');
       expect(cached.status).toBe(200);
       expect(viewSpy).toHaveBeenCalledTimes(1);
+      expect((await cached.json() as { agents: number }).agents).toBe(0);
 
       nowMs += HEALTH_BODY_CACHE_MS + 1;
       const fresh = await app.request('/api/health');
       expect(fresh.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(2);
+      expect((await fresh.json() as { agents: number }).agents).toBe(1);
+    });
+
+    test('a failed assembly is not sticky — the next request rebuilds', async () => {
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      viewSpy.mockImplementationOnce(() => {
+        throw new Error('viewTasks boom');
+      });
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      });
+
+      const failed = await app.request('/api/health');
+      expect(failed.status).toBe(500);
+
+      const recovered = await app.request('/api/health');
+      expect(recovered.status).toBe(200);
+      expect((await recovered.json() as { status: string }).status).toBe('ok');
       expect(viewSpy).toHaveBeenCalledTimes(2);
     });
 
