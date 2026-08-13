@@ -117,6 +117,25 @@ type HungSuspectReclaimProbe = (
 ) => Promise<HungSuspectReclaimProbeSnapshot | null>;
 
 /**
+ * Live probe of schedules.schedulesPausedByFailure from GET /api/health
+ * (issue #2425). null = unreachable / unknown — doctor stays green.
+ * Empty `schedules` = none paused (health omits the array when empty).
+ */
+export interface SchedulesPausedByFailureEntry {
+  id: string;
+  name: string;
+  consecutiveFailures: number;
+}
+
+export interface SchedulesPausedByFailureProbeSnapshot {
+  schedules: SchedulesPausedByFailureEntry[];
+}
+
+type SchedulesPausedByFailureProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<SchedulesPausedByFailureProbeSnapshot | null>;
+
+/**
  * Live probe of maintenancePrune.lastFiredAt from /api/diagnostics/timer-health
  * (issue #2080). Outer null = unreachable / unknown; inner lastFiredAt null =
  * loop registered but never fired yet.
@@ -224,6 +243,12 @@ interface RunDoctorDeps {
    */
   probeHungSuspectReclaim?: HungSuspectReclaimProbe;
   /**
+   * Optional override for the live /api/health schedulesPausedByFailure probe
+   * (issue #2425). Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or
+   * KOOKR_PORT is set. null = unreachable / skip.
+   */
+  probeSchedulesPausedByFailure?: SchedulesPausedByFailureProbe;
+  /**
    * Optional override for the live timer-health maintenancePrune probe.
    * Defaults to a short-timeout fetch of GET /api/diagnostics/timer-health when
    * KOOKR_API_BASE_URL or KOOKR_PORT points at a server.
@@ -278,6 +303,7 @@ recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
+ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
 hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/fileBytes exceed soft bounds),
@@ -383,6 +409,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date())));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
+  checks.push(await checkSchedulesPausedByFailure(env, deps.probeSchedulesPausedByFailure));
   checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
   checks.push(await checkHostStaleDtach(env, deps.probeHostStaleDtach));
   checks.push(await checkHookReplayCheckpoints(env, deps.probeHookReplayCheckpoints));
@@ -1069,6 +1096,86 @@ async function checkHungSuspectReclaim(
   );
 }
 
+const PAUSED_SCHEDULE_SAMPLE_LIMIT = 3;
+
+/**
+ * Advisory ops check (issue #2425): surface schedules that auto-paused after
+ * consecutive dispatch failures. Operator offline recovery runs doctor first;
+ * without this, Lucy/orchestrator schedules stay dead while doctor looks clean.
+ *
+ * WARN when the live snapshot has ≥1 failure-paused schedule. Silent (OK) when
+ * the array is empty or absent. Probe null / unreachable → OK (hermetic
+ * offline). Never a required fail; `--strict` exits non-zero on the WARN.
+ * Doctor never auto-resumes these pauses.
+ */
+async function checkSchedulesPausedByFailure(
+  env: NodeJS.ProcessEnv,
+  probe: SchedulesPausedByFailureProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeSchedulesPausedByFailure;
+  let snap: SchedulesPausedByFailureProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'ops.schedules-paused-by-failure',
+      'Paused schedules',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or health unreachable)',
+      false,
+    );
+  }
+
+  if (snap.schedules.length === 0) {
+    return okCheck(
+      'ops.schedules-paused-by-failure',
+      'Paused schedules',
+      'ops',
+      'no consecutive-failure paused schedules',
+      false,
+    );
+  }
+
+  const count = snap.schedules.length;
+  const sample = formatPausedScheduleSample(snap.schedules);
+  const first = snap.schedules[0]!;
+  const listed = snap.schedules
+    .slice(0, PAUSED_SCHEDULE_SAMPLE_LIMIT)
+    .map((entry) => `${entry.name} (id=${entry.id}, consecutiveFailures=${entry.consecutiveFailures})`);
+  const extra = count - listed.length;
+  return {
+    id: 'ops.schedules-paused-by-failure',
+    label: 'Paused schedules',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary:
+      `${count} schedule${count === 1 ? '' : 's'} consecutive-failure paused: ${sample}`,
+    detail:
+      `GET /api/health schedules.schedulesPausedByFailure count=${count}. ` +
+      listed.join('; ') +
+      (extra > 0 ? `; +${extra} more` : '') +
+      '. These stay paused until an operator re-enables them.',
+    recommendedAction:
+      `Diagnose the failure, then re-enable with \`kookr schedule enable <id>\` ` +
+      `(e.g. \`kookr schedule enable ${first.id}\`). ` +
+      'Do not auto-resume consecutive-failure pauses.',
+  };
+}
+
+function formatPausedScheduleSample(
+  schedules: ReadonlyArray<SchedulesPausedByFailureEntry>,
+): string {
+  const names = schedules.map((entry) => entry.name || entry.id);
+  const shown = names.slice(0, PAUSED_SCHEDULE_SAMPLE_LIMIT);
+  const extra = names.length - shown.length;
+  return extra > 0 ? `${shown.join(', ')} (+${extra} more)` : shown.join(', ');
+}
+
 /**
  * Last-pass open_pr fail-safe dominates when it is the plurality among
  * `lastOutcomes` (ties for first still count — residual is still held by the
@@ -1387,6 +1494,73 @@ export function parseHungSuspectReclaimHealthBody(
     lastCandidatesConsidered: lastCandidatesConsidered ?? 0,
     lastOutcomes,
   };
+}
+
+/**
+ * Best-effort live probe of consecutive-failure paused schedules from
+ * GET /api/health (issue #2425). Same base-URL gate as other health probes —
+ * hermetic offline doctor stays green without scanning default ports.
+ */
+async function defaultProbeSchedulesPausedByFailure(
+  env: NodeJS.ProcessEnv,
+): Promise<SchedulesPausedByFailureProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseSchedulesPausedByFailureHealthBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `schedules.schedulesPausedByFailure` from /api/health JSON.
+ *
+ * Health omits the array when none are paused, and omits the `schedules`
+ * block when scheduling is not wired. Both are empty (silent OK), not a skip.
+ * Malformed payloads return null so doctor does not invent a clean fleet.
+ */
+export function parseSchedulesPausedByFailureHealthBody(
+  body: unknown,
+): SchedulesPausedByFailureProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as { schedules?: unknown };
+  const schedulesBlock = root.schedules;
+  if (schedulesBlock == null) return { schedules: [] };
+  if (typeof schedulesBlock !== 'object') return null;
+
+  const raw = (schedulesBlock as { schedulesPausedByFailure?: unknown }).schedulesPausedByFailure;
+  if (raw == null) return { schedules: [] };
+  if (!Array.isArray(raw)) return null;
+
+  const schedules: SchedulesPausedByFailureEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as {
+      id?: unknown;
+      name?: unknown;
+      consecutiveFailures?: unknown;
+    };
+    if (typeof rec.id !== 'string' || rec.id.length === 0) continue;
+    const name = typeof rec.name === 'string' && rec.name.length > 0 ? rec.name : rec.id;
+    schedules.push({
+      id: rec.id,
+      name,
+      consecutiveFailures: nonNegInt(rec.consecutiveFailures) ?? 0,
+    });
+  }
+  return { schedules };
 }
 
 function nonNegInt(value: unknown): number | null {

@@ -18,11 +18,13 @@ import {
   parseHookReplayCheckpointsHealthBody,
   parseHostStaleDtachHealthBody,
   parseHungSuspectReclaimHealthBody,
+  parseSchedulesPausedByFailureHealthBody,
   runDoctorCli,
   type HookIngestionLagProbeSnapshot,
   type HookReplayCheckpointsProbeSnapshot,
   type HostStaleDtachProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
+  type SchedulesPausedByFailureProbeSnapshot,
 } from './kookr-doctor.js';
 import type { AlertArtifact } from '../server/prod-smoke.js';
 import type { GithubStatusSnapshot } from './kookr-github.js';
@@ -45,6 +47,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.grok-auth',
   'ops.resource-watchdog',
   'ops.hung-reclaim',
+  'ops.schedules-paused-by-failure',
   'hooks.ingestion-lag',
   'ops.host-stale-dtach',
   'hooks.replay-checkpoints',
@@ -62,6 +65,7 @@ const opsOkEnv = {
 const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
+  probeSchedulesPausedByFailure: async () => null as SchedulesPausedByFailureProbeSnapshot | null,
   probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
   probeHostStaleDtach: async () => null as HostStaleDtachProbeSnapshot | null,
   probeHookReplayCheckpoints: async () => null as HookReplayCheckpointsProbeSnapshot | null,
@@ -217,6 +221,7 @@ describe('kookr doctor --json', () => {
       'agent.codex-plugin-dir',
       'ops.resource-watchdog',
       'ops.hung-reclaim',
+      'ops.schedules-paused-by-failure',
       'hooks.ingestion-lag',
       'ops.host-stale-dtach',
       'hooks.replay-checkpoints',
@@ -234,6 +239,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'ops.hung-reclaim')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -1051,6 +1061,149 @@ describe('kookr doctor --json', () => {
     });
     expect(parseHungSuspectReclaimHealthBody({})).toBeNull();
     expect(parseHungSuspectReclaimHealthBody({ hungSuspectTtlReclaim: { reclaimedTotal: 'x' } })).toBeNull();
+  });
+
+  it('WARNs on ops.schedules-paused-by-failure when health lists ≥1 paused schedule (issue #2425)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () => ({
+        schedules: [
+          {
+            id: '68e9cb52-1446-4329-9f57-24a4d6cc8946',
+            name: 'Lucy Orchestration Effectiveness',
+            consecutiveFailures: 3,
+          },
+          {
+            id: 'fa8a4827-200b-4cbd-990c-09de3afb2733',
+            name: 'Lucy Twice-Daily Repository Idea Scout',
+            consecutiveFailures: 3,
+          },
+        ],
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.schedules-paused-by-failure');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('2 schedules consecutive-failure paused'),
+    });
+    expect(check?.summary).toContain('Lucy Orchestration Effectiveness');
+    expect(check?.detail).toContain('consecutiveFailures=3');
+    expect(check?.detail).toContain('68e9cb52-1446-4329-9f57-24a4d6cc8946');
+    expect(check?.recommendedAction).toContain('kookr schedule enable 68e9cb52-1446-4329-9f57-24a4d6cc8946');
+    expect(check?.recommendedAction).toMatch(/do not auto-resume/i);
+  });
+
+  it('keeps ops.schedules-paused-by-failure green when the array is empty, absent, or probe offline (issue #2425)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const empty = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () => ({ schedules: [] }),
+    });
+    expect(empty.status).toBe('ok');
+    expect(empty.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('no consecutive-failure paused schedules'),
+    });
+
+    // Health omits the array when none are paused — same silent OK as empty.
+    const absent = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () =>
+        parseSchedulesPausedByFailureHealthBody({ schedules: { schedulerHealthy: true } }),
+    });
+    expect(absent.status).toBe('ok');
+    expect(absent.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('no consecutive-failure paused schedules'),
+    });
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () => null,
+    });
+    expect(offline.status).toBe('ok');
+    expect(offline.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('exits non-zero under --strict when a schedule is consecutive-failure paused (issue #2425)', async () => {
+    const run = commandRunner(happyFixtures());
+    const deps = {
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeSchedulesPausedByFailure: async () => ({
+        schedules: [
+          { id: 'sched-lucy', name: 'Lucy orchestrator', consecutiveFailures: 3 },
+        ],
+      }),
+      out: { log: () => {}, error: () => {} },
+    };
+
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
+  });
+
+  it('parseSchedulesPausedByFailureHealthBody reads schedules.schedulesPausedByFailure (issue #2425)', () => {
+    expect(parseSchedulesPausedByFailureHealthBody({
+      schedules: {
+        schedulerHealthy: true,
+        schedulesPausedByFailure: [
+          { id: 'sched-a', name: 'Lucy orchestrator', consecutiveFailures: 3 },
+          { id: 'sched-b', name: 'Idea scout', consecutiveFailures: 8.9 },
+          { id: 'sched-c', name: '', consecutiveFailures: Number.NaN },
+          { id: 'sched-d' },
+          { name: 'missing-id', consecutiveFailures: 1 },
+          { id: '', name: 'empty-id' },
+          12,
+        ],
+      },
+    })).toEqual({
+      schedules: [
+        { id: 'sched-a', name: 'Lucy orchestrator', consecutiveFailures: 3 },
+        { id: 'sched-b', name: 'Idea scout', consecutiveFailures: 8 },
+        { id: 'sched-c', name: 'sched-c', consecutiveFailures: 0 },
+        { id: 'sched-d', name: 'sched-d', consecutiveFailures: 0 },
+      ],
+    });
+    // Health omits the array when none are paused — treat as empty, not skip.
+    expect(parseSchedulesPausedByFailureHealthBody({
+      schedules: { schedulerHealthy: true },
+    })).toEqual({ schedules: [] });
+    expect(parseSchedulesPausedByFailureHealthBody({})).toEqual({ schedules: [] });
+    expect(parseSchedulesPausedByFailureHealthBody(null)).toBeNull();
+    expect(parseSchedulesPausedByFailureHealthBody({
+      schedules: { schedulesPausedByFailure: 'not-an-array' },
+    })).toBeNull();
+    // Malformed schedules block → skip (do not invent a clean fleet).
+    expect(parseSchedulesPausedByFailureHealthBody({
+      schedules: 'not-an-object',
+    })).toBeNull();
   });
 
   it('WARNs on ops.maintenance-prune when interval is 0/unset (issue #2080)', async () => {
