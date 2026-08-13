@@ -22,6 +22,7 @@ import {
 import type { ScheduleRollup } from '../core/schedule-rollup.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import { decideTransientFailureRearm } from '../core/critical-schedule-rearm.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
 import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
@@ -36,9 +37,10 @@ export const DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD = 3;
 /**
  * Next value of a schedule's `consecutiveFailures` counter (issue #1665) given
  * the terminal `lastRunStatus` just recorded. A `completed` run resets the
- * streak to 0; every other terminal status (a `failed` dispatch/skip outcome
- * or a `cancelled` run) increments it. Pure so the counter transition is unit
- * testable without a store.
+ * streak to 0; a genuine `failed` dispatch or a `cancelled` run increments it.
+ * Overlap-skips (`skipped_active` / `previous_run_active`) never call this
+ * helper — they are not failures (issue #2458). Pure so the counter transition
+ * is unit testable without a store.
  */
 export function nextConsecutiveFailures(
   previous: number | undefined,
@@ -143,6 +145,12 @@ export function buildScheduleFailureRecoveryAlert(
  */
 const SCHEDULE_RUN_FAILURE_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set(['dispatch_failed']);
 
+/** Outcomes that borrow the previous fire's taskId as a blocking pointer. */
+const SKIP_POINTER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
+  'skipped_active',
+  'skipped_coalesced',
+]);
+
 /**
  * Cost/tokens + artifact links joined onto a ledger row from its task at
  * write time (issue #1582). Both fields are optional and only ever populated
@@ -211,6 +219,18 @@ export interface ScheduleServiceDeps {
    * re-editing every schedule.
    */
   getDefaultAgentType?: () => AgentSelection;
+  /**
+   * Live daemon-healthy signal for leftover consecutive_failures re-arm
+   * (issue #2459). True when startup phase is `ready`. Absent or false
+   * leaves leftover holds in place.
+   */
+  getDaemonHealthy?: () => boolean;
+  /**
+   * ISO timestamp of when this process became ready. A leftover hold is
+   * only lifted when its last fire predates this watermark, so a live
+   * #2353 streak that happens after boot stays paused.
+   */
+  getReadyAt?: () => string | undefined;
 }
 
 export class ScheduleService {
@@ -221,6 +241,8 @@ export class ScheduleService {
   private readonly emitAlert?: (message: Extract<ServerMessage, { type: 'alert' }>) => void;
   private readonly getFailureAlertThreshold?: () => number;
   private readonly getDefaultAgentType?: () => AgentSelection;
+  private readonly getDaemonHealthy?: () => boolean;
+  private readonly getReadyAt?: () => string | undefined;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -241,6 +263,8 @@ export class ScheduleService {
     this.emitAlert = deps.emitAlert;
     this.getFailureAlertThreshold = deps.getFailureAlertThreshold;
     this.getDefaultAgentType = deps.getDefaultAgentType;
+    this.getDaemonHealthy = deps.getDaemonHealthy;
+    this.getReadyAt = deps.getReadyAt;
   }
 
   /**
@@ -415,6 +439,62 @@ export class ScheduleService {
       this.broadcastSchedules();
     }
     return paused;
+  }
+
+  /**
+   * Lift leftover `consecutive_failures` holds whose last reason was a
+   * transient `launch_error` or overlap-skip, once the daemon is healthy
+   * (issue #2459). Only holds whose last fire predates {@link getReadyAt}
+   * (or {@link runnerStartedAt}) are lifted — a live streak that happens
+   * after boot stays paused (#2353). Reuses {@link setEnabled} so the
+   * counter, stopReason, and operatorHold clear the same way an operator
+   * re-enable would.
+   */
+  async rearmTransientFailureHolds(healthOk?: boolean, readyAt?: string): Promise<{
+    rearmed: Array<{ id: string; name: string; reasonCode?: string }>;
+  }> {
+    const healthy = healthOk ?? this.getDaemonHealthy?.() ?? false;
+    const ready = readyAt ?? this.getReadyAt?.() ?? this.runnerStartedAt;
+    const rearmed: Array<{ id: string; name: string; reasonCode?: string }> = [];
+    for (const schedule of this.store.list()) {
+      const reasonCode = schedule.latestExecution?.reasonCode;
+      const decision = decideTransientFailureRearm(
+        {
+          id: schedule.id,
+          name: schedule.name,
+          enabled: schedule.enabled,
+          stopReason: schedule.stopReason,
+          latestReasonCode: reasonCode,
+          lastEvaluatedAt: schedule.latestExecution?.evaluatedAt,
+        },
+        healthy,
+        ready,
+      );
+      if (!decision.rearm) continue;
+      // A pause that also exhausted maxTriggers cannot be re-enabled; isolate
+      // that throw so one exhausted leftover cannot abort the rest of the scan.
+      if (isTriggerLimitExhausted(schedule)) continue;
+      try {
+        await this.setEnabled(schedule.id, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[schedule] transient-failure re-arm failed for "${schedule.name}" `
+          + `(${schedule.id}): ${message}`,
+        );
+        continue;
+      }
+      rearmed.push({
+        id: schedule.id,
+        name: schedule.name,
+        ...(reasonCode ? { reasonCode } : {}),
+      });
+      console.log(
+        `[schedule] re-armed consecutive_failures hold on "${schedule.name}" `
+        + `(${schedule.id}) lastReason=${reasonCode ?? 'unknown'} (issue #2459)`,
+      );
+    }
+    return { rearmed };
   }
 
   recordTickCompleted(): void {
@@ -748,7 +828,8 @@ export class ScheduleService {
     // stale/dedup skips, unresolved-after-restart) carry the counter forward
     // unchanged, so a healthy-but-slow or capacity-pressured schedule never
     // trips the failure alert. See SCHEDULE_RUN_FAILURE_OUTCOMES.
-    const consecutiveFailures = SCHEDULE_RUN_FAILURE_OUTCOMES.has(outcome)
+    const isFailure = SCHEDULE_RUN_FAILURE_OUTCOMES.has(outcome);
+    const consecutiveFailures = isFailure
       ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
       : schedule.consecutiveFailures ?? 0;
     const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
@@ -756,7 +837,9 @@ export class ScheduleService {
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
       lastRunTaskId: receipt.taskId,
-      lastRunStatus: 'failed',
+      // Overlap-skips and other benign deferrals must not look like a failed
+      // run (issue #2458). Only a genuine dispatch failure writes lastRunStatus.
+      ...(isFailure ? { lastRunStatus: 'failed' as const } : {}),
       consecutiveFailures,
       ...consumeCronTrigger(schedule, receipt.trigger, outcome === 'dispatch_failed', evaluatedAt),
       // Auto-pause (issue #2353) wins over a still-enabled trigger-budget
@@ -806,6 +889,33 @@ export class ScheduleService {
     // Join cost/artifacts onto the row at write time (issue #1582). A null
     // resolver or a task with no measured usage leaves the fields absent.
     const enrichment = this.resolveLedgerEnrichment?.(taskId) ?? {};
+
+    // Issue #2458: after an overlap-skip, latestExecution.taskId still points
+    // at the previous fire (the blocking pointer). When that previous task
+    // later cancels, do not rewrite the skip as `cancelled` or increment
+    // consecutiveFailures — that is what fail-closed residual fuses after
+    // "Previous run still active". A later *completed* previous run still
+    // promotes (the previous fire succeeded).
+    const latestOutcome = schedule.latestExecution.outcome;
+    if (status === 'cancelled' && SKIP_POINTER_OUTCOMES.has(latestOutcome)) {
+      const now = new Date().toISOString();
+      this.store.replace({
+        ...schedule,
+        executionLedger: closeMidFlightLedgerRowsForTask(schedule.executionLedger, taskId, {
+          outcome: 'cancelled',
+          reasonCode: 'none',
+          completedAt: now,
+          ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
+          ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
+          ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
+        }),
+        updatedAt: now,
+      });
+      await this.store.persist();
+      this.broadcastSchedules();
+      return;
+    }
+
     const consecutiveFailures = nextConsecutiveFailures(schedule.consecutiveFailures, status);
     const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
 
@@ -1113,6 +1223,25 @@ function updateLedgerEntryForTask(
   let updated = false;
   const next = ledger.map((entry) => {
     if (entry.taskId !== taskId) return entry;
+    updated = true;
+    return { ...entry, ...patch };
+  });
+  return updated ? next : ledger;
+}
+
+/**
+ * Close the original fire's mid-flight ledger row without rewriting overlap
+ * skip rows that borrowed the same taskId as a blocking pointer (issue #2458).
+ */
+function closeMidFlightLedgerRowsForTask(
+  ledger: ScheduleExecutionLedgerEntry[],
+  taskId: string,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit'>>,
+): ScheduleExecutionLedgerEntry[] {
+  let updated = false;
+  const next = ledger.map((entry) => {
+    if (entry.taskId !== taskId) return entry;
+    if (SKIP_POINTER_OUTCOMES.has(entry.outcome)) return entry;
     updated = true;
     return { ...entry, ...patch };
   });

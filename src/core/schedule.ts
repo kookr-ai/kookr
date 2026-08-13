@@ -351,10 +351,11 @@ export interface Schedule {
   enabled: boolean;
   /**
    * Explicit operator hold (issue #2196). When true, critical-schedule recovery
-   * re-arm will not re-enable this schedule after outages/restarts. Set when an
-   * operator intentionally parks an allowlisted schedule; cleared when the
-   * operator re-enables it. Absent/false means disabled schedules on the
-   * critical allowlist may be re-armed on the recovery path.
+   * re-arm will not re-enable this schedule after outages/restarts. Auto-pause
+   * (#2353) also sets this so #2196 cannot unstick a known-dead loop. Issue
+   * #2459 may still lift a leftover `consecutive_failures` hold whose last
+   * reason was a transient launch_error / overlap-skip that predates the
+   * daemon becoming ready. Cleared when the operator re-enables it.
    */
   operatorHold?: boolean;
   cron: string;
@@ -397,13 +398,12 @@ export interface Schedule {
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';
   /**
-   * Count of consecutive non-`completed` terminal runs (issue #1665). Bumped
-   * whenever `lastRunStatus` is written to anything other than `completed` (a
-   * `failed` dispatch/skip outcome or a `cancelled` run) and reset to 0 on a
-   * `completed` run. Drives the per-schedule failure alert and the fail-closed
-   * auto-pause (issue #2353 — see `ScheduleService`) and surfaces schedule
-   * health without hand-reading the store. Absent until the schedule has
-   * recorded its first terminal run.
+   * Count of consecutive genuine failures (issue #1665). Incremented on a
+   * `dispatch_failed` launch or a cancelled/timeout run; reset to 0 on a
+   * `completed` run. Overlap-skips (`skipped_active` / `previous_run_active`)
+   * do not increment it (issue #2458). Drives the per-schedule failure alert
+   * and the fail-closed auto-pause (issue #2353 — see `ScheduleService`).
+   * Absent until the schedule has recorded its first terminal run.
    */
   consecutiveFailures?: number;
   /** Cron watermark — used for cadence computation, not UI status. */

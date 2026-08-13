@@ -81,6 +81,17 @@ export interface ScheduleRuntimeDeps {
    * creation (issue #1899). Typically `cancelTask` from agent-lifecycle.
    */
   cleanupFailedTask?: (taskId: string) => Promise<void>;
+  /**
+   * Live daemon-healthy signal for leftover consecutive_failures re-arm
+   * (issue #2459). True when startup phase is `ready`. Absent leaves
+   * transient holds in place until an operator PATCH.
+   */
+  isHealthy?: () => boolean;
+  /**
+   * ISO timestamp of when this process became ready. Leftover holds are
+   * only lifted when their last fire predates this watermark.
+   */
+  getReadyAt?: () => string | undefined;
 }
 
 export interface ScheduleRuntime {
@@ -158,6 +169,8 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
       ? { getFailureAlertThreshold: deps.getScheduleFailureAlertThreshold }
       : {}),
     ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
+    ...(deps.isHealthy ? { getDaemonHealthy: deps.isHealthy } : {}),
+    ...(deps.getReadyAt ? { getReadyAt: deps.getReadyAt } : {}),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 

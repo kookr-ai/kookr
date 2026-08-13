@@ -1,14 +1,18 @@
 /**
- * Critical-schedule re-arm (issue #2196).
+ * Schedule re-arm decisions (issues #2196 / #2459).
  *
- * After multi-day outages or daemon restarts, allowlisted residual-sensing /
- * product-surface schedules can remain `enabled=false` from ops drift. This
- * module decides — pure, no I/O — whether a schedule should be re-enabled on
- * the recovery path.
+ * Two independent policies live here — both pure, no I/O:
  *
- * Never re-arms experimental or intentionally parked schedules. An explicit
- * {@link operatorHold} marker is the only durable way to keep an allowlisted
- * schedule disabled across restarts.
+ *  1. {@link decideCriticalScheduleRearm} (#2196): after outages, re-enable
+ *     allowlisted residual-sensing schedules that stayed disabled from ops
+ *     drift. An explicit {@link operatorHold} keeps those parked.
+ *
+ *  2. {@link decideTransientFailureRearm} (#2459): lift a leftover
+ *     `consecutive_failures` hold whose last reason was a transient
+ *     `launch_error` / overlap-skip, and whose last fire predates the
+ *     daemon becoming ready. Genuine timeout/failed streaks stay paused
+ *     (#2353). This path exists because #2353 sets `operatorHold`, so
+ *     policy 1 cannot unstick a recovered launch wedge.
  */
 
 /** Playbook basenames that must not stay disabled without an operator hold. */
@@ -121,4 +125,93 @@ export function listCriticalSchedulesToRearm(
     .filter((s) => decideCriticalScheduleRearm(s).rearm)
     .slice()
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Reason codes whose consecutive-failure pause is leftover accounting from a
+ * transient launch wedge or overlap-skip (issues #2458 / #2459). These may be
+ * lifted automatically once the daemon is healthy. Genuine `failed` / timeout
+ * streaks (Requirements-Redundancy class, issue #2353) are not in this set.
+ */
+export const TRANSIENT_FAILURE_REARM_REASON_CODES = [
+  'launch_error',
+  'previous_run_active',
+  'previous_run_pending',
+] as const;
+
+export type TransientFailureRearmReasonCode =
+  (typeof TRANSIENT_FAILURE_REARM_REASON_CODES)[number];
+
+export type TransientFailureRearmSkipReason =
+  | 'health_not_ok'
+  | 'already_enabled'
+  | 'not_failure_pause'
+  | 'not_transient_reason'
+  | 'failure_after_ready';
+
+export type TransientFailureRearmDecision =
+  | { rearm: true }
+  | { rearm: false; reason: TransientFailureRearmSkipReason };
+
+export interface TransientFailureRearmView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** Auto-pause marker from issue #2353. Other stop reasons are left alone. */
+  stopReason?: string;
+  latestReasonCode?: string;
+  /** When the last fire was recorded. Compared to {@link readyAt}. */
+  lastEvaluatedAt?: string;
+}
+
+export function isTransientFailureRearmReason(
+  reasonCode: string | undefined,
+): reasonCode is TransientFailureRearmReasonCode {
+  return (TRANSIENT_FAILURE_REARM_REASON_CODES as readonly string[]).includes(
+    reasonCode ?? '',
+  );
+}
+
+/**
+ * Decide whether a leftover consecutive-failures hold should be lifted after
+ * the daemon recovered (issue #2459).
+ *
+ * Order (first match wins):
+ *  1. health/ready is not ok
+ *  2. already enabled
+ *  3. pause is not `consecutive_failures` (manual park, trigger-limit, …)
+ *  4. last reason is not a transient launch_error / overlap-skip
+ *  5. last fire happened at or after the daemon became ready (a live #2353
+ *     streak, not leftover accounting from before recovery)
+ *  6. otherwise → rearm
+ *
+ * `operatorHold` is not consulted: #2353 sets it on every auto-pause, and
+ * this path exists specifically to lift that leftover hold. A distinct
+ * operator park has a different stopReason (or none) and fails step 3.
+ *
+ * `readyAt` is required for a lift. Without a watermark we cannot tell a
+ * leftover hold from a pause that just fired while the process was already
+ * healthy, so we fail closed.
+ */
+export function decideTransientFailureRearm(
+  schedule: TransientFailureRearmView,
+  healthOk: boolean,
+  readyAt?: string,
+): TransientFailureRearmDecision {
+  if (!healthOk) {
+    return { rearm: false, reason: 'health_not_ok' };
+  }
+  if (schedule.enabled) {
+    return { rearm: false, reason: 'already_enabled' };
+  }
+  if (schedule.stopReason !== 'consecutive_failures') {
+    return { rearm: false, reason: 'not_failure_pause' };
+  }
+  if (!isTransientFailureRearmReason(schedule.latestReasonCode)) {
+    return { rearm: false, reason: 'not_transient_reason' };
+  }
+  if (!readyAt || !schedule.lastEvaluatedAt || schedule.lastEvaluatedAt >= readyAt) {
+    return { rearm: false, reason: 'failure_after_ready' };
+  }
+  return { rearm: true };
 }

@@ -2151,6 +2151,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDeadManScheduleMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
+    // Issue #2459: leftover launch_error / overlap holds re-arm once boot
+    // recovery has marked the process ready. Only holds whose last fire
+    // predates readyAt are lifted, so a live #2353 streak stays paused.
+    isHealthy: () => startupReadiness.getPhase() === 'ready',
+    getReadyAt: () => startupReadiness.getProgress().readyAt,
     // issue #1995: dead-man fire also refreshes the on-disk ops-status card.
     onOperationalAlert: noteOpsStatusAlert,
     // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
