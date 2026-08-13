@@ -176,6 +176,18 @@ export interface HealthLike {
     }>;
   };
   /**
+   * Schedule-runner snapshot (issue #2424). Present when the scheduler is
+   * wired; `schedulesPausedByFailure` is omitted or empty when none are
+   * fail-closed parked.
+   */
+  schedules?: {
+    schedulesPausedByFailure?: Array<{
+      id?: string;
+      name?: string;
+      consecutiveFailures?: number;
+    }>;
+  };
+  /**
    * Lesson-authoring yield gauges for the last 24h (issue #1538 / #2305).
    * Omitted on cold cache; present once the stale-while-revalidate scan lands.
    */
@@ -366,6 +378,13 @@ export interface LaunchDependenciesSummary {
   }>;
 }
 
+/** Slim fail-closed pause row (issue #2424). */
+export interface SchedulePausedByFailureSummary {
+  id: string;
+  name: string;
+  consecutiveFailures: number;
+}
+
 /** Slim lesson-authoring yield gauge (issue #2305 / #1538). */
 export interface LessonYieldSummary {
   yieldRate: number;
@@ -481,6 +500,9 @@ export function summarizeHookIngestion(
 export function summarizeLaunchDependencies(
   health: HealthLike,
 ): LaunchDependenciesSummary | null;
+export function summarizeSchedulesPausedByFailure(
+  health: HealthLike,
+): SchedulePausedByFailureSummary[] | null;
 export function summarizeHungSuspectTtlReclaim(
   health: HealthLike,
 ): HungSuspectTtlReclaimSummary | null;

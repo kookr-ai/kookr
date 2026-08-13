@@ -643,6 +643,42 @@ function summarizeLaunchDependencies(health) {
   };
 }
 
+// How many schedule names the human WARN line lists before "+N more".
+// Discord/Lucy digests stay one line; --json still carries the full roster.
+const SCHEDULES_PAUSED_SAMPLE_LIMIT = 3;
+
+// Fail-closed consecutive-failure pauses (issue #2424). /api/health already
+// publishes health.schedules.schedulesPausedByFailure when the runner has
+// parked one or more schedules after consecutiveFailures ≥ 3. Elevated-only
+// human WARN so Lucy/Discord see the pause without fetching the 14KB health
+// blob; --json repeats the slim {id, name, consecutiveFailures} rows.
+// Null when the array is absent, empty, or every row is malformed.
+// Visibility only — does not auto-resume, does not touch /api/ready.
+function summarizeSchedulesPausedByFailure(health) {
+  const raw = health?.schedules?.schedulesPausedByFailure;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+
+  /** @type {Array<{ id: string, name: string, consecutiveFailures: number }>} */
+  const rows = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const id = /** @type {{ id?: unknown }} */ (row).id;
+    const name = /** @type {{ name?: unknown }} */ (row).name;
+    if (typeof id !== 'string' || id.length === 0) continue;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const failuresRaw = Number(
+      /** @type {{ consecutiveFailures?: unknown }} */ (row).consecutiveFailures,
+    );
+    if (!Number.isFinite(failuresRaw) || failuresRaw < 0) continue;
+    rows.push({
+      id,
+      name,
+      consecutiveFailures: Math.floor(failuresRaw),
+    });
+  }
+  return rows.length > 0 ? rows : null;
+}
+
 // Startup crash-recovery counts (issue #2351). /api/health publishes a slim
 // `startupRecovery` block after deferred recovery completes (relaunched /
 // skipped / failed / crashLoopSkips + generatedAt). Always-on compact gauge
@@ -1248,6 +1284,22 @@ function renderReport({ port, health, agents }) {
     );
   }
 
+  // Schedules paused after consecutive failures (issue #2424) — elevated-only
+  // WARN with count + a short name sample so unattended Discord digests see
+  // fail-closed pauses without curling /api/health. Full roster is --json.
+  const pausedSchedules = summarizeSchedulesPausedByFailure(health);
+  if (pausedSchedules) {
+    const sample = pausedSchedules
+      .slice(0, SCHEDULES_PAUSED_SAMPLE_LIMIT)
+      .map((row) => row.name);
+    const overflow = pausedSchedules.length - sample.length;
+    const more = overflow > 0 ? ` (+${overflow} more)` : '';
+    const noun = pausedSchedules.length === 1 ? 'schedule' : 'schedules';
+    lines.push(
+      `WARN: ${pausedSchedules.length} ${noun} paused after consecutive failures: ${sample.join(', ')}${more}`,
+    );
+  }
+
   // Hung-suspect TTL reclaim residual (issue #2229) — quiet-by-default when
   // reclaimedTotal=0 and skips/candidates/residual are elevated. Prints the
   // skip breakdown + residual class counts so unattended operators do not
@@ -1504,6 +1556,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     const snapshotShedSummary = summarizeSnapshotShed(health);
     const hookIngestionSummary = summarizeHookIngestion(health);
     const launchDependenciesSummary = summarizeLaunchDependencies(health);
+    const schedulesPausedByFailureSummary = summarizeSchedulesPausedByFailure(health);
     const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
     const lessonYieldSummary = summarizeLessonYield(health);
     const ossAttemptsSummary = summarizeOssAttempts(health);
@@ -1546,6 +1599,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
         ...(launchDependenciesSummary
           ? { launchDependencies: launchDependenciesSummary }
+          : {}),
+        ...(schedulesPausedByFailureSummary
+          ? { schedulesPausedByFailure: schedulesPausedByFailureSummary }
           : {}),
         ...(capacitySummary ? { capacity: capacitySummary } : {}),
         ...(providerPausedSummary
@@ -1613,6 +1669,7 @@ export {
   summarizeSnapshotShed,
   summarizeHookIngestion,
   summarizeLaunchDependencies,
+  summarizeSchedulesPausedByFailure,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,

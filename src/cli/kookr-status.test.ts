@@ -22,6 +22,7 @@ import {
   summarizeSnapshotShed,
   summarizeHookIngestion,
   summarizeLaunchDependencies,
+  summarizeSchedulesPausedByFailure,
   summarizeHungSuspectTtlReclaim,
   summarizeLessonYield,
   summarizeOssAttempts,
@@ -1041,6 +1042,52 @@ describe('kookr-status renderReport', () => {
     };
     expect(renderReport({ port: 4800, health: zeroed, agents: [] }))
       .not.toContain('Launch dependencies:');
+  });
+
+  it('surfaces a WARN with count and sampled names when schedules are fail-closed paused (issue #2424)', () => {
+    const health = {
+      ...baseHealth,
+      schedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+          { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+          { id: 's3', name: 'sentinel', consecutiveFailures: 29 },
+          { id: 's4', name: 'idea-scout', consecutiveFailures: 12 },
+        ],
+      },
+    };
+    const out = renderReport({ port: 4800, health, agents: [] });
+    expect(out).toContain(
+      'WARN: 4 schedules paused after consecutive failures: orchestrator, deploy-conv, sentinel (+1 more)',
+    );
+    expect(out).not.toContain('idea-scout');
+  });
+
+  it('uses singular copy and lists every name when the pause set is small (issue #2424)', () => {
+    const health = {
+      ...baseHealth,
+      schedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
+        ],
+      },
+    };
+    expect(renderReport({ port: 4800, health, agents: [] })).toContain(
+      'WARN: 1 schedule paused after consecutive failures: orchestrator',
+    );
+  });
+
+  it('is a no-op when schedulesPausedByFailure is absent or empty (issue #2424)', () => {
+    expect(renderReport({ port: 4800, health: baseHealth, agents: [] }))
+      .not.toContain('paused after consecutive failures');
+    const empty = {
+      ...baseHealth,
+      schedules: { schedulesPausedByFailure: [] },
+    };
+    expect(renderReport({ port: 4800, health: empty, agents: [] }))
+      .not.toContain('paused after consecutive failures');
+    expect(renderReport({ port: 4800, health: empty, agents: [] }))
+      .not.toContain('WARN:');
   });
 
   it('always surfaces lessonYield as a compact gauge when present (issue #2305)', () => {
@@ -2330,6 +2377,54 @@ describe('kookr-status summarizeLaunchDependencies (issue #2363)', () => {
   });
 });
 
+describe('kookr-status summarizeSchedulesPausedByFailure (issue #2424)', () => {
+  it('returns null when schedules or the pause array is absent', () => {
+    expect(summarizeSchedulesPausedByFailure({ status: 'ok' })).toBeNull();
+    expect(
+      summarizeSchedulesPausedByFailure({ status: 'ok', schedules: {} }),
+    ).toBeNull();
+  });
+
+  it('returns null when the pause array is empty or every row is malformed', () => {
+    expect(
+      summarizeSchedulesPausedByFailure({
+        schedules: { schedulesPausedByFailure: [] },
+      }),
+    ).toBeNull();
+    expect(
+      summarizeSchedulesPausedByFailure({
+        schedules: {
+          schedulesPausedByFailure: [
+            { id: '', name: 'x', consecutiveFailures: 3 },
+            { id: 's1', name: '', consecutiveFailures: 3 },
+            { id: 's2', name: 'ok', consecutiveFailures: -1 },
+            { id: 's3', name: 'ok', consecutiveFailures: 'x' as unknown as number },
+            null as unknown as { id: string; name: string; consecutiveFailures: number },
+          ],
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns slim id/name/consecutiveFailures rows and skips malformed ones', () => {
+    expect(
+      summarizeSchedulesPausedByFailure({
+        schedules: {
+          schedulesPausedByFailure: [
+            { id: 's1', name: 'orchestrator', consecutiveFailures: 30.9 },
+            { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+            { id: '', name: 'skip-me', consecutiveFailures: 9 },
+            { extra: true } as unknown as { id: string; name: string; consecutiveFailures: number },
+          ],
+        },
+      }),
+    ).toEqual([
+      { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+      { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+    ]);
+  });
+});
+
 describe('kookr-status summarizeHungSuspectTtlReclaim (issue #2229)', () => {
   it('returns null when hungSuspectTtlReclaim is absent', () => {
     expect(summarizeHungSuspectTtlReclaim({ status: 'ok' })).toBeNull();
@@ -3542,6 +3637,43 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...deps, argv: ['--json'] });
     const envelope = parseSingleJsonLog(deps.logs);
     expect(envelope.details.launchDependencies).toBeUndefined();
+  });
+
+  it('includes details.schedulesPausedByFailure in --json when non-empty (issue #2424)', async () => {
+    mockSuccessfulFetch([], {
+      schedules: {
+        timezone: 'Europe/Paris',
+        catchUpMode: 'auto',
+        catchUpEnabled: true,
+        schedulerHealthy: true,
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+          { id: 's2', name: 'deploy-conv', consecutiveFailures: 55.2 },
+        ],
+      },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.details.schedulesPausedByFailure).toEqual([
+      { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+      { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+    ]);
+    expect(JSON.stringify(envelope.details.schedulesPausedByFailure)).not.toContain('timezone');
+  });
+
+  it('omits details.schedulesPausedByFailure in --json when absent or empty (issue #2424)', async () => {
+    mockSuccessfulFetch([], {});
+    const missing = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...missing, argv: ['--json'] });
+    expect(parseSingleJsonLog(missing.logs).details.schedulesPausedByFailure).toBeUndefined();
+
+    mockSuccessfulFetch([], { schedules: { schedulesPausedByFailure: [] } });
+    const empty = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...empty, argv: ['--json'] });
+    expect(parseSingleJsonLog(empty.logs).details.schedulesPausedByFailure).toBeUndefined();
   });
 
   it('includes a slim hungSuspectTtlReclaim summary in --json when residual elevated (issue #2229)', async () => {
