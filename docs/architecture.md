@@ -578,7 +578,7 @@ kookr/
 │   │   └── worktree-marker.ts             # Protected-worktree markers
 │   │
 │   ├── integrations/                      # Optional integration surfaces
-│   │   ├── webhook/                       # Inbound webhook → launch-task integration
+│   │   ├── webhook/                       # Outbound finding-delivery webhook (WebhookNotifier → KOOKR_WEBHOOK_URL)
 │   │   └── telegram/                      # Telegram voice/text ingestion and STT bridge
 │   │       ├── index.ts                   # Integration entrypoint
 │   │       ├── api-client.ts              # Telegram API wrapper
