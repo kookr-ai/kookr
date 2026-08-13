@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(metrics): alert when weekly window_too_short miss share exceeds threshold',
-      'feat(acquisition): recapture already-published when window ends with window_too_short',
-      'feat(acquisition): dual-session cover after confirmed BMO/AMC window_too_short',
+      'feat(metrics): alert when scorecard tier_infra_down miss share exceeds threshold',
+      'feat(acquisition): recapture already-published when window ends with tier_infra_down',
+      'feat(acquisition): classify classic fetch_error via classifySecFetchError before the acquire fold',
     ]);
   });
 
@@ -989,7 +989,7 @@ describe('lucy#1587 acquisition failover curated plan', () => {
           repo: 'jeanibarz/lucy',
           number: 1587,
           title: 'Umbrella: acquisition redundancy & failover',
-          openChildrenCount: 3, // invent-wave #16 live; open cap still skips
+          openChildrenCount: 3, // invent-wave titles live; open cap still skips
         }),
       ],
     });

@@ -1213,144 +1213,177 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * degraded stealth/feeds / treat those surfaces as obstructed for SEC
  * early-promote / omit stealth cache-miss from live attempt folds) shipped
  * and are title-exhausted. Invent wave 16 (queue-feeder 2026-08-13,
- * invent-product-wave #2069) continues W33 residual after wave 15:
- * window_too_short is 29/85 product misses (34.1%) with no product-metric
- * page; #2518 already-published recapture only arms no_source (2 misses)
- * so recapture.events stay 0; #2551 dual-session cover only stretches
- * unproven sessions, so a confirmed BMO/AMC that dies window_too_short
- * never tries the complementary half. Live GitHub leaves
- * jeanibarz/lucy#2944–#2946. Title idempotency prevents re-emit once those
- * exist.
+ * invent-product-wave #2069) #2944–#2946 (window_too_short share alert /
+ * window_too_short recapture / complementary dual-session cover) shipped
+ * and are title-exhausted. Invent wave 17 (queue-feeder 2026-08-13,
+ * invent-product-wave #2069) continues the next Goal-1 slice after wave 16:
+ * tier_infra_down is 26/85 product misses (30.6%) with no product-metric
+ * page; missClassForWindow prefers hasTierInfraDown over windowTooShort so
+ * #2945 never arms those rows; classic throws collapse to opaque
+ * fetch_error before classifySecFetchError can name timeout/403/429.
+ * Live GitHub leaves jeanibarz/lucy#2957–#2959. Title idempotency
+ * prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(metrics): alert when weekly window_too_short miss share exceeds threshold',
+      'feat(metrics): alert when scorecard tier_infra_down miss share exceeds threshold',
     goal:
-      'Page when window-too-short misses dominate the live Goal-1 miss mix under ' +
-      'umbrella #1587. The rolling detection scorecard (same bag #2730 already ' +
-      'reads) attributes 29 of 85 product misses (34.1%) to cause ' +
-      'window_too_short — the largest miss cause — while the product-metric pager ' +
-      'stays green. #2000 already auto-extends lagging AMC windows; #2730 already ' +
-      'pages on verification_reject miss share. Pin the rolling missRateByCause ' +
-      'bag, not the ISO-week acquisition scoreboard. Do not invent a 0% rate for ' +
-      'an unmeasurable mix.',
+      'Page when infrastructure-down misses are a large slice of the live Goal-1 ' +
+      'miss mix under umbrella #1587. The detection-scorecard missRateByCause bag ' +
+      '(same bag #2730 and #2944 already read) attributes 26 of 85 product misses ' +
+      '(30.6%) to cause tier_infra_down — the second-largest miss cause — while ' +
+      'the product-metric pager stays green. Live rows are already typed ' +
+      'missClass=tier_infra_down (JNJ/BLK/MS; reason often regulatory: fetch_error). ' +
+      'Do not invent a new 7-day rolling window: August has no fresh infra-down ' +
+      'slice, so a 7d filter would never page. Do not invent a 0% rate for an ' +
+      'unmeasurable mix. Do not change classifyMissCause.',
     acceptanceCriteria: [
-      'A rolling product miss mix with misses at or above a documented sample ' +
-        'floor and window_too_short / misses at or above a documented threshold ' +
-        'produces one alert of a new kind (e.g. windowTooShortShare) naming the ' +
-        'count, share, and threshold. Misses === 0 or missing miss-by-cause bag ' +
-        'do not page (unmeasurable, not 0%). Do not require the cause to be the ' +
-        'unique top cause.',
-      'verificationRejectShare (#2730), eventSeenNoContent (#2684), and ' +
-        'recaptureZeroAttempts (#2876) stay on their existing kinds. Read the ' +
-        'same rolling detection-scorecard / missRateByCause bag as #2730 — not ' +
-        'acquisition-weekly-scoreboard.json. .env.example documents floor / share ' +
-        'overrides.',
-      'Unit/fixture tests cover: (a) 29/85 window_too_short pages; (b) 0/85 does ' +
-        'not; (c) misses === 0 does not; (d) missing bag does not; (e) a 29/85 ' +
-        'mix still pages even if another cause is slightly larger.',
+      'The current detection-scorecard missRateByCause bag (not a new 7-day / ' +
+        'ISO-week slice, not acquisition-weekly-scoreboard.json) with misses at ' +
+        'or above a documented sample floor (default 10) and ' +
+        'tier_infra_down / misses at or above a documented threshold (default ' +
+        '0.30) produces one alert of a new kind (e.g. tierInfraDownShare) naming ' +
+        'the count, share, and threshold. A 26/85 mix pages even when ' +
+        'window_too_short is 29/85. Misses === 0 or a missing bag do not page ' +
+        '(unmeasurable, not 0%). Do not filter the bag by resolutionStatus. Do ' +
+        'not require this cause to be the unique top cause. Do not skip when a ' +
+        'sibling share alert is also firing.',
+      'verificationRejectShare (#2730), windowTooShortShare (#2944), ' +
+        'eventSeenNoContent (#2684), and recaptureZeroAttempts (#2876) stay on ' +
+        'their existing kinds. Clone evaluateWindowTooShortShareAlert. ' +
+        'classifyMissCause order stays missClass-first so this numerator does ' +
+        'not evaporate into fetch_error / ir_403. .env.example documents floor ' +
+        '/ share overrides.',
+      'Unit/fixture tests cover: (a) 26/85 tier_infra_down pages; (b) 0/85 does ' +
+        'not; (c) misses === 0 does not; (d) missing bag does not; (e) a 26/85 ' +
+        'mix still pages when window_too_short is 29/85; (f) a 7-day-empty / ' +
+        'full-bag-26/85 fixture still pages (no new rolling window).',
     ],
     fileHints: [
-      'src/product-metric-alerts.js (evaluateVerificationRejectShareAlert sibling)',
-      'src/detection-scorecard.js (miss-by-cause bag)',
+      'src/product-metric-alerts.js (evaluateWindowTooShortShareAlert sibling)',
+      'src/detection-scorecard.js (missRateByCause / classifyMissCause — do not reorder)',
       '.env.example',
     ],
     testHints: [
-      'unit: 29/85 window_too_short pages',
+      'unit: 26/85 tier_infra_down pages',
       'unit: 0/85 does not page',
       'unit: misses === 0 / missing bag do not page',
-      'unit: 29/85 still pages when a sibling cause is 30/85',
+      'unit: 26/85 still pages when window_too_short is 29/85',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): recapture already-published when window ends with window_too_short',
+      'feat(acquisition): recapture already-published when window ends with tier_infra_down',
     goal:
-      'Arm already-published recapture when a live window expires without a hit, ' +
-      'not only when the terminal row is missClass=no_source, under umbrella ' +
-      '#1587. missClassForWindow never returns window_too_short — that string is ' +
-      'a scorecard cause (mode fallback on watch_expired_* / watchdog-timeout) ' +
-      'or a mid-window watchdog stamp. Gating recapture on ' +
-      'missClass=window_too_short ∩ terminal resolution matches ~0 live rows. ' +
-      'Reuse detectNow / grace / source-blocklist. Keep the existing double-fire ' +
-      'key without missClass. Do not invent a new missClass.',
+      'Arm Path A3 already-published recapture when a live window\'s terminal ' +
+      'miss is missClass=tier_infra_down, under umbrella #1587. ' +
+      'missClassForWindow prefers hasTierInfraDown over windowTooShort, so #2945 ' +
+      'never arms the 26 typed infra-down rows (JNJ watch_expired + ' +
+      'missClass=tier_infra_down). #2518 only arms no_source. Reuse the same ' +
+      'detectNow worker, grace, and source-blocklist. Do not invent a new ' +
+      'missClass. Do not widen missClassForWindow. Immediate detectNow into a ' +
+      'still-dead SEC is an accepted residual (RFC-012 wanted retry-on-health-' +
+      'recovery); do not add a health gate live never stamps.',
     acceptanceCriteria: [
-      'When a live armed window is over and produced no hit, and the row’s ' +
-        'scorecard cause is window_too_short (mode in watch_expired_without_detection ' +
-        '/ watch_expired_resolution / detect_now_time_budget / detect_now_exhausted, ' +
-        'or empty missClass + those modes), arm one already-published recapture via ' +
-        'the same detectNow worker as #2518. Operator-aborted, disabled, ' +
-        'source-blocklisted, and outside-grace rows still refuse. A mid-window ' +
-        'watchdog throw that has not ended the window does not recapture.',
-      'no_source recapture (#2518) is unchanged. The double-fire key stays ' +
-        '${jobId}|${ticker}|${date} (no missClass) so a watchdog row and a later ' +
-        'terminal no_source on the same job cannot both fire detectNow. ' +
-        'Recapture-source jobs stay excluded. Do not widen missClassForWindow to ' +
-        'start returning window_too_short.',
-      'Unit/fixture tests cover: (a) terminal window-expired row (empty missClass ' +
-        '+ watch_expired_without_detection) → recapture armed; (b) terminal ' +
-        'no_source still arms only the #2518 path and shares the same key; (c) ' +
-        'mid-window watchdog missClass=window_too_short without window end refuses; ' +
-        '(d) operator-aborted and source-blocklisted refuse; (e) two rows for the ' +
-        'same job/ticker/date with different missClasses schedule at most one ' +
-        'detectNow.',
+      'When a live armed window is over and produced no hit, and the row\'s ' +
+        'missClass is tier_infra_down, and resolutionStatus is in the same ' +
+        'TERMINAL_RESOLUTION set as Path A/A2 (final, recheck_exhausted, AND ' +
+        'recheck — the second pass ended via safety cap is still last-pass), ' +
+        'arm one already-published recapture via the same detectNow worker as ' +
+        '#2518. provisional (first pass still has a recheck), operator-aborted, ' +
+        'disabled, source-blocklisted, and outside-grace rows refuse. Do not ' +
+        'recapture mid-window. Do not require failureCode, a regulatory: ' +
+        'reason prefix, or SEC_FETCH_FAILURE (live JNJ-class rows have ' +
+        'failureCode=null and byFailureCode.fetch_error). Do not require ' +
+        'resolutionStatus===final alone (0 live infra-down rows are final).',
+      'no_source recapture (#2518) and window_too_short recapture (#2945) stay ' +
+        'on their existing gates. The double-fire key is the current ' +
+        'noSourceRecaptureKey INCLUDING missClass ' +
+        '(${jobId}|${ticker}|${date}|${missClass}) so Path A / A2 / A3 do not ' +
+        'consume each other. Do not strip missClass from the key. Recapture-' +
+        'source jobs stay excluded. Do not widen missClassForWindow so ' +
+        'windowTooShort beats hasTierInfraDown.',
+      'Unit/fixture tests cover now-shaped rows (the July 26 are outside 6h ' +
+        'grace and must not be claimed as live recapture): (a) JNJ-shaped ' +
+        'recheck_exhausted + missClass=tier_infra_down → recapture armed; ' +
+        '(b) MS-shaped recheck + missClass=tier_infra_down → recapture armed; ' +
+        '(c) provisional + missClass=tier_infra_down refuses; (d) no_source ' +
+        'and window_too_short still use their existing gates; (e) two rows ' +
+        'same job/ticker/date different missClass → two keys, each path can ' +
+        'arm once; (f) operator-aborted and source-blocklisted refuse.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js (shouldScheduleNoSourceRecapture, noSourceRecaptureKey)',
+      'src/scheduler-no-source-recapture.js (shouldScheduleWindowTooShortRecapture sibling, noSourceRecaptureKey, TERMINAL_RESOLUTION)',
       'src/scheduler-runner.js (scheduleNoSourceRecapture)',
-      'src/detection-scorecard.js (WINDOW_TOO_SHORT_MODES / classifyMissCause)',
-      'src/scheduler-active-window-poll.js (missClassForWindow — do not widen)',
+      'src/scheduler-active-window-poll.js (missClassForWindow / hasTierInfraDown — do not widen)',
     ],
     testHints: [
-      'unit: window-expired untyped row arms one detectNow recapture',
-      'unit: no_source still uses the existing #2518 gate and the same key',
-      'unit: mid-window watchdog without window end refuses',
-      'unit: two rows same job/ticker/date → one recapture',
+      'unit: recheck_exhausted tier_infra_down arms one detectNow',
+      'unit: recheck (safety-cap last pass) tier_infra_down arms one detectNow',
+      'unit: provisional tier_infra_down refuses',
+      'unit: key includes missClass so Path A/A2/A3 do not collide',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): dual-session cover after confirmed BMO/AMC window_too_short',
+      'feat(acquisition): classify classic fetch_error via classifySecFetchError before the acquire fold',
     goal:
-      'After a confirmed BMO window dies without a hit, start a new complementary ' +
-      'AMC job — do not extend the in-flight deadline — under umbrella #1587. ' +
-      '#2551 only stretches unproven/unknown sessions (shouldDualSessionCover → ' +
-      'isUnprovenSessionJob) at arm time. Confirmed high-confidence BMO/AMC stay ' +
-      'single-session so a live first half is not double-polled. That must stay ' +
-      'true. Do not change shouldDualSessionCover. Do not invent a new missClass.',
+      'Replace opaque classic fetch_error with the existing SEC timeout/403/429/' +
+      'reset/byte_cap taxonomy at the throw site, under umbrella #1587. Live ' +
+      'JNJ-class rows carry reason regulatory: fetch_error, no top-level ' +
+      'failureCode, and tierOutcomes.classic.byFailureCode.fetch_error in the ' +
+      'thousands. classifySecFetchError already exists on the exhibit path; ' +
+      'classicFetchExceptionResult collapses every throw to ' +
+      'CLASSIC_FETCH_ERROR_FAILURE_CODE=fetch_error. Decorating ' +
+      'totalMissMetadata after the fold cannot recover timeout vs 403. missClass ' +
+      'stays tier_infra_down so the 26/85 scorecard numerator does not evaporate.',
     acceptanceCriteria: [
-      'When a confirmed BMO job is terminal with no hit, start one new ' +
-        'complementary AMC cover job for the same ticker/date if that AMC half is ' +
-        'still in the future. Kill-switch default off (env flag). Unproven/unknown ' +
-        'jobs stay on the existing #2551 live-window path — do not widen ' +
-        'shouldDualSessionCover or isUnprovenSessionJob.',
-      'Complementary cover must not start while the first session is still inside ' +
-        'its poll deadline. A confirmed session that hits, is operator-aborted, or ' +
-        'is already a recapture-source job does not arm a new job. Confirmed ' +
-        'AMC→BMO on the same calendar day is a documented skip. Stamp ' +
-        'dualSessionAttempted=true on the new complementary job when armed, and ' +
-        'false (not omitted) on the original terminal row when skipped. Do not ' +
-        'treat the current 0/158 stamp rate as proof that cover was skipped.',
-      'Unit/fixture tests cover: (a) confirmed BMO terminal miss → new AMC job ' +
-        'armed, shouldDualSessionCover still false for confirmed BMO; (b) first ' +
-        'session still polling → no new job; (c) confirmed BMO hit → no new job; ' +
-        '(d) unproven job still uses #2551 only; (e) confirmed AMC terminal miss ' +
-        'same day → skip + stamp false on the original row.',
+      'classicFetchExceptionResult (or the classic throw site that feeds it) ' +
+        'calls classifySecFetchError so timeout / 403 / 429 / reset / byte_cap ' +
+        'replace opaque fetch_error BEFORE the acquire fold. The written ' +
+        'detection row copies that code through acquire → totalMissMetadata. ' +
+        'Live JNJ-class throws are `new Error(\"SEC 403 for https://data.sec.gov/' +
+        'submissions/…\")` from secJson — no .status / .failureCode, and not ' +
+        'the HTTP 403 / TimeoutError fixtures already in ' +
+        'test/earnings-source-sec-fetch-error-taxonomy.test.js. Those live ' +
+        'SEC ${status} throws MUST become sec_403 (or the matching SEC_* code) ' +
+        'on the acquire fold: extend classifySecFetchError to treat `SEC 403` ' +
+        'like `HTTP 403`, or stamp .status on the secJson throw. Do not call ' +
+        'the leaf done because the existing HTTP 403 fixture already maps. ' +
+        'Unclassifiable non-status throws may stay fetch_error; do not invent ' +
+        'sec_other for every leftover.',
+      'missClass stays tier_infra_down. classifyMissCause order stays ' +
+        'missClass-first — do not prefer failureCode or the 26/85 leaf-1 ' +
+        'numerator splits into fetch_error / ir_403 / content_too_short. ' +
+        'hasOnlyNamedNotFoundFailures still prevents named empty-match from ' +
+        'becoming tier_infra_down. Issuer-side content_too_short / access_denied ' +
+        'halves of the 26 already have specific byFailureCode; this leaf does ' +
+        'not re-attribute those.',
+      'Unit/fixture tests cover: (a) classic timeout throw → SEC timeout code ' +
+        'on the fold + copied onto the detection row, missClass=tier_infra_down; ' +
+        '(b) `new Error(\"SEC 403 for https://data.sec.gov/submissions/CIK.json\")` ' +
+        '(no .status) → sec_403 on the acquire fold, missClass unchanged — not ' +
+        'only the existing `fetch failed: HTTP 403` fixture; (c) JNJ-shaped ' +
+        'absent top-level failureCode + byFailureCode.fetch_error is the ' +
+        'starting fixture, not a pre-stamped sec_* row; (d) classifyMissCause ' +
+        'on that row is still tier_infra_down; (e) named-not-found still is not ' +
+        'tier_infra_down.',
     ],
     fileHints: [
-      'src/scheduler-runner.js (post-terminal re-arm; new helper next to scheduleNoSourceRecapture)',
-      'src/scheduler-active-window-poll.js (shouldDualSessionCover / isUnprovenSessionJob — do not widen)',
-      'src/detection-scorecard.js (dualSessionAttempted bag — new rows only)',
+      'src/earnings-source.js (classicFetchExceptionResult / CLASSIC_FETCH_ERROR_FAILURE_CODE)',
+      'src/earnings-source/sec-exhibit.js (classifySecFetchError — reuse, do not fork)',
+      'src/earnings-source/sec-client.js (secJson `SEC ${status}` throw — stamp .status or extend the classifier)',
+      'src/scheduler-active-window-poll.js (totalMissMetadata copies result.failureCode)',
+      'src/detection-scorecard.js (classifyMissCause — do not reorder)',
     ],
     testHints: [
-      'unit: confirmed BMO terminal miss starts one new AMC job; arm-time dual-cover stays false',
-      'unit: in-deadline first session does not start a new job',
-      'unit: confirmed hit does not start a new job',
-      'unit: unproven job is unchanged (#2551 only)',
-      'unit: same-day confirmed AMC skip + stamp false',
+      'unit: classic timeout throw classified before acquire fold',
+      'unit: `SEC 403 for https://data.sec.gov/submissions/…` (no .status) → sec_403',
+      'unit: classifyMissCause still returns tier_infra_down',
+      'unit: named-not-found is not tier_infra_down',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
