@@ -201,7 +201,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   // When opening directly to playbooks, ensure the list is fetched.
   useEffect(() => {
-    if (relaunchPlaybookId || (projectContext && initialTab === 'playbooks')) {
+    if (relaunchPlaybookId || initialTab === 'playbooks') {
       // The playbook catalog follows the focused project: `cwd` is seeded from
       // the project (defaultCwd ?? projectCwd ?? …), so scanning it lists the
       // project's own `.kookr/playbooks/`. Falls back to serverCwd when the

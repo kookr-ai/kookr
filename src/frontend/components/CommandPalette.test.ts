@@ -100,6 +100,43 @@ describe('CommandPalette', () => {
     container.remove();
   });
 
+  test('browse mode lists launch and playbook actions in the tools section', () => {
+    const runLaunch = vi.fn();
+    const runPlaybooks = vi.fn();
+    act(() => {
+      root.render(React.createElement(CommandPalette, {
+        actions: [
+          ...actions,
+          { id: 'launch', label: 'Launch task', section: 'tools', keywords: ['spawn', 'new task', 'playbook'], run: runLaunch },
+          { id: 'playbooks', label: 'Browse playbooks', section: 'tools', keywords: ['playbook', 'spawn', 'new task'], run: runPlaybooks },
+        ],
+        tasks,
+        findings,
+        projects,
+        onSelectTask: vi.fn(),
+        onSelectFinding: vi.fn(),
+        onSelectProject: vi.fn(),
+        onClose: vi.fn(),
+      }));
+    });
+
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'));
+    expect(rows.map((row) => row.dataset.actionId)).toEqual([
+      'diagnostics',
+      'schedules',
+      'launch',
+      'playbooks',
+      'settings',
+    ]);
+    expect(container.textContent).toContain('Tools');
+
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'spawn'));
+    const filtered = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'))
+      .map((row) => row.dataset.actionId);
+    expect(filtered).toEqual(['launch', 'playbooks']);
+  });
+
   test('browse mode shows all actions grouped by section, no tasks', () => {
     render();
     const rows = container.querySelectorAll('[data-testid="command-palette-action"]');

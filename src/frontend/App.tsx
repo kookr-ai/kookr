@@ -306,6 +306,8 @@ function FindingsResizer({
 
 /** Command-palette actions hidden from read-only viewers (owner-only / mutating). */
 const READ_ONLY_HIDDEN_COMMANDS: ReadonlySet<string> = new Set([
+  'launch',
+  'playbooks',
   'sweep',
   'share-viewer',
   'settings',
@@ -1268,6 +1270,22 @@ export function App() {
     { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: () => setShowOperations((value) => !value) },
     { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
     { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
+    { id: 'launch', label: 'Launch task', section: 'tools', keywords: ['spawn', 'new task', 'playbook'], run: () => {
+      setLaunchProjectContext(null);
+      setLaunchProjectCwd(null);
+      setLaunchInitialTab('manual');
+      clearRelaunchTask();
+      track({ type: 'launch_dialog_opened', method: 'command_palette' });
+      openModal('launch');
+    } },
+    { id: 'playbooks', label: 'Browse playbooks', section: 'tools', keywords: ['playbook', 'spawn', 'new task'], run: () => {
+      setLaunchProjectContext(null);
+      setLaunchProjectCwd(null);
+      setLaunchInitialTab('playbooks');
+      clearRelaunchTask();
+      track({ type: 'launch_dialog_opened', method: 'command_palette_playbooks' });
+      openModal('launch');
+    } },
     ...(wideDetailActive
       ? [{
           id: 'terminal-focus',
