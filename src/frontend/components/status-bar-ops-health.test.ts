@@ -3,8 +3,9 @@
 /**
  * Status-bar pills for prod smoke-tick failing streak + resourceWatchdog
  * disabled (issue #2037) + chronic FAA residual (issue #2082) + launch
- * dependency degradation (issue #2364). Fixtures drive the store directly —
- * the poll hook is covered separately.
+ * dependency degradation (issue #2364) + fail-closed paused schedules
+ * (issue #2432). Fixtures drive the store directly — the poll hook is
+ * covered separately.
  */
 
 import React from 'react';
@@ -44,7 +45,7 @@ async function renderStatusBar(root: Root, props: { onOpenCapacity?: () => void 
   await flush();
 }
 
-describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
+describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -76,12 +77,13 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
     document.body.innerHTML = '';
   });
 
-  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear, deps clear)', async () => {
+  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear, deps clear, no paused schedules)', async () => {
     useKookrStore.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 0, status: 'ok', failingChecks: [] },
       resourceWatchdog: { enabled: true, lastDecision: 'idle' },
       capacityResidual: { finishedAwaitingAck: 0, oldestFinishedAwaitingAckAgeMs: null },
       launchDependencies: { totalDegradedTasks: 0, totalFindings: 0, dependencies: [] },
+      pausedSchedules: { schedulesPausedByFailure: [] },
     });
 
     await renderStatusBar(root);
@@ -91,10 +93,12 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-faa-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('Smoke: fail');
     expect(container.textContent).not.toContain('Watchdog: off');
     expect(container.textContent).not.toContain('FAA residual');
     expect(container.textContent).not.toContain('Deps:');
+    expect(container.textContent).not.toContain('schedule paused');
   });
 
   test('hides all pills when store has no ops-health data yet', async () => {
@@ -105,6 +109,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
     expect(container.textContent).not.toContain('Watchdog: off');
     expect(container.textContent).not.toContain('FAA residual');
     expect(container.textContent).not.toContain('Deps:');
+    expect(container.textContent).not.toContain('schedule paused');
   });
 
   test('shows Smoke: fail×N when consecutiveFailures >= 1', async () => {
@@ -126,6 +131,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
     expect(smoke?.getAttribute('title')).toContain('version-probe');
     expect(smoke?.getAttribute('title')).toContain('2026-07-28T15:45:37.810Z');
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
   });
 
   test('shows Watchdog: off when resourceWatchdog is disabled', async () => {
@@ -281,5 +287,59 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364)', () => {
     const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
     expect(pill?.textContent).toBe('Deps: kb×3 · gh×2 +1');
     expect(pill?.getAttribute('title')).toContain('tts=1 (binary)');
+  });
+
+  test('hides paused-schedules pill when the array is empty (issue #2432)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      pausedSchedules: { schedulesPausedByFailure: [] },
+    });
+
+    await renderStatusBar(root);
+
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain('schedule paused');
+  });
+
+  test('shows N schedules paused when fail-closed pauses exist (issue #2432)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      pausedSchedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+          { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+        ],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toBe('2 schedules paused');
+    expect(pill?.getAttribute('title')).toContain('2 schedules paused after consecutive failures');
+    expect(pill?.getAttribute('title')).toContain('orchestrator (fail×30)');
+    expect(pill?.getAttribute('title')).toContain('GET /api/health.schedules');
+    expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-faa-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
+  });
+
+  test('shows singular 1 schedule paused without disturbing other pills (issue #2432)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
+      pausedSchedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
+        ],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')?.textContent)
+      .toBe('1 schedule paused');
+    expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')?.textContent)
+      .toBe('Smoke: fail×2');
+    expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
   });
 });

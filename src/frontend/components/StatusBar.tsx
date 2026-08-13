@@ -23,6 +23,11 @@ import {
   formatLaunchDepsTitle,
   shouldShowLaunchDepsPill,
 } from './launch-deps-pill.js';
+import {
+  formatPausedSchedulesLabel,
+  formatPausedSchedulesTitle,
+  shouldShowPausedSchedulesPill,
+} from './paused-schedules-pill.js';
 
 interface Props {
   findings: number;
@@ -172,15 +177,17 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
 
 /**
  * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
- * (issue #2037), chronic finishedAwaitingAck residual (issue #2082), and
- * launch-dependency degradation (issue #2364). Hidden when healthy / enabled /
- * residual clear / no data yet.
+ * (issue #2037), chronic finishedAwaitingAck residual (issue #2082),
+ * launch-dependency degradation (issue #2364), and fail-closed paused
+ * schedules (issue #2432). Hidden when healthy / enabled / residual clear /
+ * no data yet.
  */
 function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
   const capacityResidual = useKookrStore((s) => s.capacityResidual);
   const launchDependencies = useKookrStore((s) => s.launchDependencies);
+  const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
@@ -189,8 +196,9 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const faaAgeMs = capacityResidual?.oldestFinishedAwaitingAckAgeMs ?? null;
   const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
   const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
+  const showPausedSchedules = shouldShowPausedSchedulesPill(pausedSchedules);
 
-  if (!showSmoke && !showWatchdog && !showFaa && !showLaunchDeps) return null;
+  if (!showSmoke && !showWatchdog && !showFaa && !showLaunchDeps && !showPausedSchedules) return null;
 
   const smokeTitle = showSmoke
     ? [
@@ -235,6 +243,11 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
     showLaunchDeps && launchDependencies ? formatLaunchDepsLabel(launchDependencies) : '';
   const launchDepsTitle =
     showLaunchDeps && launchDependencies ? formatLaunchDepsTitle(launchDependencies) : '';
+
+  const pausedSchedulesLabel =
+    showPausedSchedules && pausedSchedules ? formatPausedSchedulesLabel(pausedSchedules) : '';
+  const pausedSchedulesTitle =
+    showPausedSchedules && pausedSchedules ? formatPausedSchedulesTitle(pausedSchedules) : '';
 
   return (
     <span className="ops-health-pills" data-testid="ops-health-pills">
@@ -289,6 +302,16 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
           role="status"
         >
           {launchDepsLabel}
+        </span>
+      )}
+      {showPausedSchedules && (
+        <span
+          className="ops-health-pill ops-health-paused-schedules"
+          data-testid="ops-health-paused-schedules-pill"
+          title={pausedSchedulesTitle}
+          role="status"
+        >
+          {pausedSchedulesLabel}
         </span>
       )}
     </span>

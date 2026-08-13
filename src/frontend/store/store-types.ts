@@ -582,6 +582,27 @@ export interface LaunchDependenciesStatus {
   dependencies: LaunchDependencyStatusRow[];
 }
 
+/**
+ * One fail-closed paused schedule from `GET /api/health.schedules`
+ * (issue #2432). Tooltip lists name + consecutive-failure count; the pill
+ * itself is just a count.
+ */
+export interface PausedScheduleStatusRow {
+  id: string;
+  name: string;
+  consecutiveFailures: number;
+}
+
+/**
+ * Slim projection of `GET /api/health.schedules` for the status-bar paused
+ * schedules pill (issue #2432). Elevated-only when
+ * `schedulesPausedByFailure.length >= 1`; an empty array is a valid
+ * "none paused" projection when the block is present.
+ */
+export interface PausedSchedulesStatus {
+  schedulesPausedByFailure: PausedScheduleStatusRow[];
+}
+
 /** Decision-bucket counts from `GET /api/health.lessonYield` (lesson-yield.v2). */
 export interface LessonYieldBucketCounts {
   wroteLesson: number;
@@ -610,6 +631,7 @@ export interface OpsHealthPayload {
   capacityResidual?: CapacityResidualStatus | null;
   pipelineStarvation?: PipelineStarvationStatus | null;
   launchDependencies?: LaunchDependenciesStatus | null;
+  pausedSchedules?: PausedSchedulesStatus | null;
   lessonYield?: LessonYieldStatus | null;
 }
 
@@ -626,11 +648,17 @@ export interface SystemStatusSlice {
   pipelineStarvation: PipelineStarvationStatus | null;
   /** Launch-dependency degradation from `/api/health.launchDependencies` (issue #2364). */
   launchDependencies: LaunchDependenciesStatus | null;
+  /**
+   * Fail-closed paused schedules from `/api/health.schedules` (issue #2432).
+   * Named `pausedSchedules` so it does not collide with the existing
+   * `schedules: ScheduleResponse[]` list used by ScheduleSection.
+   */
+  pausedSchedules: PausedSchedulesStatus | null;
   /** Lesson-authoring yield projection from `/api/health.lessonYield` (issue #2395). */
   lessonYield: LessonYieldStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / lesson-yield projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

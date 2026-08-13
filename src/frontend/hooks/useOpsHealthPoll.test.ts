@@ -9,6 +9,7 @@ import {
   parseLaunchDependencies,
   parseLessonYield,
   parsePipelineStarvation,
+  parseSchedules,
   useOpsHealthPoll,
 } from './useOpsHealthPoll.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
@@ -50,7 +51,7 @@ describe('useOpsHealthPoll', () => {
     vi.unstubAllGlobals();
   });
 
-  test('parses /api/health smoke + watchdog + capacity residual + pipeline starvation + launch deps into the store', async () => {
+  test('parses /api/health smoke + watchdog + capacity residual + pipeline starvation + launch deps + schedules into the store', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -102,6 +103,14 @@ describe('useOpsHealthPoll', () => {
             },
           ],
           categories: [],
+        },
+        schedules: {
+          timezone: 'Europe/Paris',
+          schedulerHealthy: true,
+          schedulesPausedByFailure: [
+            { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+            { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+          ],
         },
         lessonYield: {
           schemaVersion: 'lesson-yield.v2',
@@ -167,6 +176,14 @@ describe('useOpsHealthPoll', () => {
     });
     // Slim projection must not carry affectedTaskIds.
     expect(JSON.stringify(useKookrStore.getState().launchDependencies)).not.toContain('affectedTaskIds');
+    expect(useKookrStore.getState().pausedSchedules).toEqual({
+      schedulesPausedByFailure: [
+        { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+        { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+      ],
+    });
+    // Slim projection must not carry timezone / runner internals.
+    expect(JSON.stringify(useKookrStore.getState().pausedSchedules)).not.toContain('timezone');
     expect(useKookrStore.getState().lessonYield).toEqual({
       windowDays: 1,
       yieldRate: 0.75,
@@ -199,6 +216,7 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().capacityResidual).toBeNull();
     expect(useKookrStore.getState().pipelineStarvation).toBeNull();
     expect(useKookrStore.getState().launchDependencies).toBeNull();
+    expect(useKookrStore.getState().pausedSchedules).toBeNull();
     expect(useKookrStore.getState().lessonYield).toBeNull();
   });
 });
@@ -361,6 +379,45 @@ describe('parseCapacityResidual (issue #2082)', () => {
       byClass: { finishedAwaitingAck: 1 },
       oldestFinishedAwaitingAckAgeMs: -50,
     })).toEqual({ finishedAwaitingAck: 1, oldestFinishedAwaitingAckAgeMs: 0 });
+  });
+});
+
+describe('parseSchedules (issue #2432)', () => {
+  test('returns null for missing or malformed schedules blocks', () => {
+    expect(parseSchedules(null)).toBeNull();
+    expect(parseSchedules(undefined)).toBeNull();
+    expect(parseSchedules('x')).toBeNull();
+    expect(parseSchedules({ schedulesPausedByFailure: 'not-an-array' })).toBeNull();
+  });
+
+  test('treats a missing or null array as none paused', () => {
+    expect(parseSchedules({})).toEqual({ schedulesPausedByFailure: [] });
+    expect(parseSchedules({ schedulesPausedByFailure: null })).toEqual({
+      schedulesPausedByFailure: [],
+    });
+    expect(parseSchedules({ timezone: 'UTC', schedulerHealthy: true })).toEqual({
+      schedulesPausedByFailure: [],
+    });
+  });
+
+  test('parses rows, falls back name to id, and skips malformed entries', () => {
+    expect(parseSchedules({
+      timezone: 'Europe/Paris',
+      schedulesPausedByFailure: [
+        { id: 's1', name: 'orchestrator', consecutiveFailures: 30.9 },
+        { id: 's2', consecutiveFailures: 'x' },
+        { id: '', name: 'bad' },
+        { name: 'no-id', consecutiveFailures: 1 },
+        null,
+        { id: 's3', name: 'sentinel', consecutiveFailures: -4 },
+      ],
+    })).toEqual({
+      schedulesPausedByFailure: [
+        { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+        { id: 's2', name: 's2', consecutiveFailures: 0 },
+        { id: 's3', name: 'sentinel', consecutiveFailures: 0 },
+      ],
+    });
   });
 });
 

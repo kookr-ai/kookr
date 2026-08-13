@@ -131,12 +131,13 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().resourceStatusReceivedAtMs).toBe(123);
   });
 
-  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, pipeline starvation, and launch deps projections', () => {
+  test('handleOpsHealth stores smoke-tick, resourceWatchdog, capacity residual, pipeline starvation, launch deps, and paused-schedules projections', () => {
     expect(store.getState().prodSmokeTick).toBeNull();
     expect(store.getState().resourceWatchdog).toBeNull();
     expect(store.getState().capacityResidual).toBeNull();
     expect(store.getState().pipelineStarvation).toBeNull();
     expect(store.getState().launchDependencies).toBeNull();
+    expect(store.getState().pausedSchedules).toBeNull();
     expect(store.getState().lessonYield).toBeNull();
 
     store.getState().handleOpsHealth({
@@ -158,6 +159,11 @@ describe('Kookr Zustand Store', () => {
         totalFindings: 9,
         dependencies: [
           { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
+        ],
+      },
+      pausedSchedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
         ],
       },
       lessonYield: {
@@ -190,6 +196,11 @@ describe('Kookr Zustand Store', () => {
         { dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] },
       ],
     });
+    expect(store.getState().pausedSchedules).toEqual({
+      schedulesPausedByFailure: [
+        { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+      ],
+    });
     expect(store.getState().lessonYield).toEqual({
       windowDays: 1,
       yieldRate: 0.75,
@@ -198,7 +209,7 @@ describe('Kookr Zustand Store', () => {
       buckets: { wroteLesson: 2, explicitSkip: 1, searchOnly: 0, noKbActivity: 1 },
     });
 
-    // Partial update: only smoke — watchdog + capacity residual + starvation + launch deps left alone.
+    // Partial update: only smoke — watchdog + capacity residual + starvation + launch deps + schedules left alone.
     store.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 0, status: 'ok' },
     });
@@ -207,7 +218,15 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().capacityResidual?.finishedAwaitingAck).toBe(7);
     expect(store.getState().pipelineStarvation?.repos['kookr-ai/kookr']?.consecutiveBlockedEmpty).toBe(2);
     expect(store.getState().launchDependencies?.totalDegradedTasks).toBe(8);
+    expect(store.getState().pausedSchedules?.schedulesPausedByFailure).toHaveLength(1);
     expect(store.getState().lessonYield?.yieldRate).toBe(0.75);
+    // Must not collide with the ScheduleResponse[] list used by ScheduleSection.
+    expect(store.getState().schedules).toEqual([]);
+
+    // Missing health.schedules parses to null and must clear a prior projection.
+    store.getState().handleOpsHealth({ pausedSchedules: null });
+    expect(store.getState().pausedSchedules).toBeNull();
+    expect(store.getState().schedules).toEqual([]);
   });
 
   test('handleUpdate updates single agent', () => {
