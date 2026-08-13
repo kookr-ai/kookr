@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
-import { mkdtemp, rm, readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   loadSettings,
@@ -771,6 +771,24 @@ describe('loadSettings / saveSettings', () => {
     const content = await readFile(filePath, 'utf-8');
     expect(content).toContain('\n');
     expect(content.endsWith('\n')).toBe(true);
+  });
+
+  it('persists settings.json as owner-only 0o600 (issue #2430)', async () => {
+    const filePath = join(tmpDir, 'settings.json');
+    await saveSettings(filePath, DEFAULT_SETTINGS);
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+  });
+
+  it('forces 0o600 even when umask would leave the file world-readable (issue #2430)', async () => {
+    // 0o000 would yield 0o666 from a default open() without fchmod.
+    const previousUmask = process.umask(0o000);
+    try {
+      const filePath = join(tmpDir, 'settings.json');
+      await saveSettings(filePath, DEFAULT_SETTINGS);
+      expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
   it('validates on load — clamps out-of-range values', async () => {
