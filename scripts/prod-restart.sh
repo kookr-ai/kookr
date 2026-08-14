@@ -405,6 +405,8 @@ writer_lock_is_clear() {
     return 0
   fi
   # Zombies still pass kill -0 but cannot own the data dir (issue #2501).
+  # Linux: /proc/<pid>/stat. macOS has no /proc — use `ps -o stat=` (BSD
+  # and procps both put Z first: Z, Z+, Zs).
   if [[ -r "/proc/${pid}/stat" ]]; then
     local stat state=""
     stat="$(cat "/proc/${pid}/stat" 2>/dev/null || true)"
@@ -412,6 +414,10 @@ writer_lock_is_clear() {
     state="${state#"${state%%[![:space:]]*}"}"
     state="${state:0:1}"
     [[ "$state" == "Z" ]] && return 0
+  else
+    local ps_stat=""
+    ps_stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
+    [[ "${ps_stat:0:1}" == "Z" ]] && return 0
   fi
   return 1
 }

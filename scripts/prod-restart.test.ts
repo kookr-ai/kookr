@@ -1001,11 +1001,13 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
           'wait_for_writer_lock_clear 5',
           'echo LOCK_CLEAR',
         ].join('; ')],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', timeout: 10_000 },
       );
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Outgoing server still holds/);
+      expect(result.stdout).toContain('Single-writer lock released');
       expect(result.stdout).toContain('LOCK_CLEAR');
+      expect(result.stdout).not.toMatch(/WARN: .*server\.pid still present/);
     } finally {
       holder.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });

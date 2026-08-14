@@ -89,4 +89,26 @@ describe('acquireSingleWriterLock (RFC R27)', () => {
     })).toThrow(/another Kookr server \(pid 1\)/);
     expect(sleeps.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('takes over a real child pid without mocking liveness (issue #2501)', async () => {
+    const dir = tempDir();
+    const { spawn } = await import('node:child_process');
+    // Short-lived child: acquire is synchronous (Atomics.wait), so a
+    // setTimeout killer would never fire. The child exits on its own
+    // during the retry window while we use the production isAlive probe.
+    const child = spawn('sleep', ['0.2'], { stdio: 'ignore' });
+    const childPid = child.pid;
+    expect(childPid).toBeDefined();
+    writeFileSync(join(dir, 'server.pid'), `${childPid}\n`);
+    try {
+      const release = acquireSingleWriterLock(dir, {
+        retryMs: 1_500,
+        retryIntervalMs: 40,
+      });
+      expect(readFileSync(join(dir, 'server.pid'), 'utf8').trim()).toBe(String(process.pid));
+      release();
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  });
 });

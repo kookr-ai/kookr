@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -127,7 +128,17 @@ function isZombiePid(pid: number): boolean {
     if (close === -1) return false;
     return stat[close + 2] === 'Z';
   } catch {
-    return false;
+    // No /proc (macOS). BSD and procps both expose state as the first
+    // character of `ps -o stat=` (`Z`, `Z+`, `Zs`, …).
+    try {
+      const out = execFileSync('ps', ['-p', String(pid), '-o', 'stat='], {
+        encoding: 'utf8',
+        timeout: 1_000,
+      }).trim();
+      return out.startsWith('Z');
+    } catch {
+      return false;
+    }
   }
 }
 
