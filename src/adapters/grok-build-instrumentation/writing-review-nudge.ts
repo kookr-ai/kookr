@@ -1,11 +1,14 @@
 /**
- * Soft, once-per-session reminder: the first `gh pr create` is denied with
- * writing-review instructions; a retry in the same session is allowed.
+ * Soft, once-per-session reminder: the first human-facing publish command
+ * (`gh pr create`, `gh issue create`, control-room post-message, Discord
+ * webhook, last-synthesis.md write) is denied with writing-review
+ * instructions; a retry in the same session is allowed.
  *
  * Isolated Grok sessions (a managed process whose config root is a temporary
  * GROK_HOME, not the operator's ~/.grok) never load hooks from the distributed
  * toolkit plugin. This file is written next to the monitoring hooks at launch
- * so the reminder reaches that session without mutating ~/.grok. Issue #2455.
+ * so the reminder reaches that session without mutating ~/.grok.
+ * Issues #2455 / #2461.
  */
 import { resolveWritingReviewNudgePath } from '../../core/hook-writer-paths.js';
 import { GROK_HOOK_TIMEOUT_SECONDS } from './monitoring-hooks.js';

@@ -168,4 +168,105 @@ describe('kookr-writing-review-nudge', () => {
     expect(first.status).toBe(0);
     expect(JSON.parse(first.stdout).decision).toBe('deny');
   });
+
+  it.each([
+    [
+      'control-room post-message',
+      'curl -sS -X POST http://127.0.0.1:5678/control-room/api/post-message -d @report.json',
+    ],
+    [
+      'Discord webhook',
+      'curl -sS -X POST https://discord.com/api/webhooks/123/abc -H "Content-Type: application/json" -d @body.json',
+    ],
+    ['last-synthesis write', 'cat > /tmp/playbook/last-synthesis.md <<EOF\nhello\nEOF'],
+    ['last-synthesis tee', 'tee /tmp/playbook/last-synthesis.md'],
+    ['gh issue create', 'gh issue create --title "ops digest" --body-file /tmp/body.md'],
+  ])('denies the first %s and allows the retry', (_label, command) => {
+    if (!SCRIPT) throw new Error('nudge script missing');
+    const tmp = mkdtempSync(join(tmpdir(), 'writing-nudge-'));
+    const payload = {
+      sessionId: 'sess-publish-1',
+      toolInput: { command },
+    };
+    try {
+      const env = { ...process.env, TMPDIR: tmp, GROK_HOME: '' };
+      const first = spawnSync('/bin/bash', [SCRIPT], {
+        input: JSON.stringify(payload),
+        encoding: 'utf8',
+        env,
+      });
+      expect(first.status).toBe(0);
+      const denied = JSON.parse(first.stdout);
+      expect(denied.decision).toBe('deny');
+      expect(denied.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(denied.reason).toMatch(/clear-technical-writing/);
+      expect(denied.reason).toMatch(/clear-writing-reviewer/);
+      expect(denied.reason).toMatch(/one-time reminder/);
+      expect(denied.reason).toMatch(/retry the same command/);
+
+      const second = spawnSync('/bin/bash', [SCRIPT], {
+        input: JSON.stringify(payload),
+        encoding: 'utf8',
+        env,
+      });
+      expect(second.status).toBe(0);
+      expect(second.stdout.trim()).toBe('');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('shares one deny-once marker across publish paths in the same session', () => {
+    if (!SCRIPT) throw new Error('nudge script missing');
+    const tmp = mkdtempSync(join(tmpdir(), 'writing-nudge-'));
+    const env = { ...process.env, TMPDIR: tmp, GROK_HOME: '' };
+    try {
+      const first = spawnSync('/bin/bash', [SCRIPT], {
+        input: JSON.stringify({
+          sessionId: 'sess-shared-1',
+          toolInput: {
+            command: 'curl -X POST http://127.0.0.1:4800/control-room/api/post-message',
+          },
+        }),
+        encoding: 'utf8',
+        env,
+      });
+      expect(JSON.parse(first.stdout).decision).toBe('deny');
+
+      const laterPr = spawnSync('/bin/bash', [SCRIPT], {
+        input: JSON.stringify({
+          sessionId: 'sess-shared-1',
+          toolInput: { command: 'gh pr create --title later' },
+        }),
+        encoding: 'utf8',
+        env,
+      });
+      expect(laterPr.status).toBe(0);
+      expect(laterPr.stdout.trim()).toBe('');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores commands that are not human-facing publish paths', () => {
+    const ignored = [
+      'curl -sS https://example.com/api/health',
+      'curl -sS https://discord.com/',
+      'curl -sS https://discord.com/api/users/@me',
+      'curl -sS http://127.0.0.1:4800/control-room/api/health',
+      'gh issue view 12',
+      'gh pr checks 99',
+      'cat /tmp/notes.md',
+      'cat /tmp/playbook/last-synthesis.md',
+      'git commit -m "docs: mention last-synthesis in the playbook"',
+    ];
+    for (const command of ignored) {
+      const result = runNudge({
+        sessionId: 'sess-ignore-1',
+        toolInput: { command },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('');
+    }
+  });
 });
