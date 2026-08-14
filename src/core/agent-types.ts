@@ -28,6 +28,7 @@ export {
   resolvePinnedAgentFallback,
   filterFallbackCandidates,
   buildAgentSelectionOptions,
+  previewRoundRobinNextLabel,
   CLAUDE_CODE_EFFORT_LEVELS,
   CODEX_CLI_EFFORT_LEVELS,
   GROK_BUILD_EFFORT_LEVELS,

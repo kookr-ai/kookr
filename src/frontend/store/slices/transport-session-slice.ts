@@ -145,6 +145,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     serverCwd: '',
     availableAgentTypes: [],
     defaultAgentType: 'claude-code',
+    roundRobinIndex: 0,
     buildInfo: null,
     serverStartedAt: null,
     playbooks: [],

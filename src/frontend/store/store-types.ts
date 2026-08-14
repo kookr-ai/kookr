@@ -136,6 +136,13 @@ export interface TransportSessionSlice {
   serverCwd: string;
   availableAgentTypes: AvailableAgentType[];
   defaultAgentType: AgentSelection;
+  /**
+   * Server-managed round-robin rotation cursor (`settings.roundRobinIndex`).
+   * Seeded from GET /api/settings; advanced locally after a successful
+   * round-robin launch so the picker preview stays honest until the next
+   * settings fetch.
+   */
+  roundRobinIndex: number;
   buildInfo: BuildInfo | null;
   serverStartedAt: string | null;
   playbooks: Playbook[];

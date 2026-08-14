@@ -404,3 +404,23 @@ export function buildAgentSelectionOptions(
     available.length > 0 ? [...available] : [...AVAILABLE_AGENT_TYPES];
   return base.length >= 2 ? [...base, ROUND_ROBIN_OPTION] : base;
 }
+
+/**
+ * Human label for the picker "Next: {label}" line when the operator selected
+ * round-robin. Prefers a server-advertised concrete type that is still in the
+ * rotation; otherwise uses {@link resolveRoundRobinAgent} so the hint matches
+ * launch-time resolution. Returns undefined when no concrete agent remains.
+ */
+export function previewRoundRobinNextLabel(
+  options: readonly AvailableAgentSelection[],
+  opts?: { cursor?: number; advertisedNext?: AgentType },
+): string | undefined {
+  const rotation = options
+    .map((option) => option.type)
+    .filter((type): type is AgentType => type !== ROUND_ROBIN_AGENT_TYPE && isAgentType(type));
+  if (rotation.length === 0) return undefined;
+  const next = opts?.advertisedNext && rotation.includes(opts.advertisedNext)
+    ? opts.advertisedNext
+    : resolveRoundRobinAgent(opts?.cursor ?? 0, rotation);
+  return options.find((option) => option.type === next)?.label;
+}

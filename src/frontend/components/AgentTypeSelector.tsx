@@ -1,5 +1,11 @@
 import React from 'react';
-import type { AgentSelection, AvailableAgentSelection } from '../../shared/protocol.js';
+import {
+  previewRoundRobinNextLabel,
+  ROUND_ROBIN_AGENT_TYPE,
+  type AgentSelection,
+  type AgentType,
+  type AvailableAgentSelection,
+} from '../../shared/protocol.js';
 
 /** Empty string means "use server default" (no schedule pin). */
 export type AgentTypeSelectorValue = AgentSelection | '';
@@ -12,6 +18,14 @@ interface Props {
   compact?: boolean;
   /** Label for the empty/server-default option. When set, prepends that choice. */
   defaultOptionLabel?: string;
+  /**
+   * Server-advertised concrete agent for the next round-robin launch. When it
+   * is still in `options`, the preview uses this instead of resolving from
+   * {@link roundRobinIndex}.
+   */
+  nextAgentType?: AgentType;
+  /** Rotation cursor matching the launch service's `roundRobinIndex`. */
+  roundRobinIndex?: number;
 }
 
 export function AgentTypeSelector({
@@ -21,7 +35,13 @@ export function AgentTypeSelector({
   label = 'Agent',
   compact = false,
   defaultOptionLabel,
+  nextAgentType,
+  roundRobinIndex,
 }: Props) {
+  const nextLabel = value === ROUND_ROBIN_AGENT_TYPE
+    ? previewRoundRobinNextLabel(options, { cursor: roundRobinIndex, advertisedNext: nextAgentType })
+    : undefined;
+
   return (
     <label className={compact ? 'agent-type-select compact' : 'agent-type-select'}>
       <span className="agent-type-select-label">{label}</span>
@@ -38,6 +58,9 @@ export function AgentTypeSelector({
           </option>
         ))}
       </select>
+      {nextLabel && (
+        <span className="agent-type-select-next">Next: {nextLabel}</span>
+      )}
     </label>
   );
 }

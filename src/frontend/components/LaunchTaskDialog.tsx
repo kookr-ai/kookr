@@ -19,6 +19,7 @@ import {
   type LaunchTaskDialogDraft,
 } from '../store/launch-task-dialog-draft.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
+import { noteRoundRobinLaunch } from '../store/round-robin-cursor.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
@@ -89,6 +90,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
+  const roundRobinIndex = useKookrStore((s) => s.roundRobinIndex);
   const setPlaybooksLoading = useKookrStore((s) => s.setPlaybooksLoading);
   const playbooks = useKookrStore((s) => s.playbooks);
   const playbooksLastFetchedAt = useKookrStore((s) => s.playbooksLastFetchedAt);
@@ -307,6 +309,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       // task is visible, restored otherwise).
       markLaunchTaskDialogDraftSubmitted();
       saveLastAgentType(agentType);
+      noteRoundRobinLaunch(agentType);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
@@ -560,6 +563,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 setModel('');
               }}
               options={agentOptions}
+              roundRobinIndex={roundRobinIndex}
             />
             <LaunchEffortModelPickers
               agentType={agentType}

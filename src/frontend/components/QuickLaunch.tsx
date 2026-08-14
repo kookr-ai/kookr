@@ -3,6 +3,7 @@ import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } f
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
+import { noteRoundRobinLaunch } from '../store/round-robin-cursor.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import {
@@ -30,7 +31,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType } = useKookrStore();
+  const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
   const launchCwds = useLaunchTaskCwds();
   const duplicateCandidates = useMemo(
     () => withLaunchTaskCwds(agents, launchCwds),
@@ -132,6 +133,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     });
     if (sent) {
       saveLastAgentType(agentType);
+      noteRoundRobinLaunch(agentType);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
@@ -192,6 +194,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           options={agentOptions}
           label="Agent"
           compact
+          roundRobinIndex={roundRobinIndex}
         />
         {(effortOptionsForSelection(agentType).length > 0
           || modelOptionsForSelection(agentType).length > 0) && (

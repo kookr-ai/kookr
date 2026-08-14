@@ -4,6 +4,7 @@ import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protoc
 import { resolveCleanupOverride } from './cleanup-override.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
+import { applyRoundRobinIndex } from './store/round-robin-cursor.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
 import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
@@ -613,11 +614,13 @@ export function App() {
         shortcutBindings?: PlatformShortcutBindingOverrides;
         speakVerbosity?: VerbosityScale;
         cleanupWorktreeOnComplete?: boolean;
+        roundRobinIndex?: number;
       }) => {
         if (cancelled) return;
         setShortcutOverrides(settings.shortcutBindings ?? {});
         setSpeakVerbositySnapshot(settings.speakVerbosity);
         setCleanupWorktreeOnComplete(settings.cleanupWorktreeOnComplete);
+        applyRoundRobinIndex(settings.roundRobinIndex);
       })
       .catch(() => {});
     return () => { cancelled = true; };
