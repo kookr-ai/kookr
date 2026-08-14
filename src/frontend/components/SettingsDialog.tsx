@@ -109,6 +109,34 @@ type SettingsTab = 'general' | 'sharing' | 'hooks';
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'sharing', 'hooks'];
 
+// Searchable terms per tab, used only to decide which tab to switch to when the
+// active tab has no visible match for the search query. The actual show/hide of
+// rows and sections is driven by matching the rendered DOM text (see the search
+// effect), so this index only needs terms that also appear in each tab's markup
+// — keeping it a subset of the rendered text prevents switching to a tab that
+// would then show nothing. Only the active tab is mounted at a time, so this is
+// how a query typed on one tab can find a match living on another.
+const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
+  general: [
+    'notifications & alerts', 'sound alerts', 'alert volume', 'chime sound',
+    'spoken summary length', 'quiet hours', 'detection sensitivity',
+    'stale agent timeout', 'repeated error threshold', 'task management',
+    'default agent', 'max concurrent tasks', 'auto-close delay',
+    'completion-ready ttl escalation', 'hung-task reaper', 'hung-task reap threshold',
+    'clean worktrees on completion', 'effort', 'reply snippets', 'saved replies',
+    'keyboard shortcuts', 'platform defaults', 'github polling', 'enable polling',
+    'polling interval', 'oss sources', 'auto-watch local sources',
+  ],
+  sharing: [
+    'relay connection', 'relay url', 'node id', 'node token', 'relay admin token',
+    'account token', 'display name', 'hosted relay', 'session sharing recovery',
+    'sharing',
+  ],
+  hooks: [
+    'hooks', 'sessionstart', 'read-only',
+  ],
+};
+
 // Which tab hosts each focusable field. Extend this when SettingsFocusField
 // gains a new value — the Record type makes the requirement exhaustive.
 const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
@@ -556,9 +584,12 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [noSearchResults, setNoSearchResults] = useState(false);
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
     sharing: null,
@@ -592,6 +623,77 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         setLoading(false);
       });
   }, []);
+
+  // Filter the visible settings by the search query. Only the active tab is
+  // mounted, so we match against its rendered DOM text and toggle inline
+  // display. A section is shown when any of its text matches the query; this
+  // is deliberately structure-agnostic so it works for both the row-based
+  // General/Hooks sections and the Sharing section (a single section with two
+  // titles and field-based, not row-based, controls). Within a shown section
+  // we narrow to the matching rows only when doing so would not hide the match
+  // itself — a title-level or non-row match keeps every row visible. When
+  // nothing on the active tab matches, jump to the first other tab whose index
+  // has the term; if no tab matches at all, flag no results.
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const query = searchQuery.trim().toLowerCase();
+    const sections = Array.from(body.querySelectorAll<HTMLElement>('.settings-section'));
+    const rowSelector = '.settings-row, .hook-inventory-row';
+
+    if (!query) {
+      for (const section of sections) {
+        section.style.display = '';
+        for (const row of Array.from(section.querySelectorAll<HTMLElement>(rowSelector))) {
+          row.style.display = '';
+        }
+      }
+      setNoSearchResults(false);
+      return;
+    }
+
+    let visibleSections = 0;
+    for (const section of sections) {
+      const rows = Array.from(section.querySelectorAll<HTMLElement>(rowSelector));
+      const sectionMatches = (section.textContent ?? '').toLowerCase().includes(query);
+      if (!sectionMatches) {
+        section.style.display = 'none';
+        continue;
+      }
+      section.style.display = '';
+      visibleSections++;
+
+      // A section can carry more than one title (Sharing bundles two). If any
+      // title matches, keep the whole section as-is rather than hiding rows.
+      const titleMatches = Array.from(section.querySelectorAll('.settings-section-title')).some(
+        (title) => (title.textContent ?? '').toLowerCase().includes(query),
+      );
+      const matchingRows = rows.filter((row) => (row.textContent ?? '').toLowerCase().includes(query));
+      if (titleMatches || matchingRows.length === 0) {
+        // Match is title-level or lives outside any row — show everything so
+        // the matched text is never hidden.
+        for (const row of rows) row.style.display = '';
+      } else {
+        for (const row of rows) {
+          row.style.display = matchingRows.includes(row) ? '' : 'none';
+        }
+      }
+    }
+
+    if (visibleSections === 0) {
+      const target = SETTINGS_TABS.find(
+        (tab) => tab !== activeTab && SETTINGS_SEARCH_INDEX[tab].some((term) => term.includes(query)),
+      );
+      if (target) {
+        setActiveTab(target);
+        setNoSearchResults(false);
+        return;
+      }
+      setNoSearchResults(true);
+    } else {
+      setNoSearchResults(false);
+    }
+  }, [searchQuery, activeTab, settings, loading]);
 
   // Deep-link focus: when opened with a target field, switch to the right
   // tab, scroll the target input into view, focus it, and select its contents
@@ -872,6 +974,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
           <h3 id="settings-dialog-title">Settings</h3>
           <button ref={closeButtonRef} className="dialog-close" onClick={onClose} aria-label="Close">&times;</button>
         </div>
+        <div className="settings-search">
+          <input
+            type="search"
+            className="settings-search-input"
+            placeholder="Search settings…"
+            aria-label="Search settings"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
         <div className="dialog-tabs settings-dialog-tabs" role="tablist" aria-label="Settings sections">
           {SETTINGS_TABS.map((tab) => {
             const isActive = activeTab === tab;
@@ -898,7 +1010,12 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
           })}
         </div>
 
-        <div className="settings-dialog-body">
+        <div className="settings-dialog-body" ref={bodyRef}>
+          {/* Always-mounted live region so screen readers reliably announce the
+              no-results state when it appears (text is toggled, not the node). */}
+          <div className="settings-search-empty" role="status" aria-live="polite">
+            {searchQuery.trim() && noSearchResults ? `No settings match “${searchQuery.trim()}”.` : null}
+          </div>
           {loading && <div className="settings-loading">Loading...</div>}
           {error && <div className="settings-error">{error}</div>}
           {warnings.length > 0 && (
