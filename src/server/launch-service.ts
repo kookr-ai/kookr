@@ -1763,33 +1763,43 @@ async function launchTaskCore(
     abandon.reaped = true;
     // Operator signal (issue #2500): the incident that motivated this fix was
     // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
-    // counters. This reap runs OUTSIDE the periodic sweep, so emit the same
-    // evidence here — a positive log line plus a `session.reap`-shaped audit row
-    // (actor `system:launch-service`) — so the same forensic tooling confirms
-    // the fix is firing instead of the leak just silently not happening.
+    // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
+    // reaper's evidence here — a positive intent line now, and the durable
+    // `session.reap` row (actor `system:launch-service`) only AFTER
+    // `adapter.stop()` actually resolves. Matching the reaper's contract
+    // (session-reaper.ts: `killSession` then audit row, and NO success row when
+    // the kill throws), a failed kill must never leave a false "reaped" trail —
+    // the session is already recorded on the task, so the next reaper sweep
+    // still reaps it as a terminal-task-leak.
     console.warn(
-      `[launch] linked + reaping abandoned-launch session ${sessionId} for terminal task ${task.id} ` +
+      `[launch] linking + reaping abandoned-launch session ${sessionId} for terminal task ${task.id} ` +
       `(agent ${agentType}) — owned as terminal-task-leak (60s), not left as a 24h unowned orphan`,
     );
-    void appendAuditRow(deps.auditLogPath, {
-      type: 'session.reap',
-      timestamp: nowISO(),
-      actor: 'system:launch-service',
-      sessionId,
-      taskId: task.id,
-      kind: 'terminal-task-leak',
-      signal: 'SIGTERM_then_SIGKILL',
-      reason: 'launch abandoned after session-create (top-level launch timeout) — late dtach master linked and reaped',
-    });
     // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
     // #1528 race helper does the same on a late RESOLUTION; this covers the
     // common case where the launch never resolves at all).
-    void Promise.resolve(adapter.stop(sessionId)).catch((stopErr) => {
-      console.warn(
-        `[launch] failed to reap abandoned session ${sessionId} for task ${task.id}: ` +
-        `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-      );
-    });
+    void Promise.resolve(adapter.stop(sessionId)).then(
+      () => {
+        void appendAuditRow(deps.auditLogPath, {
+          type: 'session.reap',
+          timestamp: nowISO(),
+          actor: 'system:launch-service',
+          sessionId,
+          taskId: task.id,
+          kind: 'terminal-task-leak',
+          signal: 'SIGTERM_then_SIGKILL',
+          reason:
+            'launch abandoned after session-create (top-level launch timeout) — late dtach master linked and reaped',
+        });
+      },
+      (stopErr) => {
+        console.warn(
+          `[launch] failed to reap abandoned session ${sessionId} for task ${task.id} ` +
+          '(recorded on the task; the next reaper sweep reaps it as a terminal-task-leak): ' +
+          `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+        );
+      },
+    );
   };
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),

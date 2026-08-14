@@ -1216,6 +1216,46 @@ describe('launchTask', () => {
       }
     });
 
+    it('does NOT write a success session.reap audit row when adapter.stop() rejects (kill failed)', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kookr-launch-audit-fail-'));
+      try {
+        const auditLogPath = join(dir, 'audit.jsonl');
+        deps.auditLogPath = auditLogPath;
+        const adapter = deps.adapterRegistry.get('claude-code');
+        // The kill fails — the master may still be alive, so no "reaped" row.
+        (adapter.stop as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('killSession failed'));
+        (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+          (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+            opts?.onPhase?.('session-create');
+            opts?.onSessionCreated?.('kookr-killfail');
+            opts?.onPhase?.('agent-boot');
+            return new Promise<string>(() => { /* hangs → times out */ });
+          },
+        );
+        deps.getLaunchTimeoutMs = () => 20;
+
+        await expect(launchTask(deps, { prompt: 'kill fails', cwd: '/tmp' }))
+          .rejects.toBeInstanceOf(LaunchTimeoutError);
+        // Give the rejected stop() and any (absent) audit write time to settle.
+        await new Promise((resolve) => setTimeout(resolve, 60));
+
+        // The session is still linked to the task (reaper safety net)…
+        const [disposed] = store.listTasks();
+        expect(disposed.sessions.some((s) => s.tmuxSession === 'kookr-killfail')).toBe(true);
+        // …but no false-positive `session.reap` success row was written.
+        const raw = await readFile(auditLogPath, 'utf-8').catch(() => '');
+        const reaped = raw
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+          .some((r) => r.type === 'session.reap' && r.sessionId === 'kookr-killfail');
+        expect(reaped).toBe(false);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
     it('a successful launch under the timeout neither records an abandoned session nor reaps (AC#4)', async () => {
       const adapter = deps.adapterRegistry.get('claude-code');
       (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
