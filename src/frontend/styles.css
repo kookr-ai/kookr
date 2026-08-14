@@ -7956,6 +7956,45 @@ button.ops-health-pill.ops-health-faa:focus-visible {
   width: 100%;
 }
 
+.project-sidebar-filter {
+  position: relative;
+  width: 36px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.project-sidebar-filter-input {
+  box-sizing: border-box;
+  width: 36px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 20px;
+}
+
+.project-sidebar-filter-input::placeholder {
+  color: var(--text-muted);
+}
+
+.project-sidebar-filter-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.project-sidebar-filter-input:focus {
+  width: 168px;
+  z-index: 30;
+  outline: 2px solid var(--teal);
+  outline-offset: -1px;
+}
+
+.project-sidebar-filter.has-query .project-sidebar-filter-input {
+  border-color: var(--teal);
+}
+
 .project-sidebar-divider {
   width: 24px;
   height: 1px;
