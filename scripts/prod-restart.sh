@@ -386,9 +386,11 @@ enter_drain_before_stop() {
 }
 
 # The outgoing server unlinks ${KOOKR_DIR}/server.pid as the last shutdown
-# step — after it has already closed the HTTP listen socket. A pid file that
-# still names a live (non-zombie) process is therefore the outgoing server,
-# not a second instance. Wait for it; TERM/KILL if it lingers.
+# step — after it has already closed the HTTP listen socket. Wait for that
+# file to name a dead/zombie pid (or disappear). Do NOT signal the listed
+# pid: after a crash the number can be reused by an unrelated process, and
+# a second SIGTERM aborts graceful close (issue #2501 review).
+# Port/start pids are already TERMed by stop_existing_server.
 writer_lock_holder_pid() {
   local lock_file="${KOOKR_DIR}/server.pid"
   local pid=""
@@ -433,8 +435,7 @@ wait_for_writer_lock_clear() {
 
   pid="$(writer_lock_holder_pid || true)"
   if [[ -n "$pid" ]]; then
-    echo "Outgoing server still holds ${KOOKR_DIR}/server.pid (pid ${pid}); waiting for it to release"
-    terminate_pids TERM "$pid"
+    echo "Waiting for ${KOOKR_DIR}/server.pid holder (pid ${pid}) to exit before start"
   fi
 
   while (( SECONDS < deadline )); do
@@ -445,19 +446,12 @@ wait_for_writer_lock_clear() {
     sleep 1
   done
 
-  pid="$(writer_lock_holder_pid || true)"
-  if [[ -n "$pid" ]] && ! writer_lock_is_clear; then
-    echo "Force-killing outgoing server still holding the single-writer lock: ${pid}"
-    terminate_pids KILL "$pid"
-    sleep 1
-  fi
-
   if writer_lock_is_clear; then
     echo "Single-writer lock released"
     return 0
   fi
 
-  echo "WARN: ${KOOKR_DIR}/server.pid still present after shutdown; new boot will retry/take over if stale"
+  echo "WARN: ${KOOKR_DIR}/server.pid still names a live pid after ${timeout_seconds}s; new boot will retry then fail if the holder is still alive"
   return 0
 }
 

@@ -984,9 +984,9 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
     }
   });
 
-  it('TERMs a live lock holder and returns once that pid is no longer a live owner', () => {
+  it('waits for a short-lived lock holder to exit without signaling it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
-    const holder = spawn('sleep', ['30'], { stdio: 'ignore' });
+    const holder = spawn('sleep', ['0.4'], { stdio: 'ignore' });
     const holderPid = holder.pid;
     expect(holderPid).toBeDefined();
     try {
@@ -1004,10 +1004,12 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
         { encoding: 'utf8', timeout: 10_000 },
       );
       expect(result.status).toBe(0);
-      expect(result.stdout).toMatch(/Outgoing server still holds/);
+      expect(result.stdout).toMatch(/Waiting for .*server\.pid holder/);
       expect(result.stdout).toContain('Single-writer lock released');
       expect(result.stdout).toContain('LOCK_CLEAR');
-      expect(result.stdout).not.toMatch(/WARN: .*server\.pid still present/);
+      expect(result.stdout).not.toMatch(/terminate_pids|Force-killing|SIGTERM|SIGKILL/);
+      // The helper must not have killed the child; sleep exits on its own.
+      expect(result.stdout).not.toMatch(/WARN: .*live pid/);
     } finally {
       holder.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });
