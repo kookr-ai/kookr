@@ -291,7 +291,9 @@ listener serves.
   (404 → clients proceed as pre-lock), release calls no-op.
 - **Single-writer assertion**: boot takes a pid lock (`server.pid`) on the data
   dir so a second server process fails loudly instead of silently interleaving
-  writes (R27).
+  writes (R27). A planned `prod:restart` waits for the outgoing process to
+  drop that lock (and retries for a few seconds on acquire) because the old
+  server frees the listen port before it unlinks the pid file.
 
 ### `tasks.json` snapshots
 
