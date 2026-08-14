@@ -930,8 +930,9 @@ The system SHALL serve the frontend SPA and provide a health endpoint.
 - Frontend SPA served at `/`
 - Health check available
 - Server binds to configurable port
+- After a successful listen, an interactive loopback start opens the dashboard URL once (`xdg-open` / `open`). `CI=true`, `KOOKR_OPEN_BROWSER=0`, a non-TTY stdin, or a non-loopback bind skip the open. A missing opener must not fail startup.
 
-**Evidence:** `src/server/index.ts` (Hono HTTP server, static file serving, startup flow).
+**Evidence:** `src/server/index.ts` (Hono HTTP server, static file serving, startup flow), `src/server/bootstrap/start-http-and-websockets.ts`, `src/server/bootstrap/open-dashboard-browser.ts`.
 
 ### R6.6: Platform Support — SHALL — `partial`
 

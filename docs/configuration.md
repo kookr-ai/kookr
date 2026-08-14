@@ -15,6 +15,8 @@ KOOKR_PORT=4800
 
 `pnpm dev` overrides the backend port to `4801` so it does not collide with a stable production-style instance on `4800`.
 
+Interactive local starts open the dashboard URL once in the default browser. Set `KOOKR_OPEN_BROWSER=0` to keep the printed URL only (scripted `prod:update` restarts, CI, or a non-TTY stdin already skip).
+
 State directory:
 
 - Port `4800`: `~/.kookr/`

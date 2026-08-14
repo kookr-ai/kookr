@@ -41,7 +41,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Terminal access: interactive xterm.js terminal in browser fully satisfies F4.6. Direct external `dtach -a` remains an operator escape hatch, but the UI no longer exposes a copy-attach button
 - [x] Task lifecycle: Open → InProgress → Completed/Cancelled (persisted in JSON)
 - [x] Stop agent from GUI (kill dtach session)
-- [x] `npx kookr` starts server (via `bin/kookr.js`). Automatic browser-opening is deferred as a small polish item — users currently open the URL printed on startup.
+- [x] `npx kookr` starts server (via `bin/kookr.js`). Interactive loopback starts open the dashboard URL once (`xdg-open` / `open`); set `KOOKR_OPEN_BROWSER=0` to keep the printed URL only.
 
 **Demo:** Open Kookr in browser. Supervisor findings panel shows agents needing attention with explanations. Click a finding, see its interactive terminal. Send a hint, auto-advance to next finding.
 
