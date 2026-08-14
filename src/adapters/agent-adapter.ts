@@ -102,6 +102,19 @@ export interface AdapterLaunchOptions {
    * that don't instrument phases simply omit the calls.
    */
   onPhase?: (phase: LaunchPhase) => void;
+  /**
+   * Session-created notification (issue #2500). The adapter invokes this once,
+   * with the terminal session id, immediately AFTER the dtach master / terminal
+   * session has been created (`createSession` resolved) and BEFORE the
+   * `agent-boot` wait — i.e. the earliest point a live master exists. The launch
+   * service uses it to link and reap a master whose launch is then abandoned at
+   * the top-level launch timeout: `addSession` (the normal ownership record)
+   * only runs at `ack`, so a master that comes up during `session-create` but
+   * never reaches `ack` would otherwise be left unowned (reaped only after 24h).
+   * Optional and side-effect-free: a launch that never calls it behaves exactly
+   * as before. The launch service's callback never throws back into the adapter.
+   */
+  onSessionCreated?: (sessionId: string) => void;
 }
 
 /**

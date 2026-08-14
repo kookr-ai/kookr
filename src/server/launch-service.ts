@@ -27,6 +27,7 @@ import {
 } from '../core/launch-dependency-preflight.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { appendAuditRow } from '../core/audit-log.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
@@ -121,6 +122,15 @@ export interface LaunchServiceDeps {
    */
   recordLaunchBootLatency?: (agentType: AgentType, timings: LaunchPhaseTimings) => void;
   interactionLog?: DeferredInteractionLogWriter;
+  /**
+   * Shared `audit.jsonl` path (issue #2500). When set, a launch abandoned after
+   * its dtach master came up writes a `session.reap`-shaped audit row (actor
+   * `system:launch-service`) as it links + reaps that late master — the same
+   * durable evidence the periodic {@link SessionReaperService} sweep emits, so
+   * an operator can confirm this out-of-sweep reap fired. Omitted (older
+   * wiring/tests) ⇒ no audit row (the record + kill still happen).
+   */
+  auditLogPath?: string;
   dependencyPreflightRunner?: DependencyPreflightRunner;
   /**
    * Operator drain gate (issue #659). When provided and returning false, the
@@ -788,7 +798,19 @@ function effectiveMaxActiveForLaunch(
 async function raceLaunchAgainstTimeout(
   launchPromise: Promise<string>,
   timeoutMs: number,
-  ctx: { taskId: string; agentType: AgentType; adapter: Pick<import('../adapters/agent-adapter.js').AgentAdapter, 'stop'> },
+  ctx: {
+    taskId: string;
+    agentType: AgentType;
+    adapter: Pick<import('../adapters/agent-adapter.js').AgentAdapter, 'stop'>;
+    /**
+     * Shared reap guard (issue #2500). When the caller already links + reaps the
+     * abandoned session via `onSessionCreated` (the common case), a late
+     * RESOLUTION of the same promise must NOT `stop()` the same id a second time
+     * and log a misleading "orphaned session" warning. If provided and already
+     * `reaped`, the late-settle stop is skipped; otherwise this handler claims it.
+     */
+    reapGuard?: { reaped: boolean };
+  },
 ): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -809,6 +831,13 @@ async function raceLaunchAgainstTimeout(
       // logged, and defused — never allowed back into launch state.
       launchPromise.then(
         (sessionId) => {
+          // Issue #2500: the abandon path may already have linked + reaped this
+          // exact session via `onSessionCreated`. Skip a redundant second stop()
+          // (and its misleading "orphaned session" warning) when it did.
+          if (ctx.reapGuard) {
+            if (ctx.reapGuard.reaped) return;
+            ctx.reapGuard.reaped = true;
+          }
           console.warn(
             `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
             `(session ${sessionId}) — stopping orphaned session`,
@@ -1700,8 +1729,86 @@ async function launchTaskCore(
   // adapter can mark the `session-create`/`agent-boot`/`ack` boundaries that
   // live inside `adapter.launch()`; the other fields stay conditional so a
   // launch with none of them is byte-identical to pre-#1589 apart from onPhase.
+  const adapter = adapterRegistry.get(agentType);
+  // Issue #2500: an abandoned launch (top-level launch timeout) that already
+  // brought up a dtach master during `session-create` must LINK that master to
+  // the task and REAP it — otherwise the reaper finds a live master with no
+  // owning task and classifies it `unowned` (reaped only after 24h, or 2h under
+  // dtach pressure), which is exactly what tripped the soft bound. The adapter
+  // reports the master id via `onSessionCreated` the moment it exists; we record
+  // it here and, once (or if already) timed out, link + kill it.
+  const abandon: { timedOut: boolean; sessionId: string | undefined; reaped: boolean } = {
+    timedOut: false,
+    sessionId: undefined,
+    reaped: false,
+  };
+  const linkAndReapAbandonedSession = (sessionId: string): void => {
+    // Link first (terminal-safe, idempotent) so the reaper owns the master as a
+    // `terminal-task-leak` (60s) even if the async kill below races a sweep,
+    // and so a restart never re-attaches it (recorded `lastStatus: 'aborted'`).
+    try {
+      taskStore.recordAbandonedLaunchSession(task.id, {
+        tmuxSession: sessionId,
+        agentType,
+        cwd: opts.cwd,
+        createdAt: new Date(),
+      });
+    } catch (linkErr) {
+      console.warn(
+        `[launch] failed to link abandoned session ${sessionId} to task ${task.id}: ` +
+        `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
+      );
+    }
+    if (abandon.reaped) return;
+    abandon.reaped = true;
+    // Operator signal (issue #2500): the incident that motivated this fix was
+    // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
+    // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
+    // reaper's evidence here — a positive intent line now, and the durable
+    // `session.reap` row (actor `system:launch-service`) only AFTER
+    // `adapter.stop()` actually resolves. Matching the reaper's contract
+    // (session-reaper.ts: `killSession` then audit row, and NO success row when
+    // the kill throws), a failed kill must never leave a false "reaped" trail —
+    // the session is already recorded on the task, so the next reaper sweep
+    // still reaps it as a terminal-task-leak.
+    console.warn(
+      `[launch] linking + reaping abandoned-launch session ${sessionId} for terminal task ${task.id} ` +
+      `(agent ${agentType}) — owned as terminal-task-leak (60s), not left as a 24h unowned orphan`,
+    );
+    // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
+    // #1528 race helper does the same on a late RESOLUTION; this covers the
+    // common case where the launch never resolves at all).
+    void Promise.resolve(adapter.stop(sessionId)).then(
+      () => {
+        void appendAuditRow(deps.auditLogPath, {
+          type: 'session.reap',
+          timestamp: nowISO(),
+          actor: 'system:launch-service',
+          sessionId,
+          taskId: task.id,
+          kind: 'terminal-task-leak',
+          signal: 'SIGTERM_then_SIGKILL',
+          reason:
+            'launch abandoned after session-create (top-level launch timeout) — late dtach master linked and reaped',
+        });
+      },
+      (stopErr) => {
+        console.warn(
+          `[launch] failed to reap abandoned session ${sessionId} for task ${task.id} ` +
+          '(recorded on the task; the next reaper sweep reaps it as a terminal-task-leak): ' +
+          `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+        );
+      },
+    );
+  };
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
+    onSessionCreated: (sessionId) => {
+      abandon.sessionId = sessionId;
+      // Late creation: the launch was already abandoned when the master came up
+      // ("session socket appears shortly after abandon"). Link + reap it now.
+      if (abandon.timedOut) linkAndReapAbandonedSession(sessionId);
+    },
     ...(opts.ralphVerdictEnv
       ? {
           extraEnv: {
@@ -1731,11 +1838,10 @@ async function launchTaskCore(
     // its beginLaunch reservation — and its schedule's 'reserved' execution —
     // for hours. Late settlement of the abandoned promise is defused inside
     // the race helper.
-    const adapter = adapterRegistry.get(agentType);
     await raceLaunchAgainstTimeout(
       adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
       resolveLaunchTimeoutMs(deps),
-      { taskId: task.id, agentType, adapter },
+      { taskId: task.id, agentType, adapter, reapGuard: abandon },
     );
   } catch (err) {
     // Never silently delete a persisted task (issue #1588). A launch that
@@ -1752,6 +1858,15 @@ async function launchTaskCore(
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
     taskStore.endLaunch(task.id);
+    // Issue #2500: if a dtach master came up during `session-create` (or comes
+    // up shortly after this abandon — the late `onSessionCreated` handles that
+    // case), link it to the task BEFORE the terminal transition so the reaper
+    // owns it as a `terminal-task-leak` (60s), and reap it so a late boot cannot
+    // outlive the abandoned launch. Done before setDisposition/terminate so the
+    // link lands while the task is still non-terminal; the record method is
+    // terminal-safe regardless.
+    abandon.timedOut = true;
+    if (abandon.sessionId) linkAndReapAbandonedSession(abandon.sessionId);
     // R5b: release any issue claim / relaunch lease granted above so a failed
     // launch cannot leave an orphaned map entry / phantom granted audit row.
     // safeRelease never throws; lifecycle wrappers would also release on

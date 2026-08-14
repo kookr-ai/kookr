@@ -139,6 +139,55 @@ describe('SessionReaperService.runSweep', () => {
     });
   });
 
+  it('classifies a launch-abandoned master linked to a terminated task as terminal-task-leak, not a 24h unowned orphan (issue #2500)', async () => {
+    await withTempAuditLog(async (auditLogPath) => {
+      const taskStore = new TaskStore();
+      const backend = new FakeTerminalBackend();
+      // A launch that timed out: the task is `terminated` and the late dtach
+      // master was linked via recordAbandonedLaunchSession (lastStatus aborted).
+      const task = taskStore.createTask('Cross-Repo Orchestrator', '/cwd');
+      taskStore.recordAbandonedLaunchSession(task.id, {
+        tmuxSession: 'kookr-24895049',
+        agentType: 'grok-build',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      taskStore.setDisposition(task.id, {
+        reason: 'launch_timeout',
+        at: new Date().toISOString(),
+        source: 'launch-service',
+        detail: 'Agent launch timed out after 180s',
+      });
+      taskStore.terminateTask(task.id);
+
+      await backend.createSession(spec('kookr-24895049'));
+      // Only ~1.8h old — WELL under the 24h unowned threshold. Before #2500 the
+      // reaper saw no owning task and waited 24h (2h under pressure); now it is
+      // owned by a terminal task, so the 60s terminal grace applies.
+      backend.setSessionStartedAt('kookr-24895049', Date.now() - 1.8 * HOUR_MS);
+
+      const reaper = new SessionReaperService({
+        taskStore,
+        backend,
+        auditLogPath,
+        getConfig: () => ENABLED_CONFIG,
+      });
+      const result = await reaper.runSweep();
+
+      expect(result.orphanCount).toBe(0);
+      expect(result.terminalLeakCount).toBe(1);
+      expect(result.reaped.map((d) => d.sessionId)).toEqual(['kookr-24895049']);
+      expect(await backend.isAlive('kookr-24895049')).toBe(false);
+      const rows = await readAuditRows(auditLogPath);
+      expect(rows[0]).toMatchObject({
+        type: 'session.reap',
+        sessionId: 'kookr-24895049',
+        kind: 'terminal-task-leak',
+        taskId: task.id,
+      });
+    });
+  });
+
   it('does not reap an orphan session younger than the age threshold', async () => {
     const taskStore = new TaskStore();
     const backend = new FakeTerminalBackend();

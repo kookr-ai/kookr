@@ -1077,6 +1077,11 @@ export class TaskStore {
     return this.sessionRegistry.addSession(taskId, session);
   }
 
+  /** @see SessionRegistry.recordAbandonedLaunchSession */
+  recordAbandonedLaunchSession(taskId: string, session: SessionInfo): void {
+    this.sessionRegistry.recordAbandonedLaunchSession(taskId, session);
+  }
+
   /** @see SessionRegistry.updateSession */
   updateSession(
     taskId: string,

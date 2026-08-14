@@ -358,6 +358,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    // Issue #2500: the dtach master now exists — report it so an abandoned
+    // launch (top-level launch timeout) can link and reap it instead of leaving
+    // it unowned for up to 24h. `addSession` below only runs at `ack`.
+    opts?.onSessionCreated?.(tmuxName);
     // Phase instrumentation (issue #1589): agent-boot covers readiness and the
     // initial-prompt delivery/submit-confirmation loop below.
     opts?.onPhase?.('agent-boot');

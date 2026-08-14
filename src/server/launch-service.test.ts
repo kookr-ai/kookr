@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -1084,6 +1084,200 @@ describe('launchTask', () => {
       const [disposed] = store.listTasks();
       expect(disposed.disposition?.reason).toBe('launch_error');
       expect(disposed.launchPhaseTimings?.incompletePhase).toBe('session-create');
+    });
+  });
+
+  describe('launch-timeout links + reaps a late dtach master (issue #2500)', () => {
+    it('records the session created during session-create on the terminated task AND reaps it (AC#1)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      // session-create completes (master `kookr-late1` exists) then agent-boot
+      // hangs past the top-level timeout — the exact leak: a live master whose
+      // launch is abandoned before `addSession` (which only runs at `ack`).
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          opts?.onSessionCreated?.('kookr-late1');
+          opts?.onPhase?.('agent-boot');
+          return new Promise<string>(() => { /* hangs in agent-boot → times out */ });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      await expect(launchTask(deps, { prompt: 'boot hang', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      const [disposed] = store.listTasks();
+      expect(disposed.status).toBe('terminated');
+      expect(disposed.disposition?.reason).toBe('launch_timeout');
+      // The master is now recorded on the task (so the reaper owns it as a
+      // terminal-task-leak, not an unowned 24h orphan) with a dead lastStatus.
+      const recorded = disposed.sessions.find((s) => s.tmuxSession === 'kookr-late1');
+      expect(recorded).toBeDefined();
+      expect(recorded?.lastStatus).toBe('aborted');
+      // …and it was reaped via the adapter's stop() (TERM -> grace -> KILL).
+      expect(adapter.stop).toHaveBeenCalledWith('kookr-late1');
+    });
+
+    it('reaps + links a master whose socket appears shortly AFTER the abandon (AC#2)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      // The launch is abandoned while still in session-create; the dtach master
+      // only comes up a moment later (onSessionCreated fires late). It must still
+      // be linked (never left unowned for 24h) and reaped.
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          return new Promise<string>(() => {
+            setTimeout(() => opts?.onSessionCreated?.('kookr-late2'), 40);
+          });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      await expect(launchTask(deps, { prompt: 'late socket', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      // Let the late master appear.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const [disposed] = store.listTasks();
+      expect(disposed.status).toBe('terminated');
+      const recorded = disposed.sessions.find((s) => s.tmuxSession === 'kookr-late2');
+      expect(recorded).toBeDefined();
+      expect(recorded?.lastStatus).toBe('aborted');
+      expect(adapter.stop).toHaveBeenCalledWith('kookr-late2');
+    });
+
+    it('reaps the abandoned session exactly once even when the abandoned launch RESOLVES late with the same id', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      let resolveLate: (id: string) => void = () => {};
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          opts?.onSessionCreated?.('kookr-dup');
+          opts?.onPhase?.('agent-boot');
+          // Resolve LATE (after the timeout) with the SAME id — exercises the
+          // race helper's late-settlement path against the abandon reap.
+          return new Promise<string>((resolve) => { resolveLate = resolve; });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      await expect(launchTask(deps, { prompt: 'late resolve', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      // Now let the abandoned promise resolve late.
+      resolveLate('kookr-dup');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // The shared reap guard must dedup: stop() fires once, not twice.
+      expect(adapter.stop).toHaveBeenCalledTimes(1);
+      expect(adapter.stop).toHaveBeenCalledWith('kookr-dup');
+    });
+
+    it('writes a session.reap-shaped audit row (actor system:launch-service) when auditLogPath is wired', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kookr-launch-audit-'));
+      try {
+        const auditLogPath = join(dir, 'audit.jsonl');
+        deps.auditLogPath = auditLogPath;
+        const adapter = deps.adapterRegistry.get('claude-code');
+        (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+          (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+            opts?.onPhase?.('session-create');
+            opts?.onSessionCreated?.('kookr-audit');
+            opts?.onPhase?.('agent-boot');
+            return new Promise<string>(() => { /* hangs → times out */ });
+          },
+        );
+        deps.getLaunchTimeoutMs = () => 20;
+
+        await expect(launchTask(deps, { prompt: 'audit me', cwd: '/tmp' }))
+          .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+        // The audit append is best-effort/async — poll until the row lands.
+        let reap: Record<string, unknown> | undefined;
+        for (let i = 0; i < 50 && !reap; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          const raw = await readFile(auditLogPath, 'utf-8').catch(() => '');
+          reap = raw
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => JSON.parse(l))
+            .find((r) => r.type === 'session.reap' && r.sessionId === 'kookr-audit');
+        }
+        expect(reap).toBeDefined();
+        expect(reap).toMatchObject({
+          type: 'session.reap',
+          actor: 'system:launch-service',
+          kind: 'terminal-task-leak',
+          signal: 'SIGTERM_then_SIGKILL',
+          taskId: (deps.taskStore.listTasks()[0]!).id,
+        });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT write a success session.reap audit row when adapter.stop() rejects (kill failed)', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kookr-launch-audit-fail-'));
+      try {
+        const auditLogPath = join(dir, 'audit.jsonl');
+        deps.auditLogPath = auditLogPath;
+        const adapter = deps.adapterRegistry.get('claude-code');
+        // The kill fails — the master may still be alive, so no "reaped" row.
+        (adapter.stop as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('killSession failed'));
+        (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+          (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+            opts?.onPhase?.('session-create');
+            opts?.onSessionCreated?.('kookr-killfail');
+            opts?.onPhase?.('agent-boot');
+            return new Promise<string>(() => { /* hangs → times out */ });
+          },
+        );
+        deps.getLaunchTimeoutMs = () => 20;
+
+        await expect(launchTask(deps, { prompt: 'kill fails', cwd: '/tmp' }))
+          .rejects.toBeInstanceOf(LaunchTimeoutError);
+        // Give the rejected stop() and any (absent) audit write time to settle.
+        await new Promise((resolve) => setTimeout(resolve, 60));
+
+        // The session is still linked to the task (reaper safety net)…
+        const [disposed] = store.listTasks();
+        expect(disposed.sessions.some((s) => s.tmuxSession === 'kookr-killfail')).toBe(true);
+        // …but no false-positive `session.reap` success row was written.
+        const raw = await readFile(auditLogPath, 'utf-8').catch(() => '');
+        const reaped = raw
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+          .some((r) => r.type === 'session.reap' && r.sessionId === 'kookr-killfail');
+        expect(reaped).toBe(false);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('a successful launch under the timeout neither records an abandoned session nor reaps (AC#4)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          opts?.onSessionCreated?.('kookr-ok');
+          opts?.onPhase?.('agent-boot');
+          opts?.onPhase?.('ack');
+          return Promise.resolve('kookr-ok');
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 5000;
+
+      const result = await launchTask(deps, { prompt: 'healthy', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+      // No reap of a live, healthy session.
+      expect(adapter.stop).not.toHaveBeenCalled();
+      // No abandoned-session record (the fake adapter never calls addSession, so
+      // the only way `kookr-ok` could appear is the #2500 abandon path — it must
+      // not fire on the success path).
+      const [task] = store.listTasks();
+      expect(task.sessions.some((s) => s.tmuxSession === 'kookr-ok')).toBe(false);
     });
   });
 

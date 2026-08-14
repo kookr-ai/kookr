@@ -560,6 +560,10 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    // Issue #2500: the dtach master now exists — report it so an abandoned
+    // launch (top-level launch timeout) can link and reap it instead of leaving
+    // it unowned for up to 24h. `addSession` below only runs at `ack`.
+    opts?.onSessionCreated?.(tmuxName);
     // Phase instrumentation (issue #1589): Codex folds the initial prompt into
     // its startup argv (--prompt-file / positional), so there is no separate
     // terminal delivery loop — agent-boot and ack collapse onto session start.

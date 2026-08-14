@@ -108,6 +108,23 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
+  test('reports the dtach master via onSessionCreated once the session exists (issue #2500)', async () => {
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('do it', '/workspace');
+    const created: string[] = [];
+    const timeline: string[] = [];
+    const sessionId = await adapter.launch(task.id, 'do it', '/workspace', undefined, {
+      onSessionCreated: (id) => { created.push(id); timeline.push('session-created'); },
+      onPhase: (p) => timeline.push(`phase:${p}`),
+    });
+    // Fires exactly once, with the terminal session id the launch returns…
+    expect(created).toEqual([sessionId]);
+    // …after session-create completes but before agent-boot — the leak window
+    // where the master exists yet addSession (at ack) has not run.
+    expect(timeline.indexOf('session-created')).toBeGreaterThan(timeline.indexOf('phase:session-create'));
+    expect(timeline.indexOf('session-created')).toBeLessThan(timeline.indexOf('phase:agent-boot'));
+  });
+
   test('launch env is allowlisted: GROK_HOME set, shared GROK_AUTH_PATH, server secrets excluded', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');
