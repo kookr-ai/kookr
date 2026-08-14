@@ -373,6 +373,9 @@ export class GitHubScannerService {
       return false;
     }
     const task = this.taskStore.getTask(ref.taskId);
+    // Missing task stays eligible: refs can appear before the task row is
+    // visible (prompt scan / tests seed synthetic ids). Delete paths must
+    // call removeTask so a gone record does not leave an orphan poll.
     return !task || !isTerminalStatus(task.status);
   }
 

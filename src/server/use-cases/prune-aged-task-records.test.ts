@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TaskStore, type Task } from '../../core/tasks.js';
+import { GitHubStateStore } from '../../core/github-state-store.js';
 import {
   DEFAULT_TASK_RECORD_MAX_AGE_DAYS,
   pruneAgedTaskRecords,
@@ -157,6 +158,36 @@ describe('pruneAgedTaskRecords', () => {
     expect(store.getTask(active.id)).toBeDefined();
     expect(monitor.unregisterAgent).toHaveBeenCalledWith('aged-session');
     expect(monitor.unregisterAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops GitHub store rows for each pruned task', async () => {
+    const store = new TaskStore();
+    const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+    const recent = seedTask(store, { session: 'recent-session', finishedAt: RECENT });
+    const githubStateStore = new GitHubStateStore();
+    for (const [taskId, number] of [[aged.id, 31], [recent.id, 32]] as const) {
+      const ref = {
+        type: 'pr' as const,
+        owner: 'kookr-ai',
+        repo: 'kookr',
+        number,
+        url: `https://github.com/kookr-ai/kookr/pull/${number}`,
+        taskId,
+        detectedAt: new Date(),
+        detectedFrom: 'agent-1',
+      };
+      githubStateStore.addReference(ref);
+    }
+
+    await pruneAgedTaskRecords({
+      taskStore: store,
+      monitor: monitorSpy(),
+      githubStateStore,
+      now: () => NOW.getTime(),
+    });
+
+    expect(githubStateStore.getReferences(aged.id)).toHaveLength(0);
+    expect(githubStateStore.getReferences(recent.id)).toHaveLength(1);
   });
 
   it('drops relations referencing a pruned task (persisted form shrinks)', async () => {

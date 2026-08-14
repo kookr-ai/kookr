@@ -286,8 +286,9 @@ export interface LifecycleDeps {
   taskTailStore?: Pick<TaskTailStore, 'save' | 'removeByTaskId'>;
   /**
    * In-memory GitHub ref store. Delete and clear-completed drop the finished
-   * task's rows so the periodic poller stops refetching names that can no
-   * longer change for a live operator.
+   * task's rows so a later poll cannot walk orphan refs after the task
+   * record is gone. Terminal-but-still-present tasks are skipped by the
+   * scanner itself and keep their last-known snapshot.
    */
   githubStateStore?: Pick<
     import('../core/github-state-store.js').GitHubStateStore,

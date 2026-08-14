@@ -2772,6 +2772,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       takePredeleteSnapshot,
       auditLogPath: join(kookrDir, 'audit.jsonl'),
+      githubStateStore,
     }),
     onTaskRecordsPruned: () => {
       broadcastToAll(createSnapshotMessage({

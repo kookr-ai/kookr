@@ -64,6 +64,15 @@ export interface PruneAgedTaskRecordsDeps {
   takePredeleteSnapshot?: () => Promise<void>;
   /** Audit log path (`<dataDir>/audit.jsonl`); rows are best-effort. */
   auditLogPath?: string;
+  /**
+   * Drop in-memory GitHub refs for each pruned task (issue #2485). Same
+   * contract as operator delete/clear-completed: once the task record is
+   * gone the poller must not keep walking its leftover names.
+   */
+  githubStateStore?: Pick<
+    import('../../core/github-state-store.js').GitHubStateStore,
+    'removeTask'
+  >;
   /** Injectable clock (ms since epoch) for deterministic tests. */
   now?: () => number;
 }
@@ -167,6 +176,7 @@ export async function pruneAgedTaskRecords(
     }
     try {
       deps.taskStore.deleteTask(task.id);
+      deps.githubStateStore?.removeTask(task.id);
       prunedTaskIds.push(task.id);
     } catch (err) {
       console.warn(`[task-record-prune] failed to delete task ${task.id}:`, err);
