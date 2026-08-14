@@ -112,6 +112,28 @@ If `reclaimedTotal` is flat while FAA occupancy is high:
 
 If residual stays high after TTL reclaim windows: ack/complete/cancel clearly dead FAA tasks, check Discord/operator signals for `faa:residual` (when enabled), avoid spawning more work until free slots return. Episode state for the residual alerter is process memory — a restart resets the wait window (same as `hung:residual`).
 
+## 3a. Fail-closed schedule pauses (issue #2426)
+
+`#2353` parks a schedule after consecutive failures. Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
+
+```bash
+curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+import json,sys
+h=json.load(sys.stdin)
+print("schedulesPausedByFailure", (h.get("schedules") or {}).get("schedulesPausedByFailure"))
+'
+kookr doctor --json 2>/dev/null | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print([c for c in d.get("checks", []) if c.get("id")=="ops.schedules-paused-by-failure"])
+'
+```
+
+- Discord/operator key: `schedules:paused:residual` (signal `op:schedules:paused:residual:alert`).
+- Page-only. **Do not** treat the page as a resume. Re-enable one schedule at a time with `kookr schedule enable <id>` after diagnosing the loop.
+- Recovered page (`op:schedules:paused:residual:clear`) fires only when the paused count returns to 0.
+- Episode state is process memory — a restart can re-page immediately if ≥3 are still parked.
+
 ## 4. Resource watchdog env
 
 When the resource watchdog is disabled, host pressure (CPU/mem) may not gate launches.

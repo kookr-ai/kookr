@@ -38,6 +38,7 @@ import { TimerHealthTracker } from '../core/timer-health.js';
 import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
+import { makePausedByFailureSnapshot } from '../test-utils/paused-schedules-fixture.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Watchdog } from '../core/watchdog.js';
@@ -1406,6 +1407,92 @@ describe('startLifecycleTimers user input delivery retry sweep', () => {
         expect.any(Error),
       );
       expect(broadcastToAll).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', () => {
+  function wiringDeps(overrides: Partial<TimerDeps> = {}): TimerDeps {
+    return {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+        unregisterAgent: vi.fn(),
+      } as TimerDeps['monitor'],
+      taskStore: new TaskStore(),
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => ''),
+        stop: vi.fn(async () => undefined),
+      } as TimerDeps['adapter'],
+      adapterRegistry: {} as TimerDeps['adapterRegistry'],
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+        unregister: vi.fn(),
+      } as TimerDeps['tokenTracker'],
+      watchdog: new Watchdog(),
+      hookWatcher: {
+        drainNow: vi.fn(async () => undefined),
+        stop: vi.fn(),
+        isWatching: vi.fn(() => false),
+        watch: vi.fn(),
+      } as TimerDeps['hookWatcher'],
+      terminalBackend: { listSessions: vi.fn(async () => []) } as TimerDeps['terminalBackend'],
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 600_000,
+      livenessIntervalMs: 50,
+      broadcastToAll: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  test('liveness tick evaluates the snapshot and never calls setEnabled', async () => {
+    vi.useFakeTimers();
+    const evaluate = vi.fn();
+    const snapshot = makePausedByFailureSnapshot({
+      names: ['orchestrator', 'smoke tick', 'daily recon'],
+    });
+    const handles = startLifecycleTimers(wiringDeps({
+      schedulesPausedResidualAlerter: { evaluate },
+      scheduleService: {
+        recordTaskTerminalOutcome: vi.fn(async () => undefined),
+        getStatusSnapshot: () => snapshot,
+      },
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      expect(evaluate).toHaveBeenCalled();
+      const last = evaluate.mock.calls[evaluate.mock.calls.length - 1]?.[0];
+      expect(last).toEqual({
+        paused: snapshot.schedulesPausedByFailure,
+      });
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('omits evaluate when getStatusSnapshot is unwired', async () => {
+    vi.useFakeTimers();
+    const evaluate = vi.fn();
+    const handles = startLifecycleTimers(wiringDeps({
+      schedulesPausedResidualAlerter: { evaluate },
+      scheduleService: {
+        recordTaskTerminalOutcome: vi.fn(async () => undefined),
+      },
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      expect(evaluate).not.toHaveBeenCalled();
     } finally {
       clearAllTimers(handles);
     }

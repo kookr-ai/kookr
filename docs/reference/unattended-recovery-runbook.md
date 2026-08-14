@@ -35,6 +35,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
+| Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` | `schedules.schedulesPausedByFailure` | Diagnose each loop, then `kookr schedule enable <id>` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
@@ -221,6 +222,40 @@ PY
    for the stale window without decreasing.
 3. Avoid new general-source spawns until `capacity.free` recovers (reserved slots
    may still accept `kookr`-sourced launches depending on settings).
+
+---
+
+## 3a. Fail-closed schedule pauses
+
+**Symptom.** Unattended schedules stop firing and stay stopped. Health lists
+them under `schedules.schedulesPausedByFailure` (issue #2353). Discord pages
+`schedules:paused:residual` once **three or more** are parked (issue #2426).
+Nothing auto-resumes them — that is the point of fail-closed pause.
+
+**Health fields:**
+
+```bash
+python3 - <<'PY'
+import json
+h=json.load(open("/tmp/kookr-health.json"))
+print("schedulesPausedByFailure", (h.get("schedules") or {}).get("schedulesPausedByFailure"))
+PY
+```
+
+**Actions (ordered):**
+
+1. Read the page body (or the health array): each row has `name`,
+   `consecutiveFailures`, and `kookr schedule enable <id>`.
+2. Diagnose the loop (last error, recent tasks) **before** re-enabling.
+   Re-enabling a still-broken belt just re-pauses it.
+3. Re-enable one schedule at a time. The recovered page fires only when the
+   paused count returns to **0**. Re-pages at most once per hour while the
+   count stays ≥ 3.
+4. Do **not** write a script that enables every id on the page. Operator
+   re-enable is the only resume path.
+
+Episode state is process memory. A restart can re-page immediately if ≥3
+schedules are still parked.
 
 ---
 
@@ -454,4 +489,5 @@ No webhook URLs, tokens, or private paths belong in this runbook. Keep edits
 tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hungSuspectTtlReclaim`, `prodSmokeTick`, `resourceWatchdog`,
 `hostStaleDtachReaper`, `staleProcesses`, `sessionReaper`,
+`schedules.schedulesPausedByFailure`,
 `data_directory_disk_critical`).
