@@ -87,6 +87,7 @@ import {
 } from './first-hook-deadline-sweep.js';
 import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import type { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
+import type { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import {
   reclaimAgedProviderPausedTasks,
   type ProviderPausedOccupancyMetrics,
@@ -292,6 +293,12 @@ export interface TimerDeps {
    */
   hungSuspectResidualAlerter?: Pick<HungSuspectResidualAlerter, 'evaluate'>;
   /**
+   * Operator page when fail-closed schedule pauses stay ≥ bound (issue #2426).
+   * Page-only — never re-enables a schedule. Prefer a `detectorBroadcast`
+   * path so fire/clear edges spool to Discord.
+   */
+  schedulesPausedResidualAlerter?: Pick<SchedulesPausedResidualAlerter, 'evaluate'>;
+  /**
    * First-observed continuous provider_pause start tracker (issue #2079).
    * Shared across liveness ticks so hard-TTL age is stable.
    */
@@ -439,6 +446,17 @@ export interface TimerDeps {
    */
   scheduleService?: {
     recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void>;
+    /**
+     * Live fail-closed pause snapshot for the residual page (issue #2426).
+     * Absent in tests / minimal wirings — the page is skipped, not invented.
+     */
+    getStatusSnapshot?: () => {
+      schedulesPausedByFailure?: ReadonlyArray<{
+        id: string;
+        name: string;
+        consecutiveFailures: number;
+      }>;
+    };
   };
   /**
    * Optional server-side scheduled data-directory prune (idea-scout rank 4).
@@ -1851,6 +1869,22 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
               err instanceof Error ? err.message : err,
             );
           }
+        }
+      }
+
+      // Fail-closed schedule-pause residual page (issue #2426): after any
+      // terminal-outcome notify above (which may have just auto-paused a
+      // schedule), page when the paused count is ≥ bound. Page-only — never
+      // calls setEnabled. Skip when snapshot is unwired so tests stay quiet.
+      if (deps.schedulesPausedResidualAlerter && deps.scheduleService?.getStatusSnapshot) {
+        try {
+          const paused = deps.scheduleService.getStatusSnapshot().schedulesPausedByFailure ?? [];
+          deps.schedulesPausedResidualAlerter.evaluate({ paused });
+        } catch (err) {
+          console.warn(
+            '[liveness] schedules-paused residual alerter threw:',
+            err instanceof Error ? err.message : err,
+          );
         }
       }
 
