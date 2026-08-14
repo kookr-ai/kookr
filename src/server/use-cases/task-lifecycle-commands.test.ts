@@ -5,7 +5,37 @@ import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
+import { GitHubStateStore } from '../../core/github-state-store.js';
 import { TaskLifecycleCommands, type TaskLifecycleCommandDeps } from './task-lifecycle-commands.js';
+
+function seedGithubPr(store: GitHubStateStore, taskId: string, number: number): void {
+  const ref = {
+    type: 'pr' as const,
+    owner: 'kookr-ai',
+    repo: 'kookr',
+    number,
+    url: `https://github.com/kookr-ai/kookr/pull/${number}`,
+    taskId,
+    detectedAt: new Date(),
+    detectedFrom: 'agent-1',
+  };
+  store.addReference(ref);
+  store.updatePRState({
+    ref,
+    title: `PR #${number}`,
+    status: 'open',
+    mergeable: 'MERGEABLE',
+    author: 'alice',
+    branch: 'feat',
+    baseBranch: 'main',
+    reviewDecision: null,
+    reviewers: [],
+    unresolvedThreads: [],
+    totalComments: 0,
+    checks: [],
+    lastFetchedAt: new Date(),
+  });
+}
 
 const mockBuildTaskCompletionMetadata = vi.fn();
 const mockCleanupTaskWorktrees = vi.fn();
@@ -241,6 +271,26 @@ describe('TaskLifecycleCommands.cancelTask', () => {
 });
 
 describe('TaskLifecycleCommands.deleteTask', () => {
+  test('empties the GitHub store for the deleted task', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Delete me', cwd: '/repo' });
+    addSession(taskStore, task.id);
+    const githubStateStore = new GitHubStateStore();
+    seedGithubPr(githubStateStore, task.id, 21);
+    const { deps } = makeDeps(taskStore);
+    const baseLifecycleDeps = deps.getLifecycleDeps;
+    deps.getLifecycleDeps = () => ({
+      ...baseLifecycleDeps(),
+      githubStateStore,
+    });
+
+    const result = await new TaskLifecycleCommands(deps).deleteTask(task.id);
+
+    expect(result.outcome).toBe('deleted');
+    expect(githubStateStore.getReferences(task.id)).toHaveLength(0);
+    expect(githubStateStore.getPRState({ owner: 'kookr-ai', repo: 'kookr', number: 21 })).toBeNull();
+  });
+
   test('writes a structured audit row with actor, scope, count, and id', async () => {
     const auditDir = await mkdtemp(join(tmpdir(), 'kookr-delete-audit-'));
     const auditLogPath = join(auditDir, 'audit.jsonl');
@@ -298,6 +348,39 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(cancelled.id)).toBeUndefined();
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('drops GitHub store rows for each cleared finished task', async () => {
+    const taskStore = new TaskStore();
+    const completed = taskStore.createTask('Done', '/repo');
+    addSession(taskStore, completed.id, 'kookr-done');
+    taskStore.completeTask(completed.id);
+    const cancelled = taskStore.createTask('Cancelled', '/repo');
+    addSession(taskStore, cancelled.id, 'kookr-cancelled');
+    taskStore.cancelTask(cancelled.id);
+    const active = taskStore.createTask('Still running', '/repo');
+    addSession(taskStore, active.id, 'kookr-active');
+    const githubStateStore = new GitHubStateStore();
+    seedGithubPr(githubStateStore, completed.id, 11);
+    seedGithubPr(githubStateStore, cancelled.id, 12);
+    seedGithubPr(githubStateStore, active.id, 13);
+    const { deps } = makeDeps(taskStore, { takePredeleteSnapshot: vi.fn(async () => undefined) });
+    const baseLifecycleDeps = deps.getLifecycleDeps;
+    deps.getLifecycleDeps = () => ({
+      ...baseLifecycleDeps(),
+      githubStateStore,
+    });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toMatchObject({
+      outcome: 'cleared',
+      deletedTaskIds: expect.arrayContaining([completed.id, cancelled.id]),
+    });
+    expect(githubStateStore.getReferences(completed.id)).toHaveLength(0);
+    expect(githubStateStore.getReferences(cancelled.id)).toHaveLength(0);
+    expect(githubStateStore.getReferences(active.id)).toHaveLength(1);
+    expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
   });
 
   test('yields between large clear batches without skipping finished tasks', async () => {

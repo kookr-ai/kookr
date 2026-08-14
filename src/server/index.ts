@@ -2772,6 +2772,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       takePredeleteSnapshot,
       auditLogPath: join(kookrDir, 'audit.jsonl'),
+      githubStateStore,
     }),
     onTaskRecordsPruned: () => {
       broadcastToAll(createSnapshotMessage({
@@ -2952,6 +2953,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // Silent-failure integrity (issue #1712): audit a WS-driven complete that
       // reclassifies to provider_transient.
       auditLogPath: join(kookrDir, 'audit.jsonl'),
+      githubStateStore,
       ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
     },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,

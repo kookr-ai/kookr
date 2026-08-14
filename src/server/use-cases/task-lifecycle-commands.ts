@@ -829,6 +829,9 @@ export class TaskLifecycleCommands {
       this.deps.monitor.unregisterAgent(session.tmuxSession);
     }
     this.deps.taskStore.deleteTask(task.id);
+    // Same contract as deleteTask: drop GitHub rows once the task record is gone
+    // so clear-completed cannot leave the poller walking finished refs.
+    this.deps.getLifecycleDeps().githubStateStore?.removeTask(task.id);
     if (opts.gcFeedbackBundle) {
       this.gcFeedbackBundle(task.id);
       this.gcTaskSnapshotBundle(task.id);

@@ -75,6 +75,8 @@ export interface MessageRouterDeps {
      * reclassifies to `provider_transient` on a WS-driven complete is audited.
      */
     auditLogPath?: import('./agent-lifecycle.js').LifecycleDeps['auditLogPath'];
+    /** Drop GitHub refs when a task is deleted over the dashboard (issue #2485). */
+    githubStateStore?: import('./agent-lifecycle.js').LifecycleDeps['githubStateStore'];
   };
   sttUrl?: string;
   ttsUrl?: string;

@@ -109,6 +109,8 @@ export interface WsConnectionDeps {
     taskTailStore?: import('./agent-lifecycle.js').LifecycleDeps['taskTailStore'];
     /** Shared audit.jsonl path for silent-failure reclassification audit (issue #1712). */
     auditLogPath?: import('./agent-lifecycle.js').LifecycleDeps['auditLogPath'];
+    /** Drop GitHub refs when a task is deleted over the dashboard (issue #2485). */
+    githubStateStore?: import('./agent-lifecycle.js').LifecycleDeps['githubStateStore'];
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;
