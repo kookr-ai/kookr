@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QuickLaunch } from './QuickLaunch.js';
@@ -92,6 +92,7 @@ describe('QuickLaunch active-duplicate warning', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     document.body.innerHTML = '';
     localStorage.clear();
   });
@@ -194,6 +195,7 @@ describe('QuickLaunch active-duplicate warning', () => {
   });
 
   test('a deferred blur still closes Quick Launch when focus leaves the bar', async () => {
+    vi.useFakeTimers();
     const rendered = renderQuickLaunch(container);
     await flush();
 
@@ -203,10 +205,15 @@ describe('QuickLaunch active-duplicate warning', () => {
     await act(async () => { input.focus(); });
     expect(rendered.closed).toBe(0);
     await act(async () => { outside.focus(); });
+    // Close is scheduled on the next macrotask so a Safari click on an
+    // in-bar button can land first. Fake timers keep that deferral
+    // deterministic — extra Pins/state work can otherwise let a real
+    // setTimeout(0) fire inside this act() and fail the next assertion.
     expect(rendered.closed).toBe(0);
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { vi.runOnlyPendingTimers(); });
     expect(rendered.closed).toBe(1);
     outside.remove();
     act(() => rendered.root.unmount());
+    vi.useRealTimers();
   });
 });
