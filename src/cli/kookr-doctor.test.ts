@@ -1862,6 +1862,25 @@ describe('kookr doctor --json', () => {
     });
     expect(report.checks.find((c) => c.id === 'ops.http-latency')?.summary)
       .toContain('GET /api/health 80ms');
+
+    // Health between the ready budget and the health budget must stay OK.
+    // If classification reused the 500ms ready budget for health, 800ms would WARN.
+    const midHealth = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        health: { elapsedMs: 800, status: 200, timedOut: false },
+      }),
+    });
+    expect(midHealth).toMatchObject({ ok: true, status: 'ok' });
+    expect(midHealth.checks.find((c) => c.id === 'ops.http-latency')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('GET /api/health 800ms (budget 2000ms)'),
+    });
+    expect(midHealth.checks.find((c) => c.id === 'ops.http-latency')?.summary)
+      .not.toContain('exceeds');
   });
 
   it('WARNs on ops.http-latency when ready exceeds 500ms (issue #2496)', async () => {
@@ -1980,6 +1999,38 @@ describe('kookr doctor --json', () => {
       health: null,
     });
     expect(calls).toEqual(['http://127.0.0.1:4800/api/ready']);
+
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const okCalls: string[] = [];
+    try {
+      const bothOk = await probeLiveHttpLatency(
+        { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800/', KOOKR_API_TOKEN: '  secret  ' },
+        {
+          nowMs: () => 0,
+          fetchFn: async (url, init) => {
+            okCalls.push(String(url));
+            expect((init?.headers as Record<string, string> | undefined)?.Authorization)
+              .toBe('Bearer secret');
+            expect(init?.signal).toBeDefined();
+            return new Response('ok', { status: 200 });
+          },
+        },
+      );
+      expect(okCalls).toEqual([
+        'http://127.0.0.1:4800/api/ready',
+        'http://127.0.0.1:4800/api/health',
+      ]);
+      expect(bothOk).toEqual({
+        ready: { elapsedMs: 0, status: 200, timedOut: false },
+        health: { elapsedMs: 0, status: 200, timedOut: false },
+      });
+      expect(timeoutSpy.mock.calls.map((call) => call[0])).toEqual([
+        HTTP_READY_BUDGET_MS,
+        HTTP_HEALTH_BUDGET_MS,
+      ]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('measureHttpLatency records elapsed, 5xx, and TimeoutError (issue #2496)', async () => {
@@ -2018,6 +2069,19 @@ describe('kookr doctor --json', () => {
     });
     expect(timeout.timedOut).toBe(true);
     expect(timeout.status).toBeUndefined();
+
+    const refused = await measureHttpLatency({
+      fetchFn: async () => {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      },
+      nowMs: () => 0,
+      url: 'http://127.0.0.1:4800/api/ready',
+      timeoutMs: HTTP_READY_BUDGET_MS,
+      headers: {},
+    });
+    expect(refused).toMatchObject({ elapsedMs: 0, timedOut: false });
+    expect(refused.status).toBeUndefined();
+    expect(refused.error).toContain('fetch failed');
   });
 
   it('formatHttpLatencyEndpoint names timeout, 5xx, slow, and ok cases (issue #2496)', () => {
@@ -2029,6 +2093,29 @@ describe('kookr doctor --json', () => {
       .toBe('GET /api/health 2400ms exceeds 2000ms budget');
     expect(formatHttpLatencyEndpoint('GET /api/ready', { elapsedMs: 20, status: 200, timedOut: false }, 500))
       .toBe('GET /api/ready 20ms (budget 500ms)');
+    expect(formatHttpLatencyEndpoint('GET /api/ready', { elapsedMs: 12, timedOut: false, error: 'fetch failed' }, 500))
+      .toBe('GET /api/ready unreachable after 12ms');
+  });
+
+  it('WARNs on ops.http-latency when the live API is unreachable (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        ready: { elapsedMs: 8, timedOut: false, error: 'fetch failed' },
+        health: { elapsedMs: 4, timedOut: false, error: 'fetch failed' },
+      }),
+    });
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    expect(report.checks.find((c) => c.id === 'ops.http-latency')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('GET /api/ready unreachable after 8ms'),
+    });
   });
 
   it('documents every doctor check id in docs/reference/cli.md (anti-drift)', async () => {
