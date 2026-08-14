@@ -83,6 +83,31 @@ export class SessionRegistry {
     return cloneTask(task);
   }
 
+  /**
+   * Link a dtach master to a task as an already-dead (`aborted`) session even
+   * when the task is terminal (issue #2500).
+   *
+   * Unlike {@link addSession} this is terminal-safe — it neither refuses a
+   * terminal task nor transitions status — because its sole purpose is to give
+   * the session reaper an *owner* for a master whose launch was abandoned at the
+   * top-level launch timeout. A launch-timeout task otherwise finishes with an
+   * empty session list, so a late-booting master the reaper then finds has no
+   * owning task and is classified `unowned` (reaped only after 24h / 2h under
+   * pressure) instead of `terminal-task-leak` (60s). Recording it here — before
+   * OR after the terminal transition — makes the reaper own it as a
+   * terminal-task-leak. Idempotent per session id; the session is stamped
+   * `lastStatus: 'aborted'` so reconcile never treats it as resumable (it must
+   * not be re-attached across a restart).
+   */
+  recordAbandonedLaunchSession(taskId: string, session: SessionInfo): void {
+    const task = this.host.getTask(taskId);
+    if (!task) return;
+    if (task.sessions.some((s) => s.tmuxSession === session.tmuxSession)) return;
+    task.sessions.push(structuredClone({ ...session, lastStatus: 'aborted' }) as SessionInfo);
+    task.updatedAt = new Date();
+    this.host.markTaskDirty(taskId);
+  }
+
   updateSession(
     taskId: string,
     tmuxName: string,

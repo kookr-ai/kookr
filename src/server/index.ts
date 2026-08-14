@@ -1636,6 +1636,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }),
     recordLaunchBootLatency: (agentType, timings) => agentBootLatency.record(agentType, timings),
     interactionLog,
+    // Issue #2500: same shared audit trail the session reaper writes to, so a
+    // launch-service-mediated reap of a late dtach master leaves a durable
+    // `session.reap` row for the same forensic tooling.
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
     // Issue #2085: loadError alone is enough to block autonomous launches even

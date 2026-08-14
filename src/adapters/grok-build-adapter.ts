@@ -616,6 +616,12 @@ export class GrokBuildAdapter implements AgentAdapter {
       size: { cols: 200, rows: 50 },
     });
 
+    // Issue #2500: the dtach master now exists. Report it so an abandoned launch
+    // (top-level launch timeout during the agent-boot wait below) can link and
+    // reap this master instead of leaving it unowned for up to 24h. Reported
+    // before agent-boot because that phase is exactly where the leak happened.
+    opts?.onSessionCreated?.(tmuxName);
+
     // Phase instrumentation (issue #1589): agent-boot covers Grok's TUI
     // readiness wait (waitForReadyOrAbort polls up to promptReadyTimeoutMs) and
     // the byte-level prompt delivery below.
