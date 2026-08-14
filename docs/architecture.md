@@ -698,6 +698,10 @@ process (PR #1950), and listen-early binds HTTP before deferred recovery finishe
 | API blackout | Port free → first `/api/health` 200 | Ideal **&lt;1s**, SLO max **&lt;5s** |
 | M2 deploy-ready | `/api/ready` no longer `startup-in-progress` | May remain multi-minute on large corpora **after** the API is live |
 
+On script-managed restart, “port free” is recorded only after
+`wait_for_writer_lock_clear` (issue #2501). Wall-clock API darkness can
+include that wait; `apiBlackoutSeconds` does not.
+
 Client surfaces are designed for that window: spawn returns **503** `draining`
 when operator drain is on; `kookr signal` spools offline; schedules record
 `skipped_draining`; the dashboard reconnects with redeploy-aware banner copy.

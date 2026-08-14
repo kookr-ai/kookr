@@ -109,7 +109,7 @@ function readHolderPid(lockPath: string): number | null {
  * them as stale so a planned restart is not blocked by an unreaped outgoing
  * pid (issue #2501).
  */
-export function isProcessAlive(pid: number): boolean {
+function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
   } catch (err) {

@@ -984,7 +984,7 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
     }
   });
 
-  it('TERMs a live lock holder and waits until the pid file is released', () => {
+  it('TERMs a live lock holder and returns once that pid is no longer a live owner', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
     const holder = spawn('sleep', ['30'], { stdio: 'ignore' });
     const holderPid = holder.pid;
