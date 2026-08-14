@@ -43,6 +43,7 @@ import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
+import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
 import { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 
@@ -2007,6 +2008,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcast: detectorBroadcast,
   });
 
+  // fail-closed schedule-pause residual page (issue #2426). Page-only;
+  // never re-enables a schedule. detectorBroadcast spools fire/clear to Discord.
+  const schedulesPausedResidualAlerter = new SchedulesPausedResidualAlerter({
+    broadcast: detectorBroadcast,
+  });
+
   // resourceWatchdog disabled-under-pressure page (issue #2078). Page-only;
   // enable remains an operator decision. Holder is installed before
   // startBackgroundServices so the first tick can page.
@@ -3103,6 +3110,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hungSuspectResidualAlerter,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL
       finishedAwaitingAckResidualAlerter,
+      // issue #2426: Discord page when ≥3 schedules are fail-closed paused
+      schedulesPausedResidualAlerter,
       // issue #2079 / #2225: provider_paused occupancy bound + hard/soft TTL reclaim
       providerPausedStartTracker,
       getProviderPausedHardTtlMs,
