@@ -9,7 +9,7 @@ This document defines **what Kookr must do** from the user's perspective. No tec
 ```
 Developer runs several AI coding agents
   ↓
-Developer runs `npx kookr` → server prints the local dashboard URL
+Developer runs `npx kookr` → server prints the local dashboard URL and opens it in the browser
   ↓
 Kookr's supervisor agent watches all agents' output
   ↓

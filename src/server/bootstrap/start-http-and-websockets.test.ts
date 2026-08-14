@@ -964,3 +964,66 @@ describe('startHttpAndWebSockets', () => {
     });
   });
 });
+
+describe('dashboard auto-open on listen', () => {
+  let openedRuntime: HttpAndWebSockets | undefined;
+
+  afterEach(async () => {
+    try {
+      if (openedRuntime) {
+        await openedRuntime.close({ gracefulShutdownMs: 10 });
+      }
+    } finally {
+      openedRuntime = undefined;
+      vi.restoreAllMocks();
+    }
+  });
+
+  test('startHttpAndWebSockets opens the bound dashboard URL once', async () => {
+    const openDashboardBrowser = vi.fn();
+    openedRuntime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: {
+        monitor: {} as never,
+        abortPendingSuggestion: () => {},
+        broadcastToAll: () => {},
+        serverCwd: '/repo',
+      },
+      onDashboardConnection: () => {},
+      openDashboardBrowser,
+    });
+    const address = openedRuntime.httpServer.address();
+    const port = (address as { port: number }).port;
+    expect(openDashboardBrowser).toHaveBeenCalledTimes(1);
+    expect(openDashboardBrowser).toHaveBeenCalledWith('127.0.0.1', port);
+  });
+
+  test('an opener throw during listen does not fail startup', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    openedRuntime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: {
+        monitor: {} as never,
+        abortPendingSuggestion: () => {},
+        broadcastToAll: () => {},
+        serverCwd: '/repo',
+      },
+      onDashboardConnection: () => {},
+      openDashboardBrowser: () => {
+        throw new Error('opener exploded');
+      },
+    });
+    expect(openedRuntime.httpServer.listening).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+});
