@@ -185,6 +185,8 @@ export class LifecycleHandler {
             dependencies: msg.dependencies,
             ...(msg.effort ? { effort: msg.effort } : {}),
             ...(msg.model ? { model: msg.model } : {}),
+            disableDedup: msg.disableDedup,
+            metadataIntent: msg.metadataIntent,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

@@ -1130,7 +1130,7 @@ delta sequence number.
 | `skipAll` | Skip findings for multiple agents. | `agentIds` |
 | `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
 | `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
-| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies` |
+| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
 | `completeTask` | Mark a task complete, optionally with feedback, reflection request, or worktree cleanup override. | `taskId`, optional `feedback`, `requestReflect`, `cleanupWorktree` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |

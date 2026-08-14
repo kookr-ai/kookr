@@ -11,6 +11,7 @@ This guide is for a first local Kookr install. It keeps optional features out of
 - On Linux, `setsid` (from `util-linux`, present on virtually every distro) — Kookr uses it to detach agent sessions. macOS does not need it.
 - Claude Code CLI, only if you want Kookr to launch Claude Code agents
 - For Codex CLI agents, the maintained fork — see [Codex CLI Setup](codex-cli-setup.md)
+- For Grok Build agents (xAI's coding-agent CLI), the official `grok` CLI — optional, only if you want Kookr to launch Grok. Install with `npm install -g @xai-official/grok`, then authenticate once on the machine that runs Kookr: `grok login --device-code` (or `grok login --oauth`). Prefer `--device-code` on the Kookr host; `--oauth` is fine on a machine with a browser.
 
 ## Ubuntu / Debian
 
@@ -72,8 +73,11 @@ Use `pnpm dev` only when you are actively developing Kookr and need hot reload o
 1. Open the dashboard.
 2. Click **Launch**.
 3. Choose a working directory.
-4. Enter a task prompt.
-5. Watch the terminal panel and findings queue.
+4. Choose the agent provider when more than one is installed (Claude Code, Codex CLI, or Grok Build).
+5. Enter a task prompt.
+6. Watch the terminal panel and findings queue.
+
+Grok Build appears as a provider once the `grok` CLI is on PATH. If credentials are missing or expired, the picker still lists Grok, but Kookr refuses the launch and tells you to run `grok login --device-code`.
 
 When an agent needs attention, Kookr adds a finding. Reply from the dashboard and Kookr advances to the next finding.
 

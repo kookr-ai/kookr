@@ -9,7 +9,13 @@ import {
 } from '../store/bottom-sections-height-prefs.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track } from '../telemetry.js';
-import { formatCompactDateTime } from '../presentation.js';
+import { anomalyTypeLabel, formatCompactDateTime } from '../presentation.js';
+import {
+  activeFindingTypeFilter,
+  filterFindingsBySelectedTypes,
+  presentFindingTypes,
+  useFindingTypeFilter,
+} from '../finding-type-filter.js';
 import { ReapWarningBanners } from './ReapWarningBanner.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
@@ -199,6 +205,7 @@ export function FindingsPanel({
   // list above, which is not collapsible, so this is the only group needing
   // the treatment. (F19)
   useAutoExpandOnItemGain(pending.length, expandPending);
+  const [selectedFindingTypes, toggleFindingType] = useFindingTypeFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
   const renderedSectionCollapsedStates = [
@@ -242,9 +249,18 @@ export function FindingsPanel({
     return () => window.clearTimeout(timer);
   }, [selectedAgentId]);
 
+  const presentTypes = useMemo(() => presentFindingTypes(findings), [findings]);
+  const activeTypeFilter = useMemo(
+    () => activeFindingTypeFilter(selectedFindingTypes, presentTypes),
+    [selectedFindingTypes, presentTypes],
+  );
+  const visibleFindings = useMemo(
+    () => filterFindingsBySelectedTypes(findings, selectedFindingTypes),
+    [findings, selectedFindingTypes],
+  );
   const findingDisplayItems = useMemo(
-    () => buildFindingDisplayItems(findings),
-    [findings],
+    () => buildFindingDisplayItems(visibleFindings),
+    [visibleFindings],
   );
   const sortedCompleted = useMemo(
     () => [...completed].sort(compareCompletedAgents),
@@ -275,23 +291,44 @@ export function FindingsPanel({
   return (
     <div ref={panelRef} className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
-        <span className="findings-header-title">Supervisor Findings</span>
-        <span className="findings-header-actions">
-          <AbortActiveButton taskIds={abortActiveTaskIds} send={send} />
-          <MigrateInterruptedButton />
-          <button
-            type="button"
-            className="findings-collapse-all-button"
-            onClick={toggleAllSections}
-            disabled={!hasBottomSections}
-            aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
-          >
-            {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
-          </button>
-          <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
-            {findings.length} active
+        <div className="findings-header-main">
+          <span className="findings-header-title">Supervisor Findings</span>
+          <span className="findings-header-actions">
+            <AbortActiveButton taskIds={abortActiveTaskIds} send={send} />
+            <MigrateInterruptedButton />
+            <button
+              type="button"
+              className="findings-collapse-all-button"
+              onClick={toggleAllSections}
+              disabled={!hasBottomSections}
+              aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
+            >
+              {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
+            </button>
+            <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
+              {findings.length} active
+            </span>
           </span>
-        </span>
+        </div>
+        {presentTypes.length > 0 && (
+          <div className="findings-type-filters" role="group" aria-label="Filter findings by type">
+            {presentTypes.map((type) => {
+              const pressed = activeTypeFilter.includes(type);
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  className={`findings-type-chip${pressed ? ' selected' : ''}`}
+                  data-testid={`finding-type-chip-${type}`}
+                  aria-pressed={pressed}
+                  onClick={() => toggleFindingType(type)}
+                >
+                  {anomalyTypeLabel(type)}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
       <ReapWarningBanners agents={[...findings, ...healthy]} send={send} />
       <div className="findings-scroll-area" ref={scrollAreaRef}>

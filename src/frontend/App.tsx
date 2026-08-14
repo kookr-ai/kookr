@@ -306,6 +306,8 @@ function FindingsResizer({
 
 /** Command-palette actions hidden from read-only viewers (owner-only / mutating). */
 const READ_ONLY_HIDDEN_COMMANDS: ReadonlySet<string> = new Set([
+  'launch',
+  'playbooks',
   'sweep',
   'share-viewer',
   'settings',
@@ -388,6 +390,9 @@ export function App() {
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
+  // Bumped by palette opens so an already-mounted LaunchTaskDialog remounts
+  // onto the requested tab instead of ignoring the new initialTab prop.
+  const [launchDialogGeneration, setLaunchDialogGeneration] = useState(0);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
   const [pendingDestructiveActions, setPendingDestructiveActions] = useState<PendingDestructiveAction[]>([]);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
@@ -792,6 +797,16 @@ export function App() {
       openModal('launch');
     }
   }, [selectedProjectSummary, agents, openModal]);
+
+  const openLaunchFromPalette = useCallback((tab: LaunchInitialTab, method: string) => {
+    setLaunchProjectContext(null);
+    setLaunchProjectCwd(null);
+    setLaunchInitialTab(tab);
+    clearRelaunchTask();
+    setLaunchDialogGeneration((generation) => generation + 1);
+    track({ type: 'launch_dialog_opened', method });
+    openModal('launch');
+  }, [clearRelaunchTask, openModal]);
 
   // The bug-report and share-viewer modals swallow global shortcuts (only
   // Escape passes through). The diagnostics popover does too, but it stays a
@@ -1268,6 +1283,12 @@ export function App() {
     { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: () => setShowOperations((value) => !value) },
     { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
     { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
+    { id: 'launch', label: 'Launch task', section: 'tools', keywords: ['spawn', 'new task'], run: () => {
+      openLaunchFromPalette('manual', 'command_palette');
+    } },
+    { id: 'playbooks', label: 'Browse playbooks', section: 'tools', keywords: ['playbook', 'spawn', 'new task'], run: () => {
+      openLaunchFromPalette('playbooks', 'command_palette_playbooks');
+    } },
     ...(wideDetailActive
       ? [{
           id: 'terminal-focus',
@@ -1696,6 +1717,7 @@ export function App() {
       {activeModal === 'launch' && (
         <Suspense fallback={null}>
           <LaunchTaskDialog
+            key={`launch-${launchDialogGeneration}-${launchInitialTab ?? 'manual'}`}
             send={send}
             onClose={handleCloseLaunch}
             defaultCwd={relaunchTask?.cwd}

@@ -16,7 +16,7 @@ import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
 import type { CoordinatorSnapshotState } from './coordinator.js';
-import type { TaskCompletionFeedback, TaskPriorityUpdate } from './task.js';
+import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
 import type {
@@ -539,6 +539,10 @@ export type ClientMessage =
       effort?: string;
       /** Optional per-task model pin (#2448). Omitted ⇒ agent CLI / env default. */
       model?: string;
+      /** When true, create a new task even if an active duplicate exists. */
+      disableDedup?: boolean;
+      /** Required with disableDedup: marks the launch as an intentional duplicate. */
+      metadataIntent?: TaskMetadataIntent;
     }
   | {
       type: 'completeTask';

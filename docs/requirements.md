@@ -384,6 +384,20 @@ The system SHOULD reduce approval-gate load by grouping agents waiting on the sa
 
 **Evidence:** `src/frontend/group-findings.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/group-findings.test.ts`, `src/frontend/components/FindingsPanel.performance.test.tsx`.
 
+### R3.10: Findings Rail Type-Filter Chips [#2445] — SHOULD — `done`
+
+The findings rail SHOULD let the operator show only selected anomaly types with clickable header chips.
+
+**Acceptance criteria:**
+- The rail header renders one chip per anomaly type currently present on the rail
+- Chips are multi-select OR; an empty selection shows every finding
+- Clicking a chip hides cards of other types; clicking it again restores them
+- The selected set persists in `localStorage` (`kookr:findingsPanel.typeFilter`)
+- Existing CLI, API, command-palette, and "N active" count defaults stay unfiltered
+- No new global keyboard shortcut is added
+
+**Evidence:** `src/frontend/finding-type-filter.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/finding-type-filter.test.ts`, `src/frontend/components/FindingsPanel.type-filter.test.ts`.
+
 ---
 
 ## R4: Agent Lifecycle
@@ -426,7 +440,19 @@ The system SHALL show operators the Grok credential-cache verdict in the Launch 
 - The status payload never includes access tokens, refresh tokens, API keys, or other credential values
 - Existing CLI and `POST /api/tasks` launch defaults stay unchanged
 
-**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
+**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/GrokAuthPreflightBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
+
+### R4.1c: Warn on Active Duplicate Prompts in the Launch Dialog [F17.4] — SHALL — `done`
+
+The system SHALL warn in the Launch dialog and Quick Launch bar before submit when an active task already uses the same prompt, working directory, and agent type, using the same equality `kookr spawn` uses, without changing CLI or REST defaults.
+
+**Acceptance criteria:**
+- Given two in-memory active tasks and a matching prompt + cwd + agent, when the Launch dialog or Quick Launch bar is open, then a warning banner is visible with Open existing and Launch anyway
+- Given the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadataIntent` `keep_as_duplicate`
+- Given a non-matching prompt, when the operator clicks Launch, then the payload is sent without those duplicate-preserving fields
+- Existing CLI (`kookr spawn --dedupe`) and `POST /api/tasks` defaults stay unchanged
+
+**Evidence:** `src/shared/launch-duplicate.ts`, `src/frontend/components/LaunchDuplicateBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchTaskDialog.duplicate.test.ts`, `src/frontend/components/QuickLaunch.duplicate.test.ts`.
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
@@ -1228,9 +1254,11 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
+| R3.10 | F5.1 | SHOULD | done | finding-type-filter, FindingsPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
+| R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -439,5 +439,11 @@ describe('findingTypeLabel', () => {
   test('distinguishes completed-turn signals from explicit input requests', () => {
     expect(findingTypeLabel(agent('needs_input'))).toBe('Needs Input');
     expect(findingTypeLabel(agent('needs_input', { turnState: 'completed_turn' }))).toBe('Signaled Complete');
+  });
+
+  test('anomalyTypeLabel is type-only so chips do not split needs_input by turn state', () => {
+    expect(anomalyTypeLabel('permission_blocked')).toBe('Permission');
+    expect(anomalyTypeLabel('needs_input')).toBe('Needs Input');
+    expect(anomalyTypeLabel('future_kind')).toBe('future kind');
   });
 });
