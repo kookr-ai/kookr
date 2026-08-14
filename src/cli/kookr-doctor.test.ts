@@ -10,19 +10,25 @@ import {
   DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND,
   formatDoctorBytes,
   formatDoctorReport,
+  formatHttpLatencyEndpoint,
   GITHUB_SCANNER_BACKOFF_WARN_MS,
   HOOK_REPLAY_CHECKPOINTS_OVERSIZE_CODE,
   HOST_STALE_DTACH_MISMATCH_CODE,
+  HTTP_HEALTH_BUDGET_MS,
+  HTTP_READY_BUDGET_MS,
   isOpenPrFailsafeDominatedLastPass,
+  measureHttpLatency,
   parseHookIngestionLagDiagnosticsBody,
   parseHookReplayCheckpointsHealthBody,
   parseHostStaleDtachHealthBody,
   parseHungSuspectReclaimHealthBody,
   parseSchedulesPausedByFailureHealthBody,
+  probeLiveHttpLatency,
   runDoctorCli,
   type HookIngestionLagProbeSnapshot,
   type HookReplayCheckpointsProbeSnapshot,
   type HostStaleDtachProbeSnapshot,
+  type HttpLatencyProbeSnapshot,
   type HungSuspectReclaimProbeSnapshot,
   type SchedulesPausedByFailureProbeSnapshot,
 } from './kookr-doctor.js';
@@ -45,6 +51,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'agent.codex',
   'agent.codex-plugin-dir',
   'agent.grok-auth',
+  'ops.http-latency',
   'ops.resource-watchdog',
   'ops.hung-reclaim',
   'ops.schedules-paused-by-failure',
@@ -69,6 +76,7 @@ const hermeticOps = {
   probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
   probeHostStaleDtach: async () => null as HostStaleDtachProbeSnapshot | null,
   probeHookReplayCheckpoints: async () => null as HookReplayCheckpointsProbeSnapshot | null,
+  probeHttpLatency: async () => null as HttpLatencyProbeSnapshot | null,
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
@@ -108,6 +116,16 @@ function hungReclaimSnap(
     skippedProviderPaused: 0,
     lastCandidatesConsidered: 0,
     lastOutcomes: [],
+    ...partial,
+  };
+}
+
+function httpLatencySnap(
+  partial: Partial<HttpLatencyProbeSnapshot> = {},
+): HttpLatencyProbeSnapshot {
+  return {
+    ready: { elapsedMs: 20, status: 200, timedOut: false },
+    health: { elapsedMs: 80, status: 200, timedOut: false },
     ...partial,
   };
 }
@@ -219,6 +237,7 @@ describe('kookr doctor --json', () => {
       'agent.claude',
       'agent.codex',
       'agent.codex-plugin-dir',
+      'ops.http-latency',
       'ops.resource-watchdog',
       'ops.hung-reclaim',
       'ops.schedules-paused-by-failure',
@@ -234,6 +253,11 @@ describe('kookr doctor --json', () => {
         .every((c) => c.status === 'ok'),
     ).toBe(true);
     expect(report.checks.find((c) => c.id === 'github.scanner-backoff')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.http-latency')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -1818,6 +1842,193 @@ describe('kookr doctor --json', () => {
     expect(check?.recommendedAction).toContain('grok login --device-code');
     expect(report.ok).toBe(false);
     expect(report.status).toBe('fail');
+  });
+
+  it('reports ops.http-latency ok when both endpoints are under budget (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap(),
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.http-latency')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('GET /api/ready 20ms'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.http-latency')?.summary)
+      .toContain('GET /api/health 80ms');
+  });
+
+  it('WARNs on ops.http-latency when ready exceeds 500ms (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        ready: { elapsedMs: 612, status: 200, timedOut: false },
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.http-latency');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain('GET /api/ready 612ms exceeds 500ms budget');
+    expect(check?.summary).toContain('GET /api/health 80ms');
+    expect(check?.recommendedAction).toContain('hung-HTTP');
+  });
+
+  it('WARNs on ops.http-latency and skips health when ready times out (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => ({
+        ready: { elapsedMs: HTTP_READY_BUDGET_MS, timedOut: true },
+        health: null,
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.http-latency');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain('GET /api/ready timed out after 500ms');
+    expect(check?.summary).toContain('GET /api/health skipped because GET /api/ready timed out');
+  });
+
+  it('WARNs on ops.http-latency when health exceeds 2s or times out (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const slow = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        health: { elapsedMs: 2_400, status: 200, timedOut: false },
+      }),
+    });
+    expect(slow.ok).toBe(true);
+    expect(slow.status).toBe('warn');
+    expect(slow.checks.find((c) => c.id === 'ops.http-latency')?.summary)
+      .toContain('GET /api/health 2400ms exceeds 2000ms budget');
+
+    const timedOut = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        health: { elapsedMs: HTTP_HEALTH_BUDGET_MS, timedOut: true },
+      }),
+    });
+    expect(timedOut.ok).toBe(true);
+    expect(timedOut.status).toBe('warn');
+    expect(timedOut.checks.find((c) => c.id === 'ops.http-latency')?.summary)
+      .toContain('GET /api/health timed out after 2000ms');
+  });
+
+  it('WARNs on ops.http-latency for 5xx without failing required checks (issue #2496)', async () => {
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHttpLatency: async () => httpLatencySnap({
+        ready: { elapsedMs: 40, status: 503, timedOut: false },
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    expect(report.checks.find((c) => c.id === 'ops.http-latency')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('GET /api/ready returned 503 in 40ms'),
+    });
+  });
+
+  it('probeLiveHttpLatency skips with no API base and short-circuits health on ready timeout (issue #2496)', async () => {
+    await expect(probeLiveHttpLatency({})).resolves.toBeNull();
+
+    const calls: string[] = [];
+    const timedOut = await probeLiveHttpLatency(
+      { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      {
+        nowMs: () => 0,
+        fetchFn: async (url) => {
+          calls.push(String(url));
+          const err = new Error('aborted');
+          err.name = 'TimeoutError';
+          throw err;
+        },
+      },
+    );
+    expect(timedOut).toEqual({
+      ready: { elapsedMs: 0, timedOut: true, error: 'aborted' },
+      health: null,
+    });
+    expect(calls).toEqual(['http://127.0.0.1:4800/api/ready']);
+  });
+
+  it('measureHttpLatency records elapsed, 5xx, and TimeoutError (issue #2496)', async () => {
+    let t = 0;
+    const ok = await measureHttpLatency({
+      fetchFn: async () => {
+        t += 42;
+        return new Response('ok', { status: 200 });
+      },
+      nowMs: () => t,
+      url: 'http://127.0.0.1:4800/api/ready',
+      timeoutMs: HTTP_READY_BUDGET_MS,
+      headers: {},
+    });
+    expect(ok).toEqual({ elapsedMs: 42, status: 200, timedOut: false });
+
+    const serverError = await measureHttpLatency({
+      fetchFn: async () => new Response('nope', { status: 500 }),
+      nowMs: () => 0,
+      url: 'http://127.0.0.1:4800/api/health',
+      timeoutMs: HTTP_HEALTH_BUDGET_MS,
+      headers: {},
+    });
+    expect(serverError).toEqual({ elapsedMs: 0, status: 500, timedOut: false });
+
+    const timeout = await measureHttpLatency({
+      fetchFn: async () => {
+        const err = new Error('The operation was aborted due to timeout');
+        err.name = 'TimeoutError';
+        throw err;
+      },
+      nowMs: () => 0,
+      url: 'http://127.0.0.1:4800/api/ready',
+      timeoutMs: HTTP_READY_BUDGET_MS,
+      headers: {},
+    });
+    expect(timeout.timedOut).toBe(true);
+    expect(timeout.status).toBeUndefined();
+  });
+
+  it('formatHttpLatencyEndpoint names timeout, 5xx, slow, and ok cases (issue #2496)', () => {
+    expect(formatHttpLatencyEndpoint('GET /api/ready', { elapsedMs: 500, timedOut: true }, 500))
+      .toBe('GET /api/ready timed out after 500ms (budget 500ms)');
+    expect(formatHttpLatencyEndpoint('GET /api/ready', { elapsedMs: 40, status: 503, timedOut: false }, 500))
+      .toBe('GET /api/ready returned 503 in 40ms');
+    expect(formatHttpLatencyEndpoint('GET /api/health', { elapsedMs: 2400, status: 200, timedOut: false }, 2000))
+      .toBe('GET /api/health 2400ms exceeds 2000ms budget');
+    expect(formatHttpLatencyEndpoint('GET /api/ready', { elapsedMs: 20, status: 200, timedOut: false }, 500))
+      .toBe('GET /api/ready 20ms (budget 500ms)');
   });
 
   it('documents every doctor check id in docs/reference/cli.md (anti-drift)', async () => {

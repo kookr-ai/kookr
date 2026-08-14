@@ -39,11 +39,32 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
+| Ready or health slower than the doctor budget, or the probe times out | `kookr doctor` `ops.http-latency` | Treat the WARN as the hung-HTTP signal — ready budget 500ms, health 2s; do not trust sibling probes that skip on timeout — [HTTP latency](#0a-http-latency-doctor-warn) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
 | Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
+
+---
+
+## 0a. HTTP latency (doctor WARN)
+
+Unattended diagnosis starts with `kookr doctor`. Sibling live probes abort
+`GET /api/health` at 500ms and **skip** (ok) on timeout, so a wedged HTTP
+surface can make the report look fine. `ops.http-latency` is the first-class
+signal: it times `GET /api/ready` (500ms abort and WARN budget) then
+`GET /api/health` (2s abort and WARN budget). Timeout, elapsed over budget, or
+5xx → advisory WARN with elapsed ms. Health is skipped when ready already
+timed out so doctor does not hang twice.
+
+```bash
+kookr doctor --json 2>/dev/null \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); print([c for c in r.get("checks",[]) if c.get("id")=="ops.http-latency"])'
+```
+
+This check never fails required doctor status. Use `--strict` if an unattended
+gate should exit non-zero on the WARN.
 
 ---
 
