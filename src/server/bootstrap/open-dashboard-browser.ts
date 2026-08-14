@@ -7,9 +7,9 @@ import { isLoopbackHost } from '../auth.js';
  * browser so they do not have to copy it from the startup log.
  *
  * Skipped unless this looks like an interactive local start: CI, a
- * non-TTY stdin, a non-loopback bind, or `KOOKR_OPEN_BROWSER=0` all
- * stay silent. A missing platform opener logs a warning and never
- * fails startup (issue #2486).
+ * non-TTY stdin, a non-loopback bind, Node `--watch`, or
+ * `KOOKR_OPEN_BROWSER=0` all stay silent. A missing platform opener
+ * logs a warning and never fails startup (issue #2486).
  */
 
 export type OpenDashboardBrowserDecision =
@@ -21,6 +21,7 @@ export type OpenDashboardBrowserSkipReason =
   | 'disabled'
   | 'not-a-tty'
   | 'non-loopback'
+  | 'watch'
   | 'no-opener';
 
 export type OpenDashboardUrl = (command: string, url: string) => void;
@@ -31,6 +32,7 @@ export interface OpenDashboardBrowserOptions {
   env?: NodeJS.ProcessEnv;
   isTTY?: boolean;
   platform?: NodeJS.Platform;
+  execArgv?: readonly string[];
   /** Test seam. Defaults to `execFile` with no shell. */
   openUrl?: OpenDashboardUrl;
   logWarn?: (message: string) => void;
@@ -38,7 +40,6 @@ export interface OpenDashboardBrowserOptions {
 
 const OPEN_BROWSER_DISABLE = new Set(['0', 'false', 'off', 'no']);
 const CI_TRUTHY = new Set(['true', '1', 'yes']);
-const OPENER_TIMEOUT_MS = 5_000;
 
 export function dashboardUrl(host: string, port: number): string {
   const needsBrackets = host.includes(':') && !host.startsWith('[');
@@ -51,10 +52,17 @@ export function dashboardBrowserCommand(platform: NodeJS.Platform): string | und
   return undefined;
 }
 
+export function isNodeWatchMode(execArgv: readonly string[]): boolean {
+  return execArgv.some(
+    (arg) => arg === '--watch' || arg.startsWith('--watch=') || arg.startsWith('--watch-path'),
+  );
+}
+
 export function shouldOpenDashboardBrowser(opts: {
   host: string;
   env?: NodeJS.ProcessEnv;
   isTTY?: boolean;
+  execArgv?: readonly string[];
 }): { open: true } | { open: false; reason: OpenDashboardBrowserSkipReason } {
   const env = opts.env ?? process.env;
   const ci = env.CI?.trim().toLowerCase();
@@ -77,15 +85,23 @@ export function shouldOpenDashboardBrowser(opts: {
   if (!isLoopbackHost(opts.host)) {
     return { open: false, reason: 'non-loopback' };
   }
+  const execArgv = opts.execArgv ?? process.execArgv;
+  if (isNodeWatchMode(execArgv)) {
+    return { open: false, reason: 'watch' };
+  }
   return { open: true };
 }
 
 function defaultOpenUrl(command: string, url: string, logWarn: (message: string) => void): void {
-  execFile(command, [url], { timeout: OPENER_TIMEOUT_MS }, (err) => {
+  // No timeout: a 5s SIGTERM can kill a just-opened browser when
+  // xdg-open waits on $BROWSER or a cold start. unref() so a hanging
+  // opener cannot keep the server process alive.
+  const child = execFile(command, [url], (err) => {
     if (err) {
       logWarn(`Failed to open dashboard in browser (${command}): ${err.message}`);
     }
   });
+  child.unref();
 }
 
 /**
@@ -99,6 +115,7 @@ export function maybeOpenDashboardBrowser(
     host: opts.host,
     env: opts.env,
     isTTY: opts.isTTY,
+    execArgv: opts.execArgv,
   });
   if (!decision.open) {
     return { opened: false, reason: decision.reason };
@@ -107,6 +124,7 @@ export function maybeOpenDashboardBrowser(
   const platform = opts.platform ?? process.platform;
   const command = dashboardBrowserCommand(platform);
   if (!command) {
+    logWarn('Failed to open dashboard in browser: no platform opener for this OS');
     return { opened: false, reason: 'no-opener' };
   }
 
@@ -123,6 +141,7 @@ export function maybeOpenDashboardBrowser(
         err instanceof Error ? err.message : String(err)
       }`,
     );
+    return { opened: false, reason: 'no-opener' };
   }
   return { opened: true, command, url };
 }
