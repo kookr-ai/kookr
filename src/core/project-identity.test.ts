@@ -359,9 +359,21 @@ describe('sanitizeGithubOwnerRepo', () => {
       expected: { owner: 'kookr-ai', repo: 'kookr' },
     },
     {
+      name: 'trims a trailing newline from owner',
+      owner: 'kookr-ai\n',
+      repo: 'kookr',
+      expected: { owner: 'kookr-ai', repo: 'kookr' },
+    },
+    {
       name: 'rejects a slash inside repo',
       owner: 'kookr-ai',
       repo: 'kookr/extra',
+      expected: null,
+    },
+    {
+      name: 'rejects a slash inside owner',
+      owner: 'kookr-ai/extra',
+      repo: 'kookr',
       expected: null,
     },
     {
@@ -369,6 +381,12 @@ describe('sanitizeGithubOwnerRepo', () => {
       owner: '12345',
       repo: 'kookr',
       expected: { owner: '12345', repo: 'kookr' },
+    },
+    {
+      name: 'keeps mixed-case live refs (GitHub names are case-insensitive)',
+      owner: 'Kookr-AI',
+      repo: 'Kookr',
+      expected: { owner: 'Kookr-AI', repo: 'Kookr' },
     },
     {
       name: 'does not rewrite owner/repo stuffed into repo',

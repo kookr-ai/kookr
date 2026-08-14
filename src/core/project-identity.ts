@@ -221,6 +221,11 @@ export function isSafeGithubSegment(segment: string, kind: 'owner' | 'repo'): bo
 /**
  * Trim owner/repo and keep them only when both are legal GitHub segments.
  *
+ * Live references keep the casing the scanner stored — GitHub owner/repo
+ * names are case-insensitive, and mixed-case remotes (Microsoft/TypeScript)
+ * are valid. Project ids stay lowercase-canonical via isSafeGithubProjectId;
+ * this helper lowercases only for the alphabet check.
+ *
  * Does not split a stuffed `owner/repo` string in `repo` — that fails the
  * segment alphabet (slash) and is skipped, same as any other illegal name.
  */
@@ -230,7 +235,10 @@ export function sanitizeGithubOwnerRepo(
 ): { owner: string; repo: string } | null {
   const trimmedOwner = owner.trim();
   const trimmedRepo = repo.trim();
-  if (!isSafeGithubSegment(trimmedOwner, 'owner') || !isSafeGithubSegment(trimmedRepo, 'repo')) {
+  if (
+    !isSafeGithubSegment(trimmedOwner.toLowerCase(), 'owner')
+    || !isSafeGithubSegment(trimmedRepo.toLowerCase(), 'repo')
+  ) {
     return null;
   }
   return { owner: trimmedOwner, repo: trimmedRepo };

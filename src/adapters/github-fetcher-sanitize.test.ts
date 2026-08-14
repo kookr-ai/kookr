@@ -69,9 +69,23 @@ describe('fetchStates owner/repo sanitization', () => {
       expectedRepo: 'kookr',
     },
     {
+      name: 'trims a trailing newline from owner',
+      owner: 'kookr-ai\n',
+      repo: 'kookr',
+      expectCall: true,
+      expectedOwner: 'kookr-ai',
+      expectedRepo: 'kookr',
+    },
+    {
       name: 'skips a slash inside repo',
       owner: 'kookr-ai',
       repo: 'kookr/extra',
+      expectCall: false,
+    },
+    {
+      name: 'skips a slash inside owner',
+      owner: 'kookr-ai/extra',
+      repo: 'kookr',
       expectCall: false,
     },
     {
@@ -81,6 +95,14 @@ describe('fetchStates owner/repo sanitization', () => {
       expectCall: true,
       expectedOwner: '12345',
       expectedRepo: 'kookr',
+    },
+    {
+      name: 'sends mixed-case live refs without lowercasing them',
+      owner: 'Kookr-AI',
+      repo: 'Kookr',
+      expectCall: true,
+      expectedOwner: 'Kookr-AI',
+      expectedRepo: 'Kookr',
     },
     {
       name: 'does not rewrite owner/repo stuffed into repo',
@@ -129,5 +151,19 @@ describe('fetchStates owner/repo sanitization', () => {
     expect(args).toContain('owner=kookr-ai');
     expect(args).toContain('repo=kookr');
     expect(args).not.toContain('repo=kookr/extra');
+  });
+
+  it('emits one alias when a dirty repo trims to the same object as a clean sibling', async () => {
+    await fetchStates([
+      ref('kookr-ai', 'kookr\n', 42),
+      ref('kookr-ai', 'kookr', 42),
+    ]);
+
+    expect(childProcessMocks.execFilePromisified).toHaveBeenCalledTimes(1);
+    const args = graphqlArgs();
+    const query = args.find((arg) => arg.startsWith('query=')) ?? '';
+    expect(query.match(/pr_42: pullRequest/g)).toHaveLength(1);
+    expect(args).toContain('repo=kookr');
+    expect(args).not.toContain('repo=kookr\n');
   });
 });
