@@ -148,13 +148,17 @@ export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<strin
   env.GROK_AUTO_UPDATE = '0';
   env.GROK_WORKSPACE_DATA_COLLECTION_DISABLED = '1';
   env.GROK_FOLDER_TRUST = '1';
-  // Kookr's monitoring hook is native Grok instrumentation under the isolated
-  // GROK_HOME. Do not also execute the operator's global Claude hooks merely
-  // because HOME is preserved for the coding task's git/ssh tooling: those
-  // hooks are unrelated to this session and can run serially before Kookr's
-  // UserPromptSubmit acknowledgement, stranding launch confirmation behind
-  // the adapter's timeout.
-  env.GROK_CLAUDE_HOOKS_ENABLED = '0';
+  // Claude-compat hook discovery (issue #2466). HOME is the operator's real
+  // home so the fork can load ~/.claude/settings.json (writing nudges, PR/OSS
+  // gates, KB-scout, memory-write guards) without copying hook scripts into
+  // the isolated GROK_HOME. Kookr's own monitoring stays a native Grok hook
+  // file under that GROK_HOME and is independent of this toggle.
+  //
+  // Launch-ack tradeoff: a blocking operator UserPromptSubmit hook can delay
+  // the initial-prompt acknowledgement. That is accepted over the previous
+  // all-or-nothing disable. The adapter already fail-opens on busy chrome
+  // (30s confirm timeout + assume-submitted) rather than stranding the launch.
+  env.GROK_CLAUDE_HOOKS_ENABLED = '1';
   // Never inherit a pay-per-token key into managed agents (cost hard-rule).
   delete env.XAI_API_KEY;
   if (!env.TERM) env.TERM = 'xterm-256color';

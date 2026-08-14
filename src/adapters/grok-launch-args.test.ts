@@ -89,8 +89,18 @@ describe('buildAllowlistedGrokEnv', () => {
     expect(env.GROK_FOLDER_TRUST).toBe('1');
   });
 
-  it('disables inherited Claude hooks while keeping Kookr native hooks active', () => {
-    expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
+  it('enables Claude-compat hooks so operator ~/.claude/settings.json hooks load (issue #2466)', () => {
+    expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('1');
+  });
+
+  it('does not inherit a processEnv disable of Claude hooks (allowlist + control var)', () => {
+    const e = buildAllowlistedGrokEnv({
+      processEnv: { ...processEnv, GROK_CLAUDE_HOOKS_ENABLED: '0' },
+      launchContextEnv: {},
+      grokHome: '/g',
+      authPath: '/tmp/fake-home/.grok/auth.json',
+    });
+    expect(e.GROK_CLAUDE_HOOKS_ENABLED).toBe('1');
   });
 
   it('defaults TERM when the server env lacks it', () => {
@@ -137,7 +147,7 @@ describe('buildAllowlistedGrokEnv', () => {
       extraEnv: {
         GROK_HOME: '/evil/home',
         GROK_AUTH_PATH: '/evil/auth.json',
-        GROK_CLAUDE_HOOKS_ENABLED: '1',
+        GROK_CLAUDE_HOOKS_ENABLED: '0',
         XAI_API_KEY: 'xai-must-not-reach-agent',
       },
       grokHome: '/tmp/session/.grok',
@@ -145,7 +155,7 @@ describe('buildAllowlistedGrokEnv', () => {
     });
     expect(e.GROK_HOME).toBe('/tmp/session/.grok');
     expect(e.GROK_AUTH_PATH).toBe('/tmp/fake-home/.grok/auth.json');
-    expect(e.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
+    expect(e.GROK_CLAUDE_HOOKS_ENABLED).toBe('1');
     expect(e.XAI_API_KEY).toBeUndefined();
   });
 });
