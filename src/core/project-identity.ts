@@ -198,6 +198,43 @@ export function deriveCanonicalPath(cwd: string): string | null {
 }
 
 const GITHUB_SEGMENT_RE = /^[a-z0-9_-][a-z0-9._-]*$/;
+const GITHUB_OWNER_MAX_LEN = 39;
+const GITHUB_REPO_MAX_LEN = 100;
+
+/**
+ * Validate one GitHub owner or repo name against GitHub's alphabet and
+ * length limits.
+ *
+ * Agent-extracted references sometimes carry a trailing newline or a slash
+ * that was never a legal name. Those must be rejected here so the GraphQL
+ * poller does not keep asking GitHub for a repository that cannot exist.
+ */
+export function isSafeGithubSegment(segment: string, kind: 'owner' | 'repo'): boolean {
+  const maxLen = kind === 'owner' ? GITHUB_OWNER_MAX_LEN : GITHUB_REPO_MAX_LEN;
+  if (segment.length === 0 || segment.length > maxLen) return false;
+  if (segment === '.' || segment === '..') return false;
+  if (segment.startsWith('.')) return false;
+  if (segment.endsWith('.git')) return false;
+  return GITHUB_SEGMENT_RE.test(segment);
+}
+
+/**
+ * Trim owner/repo and keep them only when both are legal GitHub segments.
+ *
+ * Does not split a stuffed `owner/repo` string in `repo` — that fails the
+ * segment alphabet (slash) and is skipped, same as any other illegal name.
+ */
+export function sanitizeGithubOwnerRepo(
+  owner: string,
+  repo: string,
+): { owner: string; repo: string } | null {
+  const trimmedOwner = owner.trim();
+  const trimmedRepo = repo.trim();
+  if (!isSafeGithubSegment(trimmedOwner, 'owner') || !isSafeGithubSegment(trimmedRepo, 'repo')) {
+    return null;
+  }
+  return { owner: trimmedOwner, repo: trimmedRepo };
+}
 
 /**
  * Validate that a project id is a safe `github.com/<owner>/<repo>` reference.
@@ -213,15 +250,7 @@ export function isSafeGithubProjectId(projectId: string): boolean {
   const parts = tail.split('/');
   if (parts.length !== 2) return false;
   const [owner, repo] = parts;
-  if (owner.length === 0 || owner.length > 39) return false;
-  if (repo.length === 0 || repo.length > 100) return false;
-  for (const seg of [owner, repo]) {
-    if (seg === '.' || seg === '..') return false;
-    if (seg.startsWith('.')) return false;
-    if (seg.endsWith('.git')) return false;
-    if (!GITHUB_SEGMENT_RE.test(seg)) return false;
-  }
-  return true;
+  return isSafeGithubSegment(owner, 'owner') && isSafeGithubSegment(repo, 'repo');
 }
 
 /**

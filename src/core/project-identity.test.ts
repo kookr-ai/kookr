@@ -15,6 +15,8 @@ import {
   projectIdFromPrUrl,
   deriveCanonicalPath,
   isSafeGithubProjectId,
+  isSafeGithubSegment,
+  sanitizeGithubOwnerRepo,
   projectRepoUrl,
   isSafePullRequestUrl,
   projectIdToOwnerRepo,
@@ -340,6 +342,48 @@ describe('isSafeGithubProjectId', () => {
   test('rejects uppercase (canonical form is lowercase)', () => {
     expect(isSafeGithubProjectId('github.com/Cli/Cli')).toBe(false);
     expect(isSafeGithubProjectId('Github.com/cli/cli')).toBe(false);
+  });
+
+  test('accepts a numeric owner (GitHub allows all-digit logins)', () => {
+    expect(isSafeGithubProjectId('github.com/12345/kookr')).toBe(true);
+    expect(isSafeGithubSegment('12345', 'owner')).toBe(true);
+  });
+});
+
+describe('sanitizeGithubOwnerRepo', () => {
+  test.each([
+    {
+      name: 'trims a trailing newline from repo',
+      owner: 'kookr-ai',
+      repo: 'kookr\n',
+      expected: { owner: 'kookr-ai', repo: 'kookr' },
+    },
+    {
+      name: 'rejects a slash inside repo',
+      owner: 'kookr-ai',
+      repo: 'kookr/extra',
+      expected: null,
+    },
+    {
+      name: 'accepts a numeric owner',
+      owner: '12345',
+      repo: 'kookr',
+      expected: { owner: '12345', repo: 'kookr' },
+    },
+    {
+      name: 'does not rewrite owner/repo stuffed into repo',
+      owner: 'kookr-ai',
+      repo: 'kookr-ai/kookr',
+      expected: null,
+    },
+    {
+      name: 'accepts a legal kookr-ai/kookr pair',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      expected: { owner: 'kookr-ai', repo: 'kookr' },
+    },
+  ])('$name', ({ owner, repo, expected }) => {
+    expect(sanitizeGithubOwnerRepo(owner, repo)).toEqual(expected);
   });
 });
 
