@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { access, stat } from 'node:fs/promises';
+import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   classifyKbDoctorCommandResult,
@@ -27,7 +27,7 @@ import {
 } from '../server/prod-smoke.js';
 import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
 import { resolveMaintenancePruneIntervalHours } from '../server/maintenance-prune-schedule.js';
-import { resolveKookrDataDir } from './kookr-maintenance.js';
+import { autoPortAmbiguous, resolveKookrDataDir } from './kookr-maintenance.js';
 import {
   parseGithubStatusBody,
   type GithubStatusSnapshot,
@@ -232,6 +232,18 @@ interface RunDoctorDeps {
   access?: (path: string, mode?: number) => Promise<void>;
   now?: () => Date;
   /**
+   * Optional override for reading the settings.json POSIX mode (issue #2494).
+   * Defaults to `fs.stat`. Tests inject a fixture so the host `~/.kookr` never
+   * leaks into hermetic unit runs.
+   */
+  statFile?: (path: string) => Promise<{ mode: number }>;
+  /**
+   * Optional platform override for the settings-mode check (issue #2494).
+   * Defaults to `os.platform()`. POSIX mode bits are only meaningful on
+   * linux/darwin, so the check skips elsewhere.
+   */
+  platform?: NodeJS.Platform;
+  /**
    * Optional override for the live /api/health resourceWatchdog probe.
    * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
    */
@@ -301,6 +313,7 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
+runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
@@ -403,6 +416,12 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
   checks.push(await checkPersistence(env, accessFn));
+  const settingsModeCheck = await checkSettingsFileMode(
+    env,
+    deps.statFile ?? ((path: string) => stat(path)),
+    deps.platform ?? platform(),
+  );
+  if (settingsModeCheck) checks.push(settingsModeCheck);
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
@@ -1330,6 +1349,118 @@ function checkProdSmokeTick(
       'Inspect prod-smoke-tick-alert.json failingChecks (and GET /api/health prodSmokeTick). ' +
       'Fix the root cause (adapter version-probe, health latency, etc.); see docs/reference/unattended-recovery-runbook.md §4.',
   };
+}
+
+/**
+ * Advisory runtime check (issue #2494): WARN when the on-disk settings.json is
+ * group/other-accessible instead of owner-only 0600.
+ *
+ * `saveSettings` persists settings.json with mode 0o600, but a later
+ * umask-affected copy, restore, or hand edit can widen the bits. settings.json
+ * holds `automationKillSwitch` (the SAFE MODE lever), so a world-readable copy
+ * leaks operator-safety state. `saveSettings` forces 0600 on write; doctor is
+ * the only place that catches drift on the file already on disk.
+ *
+ * - `mode & 0o077 !== 0` → WARN (recommend `chmod 600`)
+ * - owner-only (0600 / 0400 / …) → OK
+ * - Missing file → skip (return null): a fresh host has no settings.json yet;
+ *   the server writes it 0o600 on first save.
+ * - Non-POSIX platforms (not linux/darwin) or an unreadable stat → skip:
+ *   Windows mode bits are not POSIX, so the check would be meaningless there.
+ *
+ * When the path is resolved from the port-based default (no `KOOKR_SETTINGS_PATH`)
+ * under `KOOKR_PORT=auto`, the resolved `~/.kookr` may not be the auto-launched
+ * instance's real data dir (see {@link autoPortAmbiguous}). Rather than silently
+ * report a possibly-wrong file, the check appends a caveat so a false OK is never
+ * mistaken for a confirmed one; set `KOOKR_SETTINGS_PATH` to the active
+ * instance's settings.json to target it precisely.
+ *
+ * Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN.
+ */
+async function checkSettingsFileMode(
+  env: NodeJS.ProcessEnv,
+  statFn: (path: string) => Promise<{ mode: number }>,
+  hostPlatform: NodeJS.Platform,
+): Promise<DoctorCheck | null> {
+  if (hostPlatform !== 'linux' && hostPlatform !== 'darwin') return null;
+
+  const settingsPath = resolveDoctorSettingsPath(env);
+  const ambiguousCaveat = settingsPathAutoPortAmbiguous(env)
+    ? ` (KOOKR_PORT=auto: this default ~/.kookr path may not be the auto-launched instance's data dir — ` +
+      `set KOOKR_SETTINGS_PATH to the active instance's settings.json to target it precisely)`
+    : '';
+
+  let mode: number;
+  try {
+    ({ mode } = await statFn(settingsPath));
+  } catch {
+    // Missing file (ENOENT) or an unreadable stat → advisory skip.
+    return null;
+  }
+
+  const permBits = mode & 0o777;
+  if ((permBits & 0o077) !== 0) {
+    return {
+      id: 'runtime.settings-mode',
+      label: 'Settings file mode',
+      category: 'runtime',
+      status: 'warn',
+      required: false,
+      summary: `${settingsPath} is ${formatMode(permBits)} (group/other-accessible), not owner-only 0600`,
+      detail:
+        'settings.json holds automationKillSwitch (SAFE MODE). saveSettings writes 0o600, but a ' +
+        `later umask-affected copy, restore, or hand edit widened the mode to ${formatMode(permBits)}.` +
+        ambiguousCaveat,
+      recommendedAction: `Run \`chmod 600 ${settingsPath}\` to restore owner-only permissions.`,
+    };
+  }
+
+  return okCheck(
+    'runtime.settings-mode',
+    'Settings file mode',
+    'runtime',
+    `${settingsPath} is owner-only (${formatMode(permBits)})${ambiguousCaveat}`,
+    false,
+  );
+}
+
+/**
+ * True when the settings path fell back to the port-based default AND
+ * `KOOKR_PORT=auto` makes that default (`~/.kookr`) possibly-wrong — an
+ * auto-launched server can scan onto a non-default port and land on
+ * `~/.kookr-<port>`. An explicit `KOOKR_SETTINGS_PATH` removes the ambiguity
+ * (the operator named the file directly).
+ */
+function settingsPathAutoPortAmbiguous(env: NodeJS.ProcessEnv): boolean {
+  if (env.KOOKR_SETTINGS_PATH?.trim()) return false;
+  return autoPortAmbiguous(env);
+}
+
+/**
+ * settings.json path the mode check stats. By default it resolves `settings.json`
+ * in the **port-derived** data dir (`~/.kookr` on 4800, `~/.kookr-<port>`
+ * otherwise), which is exactly how the server derives its own data dir at
+ * `start.ts` (`PORT === 4800 ? ~/.kookr : ~/.kookr-<port>`) and then composes
+ * `join(kookrDir, 'settings.json')` in `create-core-stores.ts`. Deliberately
+ * `resolveKookrDataDir` (port-based), NOT the doctor-only `KOOKR_DIR`-first
+ * `resolveDoctorKookrDataDir`: the server ignores `KOOKR_DIR` for its data dir,
+ * so honoring it here could stat a different file than the server reads and
+ * report OK while the live settings.json stayed widened.
+ *
+ * `KOOKR_SETTINGS_PATH` is a doctor-only override that points this check at a
+ * non-default file (e.g. a hand-managed copy on an unusual install). The server
+ * does not consult it either, so only set it when that file genuinely is the one
+ * in use.
+ */
+function resolveDoctorSettingsPath(env: NodeJS.ProcessEnv): string {
+  const explicit = env.KOOKR_SETTINGS_PATH?.trim();
+  if (explicit) return explicit;
+  return join(resolveKookrDataDir(env), 'settings.json');
+}
+
+/** Render POSIX permission bits as a 4-digit octal string (e.g. `0644`). */
+function formatMode(permBits: number): string {
+  return `0${(permBits & 0o777).toString(8).padStart(3, '0')}`;
 }
 
 /**
