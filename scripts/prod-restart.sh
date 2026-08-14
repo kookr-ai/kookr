@@ -385,6 +385,76 @@ enter_drain_before_stop() {
   fi
 }
 
+# The outgoing server unlinks ${KOOKR_DIR}/server.pid as the last shutdown
+# step — after it has already closed the HTTP listen socket. Wait for that
+# file to name a dead/zombie pid (or disappear). Do NOT signal the listed
+# pid: after a crash the number can be reused by an unrelated process, and
+# a second SIGTERM aborts graceful close (issue #2501 review).
+# Port/start pids are already TERMed by stop_existing_server.
+writer_lock_holder_pid() {
+  local lock_file="${KOOKR_DIR}/server.pid"
+  local pid=""
+  [[ -f "$lock_file" ]] || return 1
+  pid="$(tr -d '[:space:]' < "$lock_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+writer_lock_is_clear() {
+  local pid=""
+  pid="$(writer_lock_holder_pid)" || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  # Zombies still pass kill -0 but cannot own the data dir (issue #2501).
+  # Linux: /proc/<pid>/stat. macOS has no /proc — use `ps -o stat=` (BSD
+  # and procps both put Z first: Z, Z+, Zs).
+  if [[ -r "/proc/${pid}/stat" ]]; then
+    local stat state=""
+    stat="$(cat "/proc/${pid}/stat" 2>/dev/null || true)"
+    state="${stat##*)}"
+    state="${state#"${state%%[![:space:]]*}"}"
+    state="${state:0:1}"
+    [[ "$state" == "Z" ]] && return 0
+  else
+    local ps_stat=""
+    ps_stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
+    [[ "${ps_stat:0:1}" == "Z" ]] && return 0
+  fi
+  return 1
+}
+
+wait_for_writer_lock_clear() {
+  local timeout_seconds="${1:-30}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local pid=""
+
+  if writer_lock_is_clear; then
+    return 0
+  fi
+
+  pid="$(writer_lock_holder_pid || true)"
+  if [[ -n "$pid" ]]; then
+    echo "Waiting for ${KOOKR_DIR}/server.pid holder (pid ${pid}) to exit before start"
+  fi
+
+  while (( SECONDS < deadline )); do
+    if writer_lock_is_clear; then
+      echo "Single-writer lock released"
+      return 0
+    fi
+    sleep 1
+  done
+
+  if writer_lock_is_clear; then
+    echo "Single-writer lock released"
+    return 0
+  fi
+
+  echo "WARN: ${KOOKR_DIR}/server.pid still names a live pid after ${timeout_seconds}s; new boot will retry then fail if the holder is still alive"
+  return 0
+}
+
 stop_existing_server() {
   local -a port_pids=()
   local -a start_pids=()
@@ -417,6 +487,12 @@ stop_existing_server() {
     echo "Port ${PORT} is still busy after shutdown attempt"
     exit 1
   fi
+
+  # Port-free is not the same as "old process gone." The outgoing server
+  # closes the listen socket before it unlinks ~/.kookr/server.pid. Starting
+  # now would make the new process die on the single-writer lock
+  # ("exited before becoming healthy", issue #2501).
+  wait_for_writer_lock_clear 30
 }
 
 rotate_server_log() {

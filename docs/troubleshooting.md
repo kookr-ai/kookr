@@ -325,6 +325,13 @@ the pre-kill window get 503/draining instead of only ECONNREFUSED. Drain is
 in-memory and cleared by process exit — no post-restart resume is required.
 Opt out with `KOOKR_RESTART_SKIP_DRAIN=1`.
 
+After the port is free, the script waits for `~/.kookr/server.pid` (the
+single-writer lock) to be released before it starts the next process. A leftover
+lock from a process that has already closed the listen socket was the #2501
+`exited before becoming healthy` failure. If restart still dies that way, check
+`server.log` for `[single-writer] another Kookr server` and inspect
+`~/.kookr/server.pid` (delete only if that pid is gone).
+
 Operator runbook (procedure, API blackout vs M2 clocks, client contracts,
 residual same-port blackout after speech-detach P1):
 [Low-downtime redeploy](runbooks/low-downtime-redeploy.md).

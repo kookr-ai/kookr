@@ -932,3 +932,88 @@ exit 7
   });
 });
 
+describe('prod-restart waits for single-writer lock release (issue #2501)', () => {
+  it('stop_existing_server waits for ~/.kookr/server.pid to clear', () => {
+    const script = readFileSync('scripts/prod-restart.sh', 'utf8');
+    expect(script).toMatch(/wait_for_writer_lock_clear/);
+    expect(script).toMatch(/stop_existing_server[\s\S]*wait_for_writer_lock_clear/);
+  });
+
+  it('returns immediately when no server.pid exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'wait_for_writer_lock_clear 2',
+          'echo LOCK_CLEAR',
+        ].join('; ')],
+        { encoding: 'utf8' },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('LOCK_CLEAR');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns immediately when server.pid names a dead pid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      writeFileSync(join(kookrDir, 'server.pid'), '999999999\n');
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'wait_for_writer_lock_clear 2',
+          'echo LOCK_CLEAR',
+        ].join('; ')],
+        { encoding: 'utf8' },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('LOCK_CLEAR');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a short-lived lock holder to exit without signaling it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    const holder = spawn('sleep', ['0.4'], { stdio: 'ignore' });
+    const holderPid = holder.pid;
+    expect(holderPid).toBeDefined();
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      writeFileSync(join(kookrDir, 'server.pid'), `${holderPid}\n`);
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'wait_for_writer_lock_clear 5',
+          'echo LOCK_CLEAR',
+        ].join('; ')],
+        { encoding: 'utf8', timeout: 10_000 },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Waiting for .*server\.pid holder/);
+      expect(result.stdout).toContain('Single-writer lock released');
+      expect(result.stdout).toContain('LOCK_CLEAR');
+      expect(result.stdout).not.toMatch(/terminate_pids|Force-killing|SIGTERM|SIGKILL/);
+      // The helper must not have killed the child; sleep exits on its own.
+      expect(result.stdout).not.toMatch(/WARN: .*live pid/);
+    } finally {
+      holder.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
