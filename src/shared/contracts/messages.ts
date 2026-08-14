@@ -535,6 +535,10 @@ export type ClientMessage =
       criteria?: string;
       agentType?: AgentSelection;
       dependencies?: LaunchDependency[];
+      /** Optional per-task reasoning-effort pin (#2448). Omitted ⇒ server default. */
+      effort?: string;
+      /** Optional per-task model pin (#2448). Omitted ⇒ agent CLI / env default. */
+      model?: string;
       /** When true, create a new task even if an active duplicate exists. */
       disableDedup?: boolean;
       /** Required with disableDedup: marks the launch as an intentional duplicate. */

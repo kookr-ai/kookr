@@ -4517,6 +4517,20 @@ textarea::-webkit-resizer { background: transparent; }
   font-size: 12px;
 }
 
+.launch-effort-model-pickers {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.launch-effort-model-pickers .agent-type-select {
+  flex: 1;
+  margin-bottom: 0;
+}
+.launch-effort-model-pickers.compact {
+  margin-bottom: 0;
+  gap: 8px;
+}
+
 .detail-migrate-control {
   display: inline-flex;
   align-items: center;
@@ -5077,6 +5091,30 @@ label.task-share-row {
 
 .quick-launch-bar .agent-type-select {
   flex-shrink: 0;
+}
+.quick-launch-pins {
+  flex-shrink: 0;
+  position: relative;
+}
+.quick-launch-pins summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+.quick-launch-pins[open] .launch-effort-model-pickers {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  padding: 8px;
+  min-width: 220px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .quick-launch-input {

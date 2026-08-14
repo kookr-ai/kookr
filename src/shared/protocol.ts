@@ -38,6 +38,8 @@ export {
   effortLevelsForAgent,
   isAgentType,
   isValidEffortForAgent,
+  isValidModelForAgent,
+  modelsForAgent,
   resolveRoundRobinAgent,
 } from './contracts/agent-types.js';
 export type { GrokAuthStatus, GrokAuthStatusResponse } from './contracts/grok-auth-status.js';

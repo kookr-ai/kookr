@@ -23,6 +23,8 @@ import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
+import { optionalLaunchPins } from './launch-effort-model.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
@@ -158,6 +160,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
+  const [effort, setEffort] = useState('');
+  const [model, setModel] = useState('');
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,
@@ -287,6 +291,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       cwd: cwd.trim(),
       criteria: criteria.trim() || undefined,
       agentType,
+      ...optionalLaunchPins(effort, model),
       ...(keepAsDuplicate
         ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
         : {}),
@@ -549,8 +554,19 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             </label>
             <AgentTypeSelector
               value={agentType}
-              onChange={setAgentType}
+              onChange={(next) => {
+                setAgentType(next);
+                setEffort('');
+                setModel('');
+              }}
               options={agentOptions}
+            />
+            <LaunchEffortModelPickers
+              agentType={agentType}
+              effort={effort}
+              model={model}
+              onEffortChange={setEffort}
+              onModelChange={setModel}
             />
             {showGrokAuthBanner && grokAuth?.message && (
               <GrokAuthPreflightBanner message={grokAuth.message} />

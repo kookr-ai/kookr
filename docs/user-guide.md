@@ -18,9 +18,11 @@ Use the dashboard **Launch** button for an interactive start:
 
 1. Pick the project directory.
 2. Choose the agent provider when available.
-3. Enter the task prompt.
-4. Add optional completion criteria.
-5. Launch.
+3. Optionally pin reasoning effort and model. Leave them on "Agent default"
+   to keep the server / CLI default. Codex hides Model; Grok Build hides both.
+4. Enter the task prompt.
+5. Add optional completion criteria.
+6. Launch.
 
 Kookr starts the agent in a persistent dtach session. If the server restarts, the dtach master keeps the child process alive and Kookr reconciles state on startup.
 

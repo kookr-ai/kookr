@@ -149,7 +149,53 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'claude-code' });
+    expect(sent[0]).not.toHaveProperty('effort');
+    expect(sent[0]).not.toHaveProperty('model');
     expect(localStorage.getItem(LAST_AGENT_TYPE_KEY)).toBe('claude-code');
+    act(() => root.unmount());
+  });
+
+  test('selecting effort includes it in the launch payload and grok-build hides model', async () => {
+    const sent: ClientMessage[] = [];
+    const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return true; });
+    await flush();
+
+    const agentSelect = getAgentSelectEl(container);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(agentSelect, 'claude-code');
+      agentSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const effortSelect = container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement | null;
+    const modelSelect = container.querySelector('select[aria-label="Model"]');
+    expect(effortSelect).not.toBeNull();
+    expect(modelSelect).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(effortSelect!, 'high');
+      effortSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'do the thing'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'claude-code', effort: 'high' });
+    expect(sent[0]).not.toHaveProperty('model');
+
+    sent.length = 0;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(agentSelect, 'grok-build');
+      agentSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
     act(() => root.unmount());
   });
 

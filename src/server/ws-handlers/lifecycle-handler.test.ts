@@ -58,6 +58,42 @@ function makeDeps(taskStore: TaskStore, overrides: Partial<LifecycleHandlerDeps>
 }
 
 describe('LifecycleHandler lifecycle commands', () => {
+  test('forwards optional effort and model pins from a launch message (#2448)', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 't1' }, queued: false });
+    const { deps } = makeDeps(new TaskStore(), { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({
+      type: 'launch',
+      prompt: 'pin fable',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'pin fable',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    }));
+  });
+
+  test('omits effort and model on launch when the dashboard left them unset (#2448)', async () => {
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 't1' }, queued: false });
+    const { deps } = makeDeps(new TaskStore(), { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'launch', prompt: 'plain', cwd: '/tmp' });
+
+    expect(launchTask).toHaveBeenCalledOnce();
+    const opts = launchTask.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('effort');
+    expect(opts).not.toHaveProperty('model');
+  });
+
   test('forwards the per-task cleanup override to the shared lifecycle', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Keep worktree', '/repo');
