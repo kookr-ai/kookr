@@ -15,6 +15,7 @@ import { extractRefsFromEvents, extractRefsFromPrompt, toGitHubReferences } from
 import { diffPRState, diffIssueState } from './github-state-differ.js';
 import { isSafeGithubProjectId, projectIdToOwnerRepo } from './project-identity.js';
 import type { ProjectRepoHealth } from './project-summary.js';
+import { isTerminalStatus } from './task-status.js';
 
 /** How often the per-repo health batch (issues/PRs counts + pending list) is refetched. */
 export const REPO_HEALTH_INTERVAL_MS = 600_000;
@@ -350,15 +351,29 @@ export class GitHubScannerService {
     // This periodic scan is a safety net / will be the entry point for Haiku in Phase 2.
   }
 
-  /** Fetch current state for all refresh-eligible references and emit changes. */
+  /**
+   * Fetch current state for all refresh-eligible references and emit changes.
+   *
+   * A merged PR is already a terminal GitHub object, so refetching it cannot
+   * change the dashboard. The same is true of a completed, cancelled, or
+   * terminated task: its GitHub tab should keep the last-known PR/issue
+   * snapshot, but the poller should stop paying for updates that nobody
+   * will act on. Rows stay in the store until delete/clear-completed.
+   */
   private async fetchAllStates(): Promise<void> {
     // Issue #1785: under elevated event-loop delay, skip the periodic batch
     // so background GraphQL/gh work does not compete with terminal I/O.
     if (this.shouldSkipPeriodicTick('github-state-fetch')) return;
-    const refs = this.stateStore.getAllReferences().filter((ref) => (
-      ref.type !== 'pr' || this.stateStore.getPRState(ref)?.status !== 'merged'
-    ));
+    const refs = this.stateStore.getAllReferences().filter((ref) => this.isRefreshEligible(ref));
     await this.fetchReferences(refs);
+  }
+
+  private isRefreshEligible(ref: GitHubReference): boolean {
+    if (ref.type === 'pr' && this.stateStore.getPRState(ref)?.status === 'merged') {
+      return false;
+    }
+    const task = this.taskStore.getTask(ref.taskId);
+    return !task || !isTerminalStatus(task.status);
   }
 
   /** Fetch current state for the provided references and emit changes. */

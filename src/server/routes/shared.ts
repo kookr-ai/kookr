@@ -86,6 +86,12 @@ export interface TaskRouteDeps {
    * backstop absorbed it, but R8 must fire on every terminal path).
    */
   issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
+  /**
+   * In-memory GitHub ref store. Threaded into getLifecycleDeps so REST
+   * delete/clear drops finished-task rows (issue #2485). Optional so
+   * existing route tests can omit it.
+   */
+  githubStateStore?: import('../agent-lifecycle.js').LifecycleDeps['githubStateStore'];
   queue?: AttentionQueue;
   adapter: AgentAdapter;
   hookWatcher: HookFileWatcher;

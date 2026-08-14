@@ -300,6 +300,36 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  test('drops GitHub store rows for each cleared finished task', async () => {
+    const taskStore = new TaskStore();
+    const completed = taskStore.createTask('Done', '/repo');
+    addSession(taskStore, completed.id, 'kookr-done');
+    taskStore.completeTask(completed.id);
+    const cancelled = taskStore.createTask('Cancelled', '/repo');
+    addSession(taskStore, cancelled.id, 'kookr-cancelled');
+    taskStore.cancelTask(cancelled.id);
+    const active = taskStore.createTask('Still running', '/repo');
+    addSession(taskStore, active.id, 'kookr-active');
+    const removeTask = vi.fn();
+    const { deps } = makeDeps(taskStore, { takePredeleteSnapshot: vi.fn(async () => undefined) });
+    const baseLifecycleDeps = deps.getLifecycleDeps;
+    deps.getLifecycleDeps = () => ({
+      ...baseLifecycleDeps(),
+      githubStateStore: { removeTask },
+    });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toMatchObject({
+      outcome: 'cleared',
+      deletedTaskIds: expect.arrayContaining([completed.id, cancelled.id]),
+    });
+    expect(removeTask).toHaveBeenCalledWith(completed.id);
+    expect(removeTask).toHaveBeenCalledWith(cancelled.id);
+    expect(removeTask).not.toHaveBeenCalledWith(active.id);
+    expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
+  });
+
   test('yields between large clear batches without skipping finished tasks', async () => {
     const taskStore = new TaskStore();
     const finishedIds: string[] = [];

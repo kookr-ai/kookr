@@ -128,6 +128,28 @@ describe('deleteTask use case', () => {
     expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
   });
 
+  it('drops GitHub store rows for the deleted task', async () => {
+    const taskStore = {
+      getTask: vi.fn().mockReturnValue({
+        id: 'task-1',
+        sessions: [{ tmuxSession: 'done-1', lastStatus: 'completed' }],
+      }),
+      deleteTask: vi.fn(),
+    } as any;
+    const githubStateStore = { removeTask: vi.fn() };
+
+    const ok = await deleteTask({
+      taskStore,
+      adapter: { stop: vi.fn().mockResolvedValue(undefined) },
+      monitor: { unregisterAgent: vi.fn() } as any,
+      githubStateStore,
+    } as any, 'task-1');
+
+    expect(ok).toBe(true);
+    expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
+    expect(githubStateStore.removeTask).toHaveBeenCalledWith('task-1');
+  });
+
   it('treats activity-ledger pruning as best-effort — does not fail the delete on filesystem error', async () => {
     const taskStore = {
       getTask: vi.fn().mockReturnValue({
