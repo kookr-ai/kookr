@@ -93,7 +93,7 @@ Use these controls together before resizing the browser or abandoning the dashbo
 - `Alt+P` toggles the project sidebar.
 - `Alt+T` toggles terminal focus mode on desktop.
 - `Alt+0` returns to all projects.
-- `Alt+4` through `Alt+9` select visible projects in sidebar order.
+- `Alt+4` through `Alt+9` select projects in unfiltered sidebar order.
 - `Alt+J` and `Alt+K` move through all tasks, including healthy tasks.
 - `Alt+1` through `Alt+3` sends that digit to the terminal and moves to the next task, useful for simple agent menus.
 - `?` opens the shortcuts dialog.
@@ -105,9 +105,10 @@ On narrower desktop windows, the detail panel uses **Activity**, **Terminal**, a
 For dense multi-repository sessions, start broad and narrow only when the queue is noisy:
 
 1. Use **All projects** or `Alt+0` to catch global blockers.
-2. Select a busy project from the sidebar or with `Alt+4` through `Alt+9`.
-3. Clear its urgent findings with `Alt+N`, `Alt+R`, and `Enter`.
-4. Return to **All projects** so lower-volume projects are not hidden for the rest of the session.
+2. When the project rail is long, type in the compact filter under **All projects** to narrow rows by display name or local path. **All projects** stays visible; `Alt+4` through `Alt+9` still follow the unfiltered sidebar order.
+3. Select a busy project from the sidebar or with `Alt+4` through `Alt+9`.
+4. Clear its urgent findings with `Alt+N`, `Alt+R`, and `Enter`.
+5. Return to **All projects** so lower-volume projects are not hidden for the rest of the session.
 
 Project filters are workspace controls, not task ownership changes. Agents continue running in their original working directories.
 
