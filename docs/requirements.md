@@ -843,12 +843,13 @@ The system SHOULD poll GitHub PR and issue state with the fewest API calls neede
 **Acceptance criteria:**
 - GitHub references detected from agent output are fetched immediately without refetching unrelated known references
 - Periodic GitHub state refresh batches all known references by repository
+- Periodic GitHub state refresh skips references whose owner or repo fails GitHub's segment alphabet and length rules after trim, so a trailing newline or other illegal character cannot produce a retrying NOT_FOUND GraphQL call
 - Periodic GitHub state refresh excludes PR references whose last-known status is `merged`; open, draft, and closed references remain eligible for refresh
 - Each repository batch uses a single GraphQL request that returns PR metadata, review threads, review decision, comments, checks, issue metadata, labels, and comment counts
 - The same GitHub object referenced by multiple tasks remains visible in each task without causing duplicate query selections
 - Existing WebSocket `githubUpdate` messages and GitHub alert behavior are preserved
 
-**Evidence:** `src/core/github-scanner-service.ts`, `src/core/github-state-store.ts`, `src/adapters/github-fetcher.ts`, `src/core/github-scanner-service.test.ts`, `src/core/github-state-store.test.ts`, `src/adapters/github-fetcher.test.ts`, `docs/reports/2026-05-12-github-polling-api-call-audit.md`.
+**Evidence:** `src/core/github-scanner-service.ts`, `src/core/github-state-store.ts`, `src/adapters/github-fetcher.ts`, `src/core/github-scanner-service.test.ts`, `src/core/github-state-store.test.ts`, `src/adapters/github-fetcher.test.ts`, `src/adapters/github-fetcher-sanitize.test.ts`, `src/core/project-identity.ts`, `docs/reports/2026-05-12-github-polling-api-call-audit.md`.
 
 ### R5.10: System Resource Visibility — SHOULD — `done`
 
@@ -1286,7 +1287,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R5.6 | — | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R5.8 | — | SHOULD | done | prompt-display, monitor, launch-service, Tooltip, DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
-| R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher |
+| R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher, project-identity |
 | R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |

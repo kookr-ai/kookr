@@ -13,7 +13,7 @@ import type {
   GitHubRepoHealthFetchResult,
 } from '../core/github-types.js';
 import type { ProjectRepoHealth } from '../core/project-summary.js';
-import { isSafePullRequestUrl, projectRepoUrl } from '../core/project-identity.js';
+import { isSafePullRequestUrl, projectRepoUrl, sanitizeGithubOwnerRepo } from '../core/project-identity.js';
 
 const execFile = promisify(execFileCb);
 const DEFAULT_RATE_LIMIT_RETRY_AFTER_MS = 60_000;
@@ -313,8 +313,10 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
       const { stdout } = await execGh([
         'api', 'graphql', '--include',
         '-f', `query=${query}`,
-        '-F', `owner=${group.owner}`,
-        '-F', `repo=${group.repo}`,
+        // -f (--raw-field) keeps owner/repo as strings. -F would coerce an
+        // all-digit owner (legal on GitHub) to Int and fail $owner: String!.
+        '-f', `owner=${group.owner}`,
+        '-f', `repo=${group.repo}`,
       ], {
         timeout: 15000,
       });
@@ -381,12 +383,15 @@ function mergeRateLimits(existing: GitHubRateLimit | undefined, next: GitHubRate
 function groupRefsByRepo(refs: GitHubReference[]): RepoRefGroup[] {
   const groups = new Map<string, RepoRefGroup>();
   for (const ref of refs) {
-    const key = `${ref.owner}/${ref.repo}`;
+    const safe = sanitizeGithubOwnerRepo(ref.owner, ref.repo);
+    // Illegal after trim — GraphQL would return NOT_FOUND forever; skip.
+    if (!safe) continue;
+    const key = `${safe.owner}/${safe.repo}`;
     const existing = groups.get(key);
     if (existing) {
       existing.refs.push(ref);
     } else {
-      groups.set(key, { owner: ref.owner, repo: ref.repo, refs: [ref] });
+      groups.set(key, { owner: safe.owner, repo: safe.repo, refs: [ref] });
     }
   }
   return Array.from(groups.values());
@@ -411,7 +416,10 @@ function uniqueGitHubObjects(refs: GitHubReference[]): GitHubReference[] {
   const seen = new Set<string>();
   const unique: GitHubReference[] = [];
   for (const ref of refs) {
-    const key = `${ref.type}:${ref.owner}/${ref.repo}#${ref.number}`;
+    const safe = sanitizeGithubOwnerRepo(ref.owner, ref.repo);
+    if (!safe) continue;
+    // Key on the trimmed pair so `kookr\n` and `kookr` share one alias.
+    const key = `${ref.type}:${safe.owner}/${safe.repo}#${ref.number}`;
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(ref);
@@ -799,8 +807,8 @@ async function fetchPRReviewThreads(ref: GitHubReference): Promise<{
     const { stdout: json } = await execGh([
       'api', 'graphql',
       '-f', `query=${query}`,
-      '-F', `owner=${ref.owner}`,
-      '-F', `repo=${ref.repo}`,
+      '-f', `owner=${ref.owner}`,
+      '-f', `repo=${ref.repo}`,
       '-F', `number=${ref.number}`,
     ], {
       timeout: 15000,
