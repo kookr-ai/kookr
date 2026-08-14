@@ -138,9 +138,8 @@ export interface TransportSessionSlice {
   defaultAgentType: AgentSelection;
   /**
    * Server-managed round-robin rotation cursor (`settings.roundRobinIndex`).
-   * Seeded from GET /api/settings; advanced locally after a successful
-   * round-robin launch so the picker preview stays honest until the next
-   * settings fetch.
+   * Seeded from GET /api/settings and refreshed from GET /api/grok-auth-status
+   * when the Launch dialog preflight runs.
    */
   roundRobinIndex: number;
   buildInfo: BuildInfo | null;

@@ -1135,8 +1135,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         <span className="settings-label">Default agent</span>
                         <span className="settings-desc">
                           Pre-selected agent for new tasks and child task launches when no explicit
-                          agent is supplied. Round robin alternates between Claude Code and Codex CLI
-                          on each launch to spread usage across both plans.
+                          agent is supplied. Round robin rotates across the registered agents
+                          (Claude Code, Codex CLI, and Grok Build when available).
                         </span>
                       </div>
                       <div className="settings-agent-select">

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { createKookrStore, useKookrStore } from './useStore.js';
-import { applyRoundRobinIndex, noteRoundRobinLaunch } from './round-robin-cursor.js';
+import { applyRoundRobinIndex } from './round-robin-cursor.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -23,14 +23,5 @@ describe('round-robin cursor helpers', () => {
     applyRoundRobinIndex(1.5);
     applyRoundRobinIndex('2');
     expect(useKookrStore.getState().roundRobinIndex).toBe(3);
-  });
-
-  test('noteRoundRobinLaunch advances only for the round-robin sentinel', () => {
-    syncGlobalStore();
-    applyRoundRobinIndex(1);
-    noteRoundRobinLaunch('claude-code');
-    expect(useKookrStore.getState().roundRobinIndex).toBe(1);
-    noteRoundRobinLaunch('round-robin');
-    expect(useKookrStore.getState().roundRobinIndex).toBe(2);
   });
 });

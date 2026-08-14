@@ -68,7 +68,7 @@ describe('AgentTypeSelector round-robin preview', () => {
     expect(rendered.container.querySelector('.agent-type-select-next')).toBeNull();
   });
 
-  test('preview updates when availableAgentTypes change', () => {
+  test('ignores an advertised next agent that is no longer in the rotation', () => {
     rendered = renderSelector({
       value: 'round-robin',
       nextAgentType: 'grok-build',

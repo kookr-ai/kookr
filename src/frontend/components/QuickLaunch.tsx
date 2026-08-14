@@ -3,7 +3,7 @@ import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } f
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
-import { noteRoundRobinLaunch } from '../store/round-robin-cursor.js';
+
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import {
@@ -133,7 +133,6 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     });
     if (sent) {
       saveLastAgentType(agentType);
-      noteRoundRobinLaunch(agentType);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(

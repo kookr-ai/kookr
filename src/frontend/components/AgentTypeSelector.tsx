@@ -26,6 +26,11 @@ interface Props {
   nextAgentType?: AgentType;
   /** Rotation cursor matching the launch service's `roundRobinIndex`. */
   roundRobinIndex?: number;
+  /**
+   * When false, Grok is dropped from the preview rotation (same as launch
+   * skipping an unusable grok-build). Omitted / true is fail-open.
+   */
+  grokAuthUsable?: boolean;
 }
 
 export function AgentTypeSelector({
@@ -37,9 +42,14 @@ export function AgentTypeSelector({
   defaultOptionLabel,
   nextAgentType,
   roundRobinIndex,
+  grokAuthUsable,
 }: Props) {
   const nextLabel = value === ROUND_ROBIN_AGENT_TYPE
-    ? previewRoundRobinNextLabel(options, { cursor: roundRobinIndex, advertisedNext: nextAgentType })
+    ? previewRoundRobinNextLabel(options, {
+      cursor: roundRobinIndex,
+      advertisedNext: nextAgentType,
+      grokAuthUsable,
+    })
     : undefined;
 
   return (

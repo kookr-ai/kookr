@@ -408,16 +408,23 @@ export function buildAgentSelectionOptions(
 /**
  * Human label for the picker "Next: {label}" line when the operator selected
  * round-robin. Prefers a server-advertised concrete type that is still in the
- * rotation; otherwise uses {@link resolveRoundRobinAgent} so the hint matches
- * launch-time resolution. Returns undefined when no concrete agent remains.
+ * rotation; otherwise uses {@link resolveRoundRobinAgent} over the picker
+ * agents (minus Grok when session auth would refuse a grok-build launch).
+ * Does not replay boot-deprioritization or plan-quota substitution — those
+ * stay launch-time only. Returns undefined when no concrete agent remains.
  */
 export function previewRoundRobinNextLabel(
   options: readonly AvailableAgentSelection[],
-  opts?: { cursor?: number; advertisedNext?: AgentType },
+  opts?: { cursor?: number; advertisedNext?: AgentType; grokAuthUsable?: boolean },
 ): string | undefined {
-  const rotation = options
+  let rotation = options
     .map((option) => option.type)
     .filter((type): type is AgentType => type !== ROUND_ROBIN_AGENT_TYPE && isAgentType(type));
+  // Same rule as filterLaunchableAgentTypes (#2194): drop Grok from the
+  // rotation only on a known-unusable signal. Unknown/omitted stays fail-open.
+  if (opts?.grokAuthUsable === false) {
+    rotation = rotation.filter((type) => type !== 'grok-build');
+  }
   if (rotation.length === 0) return undefined;
   const next = opts?.advertisedNext && rotation.includes(opts.advertisedNext)
     ? opts.advertisedNext

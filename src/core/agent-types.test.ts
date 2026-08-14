@@ -347,6 +347,13 @@ describe('previewRoundRobinNextLabel', () => {
   test('returns undefined when no concrete agent remains', () => {
     expect(previewRoundRobinNextLabel([{ type: 'round-robin', label: 'Round robin' }])).toBeUndefined();
   });
+
+  test('skips Grok when session auth is known unusable', () => {
+    expect(previewRoundRobinNextLabel(options, {
+      cursor: 2,
+      grokAuthUsable: false,
+    })).toBe('Claude Code');
+  });
 });
 
 describe('reasoning-effort levels (#681)', () => {
