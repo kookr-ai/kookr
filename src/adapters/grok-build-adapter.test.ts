@@ -119,7 +119,7 @@ describe('GrokBuildAdapter', () => {
     // Session home must not hold a private auth.json clone (OIDC RT race).
     expect(existsSync(join(env.GROK_HOME, 'auth.json'))).toBe(false);
     expect(env.GROK_DISABLE_AUTOUPDATER).toBe('1');
-    expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
+    expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('1');
     expect(env.KOOKR_TASK_ID).toBe(task.id);
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
