@@ -46,6 +46,11 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   // (no input lag); the fetch effect waits 300 ms of quiet before re-firing.
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [data, setData] = useState<CostComparisonResponse | null>(null);
+  // The window/agent/search that actually produced `data`, captured alongside it.
+  // Export reads this (not the live filter state) so an export triggered during
+  // an in-flight refetch — or after a refetch error, when `data` still holds the
+  // last good payload — labels the file with the query the rows came from (#2422).
+  const [dataContext, setDataContext] = useState<CsvExportContext | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
@@ -73,6 +78,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
       .then((body) => {
         if (cancelled) return;
         setData(body);
+        setDataContext({ window: windowChoice, agent: agentFilter, search: debouncedSearch });
         setLoading(false);
       })
       .catch((err) => {
@@ -93,16 +99,14 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   }, [data]);
 
   // Client-side CSV export of the currently displayed per-playbook and per-task
-  // rows. Honours the active window / agent filter / search because it serialises
-  // the same `data` payload the tables render from (#2422). No new server route.
+  // rows (#2422) — no new server route. Serialises the same `data` the tables
+  // render from and labels it with `dataContext` (the query that produced that
+  // data), so window/agent/search in the file always match the rows even when an
+  // export races an in-flight refetch.
   function handleExportCsv(): void {
-    if (!data) return;
-    const csv = buildCostComparisonCsv(data, {
-      window: windowChoice,
-      agent: agentFilter,
-      search: debouncedSearch,
-    });
-    downloadCsv(csv, csvFilename(windowChoice, agentFilter));
+    if (!data || !dataContext) return;
+    const csv = buildCostComparisonCsv(data, dataContext);
+    downloadCsv(csv, csvFilename(dataContext.window, dataContext.agent));
   }
 
   return (
@@ -635,7 +639,9 @@ function csvFilename(window: TimeWindow, agent: CostAgent | 'all'): string {
 }
 
 function downloadCsv(csv: string, filename: string): void {
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  // Lead with a UTF-8 BOM so Excel decodes the non-ASCII glyphs the panel emits
+  // (× / ∞ / — in the ratio and duration columns) instead of mojibake.
+  const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -643,5 +649,7 @@ function downloadCsv(csv: string, filename: string): void {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  // Revoke on the next tick: some WebKit builds cancel the download when the
+  // object URL is revoked synchronously in the same tick as the click.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
