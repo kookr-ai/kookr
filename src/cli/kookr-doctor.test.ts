@@ -37,6 +37,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.dtach',
   'runtime.persistence',
   'runtime.settings-mode',
+  'ops.systemd-unit',
   'github.gh-auth',
   'github.scanner-backoff',
   'launch.kb',
@@ -1875,6 +1876,153 @@ describe('kookr doctor --json', () => {
       // Off POSIX the default os.platform() gate skips the check entirely.
       expect(check).toBeUndefined();
     }
+  });
+
+  // --- ops.systemd-unit (issue #2493) ------------------------------------------
+  function systemctlFixtures(isActive: { stdout?: string; exitCode?: number }) {
+    return {
+      ...happyFixtures(),
+      [JSON.stringify(['systemctl', ['--version']])]: { stdout: 'systemd 255\n' },
+      [JSON.stringify(['systemctl', ['--user', 'is-active', 'kookr.service']])]: isActive,
+    };
+  }
+
+  it('reports ops.systemd-unit ok when the user unit is active on Linux (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'active\n', exitCode: 0 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toMatchObject({
+      status: 'ok',
+      required: false,
+      category: 'ops',
+      summary: expect.stringContaining('kookr.service is active'),
+    });
+  });
+
+  it('WARNs on ops.systemd-unit when the user unit is inactive on Linux (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'inactive\n', exitCode: 3 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    // Advisory only — a dead unit never flips the report to fail.
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+    expect(check).toMatchObject({ status: 'warn', required: false, category: 'ops' });
+    expect(check?.summary).toContain('inactive');
+    expect(check?.summary).toContain('unsupervised');
+    expect(check?.detail).toContain('systemctl --user is-active kookr.service');
+    expect(check?.recommendedAction).toContain('systemctl --user enable --now kookr.service');
+    expect(check?.recommendedAction).toContain('deploy/server/kookr.service');
+  });
+
+  it.each(['failed', 'activating', 'unknown'])(
+    'WARNs on ops.systemd-unit for non-active state %s (issue #2493)',
+    async (state) => {
+      // is-active reports these (exit 3) for crashed / transient / not-loaded units;
+      // anything other than exactly "active" is treated as unsupervised.
+      const run = commandRunner(systemctlFixtures({ stdout: `${state}\n`, exitCode: 3 }));
+
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv },
+        commandRunner: run,
+        access: async () => {},
+        ...hermeticOps,
+        platform: 'linux',
+      });
+
+      expect(report.ok).toBe(true);
+      const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+      expect(check).toMatchObject({ status: 'warn', required: false });
+      expect(check?.summary).toContain(state);
+      expect(check?.summary).toContain('unsupervised');
+    },
+  );
+
+  it('WARNs on ops.systemd-unit via the empty-state fallback when is-active fails to report (issue #2493)', async () => {
+    // systemctl exists (--version ok) but the is-active call errors with no stdout —
+    // e.g. a rejected spawn routed through commandErrorResult (stdout: ''). The
+    // fallback strings must still produce a sensible WARN, not "kookr.service is ;".
+    const run = commandRunner({
+      ...happyFixtures(),
+      [JSON.stringify(['systemctl', ['--version']])]: { stdout: 'systemd 255\n' },
+      // No is-active fixture → the runner resolves { stdout: '', exitCode: 1 }.
+    });
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain('not active');
+    expect(check?.summary).not.toContain('is ;');
+    expect(check?.detail).toContain('a non-active state');
+  });
+
+  it('skips ops.systemd-unit when systemctl is not on PATH (pid-file hosts) (issue #2493)', async () => {
+    // happyFixtures has no systemctl entry → the --version probe returns exitCode 1.
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toBeUndefined();
+  });
+
+  it('skips ops.systemd-unit off Linux without probing systemctl (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'active\n', exitCode: 0 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'darwin',
+    });
+
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toBeUndefined();
+    // Never even shells out to systemctl off Linux.
+    expect(run).not.toHaveBeenCalledWith('systemctl', expect.anything(), expect.anything());
+  });
+
+  it('exits non-zero under --strict when the systemd user unit is inactive (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'inactive\n', exitCode: 3 }));
+    const deps = {
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux' as NodeJS.Platform,
+      out: { log: () => {}, error: () => {} },
+    };
+
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
   });
 
   it('accepts system dtach when the vendored binary is unavailable', async () => {
