@@ -563,6 +563,43 @@ describe('snapshot projection', () => {
     expect(entries[0].agentId).toBe('agent-d1');
   });
 
+  it('suppresses the synthetic terminal entry when a task id is already present in states (issue #2514)', () => {
+    // Equivalence pin for the O(1) `presentTaskIds` Set that replaced the former
+    // O(n²) `states.some((s) => s.taskId === task.id)` terminal-dedup scan
+    // (PR #2310): when a task's id is already represented in `states`, the
+    // terminal pass must not append a second synthetic entry for it.
+    //
+    // The input is deliberately synthetic. Real callers source `monitorStates`
+    // from `Monitor.getSnapshot()`/`getAgentState()`, whose states never carry a
+    // pre-set `taskId` — projection assigns `taskId` only via `enrichLiveState`,
+    // which is skipped for terminal tasks by the terminal-status `continue`
+    // above. So a raw state that both carries a terminal task's id AND is
+    // retained (its agentId matches no session, so it is not enriched or
+    // skipped) is the one shape that drives `presentTaskIds.has(task.id) === true`
+    // for a terminal candidate. This pins the Set's behavioral equivalence with
+    // the old scan directly; it is not reproducing a live dashboard duplication.
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Deploy release', '/workspace/app');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-terminal-session',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-03-30T12:00:00Z'),
+    });
+    taskStore.completeTask(task.id);
+
+    const snapshot = project(taskStore, [liveAgent('external-agent', { taskId: task.id })]);
+    const entries = snapshot.filter((state) => state.taskId === task.id);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].agentId).toBe('external-agent');
+    // Without the dedup, `buildTerminalTaskEntry` would append a second entry
+    // whose agentId is the terminal session id.
+    expect(snapshot.some((state) => state.agentId === 'agent-terminal-session')).toBe(false);
+    // No duplicate row of any kind was appended for this task.
+    expect(snapshot).toHaveLength(1);
+  });
+
   it('links descendant findings to a likely root cause finding', () => {
     const taskStore = new TaskStore();
     const parent = createTaskForMutation(taskStore, { prompt: 'Coordinate release', cwd: '/repo' });
