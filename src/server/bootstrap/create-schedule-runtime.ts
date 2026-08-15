@@ -171,6 +171,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
     ...(deps.isHealthy ? { getDaemonHealthy: deps.isHealthy } : {}),
     ...(deps.getReadyAt ? { getReadyAt: deps.getReadyAt } : {}),
+    // Issue #2512: lets reconcileOnStartup excuse a boot-reconciled `unknown`
+    // session-death as restart churn only when a graceful redeploy actually
+    // caused the stop (same marker the runner uses for skipped_server_restarting).
+    isServerRestarting: () => isServerRestartingActive(deps.kookrDir),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 
