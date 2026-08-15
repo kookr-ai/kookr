@@ -51,6 +51,12 @@ export interface RemoteNodeClientOptions {
    */
   publishBufferedAmountLimit?: number;
   logger?: Pick<typeof console, 'log' | 'warn' | 'error'>;
+  /**
+   * Source of randomness for reconnect-backoff jitter. Injectable so tests can
+   * assert the jittered delay bound deterministically. Defaults to
+   * {@link Math.random}. Must return a value in `[0, 1)`.
+   */
+  random?: () => number;
   wsImporter?: () => Promise<typeof import('ws')>;
   onCommand?: (command: CommandEnvelope) => Promise<CommandResult>;
   onPolicyMessage?: (message: PolicySyncProtocolMessage) => Promise<void> | void;
@@ -70,6 +76,29 @@ export function isPublishBufferOverloaded(
     ? Math.max(0, ws.bufferedAmount)
     : 0;
   return bufferedAmount > limit;
+}
+
+/**
+ * Compute the next reconnect-backoff delay with equal-jitter applied.
+ *
+ * The deterministic tier is `min(maxMs, baseMs * 2 ** attempt)`; equal-jitter
+ * keeps the lower half as a floor and randomizes the upper half, so the result
+ * lands in `[tier / 2, tier]` and never exceeds `maxMs`. Spreading the exact
+ * delay decorrelates a fleet that would otherwise reconnect in lockstep on each
+ * tier after a relay restart (thundering herd).
+ *
+ * `random` must return a value in `[0, 1)`; injecting it keeps the bound
+ * assertable deterministically in tests.
+ */
+export function computeReconnectDelay(
+  attempt: number,
+  baseMs: number,
+  maxMs: number,
+  random: () => number = Math.random,
+): number {
+  const tier = Math.min(maxMs, baseMs * (2 ** attempt));
+  const jittered = tier / 2 + random() * (tier / 2);
+  return Math.min(maxMs, jittered);
 }
 
 export interface RemoteNodeClient {
@@ -304,6 +333,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
   const reconnectBaseMs = opts.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = opts.reconnectMaxMs ?? 30_000;
   const publishBufferedAmountLimit = opts.publishBufferedAmountLimit ?? DEFAULT_PUBLISH_BUFFERED_AMOUNT_LIMIT;
+  const random = opts.random ?? Math.random;
 
   const clearReconnect = (): void => {
     if (reconnectTimer) {
@@ -318,9 +348,9 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
     status.relayConnected = false;
     status.connectionState = 'backing-off';
     connectionObserver?.('disconnected');
-    const delay = Math.min(reconnectMaxMs, reconnectBaseMs * (2 ** reconnectAttempt));
+    const delay = computeReconnectDelay(reconnectAttempt, reconnectBaseMs, reconnectMaxMs, random);
     reconnectAttempt += 1;
-    logger.warn(`[remote-node] relay disconnected (${reason}); reconnecting in ${delay}ms`);
+    logger.warn(`[remote-node] relay disconnected (${reason}); reconnecting in ${Math.round(delay)}ms`);
     reconnectTimer = setTimeout(() => {
       startConnect();
     }, delay);
