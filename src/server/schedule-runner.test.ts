@@ -723,7 +723,7 @@ Do the test thing.
     for (const [i, at] of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:05:00.000Z', '2026-08-12T10:10:00.000Z'].entries()) {
       const receipt = await healthyService.reserveExecution(store.get(schedule.id)!, 'cron', at);
       await healthyService.markExecutionAccepted(schedule.id, receipt.id, `timeout-${i}`, false);
-      await healthyService.recordTaskTerminalOutcome(`timeout-${i}`, 'cancelled');
+      await healthyService.recordTaskTerminalOutcome(`timeout-${i}`, 'cancelled', 'timeout');
     }
     expect(store.get(schedule.id)!.enabled).toBe(false);
 

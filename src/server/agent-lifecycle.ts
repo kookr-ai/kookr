@@ -1,5 +1,5 @@
 import type { Task, TaskStore } from '../core/tasks.js';
-import type { TerminationCause } from '../core/task-status.js';
+import type { TerminationCause, TerminationReason } from '../core/task-status.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -83,6 +83,7 @@ export interface AgentLifecycleDeps {
   recordScheduleTaskTerminal?: (
     taskId: string,
     status: 'completed' | 'cancelled',
+    terminationReason?: TerminationReason,
   ) => void | Promise<void>;
 }
 
@@ -277,6 +278,7 @@ export interface LifecycleDeps {
   recordScheduleTaskTerminal?: (
     taskId: string,
     status: 'completed' | 'cancelled',
+    terminationReason?: TerminationReason,
   ) => void | Promise<void>;
   /**
    * Durable terminal-tail store (rfc-task-tail-retrieval). When set, live
@@ -752,8 +754,15 @@ export async function terminateTask(
   // Live terminate (timeout reaper, session death) must count toward schedule
   // consecutiveFailures so thrashing loops fail-closed-pause (issue #2353).
   // Count as cancelled (non-success); never block terminate on schedule I/O.
+  // Source the RESOLVED terminationReason from the task record rather than
+  // `cause?.reason`: `terminateTask` stamps `cause?.reason ?? 'unknown'`
+  // (tasks.ts), so a bare terminate (no explicit cause) is a genuine `unknown`
+  // crash that must still fail-close (issue #2521). Reading the stamped value
+  // keeps this live path classifying identically to the liveness reconcile sweep
+  // (lifecycle-timers.ts), which also reads `getTask(id)?.terminationReason`.
   try {
-    await deps.recordScheduleTaskTerminal?.(taskId, 'cancelled');
+    const resolvedReason = deps.taskStore.getTask(taskId)?.terminationReason;
+    await deps.recordScheduleTaskTerminal?.(taskId, 'cancelled', resolvedReason);
   } catch (err) {
     console.warn(
       `[lifecycle] recordScheduleTaskTerminal failed for ${taskId}:`,

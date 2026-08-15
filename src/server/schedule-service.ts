@@ -36,12 +36,13 @@ import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
 export const DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD = 3;
 
 /**
- * Next value of a schedule's `consecutiveFailures` counter (issue #1665) given
- * the terminal `lastRunStatus` just recorded. A `completed` run resets the
- * streak to 0; a genuine `failed` dispatch or a `cancelled` run increments it.
- * Overlap-skips (`skipped_active` / `previous_run_active`) never call this
- * helper — they are not failures (issue #2458). Pure so the counter transition
- * is unit testable without a store.
+ * Counter-transition MECHANIC for a schedule's `consecutiveFailures` (issue
+ * #1665): a `completed` run resets the streak to 0, any other terminal status
+ * increments it. This helper does NOT decide WHETHER an outcome is a failure —
+ * that classification is owned solely by {@link isGenuineExecutionFailure}
+ * (issue #2521), and callers only reach the incrementing branch once the
+ * classifier has said yes. Pure so the transition is unit testable without a
+ * store.
  */
 export function nextConsecutiveFailures(
   previous: number | undefined,
@@ -126,26 +127,6 @@ export function buildScheduleFailureRecoveryAlert(
   };
 }
 
-/**
- * Outcomes recorded by `markExecutionOutcome` that count as a genuine schedule
- * run failure and increment the consecutive-failure counter (issue #1665). Only
- * `dispatch_failed` — the launch pipeline actually failed to start the run —
- * qualifies. Every other outcome `markExecutionOutcome` handles is a benign
- * deferral, NOT a failure, and must carry the counter forward unchanged:
- * `skipped_active`/`skipped_coalesced` mean the previous run is still
- * running/pending (a healthy schedule whose task simply outlives its cron
- * interval, or one coalescing under capacity pressure — exactly when an
- * operator wants LESS noise); `skipped_draining` is an operator drain;
- * `skipped_server_restarting` is an intentional redeploy (issue #1983);
- * `skipped_safe_mode` is the automation kill-switch (issue #1710);
- * `skipped_manual`/`skipped_stale`/`skipped_capacity`/`deduplicated` are
- * intentional skips; `skipped_provider_paused` is a deliberate park when a
- * pinned agent is unavailable with no substitute (issue #1895); and
- * `unknown_after_restart` is unresolved rather than failed. Counting any of
- * those would mislabel healthy schedules as failing.
- */
-const SCHEDULE_RUN_FAILURE_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set(['dispatch_failed']);
-
 /** Outcomes that borrow the previous fire's taskId as a blocking pointer. */
 const SKIP_POINTER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'skipped_active',
@@ -153,42 +134,107 @@ const SKIP_POINTER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
 ]);
 
 /**
- * Whether a fire that `reconcileOnStartup` found in a `terminated` task state is
- * restart-reconciliation churn rather than a schedule fault (issue #2512), and
- * so must NOT increment `consecutiveFailures` — the same class #2458 exempted for
- * overlap-skips.
- *
- * Context matters: this classifier is only consulted from the BOOT reconcile,
- * which exclusively processes fires that were still mid-flight
- * (`latestExecution.outcome === 'running'/'queued'`) when THIS process started —
- * a fire the boot path found interrupted, never one that reached a terminal
- * decision of its own (a live crash flows through `recordTaskTerminalOutcome`,
- * which still counts it).
- *
- * Two provenances are restart churn:
- *  - `terminationReason === 'server-restart'`: written only by the boot
- *    stale-open-launch sweep (a launcher that died WITH the previous process), an
- *    unambiguous redeploy artifact — exempt regardless of the marker.
- *  - `terminationReason === 'unknown'` (all sessions died without a clean turn)
- *    AND a redeploy was actually in flight (`serverRestartActive`, the
- *    short-lived `server-restarting.json` marker written by prod-restart.sh). The
- *    `unknown` reason alone is ambiguous — it also covers a genuine crash that
- *    happened while the server was DOWN — so it is only excused when the marker
- *    confirms a graceful redeploy caused the process to stop. A hard daemon crash
- *    (no marker) leaves `unknown` counting, so repeated genuine crashes still
- *    fail-close (#2353) and alert (#1665).
- *
- * A DELIBERATE reap keeps counting regardless: `timeout` (hang-thrash — #2353
- * wants this to fail-close), `manual`/`supervisor` kills, `provider_transient`,
- * `oom`. Pure so the classification is unit testable without a store or clock.
+ * Context the single failure classifier reads to decide whether an outcome is a
+ * genuine execution failure. Every field is optional so both write paths — the
+ * dispatch path (schedule-level `reasonCode`) and the terminal/reconcile path
+ * (task-level `terminationReason` + the redeploy marker) — can call the same
+ * predicate with only the signal they have.
  */
-export function isRestartInterruptedReason(
+export interface ExecutionFailureContext {
+  /** Schedule-level reason code (dispatch/skip decisions). */
+  reasonCode?: ScheduleExecutionReasonCode;
+  /** Task termination reason, when the outcome came from a terminated task. */
+  terminationReason?: TerminationReason;
+  /**
+   * Whether a graceful redeploy drain was in flight (issue #2512), backed by the
+   * short-lived `server-restarting.json` marker. Disambiguates an `unknown`
+   * session-death caused by a redeploy (churn, excused) from a hard crash
+   * (genuine, still counts).
+   */
+  serverRestartActive?: boolean;
+}
+
+/**
+ * Whether a `terminated`/`cancelled` task's termination reason is a genuine
+ * execution failure — the task actually ran and its execution went wrong on its
+ * own — versus an infrastructure-lifecycle or deliberate stop that must NOT
+ * fail-close the schedule.
+ *
+ * Genuine (counts): `timeout` (hung past the silence threshold → reaped; #2353
+ * hang-thrash) and `oom` (killed by the OOM killer mid-run). `unknown` (all
+ * sessions died without a clean turn) is genuine ONLY when no graceful redeploy
+ * was in flight — a hard crash while the server was down also reconciles to
+ * `unknown`, so it keeps counting unless the marker attributes it to a redeploy.
+ *
+ * Not genuine (never counts): `server-restart` (unambiguous redeploy artifact),
+ * `manual`/`supervisor` (deliberate operator/controller kills — not the
+ * schedule's execution failing), `provider_transient` (external transport blip
+ * that owns its own bounded retry, issue #1712), and `undefined` (a bare cancel
+ * — operator cancel or a reconciliation `cancelled reason=none` artifact — which
+ * carries no positive execution-failure evidence).
+ */
+function isGenuineTerminationFailure(
   terminationReason: TerminationReason | undefined,
   serverRestartActive: boolean,
 ): boolean {
-  if (terminationReason === 'server-restart') return true;
-  if (terminationReason === 'unknown') return serverRestartActive;
-  return false;
+  switch (terminationReason) {
+    case 'timeout':
+    case 'oom':
+      return true;
+    case 'unknown':
+      return !serverRestartActive;
+    case 'server-restart':
+    case 'manual':
+    case 'supervisor':
+    case 'provider_transient':
+    case undefined:
+      return false;
+  }
+}
+
+/**
+ * THE one place the "does this outcome increment `consecutiveFailures`?" decision
+ * lives (issue #2521). Default-DENY, inverting the historical
+ * count-everything-except-an-exemption-list design that fail-closed the fleet in
+ * three consecutive windows (#2458 → #2517): only outcomes POSITIVELY classified
+ * as genuine execution failures increment; every infrastructure-lifecycle
+ * outcome — and any future outcome added to {@link ScheduleExecutionOutcome} — is
+ * non-incrementing by construction.
+ *
+ * Genuine execution failures:
+ *  - `dispatch_failed`: the schedule's own launch machinery failed to start the
+ *    run (a real, schedule-attributable fault; #2353 wants this to fail-close).
+ *  - `cancelled` whose task carries a genuine termination reason
+ *    (see {@link isGenuineTerminationFailure}) — the task reached the runner and
+ *    its execution went wrong on its own (`timeout`/`oom`, or `unknown` with no
+ *    redeploy marker).
+ *
+ * Everything else is an infrastructure-lifecycle result and never counts:
+ * `completed`/`running`/`queued`/`queued_capacity`, every `skipped_*` (overlap
+ * skips `skipped_active`/`skipped_coalesced` = `previous_run_active`/
+ * `previous_run_pending`, operator drains, redeploy skips, safe-mode, stale,
+ * manual, provider-paused), `deduplicated`, `unknown_after_restart`, a `cancelled`
+ * from a restart/operator lifecycle stop, and — critically — any outcome literal
+ * added later that this predicate does not explicitly name. A new lifecycle
+ * outcome therefore cannot silently start incrementing the counter.
+ *
+ * Pure so the classification is unit-testable without a store, clock, or task.
+ */
+export function isGenuineExecutionFailure(
+  outcome: ScheduleExecutionOutcome,
+  context: ExecutionFailureContext = {},
+): boolean {
+  switch (outcome) {
+    case 'dispatch_failed':
+      return true;
+    case 'cancelled':
+      return isGenuineTerminationFailure(
+        context.terminationReason,
+        context.serverRestartActive ?? false,
+      );
+    default:
+      return false;
+  }
 }
 
 /**
@@ -872,13 +918,14 @@ export class ScheduleService {
     // to `details.blockingTaskId` (the task this skip was actually blocked
     // by) preserves the pointer across any number of consecutive skips.
     const preservedTaskId = receipt.taskId ?? details.blockingTaskId;
-    // Failure-counter tracking (issue #1665). Only a genuine launch failure
-    // (`dispatch_failed`) increments; the benign deferrals/skips this method
+    // Failure-counter tracking (issue #1665/#2521). Default-deny: only an outcome
+    // positively classified as a genuine execution failure increments (here, a
+    // `dispatch_failed` launch failure). The benign deferrals/skips this method
     // also records (previous run still active/pending, operator drain, manual/
     // stale/dedup skips, unresolved-after-restart) carry the counter forward
-    // unchanged, so a healthy-but-slow or capacity-pressured schedule never
-    // trips the failure alert. See SCHEDULE_RUN_FAILURE_OUTCOMES.
-    const isFailure = SCHEDULE_RUN_FAILURE_OUTCOMES.has(outcome);
+    // unchanged, so a healthy-but-slow or capacity-pressured schedule never trips
+    // the failure alert. See isGenuineExecutionFailure — the single classifier.
+    const isFailure = isGenuineExecutionFailure(outcome, { reasonCode });
     const consecutiveFailures = isFailure
       ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
       : schedule.consecutiveFailures ?? 0;
@@ -929,7 +976,11 @@ export class ScheduleService {
     this.emitFailureAlertOnEdge(schedule, consecutiveFailures, message, Object.keys(autoPause).length > 0);
   }
 
-  async recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void> {
+  async recordTaskTerminalOutcome(
+    taskId: string,
+    status: 'completed' | 'cancelled',
+    terminationReason?: TerminationReason,
+  ): Promise<void> {
     const schedule = this.store.list().find((candidate) => candidate.latestExecution?.taskId === taskId);
     if (!schedule?.latestExecution || schedule.latestExecution.taskId !== taskId) return;
 
@@ -967,14 +1018,25 @@ export class ScheduleService {
     }
 
     // A live terminal outcome (recordTaskTerminalOutcome runs while the daemon
-    // is up and ticking): a `cancelled` here is a genuine failure — the task's
-    // sessions died during normal operation, or an operator cancelled it — and
-    // increments the counter exactly as before. Restart churn is NOT counted,
-    // but it is handled at boot by `reconcileOnStartup` (issue #2512), not here:
-    // a scheduled fire interrupted by a server restart is still mid-flight
-    // (`latestExecution.outcome === 'running'`) when the process dies, so its
-    // terminal is recorded by the boot reconcile, never by this live path.
-    const consecutiveFailures = nextConsecutiveFailures(schedule.consecutiveFailures, status);
+    // is up and ticking). Default-deny (issue #2521): a `completed` run resets
+    // the streak; a `cancelled` increments ONLY when the task's terminationReason
+    // marks a genuine execution failure (a hung/OOM/crashed run). A bare operator
+    // cancel (`cancelled reason=none`, terminationReason undefined) and a redeploy
+    // interruption are lifecycle stops, not execution failures, and carry the
+    // streak forward unchanged. The single classifier decides — see
+    // isGenuineExecutionFailure.
+    const genuineFailure =
+      status === 'cancelled' &&
+      isGenuineExecutionFailure('cancelled', {
+        terminationReason,
+        serverRestartActive: this.isServerRestarting?.() ?? false,
+      });
+    const consecutiveFailures =
+      status === 'completed'
+        ? nextConsecutiveFailures(schedule.consecutiveFailures, 'completed')
+        : genuineFailure
+          ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
+          : schedule.consecutiveFailures ?? 0;
     const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
 
     this.store.replace({
@@ -1118,34 +1180,39 @@ export class ScheduleService {
         // Enrich the reconciled-completion row too (issue #1582) — the task is
         // already in hand here, so join its cost/artifacts directly.
         const enrichment = deriveLedgerEnrichment(task);
-        // Issue #2512: a boot-reconciled `cancelled` whose task was interrupted
-        // by a graceful server redeploy is restart churn, not a schedule fault,
-        // and must NOT increment `consecutiveFailures` — the same class #2458
-        // exempted for overlap-skips. This is the actual path the 2026-08-14
-        // loop-wide fail-closed outage took: an accepted scheduled task whose
+        // Default-deny counting (issue #2521): a `completed` reconcile resets the
+        // streak; a `cancelled` increments ONLY when the task's terminationReason
+        // is a genuine execution failure. This is the actual path the 2026-08-14
+        // loop-wide fail-closed outage took — an accepted scheduled task whose
         // sessions die during a redeploy is terminated `unknown` and lands here as
         // `cancelled`; counting it three restarts running tripped the #2353
-        // auto-pause and darked 14/27 schedules.
+        // auto-pause and darked 14/27 schedules. The single classifier now excuses
+        // it by construction rather than via an ever-growing exemption list (which
+        // #2458 → #2517 proved cannot converge).
         //
-        // The exemption is deliberately narrow (see isRestartInterruptedReason):
-        // `server-restart` (unambiguous redeploy artifact) always, but `unknown`
-        // ONLY while the redeploy marker confirms a graceful stop caused it — a
-        // hard-crash-while-down `unknown` has no marker and still counts, so
-        // repeated genuine crashes keep fail-closing. Gate on `status ===
-        // 'terminated'` so a stale reason from a reopened task cannot leak
-        // (neither reopenTask nor cancelTask clears the field). A deliberate reap
-        // (`timeout` hang-thrash, `manual`/`supervisor`) always counts, and a live
-        // crash still counts through recordTaskTerminalOutcome — only a restart
-        // interruption leaves a fire mid-flight for this boot path to find.
-        // `completed` resets. An exempted cancel carries the streak forward (not
-        // reset) so a real pre-restart streak survives, and the alert edge below
-        // sees priorCount === nextCount → no spurious crossing alert.
-        const restartInterrupted = scheduleOutcome === 'cancelled'
-          && task.status === 'terminated'
-          && isRestartInterruptedReason(task.terminationReason, serverRestartActive);
-        const reconciledFailures = restartInterrupted
-          ? schedule.consecutiveFailures ?? 0
-          : nextConsecutiveFailures(schedule.consecutiveFailures, scheduleOutcome);
+        // isGenuineExecutionFailure counts `timeout` hang-thrash (#2353) and `oom`,
+        // and `unknown` only when NO redeploy marker attributes the death to a
+        // graceful restart (a hard-crash-while-down `unknown` still fail-closes).
+        // `server-restart`, deliberate `manual`/`supervisor` kills, and the
+        // self-retried `provider_transient` are lifecycle/deliberate stops and
+        // never count. `terminationReason` is only read for a `terminated` task
+        // (gated below) so a stale reason from a reopened task cannot leak —
+        // neither reopenTask nor cancelTask clears the field. A non-genuine cancel
+        // carries the streak forward (not reset) so a real pre-restart streak
+        // survives, and the alert edge below sees priorCount === nextCount → no
+        // spurious crossing alert.
+        const reconciledTerminationReason =
+          task.status === 'terminated' ? task.terminationReason : undefined;
+        const genuineReconciledFailure = isGenuineExecutionFailure(scheduleOutcome, {
+          terminationReason: reconciledTerminationReason,
+          serverRestartActive,
+        });
+        const reconciledFailures =
+          scheduleOutcome === 'completed'
+            ? nextConsecutiveFailures(schedule.consecutiveFailures, 'completed')
+            : genuineReconciledFailure
+              ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
+              : schedule.consecutiveFailures ?? 0;
         const autoPause = this.autoPausePatch(schedule, reconciledFailures);
         this.store.replace({
           ...schedule,

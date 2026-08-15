@@ -17,6 +17,7 @@
  */
 import type { Monitor } from '../core/monitor.js';
 import type { Task, TaskStore } from '../core/tasks.js';
+import type { TerminationReason } from '../core/task-status.js';
 import type { AgentActivityMeta, AgentEvent, Anomaly, TokenUsage } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
@@ -445,7 +446,11 @@ export interface TimerDeps {
    * minimal wirings.
    */
   scheduleService?: {
-    recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void>;
+    recordTaskTerminalOutcome(
+      taskId: string,
+      status: 'completed' | 'cancelled',
+      terminationReason?: TerminationReason,
+    ): Promise<void>;
     /**
      * Live fail-closed pause snapshot for the residual page (issue #2426).
      * Absent in tests / minimal wirings — the page is skipped, not invented.
@@ -1349,11 +1354,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.auditLogPath ? { auditLogPath: deps.auditLogPath } : {}),
     ...(deps.providerTransientRetry ? { providerTransientRetry: deps.providerTransientRetry } : {}),
     ...(deps.providerTransientAlert ? { providerTransientAlert: deps.providerTransientAlert } : {}),
-    // Live terminate → schedule consecutiveFailures (issue #2353).
+    // Live terminate → schedule consecutiveFailures (issue #2353). The
+    // terminationReason flows through so the single classifier can tell a genuine
+    // hung/crashed run from a deliberate or redeploy stop (issue #2521).
     ...(deps.scheduleService
       ? {
-          recordScheduleTaskTerminal: (taskId, status) =>
-            deps.scheduleService!.recordTaskTerminalOutcome(taskId, status),
+          recordScheduleTaskTerminal: (taskId, status, terminationReason) =>
+            deps.scheduleService!.recordTaskTerminalOutcome(taskId, status, terminationReason),
         }
       : {}),
   };
@@ -1862,7 +1869,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
         for (const id of result.tasksTerminated) {
           try {
-            await deps.scheduleService.recordTaskTerminalOutcome(id, 'cancelled');
+            // Pass the reconcile-assigned terminationReason so the single
+            // classifier (issue #2521) counts a genuine hung/crashed run
+            // (`timeout`/`oom`/`unknown`) but not a redeploy/deliberate stop.
+            await deps.scheduleService.recordTaskTerminalOutcome(
+              id,
+              'cancelled',
+              taskStore.getTask(id)?.terminationReason,
+            );
           } catch (err) {
             console.warn(
               `[liveness] schedule terminal cancelled notify failed for ${id}:`,
