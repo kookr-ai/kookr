@@ -13164,6 +13164,19 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .cost-search { width: 200px; }
 
+.cost-export-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: inherit;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cost-export-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.cost-export-btn:disabled { opacity: 0.5; cursor: default; }
+
 .cost-agent-chips { display: flex; gap: 4px; }
 .cost-agent-chip {
   background: rgba(255, 255, 255, 0.04);
