@@ -350,6 +350,43 @@ describe('kookr schedule enable --stop-reason (bulk recovery, issue #2520)', () 
     expect(exit.calls).toEqual([EXIT_USER_ERROR]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('rejects --held-before on a plain enable (no --stop-reason)', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', 'sched-a', '--held-before', '2026-08-14T02:16:00Z'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(io.errs.join('\n')).toContain('--held-before requires --stop-reason');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed --held-before without hitting the server', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--stop-reason', 'consecutive_failures', '--held-before', 'not-a-date'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a machine-readable envelope for --json bulk recovery', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      ok: true,
+      recovered: [{ id: 'sched-a', name: 'Queue Feeder' }],
+      skipped: [],
+    }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--stop-reason', 'consecutive_failures', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.ok).toBe(true);
+    expect(payload.details.recovered).toEqual([{ id: 'sched-a', name: 'Queue Feeder' }]);
+  });
 });
 
 describe('kookr schedule — server discovery failures', () => {

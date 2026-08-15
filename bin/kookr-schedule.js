@@ -470,6 +470,13 @@ async function main({
     return userError({ args, out, err, exit, message: `unknown verb "${args.verb}". Known verbs: ${[...VERBS].join(', ')}.` });
   }
 
+  // The bulk-recovery selectors (issue #2520) are only meaningful with `enable`.
+  // Reject them on any other verb up front rather than silently ignoring them
+  // (e.g. `list --stop-reason x` or `disable --held-before y`).
+  if (args.verb !== 'enable' && (args.stopReason !== null || args.heldBefore !== null)) {
+    return userError({ args, out, err, exit, message: `--stop-reason / --held-before are only valid with "enable".` });
+  }
+
   if (args.verb === 'list') return handleList({ args, env, out, err, exit });
   if (args.verb === 'run') return handleRun({ args, env, out, err, exit });
   if (args.verb === 'enable') {
@@ -482,10 +489,12 @@ async function main({
       }
       return handleBulkRecover({ args, env, out, err, exit });
     }
+    // `--held-before` only scopes a bulk recovery — reject it on a plain enable
+    // rather than silently ignoring it (issue #2520 review).
+    if (args.heldBefore !== null) {
+      return userError({ args, out, err, exit, message: '--held-before requires --stop-reason consecutive_failures.' });
+    }
     return handleSetEnabled({ args, env, out, err, exit, enabled: true });
-  }
-  if (args.stopReason !== null || args.heldBefore !== null) {
-    return userError({ args, out, err, exit, message: `--stop-reason / --held-before are only valid with "enable".` });
   }
   return handleSetEnabled({ args, env, out, err, exit, enabled: false });
 }

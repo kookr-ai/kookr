@@ -1878,6 +1878,8 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
 
       const result = await service.recoverConsecutiveFailureHolds();
       expect(result.recovered.map((r) => r.id).sort()).toEqual([a, b].sort());
+      // Recovered entries carry the original heldAt for operator audit.
+      expect(result.recovered).toContainEqual({ id: a, name: 'Queue Feeder', heldAt: '2026-08-14T00:10:00.000Z' });
       expect(result.skipped).toEqual([]);
 
       for (const id of [a, b]) {
@@ -1911,6 +1913,28 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
       expect(result.recovered.map((r) => r.id).sort()).toEqual([before, legacy.id].sort());
       expect(result.skipped).toEqual([{ id: after, name: 'After Fix', reason: 'held_after_watermark' }]);
       expect(store.get(after)!.enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('compares --held-before chronologically, not lexically (tz-offset watermark)', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      // heldAt is 13:00Z. A watermark of 14:00+02:00 == 12:00Z, so the hold is
+      // AFTER the fix and must stay parked. A raw string compare ("...T13...Z"
+      // vs "...T14...+02:00") would wrongly recover it — the dangerous direction.
+      const id = seedDaemonHold(store, 'Still Failing', '2026-08-14T13:00:00.000Z');
+      const result = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T14:00:00+02:00' });
+      expect(result.recovered).toEqual([]);
+      expect(result.skipped).toEqual([{ id, name: 'Still Failing', reason: 'held_after_watermark' }]);
+      expect(store.get(id)!.enabled).toBe(false);
+
+      // Same instant expressed with an offset that puts the fix AFTER the hold
+      // (16:00+02:00 == 14:00Z) recovers it.
+      const later = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T16:00:00+02:00' });
+      expect(later.recovered.map((r) => r.id)).toEqual([id]);
+      expect(store.get(id)!.enabled).toBe(true);
     } finally {
       cleanup();
     }

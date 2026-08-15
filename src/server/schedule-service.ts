@@ -66,6 +66,35 @@ export function shouldAutoPauseForConsecutiveFailures(
 }
 
 /**
+ * True when a hold established at `heldAt` predates the `watermark` (issue
+ * #2520) — i.e. it should be included by `--held-before` / the post-deploy
+ * diagnostic.
+ *
+ * Comparison is CHRONOLOGICAL, not lexical: `heldAt` is always canonical
+ * UTC-`Z` (`toISOString()`), but an operator-supplied watermark is only
+ * `Date.parse`-validated and may carry a timezone offset or reduced precision
+ * (e.g. `2026-08-14T14:00:00+02:00`). A raw string compare would misorder
+ * across formats and could recover a hold set *after* the watermark — a real,
+ * still-failing loop — which is the dangerous direction. Parse both to instants.
+ *
+ * - No watermark → include (no scoping).
+ * - Unusable watermark (unparseable) → include (fail open to unscoped recovery).
+ * - Legacy hold with no `heldAt`, or an unparseable one → treated as old → include.
+ */
+export function holdPredatesWatermark(
+  heldAt: string | undefined,
+  watermark: string | undefined,
+): boolean {
+  if (!watermark) return true;
+  const watermarkMs = Date.parse(watermark);
+  if (Number.isNaN(watermarkMs)) return true;
+  if (!heldAt) return true;
+  const heldMs = Date.parse(heldAt);
+  if (Number.isNaN(heldMs)) return true;
+  return heldMs < watermarkMs;
+}
+
+/**
  * Edge-triggered per-schedule failure alert (issue #1665): one `warning` alert
  * the moment the consecutive-failure streak crosses the threshold, one `info`
  * recovery alert when a later `completed` run clears a firing streak. Keyed per
@@ -581,8 +610,9 @@ export class ScheduleService {
     const skipped: Array<{ id: string; name: string; reason: string }> = [];
     for (const schedule of this.store.list()) {
       if (schedule.enabled || schedule.stopReason !== 'consecutive_failures') continue;
-      // A legacy hold (no heldAt) predates any fix-commit watermark → include it.
-      if (heldBefore && schedule.heldAt && schedule.heldAt >= heldBefore) {
+      // Scope to holds predating the watermark; a legacy hold (no heldAt) is
+      // treated as old and included. Chronological compare (see helper).
+      if (heldBefore && !holdPredatesWatermark(schedule.heldAt, heldBefore)) {
         skipped.push({ id: schedule.id, name: schedule.name, reason: 'held_after_watermark' });
         continue;
       }
@@ -621,7 +651,7 @@ export class ScheduleService {
   ): Array<{ id: string; name: string; heldAt?: string; consecutiveFailures: number }> {
     return this.store.list()
       .filter((s) => !s.enabled && s.stopReason === 'consecutive_failures')
-      .filter((s) => !watermark || !s.heldAt || s.heldAt < watermark)
+      .filter((s) => holdPredatesWatermark(s.heldAt, watermark))
       .map((s) => ({
         id: s.id,
         name: s.name,
