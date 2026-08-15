@@ -44,7 +44,7 @@ export function SnoozeAllButton({
         className="btn-snooze-all"
         onClick={openDialog}
         aria-label="Snooze all findings"
-        title="Snooze every current finding for a chosen duration"
+        title="Snooze the findings shown here for a chosen duration"
       >
         Snooze all
       </button>

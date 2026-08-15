@@ -6,7 +6,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FindingsPanel } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { FINDING_TYPE_FILTER_KEY } from '../finding-type-filter.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import type { AnomalyType } from '../../shared/contracts/anomalies.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -16,7 +18,11 @@ function syncGlobalStore() {
   useKookrStore.setState(nextData);
 }
 
-function makeFinding(agentId: string, overrides: Partial<AgentState> = {}): AgentState {
+function makeFinding(
+  agentId: string,
+  type: AnomalyType = 'permission_blocked',
+  overrides: Partial<AgentState> = {},
+): AgentState {
   return {
     agentId,
     taskId: `task-${agentId}`,
@@ -25,9 +31,9 @@ function makeFinding(agentId: string, overrides: Partial<AgentState> = {}): Agen
     events: [],
     anomaly: {
       agentId,
-      type: 'permission_blocked',
+      type,
       severity: 'warning',
-      explanation: 'Blocked on a Bash permission prompt',
+      explanation: `Finding of type ${type}`,
       detectedAt: new Date('2026-06-11T08:00:00Z'),
     },
     taskStatus: 'inProgress',
@@ -105,7 +111,7 @@ describe('FindingsPanel "Snooze all" bulk control (issue #2421)', () => {
     // label never promises a no-op.
     root = renderPanel(container, {
       findings: [],
-      healthy: [makeFinding('healthy-1', { anomaly: undefined })],
+      healthy: [makeFinding('healthy-1', 'permission_blocked', { anomaly: undefined })],
       send: vi.fn(),
     });
     expect(container.querySelector('.btn-snooze-all')).toBeNull();
@@ -122,7 +128,9 @@ describe('FindingsPanel "Snooze all" bulk control (issue #2421)', () => {
     expect(button).not.toBeNull();
     click(button!);
 
-    // The duration picker (the required confirm step) is now open.
+    // The duration picker (the required confirm step) is now open, and its
+    // heading names how many findings are in scope.
+    expect(document.querySelector('.snooze-dialog-title')?.textContent).toContain('3 findings');
     const presets = Array.from(document.querySelectorAll('.snooze-dialog-btn')) as HTMLElement[];
     const oneHour = presets.find((b) => b.textContent?.includes('1h'));
     expect(oneHour).toBeDefined();
@@ -154,5 +162,30 @@ describe('FindingsPanel "Snooze all" bulk control (issue #2421)', () => {
 
     expect(document.querySelector('.snooze-dialog')).toBeNull();
     expect(send.mock.calls.some((c) => (c[0] as ClientMessage).type === 'snooze')).toBe(false);
+  });
+
+  test('scope is the visible findings only — an active type filter narrows the fan-out', () => {
+    // Two findings of different types; the operator has filtered the rail to
+    // permission_blocked, so only the "a" card is visible.
+    localStorage.setItem(FINDING_TYPE_FILTER_KEY, JSON.stringify(['permission_blocked']));
+    const send = vi.fn();
+    root = renderPanel(container, {
+      findings: [makeFinding('a', 'permission_blocked'), makeFinding('b', 'needs_input')],
+      send,
+    });
+
+    // Count reflects the visible subset, not the raw bucket.
+    click(container.querySelector('.btn-snooze-all')!);
+    expect(document.querySelector('.snooze-dialog-title')?.textContent).toContain('1 finding');
+
+    const oneHour = (Array.from(document.querySelectorAll('.snooze-dialog-btn')) as HTMLElement[])
+      .find((b) => b.textContent?.includes('1h'));
+    click(oneHour!);
+
+    const snoozes = send.mock.calls.map((c) => c[0]).filter((m: ClientMessage) => m.type === 'snooze');
+    expect(snoozes).toHaveLength(1);
+    expect((snoozes[0] as { agentId: string }).agentId).toBe('a');
+    // The filtered-out finding must NOT be snoozed.
+    expect(snoozes.some((m: { agentId: string }) => m.agentId === 'b')).toBe(false);
   });
 });
