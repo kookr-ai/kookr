@@ -6,6 +6,7 @@ import { ScheduleStore, MAX_LEDGER_ENTRIES } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
 import {
   deriveLedgerEnrichment,
+  isRestartInterruptedReason,
   nextConsecutiveFailures,
   shouldAutoPauseForConsecutiveFailures,
   ScheduleService,
@@ -1357,6 +1358,255 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
       expect(paused.stopReason).toBe('consecutive_failures');
       expect(paused.operatorHold).toBe(true);
       expect(paused.consecutiveFailures).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('isRestartInterruptedReason (issue #2512)', () => {
+  it('exempts `server-restart` regardless of the redeploy marker', () => {
+    expect(isRestartInterruptedReason('server-restart', true)).toBe(true);
+    expect(isRestartInterruptedReason('server-restart', false)).toBe(true);
+  });
+
+  it('exempts `unknown` ONLY when a graceful redeploy was in flight', () => {
+    // `unknown` alone is ambiguous — it also covers a crash while the server was
+    // down. Only the redeploy marker confirms a graceful stop caused it.
+    expect(isRestartInterruptedReason('unknown', true)).toBe(true);
+    expect(isRestartInterruptedReason('unknown', false)).toBe(false);
+  });
+
+  it('keeps deliberate reaps and an absent reason counting, marker or not', () => {
+    for (const reason of ['timeout', 'manual', 'supervisor', 'provider_transient', 'oom'] as const) {
+      expect(isRestartInterruptedReason(reason, true)).toBe(false);
+      expect(isRestartInterruptedReason(reason, false)).toBe(false);
+    }
+    expect(isRestartInterruptedReason(undefined, true)).toBe(false);
+  });
+});
+
+describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #2512)', () => {
+  // `serverRestarting` mimics a fresh `server-restarting.json` marker — a
+  // graceful redeploy actually in flight. Defaults to true (the outage case);
+  // pass false to model a hard crash while the server was down (no marker).
+  function harness(serverRestarting = true): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    alerts: Array<Extract<ServerMessage, { type: 'alert' }>>;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-restart-2512-'));
+    const store = new ScheduleStore(dir);
+    const alerts: Array<Extract<ServerMessage, { type: 'alert' }>> = [];
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      getFailureAlertThreshold: () => 3,
+      emitAlert: (message) => alerts.push(message),
+      isServerRestarting: () => serverRestarting,
+    });
+    return { service, store, alerts, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  // A scheduled fire that was mid-flight when the process restarted: an accepted
+  // task whose sessions die during a redeploy is terminated `unknown` by
+  // reconcile(), so at boot its schedule sees a terminal task and records a
+  // `cancelled` reconciled_after_restart outcome. That must NOT count.
+  function midFlightThenTerminated(reason: 'server-restart' | 'unknown' | 'timeout'): {
+    taskStore: TaskStore;
+    taskId: string;
+  } {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Run scheduled work', '/tmp');
+    taskStore.startTask(task.id);
+    taskStore.terminateTask(task.id, { reason });
+    return { taskStore, taskId: task.id };
+  }
+
+  async function seedMidFlight(
+    service: ScheduleService,
+    store: ScheduleStore,
+    scheduleId: string,
+    taskId: string,
+    scheduledFor: string,
+  ): Promise<void> {
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', scheduledFor);
+    await service.markExecutionAccepted(scheduleId, receipt.id, taskId, false);
+  }
+
+  it('three restart-reconciled cancels in a row leave the schedule enabled (the 2026-08-14 outage)', async () => {
+    const { service, store, alerts, cleanup } = harness();
+    try {
+      const schedule = store.create({
+        name: 'Kookr Queue Feeder',
+        cron: '* * * * *',
+        playbook: { path: 'queue-feeder.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Simulate three restart storms: each boot reconciles a mid-flight fire
+      // whose task the restart killed (reconcile → `unknown`).
+      let n = 0;
+      for (const at of ['2026-08-14T10:00:00.000Z', '2026-08-14T10:05:00.000Z', '2026-08-14T10:10:00.000Z']) {
+        const { taskStore, taskId } = midFlightThenTerminated('unknown');
+        await seedMidFlight(service, store, schedule.id, taskId, at);
+        await service.reconcileOnStartup(taskStore);
+        n += 1;
+      }
+      expect(n).toBe(3);
+
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures ?? 0).toBe(0);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      // Still recorded truthfully as reconciled cancels, just not counted.
+      expect(after.latestExecution?.outcome).toBe('cancelled');
+      expect(after.latestExecution?.reasonCode).toBe('reconciled_after_restart');
+      // No fail-closed alert fires for restart churn.
+      expect(alerts).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('exempts a boot-reconciled cancel regardless of terminationReason (server-restart or unknown)', async () => {
+    for (const reason of ['server-restart', 'unknown'] as const) {
+      const { service, store, cleanup } = harness();
+      try {
+        const schedule = store.create({
+          name: `Reconciled-${reason}`,
+          cron: '* * * * *',
+          playbook: { path: 'daily.md', parameters: {} },
+          cwd: '/tmp',
+        });
+        const { taskStore, taskId } = midFlightThenTerminated(reason);
+        await seedMidFlight(service, store, schedule.id, taskId, '2026-08-14T09:05:00.000Z');
+
+        await service.reconcileOnStartup(taskStore);
+
+        const after = store.get(schedule.id)!;
+        expect(after.consecutiveFailures ?? 0).toBe(0);
+        expect(after.enabled).toBe(true);
+        expect(after.latestExecution?.outcome).toBe('cancelled');
+        expect(after.latestExecution?.reasonCode).toBe('reconciled_after_restart');
+      } finally {
+        cleanup();
+      }
+    }
+  });
+
+  it('COUNTS a boot-reconciled `unknown` when NO redeploy marker is present (hard crash while down)', async () => {
+    // Codex review finding: `unknown` alone does not prove restart causation — a
+    // genuine crash while the server was down also reconciles to `unknown`.
+    // Without the graceful-redeploy marker it must keep counting so repeated
+    // real crashes still fail-close (#2353). server-restart, being unambiguous,
+    // is still exempted even here.
+    const { service, store, cleanup } = harness(/* serverRestarting */ false);
+    try {
+      const schedule = store.create({
+        name: 'HardCrashWhileDown',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const unknownRun = midFlightThenTerminated('unknown');
+      await seedMidFlight(service, store, schedule.id, unknownRun.taskId, '2026-08-14T09:00:00.000Z');
+      await service.reconcileOnStartup(unknownRun.taskStore);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      // A `server-restart` reason is still exempt even without a marker.
+      const restartRun = midFlightThenTerminated('server-restart');
+      await seedMidFlight(service, store, schedule.id, restartRun.taskId, '2026-08-14T09:05:00.000Z');
+      await service.reconcileOnStartup(restartRun.taskStore);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a boot-reconciled COMPLETED run still resets a pre-existing streak', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const schedule = store.create({
+        name: 'ReconciledCompleted',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Seed a genuine failure so we can prove a clean reconciled finish clears it.
+      const failReceipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-08-14T09:00:00.000Z');
+      await service.markExecutionOutcome(schedule.id, failReceipt.id, 'dispatch_failed', 'launch_error', 'boom');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      // A mid-flight fire whose task finished cleanly across the restart.
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      taskStore.completeTask(task.id);
+      await seedMidFlight(service, store, schedule.id, task.id, '2026-08-14T09:05:00.000Z');
+
+      await service.reconcileOnStartup(taskStore);
+
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(0);
+      expect(after.latestExecution?.outcome).toBe('completed');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a restart-reconciled cancel carries a pre-existing streak forward unchanged (no reset, no increment)', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const schedule = store.create({
+        name: 'PreExistingStreak',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const failReceipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-08-14T08:55:00.000Z');
+      await service.markExecutionOutcome(schedule.id, failReceipt.id, 'dispatch_failed', 'launch_error', 'boom');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      const { taskStore, taskId } = midFlightThenTerminated('unknown');
+      await seedMidFlight(service, store, schedule.id, taskId, '2026-08-14T09:00:00.000Z');
+      await service.reconcileOnStartup(taskStore);
+
+      // Neither reset (the real streak survives) nor incremented (not the schedule's fault).
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a LIVE cancel (recordTaskTerminalOutcome) still counts — genuine mid-run failure', async () => {
+    // The live path only ever sees a task that died during normal operation, not
+    // one interrupted by a restart (those are still mid-flight at process death
+    // and handled by reconcileOnStartup). So it must keep counting.
+    const { service, store, alerts, cleanup } = harness();
+    try {
+      const schedule = store.create({
+        name: 'LiveCrash',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      let n = 0;
+      for (const at of ['2026-08-14T10:00:00.000Z', '2026-08-14T10:05:00.000Z', '2026-08-14T10:10:00.000Z']) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionAccepted(schedule.id, receipt.id, `task-live-${n++}`, false);
+        await service.recordTaskTerminalOutcome(`task-live-${n - 1}`, 'cancelled');
+      }
+
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(3);
+      expect(after.enabled).toBe(false);
+      expect(after.stopReason).toBe('consecutive_failures');
+      expect(after.latestExecution?.reasonCode).toBe('none');
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
     } finally {
       cleanup();
     }
