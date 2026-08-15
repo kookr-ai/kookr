@@ -4,8 +4,8 @@ import React from 'react';
 import { describe, expect, test, afterEach, beforeEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { CostComparisonPanel } from './CostComparisonPanel.js';
-import type { CostComparisonResponse, AggregateMetrics, PerPlaybookRow } from '../../shared/contracts/cost-comparison.js';
+import { CostComparisonPanel, buildCostComparisonCsv } from './CostComparisonPanel.js';
+import type { CostComparisonResponse, AggregateMetrics, PerPlaybookRow, PerTaskRow } from '../../shared/contracts/cost-comparison.js';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -383,5 +383,132 @@ describe('CostComparisonPanel', () => {
     expect(escapedFocus.defaultPrevented).toBe(true);
 
     outside.remove();
+  });
+
+  // ---------- CSV export (#2422) ------------------------------------------------
+
+  function taskRow(overrides: Partial<PerTaskRow> = {}): PerTaskRow {
+    return {
+      taskId: 't1', agent: 'claude-code', model: 'sonnet', playbookId: 'oss-pr',
+      startedAt: '2026-05-08T11:00:00Z', status: 'completed', isTerminal: true, durationMs: 65_000,
+      inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0,
+      estimatedCostUsd: 0.1234, thumb: 'up', dataQuality: 'complete',
+      ...overrides,
+    };
+  }
+
+  /**
+   * Click Export CSV and capture the serialised blob text. Stubs
+   * URL.createObjectURL (unimplemented in jsdom) so the download path runs
+   * without a real navigation.
+   */
+  async function clickExportAndRead(el: HTMLElement): Promise<{ csv: string; filename: string }> {
+    const blobs: Blob[] = [];
+    let filename = '';
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((b: Blob) => { blobs.push(b); return 'blob:mock'; }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      filename = this.download;
+    });
+    const btn = el.querySelector('.cost-export-btn') as HTMLButtonElement;
+    act(() => btn.click());
+    clickSpy.mockRestore();
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+    const csv = blobs[0] ? await blobs[0].text() : '';
+    return { csv, filename };
+  }
+
+  test('Export CSV button is disabled before data loads', async () => {
+    // A fetch that never resolves keeps the panel in the pre-data state.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const el = mount();
+    await flush();
+    const btn = el.querySelector('.cost-export-btn') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(true);
+  });
+
+  test('Export CSV button is enabled once data loads', async () => {
+    mockFetchSequential([{ body: makeResponse({ perTask: [taskRow()] }) }]);
+    const el = mount();
+    await flush();
+    expect((el.querySelector('.cost-export-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test('Export CSV downloads visible per-playbook and per-task rows', async () => {
+    const claude = emptyAgg('claude-code', { taskCount: 8, pricedTaskCount: 6, totalCostUsd: 1.86 });
+    const codex = emptyAgg('codex-cli', { taskCount: 5, pricedTaskCount: 4, totalCostUsd: 1.92 });
+    const playbook: PerPlaybookRow = {
+      playbookId: 'pb-1', playbookName: 'oss-pr',
+      perAgent: { 'claude-code': claude, 'codex-cli': codex },
+    };
+    mockFetchSequential([{ body: makeResponse({ perPlaybook: [playbook], perTask: [taskRow()] }) }]);
+    const el = mount();
+    await flush();
+
+    const { csv, filename } = await clickExportAndRead(el);
+    expect(csv).toContain('Per playbook');
+    expect(csv).toContain('Playbook,Claude avg (USD),Claude n,Codex avg (USD),Codex n,Cost ratio');
+    // claude avg = 1.86/6 = 0.3100, codex avg = 1.92/4 = 0.4800 → Codex 1.55×
+    expect(csv).toContain('oss-pr,0.3100,6,0.4800,4,Codex 1.55×');
+    expect(csv).toContain('Per task');
+    expect(csv).toContain('Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality');
+    // duration 65_000ms → 1m05s, cost 0.1234, thumb up, complete → priced
+    expect(csv).toContain('2026-05-08T11:00:00.000Z,Claude,sonnet,oss-pr,1m05s,0.1234,up,priced');
+    expect(filename).toMatch(/^kookr-cost-comparison-7d-all-.*\.csv$/);
+  });
+
+  test('exported rows follow the active window and agent filter', async () => {
+    mockFetchSequential([
+      { body: makeResponse({ perTask: [taskRow({ taskId: 'a', playbookId: '7d-row' })] }) },
+      { body: makeResponse({ perTask: [taskRow({ taskId: 'b', playbookId: '30d-row' })] }) },
+    ]);
+    const el = mount();
+    await flush();
+
+    const first = await clickExportAndRead(el);
+    expect(first.csv).toContain('Window,7d');
+    expect(first.csv).toContain('7d-row');
+    expect(first.csv).not.toContain('30d-row');
+
+    const select = el.querySelector('.cost-window-select') as HTMLSelectElement;
+    act(() => {
+      select.value = '30d';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const second = await clickExportAndRead(el);
+    expect(second.csv).toContain('Window,30d');
+    expect(second.csv).toContain('30d-row');
+    expect(second.csv).not.toContain('7d-row');
+  });
+
+  test('buildCostComparisonCsv escapes commas and quotes in free-text fields', () => {
+    const playbook: PerPlaybookRow = {
+      playbookId: 'pb-x', playbookName: 'reports, "weekly"',
+      perAgent: { 'claude-code': emptyAgg('claude-code', { pricedTaskCount: 1, totalCostUsd: 0.5 }) },
+    };
+    const csv = buildCostComparisonCsv(
+      makeResponse({
+        perPlaybook: [playbook],
+        perTask: [taskRow({ model: 'gpt-5, "codex"' })],
+      }),
+      { window: '7d', agent: 'all', search: '' },
+    );
+    // Comma + quote force quoting; inner quotes are doubled.
+    expect(csv).toContain('"reports, ""weekly""",0.5000,1');
+    expect(csv).toContain('"gpt-5, ""codex"""');
+  });
+
+  test('buildCostComparisonCsv neutralizes leading formula characters', () => {
+    const csv = buildCostComparisonCsv(
+      makeResponse({ perTask: [taskRow({ model: '=SUM(A1:A9)' })] }),
+      { window: '24h', agent: 'codex-cli', search: '' },
+    );
+    expect(csv).toContain(`'=SUM(A1:A9)`);
   });
 });
