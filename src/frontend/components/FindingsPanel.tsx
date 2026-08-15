@@ -50,6 +50,7 @@ import { SnoozedRow } from './FindingsPanel/SnoozedRow.js';
 import { CompletedRow } from './FindingsPanel/CompletedRow.js';
 import { ClearCompletedButton } from './FindingsPanel/ClearCompletedButton.js';
 import { AbortActiveButton } from './FindingsPanel/AbortActiveButton.js';
+import { SnoozeAllButton } from './FindingsPanel/SnoozeAllButton.js';
 import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
 import { BottomSectionsResizer } from './FindingsPanel/BottomSectionsResizer.js';
@@ -294,6 +295,7 @@ export function FindingsPanel({
         <div className="findings-header-main">
           <span className="findings-header-title">Supervisor Findings</span>
           <span className="findings-header-actions">
+            <SnoozeAllButton findings={visibleFindings} send={send} />
             <AbortActiveButton taskIds={abortActiveTaskIds} send={send} />
             <MigrateInterruptedButton />
             <button

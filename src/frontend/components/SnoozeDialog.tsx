@@ -45,13 +45,23 @@ export function msUntilClockTime(hhmm: string, now: number = Date.now()): number
 type Mode = 'presets' | 'manual' | 'time';
 
 interface Props {
-  agentId: string;
-  agentName: string;
+  /**
+   * Agent whose finding is being snoozed. Optional so the same dialog can drive
+   * a bulk "snooze all" fan-out (issue #2421), where there is no single agent —
+   * telemetry then omits the per-agent id and carries the `telemetry` extras.
+   */
+  agentId?: string;
+  /** Default title subject: rendered as "Snooze <agentName>". Ignored when `title` is set. */
+  agentName?: string;
+  /** Overrides the default "Snooze <agentName>" heading (e.g. "Snooze all 3 findings"). */
+  title?: React.ReactNode;
+  /** Extra fields merged into every `finding_snoozed` event (e.g. `{ bulk: true, count }`). */
+  telemetry?: Record<string, unknown>;
   onSnooze: (durationMs: number) => void;
   onClose: () => void;
 }
 
-export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
+export function SnoozeDialog({ agentId, agentName, title, telemetry, onSnooze, onClose }: Props) {
   const [mode, setMode] = useState<Mode>('presets');
   const [manualValue, setManualValue] = useState('');
   const [timeValue, setTimeValue] = useState('09:00');
@@ -62,6 +72,10 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
 
   useEscapeToClose(onClose);
   useDialogFocus({ dialogRef, initialFocusRef: firstPresetRef });
+
+  function trackSnooze(durationMs: number, method: string) {
+    track({ type: 'finding_snoozed', agentId: agentId ?? null, anomalyType: null, durationMs, method, ...telemetry });
+  }
 
   useEffect(() => {
     if (mode !== 'presets') {
@@ -86,7 +100,7 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
       if (preset) {
         if (hasShortcutModifier(e)) return;
         e.preventDefault();
-        track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: preset.ms, method: 'shortcut' });
+        trackSnooze(preset.ms, 'shortcut');
         onSnooze(preset.ms);
       }
     }
@@ -101,7 +115,7 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
       return;
     }
     const ms = minutes * 60 * 1000;
-    track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: ms, method: 'shortcut_manual' });
+    trackSnooze(ms, 'shortcut_manual');
     onSnooze(ms);
   }
 
@@ -111,7 +125,7 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
       onClose();
       return;
     }
-    track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: ms, method: 'shortcut_time' });
+    trackSnooze(ms, 'shortcut_time');
     onSnooze(ms);
   }
 
@@ -127,7 +141,7 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div id={titleId} className="snooze-dialog-title">
-          Snooze <strong>{agentName}</strong>
+          {title ?? <>Snooze <strong>{agentName}</strong></>}
         </div>
         {mode === 'presets' ? (
           <div className="snooze-dialog-options">
@@ -137,7 +151,7 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
                 ref={index === 0 ? firstPresetRef : undefined}
                 className="snooze-dialog-btn"
                 onClick={() => {
-                  track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: p.ms, method: 'shortcut' });
+                  trackSnooze(p.ms, 'shortcut');
                   onSnooze(p.ms);
                 }}
               >
