@@ -620,6 +620,24 @@ kbd {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
+.btn-snooze-all {
+  border: 1px solid var(--amber);
+  background: transparent;
+  color: var(--amber);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.btn-snooze-all:hover {
+  background: rgba(251, 191, 36, 0.15);
+}
+.btn-snooze-all:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
 .btn-migrate-interrupted {
   border: 1px solid var(--blue);
   background: transparent;
