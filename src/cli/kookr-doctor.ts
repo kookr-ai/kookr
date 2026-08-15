@@ -314,6 +314,7 @@ Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
+ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is not active),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
@@ -416,12 +417,15 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
   checks.push(await checkPersistence(env, accessFn));
+  const hostPlatform = deps.platform ?? platform();
   const settingsModeCheck = await checkSettingsFileMode(
     env,
     deps.statFile ?? ((path: string) => stat(path)),
-    deps.platform ?? platform(),
+    hostPlatform,
   );
   if (settingsModeCheck) checks.push(settingsModeCheck);
+  const systemdUnitCheck = await checkSystemdUnit(run, hostPlatform);
+  if (systemdUnitCheck) checks.push(systemdUnitCheck);
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
@@ -1422,6 +1426,71 @@ async function checkSettingsFileMode(
     `${settingsPath} is owner-only (${formatMode(permBits)})${ambiguousCaveat}`,
     false,
   );
+}
+
+/**
+ * Advisory ops check (issue #2493): WARN when this Linux host runs the server
+ * without the shipped systemd user unit active, so an unattended crash stays
+ * down until someone notices. The `kookr.service` template ships in
+ * `deploy/server/`, but doctor never checked whether *this* host is actually
+ * supervised by it — only resource-watchdog, hung-reclaim, and prune were
+ * covered, never "you are unsupervised".
+ *
+ * - Linux + `systemctl --user is-active kookr.service` == "active" → OK
+ * - Linux + inactive / not-loaded unit → WARN with the install snippet
+ * - Non-Linux (systemd is Linux-only) → skip (return null)
+ * - `systemctl` not on PATH → skip: some hosts deliberately run the pid-file
+ *   path, so a missing user manager is not an error to surface here.
+ *
+ * Never a required fail (doctor must not FAIL a host that intentionally uses the
+ * pid-file path, and never auto-enables the unit); use `kookr doctor --strict`
+ * to exit non-zero on the WARN.
+ */
+async function checkSystemdUnit(
+  run: CommandRunner,
+  hostPlatform: NodeJS.Platform,
+): Promise<DoctorCheck | null> {
+  // systemd user units are Linux-only; macOS/Windows use different supervisors.
+  if (hostPlatform !== 'linux') return null;
+
+  // Probe systemctl first so a host without a user manager (or without systemd
+  // at all) is skipped cleanly instead of misread as an inactive unit. The
+  // is-active exit code alone cannot tell "systemctl missing" from "inactive".
+  const probe = await run('systemctl', ['--version'], { timeoutMs: 2_000 }).catch(commandErrorResult);
+  if (probe.exitCode !== 0) return null;
+
+  const result = await run('systemctl', ['--user', 'is-active', 'kookr.service'], { timeoutMs: 2_000 })
+    .catch(commandErrorResult);
+  const state = result.stdout.trim();
+  if (result.exitCode === 0 && state === 'active') {
+    return okCheck(
+      'ops.systemd-unit',
+      'Systemd unit',
+      'ops',
+      'kookr.service is active under systemd --user',
+      false,
+    );
+  }
+
+  return {
+    id: 'ops.systemd-unit',
+    label: 'Systemd unit',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary: `kookr.service is ${state || 'not active'}; this host is running unsupervised`,
+    detail:
+      `systemctl --user is-active kookr.service reported ${state || 'a non-active state'}. ` +
+      'Without the unit a crash stays down until someone notices. Some hosts deliberately ' +
+      'use the pid-file path — if so, this advisory WARN is expected.',
+    recommendedAction:
+      'Install and enable the shipped unit so a crash restarts automatically:\n' +
+      '  mkdir -p ~/.config/systemd/user\n' +
+      '  cp deploy/server/kookr.service ~/.config/systemd/user/kookr.service\n' +
+      '  systemctl --user daemon-reload\n' +
+      '  systemctl --user enable --now kookr.service\n' +
+      'See docs/reference/production-server-service.md.',
+  };
 }
 
 /**
