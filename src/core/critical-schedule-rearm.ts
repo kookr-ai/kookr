@@ -146,6 +146,7 @@ export type TransientFailureRearmSkipReason =
   | 'health_not_ok'
   | 'already_enabled'
   | 'not_failure_pause'
+  | 'operator_hold'
   | 'not_transient_reason'
   | 'failure_after_ready';
 
@@ -159,6 +160,14 @@ export interface TransientFailureRearmView {
   enabled: boolean;
   /** Auto-pause marker from issue #2353. Other stop reasons are left alone. */
   stopReason?: string;
+  /**
+   * Provenance of the current hold (issue #2520). `operator` holds are never
+   * auto-cleared here — only `daemon`-set (or legacy untagged) fail-closed
+   * holds are eligible. Absent on legacy schedules; combined with a
+   * `consecutive_failures` stopReason it can only be a #2353 daemon pause, so
+   * absence is treated as eligible (not operator).
+   */
+  holdSource?: string;
   latestReasonCode?: string;
   /** When the last fire was recorded. Compared to {@link readyAt}. */
   lastEvaluatedAt?: string;
@@ -180,14 +189,18 @@ export function isTransientFailureRearmReason(
  *  1. health/ready is not ok
  *  2. already enabled
  *  3. pause is not `consecutive_failures` (manual park, trigger-limit, …)
- *  4. last reason is not a transient launch_error / overlap-skip
- *  5. last fire happened at or after the daemon became ready (a live #2353
+ *  4. hold provenance is `operator` — a human held it; never auto-cleared (#2520)
+ *  5. last reason is not a transient launch_error / overlap-skip
+ *  6. last fire happened at or after the daemon became ready (a live #2353
  *     streak, not leftover accounting from before recovery)
- *  6. otherwise → rearm
+ *  7. otherwise → rearm
  *
- * `operatorHold` is not consulted: #2353 sets it on every auto-pause, and
- * this path exists specifically to lift that leftover hold. A distinct
- * operator park has a different stopReason (or none) and fails step 3.
+ * `operatorHold` (the boolean) is not consulted: #2353 sets it on every
+ * auto-pause, and this path exists specifically to lift that leftover hold.
+ * The `holdSource` tag (issue #2520) is consulted instead so a genuine
+ * operator park is never auto-cleared here even if it somehow carried a
+ * `consecutive_failures` stopReason. Absent `holdSource` on a
+ * `consecutive_failures` pause can only be a #2353 daemon hold → eligible.
  *
  * `readyAt` is required for a lift. Without a watermark we cannot tell a
  * leftover hold from a pause that just fired while the process was already
@@ -206,6 +219,9 @@ export function decideTransientFailureRearm(
   }
   if (schedule.stopReason !== 'consecutive_failures') {
     return { rearm: false, reason: 'not_failure_pause' };
+  }
+  if (schedule.holdSource === 'operator') {
+    return { rearm: false, reason: 'operator_hold' };
   }
   if (!isTransientFailureRearmReason(schedule.latestReasonCode)) {
     return { rearm: false, reason: 'not_transient_reason' };

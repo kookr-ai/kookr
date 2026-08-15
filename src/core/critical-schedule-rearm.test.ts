@@ -208,6 +208,23 @@ describe('decideTransientFailureRearm (issues #2458 / #2459)', () => {
     ).toEqual({ rearm: false, reason: 'not_transient_reason' });
   });
 
+  it('never auto-clears an operator-sourced hold (issue #2520)', () => {
+    // A human hold (holdSource:'operator') that somehow carries a
+    // consecutive_failures stopReason + transient reason must stay parked.
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, holdSource: 'operator' }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+  });
+
+  it('still rearms a daemon-sourced or legacy (untagged) transient hold (issue #2520)', () => {
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, holdSource: 'daemon' }, true, readyAt),
+    ).toEqual({ rearm: true });
+    // Legacy hold with no provenance tag on a consecutive_failures pause can
+    // only be a #2353 daemon hold → still eligible.
+    expect(decideTransientFailureRearm(pausedLaunchError, true, readyAt)).toEqual({ rearm: true });
+  });
+
   it('does not rearm a non-failure park (trigger limit or already enabled)', () => {
     expect(
       decideTransientFailureRearm({ ...pausedLaunchError, enabled: true }, true, readyAt),

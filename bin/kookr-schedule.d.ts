@@ -14,6 +14,10 @@ export interface ParsedArgs {
   id: string | null;
   json: boolean;
   help: boolean;
+  /** Bulk-recovery selector for `enable` (issue #2520). */
+  stopReason: string | null;
+  /** Optional ISO watermark for bulk recovery (issue #2520). */
+  heldBefore: string | null;
 }
 
 export interface RequestJsonArgs {

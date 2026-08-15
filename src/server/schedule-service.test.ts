@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -1799,6 +1799,216 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
       expect(store.get(schedule.id)!.enabled).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => {
+  function harness(threshold = 3): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-recover-2520-'));
+    const store = new ScheduleStore(dir);
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      getFailureAlertThreshold: () => threshold,
+    });
+    return { service, store, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  // Seed a schedule already parked by the #2353 daemon auto-pause, with a
+  // controllable heldAt (deterministic vs. real-clock heldAt).
+  function seedDaemonHold(store: ScheduleStore, name: string, heldAt: string): string {
+    const schedule = store.create({
+      name,
+      cron: '* * * * *',
+      playbook: { path: 'daily.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    store.replace({
+      ...schedule,
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt,
+      consecutiveFailures: 3,
+    });
+    return schedule.id;
+  }
+
+  it('tags a live #2353 auto-pause as daemon-sourced with a heldAt (issue #2520)', async () => {
+    const { service, store, cleanup } = harness(3);
+    try {
+      const schedule = store.create({
+        name: 'CascadeVictim',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Three cancelled (reason=none) terminals — the #2512 cascade shape.
+      for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionAccepted(schedule.id, receipt.id, `task-${i}`, false);
+        await service.recordTaskTerminalOutcome(`task-${i}`, 'cancelled');
+      }
+      const paused = store.get(schedule.id)!;
+      expect(paused.enabled).toBe(false);
+      expect(paused.stopReason).toBe('consecutive_failures');
+      expect(paused.operatorHold).toBe(true);
+      expect(paused.holdSource).toBe('daemon');
+      expect(typeof paused.heldAt).toBe('string');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('bulk-recovers every consecutive_failures hold in one action, clearing counter + hold', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const a = seedDaemonHold(store, 'Queue Feeder', '2026-08-14T00:10:00.000Z');
+      const b = seedDaemonHold(store, 'Idea Scout', '2026-08-14T01:20:00.000Z');
+      // A healthy schedule and an operator-parked one must be left alone.
+      const healthy = store.create({ name: 'Healthy', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      const operatorParked = store.create({ name: 'Operator Off', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.setEnabled(operatorParked.id, false, { operatorHold: true });
+
+      const result = await service.recoverConsecutiveFailureHolds();
+      expect(result.recovered.map((r) => r.id).sort()).toEqual([a, b].sort());
+      expect(result.skipped).toEqual([]);
+
+      for (const id of [a, b]) {
+        const row = store.get(id)!;
+        expect(row.enabled).toBe(true);
+        expect(row.stopReason).toBeUndefined();
+        expect(row.operatorHold).toBeUndefined();
+        expect(row.holdSource).toBeUndefined();
+        expect(row.consecutiveFailures).toBe(0);
+      }
+      // Untouched: healthy stays enabled, operator hold stays parked.
+      expect(store.get(healthy.id)!.enabled).toBe(true);
+      expect(store.get(operatorParked.id)!.enabled).toBe(false);
+      expect(store.get(operatorParked.id)!.holdSource).toBe('operator');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('scopes recovery to holds predating --held-before; legacy (no heldAt) holds are included', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const before = seedDaemonHold(store, 'Before Fix', '2026-08-14T02:00:00.000Z');
+      const after = seedDaemonHold(store, 'After Fix', '2026-08-14T05:00:00.000Z');
+      // Legacy hold with no heldAt timestamp (paused before this feature shipped).
+      const legacy = store.create({ name: 'Legacy', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.replace({ ...store.get(legacy.id)!, enabled: false, stopReason: 'consecutive_failures', operatorHold: true, holdSource: 'daemon', consecutiveFailures: 3 });
+
+      // Fix commit landed 02:16Z: recover only holds set before it.
+      const result = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T02:16:00.000Z' });
+      expect(result.recovered.map((r) => r.id).sort()).toEqual([before, legacy.id].sort());
+      expect(result.skipped).toEqual([{ id: after, name: 'After Fix', reason: 'held_after_watermark' }]);
+      expect(store.get(after)!.enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reports a trigger-limit-exhausted hold as skipped instead of throwing', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const good = seedDaemonHold(store, 'Recoverable', '2026-08-14T02:00:00.000Z');
+      const exhausted = store.create({ name: 'Exhausted', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp', maxTriggers: 1 });
+      store.replace({
+        ...store.get(exhausted.id)!,
+        enabled: false,
+        stopReason: 'consecutive_failures',
+        operatorHold: true,
+        holdSource: 'daemon',
+        remainingTriggers: 0,
+        exhaustedAt: '2026-08-14T02:00:00.000Z',
+        consecutiveFailures: 3,
+      });
+
+      const result = await service.recoverConsecutiveFailureHolds();
+      expect(result.recovered.map((r) => r.id)).toEqual([good]);
+      expect(result.skipped).toEqual([
+        { id: exhausted.id, name: 'Exhausted', reason: 'trigger_limit_exhausted' },
+      ]);
+      expect(store.get(exhausted.id)!.enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Acceptance criterion #4: a bug-induced cancelled reason=none cascade is
+  // one-command recovered after the fix deploys; an operator-set hold is NOT
+  // auto-cleared by the automated re-arm path.
+  it('one-command recovers a bug cascade; never auto-clears an operator hold (AC4)', async () => {
+    const { service, store, cleanup } = harness(3);
+    try {
+      // The cascade victim (reason=none daemon hold) — the auto re-arm path
+      // (#2459) intentionally leaves it dark (reason is not transient)...
+      const victim = store.create({ name: 'Cross-Repo Orchestrator', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
+        const receipt = await service.reserveExecution(store.get(victim.id)!, 'cron', at);
+        await service.markExecutionAccepted(victim.id, receipt.id, `victim-${i}`, false);
+        await service.recordTaskTerminalOutcome(`victim-${i}`, 'cancelled');
+      }
+      expect(store.get(victim.id)!.holdSource).toBe('daemon');
+      expect(store.get(victim.id)!.latestExecution?.reasonCode).toBe('none');
+
+      // An operator-held schedule (human decision).
+      const operatorHeld = store.create({ name: 'Operator Held', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.setEnabled(operatorHeld.id, false, { operatorHold: true });
+
+      // Auto re-arm (#2459) leaves BOTH dark: the cascade victim is not a
+      // transient reason, the operator hold is not a daemon hold.
+      const rearm = await service.rearmTransientFailureHolds(true, '2026-08-15T00:00:00.000Z');
+      expect(rearm.rearmed).toEqual([]);
+      expect(store.get(victim.id)!.enabled).toBe(false);
+      expect(store.get(operatorHeld.id)!.enabled).toBe(false);
+
+      // One operator command recovers the cascade victim...
+      const recovered = await service.recoverConsecutiveFailureHolds();
+      expect(recovered.recovered.map((r) => r.id)).toEqual([victim.id]);
+      expect(store.get(victim.id)!.enabled).toBe(true);
+      // ...and the operator hold is untouched (not a consecutive_failures hold).
+      expect(store.get(operatorHeld.id)!.enabled).toBe(false);
+      expect(store.get(operatorHeld.id)!.holdSource).toBe('operator');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('lists / logs consecutive_failures holds older than the running build (AC2)', () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const old = seedDaemonHold(store, 'Old Hold', '2026-08-14T00:10:00.000Z');
+      const recent = seedDaemonHold(store, 'Recent Hold', '2026-08-15T09:00:00.000Z');
+
+      const listed = service.listConsecutiveFailureHoldsBefore('2026-08-15T00:00:00.000Z');
+      expect(listed.map((h) => h.id)).toEqual([old]);
+      expect(listed[0]).toMatchObject({ name: 'Old Hold', heldAt: '2026-08-14T00:10:00.000Z', consecutiveFailures: 3 });
+      // No watermark → every held schedule is listed.
+      expect(service.listConsecutiveFailureHoldsBefore().map((h) => h.id).sort()).toEqual([old, recent].sort());
+
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { logs.push(String(m)); });
+      try {
+        service.logConsecutiveFailureHoldsAfterDeploy('2026-08-15T00:00:00.000Z');
+        expect(logs.some((l) => l.includes('post-deploy') && l.includes('Old Hold') && l.includes('issue #2520'))).toBe(true);
+        logs.length = 0;
+        // Dev build (no timestamp) → no diagnostic.
+        service.logConsecutiveFailureHoldsAfterDeploy(undefined);
+        expect(logs).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    } finally {
+      cleanup();
     }
   });
 });

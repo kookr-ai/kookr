@@ -49,9 +49,16 @@ Usage:
   kookr schedule list [OPTIONS]
   kookr schedule run <id> [OPTIONS]
   kookr schedule enable <id> [OPTIONS]
+  kookr schedule enable --stop-reason consecutive_failures [--held-before <ISO>] [OPTIONS]
   kookr schedule disable <id> [OPTIONS]
 
 Options:
+      --stop-reason <reason>   Bulk-recover all schedules parked by this
+                               fail-closed auto-pause (only consecutive_failures
+                               today). Use instead of a schedule <id> with enable.
+      --held-before <ISO>      With --stop-reason, only recover holds established
+                               before this ISO-8601 instant (e.g. a fix-commit
+                               time). Legacy holds without a timestamp are included.
       --json     Print one machine-readable output envelope.
   -h, --help     Show this help.
 
@@ -69,13 +76,31 @@ Exit codes:
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const out = { verb: null, id: null, json: false, help: false };
+  const out = { verb: null, id: null, json: false, help: false, stopReason: null, heldBefore: null };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
     if (tok === '-h' || tok === '--help') {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--stop-reason') {
+      // Bulk-recovery selector (issue #2520): `enable --stop-reason <reason>`.
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('-')) {
+        throw new UsageError('--stop-reason requires a value (e.g. consecutive_failures)');
+      }
+      out.stopReason = value;
+    } else if (tok.startsWith('--stop-reason=')) {
+      out.stopReason = tok.slice('--stop-reason='.length);
+    } else if (tok === '--held-before') {
+      // Optional watermark (issue #2520): only recover holds set before <ISO>.
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('-')) {
+        throw new UsageError('--held-before requires an ISO-8601 timestamp value');
+      }
+      out.heldBefore = value;
+    } else if (tok.startsWith('--held-before=')) {
+      out.heldBefore = tok.slice('--held-before='.length);
     } else if (tok.startsWith('-')) {
       throw new UsageError(`unknown option: ${tok}`);
     } else if (out.verb === null) {
@@ -294,6 +319,64 @@ async function handleRun({ args, env, out, err, exit }) {
   return exit(EXIT_OK);
 }
 
+// Bulk-recover schedules parked by the fail-closed consecutive_failures
+// auto-pause (issue #2520): `kookr schedule enable --stop-reason
+// consecutive_failures [--held-before <ISO>]`. One operator action re-enables
+// the whole set instead of one `enable <id>` per schedule.
+async function handleBulkRecover({ args, env, out, err, exit }) {
+  if (args.stopReason !== 'consecutive_failures') {
+    return userError({
+      args,
+      out,
+      err,
+      exit,
+      message: `--stop-reason must be "consecutive_failures" (got: ${args.stopReason}).`,
+    });
+  }
+  const body = { stopReason: 'consecutive_failures' };
+  if (args.heldBefore !== null) {
+    if (Number.isNaN(Date.parse(args.heldBefore))) {
+      return userError({ args, out, err, exit, message: `--held-before must be an ISO-8601 timestamp (got: ${args.heldBefore}).` });
+    }
+    body.heldBefore = args.heldBefore;
+  }
+
+  const outcome = await attemptOnce({
+    env,
+    invoke: (baseUrl) => requestJson({ baseUrl, method: 'POST', path: `${API_PATH}/recover`, body }),
+  });
+  if (outcome.kind === 'invalid_port') return invalidPort({ args, out, err, exit, raw: outcome.raw });
+  if (outcome.kind === 'unreachable') return noServer({ args, out, err, exit });
+
+  const { status, json, text } = outcome.result;
+  if (status !== 200) return serverError({ args, out, err, exit, status, json, text });
+
+  const recovered = Array.isArray(json?.recovered) ? json.recovered : [];
+  const skipped = Array.isArray(json?.skipped) ? json.skipped : [];
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: `Recovered ${recovered.length} schedule(s).`,
+      details: { recovered, skipped },
+    });
+  }
+  if (recovered.length === 0) {
+    out.log('No consecutive_failures holds to recover.');
+  } else {
+    out.log(`✓ Recovered ${recovered.length} consecutive_failures hold(s):`);
+    for (const s of recovered) out.log(`  ${s.id}  ${s.name ?? '(unnamed)'}${s.heldAt ? `  heldAt=${s.heldAt}` : ''}`);
+  }
+  if (skipped.length > 0) {
+    err.error(`kookr schedule: skipped ${skipped.length} schedule(s):`);
+    for (const s of skipped) err.error(`  ${s.id}  ${s.name ?? '(unnamed)'}  (${s.reason})`);
+  }
+  return exit(EXIT_OK);
+}
+
 async function handleSetEnabled({ args, env, out, err, exit, enabled }) {
   const id = resolveId(args.id);
   const verb = enabled ? 'enable' : 'disable';
@@ -389,7 +472,21 @@ async function main({
 
   if (args.verb === 'list') return handleList({ args, env, out, err, exit });
   if (args.verb === 'run') return handleRun({ args, env, out, err, exit });
-  if (args.verb === 'enable') return handleSetEnabled({ args, env, out, err, exit, enabled: true });
+  if (args.verb === 'enable') {
+    // Bulk-recovery form (issue #2520): `enable --stop-reason <reason>` with no
+    // id re-enables every matching hold. A `--stop-reason` with an explicit id
+    // is contradictory — reject rather than silently ignore the selector.
+    if (args.stopReason !== null) {
+      if (resolveId(args.id) !== null) {
+        return userError({ args, out, err, exit, message: 'give either a schedule <id> or --stop-reason, not both.' });
+      }
+      return handleBulkRecover({ args, env, out, err, exit });
+    }
+    return handleSetEnabled({ args, env, out, err, exit, enabled: true });
+  }
+  if (args.stopReason !== null || args.heldBefore !== null) {
+    return userError({ args, out, err, exit, message: `--stop-reason / --held-before are only valid with "enable".` });
+  }
   return handleSetEnabled({ args, env, out, err, exit, enabled: false });
 }
 

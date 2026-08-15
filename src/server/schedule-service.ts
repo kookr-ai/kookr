@@ -367,7 +367,7 @@ export class ScheduleService {
   private autoPausePatch(
     schedule: Schedule,
     consecutiveFailures: number,
-  ): Partial<Pick<Schedule, 'enabled' | 'stopReason' | 'operatorHold'>> {
+  ): Partial<Pick<Schedule, 'enabled' | 'stopReason' | 'operatorHold' | 'holdSource' | 'heldAt'>> {
     const threshold = this.resolveFailureAlertThreshold();
     if (!shouldAutoPauseForConsecutiveFailures(consecutiveFailures, threshold, schedule.enabled)) {
       return {};
@@ -376,6 +376,11 @@ export class ScheduleService {
       enabled: false,
       stopReason: 'consecutive_failures',
       operatorHold: true,
+      // Tag the hold as daemon-set (issue #2520) so re-arm (#2196/#2459) and the
+      // bulk-recovery command can distinguish this automated fail-closed hold
+      // from a human `operator` hold and recover it without touching the latter.
+      holdSource: 'daemon',
+      heldAt: new Date().toISOString(),
     };
   }
 
@@ -514,6 +519,8 @@ export class ScheduleService {
           name: schedule.name,
           enabled: schedule.enabled,
           stopReason: schedule.stopReason,
+          // Issue #2520: never auto-clear a human `operator` hold here.
+          ...(schedule.holdSource ? { holdSource: schedule.holdSource } : {}),
           latestReasonCode: reasonCode,
           lastEvaluatedAt: schedule.latestExecution?.evaluatedAt,
         },
@@ -545,6 +552,105 @@ export class ScheduleService {
       );
     }
     return { rearmed };
+  }
+
+  /**
+   * Bulk-recover schedules parked by the fail-closed `consecutive_failures`
+   * auto-pause (issue #2520) in one operator action, instead of one
+   * `kookr schedule enable <id>` per schedule. This is the safe remediation for
+   * a bug-induced cascade (e.g. #2512) that disabled a whole fleet: once the
+   * root-cause fix has deployed, the operator re-enables every held schedule at
+   * once. Explicitly operator-invoked, so it recovers a genuine-looking hold
+   * too — the operator asserts the fix landed.
+   *
+   * `heldBefore` (ISO) scopes recovery to holds established before a given
+   * instant — typically the fix commit / deploy time — so a schedule that was
+   * paused AFTER the fix (a real, still-failing loop) is left parked. A legacy
+   * hold with no `heldAt` timestamp predates any watermark and is included.
+   *
+   * Reuses {@link setEnabled}, so the counter, stopReason, and hold clear
+   * exactly as an operator re-enable would. Trigger-limit-exhausted schedules
+   * cannot be re-enabled and are reported as skipped rather than throwing.
+   */
+  async recoverConsecutiveFailureHolds(opts?: { heldBefore?: string }): Promise<{
+    recovered: Array<{ id: string; name: string; heldAt?: string }>;
+    skipped: Array<{ id: string; name: string; reason: string }>;
+  }> {
+    const heldBefore = opts?.heldBefore;
+    const recovered: Array<{ id: string; name: string; heldAt?: string }> = [];
+    const skipped: Array<{ id: string; name: string; reason: string }> = [];
+    for (const schedule of this.store.list()) {
+      if (schedule.enabled || schedule.stopReason !== 'consecutive_failures') continue;
+      // A legacy hold (no heldAt) predates any fix-commit watermark → include it.
+      if (heldBefore && schedule.heldAt && schedule.heldAt >= heldBefore) {
+        skipped.push({ id: schedule.id, name: schedule.name, reason: 'held_after_watermark' });
+        continue;
+      }
+      if (isTriggerLimitExhausted(schedule)) {
+        skipped.push({ id: schedule.id, name: schedule.name, reason: 'trigger_limit_exhausted' });
+        continue;
+      }
+      try {
+        await this.setEnabled(schedule.id, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        skipped.push({ id: schedule.id, name: schedule.name, reason: message });
+        continue;
+      }
+      recovered.push({
+        id: schedule.id,
+        name: schedule.name,
+        ...(schedule.heldAt ? { heldAt: schedule.heldAt } : {}),
+      });
+      console.log(
+        `[schedule] bulk-recovered consecutive_failures hold on "${schedule.name}" `
+        + `(${schedule.id}) heldAt=${schedule.heldAt ?? 'unknown'} (issue #2520)`,
+      );
+    }
+    return { recovered, skipped };
+  }
+
+  /**
+   * List `consecutive_failures` holds whose hold predates a build/commit
+   * watermark (issue #2520) — candidates a just-deployed fix may have
+   * addressed. Pure read; a legacy hold with no `heldAt` is treated as old
+   * (predates any watermark) and included with `heldAt: undefined`.
+   */
+  listConsecutiveFailureHoldsBefore(
+    watermark?: string,
+  ): Array<{ id: string; name: string; heldAt?: string; consecutiveFailures: number }> {
+    return this.store.list()
+      .filter((s) => !s.enabled && s.stopReason === 'consecutive_failures')
+      .filter((s) => !watermark || !s.heldAt || s.heldAt < watermark)
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        ...(s.heldAt ? { heldAt: s.heldAt } : {}),
+        consecutiveFailures: s.consecutiveFailures ?? 0,
+      }));
+  }
+
+  /**
+   * Emit a one-line post-deploy diagnostic (issue #2520) listing
+   * `consecutive_failures` holds older than the running build. Runs once at
+   * startup — pure observability, no auto-flip — so an operator can see which
+   * dark schedules a just-deployed fix may have cleared and recover them with
+   * `kookr schedule enable --stop-reason consecutive_failures`. No-op when
+   * nothing is held or the build timestamp is unknown (dev build).
+   */
+  logConsecutiveFailureHoldsAfterDeploy(buildTimestamp?: string): void {
+    if (!buildTimestamp) return;
+    const holds = this.listConsecutiveFailureHoldsBefore(buildTimestamp);
+    if (holds.length === 0) return;
+    const detail = holds
+      .map((h) => `${h.name} (${h.id}, heldAt=${h.heldAt ?? 'unknown'})`)
+      .join(', ');
+    console.log(
+      `[schedule] post-deploy: ${holds.length} consecutive_failures hold(s) predate the `
+      + `running build (${buildTimestamp}) — a deployed fix may have addressed them; `
+      + `recover with \`kookr schedule enable --stop-reason consecutive_failures\` `
+      + `(issue #2520): ${detail}`,
+    );
   }
 
   recordTickCompleted(): void {

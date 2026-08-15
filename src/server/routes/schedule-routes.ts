@@ -180,6 +180,42 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
     }
   });
 
+  // Issue #2520: bulk-recover schedules parked by the fail-closed
+  // `consecutive_failures` auto-pause in one operator action (backs
+  // `kookr schedule enable --stop-reason consecutive_failures [--held-before …]`).
+  // `stopReason` is required and today must be `consecutive_failures` (the only
+  // bulk-recoverable auto-pause class); `heldBefore` (ISO) optionally scopes
+  // recovery to holds established before a fix-commit / deploy watermark.
+  app.post("/api/schedules/recover", async (c) => {
+    if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      body = {};
+    }
+    if (body.stopReason !== "consecutive_failures") {
+      return c.json(
+        { error: "stopReason must be 'consecutive_failures'", code: "validation" },
+        400,
+      );
+    }
+    let heldBefore: string | undefined;
+    if (body.heldBefore !== undefined) {
+      if (typeof body.heldBefore !== "string" || Number.isNaN(Date.parse(body.heldBefore))) {
+        return c.json(
+          { error: "heldBefore must be an ISO-8601 timestamp", code: "validation" },
+          400,
+        );
+      }
+      heldBefore = body.heldBefore;
+    }
+    const result = await deps.scheduleService.recoverConsecutiveFailureHolds(
+      heldBefore ? { heldBefore } : undefined,
+    );
+    return c.json({ ok: true, ...result });
+  });
+
   app.delete("/api/schedules/:id", async (c) => {
     if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
     const id = c.req.param("id");
