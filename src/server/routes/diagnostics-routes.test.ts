@@ -24,6 +24,7 @@ import {
   buildHookIngestionHealthSummary,
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
 import { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
@@ -2797,6 +2798,42 @@ describe('diagnostics routes', () => {
         healthCacheAgeMs: number;
       };
       expect(aged.healthCacheAgeMs).toBe(250);
+    });
+
+    test('records onto a shared HealthBodyCacheStats so /metrics agrees with /api/health (issue #2497)', async () => {
+      // The class exists for cross-route agreement: diagnostics calls record()
+      // on each assembly; /metrics reads the SAME instance. This drives a real
+      // /api/health assembly through the wired dep and asserts the shared stats
+      // reflect it — covering the record() call site + shared-instance seam that
+      // the JSON-body and metrics tests exercise only in disconnected halves.
+      let nowMs = 1_700_000_000_000;
+      const stats = new HealthBodyCacheStats();
+      // Cold: nothing assembled yet ⇒ /metrics would omit the series.
+      expect(stats.snapshot(nowMs)).toBeUndefined();
+
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        nowMs: () => nowMs,
+        healthBodyCacheStats: stats,
+      });
+
+      const body = await (await app.request('/api/health')).json() as {
+        healthAssemblyMs: number;
+        healthCacheAgeMs: number;
+      };
+      // record() ran on the shared instance during assembly; the numbers /metrics
+      // would read match what /api/health served.
+      const snap = stats.snapshot(nowMs);
+      expect(snap).toBeDefined();
+      expect(snap!.assemblyMs).toBe(body.healthAssemblyMs);
+      expect(snap!.cacheAgeMs).toBe(0);
+      expect(body.healthCacheAgeMs).toBe(0);
+
+      // Age tracks off the shared instance without a fresh assembly.
+      nowMs += 250;
+      expect(stats.snapshot(nowMs)!.cacheAgeMs).toBe(250);
     });
 
     test('a failed assembly is not sticky — the next request rebuilds', async () => {
