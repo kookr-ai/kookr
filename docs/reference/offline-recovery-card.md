@@ -116,7 +116,7 @@ If residual stays high after TTL reclaim windows: ack/complete/cancel clearly de
 
 ## 3a. Fail-closed schedule pauses (issue #2426)
 
-`#2353` parks a schedule after consecutive failures. Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
+`#2353` parks a schedule after consecutive failures (the bootstrap-critical merge watchdog is exempt and never parks — see the unattended-recovery runbook §3b, `#2530`). Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
 
 ```bash
 curl -sS http://127.0.0.1:4800/api/health | python3 -c '
