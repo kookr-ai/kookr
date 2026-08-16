@@ -49,6 +49,7 @@ import { nowISO } from '../core/interaction-log.js';
 import {
   classifyTerminalSuccessVerdict,
   type TerminalSuccessVerdict,
+  type TerminalSuccessVerdictMatch,
 } from '../core/terminal-success-verdict.js';
 import { deriveTurnStateDetails } from '../core/turn-state.js';
 
@@ -181,6 +182,46 @@ async function recordTerminalVerdictAutoComplete(
  * tick. Never throws for a single task — a raced terminal transition is logged
  * and skipped so the sweep keeps draining the rest of the batch.
  */
+/**
+ * All eligibility gates for one task, in one place, returning the matched verdict
+ * when the task is a terminal-success park to complete — else null. Reads live
+ * monitor state, so calling it a second time (after an await) re-checks against
+ * the CURRENT state, which is exactly the TOCTOU re-validation the sweep needs.
+ */
+function evaluateCandidate(
+  deps: AutoCompleteTerminalVerdictDeps,
+  task: Task,
+): TerminalSuccessVerdictMatch | null {
+  if (task.status !== 'inProgress') return null;
+  if (isActiveRalphLoop(task)) return null;
+  // A signalled task belongs to the finishedAwaitingAck reclaim path, not here.
+  if (task.pendingSignal) return null;
+  // A billing/quota pause is not a completion (issue #1667 parity).
+  if (deps.isProviderPaused?.(task) === true) return null;
+  // A delivery-gated (`ask-first`) task is completed only when its delivery is
+  // positively clear: skip unless `isHoldingOpenPr` confirms it holds no open PR
+  // (returns false). Absent/unknown ⇒ skip (fail-safe). This still lets a
+  // converged deploy-verification task with no pending delivery complete (issue
+  // AC), while never auto-completing one whose PR is still unmerged.
+  if (task.deliveryAuthorization === 'ask-first' && deps.isHoldingOpenPr?.(task) !== false) return null;
+
+  // Only act on an unambiguous single live session (fail closed on the
+  // attach-race duplicate-session state, so a receipt on an older session can
+  // never tear down a newer one that is still working).
+  const session = soleLiveSession(task);
+  if (!session) return null;
+
+  // Must be genuinely PARKED in needs_input with no concrete question. The
+  // watchdog only mints needs_input once the agent is idle at the prompt past the
+  // staleness threshold, so this excludes tasks that are still working.
+  if (!isParkedWithoutQuestion(deps.monitor.getCurrentAnomaly(session.tmuxSession))) return null;
+
+  // Require a genuinely COMPLETED clean turn — a Stop still reporting active
+  // background tasks / crons is `running`, not done, and yields no message.
+  const finalMessage = completedTurnFinalMessage(deps.monitor.getAgentEvents(session.tmuxSession));
+  return classifyTerminalSuccessVerdict(finalMessage);
+}
+
 export async function autoCompleteTerminalVerdictTasks(
   deps: AutoCompleteTerminalVerdictDeps,
   opts: AutoCompleteTerminalVerdictOptions = {},
@@ -193,35 +234,7 @@ export async function autoCompleteTerminalVerdictTasks(
   let completedThisTick = 0;
 
   for (const task of deps.taskStore.viewTasks()) {
-    if (task.status !== 'inProgress') continue;
-    if (isActiveRalphLoop(task)) continue;
-    // A signalled task belongs to the finishedAwaitingAck reclaim path, not here.
-    if (task.pendingSignal) continue;
-    // A billing/quota pause is not a completion (issue #1667 parity).
-    if (deps.isProviderPaused?.(task) === true) continue;
-    // A delivery-gated (`ask-first`) task is completed only when its delivery is
-    // positively clear: skip unless `isHoldingOpenPr` confirms it holds no open
-    // PR (returns false). Absent/unknown ⇒ skip (fail-safe). This still lets a
-    // converged deploy-verification task with no pending delivery complete (issue
-    // AC), while never auto-completing one whose PR is still unmerged.
-    if (task.deliveryAuthorization === 'ask-first' && deps.isHoldingOpenPr?.(task) !== false) continue;
-
-    // Only act on an unambiguous single live session (fail closed on the
-    // attach-race duplicate-session state, so a receipt on an older session can
-    // never tear down a newer one that is still working).
-    const session = soleLiveSession(task);
-    if (!session) continue;
-
-    // Must be genuinely PARKED in needs_input with no concrete question. The
-    // watchdog only mints needs_input once the agent is idle at the prompt past
-    // the staleness threshold, so this excludes tasks that are still working.
-    const anomaly = deps.monitor.getCurrentAnomaly(session.tmuxSession);
-    if (!isParkedWithoutQuestion(anomaly)) continue;
-
-    // Require a genuinely COMPLETED clean turn — a Stop still reporting active
-    // background tasks / crons is `running`, not done, and yields no message.
-    const finalMessage = completedTurnFinalMessage(deps.monitor.getAgentEvents(session.tmuxSession));
-    const match = classifyTerminalSuccessVerdict(finalMessage);
+    const match = evaluateCandidate(deps, task);
     if (!match) continue;
 
     // Per-batch cap: leave the rest for the next tick.
@@ -235,6 +248,20 @@ export async function autoCompleteTerminalVerdictTasks(
         auditLogPath: deps.auditLogPath,
         broadcastToAll: deps.broadcastToAll,
       });
+      // TOCTOU re-validation (Lucy #2238 pattern): the awaited worktree inspection
+      // above yields the event loop, during which the agent may have resumed
+      // (new turn), signalled, or the record may have raced to terminal. Re-fetch
+      // the LIVE record and re-run every gate against current monitor state
+      // before the irreversible completeTask; skip (without burning budget) if it
+      // is no longer a clean terminal-success park.
+      const fresh = deps.taskStore.getTask(task.id);
+      const revalidated = fresh ? evaluateCandidate(deps, fresh) : null;
+      if (!fresh || !revalidated) {
+        console.warn(
+          `[terminal-verdict-auto-complete] task ${task.id} no longer eligible after worktree inspection — skipping`,
+        );
+        continue;
+      }
       await completeTask(task.id, lifecycleDeps, {
         actorSource: TERMINAL_VERDICT_AUTO_COMPLETE_ACTOR,
         interactionLogReason: 'terminal_success_auto_complete',
@@ -245,7 +272,7 @@ export async function autoCompleteTerminalVerdictTasks(
       // (matching the sibling delivered / auto-close sweeps).
       completedThisTick += 1;
       completedTaskIds.push(task.id);
-      await recordTerminalVerdictAutoComplete(deps, task, match.verdict);
+      await recordTerminalVerdictAutoComplete(deps, fresh, revalidated.verdict);
     } catch (err) {
       // Raced a manual ack or another terminal transition — skip; the task is no
       // longer this sweep's to finish. Keeps draining the rest of the batch.

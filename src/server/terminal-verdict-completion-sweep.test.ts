@@ -24,6 +24,7 @@ const T0 = new Date('2026-08-16T00:00:00.000Z');
 const tmpDirs: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  mockSurfaceDirty.mockClear();
   mockSurfaceDirty.mockResolvedValue(false);
   while (tmpDirs.length) {
     await rm(tmpDirs.pop()!, { recursive: true, force: true });
@@ -446,6 +447,33 @@ describe('autoCompleteTerminalVerdictTasks', () => {
 
     expect(result.completedTaskIds).toEqual([]);
     expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
+  test('re-validates after the worktree await and skips if the turn resumed (TOCTOU)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    const receipt = 'deploy-convergence: converged · serving=194eda77 main=194eda77';
+    // Mutable monitor state so the awaited surfaceDirty can simulate a resume.
+    const entry: { anomaly: Anomaly | null; events: AgentEvent[] } = {
+      anomaly: needsInputAnomaly(agentId),
+      events: [stopEvent(agentId, receipt)],
+    };
+    const monitor: TerminalVerdictMonitor = {
+      getCurrentAnomaly: () => entry.anomaly,
+      getAgentEvents: () => entry.events,
+    };
+    // The agent receives a follow-up and resumes DURING the worktree inspection:
+    // its needs_input park clears, so it is no longer a terminal park.
+    mockSurfaceDirty.mockImplementationOnce(async () => {
+      entry.anomaly = null;
+      return false;
+    });
+
+    const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+
+    expect(result.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+    expect(mockSurfaceDirty).toHaveBeenCalledTimes(1);
   });
 
   test('is a no-op without lifecycleDeps', async () => {
