@@ -20,6 +20,14 @@ export interface SchedulePlaybook {
  *   runs (issue #2353).
  */
 export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
+
+/**
+ * Provenance of the current {@link Schedule.operatorHold} (issue #2520).
+ * `operator` = a human held it (never auto-cleared); `daemon` = an automated
+ * fail-closed path (#2353 consecutive-failures auto-pause) held it (eligible
+ * for auto-re-arm / bulk recovery). Mirrors `core/schedule`.
+ */
+export type ScheduleHoldSource = 'operator' | 'daemon';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
@@ -183,6 +191,18 @@ export interface Schedule {
    * Mirrors `core/schedule`.
    */
   operatorHold?: boolean;
+  /**
+   * Provenance of the current {@link operatorHold} (issue #2520). Present only
+   * while held. `daemon` = automated fail-closed hold (auto-re-armable);
+   * `operator` = human hold (never auto-cleared). Absent on legacy holds
+   * (treated as operator-set). Mirrors `core/schedule`.
+   */
+  holdSource?: ScheduleHoldSource;
+  /**
+   * ISO timestamp of when the current hold was established (issue #2520). Set
+   * alongside {@link operatorHold}; cleared on re-enable. Mirrors `core/schedule`.
+   */
+  heldAt?: string;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;

@@ -86,6 +86,23 @@ export function normalizeScheduleLoopConfig(raw: unknown): ScheduleLoopConfig | 
  *   schedule.
  */
 export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
+
+/**
+ * Provenance of the current {@link Schedule.operatorHold} (issue #2520).
+ *
+ * - `operator` — a human established the hold (UI Pause / CLI `disable`, or an
+ *   explicit `operatorHold:true` PATCH). Never auto-cleared by re-arm.
+ * - `daemon` — an automated fail-closed path set the hold (the #2353
+ *   consecutive-failures auto-pause / cascade). Distinguishable so re-arm
+ *   (#2196/#2459) and the bulk-recovery command can recover these without
+ *   touching operator-set holds.
+ *
+ * Absent on legacy schedules and whenever no hold is set. The tag exists
+ * because a #2353 auto-pause sets `operatorHold:true` on schedules no human
+ * ever held, which otherwise makes an automated disable indistinguishable from
+ * an operator decision and defeats auto-re-arm.
+ */
+export type ScheduleHoldSource = 'operator' | 'daemon';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
@@ -358,6 +375,22 @@ export interface Schedule {
    * daemon becoming ready. Cleared when the operator re-enables it.
    */
   operatorHold?: boolean;
+  /**
+   * Provenance of the current {@link operatorHold} (issue #2520). Present only
+   * while `operatorHold` is set. `daemon` marks an automated fail-closed hold
+   * (#2353 consecutive-failures auto-pause) eligible for automated re-arm;
+   * `operator` marks a human hold that re-arm must never auto-clear. Absent on
+   * legacy holds (treated as operator-set — fail safe, never auto-cleared).
+   */
+  holdSource?: ScheduleHoldSource;
+  /**
+   * ISO timestamp of when the current hold was established (issue #2520). Set
+   * alongside {@link operatorHold}; cleared on re-enable. Lets the bulk-recovery
+   * command scope to holds predating a fix commit (`--held-before`) and the
+   * post-deploy diagnostic list holds older than the running build. Absent on
+   * legacy holds (age unknown → treated as old).
+   */
+  heldAt?: string;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;
@@ -821,15 +854,26 @@ export class ScheduleStore {
     if (enabled) {
       // Manual enable clears any hold — the operator is unparking.
       delete updated.operatorHold;
+      delete updated.holdSource;
+      delete updated.heldAt;
     } else if (opts?.operatorHold === true) {
+      // Explicit operator hold (UI Pause / CLI disable / operatorHold PATCH):
+      // tag its provenance so re-arm never auto-clears it (issue #2520).
       updated.operatorHold = true;
+      updated.holdSource = 'operator';
+      updated.heldAt = updated.updatedAt;
     } else if (opts?.operatorHold === false) {
       delete updated.operatorHold;
+      delete updated.holdSource;
+      delete updated.heldAt;
     } else if (isCriticalAllowlistedSchedule(existing)) {
       // Hold omitted: park critical schedules on intentional disable so UI
       // Pause / CLI disable do not fight recovery re-arm every tick.
       // Non-critical schedules: leave any existing hold state alone.
+      // An intentional operator disable — tag as operator-sourced (issue #2520).
       updated.operatorHold = true;
+      updated.holdSource = 'operator';
+      updated.heldAt = updated.updatedAt;
     }
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
@@ -906,6 +950,14 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     enabled: candidate.enabled ?? true,
     // Durable operator hold (issue #2196) — only rehydrate explicit true.
     ...(candidate.operatorHold === true ? { operatorHold: true } : {}),
+    // Hold provenance + timestamp (issue #2520) — only meaningful while held.
+    ...(candidate.operatorHold === true
+      && (candidate.holdSource === 'operator' || candidate.holdSource === 'daemon')
+      ? { holdSource: candidate.holdSource }
+      : {}),
+    ...(candidate.operatorHold === true && typeof candidate.heldAt === 'string'
+      ? { heldAt: candidate.heldAt }
+      : {}),
     cron: String(candidate.cron),
     ...normalizeTriggerState(candidate),
     playbook: {

@@ -270,11 +270,25 @@ PY
    `consecutiveFailures`, and `kookr schedule enable <id>`.
 2. Diagnose the loop (last error, recent tasks) **before** re-enabling.
    Re-enabling a still-broken belt just re-pauses it.
-3. Re-enable one schedule at a time. The recovered page fires only when the
+3. **Unrelated pauses** (different root causes): re-enable one schedule at a
+   time, each after its own diagnosis. The recovered page fires only when the
    paused count returns to **0**. Re-pages at most once per hour while the
    count stays ≥ 3.
-4. Do **not** write a script that enables every id on the page. Operator
-   re-enable is the only resume path.
+4. **Single bug-induced cascade** (one root cause parked a whole fleet — e.g. a
+   `cancelled reason=none` storm, issue #2512): once the fix has **deployed**,
+   recover the whole set in one action with
+   `kookr schedule enable --stop-reason consecutive_failures [--held-before <fix-commit-ISO>]`
+   (issue #2520). Pass `--held-before` so holds established *after* the fix —
+   real, still-failing loops — stay parked. This is the sanctioned bulk resume;
+   it only touches daemon-set `consecutive_failures` holds and never clears an
+   operator-set hold. Still diagnose the root cause first — bulk-recovering
+   before the fix deploys just re-pauses the fleet on the next tick. On
+   post-deploy start the daemon also logs the `consecutive_failures` holds that
+   predate the running build, so you can see which dark schedules a just-deployed
+   fix may have cleared.
+5. Do **not** hand-roll a script that blindly enables every id on the page. Use
+   the scoped `--stop-reason` command above (cascade) or per-id `enable`
+   (unrelated pauses) — both keep operator-set holds parked.
 
 Episode state is process memory. A restart can re-page immediately if ≥3
 schedules are still parked.

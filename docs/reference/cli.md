@@ -1022,12 +1022,14 @@ List, trigger, enable, or disable schedules from the shell — the same operatio
 kookr schedule list [--json]
 kookr schedule run <id> [--json]
 kookr schedule enable <id> [--json]
+kookr schedule enable --stop-reason consecutive_failures [--held-before <ISO>] [--json]
 kookr schedule disable <id> [--json]
 ```
 
 - `list` renders one line per schedule — `<id>  <enabled|disabled>  <name>  cron="<cron>"  next=<nextRunAt|->` plus `triggers=<remaining>/<max>` when a trigger cap is set. Pass `--json` for the raw `{schedules, status}` payload so scripts don't parse the human format.
 - `run <id>` fires the schedule once now and prints the spawned task id (`(queued)` when the server accepted the fire but is at capacity, so the task waits in the pending queue until a slot frees).
 - `enable <id>` / `disable <id>` toggle the schedule without editing its definition.
+- `enable --stop-reason consecutive_failures` (issue #2520) bulk re-enables **every** schedule parked by the fail-closed consecutive-failures auto-pause in one action — the recovery for a bug-induced cascade that disabled a whole fleet (see the [fail-closed schedule pauses](unattended-recovery-runbook.md) runbook). Give either a schedule `<id>` **or** `--stop-reason`, not both. Optionally add `--held-before <ISO>` to recover only holds established before a fix-commit / deploy time (holds set after it — real, still-failing loops — stay parked). Legacy holds without a recorded timestamp are treated as old and included. Prints the recovered schedules; any that could not be re-enabled (e.g. trigger-limit exhausted) are listed on stderr as skipped. On post-deploy start the daemon also logs the consecutive-failures holds that predate the running build, so operators know which dark schedules a just-deployed fix may have cleared.
 
 The server is discovered the same way as `kookr spawn` (`KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then a probe of `4800`/`4801`); `KOOKR_API_TOKEN` is forwarded to non-loopback servers.
 

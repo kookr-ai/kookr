@@ -523,6 +523,58 @@ describe('ScheduleStore', () => {
     expect(otherDisabled.operatorHold).toBeUndefined();
   });
 
+  it('tags an operator hold with provenance + heldAt and clears both on re-enable (issue #2520)', () => {
+    const schedule = store.create({
+      name: 'Critical residual',
+      cron: '0 0 * * *',
+      playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      cwd: '/tmp',
+    });
+
+    // Critical intentional disable auto-parks: tagged operator-sourced.
+    const parked = store.setEnabled(schedule.id, false);
+    expect(parked.operatorHold).toBe(true);
+    expect(parked.holdSource).toBe('operator');
+    expect(parked.heldAt).toBe(parked.updatedAt);
+
+    // Re-enable clears the whole hold triple.
+    const unpark = store.setEnabled(schedule.id, true);
+    expect(unpark.operatorHold).toBeUndefined();
+    expect(unpark.holdSource).toBeUndefined();
+    expect(unpark.heldAt).toBeUndefined();
+
+    // Explicit operatorHold:true (operator PATCH) also tags operator.
+    const explicit = store.setEnabled(schedule.id, false, { operatorHold: true });
+    expect(explicit.holdSource).toBe('operator');
+    expect(typeof explicit.heldAt).toBe('string');
+  });
+
+  it('rehydrates a daemon-sourced hold + heldAt across a reload (issue #2520)', async () => {
+    const schedule = store.create({
+      name: 'Cascade victim',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    // Simulate the #2353 auto-pause writing a daemon-sourced hold.
+    store.replace({
+      ...schedule,
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt: '2026-08-14T00:10:00.000Z',
+    });
+    await store.persist();
+
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    const after = reloaded.get(schedule.id)!;
+    expect(after.operatorHold).toBe(true);
+    expect(after.holdSource).toBe('daemon');
+    expect(after.heldAt).toBe('2026-08-14T00:10:00.000Z');
+  });
+
   it('replaces a schedule with runtime execution state', () => {
     const schedule = store.create({
       name: 'Runtime',

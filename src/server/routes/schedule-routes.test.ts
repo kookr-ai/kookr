@@ -436,6 +436,82 @@ Do not schedule.
   });
 
   // ---------------------------------------------------------------------------
+  // POST /api/schedules/recover (issue #2520)
+  // ---------------------------------------------------------------------------
+  describe('POST /api/schedules/recover', () => {
+    async function seedDaemonHold(name: string, heldAt: string): Promise<string> {
+      const schedule = await seedSchedule(service, tempDir, name);
+      store.replace({
+        ...store.get(schedule.id)!,
+        enabled: false,
+        stopReason: 'consecutive_failures',
+        operatorHold: true,
+        holdSource: 'daemon',
+        heldAt,
+        consecutiveFailures: 3,
+      });
+      return schedule.id;
+    }
+
+    test('bulk-recovers consecutive_failures holds', async () => {
+      const id = await seedDaemonHold('Queue Feeder', '2026-08-14T00:10:00.000Z');
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopReason: 'consecutive_failures' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.recovered.map((r: { id: string }) => r.id)).toEqual([id]);
+      expect(store.get(id)!.enabled).toBe(true);
+    });
+
+    test('honors a heldBefore watermark', async () => {
+      const before = await seedDaemonHold('Before', '2026-08-14T02:00:00.000Z');
+      const after = await seedDaemonHold('After', '2026-08-14T05:00:00.000Z');
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopReason: 'consecutive_failures', heldBefore: '2026-08-14T02:16:00.000Z' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.recovered.map((r: { id: string }) => r.id)).toEqual([before]);
+      expect(store.get(after)!.enabled).toBe(false);
+    });
+
+    test('rejects an unsupported stopReason', async () => {
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopReason: 'trigger_limit_reached' }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('validation');
+    });
+
+    test('rejects a malformed heldBefore', async () => {
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopReason: 'consecutive_failures', heldBefore: 'not-a-date' }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('validation');
+    });
+
+    test('returns 500 when scheduling is not configured', async () => {
+      const res = await mkApp({}).request('/api/schedules/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stopReason: 'consecutive_failures' }),
+      });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // POST /api/schedules/preview
   // ---------------------------------------------------------------------------
   describe('POST /api/schedules/preview', () => {

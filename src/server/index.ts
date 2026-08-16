@@ -2167,6 +2167,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // predates readyAt are lifted, so a live #2353 streak stays paused.
     isHealthy: () => startupReadiness.getPhase() === 'ready',
     getReadyAt: () => startupReadiness.getProgress().readyAt,
+    // Issue #2520: post-deploy diagnostic watermark — list consecutive_failures
+    // holds older than the running build so a deployed fix's dark schedules are
+    // visible. Dev builds carry an empty timestamp (skips the diagnostic).
+    getBuildTimestamp: () => buildInfo.buildTimestamp || undefined,
     // issue #1995: dead-man fire also refreshes the on-disk ops-status card.
     onOperationalAlert: noteOpsStatusAlert,
     // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
