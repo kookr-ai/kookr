@@ -601,4 +601,25 @@ describe('renderPrometheusExposition', () => {
     });
     expect(output).not.toContain('kookr_lesson_yield_');
   });
+
+  test('renders health-body cache gauges in seconds (issue #2497)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      healthBodyCache: { assemblyMs: 42, cacheAgeMs: 1_250 },
+    });
+    expect(output).toContain('# TYPE kookr_health_body_assembly_seconds gauge');
+    expect(output).toContain('kookr_health_body_assembly_seconds 0.042');
+    expect(output).toContain('# TYPE kookr_health_body_cache_age_seconds gauge');
+    // Age can exceed the 1s TTL during a stale-while-revalidate refresh (#2492).
+    expect(output).toContain('kookr_health_body_cache_age_seconds 1.25');
+  });
+
+  test('omits health-body cache series when cache is cold (issue #2497)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).not.toContain('kookr_health_body_');
+  });
 });

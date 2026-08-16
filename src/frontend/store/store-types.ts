@@ -136,6 +136,12 @@ export interface TransportSessionSlice {
   serverCwd: string;
   availableAgentTypes: AvailableAgentType[];
   defaultAgentType: AgentSelection;
+  /**
+   * Server-managed round-robin rotation cursor (`settings.roundRobinIndex`).
+   * Seeded from GET /api/settings and refreshed from GET /api/grok-auth-status
+   * when the Launch dialog preflight runs.
+   */
+  roundRobinIndex: number;
   buildInfo: BuildInfo | null;
   serverStartedAt: string | null;
   playbooks: Playbook[];

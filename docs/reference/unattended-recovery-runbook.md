@@ -36,14 +36,36 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
+| Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
+| Ready or health slower than the doctor budget, or the probe times out | `kookr doctor` `ops.http-latency` | Treat the WARN as the hung-HTTP signal — ready budget 500ms, health 2s; do not trust sibling probes that skip on timeout — [HTTP latency](#0a-http-latency-doctor-warn) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
 | Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
+
+---
+
+## 0a. HTTP latency (doctor WARN)
+
+Unattended diagnosis starts with `kookr doctor`. Sibling live probes abort
+`GET /api/health` at 500ms and **skip** (ok) on timeout, so a wedged HTTP
+surface can make the report look fine. `ops.http-latency` is the first-class
+signal: it times `GET /api/ready` (500ms abort and WARN budget) then
+`GET /api/health` (2s abort and WARN budget). Timeout, elapsed over budget, or
+5xx → advisory WARN with elapsed ms. Health is skipped when ready already
+timed out so doctor does not hang twice.
+
+```bash
+kookr doctor --json 2>/dev/null \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); print([c for c in r.get("checks",[]) if c.get("id")=="ops.http-latency"])'
+```
+
+This check never fails required doctor status. Use `--strict` if an unattended
+gate should exit non-zero on the WARN.
 
 ---
 
@@ -264,11 +286,29 @@ PY
    `reenabled` / `failed` arrays list exactly what changed). Re-running it on a
    clean fleet is a no-op ("No cascade-held schedules to re-enable").
 
+   To scope the same recovery to a fix-commit / deploy time — recovering only
+   holds established **before** the fix so real, still-failing loops parked
+   afterward stay held — use the watermark form instead (issue #2520):
+
+   ```bash
+   kookr schedule enable --stop-reason consecutive_failures --held-before <fix-commit-ISO>
+   ```
+
+   Legacy holds without a recorded timestamp are treated as old and included;
+   any schedule that could not be re-enabled (e.g. trigger-limit exhausted) is
+   listed on stderr as skipped. On post-deploy start the daemon also logs the
+   `consecutive_failures` holds that predate the running build, so you can see
+   which dark schedules a just-deployed fix may have cleared. Bulk-recovering
+   *before* the fix deploys just re-pauses the fleet on the next tick — diagnose
+   and land the fix first.
+
    **Why the batch is safe:** issue #2517 fixed the root cause — restart-
    interrupted `cancelled` runs no longer increment `consecutiveFailures`, so a
    false increment cannot recur and re-enabling a cascade-parked schedule will
    not immediately re-trip the auto-pause on a phantom streak. To resume one
-   belt at a time instead, `kookr schedule enable <id>` still works.
+   belt at a time instead, `kookr schedule enable <id>` still works. Do **not**
+   hand-roll a script that blindly enables every id on the page — both scoped
+   commands above keep operator-set holds parked.
 4. The recovered page fires only when the paused count returns to **0**.
    Running the batch command drops the count to 0, which **is** the ack — no
    separate acknowledgement step exists.
@@ -290,6 +330,56 @@ Escalation stops the moment the paused count returns to 0 (recovery = ack).
 
 Episode state is process memory. A restart can re-page immediately if ≥3
 schedules are still parked, and resets the escalation age clock.
+
+---
+
+## 3b. Bootstrap-safe recovery tier (issue #2530)
+
+**What it is.** A tiny, hand-audited sub-tier of the critical allowlist
+(`src/core/critical-schedule-rearm.ts`,
+`BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES` /
+`BOOTSTRAP_CRITICAL_SCHEDULE_NAME_PATTERNS`) whose members' liveness *gates the
+fleet's ability to land its own fixes*. Today that is the **PR merge/rebase
+watchdog** — the schedule that merges recovery PRs. The motivating deadlock: a
+loop-wide `consecutive_failures` cascade parked the watchdog, so the fix for the
+cascade could not merge, because merging it required the very schedule the
+cascade had disabled.
+
+**The two protections (both narrow):**
+
+1. **Never auto-paused.** A bootstrap member is exempt from the `#2353`
+   fail-closed pause: on a failing streak it stays `enabled=true`, emits the
+   ordinary per-schedule failure alert (`#1665`) for out-of-fleet visibility,
+   and keeps retrying at its normal cron cadence. It is never disabled, so the
+   merge watchdog is always alive to land a fix. It will **not** appear in
+   `schedules.schedulesPausedByFailure`.
+2. **Re-armed out of a cascade hold.** If a member is *already* parked in a
+   cascade-origin hold (`enabled=false`, `stopReason=consecutive_failures`,
+   `operatorHold=true` — e.g. persisted from before this fix), the critical
+   re-arm (`decideCriticalScheduleRearm`) re-enables it *through* the
+   `operatorHold`, because `#2353` sets that hold on every auto-pause and a
+   cascade hold is otherwise indistinguishable from a genuine park.
+
+**Interaction with `#2520` provenance re-arm.** `#2520` stamps each hold with its
+origin so a cascade-origin `operatorHold` can be told apart from an operator
+park and self-clear once a fix is live. The bootstrap tier is the *bootstrap*
+for that machinery: it keeps the merge watchdog and (once it exists) the
+provenance re-arm executor alive **through** the cascade, so the fix that
+teaches the whole fleet to self-clear can always land. Concretely: a root-cause
+fix merged to main → the always-alive watchdog lands it → `#2520` provenance
+then lets the rest of the parked fleet self-clear. Until `#2520` ships, protection
+(2) uses the coarse `stopReason=consecutive_failures` signal as the cascade
+proxy; when `#2520` lands, prefer its explicit provenance and keep this tier as
+the floor underneath it.
+
+**What is NOT changed.** The general fleet's fail-closed behavior is
+**unchanged** — every non-member schedule still auto-pauses on a
+`consecutive_failures` streak and still requires operator `kookr schedule
+enable`, exactly as section 3a describes. A **genuine operator park** of a
+bootstrap member (a manual disable, or any hold whose `stopReason` is not
+`consecutive_failures`) is still respected and will **not** be auto-re-armed.
+The floor only ever keeps a hand-audited handful of recovery-critical schedules
+alive; it never weakens fail-closed for anything else.
 
 ---
 

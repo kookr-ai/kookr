@@ -11,6 +11,7 @@ import {
 import type { LaunchDependency, PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
+
 import { projectLabel, projectColor } from '../presentation.js';
 import { PlaybookUsageTracker, matchesUsageKey, snapshotKey } from '../store/playbook-usage.js';
 import { mergeParamDefaults } from '../store/playbook-params.js';
@@ -261,7 +262,7 @@ export function PlaybookBrowser({
   onRequestEditCwd,
   grokAuth = null,
 }: Props) {
-  const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries, hostCapabilities } = useKookrStore();
+  const { playbooks, playbooksLoading, availableAgentTypes, defaultAgentType, projectSummaries, hostCapabilities, roundRobinIndex } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [selected, setSelected] = useState<Playbook | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
@@ -875,6 +876,8 @@ export function PlaybookBrowser({
           value={agentType}
           onChange={setAgentType}
           options={agentOptions}
+          roundRobinIndex={roundRobinIndex}
+          grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
         />
         {showGrokAuthBanner && grokAuth?.message && (
           <GrokAuthPreflightBanner message={grokAuth.message} />

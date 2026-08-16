@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore, MAX_LEDGER_ENTRIES } from '../core/schedule.js';
+import type { ScheduleExecutionOutcome } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
 import {
   deriveLedgerEnrichment,
-  isRestartInterruptedReason,
+  isGenuineExecutionFailure,
   nextConsecutiveFailures,
   shouldAutoPauseForConsecutiveFailures,
   ScheduleService,
@@ -988,7 +989,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
-  it('counts a cancelled terminal run through recordTaskTerminalOutcome and can fire on it', async () => {
+  it('counts a GENUINE terminal failure (timeout) through recordTaskTerminalOutcome and can fire on it', async () => {
     const { service, store, alerts, cleanup } = alertServiceHarness(2);
     try {
       const schedule = store.create({
@@ -998,18 +999,84 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
         cwd: '/tmp',
       });
 
-      // A dispatch failure then a cancelled terminal run crosses the threshold of 2.
+      // A dispatch failure then a genuine timeout crash crosses the threshold of 2.
+      // Post-#2521 the live path only counts a `cancelled` whose terminationReason
+      // marks a real execution fault (here `timeout` hang-thrash, #2353).
       await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
 
       const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
       await service.markExecutionAccepted(schedule.id, receipt.id, 'task-cancel', false);
-      await service.recordTaskTerminalOutcome('task-cancel', 'cancelled');
+      await service.recordTaskTerminalOutcome('task-cancel', 'cancelled', 'timeout');
 
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
     } finally {
       cleanup();
+    }
+  });
+
+  it('does NOT count a bare live cancel (`cancelled reason=none`) through recordTaskTerminalOutcome (issue #2521)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'BareCancelSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Seed one real failure so we can prove the bare cancel carries it forward,
+      // not that it merely started at 0.
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      // An operator/programmatic cancel arrives with no terminationReason — it is
+      // a lifecycle stop, not an execution result, and must NOT increment.
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-bare-cancel', false);
+      await service.recordTaskTerminalOutcome('task-bare-cancel', 'cancelled');
+
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+      expect(store.get(schedule.id)!.operatorHold ?? false).toBe(false);
+      // Bare cancel did not cross the threshold → no fail-closed alert.
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does NOT count a deliberate / self-retried terminal reason (manual/supervisor/provider_transient) at the wiring (issue #2521)', async () => {
+    // The highest-risk part of the inversion: pre-#2521 the live path incremented
+    // on ANY cancel, so a deliberate operator/controller kill or a self-retried
+    // provider blip counted and could fail-close. Lock the new behavior in at the
+    // runtime path, not just the pure classifier.
+    for (const reason of ['manual', 'supervisor', 'provider_transient'] as const) {
+      const { service, store, alerts, cleanup } = alertServiceHarness(2);
+      try {
+        const schedule = store.create({
+          name: `Deliberate-${reason}`,
+          cron: '* * * * *',
+          playbook: { path: 'daily.md', parameters: {} },
+          cwd: '/tmp',
+        });
+
+        // Seed one genuine failure so we prove the reason carries it forward, not resets.
+        await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+        expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+        await service.markExecutionAccepted(schedule.id, receipt.id, `task-${reason}`, false);
+        await service.recordTaskTerminalOutcome(`task-${reason}`, 'cancelled', reason);
+
+        expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+        expect(store.get(schedule.id)!.enabled).toBe(true);
+        expect(store.get(schedule.id)!.operatorHold ?? false).toBe(false);
+        expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(0);
+      } finally {
+        cleanup();
+      }
     }
   });
 
@@ -1019,7 +1086,9 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       const taskStore = new TaskStore();
       const task = taskStore.createTask('Run scheduled work', '/tmp');
       taskStore.startTask(task.id);
-      taskStore.cancelTask(task.id);
+      // A GENUINE mid-flight failure (timeout hang-thrash) so reconcile counts it
+      // post-#2521 — a bare operator cancel would (correctly) no longer cross.
+      taskStore.terminateTask(task.id, { reason: 'timeout', detail: 'hung' });
 
       const schedule = store.create({
         name: 'ReconcileCrossing',
@@ -1113,6 +1182,123 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
       expect(store.get(schedule.id)!.enabled).toBe(false);
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(4);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('never auto-pauses the bootstrap-critical merge watchdog (issue #2530)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Three consecutive failures — the exact streak that fail-closes an
+      // ordinary schedule (#2353).
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:05:00.000Z');
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:10:00.000Z');
+
+      const after = store.get(watchdog.id)!;
+      // The floor: it stays enabled and is NOT parked behind an operatorHold, so
+      // it is always alive to land the fix that would re-arm the fleet.
+      expect(after.enabled).toBe(true);
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.stopReason).toBeUndefined();
+      // Counter is still maintained and it still alerts out-of-fleet (#1665) —
+      // the alert just does not claim it was paused.
+      expect(after.consecutiveFailures).toBe(3);
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).not.toContain('auto-paused');
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('regression: a fleet cascade parks the general fleet but never the merge watchdog (issue #2530)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const general = ['Cross-Repo Orchestrator', 'Queue Feeder', 'Incident Sentinel'].map((name, i) =>
+        store.create({
+          name,
+          cron: '* * * * *',
+          playbook: { path: `general-${i}.md`, parameters: {} },
+          cwd: '/tmp',
+        }),
+      );
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // The cascade: every schedule, including the watchdog, fails 3× in the
+      // same window.
+      const all = [...general, watchdog];
+      for (const s of all) {
+        for (let i = 0; i < 3; i++) {
+          await failOnce(service, store, s.id, `2026-01-01T1${i}:00:00.000Z`);
+        }
+      }
+
+      // Fail-closed for the general fleet is unchanged.
+      for (const s of general) {
+        const parked = store.get(s.id)!;
+        expect(parked.enabled).toBe(false);
+        expect(parked.stopReason).toBe('consecutive_failures');
+        expect(parked.operatorHold).toBe(true);
+      }
+
+      // The recovery floor holds: the merge watchdog is still enabled…
+      const wd = store.get(watchdog.id)!;
+      expect(wd.enabled).toBe(true);
+      expect(wd.operatorHold).toBeUndefined();
+
+      // …and can still land a PR: a subsequent fire reserves, accepts, and
+      // completes, clearing its own streak.
+      const receipt = await service.reserveExecution(store.get(watchdog.id)!, 'cron', '2026-01-01T14:00:00.000Z');
+      await service.markExecutionAccepted(watchdog.id, receipt.id, 'task-land', false);
+      await service.recordTaskTerminalOutcome('task-land', 'completed');
+      const recovered = store.get(watchdog.id)!;
+      expect(recovered.enabled).toBe(true);
+      expect(recovered.consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('enforceFailureAutoPauses skips the bootstrap-critical merge watchdog (issue #2530)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      // Pre-existing high counters (e.g. persisted from before the fix), both
+      // still enabled — exactly what enforceFailureAutoPauses sweeps.
+      const general = store.create({
+        name: 'General',
+        cron: '* * * * *',
+        playbook: { path: 'general.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      store.replace({ ...store.get(general.id)!, consecutiveFailures: 5 });
+      store.replace({ ...store.get(watchdog.id)!, consecutiveFailures: 5 });
+
+      const paused = await service.enforceFailureAutoPauses();
+      expect(paused).toBe(1);
+      expect(store.get(general.id)!.enabled).toBe(false);
+      expect(store.get(watchdog.id)!.enabled).toBe(true);
+      expect(store.get(watchdog.id)!.operatorHold).toBeUndefined();
     } finally {
       cleanup();
     }
@@ -1364,25 +1550,68 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
   });
 });
 
-describe('isRestartInterruptedReason (issue #2512)', () => {
-  it('exempts `server-restart` regardless of the redeploy marker', () => {
-    expect(isRestartInterruptedReason('server-restart', true)).toBe(true);
-    expect(isRestartInterruptedReason('server-restart', false)).toBe(true);
+describe('isGenuineExecutionFailure (issue #2521 — the single classifier)', () => {
+  it('counts `dispatch_failed`: the schedule launch machinery itself failed', () => {
+    expect(isGenuineExecutionFailure('dispatch_failed', { reasonCode: 'launch_error' })).toBe(true);
+    expect(isGenuineExecutionFailure('dispatch_failed', { reasonCode: 'pending_queue_full' })).toBe(true);
+    // No context needed — a dispatch failure is genuine regardless of reason.
+    expect(isGenuineExecutionFailure('dispatch_failed')).toBe(true);
   });
 
-  it('exempts `unknown` ONLY when a graceful redeploy was in flight', () => {
-    // `unknown` alone is ambiguous — it also covers a crash while the server was
-    // down. Only the redeploy marker confirms a graceful stop caused it.
-    expect(isRestartInterruptedReason('unknown', true)).toBe(true);
-    expect(isRestartInterruptedReason('unknown', false)).toBe(false);
+  it('counts a `cancelled` run whose task genuinely ran and failed (timeout / oom)', () => {
+    // Hang-thrash (#2353) and OOM are real execution faults.
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'timeout' })).toBe(true);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'oom' })).toBe(true);
   });
 
-  it('keeps deliberate reaps and an absent reason counting, marker or not', () => {
-    for (const reason of ['timeout', 'manual', 'supervisor', 'provider_transient', 'oom'] as const) {
-      expect(isRestartInterruptedReason(reason, true)).toBe(false);
-      expect(isRestartInterruptedReason(reason, false)).toBe(false);
+  it('counts an `unknown` crash ONLY when no graceful redeploy was in flight', () => {
+    // `unknown` alone is ambiguous — a hard crash while the server was down also
+    // reconciles to `unknown`. The redeploy marker is the only thing that excuses it.
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', serverRestartActive: false })).toBe(true);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', serverRestartActive: true })).toBe(false);
+    // Marker defaults to absent → the hard-crash reading, still counts.
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown' })).toBe(true);
+  });
+
+  it('never counts `cancelled reason=none` — a bare/operator/reconciliation cancel', () => {
+    // The 2026-08-14 category error: a cancel with no execution-failure evidence.
+    expect(isGenuineExecutionFailure('cancelled')).toBe(false);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: undefined })).toBe(false);
+  });
+
+  it('never counts lifecycle / deliberate terminations of a `cancelled` run', () => {
+    // Redeploy artifact, deliberate operator/controller kills, and the
+    // self-retried provider blip are not the schedule's execution failing.
+    for (const reason of ['server-restart', 'manual', 'supervisor', 'provider_transient'] as const) {
+      expect(isGenuineExecutionFailure('cancelled', { terminationReason: reason, serverRestartActive: false })).toBe(false);
+      expect(isGenuineExecutionFailure('cancelled', { terminationReason: reason, serverRestartActive: true })).toBe(false);
     }
-    expect(isRestartInterruptedReason(undefined, true)).toBe(false);
+  });
+
+  it('never counts overlap-skips (previous_run_active / skipped_active) — issue #2458', () => {
+    expect(isGenuineExecutionFailure('skipped_active', { reasonCode: 'previous_run_active' })).toBe(false);
+    expect(isGenuineExecutionFailure('skipped_coalesced', { reasonCode: 'previous_run_pending' })).toBe(false);
+  });
+
+  it('never counts any other infra-lifecycle outcome (default-deny)', () => {
+    const lifecycle: ScheduleExecutionOutcome[] = [
+      'completed', 'running', 'queued', 'queued_capacity', 'deduplicated',
+      'skipped_capacity', 'skipped_draining', 'skipped_server_restarting',
+      'skipped_safe_mode', 'skipped_manual', 'skipped_stale',
+      'skipped_relaunch_locked', 'skipped_provider_paused', 'unknown_after_restart',
+    ];
+    for (const outcome of lifecycle) {
+      expect(isGenuineExecutionFailure(outcome)).toBe(false);
+    }
+  });
+
+  it('defaults a FUTURE/unknown lifecycle outcome to NOT counting (cannot silently regress)', () => {
+    // The whole point of the inversion (#2521): a new outcome added to the union
+    // later must be non-incrementing by construction, not counted-until-exempted.
+    // Cast models a literal this predicate has never seen.
+    const futureOutcome = 'skipped_some_new_lifecycle_state' as ScheduleExecutionOutcome;
+    expect(isGenuineExecutionFailure(futureOutcome)).toBe(false);
+    expect(isGenuineExecutionFailure(futureOutcome, { terminationReason: 'timeout' })).toBe(false);
   });
 });
 
@@ -1581,10 +1810,12 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
     }
   });
 
-  it('a LIVE cancel (recordTaskTerminalOutcome) still counts — genuine mid-run failure', async () => {
-    // The live path only ever sees a task that died during normal operation, not
-    // one interrupted by a restart (those are still mid-flight at process death
-    // and handled by reconcileOnStartup). So it must keep counting.
+  it('a LIVE cancel carrying a genuine failure reason (timeout) still counts and fail-closes at 3', async () => {
+    // The live path sees a task that died during normal operation. Post-#2521 it
+    // counts only when the terminationReason marks a genuine execution fault (here
+    // `timeout` hang-thrash) — a bare cancel with no reason is a lifecycle stop and
+    // is covered separately. A restart interruption never reaches this path: those
+    // are still mid-flight at process death and handled by reconcileOnStartup.
     const { service, store, alerts, cleanup } = harness();
     try {
       const schedule = store.create({
@@ -1598,7 +1829,7 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
       for (const at of ['2026-08-14T10:00:00.000Z', '2026-08-14T10:05:00.000Z', '2026-08-14T10:10:00.000Z']) {
         const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
         await service.markExecutionAccepted(schedule.id, receipt.id, `task-live-${n++}`, false);
-        await service.recordTaskTerminalOutcome(`task-live-${n - 1}`, 'cancelled');
+        await service.recordTaskTerminalOutcome(`task-live-${n - 1}`, 'cancelled', 'timeout');
       }
 
       const after = store.get(schedule.id)!;
@@ -1715,7 +1946,8 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
       for (const [i, at] of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:05:00.000Z', '2026-08-12T10:10:00.000Z'].entries()) {
         const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
         await service.markExecutionAccepted(schedule.id, receipt.id, `task-timeout-${i}`, false);
-        await service.recordTaskTerminalOutcome(`task-timeout-${i}`, 'cancelled');
+        // Genuine timeout hang-thrash carries its reason so it counts post-#2521.
+        await service.recordTaskTerminalOutcome(`task-timeout-${i}`, 'cancelled', 'timeout');
       }
 
       const paused = store.get(schedule.id)!;
@@ -1799,6 +2031,240 @@ describe('ScheduleService transient-failure re-arm (issue #2459)', () => {
       expect(store.get(schedule.id)!.enabled).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => {
+  function harness(threshold = 3): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-recover-2520-'));
+    const store = new ScheduleStore(dir);
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      getFailureAlertThreshold: () => threshold,
+    });
+    return { service, store, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  // Seed a schedule already parked by the #2353 daemon auto-pause, with a
+  // controllable heldAt (deterministic vs. real-clock heldAt).
+  function seedDaemonHold(store: ScheduleStore, name: string, heldAt: string): string {
+    const schedule = store.create({
+      name,
+      cron: '* * * * *',
+      playbook: { path: 'daily.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    store.replace({
+      ...schedule,
+      enabled: false,
+      stopReason: 'consecutive_failures',
+      operatorHold: true,
+      holdSource: 'daemon',
+      heldAt,
+      consecutiveFailures: 3,
+    });
+    return schedule.id;
+  }
+
+  it('tags a live #2353 auto-pause as daemon-sourced with a heldAt (issue #2520)', async () => {
+    const { service, store, cleanup } = harness(3);
+    try {
+      const schedule = store.create({
+        name: 'CascadeVictim',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Three cancelled (reason=none) terminals — the #2512 cascade shape.
+      for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionAccepted(schedule.id, receipt.id, `task-${i}`, false);
+        await service.recordTaskTerminalOutcome(`task-${i}`, 'cancelled');
+      }
+      const paused = store.get(schedule.id)!;
+      expect(paused.enabled).toBe(false);
+      expect(paused.stopReason).toBe('consecutive_failures');
+      expect(paused.operatorHold).toBe(true);
+      expect(paused.holdSource).toBe('daemon');
+      expect(typeof paused.heldAt).toBe('string');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('bulk-recovers every consecutive_failures hold in one action, clearing counter + hold', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const a = seedDaemonHold(store, 'Queue Feeder', '2026-08-14T00:10:00.000Z');
+      const b = seedDaemonHold(store, 'Idea Scout', '2026-08-14T01:20:00.000Z');
+      // A healthy schedule and an operator-parked one must be left alone.
+      const healthy = store.create({ name: 'Healthy', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      const operatorParked = store.create({ name: 'Operator Off', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.setEnabled(operatorParked.id, false, { operatorHold: true });
+
+      const result = await service.recoverConsecutiveFailureHolds();
+      expect(result.recovered.map((r) => r.id).sort()).toEqual([a, b].sort());
+      // Recovered entries carry the original heldAt for operator audit.
+      expect(result.recovered).toContainEqual({ id: a, name: 'Queue Feeder', heldAt: '2026-08-14T00:10:00.000Z' });
+      expect(result.skipped).toEqual([]);
+
+      for (const id of [a, b]) {
+        const row = store.get(id)!;
+        expect(row.enabled).toBe(true);
+        expect(row.stopReason).toBeUndefined();
+        expect(row.operatorHold).toBeUndefined();
+        expect(row.holdSource).toBeUndefined();
+        expect(row.consecutiveFailures).toBe(0);
+      }
+      // Untouched: healthy stays enabled, operator hold stays parked.
+      expect(store.get(healthy.id)!.enabled).toBe(true);
+      expect(store.get(operatorParked.id)!.enabled).toBe(false);
+      expect(store.get(operatorParked.id)!.holdSource).toBe('operator');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('scopes recovery to holds predating --held-before; legacy (no heldAt) holds are included', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const before = seedDaemonHold(store, 'Before Fix', '2026-08-14T02:00:00.000Z');
+      const after = seedDaemonHold(store, 'After Fix', '2026-08-14T05:00:00.000Z');
+      // Legacy hold with no heldAt timestamp (paused before this feature shipped).
+      const legacy = store.create({ name: 'Legacy', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.replace({ ...store.get(legacy.id)!, enabled: false, stopReason: 'consecutive_failures', operatorHold: true, holdSource: 'daemon', consecutiveFailures: 3 });
+
+      // Fix commit landed 02:16Z: recover only holds set before it.
+      const result = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T02:16:00.000Z' });
+      expect(result.recovered.map((r) => r.id).sort()).toEqual([before, legacy.id].sort());
+      expect(result.skipped).toEqual([{ id: after, name: 'After Fix', reason: 'held_after_watermark' }]);
+      expect(store.get(after)!.enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('compares --held-before chronologically, not lexically (tz-offset watermark)', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      // heldAt is 13:00Z. A watermark of 14:00+02:00 == 12:00Z, so the hold is
+      // AFTER the fix and must stay parked. A raw string compare ("...T13...Z"
+      // vs "...T14...+02:00") would wrongly recover it — the dangerous direction.
+      const id = seedDaemonHold(store, 'Still Failing', '2026-08-14T13:00:00.000Z');
+      const result = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T14:00:00+02:00' });
+      expect(result.recovered).toEqual([]);
+      expect(result.skipped).toEqual([{ id, name: 'Still Failing', reason: 'held_after_watermark' }]);
+      expect(store.get(id)!.enabled).toBe(false);
+
+      // Same instant expressed with an offset that puts the fix AFTER the hold
+      // (16:00+02:00 == 14:00Z) recovers it.
+      const later = await service.recoverConsecutiveFailureHolds({ heldBefore: '2026-08-14T16:00:00+02:00' });
+      expect(later.recovered.map((r) => r.id)).toEqual([id]);
+      expect(store.get(id)!.enabled).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reports a trigger-limit-exhausted hold as skipped instead of throwing', async () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const good = seedDaemonHold(store, 'Recoverable', '2026-08-14T02:00:00.000Z');
+      const exhausted = store.create({ name: 'Exhausted', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp', maxTriggers: 1 });
+      store.replace({
+        ...store.get(exhausted.id)!,
+        enabled: false,
+        stopReason: 'consecutive_failures',
+        operatorHold: true,
+        holdSource: 'daemon',
+        remainingTriggers: 0,
+        exhaustedAt: '2026-08-14T02:00:00.000Z',
+        consecutiveFailures: 3,
+      });
+
+      const result = await service.recoverConsecutiveFailureHolds();
+      expect(result.recovered.map((r) => r.id)).toEqual([good]);
+      expect(result.skipped).toEqual([
+        { id: exhausted.id, name: 'Exhausted', reason: 'trigger_limit_exhausted' },
+      ]);
+      expect(store.get(exhausted.id)!.enabled).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Acceptance criterion #4: a bug-induced cancelled reason=none cascade is
+  // one-command recovered after the fix deploys; an operator-set hold is NOT
+  // auto-cleared by the automated re-arm path.
+  it('one-command recovers a bug cascade; never auto-clears an operator hold (AC4)', async () => {
+    const { service, store, cleanup } = harness(3);
+    try {
+      // The cascade victim (reason=none daemon hold) — the auto re-arm path
+      // (#2459) intentionally leaves it dark (reason is not transient)...
+      const victim = store.create({ name: 'Cross-Repo Orchestrator', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
+        const receipt = await service.reserveExecution(store.get(victim.id)!, 'cron', at);
+        await service.markExecutionAccepted(victim.id, receipt.id, `victim-${i}`, false);
+        await service.recordTaskTerminalOutcome(`victim-${i}`, 'cancelled');
+      }
+      expect(store.get(victim.id)!.holdSource).toBe('daemon');
+      expect(store.get(victim.id)!.latestExecution?.reasonCode).toBe('none');
+
+      // An operator-held schedule (human decision).
+      const operatorHeld = store.create({ name: 'Operator Held', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+      store.setEnabled(operatorHeld.id, false, { operatorHold: true });
+
+      // Auto re-arm (#2459) leaves BOTH dark: the cascade victim is not a
+      // transient reason, the operator hold is not a daemon hold.
+      const rearm = await service.rearmTransientFailureHolds(true, '2026-08-15T00:00:00.000Z');
+      expect(rearm.rearmed).toEqual([]);
+      expect(store.get(victim.id)!.enabled).toBe(false);
+      expect(store.get(operatorHeld.id)!.enabled).toBe(false);
+
+      // One operator command recovers the cascade victim...
+      const recovered = await service.recoverConsecutiveFailureHolds();
+      expect(recovered.recovered.map((r) => r.id)).toEqual([victim.id]);
+      expect(store.get(victim.id)!.enabled).toBe(true);
+      // ...and the operator hold is untouched (not a consecutive_failures hold).
+      expect(store.get(operatorHeld.id)!.enabled).toBe(false);
+      expect(store.get(operatorHeld.id)!.holdSource).toBe('operator');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('lists / logs consecutive_failures holds older than the running build (AC2)', () => {
+    const { service, store, cleanup } = harness();
+    try {
+      const old = seedDaemonHold(store, 'Old Hold', '2026-08-14T00:10:00.000Z');
+      const recent = seedDaemonHold(store, 'Recent Hold', '2026-08-15T09:00:00.000Z');
+
+      const listed = service.listConsecutiveFailureHoldsBefore('2026-08-15T00:00:00.000Z');
+      expect(listed.map((h) => h.id)).toEqual([old]);
+      expect(listed[0]).toMatchObject({ name: 'Old Hold', heldAt: '2026-08-14T00:10:00.000Z', consecutiveFailures: 3 });
+      // No watermark → every held schedule is listed.
+      expect(service.listConsecutiveFailureHoldsBefore().map((h) => h.id).sort()).toEqual([old, recent].sort());
+
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { logs.push(String(m)); });
+      try {
+        service.logConsecutiveFailureHoldsAfterDeploy('2026-08-15T00:00:00.000Z');
+        expect(logs.some((l) => l.includes('post-deploy') && l.includes('Old Hold') && l.includes('issue #2520'))).toBe(true);
+        logs.length = 0;
+        // Dev build (no timestamp) → no diagnostic.
+        service.logConsecutiveFailureHoldsAfterDeploy(undefined);
+        expect(logs).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    } finally {
+      cleanup();
     }
   });
 });

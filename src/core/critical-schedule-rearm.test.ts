@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES,
   CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES,
   TRANSIENT_FAILURE_REARM_REASON_CODES,
   decideCriticalScheduleRearm,
   decideTransientFailureRearm,
+  isBootstrapCriticalSchedule,
   isCriticalAllowlistedSchedule,
   isTransientFailureRearmReason,
   listCriticalSchedulesToRearm,
@@ -88,6 +90,150 @@ describe('isCriticalAllowlistedSchedule', () => {
         playbook: { path: 'renamed.md' },
       }),
     ).toBe(true);
+  });
+});
+
+describe('isBootstrapCriticalSchedule (issue #2530)', () => {
+  it('matches the PR merge/rebase watchdog by playbook basename', () => {
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'anything',
+        playbook: { path: 'plugin/playbooks/pr-merge-rebase-watchdog.md' },
+      }),
+    ).toBe(true);
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'x',
+        playbook: { path: 'pr-merge-rebase-watchdog' },
+      }),
+    ).toBe(true);
+  });
+
+  it('matches by well-known name when the playbook is renamed', () => {
+    // Playbook title and the fleet-listing title both identify the role.
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'PR Merge/Rebase Watchdog',
+        playbook: { path: 'renamed.md' },
+      }),
+    ).toBe(true);
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'Kookr PR merge/rebase watchdog',
+        playbook: { path: 'renamed.md' },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match ordinary critical or experimental schedules', () => {
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'Lucy Orchestration Effectiveness',
+        playbook: { path: 'lucy-orchestration-effectiveness.md' },
+      }),
+    ).toBe(false);
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'Nightly idea scout',
+        playbook: { path: 'repository-idea-scout.md' },
+      }),
+    ).toBe(false);
+  });
+
+  it('does not exempt unrelated *watchdog schedules from fail-closed', () => {
+    // The pattern requires BOTH "merge" and "rebase" — a sibling watchdog, or a
+    // plain merge-watchdog without "rebase", must stay fail-closed. Guards
+    // against a future loosening of the regex that would over-capture.
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'Resource Watchdog',
+        playbook: { path: 'resource-watchdog.md' },
+      }),
+    ).toBe(false);
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'Merge Watchdog',
+        playbook: { path: 'merge-watchdog.md' },
+      }),
+    ).toBe(false);
+  });
+
+  it('matches a hyphenated "Merge-Rebase Watchdog" title', () => {
+    expect(
+      isBootstrapCriticalSchedule({
+        name: 'PR Merge-Rebase Watchdog',
+        playbook: { path: 'renamed.md' },
+      }),
+    ).toBe(true);
+  });
+
+  it('bootstrap members are a strict subset of the critical allowlist', () => {
+    // Every bootstrap-critical schedule is also critical-allowlisted, so the
+    // existing recovery re-arm path already considers it. Iterate the whole
+    // bootstrap basename set so a member that failed to be critical-allowlisted
+    // would be caught, not just the one hand-picked example.
+    for (const path of BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES) {
+      expect(isBootstrapCriticalSchedule({ name: 'x', playbook: { path } })).toBe(true);
+      expect(isCriticalAllowlistedSchedule({ name: 'x', playbook: { path } })).toBe(true);
+    }
+  });
+
+  it('bootstrap allowlist stays small (no accidental expansion)', () => {
+    // One role × (with/without .md) = 2 basenames.
+    expect(BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES.length).toBe(2);
+  });
+});
+
+describe('decideCriticalScheduleRearm — bootstrap sub-tier (issue #2530)', () => {
+  const watchdog = sched({
+    id: 'wd',
+    name: 'PR Merge/Rebase Watchdog',
+    playbook: { path: 'pr-merge-rebase-watchdog.md' },
+  });
+
+  it('re-arms the merge watchdog THROUGH a cascade-origin consecutive_failures hold', () => {
+    // #2353 sets operatorHold on every consecutive_failures auto-pause, so this
+    // hold is a cascade artifact — re-arm through it rather than strand recovery.
+    expect(
+      decideCriticalScheduleRearm({
+        ...watchdog,
+        operatorHold: true,
+        stopReason: 'consecutive_failures',
+      }),
+    ).toEqual({ rearm: true });
+  });
+
+  it('still respects a genuine operator park (no consecutive_failures stopReason)', () => {
+    expect(
+      decideCriticalScheduleRearm({ ...watchdog, operatorHold: true }),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+    expect(
+      decideCriticalScheduleRearm({
+        ...watchdog,
+        operatorHold: true,
+        stopReason: 'trigger_limit_reached',
+      }),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+  });
+
+  it('does not bypass holds for ordinary (non-bootstrap) critical schedules', () => {
+    // A cascade hold on a general critical schedule is still respected — the
+    // floor is only for the tiny recovery sub-tier.
+    expect(
+      decideCriticalScheduleRearm(
+        sched({
+          id: 'eff',
+          name: 'Lucy Orchestration Effectiveness',
+          playbook: { path: 'lucy-orchestration-effectiveness.md' },
+          operatorHold: true,
+          stopReason: 'consecutive_failures',
+        }),
+      ),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+  });
+
+  it('re-arms a plain disabled merge watchdog (no hold) like any critical schedule', () => {
+    expect(decideCriticalScheduleRearm(watchdog)).toEqual({ rearm: true });
   });
 });
 
@@ -206,6 +352,23 @@ describe('decideTransientFailureRearm (issues #2458 / #2459)', () => {
     expect(
       decideTransientFailureRearm({ ...pausedLaunchError, latestReasonCode: undefined }, true, readyAt),
     ).toEqual({ rearm: false, reason: 'not_transient_reason' });
+  });
+
+  it('never auto-clears an operator-sourced hold (issue #2520)', () => {
+    // A human hold (holdSource:'operator') that somehow carries a
+    // consecutive_failures stopReason + transient reason must stay parked.
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, holdSource: 'operator' }, true, readyAt),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+  });
+
+  it('still rearms a daemon-sourced or legacy (untagged) transient hold (issue #2520)', () => {
+    expect(
+      decideTransientFailureRearm({ ...pausedLaunchError, holdSource: 'daemon' }, true, readyAt),
+    ).toEqual({ rearm: true });
+    // Legacy hold with no provenance tag on a consecutive_failures pause can
+    // only be a #2353 daemon hold → still eligible.
+    expect(decideTransientFailureRearm(pausedLaunchError, true, readyAt)).toEqual({ rearm: true });
   });
 
   it('does not rearm a non-failure park (trigger limit or already enabled)', () => {

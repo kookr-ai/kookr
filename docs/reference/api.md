@@ -729,6 +729,7 @@ Returns the full sanitized config object for that project.
 | `PATCH /api/schedules/:id` | Update a schedule |
 | `DELETE /api/schedules/:id` | Delete a schedule |
 | `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
+| `POST /api/schedules/recover` | Bulk re-enable schedules parked by the fail-closed `consecutive_failures` auto-pause (issue #2520). Body `{ "stopReason": "consecutive_failures", "heldBefore"?: "<ISO>" }`; `heldBefore` scopes recovery to holds established before a fix-commit / deploy watermark. Returns `{ ok, recovered[], skipped[] }`. Backs `kookr schedule enable --stop-reason consecutive_failures`. |
 | `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
 
 ### `POST /api/pipeline-starvation/handle`

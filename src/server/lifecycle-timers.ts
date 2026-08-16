@@ -17,6 +17,7 @@
  */
 import type { Monitor } from '../core/monitor.js';
 import type { Task, TaskStore } from '../core/tasks.js';
+import type { TerminationReason } from '../core/task-status.js';
 import type { AgentActivityMeta, AgentEvent, Anomaly, TokenUsage } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
@@ -58,6 +59,7 @@ import {
   createDeliveredCompletionTracker,
   type DeliveredCompletionTracker,
 } from './delivered-task-completion-sweep.js';
+import { autoCompleteTerminalVerdictTasks } from './terminal-verdict-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
 import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
 // Domain job bodies extracted from this scheduler (issue #1822). Each lives
@@ -192,6 +194,13 @@ export interface TimerDeps {
    * tick. Falls back to the module default when absent (older wiring/tests).
    */
   getPostMergeCleanupBudgetMs?: () => number;
+  /**
+   * Live enable flag for the terminal-success verdict auto-complete sweep
+   * (issue #2532). Read on every liveness tick. Absent ⇒ enabled — the sweep is
+   * self-gating (only fires on a `needs_input` park with a terminal-success
+   * verdict), so it defaults on; a getter returning false is the ops kill switch.
+   */
+  getTerminalVerdictAutoCompleteEnabled?: () => boolean;
   /**
    * Delivery attribution for the delivered-completion sweep (issue #1560):
    * a task's attributable merged PR, or null. Wired at bootstrap to read
@@ -445,7 +454,11 @@ export interface TimerDeps {
    * minimal wirings.
    */
   scheduleService?: {
-    recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void>;
+    recordTaskTerminalOutcome(
+      taskId: string,
+      status: 'completed' | 'cancelled',
+      terminationReason?: TerminationReason,
+    ): Promise<void>;
     /**
      * Live fail-closed pause snapshot for the residual page (issue #2426).
      * Absent in tests / minimal wirings — the page is skipped, not invented.
@@ -1349,11 +1362,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.auditLogPath ? { auditLogPath: deps.auditLogPath } : {}),
     ...(deps.providerTransientRetry ? { providerTransientRetry: deps.providerTransientRetry } : {}),
     ...(deps.providerTransientAlert ? { providerTransientAlert: deps.providerTransientAlert } : {}),
-    // Live terminate → schedule consecutiveFailures (issue #2353).
+    // Live terminate → schedule consecutiveFailures (issue #2353). The
+    // terminationReason flows through so the single classifier can tell a genuine
+    // hung/crashed run from a deliberate or redeploy stop (issue #2521).
     ...(deps.scheduleService
       ? {
-          recordScheduleTaskTerminal: (taskId, status) =>
-            deps.scheduleService!.recordTaskTerminalOutcome(taskId, status),
+          recordScheduleTaskTerminal: (taskId, status, terminationReason) =>
+            deps.scheduleService!.recordTaskTerminalOutcome(taskId, status, terminationReason),
         }
       : {}),
   };
@@ -1475,6 +1490,31 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           },
         )
         : { completedTaskIds: [] };
+
+      // Terminal-success verdict auto-complete (issue #2532): a running task
+      // parked in `needs_input` with an unambiguous success verdict (e.g. a
+      // Deploy Convergence run that resolved to `converged`) is completed to
+      // release its slot, instead of holding it awaiting input with nothing to
+      // ask. Non-success parks / genuine questions never match and keep parking.
+      // Self-gating on the live needs_input anomaly; `getTerminalVerdictAutoCompleteEnabled`
+      // (absent ⇒ enabled) is the ops kill switch. Never provider-pause-completes.
+      const terminalVerdictResult =
+        (deps.getTerminalVerdictAutoCompleteEnabled?.() ?? true)
+          ? await autoCompleteTerminalVerdictTasks({
+            taskStore,
+            lifecycleDeps: {
+              ...lifecycleDeps,
+              ...(deps.agentLifecycleDeps?.interactionLog
+                ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+                : {}),
+            },
+            monitor,
+            isProviderPaused: isTaskProviderPaused,
+            isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+            auditLogPath: deps.auditLogPath,
+            broadcastToAll: deps.broadcastToAll,
+          })
+          : { completedTaskIds: [] };
 
       // Pending-task TTL sweep (issue #1526 Phase C / C3): expire tasks that
       // have starved in the queue past the TTL, freeing depth for the 429
@@ -1862,7 +1902,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
         for (const id of result.tasksTerminated) {
           try {
-            await deps.scheduleService.recordTaskTerminalOutcome(id, 'cancelled');
+            // Pass the reconcile-assigned terminationReason so the single
+            // classifier (issue #2521) counts a genuine hung/crashed run
+            // (`timeout`/`oom`/`unknown`) but not a redeploy/deliberate stop.
+            await deps.scheduleService.recordTaskTerminalOutcome(
+              id,
+              'cancelled',
+              taskStore.getTask(id)?.terminationReason,
+            );
           } catch (err) {
             console.warn(
               `[liveness] schedule terminal cancelled notify failed for ${id}:`,
@@ -1925,6 +1972,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || result.worktreesChanged.length > 0
         || autoCloseResult.closedTaskIds.length > 0
         || deliveredResult.completedTaskIds.length > 0
+        || terminalVerdictResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0

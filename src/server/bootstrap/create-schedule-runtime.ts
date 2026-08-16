@@ -92,6 +92,13 @@ export interface ScheduleRuntimeDeps {
    * only lifted when their last fire predates this watermark.
    */
   getReadyAt?: () => string | undefined;
+  /**
+   * ISO timestamp of the running build (issue #2520, `buildInfo.buildTimestamp`).
+   * When present, a one-line post-deploy diagnostic lists `consecutive_failures`
+   * holds established before this build — candidates a just-deployed fix may
+   * have cleared. Absent (dev build) skips the diagnostic.
+   */
+  getBuildTimestamp?: () => string | undefined;
 }
 
 export interface ScheduleRuntime {
@@ -177,6 +184,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     isServerRestarting: () => isServerRestartingActive(deps.kookrDir),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
+  // Issue #2520: post-deploy diagnostic — list consecutive_failures holds older
+  // than the running build so an operator can see which dark schedules a just-
+  // deployed fix may have cleared. Pure logging; no auto-flip.
+  scheduleService.logConsecutiveFailureHoldsAfterDeploy(deps.getBuildTimestamp?.());
 
   const activeStatuses = new Set(['open', 'pending', 'inProgress']);
   // Late-bound reference so the dead-man's self-heal action can drive re-fires

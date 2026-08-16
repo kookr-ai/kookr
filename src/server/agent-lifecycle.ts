@@ -1,5 +1,5 @@
 import type { Task, TaskStore } from '../core/tasks.js';
-import type { TerminationCause } from '../core/task-status.js';
+import type { TerminationCause, TerminationReason } from '../core/task-status.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -83,6 +83,7 @@ export interface AgentLifecycleDeps {
   recordScheduleTaskTerminal?: (
     taskId: string,
     status: 'completed' | 'cancelled',
+    terminationReason?: TerminationReason,
   ) => void | Promise<void>;
 }
 
@@ -277,6 +278,7 @@ export interface LifecycleDeps {
   recordScheduleTaskTerminal?: (
     taskId: string,
     status: 'completed' | 'cancelled',
+    terminationReason?: TerminationReason,
   ) => void | Promise<void>;
   /**
    * Durable terminal-tail store (rfc-task-tail-retrieval). When set, live
@@ -524,15 +526,19 @@ export async function completeTask(
      * finishedAwaitingAck TTL reclaim (issue #1884) stamps
      * `'finished_awaiting_ack_ttl'`, meta FAA auto-complete (issue #2070)
      * stamps `'finished_awaiting_ack_auto_complete'`, and the ack-path reaper
-     * (issue #2170) stamps `'finished_awaiting_ack_ack_reap'`, so the log
-     * distinguishes autonomous slot reclaim from a manual ack.
+     * (issue #2170) stamps `'finished_awaiting_ack_ack_reap'`, and the
+     * terminal-success verdict auto-complete (issue #2532) — an agent parked in
+     * `needs_input` with an unambiguous success verdict — stamps
+     * `'terminal_success_auto_complete'`, so the log distinguishes autonomous
+     * slot reclaim from a manual ack.
      */
     interactionLogReason?:
       | 'user_marked'
       | 'finished_awaiting_ack_ttl'
       | 'finished_awaiting_ack_capacity_pressure'
       | 'finished_awaiting_ack_auto_complete'
-      | 'finished_awaiting_ack_ack_reap';
+      | 'finished_awaiting_ack_ack_reap'
+      | 'terminal_success_auto_complete';
   } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
@@ -752,8 +758,15 @@ export async function terminateTask(
   // Live terminate (timeout reaper, session death) must count toward schedule
   // consecutiveFailures so thrashing loops fail-closed-pause (issue #2353).
   // Count as cancelled (non-success); never block terminate on schedule I/O.
+  // Source the RESOLVED terminationReason from the task record rather than
+  // `cause?.reason`: `terminateTask` stamps `cause?.reason ?? 'unknown'`
+  // (tasks.ts), so a bare terminate (no explicit cause) is a genuine `unknown`
+  // crash that must still fail-close (issue #2521). Reading the stamped value
+  // keeps this live path classifying identically to the liveness reconcile sweep
+  // (lifecycle-timers.ts), which also reads `getTask(id)?.terminationReason`.
   try {
-    await deps.recordScheduleTaskTerminal?.(taskId, 'cancelled');
+    const resolvedReason = deps.taskStore.getTask(taskId)?.terminationReason;
+    await deps.recordScheduleTaskTerminal?.(taskId, 'cancelled', resolvedReason);
   } catch (err) {
     console.warn(
       `[lifecycle] recordScheduleTaskTerminal failed for ${taskId}:`,

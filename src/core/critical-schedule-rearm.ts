@@ -15,6 +15,50 @@
  *     policy 1 cannot unstick a recovered launch wedge.
  */
 
+/**
+ * Bootstrap-safe recovery sub-tier (issue #2530).
+ *
+ * These are the schedules whose liveness *gates the fleet's own recovery*: if
+ * they go down, nothing can bring them (or anything else) back without a human.
+ * The motivating deadlock: a loop-wide `consecutive_failures` cascade parked the
+ * PR merge/rebase watchdog — the one schedule that lands fix PRs — so the fix
+ * for the cascade could not merge, because merging it required the very schedule
+ * the cascade had disabled.
+ *
+ * The sub-tier is a strict subset of the critical allowlist. Two protections
+ * distinguish it from an ordinary critical schedule:
+ *  1. It is never auto-paused by a `consecutive_failures` streak (see the
+ *     service-side `autoPausePatch`) — it stays enabled and alerts instead of
+ *     disabling, so the merge watchdog is always alive to land a fix.
+ *  2. If it is *already* parked in a cascade-origin `consecutive_failures`
+ *     `operatorHold` (from persisted pre-fix state or another disable path),
+ *     {@link decideCriticalScheduleRearm} re-arms it *through* that hold —
+ *     #2353 sets `operatorHold` on every auto-pause, so a cascade hold is
+ *     otherwise indistinguishable from a genuine operator park.
+ *
+ * This is a floor over a tiny, hand-audited set. It does NOT weaken fail-closed
+ * for the general fleet: a genuine operator park (any other stopReason, or none)
+ * is still respected, and non-member schedules pause exactly as before.
+ */
+export const BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES: readonly string[] = [
+  // PR merge/rebase watchdog — lands the fix PRs (issue #2530). Without this
+  // alive, any recovery fix merged to main can never land.
+  'pr-merge-rebase-watchdog.md',
+  'pr-merge-rebase-watchdog',
+];
+
+/**
+ * Name substrings for the bootstrap sub-tier when the playbook is renamed but
+ * the schedule title still identifies the merge watchdog. Matches "PR
+ * Merge/Rebase Watchdog", "Kookr PR merge/rebase watchdog", and a hyphenated
+ * "Merge-Rebase Watchdog". Deliberately narrow — it requires BOTH the "merge"
+ * and "rebase" tokens so unrelated `*watchdog` schedules (Resource Watchdog,
+ * a plain merge-watchdog) are not exempted from fail-closed.
+ */
+export const BOOTSTRAP_CRITICAL_SCHEDULE_NAME_PATTERNS: readonly RegExp[] = [
+  /merge\s*[/-]?\s*rebase\s+watchdog/i,
+];
+
 /** Playbook basenames that must not stay disabled without an operator hold. */
 export const CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES: readonly string[] = [
   // L3 residual fuse (orchestration effectiveness).
@@ -72,12 +116,33 @@ export function playbookBasename(path: string): string {
 }
 
 /**
+ * True when the schedule is in the bootstrap-safe recovery sub-tier (issue
+ * #2530) — the merge watchdog and any future recovery executor whose liveness
+ * gates the fleet's ability to land its own fixes. Matched by playbook basename
+ * or well-known name pattern, case-insensitively.
+ */
+export function isBootstrapCriticalSchedule(
+  schedule: Pick<CriticalRearmScheduleView, 'name' | 'playbook'>,
+): boolean {
+  const base = playbookBasename(schedule.playbook.path).toLowerCase();
+  if (BOOTSTRAP_CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES.some((b) => b.toLowerCase() === base)) {
+    return true;
+  }
+  const name = schedule.name ?? '';
+  return BOOTSTRAP_CRITICAL_SCHEDULE_NAME_PATTERNS.some((re) => re.test(name));
+}
+
+/**
  * True when the schedule is on the critical re-arm allowlist (playbook basename
  * or well-known name pattern). Experimental scouts / parked batches are out.
+ * The bootstrap sub-tier is a strict subset — its members are always critical.
  */
 export function isCriticalAllowlistedSchedule(
   schedule: Pick<CriticalRearmScheduleView, 'name' | 'playbook'>,
 ): boolean {
+  if (isBootstrapCriticalSchedule(schedule)) {
+    return true;
+  }
   const base = playbookBasename(schedule.playbook.path).toLowerCase();
   if (CRITICAL_SCHEDULE_PLAYBOOK_BASENAMES.some((b) => b.toLowerCase() === base)) {
     return true;
@@ -92,9 +157,16 @@ export function isCriticalAllowlistedSchedule(
  * Order (first match wins):
  *  1. not on allowlist
  *  2. already enabled
- *  3. operator hold marker set
- *  4. trigger-limit auto-exhausted (different recovery path)
- *  5. otherwise → rearm
+ *  3. bootstrap sub-tier parked in a cascade-origin hold → rearm (#2530)
+ *  4. operator hold marker set
+ *  5. trigger-limit auto-exhausted (different recovery path)
+ *  6. otherwise → rearm
+ *
+ * Step 3 is the bootstrap-safe floor: a `consecutive_failures` `operatorHold`
+ * is a cascade artifact (#2353 sets `operatorHold` on every auto-pause), so for
+ * a recovery-critical member we re-arm through it rather than let the cascade
+ * strand its own recovery path. A genuine operator park carries a different
+ * stopReason (or none) and falls through to step 4, still respected.
  */
 export function decideCriticalScheduleRearm(
   schedule: CriticalRearmScheduleView,
@@ -104,6 +176,13 @@ export function decideCriticalScheduleRearm(
   }
   if (schedule.enabled) {
     return { rearm: false, reason: 'already_enabled' };
+  }
+  if (
+    isBootstrapCriticalSchedule(schedule)
+    && schedule.operatorHold === true
+    && schedule.stopReason === 'consecutive_failures'
+  ) {
+    return { rearm: true };
   }
   if (schedule.operatorHold === true) {
     return { rearm: false, reason: 'operator_hold' };
@@ -146,6 +225,7 @@ export type TransientFailureRearmSkipReason =
   | 'health_not_ok'
   | 'already_enabled'
   | 'not_failure_pause'
+  | 'operator_hold'
   | 'not_transient_reason'
   | 'failure_after_ready';
 
@@ -159,6 +239,14 @@ export interface TransientFailureRearmView {
   enabled: boolean;
   /** Auto-pause marker from issue #2353. Other stop reasons are left alone. */
   stopReason?: string;
+  /**
+   * Provenance of the current hold (issue #2520). `operator` holds are never
+   * auto-cleared here — only `daemon`-set (or legacy untagged) fail-closed
+   * holds are eligible. Absent on legacy schedules; combined with a
+   * `consecutive_failures` stopReason it can only be a #2353 daemon pause, so
+   * absence is treated as eligible (not operator).
+   */
+  holdSource?: string;
   latestReasonCode?: string;
   /** When the last fire was recorded. Compared to {@link readyAt}. */
   lastEvaluatedAt?: string;
@@ -180,14 +268,18 @@ export function isTransientFailureRearmReason(
  *  1. health/ready is not ok
  *  2. already enabled
  *  3. pause is not `consecutive_failures` (manual park, trigger-limit, …)
- *  4. last reason is not a transient launch_error / overlap-skip
- *  5. last fire happened at or after the daemon became ready (a live #2353
+ *  4. hold provenance is `operator` — a human held it; never auto-cleared (#2520)
+ *  5. last reason is not a transient launch_error / overlap-skip
+ *  6. last fire happened at or after the daemon became ready (a live #2353
  *     streak, not leftover accounting from before recovery)
- *  6. otherwise → rearm
+ *  7. otherwise → rearm
  *
- * `operatorHold` is not consulted: #2353 sets it on every auto-pause, and
- * this path exists specifically to lift that leftover hold. A distinct
- * operator park has a different stopReason (or none) and fails step 3.
+ * `operatorHold` (the boolean) is not consulted: #2353 sets it on every
+ * auto-pause, and this path exists specifically to lift that leftover hold.
+ * The `holdSource` tag (issue #2520) is consulted instead so a genuine
+ * operator park is never auto-cleared here even if it somehow carried a
+ * `consecutive_failures` stopReason. Absent `holdSource` on a
+ * `consecutive_failures` pause can only be a #2353 daemon hold → eligible.
  *
  * `readyAt` is required for a lift. Without a watermark we cannot tell a
  * leftover hold from a pause that just fired while the process was already
@@ -206,6 +298,9 @@ export function decideTransientFailureRearm(
   }
   if (schedule.stopReason !== 'consecutive_failures') {
     return { rearm: false, reason: 'not_failure_pause' };
+  }
+  if (schedule.holdSource === 'operator') {
+    return { rearm: false, reason: 'operator_hold' };
   }
   if (!isTransientFailureRearmReason(schedule.latestReasonCode)) {
     return { rearm: false, reason: 'not_transient_reason' };

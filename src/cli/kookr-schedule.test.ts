@@ -65,31 +65,45 @@ afterEach(() => {
 
 describe('kookr schedule parseArgs', () => {
   it('parses list with --json', () => {
-    expect(parseArgs(['list', '--json'])).toEqual({ verb: 'list', id: null, json: true, help: false, heldBy: null });
+    expect(parseArgs(['list', '--json'])).toEqual({ verb: 'list', id: null, json: true, help: false, heldBy: null, stopReason: null, heldBefore: null });
   });
 
   it('parses run with an id', () => {
-    expect(parseArgs(['run', 'sched-a'])).toEqual({ verb: 'run', id: 'sched-a', json: false, help: false, heldBy: null });
+    expect(parseArgs(['run', 'sched-a'])).toEqual({ verb: 'run', id: 'sched-a', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null });
   });
 
   it('parses enable/disable with an id and --json', () => {
-    expect(parseArgs(['enable', 'sched-a', '--json'])).toEqual({ verb: 'enable', id: 'sched-a', json: true, help: false, heldBy: null });
-    expect(parseArgs(['disable', 'sched-b'])).toEqual({ verb: 'disable', id: 'sched-b', json: false, help: false, heldBy: null });
+    expect(parseArgs(['enable', 'sched-a', '--json'])).toEqual({ verb: 'enable', id: 'sched-a', json: true, help: false, heldBy: null, stopReason: null, heldBefore: null });
+    expect(parseArgs(['disable', 'sched-b'])).toEqual({ verb: 'disable', id: 'sched-b', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null });
   });
 
   it('parses --help', () => {
-    expect(parseArgs(['--help'])).toEqual({ verb: null, id: null, json: false, help: true, heldBy: null });
+    expect(parseArgs(['--help'])).toEqual({ verb: null, id: null, json: false, help: true, heldBy: null, stopReason: null, heldBefore: null });
   });
 
   it('parses enable --held-by cascade (space and = forms, plus alias)', () => {
-    expect(parseArgs(['enable', '--held-by', 'cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade' });
-    expect(parseArgs(['enable', '--held-by=cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade' });
-    expect(parseArgs(['enable', '--held-by', 'consecutive-failures'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade' });
+    expect(parseArgs(['enable', '--held-by', 'cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
+    expect(parseArgs(['enable', '--held-by=cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
+    expect(parseArgs(['enable', '--held-by', 'consecutive-failures'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
   });
 
   it('throws UsageError on an unknown --held-by value or a missing value', () => {
     expect(() => parseArgs(['enable', '--held-by', 'bogus'])).toThrow(UsageError);
     expect(() => parseArgs(['enable', '--held-by'])).toThrow(UsageError);
+  });
+
+  it('parses bulk-recovery flags (issue #2520)', () => {
+    expect(parseArgs(['enable', '--stop-reason', 'consecutive_failures'])).toEqual({
+      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: null,
+    });
+    expect(parseArgs(['enable', '--stop-reason=consecutive_failures', '--held-before', '2026-08-14T02:16:00Z'])).toEqual({
+      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: '2026-08-14T02:16:00Z',
+    });
+  });
+
+  it('throws UsageError when --stop-reason has no value', () => {
+    expect(() => parseArgs(['enable', '--stop-reason'])).toThrow(UsageError);
+    expect(() => parseArgs(['enable', '--held-before'])).toThrow(UsageError);
   });
 
   it('throws UsageError on unknown option', () => {
@@ -438,6 +452,100 @@ describe('kookr schedule enable --held-by cascade (issue #2531)', () => {
     await main({ argv: ['disable', '--held-by', 'cascade'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
     expect(exit.calls).toEqual([EXIT_USER_ERROR]);
     expect(io.errs.join('\n')).toMatch(/only valid with "enable"/);
+  });
+});
+
+describe('kookr schedule enable --stop-reason (bulk recovery, issue #2520)', () => {
+  it('POSTs /recover with stopReason + heldBefore and reports recovered schedules', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      ok: true,
+      recovered: [{ id: 'sched-a', name: 'Queue Feeder', heldAt: '2026-08-14T00:10:00.000Z' }],
+      skipped: [{ id: 'sched-x', name: 'Exhausted', reason: 'trigger_limit_exhausted' }],
+    }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({
+      argv: ['enable', '--stop-reason', 'consecutive_failures', '--held-before', '2026-08-14T02:16:00.000Z'],
+      env: { ...BASE_ENV }, out: io.out, err: io.err, exit,
+    });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:4800/api/schedules/recover');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      stopReason: 'consecutive_failures',
+      heldBefore: '2026-08-14T02:16:00.000Z',
+    });
+    expect(io.logs.join('\n')).toContain('Recovered 1 consecutive_failures hold');
+    expect(io.errs.join('\n')).toContain('trigger_limit_exhausted');
+  });
+
+  it('rejects an unsupported --stop-reason without hitting the server', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--stop-reason', 'trigger_limit_reached'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects giving both an <id> and --stop-reason', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', 'sched-a', '--stop-reason', 'consecutive_failures'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects --stop-reason on disable', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['disable', '--stop-reason', 'consecutive_failures'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects --held-before on a plain enable (no --stop-reason)', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', 'sched-a', '--held-before', '2026-08-14T02:16:00Z'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(io.errs.join('\n')).toContain('--held-before requires --stop-reason');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed --held-before without hitting the server', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--stop-reason', 'consecutive_failures', '--held-before', 'not-a-date'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('emits a machine-readable envelope for --json bulk recovery', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      ok: true,
+      recovered: [{ id: 'sched-a', name: 'Queue Feeder' }],
+      skipped: [],
+    }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--stop-reason', 'consecutive_failures', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.ok).toBe(true);
+    expect(payload.details.recovered).toEqual([{ id: 'sched-a', name: 'Queue Feeder' }]);
   });
 });
 

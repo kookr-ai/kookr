@@ -218,6 +218,31 @@ type HookReplayCheckpointsProbe = (
 ) => Promise<HookReplayCheckpointsProbeSnapshot | null>;
 
 /**
+ * One timed GET of `/api/ready` or `/api/health` (issue #2496).
+ * `timedOut` is true when the abort budget fired; `status` is absent on
+ * network errors. Never a required fail — this is the unattended latency signal.
+ */
+export interface HttpLatencyEndpointResult {
+  elapsedMs: number;
+  status?: number;
+  timedOut: boolean;
+  error?: string;
+}
+
+/**
+ * Live HTTP-latency snapshot. `health` is null when ready already timed out
+ * so doctor does not hang a second time on a wedged server.
+ */
+export interface HttpLatencyProbeSnapshot {
+  ready: HttpLatencyEndpointResult;
+  health: HttpLatencyEndpointResult | null;
+}
+
+type HttpLatencyProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<HttpLatencyProbeSnapshot | null>;
+
+/**
  * Read the durable prod-smoke-tick alert artifact (issue #2035).
  * Return null when the file is missing, unreadable, or not an alert.
  * Injected in unit tests so hermetic runs never touch the host data dir.
@@ -295,6 +320,12 @@ interface RunDoctorDeps {
    * KOOKR_PORT is set. null = unreachable / skip.
    */
   probeHookReplayCheckpoints?: HookReplayCheckpointsProbe;
+  /**
+   * Optional override for the live HTTP latency probe (issue #2496).
+   * Defaults to timed GETs of /api/ready (500ms) then /api/health (2s) when
+   * KOOKR_API_BASE_URL or KOOKR_PORT is set. null = no API base / skip.
+   */
+  probeHttpLatency?: HttpLatencyProbe;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -314,6 +345,7 @@ Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
+ops.http-latency (advisory warn when GET /api/ready exceeds 500ms or GET /api/health exceeds 2s, or either times out / 5xx),
 ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is not active),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
@@ -329,6 +361,10 @@ KOOKR_GROK_BIN is set and launch-scoped auth is missing, invalid, or expired).
 
 const KB_PREFLIGHT_TIMEOUT_MS = 5_000;
 const AGENT_PROBE_TIMEOUT_MS = 2_000;
+/** Ready-probe abort and WARN budget (issue #2496). Same value — doctor must not hang past the budget. */
+export const HTTP_READY_BUDGET_MS = 500;
+/** Health-probe abort and WARN budget (issue #2496). Health is allowed to be slower than ready. */
+export const HTTP_HEALTH_BUDGET_MS = 2_000;
 const KB_SMOKE_QUERY = 'kookr launch dependency smoke';
 /**
  * Ignore brief state-fetch backoff windows so doctor does not flap WARN during
@@ -430,6 +466,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
   checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date())));
+  checks.push(await checkHttpLatency(env, deps.probeHttpLatency));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkSchedulesPausedByFailure(env, deps.probeSchedulesPausedByFailure));
@@ -696,6 +733,185 @@ function normalizeResourceWatchdogProbe(
   if (typeof value === 'boolean') return { enabled: value };
   if (typeof value.enabled === 'boolean') return value;
   return null;
+}
+
+/**
+ * Advisory ops check (issue #2496): treat a slow or hung HTTP surface as a
+ * first-class unattended signal.
+ *
+ * Sibling doctor probes abort `/api/health` at 500ms and skip (ok) on timeout,
+ * so a wedged server can make the report look fine. This check GETs
+ * `/api/ready` with a 500ms budget and `/api/health` with a 2s budget, WARNs
+ * on timeout / over-budget / 5xx, and never fails required checks. Health is
+ * skipped when ready already timed out so doctor does not hang twice.
+ *
+ * Soft-skip when no API base is configured so hermetic offline doctor stays green.
+ */
+async function checkHttpLatency(
+  env: NodeJS.ProcessEnv,
+  probe: HttpLatencyProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHttpLatency;
+  let snap: HttpLatencyProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'ops.http-latency',
+      'HTTP latency',
+      'ops',
+      'probe skipped (hermetic offline / no KOOKR_API_BASE_URL / KOOKR_PORT)',
+      false,
+    );
+  }
+
+  const readyNote = formatHttpLatencyEndpoint('GET /api/ready', snap.ready, HTTP_READY_BUDGET_MS);
+  const healthNote = snap.health
+    ? formatHttpLatencyEndpoint('GET /api/health', snap.health, HTTP_HEALTH_BUDGET_MS)
+    : snap.ready.timedOut
+      ? `GET /api/health skipped because GET /api/ready timed out after ${snap.ready.elapsedMs}ms`
+      : 'GET /api/health skipped';
+
+  const readyBad = isHttpLatencyBad(snap.ready, HTTP_READY_BUDGET_MS);
+  const healthBad = snap.health ? isHttpLatencyBad(snap.health, HTTP_HEALTH_BUDGET_MS) : snap.ready.timedOut;
+  if (!readyBad && !healthBad) {
+    return okCheck(
+      'ops.http-latency',
+      'HTTP latency',
+      'ops',
+      `${readyNote}; ${healthNote}`,
+      false,
+    );
+  }
+
+  return {
+    id: 'ops.http-latency',
+    label: 'HTTP latency',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary: `${readyNote}; ${healthNote}`,
+    detail:
+      'Timed GET /api/ready (500ms budget) then GET /api/health (2s budget). ' +
+      'Timeout or 5xx is the hung-HTTP surface, not a skipped sibling probe.',
+    recommendedAction:
+      'Inspect GET /api/ready and GET /api/health. A timeout or multi-second response is the hung-HTTP symptom. ' +
+      'Treat this WARN as the first unattended signal — sibling doctor probes that skip on timeout are not a clean bill of health.',
+  };
+}
+
+function isHttpLatencyBad(result: HttpLatencyEndpointResult, budgetMs: number): boolean {
+  if (result.timedOut) return true;
+  if (result.status != null && result.status >= 500) return true;
+  if (result.status == null) return true;
+  return result.elapsedMs > budgetMs;
+}
+
+export function formatHttpLatencyEndpoint(
+  label: string,
+  result: HttpLatencyEndpointResult,
+  budgetMs: number,
+): string {
+  if (result.timedOut) {
+    return `${label} timed out after ${result.elapsedMs}ms (budget ${budgetMs}ms)`;
+  }
+  if (result.status != null && result.status >= 500) {
+    return `${label} returned ${result.status} in ${result.elapsedMs}ms`;
+  }
+  if (result.status == null) {
+    return `${label} unreachable after ${result.elapsedMs}ms`;
+  }
+  if (result.elapsedMs > budgetMs) {
+    return `${label} ${result.elapsedMs}ms exceeds ${budgetMs}ms budget`;
+  }
+  return `${label} ${result.elapsedMs}ms (budget ${budgetMs}ms)`;
+}
+
+/**
+ * Time a single GET. The abort timeout equals the WARN budget so doctor cannot
+ * hang on a wedged server past that budget.
+ */
+export async function measureHttpLatency(args: {
+  fetchFn: typeof fetch;
+  nowMs: () => number;
+  url: string;
+  timeoutMs: number;
+  headers: Record<string, string>;
+}): Promise<HttpLatencyEndpointResult> {
+  const started = args.nowMs();
+  try {
+    const res = await args.fetchFn(args.url, {
+      method: 'GET',
+      headers: args.headers,
+      signal: AbortSignal.timeout(args.timeoutMs),
+    });
+    void res.body?.cancel();
+    return {
+      elapsedMs: Math.max(0, args.nowMs() - started),
+      status: res.status,
+      timedOut: false,
+    };
+  } catch (err) {
+    return {
+      elapsedMs: Math.max(0, args.nowMs() - started),
+      timedOut: isTimeoutError(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function isTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as { name?: string }).name;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+/**
+ * Live latency probe. Only hits the network when the operator has pointed at
+ * a server (`KOOKR_API_BASE_URL` or numeric `KOOKR_PORT`) — no auto 4800/4801
+ * scan, so hermetic unit tests with empty env stay offline.
+ *
+ * Unlike sibling health probes, a timeout here is a snapshot (WARN), not null
+ * (skip / looks-fine).
+ */
+export async function probeLiveHttpLatency(
+  env: NodeJS.ProcessEnv,
+  deps: { fetchFn?: typeof fetch; nowMs?: () => number } = {},
+): Promise<HttpLatencyProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const fetchFn = deps.fetchFn ?? fetch;
+  const nowMs = deps.nowMs ?? Date.now;
+  const ready = await measureHttpLatency({
+    fetchFn,
+    nowMs,
+    url: `${base}/api/ready`,
+    timeoutMs: HTTP_READY_BUDGET_MS,
+    headers,
+  });
+  if (ready.timedOut) return { ready, health: null };
+
+  const health = await measureHttpLatency({
+    fetchFn,
+    nowMs,
+    url: `${base}/api/health`,
+    timeoutMs: HTTP_HEALTH_BUDGET_MS,
+    headers,
+  });
+  return { ready, health };
+}
+
+async function defaultProbeHttpLatency(env: NodeJS.ProcessEnv): Promise<HttpLatencyProbeSnapshot | null> {
+  return probeLiveHttpLatency(env);
 }
 
 /**

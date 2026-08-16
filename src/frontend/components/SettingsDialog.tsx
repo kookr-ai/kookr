@@ -26,6 +26,7 @@ import { setQuietHoursWindows } from '../hooks/useDnd.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useKookrStore } from '../store/useStore.js';
+import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import type {
@@ -52,6 +53,7 @@ interface ServerSettings {
   maxActiveTasks: number;
   cleanupWorktreeOnComplete: boolean;
   defaultAgentType: AgentSelection;
+  roundRobinIndex?: number;
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
@@ -616,6 +618,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         // Mirror the saved schedule into the live DND gate so quiet hours take
         // effect immediately, even before the operator edits anything.
         setQuietHoursWindows(data.quietHours ?? []);
+        applyRoundRobinIndex(data.roundRobinIndex);
         setLoading(false);
       })
       .catch((err) => {
@@ -1249,8 +1252,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         <span className="settings-label">Default agent</span>
                         <span className="settings-desc">
                           Pre-selected agent for new tasks and child task launches when no explicit
-                          agent is supplied. Round robin alternates between Claude Code and Codex CLI
-                          on each launch to spread usage across both plans.
+                          agent is supplied. Round robin rotates across the registered agents
+                          (Claude Code, Codex CLI, and Grok Build when available).
                         </span>
                       </div>
                       <div className="settings-agent-select">
@@ -1260,6 +1263,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           options={agentOptions}
                           label="Agent"
                           compact
+                          roundRobinIndex={settings.roundRobinIndex}
                         />
                       </div>
                     </div>

@@ -46,6 +46,7 @@ import { createRequestDurationMiddleware, RequestDurationMetrics } from './reque
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
 import { createInFlightRequestMiddleware, inFlightRequestRegistry } from './in-flight-request-registry.js';
 import { LessonYieldHealthCache } from './lesson-yield-health-cache.js';
+import { HealthBodyCacheStats } from './health-body-cache-stats.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
@@ -105,6 +106,10 @@ export function createRoutes(deps: RouteDeps): Hono {
     // Shared lesson-yield cache so /api/health and /metrics see the same
     // days=1 snapshot (issue #1857). Metrics only reads; diagnostics scans.
     lessonYieldHealth: deps.lessonYieldHealth ?? new LessonYieldHealthCache(),
+    // Shared health-body cache timing gauges so /api/health and /metrics report
+    // the same assemblyMs / cacheAgeMs (issue #2497). Diagnostics records on
+    // each assembly; metrics only reads.
+    healthBodyCacheStats: deps.healthBodyCacheStats ?? new HealthBodyCacheStats(),
   };
 
   // #804: browser cookie-exchange endpoint (POST /api/auth/session). Allow-listed

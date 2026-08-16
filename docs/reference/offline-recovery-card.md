@@ -17,6 +17,8 @@ curl -sS http://127.0.0.1:4800/api/health | python3 -m json.tool | head -120
 
 If `/api/ready` fails: fix the failing subsystem named in the body (scheduler tick, persistence writability, terminal backend, etc.), then re-probe. Do not assume “dashboard loads” means ready.
 
+If curl hangs or takes hundreds of milliseconds: `kookr doctor --json` `ops.http-latency` WARNs when ready exceeds 500ms or health exceeds 2s (or either times out / 5xx). Sibling doctor probes that skip on timeout are not a clean bill of health.
+
 ## 2. Disk free (data directory)
 
 ENOSPC under `~/.kookr` (or `KOOKR_DIR`) kills launches and JSONL writers.
@@ -114,7 +116,7 @@ If residual stays high after TTL reclaim windows: ack/complete/cancel clearly de
 
 ## 3a. Fail-closed schedule pauses (issue #2426)
 
-`#2353` parks a schedule after consecutive failures. Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
+`#2353` parks a schedule after consecutive failures (the bootstrap-critical merge watchdog is exempt and never parks — see the unattended-recovery runbook §3b, `#2530`). Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
 
 ```bash
 curl -sS http://127.0.0.1:4800/api/health | python3 -c '

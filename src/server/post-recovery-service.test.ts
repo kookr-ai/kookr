@@ -192,6 +192,67 @@ describe('PostRecoveryService', () => {
     expect(setEnabled).not.toHaveBeenCalled();
   });
 
+  it('re-arms the bootstrap merge watchdog OUT of a cascade-origin hold and audits (issue #2530)', async () => {
+    const setEnabled = vi.fn(async (id: string, enabled: boolean) => ({ id, enabled }));
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'watchdog',
+          name: 'PR Merge/Rebase Watchdog',
+          enabled: false,
+          // #2353 sets operatorHold on every consecutive_failures auto-pause —
+          // this is a cascade artifact, not a genuine operator park.
+          operatorHold: true,
+          stopReason: 'consecutive_failures',
+          playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        }),
+      ],
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+    });
+
+    const result = await service.rearmCriticalSchedules();
+    expect(result.rearmed).toEqual([{ id: 'watchdog', name: 'PR Merge/Rebase Watchdog' }]);
+    expect(setEnabled).toHaveBeenCalledWith('watchdog', true);
+
+    const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
+    const row = JSON.parse(audit.trim().split('\n')[0]!);
+    expect(row.action).toBe('critical_schedule_rearm');
+    expect(row.scheduleId).toBe('watchdog');
+  });
+
+  it('still respects a GENUINE operator park of the merge watchdog (issue #2530)', async () => {
+    const setEnabled = vi.fn();
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'watchdog',
+          name: 'PR Merge/Rebase Watchdog',
+          enabled: false,
+          // Manual disable: operatorHold with no consecutive_failures stopReason.
+          operatorHold: true,
+          playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        }),
+      ],
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+    });
+    const result = await service.rearmCriticalSchedules();
+    expect(result.rearmed).toEqual([]);
+    expect(result.skipped).toEqual([
+      { id: 'watchdog', name: 'PR Merge/Rebase Watchdog', reason: 'operator_hold' },
+    ]);
+    expect(setEnabled).not.toHaveBeenCalled();
+  });
+
   it('kicks at most one scout per repo per UTC day when idle capacity returns', async () => {
     const launcher = vi.fn(async () => ({
       task: { id: 'scout-1', status: 'running' } as Task,
