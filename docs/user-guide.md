@@ -100,6 +100,17 @@ Use these controls together before resizing the browser or abandoning the dashbo
 
 On narrower desktop windows, the detail panel uses **Activity**, **Terminal**, and **GitHub** tabs. Keep **Terminal** selected while reading or replying, then switch briefly to **Activity** or **GitHub** only when you need summarized context.
 
+### Command Palette
+
+When you would rather jump straight to a command or a specific record than hunt for it on screen, open the command palette with `Ctrl+K` (Windows/Linux) or `Cmd+K` (macOS). Clicking the top-bar **Search actions & tasks** field opens the same palette.
+
+The palette has two modes:
+
+- **Browse.** With the query empty, it lists every action that Kookr can run — the same commands that live behind the top-bar controls — grouped into labelled sections so you can discover what is available without knowing its name.
+- **Search.** As you type, it filters and ranks results across four kinds at once: **actions**, **tasks**, active **findings**, and **projects**. Actions show their keyboard shortcut and any status badge; tasks, findings, and projects show summarizing context such as lifecycle state, severity, or active-agent counts.
+
+Use `↑` and `↓` to move through results, `↵` to run the highlighted action or open the highlighted task, finding, or project, and `Esc` to close the palette. The palette is a fast entry point, not a replacement for the shortcuts dialog — `?` still opens the full list of keyboard shortcuts.
+
 ### Project-Scoped Triage
 
 For dense multi-repository sessions, start broad and narrow only when the queue is noisy:
@@ -111,6 +122,30 @@ For dense multi-repository sessions, start broad and narrow only when the queue 
 5. Return to **All projects** so lower-volume projects are not hidden for the rest of the session.
 
 Project filters are workspace controls, not task ownership changes. Agents continue running in their original working directories.
+
+## Do Not Disturb And Quiet Hours
+
+When you need to step away, use **Do Not Disturb (DND)** to silence alerts without stopping supervision. While DND is on, Kookr mutes toasts, desktop notifications, and the audible chime, but anomaly detection keeps running and findings still accumulate in the dashboard. Nothing is lost — only the interruptions are muted.
+
+### The DND Pill
+
+The top-bar **DND** pill is the manual control:
+
+- Click the pill to turn Do Not Disturb on until you turn it off again. Click it again to turn it off.
+- Use the caret (`▾`) next to the pill to silence alerts for a fixed duration instead — **15 minutes**, **30 minutes**, **1 hour**, **2 hours**, or **Until I turn it off** (the same indefinite state as clicking the pill directly). When a duration is set, the pill tracks the time remaining and re-enables alerts automatically when it elapses.
+- When you enable DND manually, findings that arrive while it is on are counted on the pill, so you can see how many new findings are waiting the moment you return.
+
+The manual toggle is per-browser and persists across reloads, and it stays in sync across open tabs so enabling DND in one tab silences the others too.
+
+### Quiet Hours
+
+Quiet hours put DND on a recurring schedule. Open **Settings → Notifications & Alerts → Quiet hours** and add one or more time-of-day windows:
+
+- Each window has a **From** and **To** time and a set of weekdays it applies to.
+- Times are local wall-clock time (`HH:MM`, 24-hour), so windows follow your clock — including daylight-saving changes — rather than a fixed UTC offset.
+- A **To** time earlier than the **From** time wraps past midnight (for example, `22:00`→`08:00` covers overnight), with the weekday selection referring to the day the window starts.
+
+While a quiet-hours window is active, the DND pill shows an **Auto** badge to indicate that the schedule — not a manual toggle — is silencing alerts. Clicking the pill during a quiet-hours window pins DND on manually so it stays on after the window ends; edit or remove the windows from Settings at any time.
 
 ## Finding Types
 
