@@ -95,7 +95,6 @@ export interface AutoCompleteTerminalVerdictDeps {
   isHoldingOpenPr?: (task: Task) => boolean | undefined;
   auditLogPath?: string;
   broadcastToAll?: (msg: ServerMessage) => void;
-  now?: () => Date;
 }
 
 export interface AutoCompleteTerminalVerdictOptions {
@@ -182,12 +181,6 @@ async function recordTerminalVerdictAutoComplete(
 }
 
 /**
- * Complete running tasks that reached a terminal-success verdict but parked in
- * `needs_input` (issue #2532). See module header. Returns the ids completed this
- * tick. Never throws for a single task — a raced terminal transition is logged
- * and skipped so the sweep keeps draining the rest of the batch.
- */
-/**
  * All eligibility gates for one task, in one place, returning the matched verdict
  * when the task is a terminal-success park to complete — else null. Reads live
  * monitor state, so calling it a second time (after an await) re-checks against
@@ -227,6 +220,12 @@ function evaluateCandidate(
   return classifyTerminalSuccessVerdict(finalMessage);
 }
 
+/**
+ * Complete running tasks that reached a terminal-success verdict but parked in
+ * `needs_input` (issue #2532). See module header. Returns the ids completed this
+ * tick. Never throws for a single task — a raced terminal transition is logged
+ * and skipped so the sweep keeps draining the rest of the batch.
+ */
 export async function autoCompleteTerminalVerdictTasks(
   deps: AutoCompleteTerminalVerdictDeps,
   opts: AutoCompleteTerminalVerdictOptions = {},
