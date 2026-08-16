@@ -16,6 +16,7 @@ import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.j
 import { getCompactTasks } from '../api/index.js';
 import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
+import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -32,6 +33,11 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
+  // Same preflight the Launch dialog uses: it advertises whether a grok-build
+  // launch would be refused and refreshes the rotation cursor on mount, so the
+  // round-robin preview here stays honest (skips Grok when unusable) and does
+  // not drift after a launch — parity with LaunchTaskDialog / PlaybookBrowser.
+  const grokAuth = useGrokAuthStatus();
   const launchCwds = useLaunchTaskCwds();
   const duplicateCandidates = useMemo(
     () => withLaunchTaskCwds(agents, launchCwds),
@@ -194,6 +200,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           label="Agent"
           compact
           roundRobinIndex={roundRobinIndex}
+          grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
         />
         {(effortOptionsForSelection(agentType).length > 0
           || modelOptionsForSelection(agentType).length > 0) && (
