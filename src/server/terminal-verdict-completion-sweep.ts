@@ -50,6 +50,7 @@ import {
   classifyTerminalSuccessVerdict,
   type TerminalSuccessVerdict,
 } from '../core/terminal-success-verdict.js';
+import { deriveTurnStateDetails } from '../core/turn-state.js';
 
 /**
  * Max terminal-success tasks completed per sweep. Same rationale as the
@@ -108,21 +109,35 @@ function isActiveRalphLoop(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
-function firstLiveSession(task: Task): SessionInfo | undefined {
-  return task.sessions.find(
+/**
+ * The task's SOLE live session, or undefined when there is not exactly one.
+ * SessionRegistry can hold more than one live session after an attach race, and
+ * completing the task tears down ALL of them — so a receipt on an older session
+ * must never complete a task whose newer session is still working. Fail closed:
+ * act only when the live session is unambiguous.
+ */
+function soleLiveSession(task: Task): SessionInfo | undefined {
+  const live = task.sessions.filter(
     (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered,
   );
+  return live.length === 1 ? live[0] : undefined;
 }
 
-/** Latest clean-turn final message: the `lastMessage` of the most recent `stop` event. */
-function latestStopMessage(events: readonly AgentEvent[]): string | undefined {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const e = events[i];
-    if (e.type === 'stop') return e.lastMessage;
-    // A newer non-stop terminal event means the turn is not cleanly stopped.
-    if (e.type === 'user_prompt' || e.type === 'input_received' || e.type === 'tool_use') return undefined;
-  }
-  return undefined;
+/**
+ * The final message of a genuinely COMPLETED clean turn, or undefined. Reuses
+ * `deriveTurnStateDetails` (the same clean-turn evidence the completion-signal
+ * machinery uses), so a Stop that is actually `running` — e.g. one that reports
+ * active background tasks / session crons — is NOT treated as a completed turn
+ * and never yields a message to classify. This is what stops the sweep from
+ * completing a task whose agent printed its receipt while a background poll /
+ * verification is still live.
+ */
+function completedTurnFinalMessage(events: readonly AgentEvent[]): string | undefined {
+  const details = deriveTurnStateDetails(events as AgentEvent[]);
+  if (details.turnState !== 'completed_turn') return undefined;
+  const stop = details.effectiveEvent;
+  if (!stop || stop.type !== 'stop') return undefined;
+  return stop.lastMessage;
 }
 
 /**
@@ -191,7 +206,10 @@ export async function autoCompleteTerminalVerdictTasks(
     // AC), while never auto-completing one whose PR is still unmerged.
     if (task.deliveryAuthorization === 'ask-first' && deps.isHoldingOpenPr?.(task) !== false) continue;
 
-    const session = firstLiveSession(task);
+    // Only act on an unambiguous single live session (fail closed on the
+    // attach-race duplicate-session state, so a receipt on an older session can
+    // never tear down a newer one that is still working).
+    const session = soleLiveSession(task);
     if (!session) continue;
 
     // Must be genuinely PARKED in needs_input with no concrete question. The
@@ -200,7 +218,9 @@ export async function autoCompleteTerminalVerdictTasks(
     const anomaly = deps.monitor.getCurrentAnomaly(session.tmuxSession);
     if (!isParkedWithoutQuestion(anomaly)) continue;
 
-    const finalMessage = latestStopMessage(deps.monitor.getAgentEvents(session.tmuxSession));
+    // Require a genuinely COMPLETED clean turn — a Stop still reporting active
+    // background tasks / crons is `running`, not done, and yields no message.
+    const finalMessage = completedTurnFinalMessage(deps.monitor.getAgentEvents(session.tmuxSession));
     const match = classifyTerminalSuccessVerdict(finalMessage);
     if (!match) continue;
 

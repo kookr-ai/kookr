@@ -411,6 +411,43 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     expect(taskStore.getTask(okId)?.status).toBe('completed');
   });
 
+  test('does not complete a Stop that still reports active background tasks (turn is running)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    const stopWithBackground = {
+      type: 'stop',
+      sessionId: agentId,
+      lastMessage: 'deploy-convergence: converged · serving=194eda77 main=194eda77',
+      activeBackgroundTaskCount: 1,
+    } as AgentEvent;
+    const monitor = stubMonitor({
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopWithBackground] },
+    });
+
+    const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+
+    expect(result.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
+  test('fails closed when a task has more than one live session (attach race)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    // A second live session — SessionRegistry permits this after an attach race.
+    const agentId2 = `${agentId}-2`;
+    taskStore.addSession(taskId, { tmuxSession: agentId2, agentType: 'claude-code', cwd: '/tmp', createdAt: T0 });
+    const receipt = 'deploy-convergence: converged · serving=194eda77 main=194eda77';
+    const monitor = stubMonitor({
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, receipt)] },
+      [agentId2]: { anomaly: needsInputAnomaly(agentId2), events: [stopEvent(agentId2, receipt)] },
+    });
+
+    const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+
+    expect(result.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
   test('is a no-op without lifecycleDeps', async () => {
     const taskStore = new TaskStore();
     const [taskId, agentId] = makeRunningTask(taskStore);
