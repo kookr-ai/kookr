@@ -431,6 +431,46 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
   });
 
+  test('does not complete a Grok turn that was cancelled/shutdown (stopReason !== end_turn)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    // Grok stamps a stopReason; only `end_turn` is a success. A cancelled (Esc)
+    // turn that already printed its receipt must NOT be treated as completed.
+    const cancelledStop = {
+      type: 'stop',
+      sessionId: agentId,
+      lastMessage: 'deploy-convergence: converged · serving=194eda77 main=194eda77',
+      stopReason: 'cancelled',
+    } as AgentEvent;
+    const monitor = stubMonitor({
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [cancelledStop] },
+    });
+
+    const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+
+    expect(result.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
+  test('completes a Grok turn that ended cleanly (stopReason === end_turn)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    const endTurnStop = {
+      type: 'stop',
+      sessionId: agentId,
+      lastMessage: 'deploy-convergence: converged · serving=194eda77 main=194eda77',
+      stopReason: 'end_turn',
+    } as AgentEvent;
+    const monitor = stubMonitor({
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [endTurnStop] },
+    });
+
+    const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+
+    expect(result.completedTaskIds).toEqual([taskId]);
+    expect(taskStore.getTask(taskId)?.status).toBe('completed');
+  });
+
   test('fails closed when a task has more than one live session (attach race)', async () => {
     const taskStore = new TaskStore();
     const [taskId, agentId] = makeRunningTask(taskStore);

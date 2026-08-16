@@ -138,6 +138,11 @@ function completedTurnFinalMessage(events: readonly AgentEvent[]): string | unde
   if (details.turnState !== 'completed_turn') return undefined;
   const stop = details.effectiveEvent;
   if (!stop || stop.type !== 'stop') return undefined;
+  // Grok Build stamps a `stopReason` on the Stop; per the outcome contract only
+  // `end_turn` is a success — a `cancelled` (Esc) / `shutdown` / `error` turn is
+  // NOT done even if a receipt was printed, so its message must not be trusted.
+  // Claude Code / Codex CLI omit `stopReason`, which is treated as `end_turn`.
+  if (stop.stopReason !== undefined && stop.stopReason !== 'end_turn') return undefined;
   return stop.lastMessage;
 }
 
