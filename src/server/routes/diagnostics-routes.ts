@@ -66,6 +66,7 @@ import {
 } from '../../core/lesson-decision.js';
 import { summarizeOssAttemptsForHealth } from '../oss-attempts-snapshot.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
+import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
   formatSafeModeDigestLine,
@@ -248,15 +249,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return scan;
   }
 
-  // Issue #2429: one assembled health body is reused for ~1s (TTL) and
-  // while a rebuild is already in flight (single-flight). This is not
-  // stale-while-revalidate: after expiry the next caller waits for a
-  // fresh walk. Overlapping probes must not start a second copy.
+  // Issue #2429 + #2492: one assembled health body is reused for ~1s (TTL) and
+  // while a rebuild is already in flight (single-flight). After the TTL expires
+  // this is now true stale-while-revalidate (issue #2492): the next caller gets
+  // the previous body immediately and one background assembly is kicked off to
+  // refresh it, so concurrent Lucy/doctor/status probes never stack on the
+  // expensive walk. Only a genuinely cold cache (nothing ever assembled) waits.
+  // This helps the stampede-before-wedge case; it cannot heal a fully wedged
+  // event loop (#2167). Overlapping probes must not start a second copy.
+  // `cachedAtMs`/`assemblyMs` back the health-cache gauges (issue #2497).
   // /api/ready is intentionally uncached — see the route below.
   let healthBodyCache:
-    | { expiresAtMs: number; body: Record<string, unknown> }
+    | { cachedAtMs: number; expiresAtMs: number; assemblyMs: number; body: Record<string, unknown> }
     | undefined;
   let healthBodyInFlight: Promise<Record<string, unknown>> | undefined;
+  const healthBodyStats = deps.healthBodyCacheStats ?? new HealthBodyCacheStats();
 
   async function assembleHealthBody(): Promise<Record<string, unknown>> {
     const terminalBackend = deps.terminalBackend;
@@ -712,19 +719,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     };
   }
 
-  function getCachedHealthBody(): Promise<Record<string, unknown>> {
-    const now = deps.nowMs?.() ?? Date.now();
-    if (healthBodyCache !== undefined && healthBodyCache.expiresAtMs > now) {
-      return Promise.resolve(healthBodyCache.body);
-    }
+  // Start (or join) the single-flight assembly that repopulates the cache. Each
+  // completed assembly records its walk duration and land time so the health
+  // gauges (issue #2497) reflect the real cost, and resets the TTL.
+  function startHealthAssembly(): Promise<Record<string, unknown>> {
     if (healthBodyInFlight) return healthBodyInFlight;
+    const startedAtMs = deps.nowMs?.() ?? Date.now();
     let pending: Promise<Record<string, unknown>>;
     pending = assembleHealthBody()
       .then((body) => {
+        const finishedAtMs = deps.nowMs?.() ?? Date.now();
         healthBodyCache = {
-          expiresAtMs: (deps.nowMs?.() ?? Date.now()) + HEALTH_BODY_CACHE_MS,
+          cachedAtMs: finishedAtMs,
+          expiresAtMs: finishedAtMs + HEALTH_BODY_CACHE_MS,
+          assemblyMs: Math.max(0, finishedAtMs - startedAtMs),
           body,
         };
+        healthBodyStats.record(healthBodyCache.assemblyMs, finishedAtMs);
         return body;
       })
       .finally(() => {
@@ -732,6 +743,42 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       });
     healthBodyInFlight = pending;
     return pending;
+  }
+
+  // Stamp the point-in-time cache gauges onto a shallow copy of the cached body
+  // so the served response reports its own staleness without mutating (and thus
+  // freezing a stale age into) the shared cache entry.
+  function serveHealthBody(
+    entry: { cachedAtMs: number; assemblyMs: number; body: Record<string, unknown> },
+    nowMs: number,
+  ): Record<string, unknown> {
+    return {
+      ...entry.body,
+      healthAssemblyMs: entry.assemblyMs,
+      healthCacheAgeMs: Math.max(0, nowMs - entry.cachedAtMs),
+    };
+  }
+
+  async function getCachedHealthBody(): Promise<Record<string, unknown>> {
+    const now = deps.nowMs?.() ?? Date.now();
+    if (healthBodyCache !== undefined) {
+      // Stale-while-revalidate (issue #2492): if the TTL has expired but a
+      // previous body exists, serve it immediately and kick off exactly one
+      // background refresh. A wedged loop is out of scope for an in-process
+      // cache — this only spares the stampede-before-wedge case.
+      if (healthBodyCache.expiresAtMs <= now) {
+        void startHealthAssembly().catch(() => {
+          // Soft: a failed background refresh must never reject the response we
+          // are about to serve from the still-valid stale body. The failed
+          // assembly clears healthBodyInFlight, so the next request retries.
+        });
+      }
+      return serveHealthBody(healthBodyCache, now);
+    }
+    // Cold cache: nothing to serve stale, so the first caller must wait for the
+    // assembly (still single-flight for any overlapping cold callers).
+    await startHealthAssembly();
+    return serveHealthBody(healthBodyCache!, deps.nowMs?.() ?? Date.now());
   }
 
   app.get('/api/health', async (c) => c.json(await getCachedHealthBody()));

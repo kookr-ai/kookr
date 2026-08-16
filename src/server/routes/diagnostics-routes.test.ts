@@ -1069,12 +1069,18 @@ describe('diagnostics routes', () => {
         expect(await res.json()).toMatchObject({ schemaVersion: 'lesson-yield.v2' });
       });
       nowMs += HEALTH_BODY_CACHE_MS + 1;
-      const res = await app.request('/api/health');
-      expect(res.status).toBe(200);
-      const body = await res.json() as { lessonYield?: unknown };
-      expect(body.lessonYield).toMatchObject({
-        schemaVersion: 'lesson-yield.v2',
-        windowDays: 1,
+      // SWR (issue #2492): the first post-TTL request serves the (cold) stale
+      // body and refreshes in the background; the lessonYield block appears once
+      // that background assembly — which reads the now-warm lesson-yield cache —
+      // lands and replaces the cached body.
+      await vi.waitFor(async () => {
+        const res = await app.request('/api/health');
+        expect(res.status).toBe(200);
+        const body = await res.json() as { lessonYield?: unknown };
+        expect(body.lessonYield).toMatchObject({
+          schemaVersion: 'lesson-yield.v2',
+          windowDays: 1,
+        });
       });
     });
   });
@@ -2673,9 +2679,10 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // GET /api/health — 1s TTL + single-flight body cache (issue #2429)
+  // GET /api/health — 1s TTL + single-flight body cache + SWR (issues #2429, #2492)
+  // + assembly/cache-age gauges (issue #2497)
   // ---------------------------------------------------------------------------
-  describe('GET /api/health body cache (issue #2429)', () => {
+  describe('GET /api/health body cache (issues #2429, #2492, #2497)', () => {
     test('overlapping requests share one assembly', async () => {
       const taskStore = new TaskStore();
       const viewSpy = vi.spyOn(taskStore, 'viewTasks');
@@ -2696,7 +2703,7 @@ describe('diagnostics routes', () => {
       expect(await first.json()).toEqual(await second.json());
     });
 
-    test('a request after the TTL expires gets a fresh assembly', async () => {
+    test('after the TTL expires serves the previous body immediately and refreshes in the background (issue #2492)', async () => {
       let nowMs = 1_700_000_000_000;
       const taskStore = new TaskStore();
       const viewSpy = vi.spyOn(taskStore, 'viewTasks');
@@ -2718,11 +2725,78 @@ describe('diagnostics routes', () => {
       expect(viewSpy).toHaveBeenCalledTimes(1);
       expect((await cached.json() as { agents: number }).agents).toBe(0);
 
+      // 1ms past the TTL: the previous body is returned WITHOUT waiting for a
+      // fresh assembly (SWR), and a single background refresh is triggered.
       nowMs += HEALTH_BODY_CACHE_MS + 1;
-      const fresh = await app.request('/api/health');
-      expect(fresh.status).toBe(200);
+      const stale = await app.request('/api/health');
+      expect(stale.status).toBe(200);
+      expect((await stale.json() as { agents: number }).agents).toBe(0);
+
+      // The background refresh replaces the cached body; it runs exactly once.
+      await vi.waitFor(async () => {
+        const r = await app.request('/api/health');
+        expect((await r.json() as { agents: number }).agents).toBe(1);
+      });
       expect(viewSpy).toHaveBeenCalledTimes(2);
-      expect((await fresh.json() as { agents: number }).agents).toBe(1);
+    });
+
+    test('overlapping post-TTL requests trigger exactly one background refresh (issue #2492)', async () => {
+      let nowMs = 1_700_000_000_000;
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        nowMs: () => nowMs,
+      });
+
+      await app.request('/api/health');
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+      taskStore.createTask('refresh-target', '/repo');
+
+      nowMs += HEALTH_BODY_CACHE_MS + 1;
+      const [a, b] = await Promise.all([
+        app.request('/api/health'),
+        app.request('/api/health'),
+      ]);
+      // Both overlapping callers get the stale body immediately.
+      expect((await a.json() as { agents: number }).agents).toBe(0);
+      expect((await b.json() as { agents: number }).agents).toBe(0);
+
+      // Single-flight holds across the two post-TTL requests: exactly one
+      // refresh assembly ran (1 prime + 1 refresh), never two.
+      await vi.waitFor(() => expect(viewSpy).toHaveBeenCalledTimes(2));
+      await Promise.resolve();
+      expect(viewSpy).toHaveBeenCalledTimes(2);
+    });
+
+    test('exposes healthAssemblyMs + healthCacheAgeMs gauges that track cache age (issue #2497)', async () => {
+      let nowMs = 1_700_000_000_000;
+      const taskStore = new TaskStore();
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        nowMs: () => nowMs,
+      });
+
+      const first = await (await app.request('/api/health')).json() as {
+        healthAssemblyMs: number;
+        healthCacheAgeMs: number;
+      };
+      expect(typeof first.healthAssemblyMs).toBe('number');
+      expect(first.healthAssemblyMs).toBeGreaterThanOrEqual(0);
+      // Freshly assembled ⇒ zero age.
+      expect(first.healthCacheAgeMs).toBe(0);
+
+      // Still within the TTL: the same cached body is served, but its reported
+      // age reflects the elapsed wall time since assembly.
+      nowMs += 250;
+      const aged = await (await app.request('/api/health')).json() as {
+        healthCacheAgeMs: number;
+      };
+      expect(aged.healthCacheAgeMs).toBe(250);
     });
 
     test('a failed assembly is not sticky — the next request rebuilds', async () => {

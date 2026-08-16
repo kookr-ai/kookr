@@ -67,6 +67,7 @@ import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 import type { EnvironmentBlockerRegistry } from '../../core/environment-blocker-registry.js';
 import type { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
+import type { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -541,6 +542,14 @@ export interface RouteDeps {
    * and never scans hook logs on the scrape path.
    */
   lessonYieldHealth?: LessonYieldHealthCache;
+  /**
+   * Shared `/api/health` body-cache timing gauges (issue #2497). Diagnostics
+   * records the last assembly duration + land time; `/metrics` reads the same
+   * instance via `snapshot()`. Absent in partial test harnesses ⇒ diagnostics
+   * builds a private fallback (same pattern as lessonYieldHealth) and `/metrics`
+   * simply omits the series.
+   */
+  healthBodyCacheStats?: HealthBodyCacheStats;
   /**
    * Shared stale-process /proc summary cache (issues #1723, #2081, #2350).
    * Health reads via SWR `getSummary()`; session reaper + resource watchdog
