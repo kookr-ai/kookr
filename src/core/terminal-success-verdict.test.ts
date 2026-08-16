@@ -51,9 +51,23 @@ describe('classifyTerminalSuccessVerdict', () => {
     ).toBe('converged');
   });
 
-  test('finds the verdict on a later line of a multi-line summary', () => {
-    const msg = 'Ran the deploy-convergence check against prod.\n\nconverged · serving=194eda77 main=194eda77';
-    expect(classifyTerminalSuccessVerdict(msg)?.verdict).toBe('converged');
+  test('does NOT match a multi-line message (nothing may hide on another line)', () => {
+    // A verdict headline plus any other non-empty line is rejected — even when
+    // the second line is a question with NO `?`.
+    expect(
+      classifyTerminalSuccessVerdict('Ran the deploy-convergence check.\nconverged · serving=194eda77 main=194eda77'),
+    ).toBeNull();
+    expect(classifyTerminalSuccessVerdict('Complete.\nCan you approve the production rollout')).toBeNull();
+  });
+
+  test('does NOT match a receipt with an appended non-receipt (failure) clause', () => {
+    // A real SHA cannot smuggle prose past the receipt-body whitelist.
+    expect(
+      classifyTerminalSuccessVerdict('converged — serving=194eda77 main=194eda77; smoke tests exited 1'),
+    ).toBeNull();
+    expect(
+      classifyTerminalSuccessVerdict('converged · serving=194eda77 main=194eda77 (2 e2e specs still red)'),
+    ).toBeNull();
   });
 
   test('does NOT match a prose body with no machine (SHA) evidence', () => {
