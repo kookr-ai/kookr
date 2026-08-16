@@ -764,7 +764,7 @@ async function checkHttpLatency(
       'ops.http-latency',
       'HTTP latency',
       'ops',
-      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or live API unreachable)',
+      'probe skipped (hermetic offline / no KOOKR_API_BASE_URL / KOOKR_PORT)',
       false,
     );
   }
