@@ -15,6 +15,7 @@ import { registerMetricsRoutes } from './metrics-routes.js';
 import type { RouteDeps } from './shared.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { LESSON_YIELD_SCHEMA_VERSION } from '../../core/lesson-decision.js';
+import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -331,5 +332,29 @@ describe('metrics routes', () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).not.toContain('kookr_lesson_yield_');
+  });
+
+  test('serves health-body cache gauges from the shared stats (issue #2497)', async () => {
+    const healthBodyCacheStats = new HealthBodyCacheStats();
+    healthBodyCacheStats.record(42, 1_700_000_000_000);
+    // Read 250ms after the body landed ⇒ cacheAgeMs = 250.
+    const res = await mkApp({
+      healthBodyCacheStats,
+      nowMs: () => 1_700_000_000_250,
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('# TYPE kookr_health_body_assembly_seconds gauge');
+    expect(body).toContain('kookr_health_body_assembly_seconds 0.042');
+    expect(body).toContain('# TYPE kookr_health_body_cache_age_seconds gauge');
+    expect(body).toContain('kookr_health_body_cache_age_seconds 0.25');
+  });
+
+  test('omits health-body cache series when the cache is cold (issue #2497)', async () => {
+    const res = await mkApp({ healthBodyCacheStats: new HealthBodyCacheStats() }).request('/metrics');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain('kookr_health_body_');
   });
 });

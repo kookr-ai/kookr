@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { GitHubStateStore } from '../../core/github-state-store.js';
 import { deleteTask } from './delete-task.js';
 
 describe('deleteTask use case', () => {
@@ -126,6 +127,55 @@ describe('deleteTask use case', () => {
     expect(suppressionTracker.reset).toHaveBeenCalledWith('aborted-before-hook-file');
     expect(suppressionTracker.reset).toHaveBeenCalledWith('completed-before-hook-file');
     expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('drops GitHub store rows for the deleted task', async () => {
+    const taskStore = {
+      getTask: vi.fn().mockReturnValue({
+        id: 'task-1',
+        sessions: [{ tmuxSession: 'done-1', lastStatus: 'completed' }],
+      }),
+      deleteTask: vi.fn(),
+    } as any;
+    const githubStateStore = new GitHubStateStore();
+    const ref = {
+      type: 'pr' as const,
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 42,
+      url: 'https://github.com/kookr-ai/kookr/pull/42',
+      taskId: 'task-1',
+      detectedAt: new Date(),
+      detectedFrom: 'agent-1',
+    };
+    githubStateStore.addReference(ref);
+    githubStateStore.updatePRState({
+      ref,
+      title: 'Fix poll leak',
+      status: 'open',
+      mergeable: 'MERGEABLE',
+      author: 'alice',
+      branch: 'fix',
+      baseBranch: 'main',
+      reviewDecision: null,
+      reviewers: [],
+      unresolvedThreads: [],
+      totalComments: 0,
+      checks: [],
+      lastFetchedAt: new Date(),
+    });
+
+    const ok = await deleteTask({
+      taskStore,
+      adapter: { stop: vi.fn().mockResolvedValue(undefined) },
+      monitor: { unregisterAgent: vi.fn() } as any,
+      githubStateStore,
+    } as any, 'task-1');
+
+    expect(ok).toBe(true);
+    expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
+    expect(githubStateStore.getReferences('task-1')).toHaveLength(0);
+    expect(githubStateStore.getPRState({ owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBeNull();
   });
 
   it('treats activity-ledger pruning as best-effort — does not fail the delete on filesystem error', async () => {

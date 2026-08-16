@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 
 import { TaskStore } from '../../core/tasks.js';
+import { SERVER_RESTARTING_MARKER_FILE } from '../server-restart-marker.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { LaunchServiceDeps } from '../launch-service.js';
 import { createScheduleRuntime, unwindCatchUpDuplicate } from './create-schedule-runtime.js';
@@ -42,6 +43,64 @@ describe('createScheduleRuntime', () => {
         runnerStartedAt: expect.any(String),
       }),
     }));
+  });
+
+  // issue #2512: a scheduled fire interrupted by a server restart (its accepted
+  // task terminated `unknown` by reconcile at boot) must not fail-close the
+  // schedule. Exercised end-to-end through the real runtime, since reconcileOnStartup
+  // runs during createScheduleRuntime — the exact boot path the 2026-08-14 outage took.
+  test('reconcileOnStartup does not count a restart-interrupted mid-flight fire', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-schedule-2512-'));
+    const taskStore = new TaskStore();
+
+    // Build the pre-restart schedule state on disk: a fire accepted (outcome
+    // `running`) pointing at a task the restart later killed (`unknown`).
+    const seedRuntime = await createScheduleRuntime({
+      kookrDir: tempDir,
+      taskStore,
+      launchServiceDeps: {} as LaunchServiceDeps,
+      getMaxActiveTasks: () => 5,
+      getScheduleFailureAlertThreshold: () => 3,
+      broadcastToAll: () => {},
+    });
+    const schedule = seedRuntime.scheduleStore.create({
+      name: 'Kookr Queue Feeder',
+      cron: '* * * * *',
+      playbook: { path: 'queue-feeder.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    const task = taskStore.createTask('Run scheduled work', '/tmp');
+    taskStore.startTask(task.id);
+    const receipt = await seedRuntime.scheduleService.reserveExecution(
+      seedRuntime.scheduleStore.get(schedule.id)!,
+      'cron',
+      '2026-08-14T10:00:00.000Z',
+    );
+    await seedRuntime.scheduleService.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+    // The redeploy kills the task's sessions; reconcile terminates it `unknown`.
+    taskStore.terminateTask(task.id, { reason: 'unknown' });
+    // prod-restart.sh wrote the graceful-redeploy marker before draining, so the
+    // boot reconcile can attribute the `unknown` death to the restart (#2512).
+    writeFileSync(
+      join(tempDir, SERVER_RESTARTING_MARKER_FILE),
+      JSON.stringify({ schemaVersion: 'server-restarting.v1', reason: 'server_restarting', at: new Date().toISOString() }),
+    );
+
+    // Boot the replacement process: reconcileOnStartup runs inside the factory.
+    const runtime = await createScheduleRuntime({
+      kookrDir: tempDir,
+      taskStore,
+      launchServiceDeps: {} as LaunchServiceDeps,
+      getMaxActiveTasks: () => 5,
+      getScheduleFailureAlertThreshold: () => 3,
+      broadcastToAll: () => {},
+    });
+
+    const after = runtime.scheduleStore.get(schedule.id)!;
+    expect(after.consecutiveFailures ?? 0).toBe(0);
+    expect(after.enabled).toBe(true);
+    expect(after.latestExecution?.outcome).toBe('cancelled');
+    expect(after.latestExecution?.reasonCode).toBe('reconciled_after_restart');
   });
 
   // issue #1914: the catch-up lease-CAS unwind hook wired into the runner.

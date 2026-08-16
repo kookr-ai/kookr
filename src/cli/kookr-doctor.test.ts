@@ -1,4 +1,4 @@
-import { constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,6 +42,8 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.git',
   'runtime.dtach',
   'runtime.persistence',
+  'runtime.settings-mode',
+  'ops.systemd-unit',
   'github.gh-auth',
   'github.scanner-backoff',
   'launch.kb',
@@ -80,6 +82,9 @@ const hermeticOps = {
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
+  // Owner-only 0600 so the settings-mode check is deterministic and hermetic.
+  statFile: async () => ({ mode: 0o600 }),
+  platform: 'linux' as NodeJS.Platform,
 };
 
 function hostStaleSnap(
@@ -1678,6 +1683,370 @@ describe('kookr doctor --json', () => {
     const check = report.checks.find((c) => c.id === 'runtime.persistence');
     expect(check).toMatchObject({ status: 'ok', required: true });
     expect(check?.summary).toContain('/srv/tester-home/.kookr');
+  });
+
+  // --- runtime.settings-mode (issue #2494) -------------------------------------
+  it('reports runtime.settings-mode ok when settings.json is owner-only 0600', async () => {
+    const run = commandRunner(happyFixtures());
+    const paths: string[] = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) => {
+        paths.push(path);
+        return { mode: 0o100600 }; // regular file, rw-------
+      },
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.settings-mode');
+    expect(check).toMatchObject({ status: 'ok', required: false, category: 'runtime' });
+    expect(check?.summary).toContain('owner-only');
+    expect(check?.summary).toContain('0600');
+    // Defaults to settings.json in the resolved data dir (~/.kookr from HOME).
+    expect(paths).toContain('/srv/tester-home/.kookr/settings.json');
+  });
+
+  it('WARNs on runtime.settings-mode when settings.json is world-readable 0644', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async () => ({ mode: 0o100644 }), // rw-r--r--
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.settings-mode');
+    expect(check).toMatchObject({ status: 'warn', required: false, category: 'runtime' });
+    expect(check?.summary).toContain('0644');
+    expect(check?.summary).toContain('group/other-accessible');
+    expect(check?.detail).toContain('automationKillSwitch');
+    expect(check?.recommendedAction).toContain('chmod 600');
+    expect(check?.recommendedAction).toContain('/srv/tester-home/.kookr/settings.json');
+    // Advisory only: a widened mode never fails the report.
+    expect(report.ok).toBe(true);
+  });
+
+  it('WARNs on runtime.settings-mode for group-only access (0640)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'darwin',
+      statFile: async () => ({ mode: 0o100640 }), // rw-r-----
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toMatchObject({
+      status: 'warn',
+      summary: expect.stringContaining('0640'),
+    });
+  });
+
+  it('skips runtime.settings-mode when settings.json is missing (ENOENT)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async () => {
+        const err = new Error('no such file') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toBeUndefined();
+  });
+
+  it('skips runtime.settings-mode off POSIX (Windows mode bits are not comparable)', async () => {
+    const run = commandRunner(happyFixtures());
+    let statCalls = 0;
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'win32',
+      statFile: async () => {
+        statCalls += 1;
+        return { mode: 0o100644 };
+      },
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toBeUndefined();
+    // Never even stats the file off POSIX.
+    expect(statCalls).toBe(0);
+  });
+
+  it('honours KOOKR_SETTINGS_PATH over the default data-dir settings.json', async () => {
+    const run = commandRunner(happyFixtures());
+    const paths: string[] = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_SETTINGS_PATH: '/etc/kookr/custom-settings.json' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) => {
+        paths.push(path);
+        return { mode: 0o100600 };
+      },
+    });
+
+    expect(paths).toEqual(['/etc/kookr/custom-settings.json']);
+    expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('/etc/kookr/custom-settings.json'),
+    });
+  });
+
+  it('exits non-zero under --strict when settings.json mode is widened', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli(['--json', '--strict'], {
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async () => ({ mode: 0o100644 }),
+      out: { log: (m: string) => logs.push(m), error: () => {} },
+    });
+
+    // Advisory WARN → strict exit non-zero, but not a required failure.
+    expect(code).toBe(1);
+    const body = JSON.parse(logs.join('\n')) as {
+      ok: boolean;
+      checks: Array<{ id: string; status: string }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.checks.find((c) => c.id === 'runtime.settings-mode')?.status).toBe('warn');
+  });
+
+  it('flags the KOOKR_PORT=auto default-path ambiguity in runtime.settings-mode (issue #2494)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    // auto + no explicit KOOKR_DIR / KOOKR_SETTINGS_PATH → the ~/.kookr default may be wrong.
+    const ambiguous = await buildDoctorJsonReport({
+      env: { KOOKR_RESOURCE_WATCHDOG: '1', KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24', KOOKR_PORT: 'auto' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async () => ({ mode: 0o100600 }),
+    });
+    const ambiguousCheck = ambiguous.checks.find((c) => c.id === 'runtime.settings-mode');
+    expect(ambiguousCheck).toMatchObject({ status: 'ok' });
+    expect(ambiguousCheck?.summary).toContain('KOOKR_PORT=auto');
+    expect(ambiguousCheck?.summary).toContain('target it precisely');
+
+    // An explicit KOOKR_SETTINGS_PATH removes the ambiguity — no caveat.
+    const explicit = await buildDoctorJsonReport({
+      env: {
+        KOOKR_RESOURCE_WATCHDOG: '1',
+        KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24',
+        KOOKR_PORT: 'auto',
+        KOOKR_SETTINGS_PATH: '/etc/kookr/settings.json',
+      },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async () => ({ mode: 0o100600 }),
+    });
+    const explicitCheck = explicit.checks.find((c) => c.id === 'runtime.settings-mode');
+    expect(explicitCheck?.summary).not.toContain('KOOKR_PORT=auto');
+  });
+
+  it('exercises the default fs.stat / os.platform wiring against a real settings.json (issue #2494)', async () => {
+    const run = commandRunner(happyFixtures());
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-doctor-settings-'));
+    const settingsPath = join(dir, 'settings.json');
+    writeFileSync(settingsPath, '{}\n');
+    chmodSync(settingsPath, 0o600);
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, KOOKR_SETTINGS_PATH: settingsPath },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      // Exercise the real default wiring — no statFile / platform injection.
+      statFile: undefined,
+      platform: undefined,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.settings-mode');
+    if (process.platform === 'linux' || process.platform === 'darwin') {
+      expect(check).toMatchObject({ status: 'ok', required: false });
+      expect(check?.summary).toContain(settingsPath);
+      expect(check?.summary).toContain('0600');
+    } else {
+      // Off POSIX the default os.platform() gate skips the check entirely.
+      expect(check).toBeUndefined();
+    }
+  });
+
+  // --- ops.systemd-unit (issue #2493) ------------------------------------------
+  function systemctlFixtures(isActive: { stdout?: string; exitCode?: number }) {
+    return {
+      ...happyFixtures(),
+      [JSON.stringify(['systemctl', ['--version']])]: { stdout: 'systemd 255\n' },
+      [JSON.stringify(['systemctl', ['--user', 'is-active', 'kookr.service']])]: isActive,
+    };
+  }
+
+  it('reports ops.systemd-unit ok when the user unit is active on Linux (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'active\n', exitCode: 0 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toMatchObject({
+      status: 'ok',
+      required: false,
+      category: 'ops',
+      summary: expect.stringContaining('kookr.service is active'),
+    });
+  });
+
+  it('WARNs on ops.systemd-unit when the user unit is inactive on Linux (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'inactive\n', exitCode: 3 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    // Advisory only — a dead unit never flips the report to fail.
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+    expect(check).toMatchObject({ status: 'warn', required: false, category: 'ops' });
+    expect(check?.summary).toContain('inactive');
+    expect(check?.summary).toContain('unsupervised');
+    expect(check?.detail).toContain('systemctl --user is-active kookr.service');
+    expect(check?.recommendedAction).toContain('systemctl --user enable --now kookr.service');
+    expect(check?.recommendedAction).toContain('deploy/server/kookr.service');
+  });
+
+  it.each(['failed', 'activating', 'unknown'])(
+    'WARNs on ops.systemd-unit for non-active state %s (issue #2493)',
+    async (state) => {
+      // is-active reports these (exit 3) for crashed / transient / not-loaded units;
+      // anything other than exactly "active" is treated as unsupervised.
+      const run = commandRunner(systemctlFixtures({ stdout: `${state}\n`, exitCode: 3 }));
+
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv },
+        commandRunner: run,
+        access: async () => {},
+        ...hermeticOps,
+        platform: 'linux',
+      });
+
+      expect(report.ok).toBe(true);
+      const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+      expect(check).toMatchObject({ status: 'warn', required: false });
+      expect(check?.summary).toContain(state);
+      expect(check?.summary).toContain('unsupervised');
+    },
+  );
+
+  it('WARNs on ops.systemd-unit via the empty-state fallback when is-active fails to report (issue #2493)', async () => {
+    // systemctl exists (--version ok) but the is-active call errors with no stdout —
+    // e.g. a rejected spawn routed through commandErrorResult (stdout: ''). The
+    // fallback strings must still produce a sensible WARN, not "kookr.service is ;".
+    const run = commandRunner({
+      ...happyFixtures(),
+      [JSON.stringify(['systemctl', ['--version']])]: { stdout: 'systemd 255\n' },
+      // No is-active fixture → the runner resolves { stdout: '', exitCode: 1 }.
+    });
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    const check = report.checks.find((c) => c.id === 'ops.systemd-unit');
+    expect(check).toMatchObject({ status: 'warn', required: false });
+    expect(check?.summary).toContain('not active');
+    expect(check?.summary).not.toContain('is ;');
+    expect(check?.detail).toContain('a non-active state');
+  });
+
+  it('skips ops.systemd-unit when systemctl is not on PATH (pid-file hosts) (issue #2493)', async () => {
+    // happyFixtures has no systemctl entry → the --version probe returns exitCode 1.
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+    });
+
+    expect(report).toMatchObject({ ok: true, status: 'ok' });
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toBeUndefined();
+  });
+
+  it('skips ops.systemd-unit off Linux without probing systemctl (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'active\n', exitCode: 0 }));
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'darwin',
+    });
+
+    expect(report.checks.find((c) => c.id === 'ops.systemd-unit')).toBeUndefined();
+    // Never even shells out to systemctl off Linux.
+    expect(run).not.toHaveBeenCalledWith('systemctl', expect.anything(), expect.anything());
+  });
+
+  it('exits non-zero under --strict when the systemd user unit is inactive (issue #2493)', async () => {
+    const run = commandRunner(systemctlFixtures({ stdout: 'inactive\n', exitCode: 3 }));
+    const deps = {
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux' as NodeJS.Platform,
+      out: { log: () => {}, error: () => {} },
+    };
+
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
   });
 
   it('accepts system dtach when the vendored binary is unavailable', async () => {

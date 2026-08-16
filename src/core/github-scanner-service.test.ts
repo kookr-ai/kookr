@@ -575,6 +575,45 @@ describe('GitHubScannerService', () => {
       expect(fetcher.fetchStates).toHaveBeenCalledWith([closedRef, openRef, issueRef]);
     });
 
+    it('stops polling refs once the owning task is completed, cancelled, or terminated', async () => {
+      const fetcher = createMockFetcher(true);
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+
+      const completed = taskStore.createTask({ prompt: 'done', cwd: '/tmp' });
+      taskStore.startTask(completed.id);
+      taskStore.completeTask(completed.id);
+      const cancelled = taskStore.createTask({ prompt: 'cancelled', cwd: '/tmp' });
+      taskStore.startTask(cancelled.id);
+      taskStore.cancelTask(cancelled.id);
+      const terminated = taskStore.createTask({ prompt: 'terminated', cwd: '/tmp' });
+      taskStore.startTask(terminated.id);
+      taskStore.terminateTask(terminated.id);
+      const active = taskStore.createTask({ prompt: 'still running', cwd: '/tmp' });
+
+      const completedRef = makePRRef(completed.id, 1);
+      const cancelledRef = makePRRef(cancelled.id, 2);
+      const terminatedRef = makeIssueRef(terminated.id, 3);
+      const activeRef = makePRRef(active.id, 4);
+      for (const ref of [completedRef, cancelledRef, terminatedRef, activeRef]) {
+        stateStore.addReference(ref);
+      }
+      stateStore.updatePRState(makePRState(completedRef));
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+      expect(fetcher.fetchStates).toHaveBeenCalledWith([activeRef]);
+      expect(stateStore.getTaskState(completed.id).prs).toHaveLength(1);
+      expect(stateStore.getPRState(completedRef)?.status).toBe('open');
+    });
+
     it('backs off batched state fetches when GitHub returns a rate-limit diagnostic', async () => {
       const fetcher = createMockFetcher(true);
       const ref = makePRRef('task-1', 1);

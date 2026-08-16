@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { access, stat } from 'node:fs/promises';
+import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   classifyKbDoctorCommandResult,
@@ -27,7 +27,7 @@ import {
 } from '../server/prod-smoke.js';
 import { prodSmokeTickAlertPath } from '../server/prod-smoke-tick.js';
 import { resolveMaintenancePruneIntervalHours } from '../server/maintenance-prune-schedule.js';
-import { resolveKookrDataDir } from './kookr-maintenance.js';
+import { autoPortAmbiguous, resolveKookrDataDir } from './kookr-maintenance.js';
 import {
   parseGithubStatusBody,
   type GithubStatusSnapshot,
@@ -257,6 +257,18 @@ interface RunDoctorDeps {
   access?: (path: string, mode?: number) => Promise<void>;
   now?: () => Date;
   /**
+   * Optional override for reading the settings.json POSIX mode (issue #2494).
+   * Defaults to `fs.stat`. Tests inject a fixture so the host `~/.kookr` never
+   * leaks into hermetic unit runs.
+   */
+  statFile?: (path: string) => Promise<{ mode: number }>;
+  /**
+   * Optional platform override for the settings-mode check (issue #2494).
+   * Defaults to `os.platform()`. POSIX mode bits are only meaningful on
+   * linux/darwin, so the check skips elsewhere.
+   */
+  platform?: NodeJS.Platform;
+  /**
    * Optional override for the live /api/health resourceWatchdog probe.
    * Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or KOOKR_PORT is set.
    */
@@ -332,7 +344,9 @@ Options:
 Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
+runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
 ops.http-latency (advisory warn when GET /api/ready exceeds 500ms or GET /api/health exceeds 2s, or either times out / 5xx),
+ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is not active),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
@@ -439,6 +453,15 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
   checks.push(await checkPersistence(env, accessFn));
+  const hostPlatform = deps.platform ?? platform();
+  const settingsModeCheck = await checkSettingsFileMode(
+    env,
+    deps.statFile ?? ((path: string) => stat(path)),
+    hostPlatform,
+  );
+  if (settingsModeCheck) checks.push(settingsModeCheck);
+  const systemdUnitCheck = await checkSystemdUnit(run, hostPlatform);
+  if (systemdUnitCheck) checks.push(systemdUnitCheck);
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
@@ -1546,6 +1569,183 @@ function checkProdSmokeTick(
       'Inspect prod-smoke-tick-alert.json failingChecks (and GET /api/health prodSmokeTick). ' +
       'Fix the root cause (adapter version-probe, health latency, etc.); see docs/reference/unattended-recovery-runbook.md §4.',
   };
+}
+
+/**
+ * Advisory runtime check (issue #2494): WARN when the on-disk settings.json is
+ * group/other-accessible instead of owner-only 0600.
+ *
+ * `saveSettings` persists settings.json with mode 0o600, but a later
+ * umask-affected copy, restore, or hand edit can widen the bits. settings.json
+ * holds `automationKillSwitch` (the SAFE MODE lever), so a world-readable copy
+ * leaks operator-safety state. `saveSettings` forces 0600 on write; doctor is
+ * the only place that catches drift on the file already on disk.
+ *
+ * - `mode & 0o077 !== 0` → WARN (recommend `chmod 600`)
+ * - owner-only (0600 / 0400 / …) → OK
+ * - Missing file → skip (return null): a fresh host has no settings.json yet;
+ *   the server writes it 0o600 on first save.
+ * - Non-POSIX platforms (not linux/darwin) or an unreadable stat → skip:
+ *   Windows mode bits are not POSIX, so the check would be meaningless there.
+ *
+ * When the path is resolved from the port-based default (no `KOOKR_SETTINGS_PATH`)
+ * under `KOOKR_PORT=auto`, the resolved `~/.kookr` may not be the auto-launched
+ * instance's real data dir (see {@link autoPortAmbiguous}). Rather than silently
+ * report a possibly-wrong file, the check appends a caveat so a false OK is never
+ * mistaken for a confirmed one; set `KOOKR_SETTINGS_PATH` to the active
+ * instance's settings.json to target it precisely.
+ *
+ * Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN.
+ */
+async function checkSettingsFileMode(
+  env: NodeJS.ProcessEnv,
+  statFn: (path: string) => Promise<{ mode: number }>,
+  hostPlatform: NodeJS.Platform,
+): Promise<DoctorCheck | null> {
+  if (hostPlatform !== 'linux' && hostPlatform !== 'darwin') return null;
+
+  const settingsPath = resolveDoctorSettingsPath(env);
+  const ambiguousCaveat = settingsPathAutoPortAmbiguous(env)
+    ? ` (KOOKR_PORT=auto: this default ~/.kookr path may not be the auto-launched instance's data dir — ` +
+      `set KOOKR_SETTINGS_PATH to the active instance's settings.json to target it precisely)`
+    : '';
+
+  let mode: number;
+  try {
+    ({ mode } = await statFn(settingsPath));
+  } catch {
+    // Missing file (ENOENT) or an unreadable stat → advisory skip.
+    return null;
+  }
+
+  const permBits = mode & 0o777;
+  if ((permBits & 0o077) !== 0) {
+    return {
+      id: 'runtime.settings-mode',
+      label: 'Settings file mode',
+      category: 'runtime',
+      status: 'warn',
+      required: false,
+      summary: `${settingsPath} is ${formatMode(permBits)} (group/other-accessible), not owner-only 0600`,
+      detail:
+        'settings.json holds automationKillSwitch (SAFE MODE). saveSettings writes 0o600, but a ' +
+        `later umask-affected copy, restore, or hand edit widened the mode to ${formatMode(permBits)}.` +
+        ambiguousCaveat,
+      recommendedAction: `Run \`chmod 600 ${settingsPath}\` to restore owner-only permissions.`,
+    };
+  }
+
+  return okCheck(
+    'runtime.settings-mode',
+    'Settings file mode',
+    'runtime',
+    `${settingsPath} is owner-only (${formatMode(permBits)})${ambiguousCaveat}`,
+    false,
+  );
+}
+
+/**
+ * Advisory ops check (issue #2493): WARN when this Linux host runs the server
+ * without the shipped systemd user unit active, so an unattended crash stays
+ * down until someone notices. The `kookr.service` template ships in
+ * `deploy/server/`, but doctor never checked whether *this* host is actually
+ * supervised by it — only resource-watchdog, hung-reclaim, and prune were
+ * covered, never "you are unsupervised".
+ *
+ * - Linux + `systemctl --user is-active kookr.service` == "active" → OK
+ * - Linux + inactive / not-loaded unit → WARN with the install snippet
+ * - Non-Linux (systemd is Linux-only) → skip (return null)
+ * - `systemctl` not on PATH → skip: some hosts deliberately run the pid-file
+ *   path, so a missing user manager is not an error to surface here.
+ *
+ * Never a required fail (doctor must not FAIL a host that intentionally uses the
+ * pid-file path, and never auto-enables the unit); use `kookr doctor --strict`
+ * to exit non-zero on the WARN.
+ */
+async function checkSystemdUnit(
+  run: CommandRunner,
+  hostPlatform: NodeJS.Platform,
+): Promise<DoctorCheck | null> {
+  // systemd user units are Linux-only; macOS/Windows use different supervisors.
+  if (hostPlatform !== 'linux') return null;
+
+  // Probe systemctl first so a host without a user manager (or without systemd
+  // at all) is skipped cleanly instead of misread as an inactive unit. The
+  // is-active exit code alone cannot tell "systemctl missing" from "inactive".
+  const probe = await run('systemctl', ['--version'], { timeoutMs: 2_000 }).catch(commandErrorResult);
+  if (probe.exitCode !== 0) return null;
+
+  const result = await run('systemctl', ['--user', 'is-active', 'kookr.service'], { timeoutMs: 2_000 })
+    .catch(commandErrorResult);
+  const state = result.stdout.trim();
+  if (result.exitCode === 0 && state === 'active') {
+    return okCheck(
+      'ops.systemd-unit',
+      'Systemd unit',
+      'ops',
+      'kookr.service is active under systemd --user',
+      false,
+    );
+  }
+
+  return {
+    id: 'ops.systemd-unit',
+    label: 'Systemd unit',
+    category: 'ops',
+    status: 'warn',
+    required: false,
+    summary: `kookr.service is ${state || 'not active'}; this host is running unsupervised`,
+    detail:
+      `systemctl --user is-active kookr.service reported ${state || 'a non-active state'}. ` +
+      'Without the unit a crash stays down until someone notices. Some hosts deliberately ' +
+      'use the pid-file path — if so, this advisory WARN is expected.',
+    recommendedAction:
+      'Install and enable the shipped unit so a crash restarts automatically:\n' +
+      '  mkdir -p ~/.config/systemd/user\n' +
+      '  cp deploy/server/kookr.service ~/.config/systemd/user/kookr.service\n' +
+      '  systemctl --user daemon-reload\n' +
+      '  systemctl --user enable --now kookr.service\n' +
+      'See docs/reference/production-server-service.md.',
+  };
+}
+
+/**
+ * True when the settings path fell back to the port-based default AND
+ * `KOOKR_PORT=auto` makes that default (`~/.kookr`) possibly-wrong — an
+ * auto-launched server can scan onto a non-default port and land on
+ * `~/.kookr-<port>`. An explicit `KOOKR_SETTINGS_PATH` removes the ambiguity
+ * (the operator named the file directly).
+ */
+function settingsPathAutoPortAmbiguous(env: NodeJS.ProcessEnv): boolean {
+  if (env.KOOKR_SETTINGS_PATH?.trim()) return false;
+  return autoPortAmbiguous(env);
+}
+
+/**
+ * settings.json path the mode check stats. By default it resolves `settings.json`
+ * in the **port-derived** data dir (`~/.kookr` on 4800, `~/.kookr-<port>`
+ * otherwise), which is exactly how the server derives its own data dir at
+ * `start.ts` (`PORT === 4800 ? ~/.kookr : ~/.kookr-<port>`) and then composes
+ * `join(kookrDir, 'settings.json')` in `create-core-stores.ts`. Deliberately
+ * `resolveKookrDataDir` (port-based), NOT the doctor-only `KOOKR_DIR`-first
+ * `resolveDoctorKookrDataDir`: the server ignores `KOOKR_DIR` for its data dir,
+ * so honoring it here could stat a different file than the server reads and
+ * report OK while the live settings.json stayed widened.
+ *
+ * `KOOKR_SETTINGS_PATH` is a doctor-only override that points this check at a
+ * non-default file (e.g. a hand-managed copy on an unusual install). The server
+ * does not consult it either, so only set it when that file genuinely is the one
+ * in use.
+ */
+function resolveDoctorSettingsPath(env: NodeJS.ProcessEnv): string {
+  const explicit = env.KOOKR_SETTINGS_PATH?.trim();
+  if (explicit) return explicit;
+  return join(resolveKookrDataDir(env), 'settings.json');
+}
+
+/** Render POSIX permission bits as a 4-digit octal string (e.g. `0644`). */
+function formatMode(permBits: number): string {
+  return `0${(permBits & 0o777).toString(8).padStart(3, '0')}`;
 }
 
 /**

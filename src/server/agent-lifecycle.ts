@@ -285,6 +285,16 @@ export interface LifecycleDeps {
    */
   taskTailStore?: Pick<TaskTailStore, 'save' | 'removeByTaskId'>;
   /**
+   * In-memory GitHub ref store. Delete and clear-completed drop the finished
+   * task's rows so a later poll cannot walk orphan refs after the task
+   * record is gone. Terminal-but-still-present tasks are skipped by the
+   * scanner itself and keep their last-known snapshot.
+   */
+  githubStateStore?: Pick<
+    import('../core/github-state-store.js').GitHubStateStore,
+    'removeTask'
+  >;
+  /**
    * Shared `audit.jsonl` path (issue #1712). When set, the silent-failure guard
    * writes `task.reclassifiedFailed` / `task.retrySpawned` rows so a
    * reclassified provider-transient failure and any auto-retry are queryable.

@@ -23,6 +23,7 @@ import {
 } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+import { maybeOpenDashboardBrowser } from './open-dashboard-browser.js';
 
 type WebSocketServerOptions = ConstructorParameters<typeof WebSocketServer>[0];
 type PerMessageDeflatePolicy = Exclude<NonNullable<WebSocketServerOptions>['perMessageDeflate'], boolean>;
@@ -104,6 +105,11 @@ export interface HttpAndWebSocketsDeps {
   isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
   /** Browser bridge lifecycle tracker used by cross-signal session diagnostics. */
   sessionHealthTracker?: Pick<SessionHealthTracker, 'recordBridgeOpened' | 'recordBridgeReplay' | 'recordBridgeLiveBytes' | 'recordBridgeClosed'>;
+  /**
+   * Test seam for dashboard auto-open (issue #2486). Production leaves this
+   * unset and uses the platform opener after a successful listen.
+   */
+  openDashboardBrowser?: (host: string, port: number) => void;
 }
 
 export interface HttpAndWebSocketsCloseOptions {
@@ -461,8 +467,10 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
 
   await new Promise<void>((resolve) => {
     httpServer.listen(deps.port, deps.host, () => {
-      console.log(`Kookr server listening on http://${deps.host}:${deps.port}`);
-      console.log(`WebSocket endpoint: ws://${deps.host}:${deps.port}/ws`);
+      const bound = httpServer.address();
+      const port = typeof bound === 'object' && bound ? bound.port : deps.port;
+      console.log(`Kookr server listening on http://${deps.host}:${port}`);
+      console.log(`WebSocket endpoint: ws://${deps.host}:${port}/ws`);
       console.log(`Task file: ${deps.tasksFile}`);
       console.log(`Hook files: ${deps.hooksDir}`);
       console.log(
@@ -474,6 +482,17 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
       );
       console.log('\nManaged agents run under dtach sessions prefixed with "kookr-".');
       console.log('Attach a Kookr-managed terminal through the dashboard terminal panel.\n');
+      try {
+        if (deps.openDashboardBrowser) {
+          deps.openDashboardBrowser(deps.host, port);
+        } else {
+          maybeOpenDashboardBrowser({ host: deps.host, port });
+        }
+      } catch (err) {
+        console.warn(
+          `Failed to open dashboard in browser: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       resolve();
     });
   });

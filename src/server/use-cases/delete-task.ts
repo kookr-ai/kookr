@@ -31,6 +31,11 @@ export interface DeleteTaskDeps {
     import('../../core/task-tail-store.js').TaskTailStore,
     'save' | 'removeByTaskId'
   >;
+  /** Drop in-memory GitHub refs so the poller stops walking a deleted task. */
+  githubStateStore?: Pick<
+    import('../../core/github-state-store.js').GitHubStateStore,
+    'removeTask'
+  >;
 }
 
 export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<boolean> {
@@ -69,6 +74,7 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
   // record disappears (otherwise the next save logs an orphan-snooze warning).
   deps.queue?.purgeTask(taskId);
   deps.taskStore.deleteTask(taskId);
+  deps.githubStateStore?.removeTask(taskId);
 
   // Explicit delete clears retained terminal tails immediately (TTL only
   // covers completed tasks still present in tasks.json).

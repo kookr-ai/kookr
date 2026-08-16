@@ -133,6 +133,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
       ...(deps.onTaskOutcome ? { onTaskOutcome: deps.onTaskOutcome } : {}),
       ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
+      ...(deps.githubStateStore ? { githubStateStore: deps.githubStateStore } : {}),
       shadowRegistry: deps.shadowRegistry,
       suppressionTracker: deps.suppressionTracker,
       tokenTracker: deps.tokenTracker,

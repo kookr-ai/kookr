@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeRelayHello, type NodeHello } from '../handshake.js';
 import { asSessionEpoch, asSessionId } from '../ids.js';
 import {
+  computeReconnectDelay,
   createRemoteNodeClient,
   isPublishBufferOverloaded,
   type RemoteNodeClient,
@@ -508,5 +509,62 @@ describe('RemoteNodeClient', () => {
     // Control-plane events still send while the soft limit is elevated.
     expect(client.publish(controlEvent)).toBe(true);
     expect(sent.length).toBe(before + 2);
+  });
+});
+
+describe('computeReconnectDelay', () => {
+  const baseMs = 1_000;
+  const maxMs = 30_000;
+
+  it('applies equal-jitter within [tier/2, tier] for each attempt', () => {
+    // Below the ceiling the deterministic tier is baseMs * 2 ** attempt.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const tier = baseMs * (2 ** attempt);
+      for (const r of [0, 0.25, 0.5, 0.75, 0.9999]) {
+        const delay = computeReconnectDelay(attempt, baseMs, maxMs, () => r);
+        expect(delay).toBeGreaterThanOrEqual(tier / 2);
+        expect(delay).toBeLessThanOrEqual(tier);
+        // Equal-jitter formula: floor at tier/2, randomize the upper half.
+        expect(delay).toBeCloseTo(tier / 2 + r * (tier / 2), 6);
+      }
+    }
+  });
+
+  it('clamps the tier to maxMs at the transition attempt', () => {
+    // attempt 5 is the first tier that crosses the ceiling: 1_000 * 2**5 = 32_000 > 30_000.
+    // This is the off-by-one-prone boundary where the tier calc first clamps.
+    const transitionAttempt = 5;
+    expect(baseMs * (2 ** transitionAttempt)).toBeGreaterThan(maxMs);
+    for (const r of [0, 0.5, 0.9999]) {
+      const delay = computeReconnectDelay(transitionAttempt, baseMs, maxMs, () => r);
+      // Tier clamps to maxMs, so equal-jitter spreads over [maxMs/2, maxMs].
+      expect(delay).toBeCloseTo(maxMs / 2 + r * (maxMs / 2), 6);
+      expect(delay).toBeGreaterThanOrEqual(maxMs / 2);
+      expect(delay).toBeLessThanOrEqual(maxMs);
+    }
+  });
+
+  it('never exceeds maxMs even when the tier is clamped', () => {
+    // attempt 20 would overflow the ceiling; tier clamps to maxMs first.
+    for (const r of [0, 0.5, 0.9999]) {
+      const delay = computeReconnectDelay(20, baseMs, maxMs, () => r);
+      expect(delay).toBeGreaterThanOrEqual(maxMs / 2);
+      expect(delay).toBeLessThanOrEqual(maxMs);
+    }
+  });
+
+  it('preserves a minimum backoff floor of tier/2 at random()===0', () => {
+    // Equal-jitter never collapses the delay to zero.
+    expect(computeReconnectDelay(0, baseMs, maxMs, () => 0)).toBe(baseMs / 2);
+    expect(computeReconnectDelay(3, baseMs, maxMs, () => 0)).toBe((baseMs * 8) / 2);
+  });
+
+  it('defaults to Math.random and stays within the bound over many draws', () => {
+    for (let i = 0; i < 200; i += 1) {
+      const delay = computeReconnectDelay(4, baseMs, maxMs);
+      const tier = baseMs * (2 ** 4);
+      expect(delay).toBeGreaterThanOrEqual(tier / 2);
+      expect(delay).toBeLessThanOrEqual(tier);
+    }
   });
 });

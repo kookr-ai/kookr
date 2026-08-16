@@ -620,6 +620,24 @@ kbd {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
+.btn-snooze-all {
+  border: 1px solid var(--amber);
+  background: transparent;
+  color: var(--amber);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.btn-snooze-all:hover {
+  background: rgba(251, 191, 36, 0.15);
+}
+.btn-snooze-all:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
 .btn-migrate-interrupted {
   border: 1px solid var(--blue);
   background: transparent;
@@ -9842,6 +9860,38 @@ button.project-drawer-link:focus-visible {
   margin-top: 16px;
 }
 
+.settings-search {
+  flex-shrink: 0;
+  margin-top: 12px;
+}
+
+.settings-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 13px;
+  padding: 7px 9px;
+}
+
+.settings-search-input:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+.settings-search-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.settings-search-empty:empty {
+  display: none;
+}
+
 .settings-dialog-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -13113,6 +13163,19 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 
 .cost-search { width: 200px; }
+
+.cost-export-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: inherit;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cost-export-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.cost-export-btn:disabled { opacity: 0.5; cursor: default; }
 
 .cost-agent-chips { display: flex; gap: 4px; }
 .cost-agent-chip {

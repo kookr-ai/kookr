@@ -67,6 +67,7 @@ import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 import type { EnvironmentBlockerRegistry } from '../../core/environment-blocker-registry.js';
 import type { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
+import type { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -86,6 +87,12 @@ export interface TaskRouteDeps {
    * backstop absorbed it, but R8 must fire on every terminal path).
    */
   issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
+  /**
+   * In-memory GitHub ref store. Threaded into getLifecycleDeps so REST
+   * delete/clear drops finished-task rows (issue #2485). Optional so
+   * existing route tests can omit it.
+   */
+  githubStateStore?: import('../agent-lifecycle.js').LifecycleDeps['githubStateStore'];
   queue?: AttentionQueue;
   adapter: AgentAdapter;
   hookWatcher: HookFileWatcher;
@@ -535,6 +542,22 @@ export interface RouteDeps {
    * and never scans hook logs on the scrape path.
    */
   lessonYieldHealth?: LessonYieldHealthCache;
+  /**
+   * Shared `/api/health` body-cache timing gauges (issue #2497). Diagnostics
+   * records the last assembly duration + land time; `/metrics` reads the same
+   * instance via `snapshot()`. Absent in partial test harnesses ⇒ diagnostics
+   * builds a private fallback (same pattern as lessonYieldHealth) and `/metrics`
+   * simply omits the series.
+   */
+  healthBodyCacheStats?: HealthBodyCacheStats;
+  /**
+   * Schedules the #2492 stale-while-revalidate background health re-assembly off
+   * the request path. Default is `setImmediate` so the refresh runs on a later
+   * macrotask — after the expired body is returned and flushed — rather than
+   * inline (assembleHealthBody has a large synchronous prefix). Injected in tests
+   * for deterministic scheduling; production leaves it unset.
+   */
+  healthRefreshScheduler?: (task: () => void) => void;
   /**
    * Shared stale-process /proc summary cache (issues #1723, #2081, #2350).
    * Health reads via SWR `getSummary()`; session reaper + resource watchdog

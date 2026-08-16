@@ -112,6 +112,12 @@ function changeInput(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function sectionByTitle(container: HTMLElement, title: string): HTMLElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLElement>('.settings-section')).find(
+    (section) => section.querySelector('.settings-section-title')?.textContent?.trim() === title,
+  );
+}
+
 function renderDialog(container: HTMLElement, onClose = vi.fn()): Root {
   const root = createRoot(container);
   act(() => {
@@ -1053,5 +1059,147 @@ describe('SettingsDialog tabs', () => {
     expect(alert?.textContent).toContain('Revoked 1 shares; 1 revocations failed.');
     expect(container.textContent).not.toContain('Relay logs are at');
     confirmSpy.mockRestore();
+  });
+
+  test('search filters General settings to matching rows and hides other sections', async () => {
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    expect(search).not.toBeNull();
+
+    await act(async () => {
+      changeInput(search!, 'Quiet hours');
+    });
+    await flush();
+
+    const notifications = sectionByTitle(container, 'Notifications & Alerts');
+    const taskManagement = sectionByTitle(container, 'Task Management');
+    expect(notifications).toBeDefined();
+    expect(taskManagement).toBeDefined();
+    // The section owning the matched row stays visible; unrelated sections hide.
+    expect(notifications!.style.display).not.toBe('none');
+    expect(taskManagement!.style.display).toBe('none');
+
+    // Within the matched section, the matching row stays while a sibling hides.
+    const quietHoursRow = container
+      .querySelector('.settings-quiet-hours')
+      ?.closest<HTMLElement>('.settings-row');
+    const soundRow = container
+      .querySelector('[aria-label="Toggle sound alerts"]')
+      ?.closest<HTMLElement>('.settings-row');
+    expect(quietHoursRow).toBeDefined();
+    expect(soundRow).toBeDefined();
+    expect(quietHoursRow!.style.display).not.toBe('none');
+    expect(soundRow!.style.display).toBe('none');
+  });
+
+  test('clearing the search query restores every section', async () => {
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    await act(async () => {
+      changeInput(search!, 'Quiet hours');
+    });
+    await flush();
+    expect(sectionByTitle(container, 'Task Management')!.style.display).toBe('none');
+
+    await act(async () => {
+      changeInput(search!, '');
+    });
+    await flush();
+
+    for (const section of Array.from(container.querySelectorAll<HTMLElement>('.settings-section'))) {
+      expect(section.style.display).not.toBe('none');
+    }
+    for (const row of Array.from(container.querySelectorAll<HTMLElement>('.settings-row'))) {
+      expect(row.style.display).not.toBe('none');
+    }
+  });
+
+  test('search switches to the Hooks tab when the only match lives there', async () => {
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    await act(async () => {
+      changeInput(search!, 'SessionStart');
+    });
+    await flush();
+
+    const hooksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Hooks');
+    expect(hooksTab?.getAttribute('aria-selected')).toBe('true');
+    expect(container.textContent).toContain('SessionStart');
+
+    // Guard against a "switched but shows nothing" regression: jsdom textContent
+    // includes display:none nodes, so also assert the Hooks section is actually
+    // visible and that a non-matching hook row was filtered out.
+    const hooksSection = sectionByTitle(container, 'Hooks (read-only)');
+    expect(hooksSection).toBeDefined();
+    expect(hooksSection!.style.display).not.toBe('none');
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('.hook-inventory-row'));
+    const nonMatchingRow = rows.find((row) => !row.textContent?.includes('SessionStart'));
+    expect(nonMatchingRow).toBeDefined();
+    expect(nonMatchingRow!.style.display).toBe('none');
+  });
+
+  test('search switches to the Sharing tab when the only match lives there', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings') {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/share/csrf-token') {
+        return { ok: true, json: async () => ({ csrfToken: 'csrf-relay' }) } as Response;
+      }
+      if (url === '/api/relay-connection' && !init) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: {
+              configured: false,
+              source: 'none',
+              connectionState: 'localOnly',
+              relayConnected: false,
+            },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    // "Node ID" is a Sharing field label that is NOT part of the section's
+    // first title — it exercises the structure-agnostic filter (the Sharing
+    // panel is one section, two titles, zero .settings-row elements).
+    await act(async () => {
+      changeInput(search!, 'Node ID');
+    });
+    await flush();
+
+    const sharingTab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent?.trim() === 'Sharing');
+    expect(sharingTab?.getAttribute('aria-selected')).toBe('true');
+    // The Sharing section stays visible (not force-hidden into a false "no
+    // results"), and the empty-state message is absent.
+    const relaySection = sectionByTitle(container, 'Relay Connection');
+    expect(relaySection).toBeDefined();
+    expect(relaySection!.style.display).not.toBe('none');
+    expect(container.textContent).not.toContain('No settings match');
+  });
+
+  test('search reports when nothing matches on any tab', async () => {
+    await flush();
+
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]');
+    await act(async () => {
+      changeInput(search!, 'zzzznotasetting');
+    });
+    await flush();
+
+    expect(container.textContent).toContain('No settings match');
+    for (const section of Array.from(container.querySelectorAll<HTMLElement>('.settings-section'))) {
+      expect(section.style.display).toBe('none');
+    }
   });
 });

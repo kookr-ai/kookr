@@ -46,6 +46,11 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   // (no input lag); the fetch effect waits 300 ms of quiet before re-firing.
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [data, setData] = useState<CostComparisonResponse | null>(null);
+  // The window/agent/search that actually produced `data`, captured alongside it.
+  // Export reads this (not the live filter state) so an export triggered during
+  // an in-flight refetch — or after a refetch error, when `data` still holds the
+  // last good payload — labels the file with the query the rows came from (#2422).
+  const [dataContext, setDataContext] = useState<CsvExportContext | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAllNotes, setShowAllNotes] = useState(false);
@@ -73,6 +78,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
       .then((body) => {
         if (cancelled) return;
         setData(body);
+        setDataContext({ window: windowChoice, agent: agentFilter, search: debouncedSearch });
         setLoading(false);
       })
       .catch((err) => {
@@ -91,6 +97,17 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
     if (!data) return { primary: [], rest: [] };
     return { primary: data.notes.slice(0, 3), rest: data.notes.slice(3) };
   }, [data]);
+
+  // Client-side CSV export of the currently displayed per-playbook and per-task
+  // rows (#2422) — no new server route. Serialises the same `data` the tables
+  // render from and labels it with `dataContext` (the query that produced that
+  // data), so window/agent/search in the file always match the rows even when an
+  // export races an in-flight refetch.
+  function handleExportCsv(): void {
+    if (!data || !dataContext) return;
+    const csv = buildCostComparisonCsv(data, dataContext);
+    downloadCsv(csv, csvFilename(dataContext.window, dataContext.agent));
+  }
 
   return (
     <div
@@ -128,6 +145,15 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
               onChange={(e) => setSearch(e.target.value)}
               aria-label="Search task names"
             />
+            <button
+              type="button"
+              className="cost-export-btn"
+              onClick={handleExportCsv}
+              disabled={!data}
+              aria-label="Export cost comparison as CSV"
+            >
+              Export CSV
+            </button>
           </div>
           <button
             ref={closeBtnRef}
@@ -507,4 +533,123 @@ function dataQualityTooltip(q: CostDataQuality): string {
     case 'codex-rollout-not-found':   return 'No Codex rollout file matched this task by (cwd, ±60 s). Possible ambiguity from a batch launch — see logs.';
     case 'codex-rollout-abandoned':   return 'Codex rollout exists but never reached a terminal event (Ctrl-C / kill / crash); excluded from cost.';
   }
+}
+
+// ---------- CSV export ----------------------------------------------------------
+
+interface CsvExportContext {
+  window: TimeWindow;
+  agent: CostAgent | 'all';
+  search: string;
+}
+
+/**
+ * Serialise the currently displayed per-playbook and per-task rows to a single
+ * CSV document (#2422). Only fields already visible in the panel are emitted —
+ * we deliberately do NOT dump raw token counts or the unbound/internal scanner
+ * aggregates, to avoid implying a completeness the panel itself caveats.
+ *
+ * Two labelled sections separated by a blank line: "Per playbook" mirrors the
+ * headline table (per-agent average + n, cost ratio, thumbs-up ratio); "Per
+ * task" mirrors the task table. A short preamble records the active window /
+ * agent filter / search so an exported file is self-describing.
+ *
+ * Cost figures are emitted as bare numbers (not the "$0.31 avg" display string)
+ * so spreadsheets can sum them; timestamps use ISO 8601 for the same reason.
+ */
+export function buildCostComparisonCsv(
+  data: CostComparisonResponse,
+  ctx: CsvExportContext,
+): string {
+  const rows: string[][] = [];
+
+  rows.push(['Cost Comparison export (estimated)']);
+  rows.push(['Window', ctx.window]);
+  rows.push(['Agent filter', ctx.agent]);
+  rows.push(['Search', ctx.search || '(none)']);
+  rows.push([]);
+
+  rows.push(['Per playbook']);
+  rows.push([
+    'Playbook',
+    'Claude avg (USD)', 'Claude n',
+    'Codex avg (USD)', 'Codex n',
+    'Cost ratio', 'Thumbs-up ratio (Claude / Codex)',
+  ]);
+  for (const row of data.perPlaybook) {
+    const c = row.perAgent['claude-code'];
+    const x = row.perAgent['codex-cli'];
+    rows.push([
+      row.playbookName,
+      csvAvgUsd(c), csvCount(c),
+      csvAvgUsd(x), csvCount(x),
+      formatCostRatio(c, x),
+      formatThumbsRatio(c, x),
+    ]);
+  }
+
+  rows.push([]);
+  rows.push(['Per task']);
+  rows.push(['Started', 'Agent', 'Model', 'Playbook', 'Duration', 'Cost (USD)', 'Feedback', 'Quality']);
+  for (const r of data.perTask) {
+    rows.push([
+      csvIsoDate(r.startedAt),
+      r.agent === 'claude-code' ? 'Claude' : 'Codex',
+      r.model ?? '',
+      r.playbookId ?? '',
+      formatRowDur(r),
+      r.estimatedCostUsd == null ? '' : r.estimatedCostUsd.toFixed(4),
+      r.thumb ?? '',
+      dataQualityLabel(r),
+    ]);
+  }
+
+  return `${rows.map((cells) => cells.map(escapeCsvField).join(',')).join('\r\n')}\r\n`;
+}
+
+function csvAvgUsd(m: AggregateMetrics | undefined): string {
+  if (!m || m.pricedTaskCount === 0) return '';
+  return (m.totalCostUsd / m.pricedTaskCount).toFixed(4);
+}
+
+function csvCount(m: AggregateMetrics | undefined): string {
+  return String(m?.pricedTaskCount ?? 0);
+}
+
+function csvIsoDate(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : value;
+}
+
+/**
+ * RFC-4180 field escaping plus leading-formula neutralisation, mirroring the
+ * server's Ralph-export escaper (core/ralph-iteration-log.ts). Escaping lives
+ * here rather than being imported so the frontend bundle stays free of server
+ * modules; the two paths are covered by their own tests.
+ */
+function escapeCsvField(value: string): string {
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  if (!/[",\n\r]/.test(safe)) return safe;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
+function csvFilename(window: TimeWindow, agent: CostAgent | 'all'): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `kookr-cost-comparison-${window}-${agent}-${stamp}.csv`;
+}
+
+function downloadCsv(csv: string, filename: string): void {
+  // Lead with a UTF-8 BOM so Excel decodes the non-ASCII glyphs the panel emits
+  // (× / ∞ / — in the ratio and duration columns) instead of mojibake.
+  const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoke on the next tick: some WebKit builds cancel the download when the
+  // object URL is revoked synchronously in the same tick as the click.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

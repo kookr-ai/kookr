@@ -20,6 +20,7 @@ import {
   ScheduleValidationError,
 } from '../core/schedule.js';
 import type { ScheduleRollup } from '../core/schedule-rollup.js';
+import type { TerminationReason } from '../shared/contracts/task-status.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import { decideTransientFailureRearm } from '../core/critical-schedule-rearm.js';
@@ -152,6 +153,45 @@ const SKIP_POINTER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
 ]);
 
 /**
+ * Whether a fire that `reconcileOnStartup` found in a `terminated` task state is
+ * restart-reconciliation churn rather than a schedule fault (issue #2512), and
+ * so must NOT increment `consecutiveFailures` — the same class #2458 exempted for
+ * overlap-skips.
+ *
+ * Context matters: this classifier is only consulted from the BOOT reconcile,
+ * which exclusively processes fires that were still mid-flight
+ * (`latestExecution.outcome === 'running'/'queued'`) when THIS process started —
+ * a fire the boot path found interrupted, never one that reached a terminal
+ * decision of its own (a live crash flows through `recordTaskTerminalOutcome`,
+ * which still counts it).
+ *
+ * Two provenances are restart churn:
+ *  - `terminationReason === 'server-restart'`: written only by the boot
+ *    stale-open-launch sweep (a launcher that died WITH the previous process), an
+ *    unambiguous redeploy artifact — exempt regardless of the marker.
+ *  - `terminationReason === 'unknown'` (all sessions died without a clean turn)
+ *    AND a redeploy was actually in flight (`serverRestartActive`, the
+ *    short-lived `server-restarting.json` marker written by prod-restart.sh). The
+ *    `unknown` reason alone is ambiguous — it also covers a genuine crash that
+ *    happened while the server was DOWN — so it is only excused when the marker
+ *    confirms a graceful redeploy caused the process to stop. A hard daemon crash
+ *    (no marker) leaves `unknown` counting, so repeated genuine crashes still
+ *    fail-close (#2353) and alert (#1665).
+ *
+ * A DELIBERATE reap keeps counting regardless: `timeout` (hang-thrash — #2353
+ * wants this to fail-close), `manual`/`supervisor` kills, `provider_transient`,
+ * `oom`. Pure so the classification is unit testable without a store or clock.
+ */
+export function isRestartInterruptedReason(
+  terminationReason: TerminationReason | undefined,
+  serverRestartActive: boolean,
+): boolean {
+  if (terminationReason === 'server-restart') return true;
+  if (terminationReason === 'unknown') return serverRestartActive;
+  return false;
+}
+
+/**
  * Cost/tokens + artifact links joined onto a ledger row from its task at
  * write time (issue #1582). Both fields are optional and only ever populated
  * from real task state — a task with no `tokenUsage` yields no `tokenUsage`
@@ -231,6 +271,14 @@ export interface ScheduleServiceDeps {
    * #2353 streak that happens after boot stays paused.
    */
   getReadyAt?: () => string | undefined;
+  /**
+   * Whether a graceful redeploy drain is/was in flight (issue #2512), backed by
+   * the short-lived `server-restarting.json` marker prod-restart.sh writes. Read
+   * once during `reconcileOnStartup` so a boot-reconciled `unknown` session-death
+   * is only excused as restart churn when a redeploy actually caused the stop.
+   * Absent → only the unambiguous `server-restart` reason is exempted.
+   */
+  isServerRestarting?: () => boolean;
 }
 
 export class ScheduleService {
@@ -243,6 +291,7 @@ export class ScheduleService {
   private readonly getDefaultAgentType?: () => AgentSelection;
   private readonly getDaemonHealthy?: () => boolean;
   private readonly getReadyAt?: () => string | undefined;
+  private readonly isServerRestarting?: () => boolean;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -265,6 +314,7 @@ export class ScheduleService {
     this.getDefaultAgentType = deps.getDefaultAgentType;
     this.getDaemonHealthy = deps.getDaemonHealthy;
     this.getReadyAt = deps.getReadyAt;
+    this.isServerRestarting = deps.isServerRestarting;
   }
 
   /**
@@ -916,6 +966,14 @@ export class ScheduleService {
       return;
     }
 
+    // A live terminal outcome (recordTaskTerminalOutcome runs while the daemon
+    // is up and ticking): a `cancelled` here is a genuine failure — the task's
+    // sessions died during normal operation, or an operator cancelled it — and
+    // increments the counter exactly as before. Restart churn is NOT counted,
+    // but it is handled at boot by `reconcileOnStartup` (issue #2512), not here:
+    // a scheduled fire interrupted by a server restart is still mid-flight
+    // (`latestExecution.outcome === 'running'`) when the process dies, so its
+    // terminal is recorded by the boot reconcile, never by this live path.
     const consecutiveFailures = nextConsecutiveFailures(schedule.consecutiveFailures, status);
     const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
 
@@ -953,6 +1011,10 @@ export class ScheduleService {
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
     let changed = false;
+    // Issue #2512: read the redeploy marker once for the whole boot reconcile —
+    // it discriminates a graceful-restart `unknown` interruption (excused) from a
+    // hard-crash-while-down `unknown` (a genuine failure that still counts).
+    const serverRestartActive = this.isServerRestarting?.() ?? false;
     for (const listed of this.store.list()) {
       let schedule = listed;
       if (schedule.currentExecution && (schedule.currentExecution.status === 'reserved' || schedule.currentExecution.status === 'accepted')) {
@@ -1056,16 +1118,34 @@ export class ScheduleService {
         // Enrich the reconciled-completion row too (issue #1582) — the task is
         // already in hand here, so join its cost/artifacts directly.
         const enrichment = deriveLedgerEnrichment(task);
-        // Keep the failure counter accurate across a restart-reconciled run and
-        // evaluate the alert edge on it (issue #1665). Emitting here rather than
-        // suppressing it closes a gap: a reconciled `cancelled` run that lands
-        // exactly on the threshold would otherwise consume the crossing edge
-        // silently, so a later live failure (already at/over threshold) could
-        // never fire. The edge trigger caps this at one alert per crossing
-        // schedule — bounded to schedules that had a mid-flight run at crash,
-        // not a boot-wide storm. `completed` resets; `cancelled`/`terminated`
-        // increment and may auto-pause (issue #2353).
-        const reconciledFailures = nextConsecutiveFailures(schedule.consecutiveFailures, scheduleOutcome);
+        // Issue #2512: a boot-reconciled `cancelled` whose task was interrupted
+        // by a graceful server redeploy is restart churn, not a schedule fault,
+        // and must NOT increment `consecutiveFailures` — the same class #2458
+        // exempted for overlap-skips. This is the actual path the 2026-08-14
+        // loop-wide fail-closed outage took: an accepted scheduled task whose
+        // sessions die during a redeploy is terminated `unknown` and lands here as
+        // `cancelled`; counting it three restarts running tripped the #2353
+        // auto-pause and darked 14/27 schedules.
+        //
+        // The exemption is deliberately narrow (see isRestartInterruptedReason):
+        // `server-restart` (unambiguous redeploy artifact) always, but `unknown`
+        // ONLY while the redeploy marker confirms a graceful stop caused it — a
+        // hard-crash-while-down `unknown` has no marker and still counts, so
+        // repeated genuine crashes keep fail-closing. Gate on `status ===
+        // 'terminated'` so a stale reason from a reopened task cannot leak
+        // (neither reopenTask nor cancelTask clears the field). A deliberate reap
+        // (`timeout` hang-thrash, `manual`/`supervisor`) always counts, and a live
+        // crash still counts through recordTaskTerminalOutcome — only a restart
+        // interruption leaves a fire mid-flight for this boot path to find.
+        // `completed` resets. An exempted cancel carries the streak forward (not
+        // reset) so a real pre-restart streak survives, and the alert edge below
+        // sees priorCount === nextCount → no spurious crossing alert.
+        const restartInterrupted = scheduleOutcome === 'cancelled'
+          && task.status === 'terminated'
+          && isRestartInterruptedReason(task.terminationReason, serverRestartActive);
+        const reconciledFailures = restartInterrupted
+          ? schedule.consecutiveFailures ?? 0
+          : nextConsecutiveFailures(schedule.consecutiveFailures, scheduleOutcome);
         const autoPause = this.autoPausePatch(schedule, reconciledFailures);
         this.store.replace({
           ...schedule,

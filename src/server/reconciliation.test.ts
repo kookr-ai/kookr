@@ -48,6 +48,40 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toHaveLength(0);
   });
 
+  test('does not resume (SessionBridge-reattach) a launch-abandoned master linked to a terminated launch_timeout task (issue #2500)', async () => {
+    // A launch that timed out: the task is terminated with a launch_timeout
+    // disposition and the late dtach master was linked via
+    // recordAbandonedLaunchSession (lastStatus 'aborted').
+    const task = taskStore.createTask('Cross-Repo Orchestrator', '/cwd');
+    taskStore.recordAbandonedLaunchSession(task.id, {
+      tmuxSession: 'kookr-24895049',
+      agentType: 'grok-build',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    taskStore.setDisposition(task.id, {
+      reason: 'launch_timeout',
+      at: new Date().toISOString(),
+      source: 'launch-service',
+      detail: 'Agent launch timed out after 180s',
+    });
+    taskStore.terminateTask(task.id);
+
+    // The master is still live at restart.
+    await backend.createSession(spec('kookr-24895049'));
+
+    const result = await reconcile(taskStore, backend);
+
+    // It must NOT be resumed: a resumed session is what post-restart-recovery
+    // hands to SessionBridge to reattach. An aborted, abandoned master must not
+    // get a reattached client across a prod restart.
+    expect(result.resumed).not.toContain('kookr-24895049');
+    // It is a live backend session the reaper will own (via the recorded
+    // session) as a terminal-task-leak — reconcile lists it as an orphan only
+    // for the informational log line, and never reattaches it.
+    expect(result.orphans).toContain('kookr-24895049');
+  });
+
   test('marks live session worktree missing_unexpectedly when registry has no entry AND directory is gone from disk', async () => {
     const task = taskStore.createTask('Fix bug', '/repo-missing');
     taskStore.addSession(task.id, {

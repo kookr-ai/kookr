@@ -92,6 +92,13 @@ export interface PrometheusExpositionSnapshot {
    */
   lessonYield?: LessonYieldSnapshot;
   /**
+   * `/api/health` body-cache timing gauges (issue #2497): the last full
+   * assembly duration and the current cached body's age. When undefined (cache
+   * cold — never assembled) the series are omitted. Same values `/api/health`
+   * reports as `healthAssemblyMs` / `healthCacheAgeMs`.
+   */
+  healthBodyCache?: { assemblyMs: number; cacheAgeMs: number };
+  /**
    * finishedAwaitingAck TTL reclaim counters (issues #1884 / #2070 / #2084).
    * Cumulative reclaimed + skip-reason breakdown since process start. Omitted
    * only in harnesses that never wire the sweep.
@@ -183,6 +190,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
   appendCapacityMetrics(lines, snapshot.capacity);
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
+  appendHealthBodyCacheMetrics(lines, snapshot.healthBodyCache);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
   appendProviderPausedOccupancyMetrics(lines, snapshot.providerPausedOccupancy);
@@ -882,6 +890,28 @@ function appendLessonYieldMetrics(
     '# HELP kookr_lesson_yield_ratio decided / completedInWindow for the last 24h (0 when denominator is 0). Target ≥ 1.0.',
     '# TYPE kookr_lesson_yield_ratio gauge',
     metricLine('kookr_lesson_yield_ratio', {}, snapshot.yieldRate),
+  );
+}
+
+/**
+ * `/api/health` body-cache timing gauges (issue #2497). Seconds base unit to
+ * match the other duration families. Omitted entirely when the cache is cold
+ * (never assembled) so scrapers never see fabricated zeros. `cache_age_seconds`
+ * can briefly exceed the 1s TTL during a stale-while-revalidate refresh (#2492).
+ */
+function appendHealthBodyCacheMetrics(
+  lines: string[],
+  snapshot: { assemblyMs: number; cacheAgeMs: number } | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_health_body_assembly_seconds Duration of the most recent /api/health body assembly walk.',
+    '# TYPE kookr_health_body_assembly_seconds gauge',
+    metricLine('kookr_health_body_assembly_seconds', {}, msToSeconds(snapshot.assemblyMs)),
+    '# HELP kookr_health_body_cache_age_seconds Age of the currently-cached /api/health body; may exceed the 1s TTL during a stale-while-revalidate refresh.',
+    '# TYPE kookr_health_body_cache_age_seconds gauge',
+    metricLine('kookr_health_body_cache_age_seconds', {}, msToSeconds(snapshot.cacheAgeMs)),
   );
 }
 
