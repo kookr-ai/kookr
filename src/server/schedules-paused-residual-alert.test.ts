@@ -379,10 +379,14 @@ describe('age-based escalation ladder (issue #2531)', () => {
   it('re-raises with rising urgency as one unrecovered episode ages (simulated clock)', () => {
     let nowMs = 5_000_000;
     const broadcast = vi.fn();
+    // A 24h re-page cooldown much longer than the ladder boundaries, so the
+    // ONLY thing that can page at +6h/+12h is the escalation edge — not the
+    // same-tier cooldown. This isolates the `escalated` bypass branch: with the
+    // bypass removed, none of these re-raises would fire.
     const alerter = new SchedulesPausedResidualAlerter({
       broadcast,
       getCountBound: () => 3,
-      getCooldownMs: () => HOUR, // 1h re-page cooldown
+      getCooldownMs: () => 24 * HOUR,
       now: () => nowMs,
     });
 
@@ -393,7 +397,7 @@ describe('age-based escalation ladder (issue #2531)', () => {
     expect(alerter.stats().escalationTier).toBe(0);
 
     // +6h: episode aged into tier 1 — escalation edge pages immediately even
-    // though the 1h cooldown just elapsed; severity bumps to critical.
+    // though the 24h re-page cooldown has NOT elapsed; severity bumps to critical.
     nowMs += 6 * HOUR;
     alerter.evaluate({ paused: threePaused() });
     expect(broadcast).toHaveBeenCalledTimes(2);
@@ -401,17 +405,41 @@ describe('age-based escalation ladder (issue #2531)', () => {
     expect(broadcast.mock.calls[1][0].summary).toContain('HIGH');
     expect(alerter.stats().escalationTier).toBe(1);
 
-    // +5m within the same tier and inside cooldown: no spam.
+    // +5m within the same tier and far inside the cooldown: no spam.
     nowMs += 5 * 60_000;
     alerter.evaluate({ paused: threePaused() });
     expect(broadcast).toHaveBeenCalledTimes(2);
 
-    // +12h total: tier 2 — escalates again to SEVERE.
+    // +12h total: tier 2 — escalation edge fires again (still inside cooldown)
+    // to SEVERE.
     nowMs = 5_000_000 + 12 * HOUR;
     alerter.evaluate({ paused: threePaused() });
     expect(broadcast).toHaveBeenCalledTimes(3);
     expect(broadcast.mock.calls[2][0].summary).toContain('SEVERE');
     expect(alerter.stats().escalationTier).toBe(2);
+  });
+
+  it('honors an injected custom escalation ladder', () => {
+    let nowMs = 7_000_000;
+    const broadcast = vi.fn();
+    // A single-step ladder that never escalates past warning, injected via the
+    // getEscalationLadder seam.
+    const alerter = new SchedulesPausedResidualAlerter({
+      broadcast,
+      getCountBound: () => 3,
+      getCooldownMs: () => 72 * HOUR,
+      getEscalationLadder: () => [{ afterMs: 0, severity: 'warning', urgency: 'FLAT' }],
+      now: () => nowMs,
+    });
+
+    alerter.evaluate({ paused: threePaused() });
+    // Even 30h in, the custom ladder has no higher step — no escalation edge,
+    // and the 72h cooldown has not elapsed, so no re-page and severity stays warning.
+    nowMs += 30 * HOUR;
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0].severity).toBe('warning');
+    expect(alerter.stats().escalationTier).toBe(0);
   });
 
   it('recovery is the ack: clearing resets the episode clock and tier', () => {

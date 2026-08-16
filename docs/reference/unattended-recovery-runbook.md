@@ -279,7 +279,7 @@ age**, so a single dropped escalation cannot sit ignored for 24h+:
 
 | Episode age | Severity | Urgency label |
 | --- | --- | --- |
-| 0 (first page) | `warning` | ELEVATED |
+| 0 (first page) | `warning` | ELEVATED (label not shown on the page — the first page carries no urgency prefix) |
 | ≥ 6h | `critical` | HIGH |
 | ≥ 12h | `critical` | SEVERE |
 

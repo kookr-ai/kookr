@@ -204,7 +204,12 @@ function formatScheduleLine(schedule) {
 function selectCascadeHeld(schedules) {
   if (!Array.isArray(schedules)) return [];
   return schedules.filter(
-    (s) => s && s.enabled === false && s.stopReason === 'consecutive_failures',
+    (s) =>
+      s
+      && typeof s.id === 'string'
+      && s.id.length > 0
+      && s.enabled === false
+      && s.stopReason === 'consecutive_failures',
   );
 }
 

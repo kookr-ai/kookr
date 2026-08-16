@@ -355,13 +355,49 @@ describe('kookr schedule enable --held-by cascade (issue #2531)', () => {
     expect(out).toContain('Re-enabled 2 of 2.');
   });
 
-  it('is idempotent — a clean fleet reports nothing to do and exits 0', async () => {
-    vi.stubGlobal('fetch', batchFetch([OPERATOR_HELD, { id: 'live', enabled: true }]));
+  it('is idempotent — a clean fleet reports nothing to do, writes nothing, and exits 0', async () => {
+    const fetchMock = batchFetch([OPERATOR_HELD, { id: 'live', enabled: true }]);
+    vi.stubGlobal('fetch', fetchMock);
     const io = mkIO();
     const exit = mkExit();
     await main({ argv: ['enable', '--held-by', 'cascade'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
     expect(exit.calls).toEqual([EXIT_OK]);
     expect(io.logs.join('\n')).toMatch(/No cascade-held schedules/);
+    // A no-op must not issue any PATCH writes.
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+
+  it('emits an empty JSON envelope on a clean fleet', async () => {
+    vi.stubGlobal('fetch', batchFetch([OPERATOR_HELD]));
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--held-by', 'cascade', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.ok).toBe(true);
+    expect(payload.details).toEqual({ heldBy: 'cascade', total: 0, reenabled: [], failed: [] });
+  });
+
+  it('records a failed row (status 0) and exits 4 when a PATCH throws mid-batch', async () => {
+    // batchFetch always resolves; wrap it so cas-b's PATCH rejects (network drop).
+    const inner = batchFetch([CASCADE_A, CASCADE_B]);
+    const fetchMock = vi.fn(async (url, init) => {
+      if (init?.method === 'PATCH' && decodeURIComponent(String(url).split('/').pop()) === 'cas-b') {
+        throw new Error('ECONNRESET');
+      }
+      return inner(url, init);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['enable', '--held-by', 'cascade', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_SERVER_ERROR]);
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.ok).toBe(false);
+    expect(payload.details.reenabled.map((r: { id: string }) => r.id)).toEqual(['cas-a']);
+    expect(payload.details.failed).toHaveLength(1);
+    expect(payload.details.failed[0]).toMatchObject({ id: 'cas-b', status: 0 });
+    expect(payload.details.failed[0].error).toContain('ECONNRESET');
   });
 
   it('emits a JSON envelope listing what it re-enabled', async () => {

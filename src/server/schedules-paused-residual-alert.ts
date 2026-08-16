@@ -194,7 +194,13 @@ export class SchedulesPausedResidualAlerter {
 
     if (count < bound) {
       // Below page threshold but not zero: do not fire; do not clear (clear
-      // is only at 0).
+      // is only at 0). The episode clock is intentionally NOT reset here — a
+      // partial recovery (e.g. 5→2 paused) leaves the episode open, so if the
+      // count later re-crosses the bound the escalation resumes from the
+      // original first-fire age rather than restarting cold. Escalation urgency
+      // tracks how long the situation has stayed unresolved, and a partial
+      // remediation that never reached 0 is still unresolved. Only a true
+      // recovery (count === 0) ends the episode and resets the ladder.
       this.lastCount = count;
       return;
     }
