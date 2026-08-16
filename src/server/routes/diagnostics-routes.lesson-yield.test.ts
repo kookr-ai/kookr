@@ -95,6 +95,12 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
   });
 
   test('an expired cache serves the stale snapshot while exactly one refresh runs', async () => {
+    // Fake timers: the lesson-yield cache keys its TTL off `Date.now()` (not an
+    // injected clock), so `setSystemTime` is the only way to age it. Under SWR
+    // (#2492) the health body is served stale and refreshed in the background, so
+    // reads settle on the async queue — `pollUntil`/`settleUntil` re-poll while
+    // draining that queue via `advanceTimersByTimeAsync(0)` (deterministic, no
+    // guessed flush depth, and the 0ms advance never moves the TTL clock).
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-07-27T00:00:00.000Z'));
@@ -102,33 +108,53 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
       scanMock.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
       const app = mkApp(baseDeps());
 
+      const settleUntil = async (predicate: () => boolean) => {
+        for (let i = 0; i < 200 && !predicate(); i++) await vi.advanceTimersByTimeAsync(0);
+      };
+      const pollUntilDecided = async (expected: number) => {
+        let body: { lessonYield?: { decided: number } } = {};
+        for (let i = 0; i < 200; i++) {
+          body = await (await app.request('/api/health')).json();
+          if (body.lessonYield?.decided === expected) return body;
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        return body;
+      };
+
       // Warm the lesson-yield cache via the first background scan.
       await app.request('/api/health');
       expect(scanMock).toHaveBeenCalledTimes(1);
       resolvers[0](snapshot({ decided: 1 }));
-      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-      // Expire the 1s health-body cache so the next poll re-reads the snapshot.
+      await settleUntil(() => false); // drain: let the resolved scan populate the lesson cache
+
+      // Expire the 1s health-body cache. Under SWR (#2492) the next poll serves
+      // the stale body immediately and refreshes in the background; once that
+      // re-assembly lands, the warm lesson snapshot (decided=1) is visible with
+      // NO new scan (the lesson cache is still warm — single-flight preserved).
       vi.setSystemTime(new Date('2026-07-27T00:00:01.001Z'));
-      let body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
-      expect(body.lessonYield?.decided).toBe(1);
+      expect((await pollUntilDecided(1)).lessonYield?.decided).toBe(1);
       expect(scanMock).toHaveBeenCalledTimes(1);
 
-      // Expire the 60s TTL: the immediate response must still carry the OLD
-      // snapshot (stale-while-revalidate — never undefined, never blocking),
-      // with exactly one new background scan started.
+      // Expire the 60s lesson-yield TTL. The immediate poll still serves the warm
+      // health body (decided=1) — never undefined, never blocking; the background
+      // health re-assembly re-reads the lesson cache, whose 60s TTL has lapsed, so
+      // lesson SWR serves the old snapshot and starts exactly one new scan (#2).
       vi.setSystemTime(new Date('2026-07-27T00:01:02.000Z'));
-      body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
-      expect(body.lessonYield?.decided).toBe(1);
+      const staleBody = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
+      expect(staleBody.lessonYield?.decided).toBe(1);
+      await settleUntil(() => scanMock.mock.calls.length >= 2);
       expect(scanMock).toHaveBeenCalledTimes(2);
+      // Single-flight: another poll at the same clock starts no third scan.
       await app.request('/api/health');
+      await settleUntil(() => false);
       expect(scanMock).toHaveBeenCalledTimes(2);
 
-      // The refresh lands; expire the body cache so later polls serve it.
+      // The refresh lands; expire the body cache so a later poll's background
+      // re-assembly picks up the new snapshot (decided=2).
       resolvers[1](snapshot({ decided: 2 }));
-      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await settleUntil(() => false);
       vi.setSystemTime(new Date('2026-07-27T00:01:03.001Z'));
-      body = await (await app.request('/api/health')).json() as { lessonYield?: { decided: number } };
-      expect(body.lessonYield?.decided).toBe(2);
+      expect((await pollUntilDecided(2)).lessonYield?.decided).toBe(2);
     } finally {
       vi.useRealTimers();
     }
