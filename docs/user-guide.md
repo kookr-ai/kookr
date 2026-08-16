@@ -28,6 +28,12 @@ Kookr starts the agent in a persistent dtach session. If the server restarts, th
 
 Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their CLI is installed and ready. Grok is the one that needs an extra install and login step.
 
+### Pinning Model And Effort
+
+The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` and `grok-build` reject `--model` (set `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL` instead) and have their own effort rules. See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
+
+To set a lasting default instead of pinning each launch, use **Settings → Task Management**, where each agent type has a reasoning-effort default that new tasks start at. A per-task `--effort` always wins over that default.
+
 ### Grok Build
 
 Grok Build is xAI's coding agent. Kookr can launch it the same way it launches Claude Code and Codex CLI. Install the official `grok` CLI (`npm install -g @xai-official/grok`) so it appears in Launch, then sign in once on the machine that runs Kookr:
@@ -71,6 +77,8 @@ When a finding appears:
 4. Kookr advances to the next queued finding.
 
 Quick actions and AI suggestions may appear when Kookr can infer likely responses. AI suggestions require an LLM provider key — see [Configuration](configuration.md#ai-suggestions).
+
+When you reply with the same text often, save it as a **reply snippet** so you do not retype it. Create and edit snippets under **Settings → Reply Snippets**: each snippet has a short label and its reusable text, and Kookr keeps up to 20 of them. Once at least one snippet exists, an **Insert snippet…** picker appears with the reply box; choosing a snippet inserts its text at the cursor. Selecting a snippet never sends it automatically — you still send the reply yourself — so you can edit a snippet or combine it with free-text first.
 
 When grouped findings contain identical pending prompts, Kookr may show **Reply to matching** for that subset. For policy-covered low-risk prompts, it may show **Approve matching**, which sends the shown approval only to the matching agents. Merge, scope, destructive, permission, credential, and secret-related prompts remain manual.
 
@@ -237,6 +245,15 @@ Speech and Telegram integrations are optional. They are disabled unless configur
 - Telegram remote chat requires a bot token plus explicit user and project allowlists.
 
 See [Configuration](configuration.md) for setup notes.
+
+## Sharing A View
+
+Kookr stays local-first, but you can hand a collaborator a view of your work — either a read-only viewer link or, with the hosted relay, a streamed session. Two paths exist:
+
+- **Read-only viewer links (preview).** Use **Share read-only view** (from the command palette, `Ctrl+K` / `Cmd+K`) to mint, list, and revoke scoped, optionally expiring links to the whole dashboard or a single project. This build ships the owner side — link management plus every server-side guard — but **live viewer admission is still a preview**: a collaborator who opens a link reaches the app in a browser (no install) yet is not admitted to live data until that wiring lands. Set links up now and they start carrying data the moment admission is enabled. See [Read-Only Shared View Setup](reference/shared-view-setup.md) for the current status and setup.
+- **Hosted relay.** Pair your instance with the hosted relay under **Settings → Sharing**, then use a task's **Share** control to stream selected terminal sessions to a remote collaborator. Remote input is permissioned separately from viewing and **fails closed**: when the remote-input grant is missing or relay connectivity drops, the shared session stays view-only.
+
+Terminal sharing requires `KOOKR_RELAY_TRUSTED=true` in the running Kookr process, and public browser access requires HTTPS/WSS. See [Session Sharing](reference/session-sharing.md) for owner and collaborator setup, and [Hosted Relay Operations](reference/hosted-relay-operations.md) for the hosted relay.
 
 ## Privacy
 
