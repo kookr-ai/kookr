@@ -35,7 +35,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
-| Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` | `schedules.schedulesPausedByFailure` | Diagnose each loop, then `kookr schedule enable <id>` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
+| Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
@@ -267,31 +267,69 @@ PY
 **Actions (ordered):**
 
 1. Read the page body (or the health array): each row has `name`,
-   `consecutiveFailures`, and `kookr schedule enable <id>`.
+   `consecutiveFailures`, and `kookr schedule enable <id>`. The page also prints
+   the one-command batch re-enable (below).
 2. Diagnose the loop (last error, recent tasks) **before** re-enabling.
    Re-enabling a still-broken belt just re-pauses it.
-3. **Unrelated pauses** (different root causes): re-enable one schedule at a
-   time, each after its own diagnosis. The recovered page fires only when the
-   paused count returns to **0**. Re-pages at most once per hour while the
-   count stays ≥ 3.
-4. **Single bug-induced cascade** (one root cause parked a whole fleet — e.g. a
-   `cancelled reason=none` storm, issue #2512): once the fix has **deployed**,
-   recover the whole set in one action with
-   `kookr schedule enable --stop-reason consecutive_failures [--held-before <fix-commit-ISO>]`
-   (issue #2520). Pass `--held-before` so holds established *after* the fix —
-   real, still-failing loops — stay parked. This is the sanctioned bulk resume;
-   it only touches daemon-set `consecutive_failures` holds and never clears an
-   operator-set hold. Still diagnose the root cause first — bulk-recovering
-   before the fix deploys just re-pauses the fleet on the next tick. On
-   post-deploy start the daemon also logs the `consecutive_failures` holds that
-   predate the running build, so you can see which dark schedules a just-deployed
-   fix may have cleared.
-5. Do **not** hand-roll a script that blindly enables every id on the page. Use
-   the scoped `--stop-reason` command above (cascade) or per-id `enable`
-   (unrelated pauses) — both keep operator-set holds parked.
+3. Once the underlying cause is resolved, recover **all** cascade-origin holds
+   in one idempotent command instead of running `kookr schedule enable <id>` N
+   times (issue #2531):
+
+   ```bash
+   kookr schedule enable --held-by cascade
+   ```
+
+   This selects only schedules parked by the fail-closed auto-pause
+   (`enabled=false` **and** `stopReason=consecutive_failures`) and re-enables
+   each. A genuine operator `disable` does **not** set that `stopReason`, so
+   this **never** flips an intentional hold — verify with `--json` (the
+   `reenabled` / `failed` arrays list exactly what changed). Re-running it on a
+   clean fleet is a no-op ("No cascade-held schedules to re-enable").
+
+   To scope the same recovery to a fix-commit / deploy time — recovering only
+   holds established **before** the fix so real, still-failing loops parked
+   afterward stay held — use the watermark form instead (issue #2520):
+
+   ```bash
+   kookr schedule enable --stop-reason consecutive_failures --held-before <fix-commit-ISO>
+   ```
+
+   Legacy holds without a recorded timestamp are treated as old and included;
+   any schedule that could not be re-enabled (e.g. trigger-limit exhausted) is
+   listed on stderr as skipped. On post-deploy start the daemon also logs the
+   `consecutive_failures` holds that predate the running build, so you can see
+   which dark schedules a just-deployed fix may have cleared. Bulk-recovering
+   *before* the fix deploys just re-pauses the fleet on the next tick — diagnose
+   and land the fix first.
+
+   **Why the batch is safe:** issue #2517 fixed the root cause — restart-
+   interrupted `cancelled` runs no longer increment `consecutiveFailures`, so a
+   false increment cannot recur and re-enabling a cascade-parked schedule will
+   not immediately re-trip the auto-pause on a phantom streak. To resume one
+   belt at a time instead, `kookr schedule enable <id>` still works. Do **not**
+   hand-roll a script that blindly enables every id on the page — both scoped
+   commands above keep operator-set holds parked.
+4. The recovered page fires only when the paused count returns to **0**.
+   Running the batch command drops the count to 0, which **is** the ack — no
+   separate acknowledgement step exists.
+
+**Escalation ladder (issue #2531).** While a paused set stays unrecovered, the
+`schedules:paused:residual` page **re-raises with rising urgency by episode
+age**, so a single dropped escalation cannot sit ignored for 24h+:
+
+| Episode age | Severity | Urgency label |
+| --- | --- | --- |
+| 0 (first page) | `warning` | ELEVATED (label not shown on the page — the first page carries no urgency prefix) |
+| ≥ 6h | `critical` | HIGH |
+| ≥ 12h | `critical` | SEVERE |
+
+Each re-raise embeds the copy-paste `kookr schedule enable --held-by cascade`
+block. Same-tier re-pages are still rate-limited to once per hour; an
+age-boundary crossing pages immediately so a severity bump is never swallowed.
+Escalation stops the moment the paused count returns to 0 (recovery = ack).
 
 Episode state is process memory. A restart can re-page immediately if ≥3
-schedules are still parked.
+schedules are still parked, and resets the escalation age clock.
 
 ---
 

@@ -122,7 +122,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   {
     name: 'schedule',
     subcommands: ['list', 'run', 'enable', 'disable'],
-    flags: ['--json', '-h', '--help'],
+    flags: ['--held-by', '--json', '-h', '--help'],
   },
   {
     name: 'drain',

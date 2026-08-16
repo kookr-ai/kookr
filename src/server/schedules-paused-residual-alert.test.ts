@@ -15,6 +15,10 @@ import {
   SCHEDULES_PAUSED_SAMPLE_CAP,
   DEFAULT_SCHEDULES_PAUSED_COUNT_BOUND,
   DEFAULT_SCHEDULES_PAUSED_COOLDOWN_MS,
+  DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER,
+  CASCADE_BATCH_REENABLE_COMMAND,
+  resolveEscalationTier,
+  formatEpisodeAge,
   type PausedScheduleSample,
 } from './schedules-paused-residual-alert.js';
 
@@ -322,5 +326,154 @@ describe('SchedulesPausedResidualAlerter (issue #2426)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('age-based escalation ladder (issue #2531)', () => {
+  const HOUR = 60 * 60_000;
+
+  it('resolveEscalationTier climbs the default ladder by episode age', () => {
+    expect(resolveEscalationTier(0)).toBe(0);
+    expect(resolveEscalationTier(HOUR)).toBe(0);
+    expect(resolveEscalationTier(6 * HOUR)).toBe(1);
+    expect(resolveEscalationTier(11 * HOUR)).toBe(1);
+    expect(resolveEscalationTier(12 * HOUR)).toBe(2);
+    expect(resolveEscalationTier(48 * HOUR)).toBe(2);
+    // Negative / NaN floor to step 0.
+    expect(resolveEscalationTier(-1)).toBe(0);
+    expect(resolveEscalationTier(Number.NaN)).toBe(0);
+  });
+
+  it('formatEpisodeAge renders coarse h/m strings', () => {
+    expect(formatEpisodeAge(0)).toBe('0m');
+    expect(formatEpisodeAge(90_000)).toBe('1m');
+    expect(formatEpisodeAge(6 * HOUR)).toBe('6h');
+    expect(formatEpisodeAge(6 * HOUR + 30 * 60_000)).toBe('6h30m');
+  });
+
+  it('the tier-0 page embeds the one-command batch re-enable and stays warning severity', () => {
+    const alert = buildSchedulesPausedResidualAlert({
+      paused: [paused({ id: 'sched-a', name: 'orchestrator', consecutiveFailures: 5 })],
+      countBound: 3,
+    });
+    expect(alert.severity).toBe('warning');
+    expect(alert.details).toContain(CASCADE_BATCH_REENABLE_COMMAND);
+    // Batch command must reference #2517-safety and still list per-id fallback.
+    expect(alert.details).toContain('#2517');
+    expect(alert.details).toContain('kookr schedule enable sched-a');
+  });
+
+  it('escalated pages raise severity to critical and surface the urgency + age', () => {
+    const alert = buildSchedulesPausedResidualAlert({
+      paused: [paused({ id: 'sched-a' })],
+      countBound: 3,
+      tier: 2,
+      ageMs: 13 * HOUR,
+    });
+    expect(alert.severity).toBe('critical');
+    expect(alert.summary).toContain('SEVERE');
+    expect(alert.summary).toContain('13h');
+    expect(alert.details).toContain(CASCADE_BATCH_REENABLE_COMMAND);
+  });
+
+  it('re-raises with rising urgency as one unrecovered episode ages (simulated clock)', () => {
+    let nowMs = 5_000_000;
+    const broadcast = vi.fn();
+    // A 24h re-page cooldown much longer than the ladder boundaries, so the
+    // ONLY thing that can page at +6h/+12h is the escalation edge — not the
+    // same-tier cooldown. This isolates the `escalated` bypass branch: with the
+    // bypass removed, none of these re-raises would fire.
+    const alerter = new SchedulesPausedResidualAlerter({
+      broadcast,
+      getCountBound: () => 3,
+      getCooldownMs: () => 24 * HOUR,
+      now: () => nowMs,
+    });
+
+    // t0: first fire — tier 0, warning.
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0].severity).toBe('warning');
+    expect(alerter.stats().escalationTier).toBe(0);
+
+    // +6h: episode aged into tier 1 — escalation edge pages immediately even
+    // though the 24h re-page cooldown has NOT elapsed; severity bumps to critical.
+    nowMs += 6 * HOUR;
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast.mock.calls[1][0].severity).toBe('critical');
+    expect(broadcast.mock.calls[1][0].summary).toContain('HIGH');
+    expect(alerter.stats().escalationTier).toBe(1);
+
+    // +5m within the same tier and far inside the cooldown: no spam.
+    nowMs += 5 * 60_000;
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(2);
+
+    // +12h total: tier 2 — escalation edge fires again (still inside cooldown)
+    // to SEVERE.
+    nowMs = 5_000_000 + 12 * HOUR;
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(3);
+    expect(broadcast.mock.calls[2][0].summary).toContain('SEVERE');
+    expect(alerter.stats().escalationTier).toBe(2);
+  });
+
+  it('honors an injected custom escalation ladder', () => {
+    let nowMs = 7_000_000;
+    const broadcast = vi.fn();
+    // A single-step ladder that never escalates past warning, injected via the
+    // getEscalationLadder seam.
+    const alerter = new SchedulesPausedResidualAlerter({
+      broadcast,
+      getCountBound: () => 3,
+      getCooldownMs: () => 72 * HOUR,
+      getEscalationLadder: () => [{ afterMs: 0, severity: 'warning', urgency: 'FLAT' }],
+      now: () => nowMs,
+    });
+
+    alerter.evaluate({ paused: threePaused() });
+    // Even 30h in, the custom ladder has no higher step — no escalation edge,
+    // and the 72h cooldown has not elapsed, so no re-page and severity stays warning.
+    nowMs += 30 * HOUR;
+    alerter.evaluate({ paused: threePaused() });
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0].severity).toBe('warning');
+    expect(alerter.stats().escalationTier).toBe(0);
+  });
+
+  it('recovery is the ack: clearing resets the episode clock and tier', () => {
+    let nowMs = 9_000_000;
+    const broadcast = vi.fn();
+    const alerter = new SchedulesPausedResidualAlerter({
+      broadcast,
+      getCountBound: () => 3,
+      getCooldownMs: () => HOUR,
+      now: () => nowMs,
+    });
+
+    alerter.evaluate({ paused: threePaused() });
+    nowMs += 12 * HOUR;
+    alerter.evaluate({ paused: threePaused() });
+    expect(alerter.stats().escalationTier).toBe(2);
+
+    // Operator runs the batch command → count drops to 0 → recovery.
+    nowMs += 60_000;
+    alerter.evaluate({ paused: [] });
+    expect(alerter.stats().firing).toBe(false);
+    expect(alerter.stats().escalationTier).toBe(0);
+    expect(alerter.stats().episodeStartedAtMs).toBeNull();
+
+    // A brand-new episode starts the ladder over at tier 0 / warning.
+    nowMs += 1;
+    alerter.evaluate({ paused: threePaused() });
+    const last = broadcast.mock.calls.at(-1)?.[0];
+    expect(last.severity).toBe('warning');
+    expect(alerter.stats().escalationTier).toBe(0);
+  });
+
+  it('exposes a sane default ladder', () => {
+    expect(DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER[0]).toMatchObject({ afterMs: 0, severity: 'warning' });
+    expect(DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER.at(-1)?.severity).toBe('critical');
   });
 });

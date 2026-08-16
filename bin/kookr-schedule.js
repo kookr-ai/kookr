@@ -11,13 +11,16 @@
 //   kookr schedule list [--json]
 //   kookr schedule run <id> [--json]
 //   kookr schedule enable <id> [--json]
+//   kookr schedule enable --held-by cascade [--json]   (issue #2531)
 //   kookr schedule disable <id> [--json]
 //
 // Endpoints wrapped:
-//   list           GET   /api/schedules
-//   run <id>       POST  /api/schedules/:id/run
-//   enable <id>    PATCH /api/schedules/:id   {"enabled": true}
-//   disable <id>   PATCH /api/schedules/:id   {"enabled": false}
+//   list                    GET   /api/schedules
+//   run <id>                POST  /api/schedules/:id/run
+//   enable <id>             PATCH /api/schedules/:id   {"enabled": true}
+//   enable --held-by cascade  GET /api/schedules, then PATCH each cascade-held
+//                             schedule {"enabled": true} in one batch (#2531)
+//   disable <id>            PATCH /api/schedules/:id   {"enabled": false}
 //
 // Exit codes (distinct on purpose, so a wrong outcome is visible to a script
 // rather than silently swallowed — same convention as kookr-issue):
@@ -43,16 +46,31 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const API_PATH = '/api/schedules';
 const VERBS = new Set(['list', 'run', 'enable', 'disable']);
 
+// Provenance selectors for the batch re-enable (issue #2531). Both name the
+// same set: schedules the fail-closed auto-pause (#2353) parked with
+// stopReason=consecutive_failures. `cascade` is the friendly alias;
+// `consecutive-failures` names the underlying stopReason.
+const HELD_BY_VALUES = new Map([
+  ['cascade', 'cascade'],
+  ['consecutive-failures', 'cascade'],
+]);
+
 const HELP_TEXT = `kookr schedule — list / run / enable / disable schedules.
 
 Usage:
   kookr schedule list [OPTIONS]
   kookr schedule run <id> [OPTIONS]
   kookr schedule enable <id> [OPTIONS]
+  kookr schedule enable --held-by cascade [OPTIONS]
   kookr schedule enable --stop-reason consecutive_failures [--held-before <ISO>] [OPTIONS]
   kookr schedule disable <id> [OPTIONS]
 
 Options:
+      --held-by <who>  Batch-enable held schedules by hold provenance instead of
+                       by <id>. Only "cascade" (alias "consecutive-failures") is
+                       supported: re-enables every schedule the fail-closed
+                       auto-pause parked (stopReason=consecutive_failures) and
+                       leaves genuine operator holds untouched. Idempotent.
       --stop-reason <reason>   Bulk-recover all schedules parked by this
                                fail-closed auto-pause (only consecutive_failures
                                today). Use instead of a schedule <id> with enable.
@@ -75,14 +93,31 @@ Exit codes:
 
 class UsageError extends Error {}
 
+function normalizeHeldBy(raw) {
+  const key = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const resolved = HELD_BY_VALUES.get(key);
+  if (resolved === undefined) {
+    throw new UsageError(
+      `--held-by must be one of: ${[...HELD_BY_VALUES.keys()].join(', ')} (got: ${raw ?? ''})`,
+    );
+  }
+  return resolved;
+}
+
 function parseArgs(argv) {
-  const out = { verb: null, id: null, json: false, help: false, stopReason: null, heldBefore: null };
+  const out = { verb: null, id: null, json: false, help: false, heldBy: null, stopReason: null, heldBefore: null };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
     if (tok === '-h' || tok === '--help') {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--held-by') {
+      const val = argv[++i];
+      if (val === undefined) throw new UsageError('--held-by requires a value (cascade)');
+      out.heldBy = normalizeHeldBy(val);
+    } else if (tok.startsWith('--held-by=')) {
+      out.heldBy = normalizeHeldBy(tok.slice('--held-by='.length));
     } else if (tok === '--stop-reason') {
       // Bulk-recovery selector (issue #2520): `enable --stop-reason <reason>`.
       const value = argv[++i];
@@ -184,6 +219,23 @@ function formatScheduleLine(schedule) {
     triggers = `  triggers=${remaining}/${schedule.maxTriggers}`;
   }
   return `${id}  ${state}  ${name}  cron="${cron}"  next=${next}${triggers}`;
+}
+
+// Cascade-origin held schedules (issue #2531): disabled AND parked by the
+// fail-closed auto-pause (stopReason=consecutive_failures, #2353). That
+// stopReason is the provenance signal — a genuine operator `disable` leaves it
+// unset (or trigger_limit_reached), so this filter never flips an intentional
+// hold. Returns the schedules in list order.
+function selectCascadeHeld(schedules) {
+  if (!Array.isArray(schedules)) return [];
+  return schedules.filter(
+    (s) =>
+      s
+      && typeof s.id === 'string'
+      && s.id.length > 0
+      && s.enabled === false
+      && s.stopReason === 'consecutive_failures',
+  );
 }
 
 // ---------- shared error/edge-case shaping ----------
@@ -409,6 +461,92 @@ async function handleSetEnabled({ args, env, out, err, exit, enabled }) {
   return exit(EXIT_OK);
 }
 
+// Batch, provenance-filtered re-enable (issue #2531). Collapses the "re-enable
+// all N cascade-held schedules" recovery from N `kookr schedule enable <id>`
+// calls to one command. Fetches the list, selects cascade-origin holds, and
+// PATCHes each enabled:true. Idempotent — an empty selection succeeds with a
+// clear "nothing to do" message. Prints exactly what it re-enabled.
+async function handleBatchEnable({ args, env, out, err, exit }) {
+  // Resolve the server once, then reuse the base URL for the list + each PATCH
+  // so a single unreachable check covers the whole batch.
+  const listOutcome = await attemptOnce({
+    env,
+    invoke: (baseUrl) => requestJson({ baseUrl, method: 'GET', path: API_PATH }),
+  });
+  if (listOutcome.kind === 'invalid_port') return invalidPort({ args, out, err, exit, raw: listOutcome.raw });
+  if (listOutcome.kind === 'unreachable') return noServer({ args, out, err, exit });
+
+  const { status, json, text } = listOutcome.result;
+  if (status !== 200) return serverError({ args, out, err, exit, status, json, text });
+
+  const baseUrl = listOutcome.baseUrl;
+  const schedules = Array.isArray(json?.schedules) ? json.schedules : [];
+  const held = selectCascadeHeld(schedules);
+
+  if (held.length === 0) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'No cascade-held schedules to re-enable.',
+        details: { heldBy: args.heldBy, total: 0, reenabled: [], failed: [] },
+      });
+    }
+    out.log('No cascade-held schedules to re-enable (nothing parked by consecutive_failures).');
+    return exit(EXIT_OK);
+  }
+
+  const reenabled = [];
+  const failed = [];
+  // Re-enable serially: the batch is small (a full belt stall parks ~8–14) and
+  // serial PATCHes keep server load and output ordering predictable.
+  for (const schedule of held) {
+    const id = schedule.id;
+    const name = schedule.name ?? null;
+    try {
+      const res = await requestJson({
+        baseUrl,
+        method: 'PATCH',
+        path: `${API_PATH}/${encodeURIComponent(id)}`,
+        body: { enabled: true },
+      });
+      if (res.status === 200) {
+        reenabled.push({ id, name });
+      } else {
+        failed.push({ id, name, status: res.status, error: res.json?.error ?? (res.text || 'unknown error') });
+      }
+    } catch (e) {
+      failed.push({ id, name, status: 0, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: failed.length === 0 ? EXIT_OK : EXIT_SERVER_ERROR,
+      ok: failed.length === 0,
+      code: failed.length === 0 ? 'OK' : 'SERVER_ERROR',
+      message:
+        failed.length === 0
+          ? `Re-enabled ${reenabled.length} cascade-held schedule(s).`
+          : `Re-enabled ${reenabled.length} of ${held.length}; ${failed.length} failed.`,
+      details: { heldBy: args.heldBy, total: held.length, reenabled, failed },
+    });
+  }
+
+  out.log(`Re-enabling ${held.length} cascade-held schedule(s):`);
+  for (const row of reenabled) out.log(`  ✓ ${row.id}${row.name ? ` (${row.name})` : ''}`);
+  for (const row of failed) {
+    err.error(`  ✗ ${row.id}${row.name ? ` (${row.name})` : ''} — HTTP ${row.status}: ${row.error}`);
+  }
+  out.log(`Re-enabled ${reenabled.length} of ${held.length}.`);
+  return exit(failed.length === 0 ? EXIT_OK : EXIT_SERVER_ERROR);
+}
+
 function resolveId(raw) {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
@@ -470,6 +608,19 @@ async function main({
     return userError({ args, out, err, exit, message: `unknown verb "${args.verb}". Known verbs: ${[...VERBS].join(', ')}.` });
   }
 
+  if (args.heldBy) {
+    if (args.verb !== 'enable') {
+      return userError({ args, out, err, exit, message: `--held-by is only valid with "enable" (got verb "${args.verb}").` });
+    }
+    if (resolveId(args.id) !== null) {
+      return userError({ args, out, err, exit, message: 'cannot combine a schedule <id> with --held-by (choose one).' });
+    }
+    if (args.stopReason !== null || args.heldBefore !== null) {
+      return userError({ args, out, err, exit, message: 'cannot combine --held-by with --stop-reason / --held-before (choose one selector).' });
+    }
+    return handleBatchEnable({ args, env, out, err, exit });
+  }
+
   // The bulk-recovery selectors (issue #2520) are only meaningful with `enable`.
   // Reject them on any other verb up front rather than silently ignoring them
   // (e.g. `list --stop-reason x` or `disable --held-before y`).
@@ -523,5 +674,6 @@ export {
   resolveId,
   requestJson,
   formatScheduleLine,
+  selectCascadeHeld,
   main,
 };
