@@ -34,12 +34,14 @@ export type {
 export {
   AGENT_TYPES,
   AVAILABLE_AGENT_TYPES,
+  ROUND_ROBIN_AGENT_TYPE,
   buildAgentSelectionOptions,
   effortLevelsForAgent,
   isAgentType,
   isValidEffortForAgent,
   isValidModelForAgent,
   modelsForAgent,
+  previewRoundRobinNextLabel,
   resolveRoundRobinAgent,
 } from './contracts/agent-types.js';
 export type { GrokAuthStatus, GrokAuthStatusResponse } from './contracts/grok-auth-status.js';

@@ -200,6 +200,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     serverCwd,
     availableAgentTypes,
     defaultAgentType,
+    roundRobinIndex,
     handleSchedules,
   } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
@@ -486,6 +487,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                   ? `Server default (${defaultAgentType})`
                   : 'Server default'
               }
+              roundRobinIndex={roundRobinIndex}
             />
 
             <label className="schedule-enable-checkbox">

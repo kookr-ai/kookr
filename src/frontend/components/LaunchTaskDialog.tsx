@@ -19,6 +19,7 @@ import {
   type LaunchTaskDialogDraft,
 } from '../store/launch-task-dialog-draft.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
+
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
@@ -210,6 +211,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
+  const roundRobinIndex = useKookrStore((s) => s.roundRobinIndex);
   const setPlaybooksLoading = useKookrStore((s) => s.setPlaybooksLoading);
   const playbooks = useKookrStore((s) => s.playbooks);
   const playbooksLastFetchedAt = useKookrStore((s) => s.playbooksLastFetchedAt);
@@ -712,6 +714,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 setModel('');
               }}
               options={agentOptions}
+              roundRobinIndex={roundRobinIndex}
+              grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
             />
             <LaunchEffortModelPickers
               agentType={agentType}

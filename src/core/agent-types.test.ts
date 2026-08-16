@@ -5,6 +5,7 @@ import {
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
   buildAgentSelectionOptions,
+  previewRoundRobinNextLabel,
   DEFAULT_AGENT_TYPE,
   AVAILABLE_AGENT_TYPES,
   ROUND_ROBIN_AGENT_TYPE,
@@ -314,6 +315,44 @@ describe('buildAgentSelectionOptions', () => {
   test('falls back to the canonical list (with round-robin) when none are supplied', () => {
     const options = buildAgentSelectionOptions([]);
     expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'round-robin']);
+  });
+});
+
+describe('previewRoundRobinNextLabel', () => {
+  const options = buildAgentSelectionOptions(AVAILABLE_AGENT_TYPES);
+
+  test('resolves the next label from the cursor the launch service uses', () => {
+    expect(previewRoundRobinNextLabel(options, { cursor: 0 })).toBe('Claude Code');
+    expect(previewRoundRobinNextLabel(options, { cursor: 1 })).toBe('Codex CLI');
+    expect(previewRoundRobinNextLabel(options, { cursor: 2 })).toBe('Grok Build');
+  });
+
+  test('prefers a still-available advertised next agent over the cursor', () => {
+    expect(previewRoundRobinNextLabel(options, {
+      cursor: 0,
+      advertisedNext: 'codex-cli',
+    })).toBe('Codex CLI');
+  });
+
+  test('ignores an advertised agent that is no longer in the rotation', () => {
+    const withoutGrok = buildAgentSelectionOptions(
+      AVAILABLE_AGENT_TYPES.filter((entry) => entry.type !== 'grok-build'),
+    );
+    expect(previewRoundRobinNextLabel(withoutGrok, {
+      cursor: 0,
+      advertisedNext: 'grok-build',
+    })).toBe('Claude Code');
+  });
+
+  test('returns undefined when no concrete agent remains', () => {
+    expect(previewRoundRobinNextLabel([{ type: 'round-robin', label: 'Round robin' }])).toBeUndefined();
+  });
+
+  test('skips Grok when session auth is known unusable', () => {
+    expect(previewRoundRobinNextLabel(options, {
+      cursor: 2,
+      grokAuthUsable: false,
+    })).toBe('Claude Code');
   });
 });
 

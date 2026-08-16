@@ -4,6 +4,7 @@ import {
   parseGrokAuthStatusResponse,
   type GrokAuthStatusResponse,
 } from '../../shared/protocol.js';
+import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
 
 /**
  * Load the secret-free Grok auth preflight used by the Launch dialog.
@@ -24,7 +25,12 @@ export function useGrokAuthStatus(): GrokAuthStatusResponse | null {
         });
         if (!response?.ok || controller.signal.aborted) return;
         const parsed = parseGrokAuthStatusResponse(await response.json());
-        if (parsed && !controller.signal.aborted) setStatus(parsed);
+        if (parsed && !controller.signal.aborted) {
+          setStatus(parsed);
+          // The preflight already carries the live rotation cursor — reuse it
+          // so the picker preview does not wait on a separate settings fetch.
+          applyRoundRobinIndex(parsed.roundRobinIndex);
+        }
       } catch {
         // Network, abort, stubbed fetch, or non-JSON: leave status unknown.
       }
