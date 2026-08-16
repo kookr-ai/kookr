@@ -1503,6 +1503,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             },
             monitor,
             isProviderPaused: isTaskProviderPaused,
+            isHoldingOpenPr: deps.isTaskHoldingOpenPr,
             auditLogPath: deps.auditLogPath,
             broadcastToAll: deps.broadcastToAll,
           })

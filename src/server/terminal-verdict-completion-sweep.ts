@@ -80,6 +80,17 @@ export interface AutoCompleteTerminalVerdictDeps {
    * a fake. Optional — omit ⇒ never paused.
    */
   isProviderPaused?: (task: Task) => boolean;
+  /**
+   * Open-PR fail-safe for delivery-gated (`ask-first`) tasks (issue #2532
+   * independent review). An `ask-first` task is completed only when this
+   * positively confirms it holds no open PR (returns `false`) — so a converged
+   * deploy-verification task with no pending delivery still auto-completes
+   * (issue AC), while one whose PR is unmerged is left for the human / the
+   * delivered-PR sweep. Absent or `undefined` ⇒ the task is treated as
+   * possibly-holding and skipped (fail-safe), mirroring the predicate the FAA /
+   * delivered sweeps use.
+   */
+  isHoldingOpenPr?: (task: Task) => boolean | undefined;
   auditLogPath?: string;
   broadcastToAll?: (msg: ServerMessage) => void;
   now?: () => Date;
@@ -173,10 +184,12 @@ export async function autoCompleteTerminalVerdictTasks(
     if (task.pendingSignal) continue;
     // A billing/quota pause is not a completion (issue #1667 parity).
     if (deps.isProviderPaused?.(task) === true) continue;
-    // A delivery-gated (`ask-first`) task must never be auto-marked done on a
-    // text verdict — its completion is owned by an explicit human ack or the
-    // delivered-PR sweep (merged-PR evidence), never a needs_input park.
-    if (task.deliveryAuthorization === 'ask-first') continue;
+    // A delivery-gated (`ask-first`) task is completed only when its delivery is
+    // positively clear: skip unless `isHoldingOpenPr` confirms it holds no open
+    // PR (returns false). Absent/unknown ⇒ skip (fail-safe). This still lets a
+    // converged deploy-verification task with no pending delivery complete (issue
+    // AC), while never auto-completing one whose PR is still unmerged.
+    if (task.deliveryAuthorization === 'ask-first' && deps.isHoldingOpenPr?.(task) !== false) continue;
 
     const session = firstLiveSession(task);
     if (!session) continue;

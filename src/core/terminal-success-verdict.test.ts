@@ -38,12 +38,37 @@ describe('classifyTerminalSuccessVerdict', () => {
   test('matches bare "Completed." / "Complete" verdict lines', () => {
     expect(classifyTerminalSuccessVerdict('Completed.')?.verdict).toBe('completed');
     expect(classifyTerminalSuccessVerdict('Complete')?.verdict).toBe('complete');
-    expect(classifyTerminalSuccessVerdict('✅ Complete — all checks pass')?.verdict).toBe('complete');
+    expect(classifyTerminalSuccessVerdict('✅ Complete')?.verdict).toBe('complete');
+    expect(classifyTerminalSuccessVerdict('Complete!')?.verdict).toBe('complete');
+  });
+
+  test('matches a SHA-bearing convergence receipt body', () => {
+    expect(
+      classifyTerminalSuccessVerdict('converged — prod serving 97ef54f4 == origin/main HEAD 97ef54f4')?.verdict,
+    ).toBe('converged');
+    expect(
+      classifyTerminalSuccessVerdict('deploy-convergence: converged · serving=194eda77 main=194eda77')?.verdict,
+    ).toBe('converged');
   });
 
   test('finds the verdict on a later line of a multi-line summary', () => {
-    const msg = 'Ran the deploy-convergence check against prod.\n\nconverged · serving=abc main=abc';
+    const msg = 'Ran the deploy-convergence check against prod.\n\nconverged · serving=194eda77 main=194eda77';
     expect(classifyTerminalSuccessVerdict(msg)?.verdict).toBe('converged');
+  });
+
+  test('does NOT match a prose body with no machine (SHA) evidence', () => {
+    // A receipt-style separator is not enough — an arbitrary prose body can hide
+    // a failure the marker denylist never enumerated, so it must not qualify.
+    expect(classifyTerminalSuccessVerdict('Complete — smoke tests exited 1')).toBeNull();
+    expect(classifyTerminalSuccessVerdict('Complete — all checks pass')).toBeNull();
+    expect(classifyTerminalSuccessVerdict('converged — prod matches main now')).toBeNull();
+  });
+
+  test('refuses to classify an oversized message (park is the safe default)', () => {
+    // A caveat/question could hide beyond a prefix cut, so an oversized message
+    // is never classified as success.
+    const huge = 'converged — serving 194eda77 main 194eda77\n' + 'x'.repeat(200_000);
+    expect(classifyTerminalSuccessVerdict(huge)).toBeNull();
   });
 
   test('does NOT match non-success convergence outcomes (diverging / divergent)', () => {

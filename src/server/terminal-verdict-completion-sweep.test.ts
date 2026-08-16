@@ -158,7 +158,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: needsInputAnomaly(agentId),
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')],
       },
     });
     const auditLogPath = await makeAuditPath();
@@ -203,7 +203,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: needsInputAnomaly(agentId, 'ask_user_question'),
-        events: [stopEvent(agentId, 'converged — should I also redeploy staging?')],
+        events: [stopEvent(agentId, 'deploy-convergence: converged · serving=194eda77 main=194eda77')],
       },
     });
 
@@ -219,7 +219,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: null, // healthy / working
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')],
       },
     });
 
@@ -236,7 +236,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: needsInputAnomaly(agentId),
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')],
       },
     });
 
@@ -246,22 +246,53 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
   });
 
-  test('skips an ask-first delivery-gated task', async () => {
-    const taskStore = new TaskStore();
+  function makeAskFirstTask(taskStore: TaskStore): [string, TerminalVerdictMonitor] {
     const task = taskStore.createTask({ prompt: 'gated', cwd: '/tmp', deliveryAuthorization: 'ask-first' });
     const agentId = `kookr-${task.id}`;
     taskStore.addSession(task.id, { tmuxSession: agentId, agentType: 'claude-code', cwd: '/tmp', createdAt: T0 });
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: needsInputAnomaly(agentId),
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'deploy-convergence: converged · serving=194eda77 main=194eda77')],
       },
     });
+    return [task.id, monitor];
+  }
+
+  test('skips an ask-first task when open-PR status cannot be confirmed clear (no predicate)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, monitor] = makeAskFirstTask(taskStore);
 
     const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
 
     expect(result.completedTaskIds).toEqual([]);
-    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
+  test('skips an ask-first task confirmed to be holding an open PR (delivery pending)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, monitor] = makeAskFirstTask(taskStore);
+
+    const result = await autoCompleteTerminalVerdictTasks(
+      deps(taskStore, monitor, { isHoldingOpenPr: () => true }),
+    );
+
+    expect(result.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+  });
+
+  test('completes an ask-first task once delivery is confirmed clear (no open PR)', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, monitor] = makeAskFirstTask(taskStore);
+
+    // AC: a converged deploy-verification task with no pending delivery reaches a
+    // completed, slot-releasing state without operator input.
+    const result = await autoCompleteTerminalVerdictTasks(
+      deps(taskStore, monitor, { isHoldingOpenPr: () => false }),
+    );
+
+    expect(result.completedTaskIds).toEqual([taskId]);
+    expect(taskStore.getTask(taskId)?.status).toBe('completed');
   });
 
   test('skips a provider-paused task', async () => {
@@ -270,7 +301,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const monitor = stubMonitor({
       [agentId]: {
         anomaly: needsInputAnomaly(agentId),
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')],
       },
     });
 
@@ -291,7 +322,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
       ids.push(taskId);
       entries[agentId] = {
         anomaly: needsInputAnomaly(agentId),
-        events: [stopEvent(agentId, 'converged — serving=abc main=abc')],
+        events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')],
       };
     }
     const monitor = stubMonitor(entries);
@@ -317,7 +348,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
       cumulativeIterations: 1,
     };
     const monitor = stubMonitor({
-      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — x')] },
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')] },
     });
 
     const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
@@ -331,7 +362,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const [taskId, agentId] = makeRunningTask(taskStore);
     taskStore.updateSession(taskId, agentId, { lastStatus: 'completed' });
     const monitor = stubMonitor({
-      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — x')] },
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')] },
     });
 
     const result = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
@@ -347,7 +378,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
       [agentId]: {
         anomaly: needsInputAnomaly(agentId),
         events: [
-          stopEvent(agentId, 'converged — serving=abc main=abc'),
+          stopEvent(agentId, 'converged — serving 194eda77 main 194eda77'),
           { type: 'tool_use', sessionId: agentId, toolName: 'Bash' } as AgentEvent,
         ],
       },
@@ -364,8 +395,8 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const [racedId, racedAgent] = makeRunningTask(taskStore, 'raced');
     const [okId, okAgent] = makeRunningTask(taskStore, 'ok');
     const monitor = stubMonitor({
-      [racedAgent]: { anomaly: needsInputAnomaly(racedAgent), events: [stopEvent(racedAgent, 'converged — a')] },
-      [okAgent]: { anomaly: needsInputAnomaly(okAgent), events: [stopEvent(okAgent, 'converged — b')] },
+      [racedAgent]: { anomaly: needsInputAnomaly(racedAgent), events: [stopEvent(racedAgent, 'converged — serving 194eda77 main 194eda77')] },
+      [okAgent]: { anomaly: needsInputAnomaly(okAgent), events: [stopEvent(okAgent, 'converged — serving 0a1b2c3d main 0a1b2c3d')] },
     });
     // Fail the FIRST completion only; the sweep must skip it and still complete the next.
     const spy = vi.spyOn(taskStore, 'completeTask');
@@ -384,7 +415,7 @@ describe('autoCompleteTerminalVerdictTasks', () => {
     const taskStore = new TaskStore();
     const [taskId, agentId] = makeRunningTask(taskStore);
     const monitor = stubMonitor({
-      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — x')] },
+      [agentId]: { anomaly: needsInputAnomaly(agentId), events: [stopEvent(agentId, 'converged — serving 194eda77 main 194eda77')] },
     });
 
     const result = await autoCompleteTerminalVerdictTasks({ taskStore, monitor });
