@@ -1564,13 +1564,29 @@ describe('isGenuineExecutionFailure (issue #2521 — the single classifier)', ()
     expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'oom' })).toBe(true);
   });
 
-  it('counts an `unknown` crash ONLY when no graceful redeploy was in flight', () => {
-    // `unknown` alone is ambiguous — a hard crash while the server was down also
-    // reconciles to `unknown`. The redeploy marker is the only thing that excuses it.
+  it('counts a LIVE `unknown` crash only when no graceful redeploy was in flight', () => {
+    // On the LIVE path `unknown` is ambiguous — a hard crash while the server was
+    // up reconciles to `unknown` too. The redeploy marker is the only thing that
+    // excuses it there.
     expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', serverRestartActive: false })).toBe(true);
     expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', serverRestartActive: true })).toBe(false);
-    // Marker defaults to absent → the hard-crash reading, still counts.
+    // Marker defaults to absent → the live hard-crash reading, still counts.
     expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown' })).toBe(true);
+  });
+
+  it('never counts an `unknown` reconciled after restart, marker or not (issue #2539)', () => {
+    // A boot reconcile only runs post-restart and only reaches a run that was
+    // mid-flight when the process stopped, so its `unknown` death is
+    // restart-induced by construction — excused whether or not a graceful
+    // `server-restarting.json` marker exists (host freeze / reboot / power loss
+    // write none). This is what stops a reboot from tripping the #2353 breaker.
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', reconciledAfterRestart: true })).toBe(false);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', reconciledAfterRestart: true, serverRestartActive: false })).toBe(false);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'unknown', reconciledAfterRestart: true, serverRestartActive: true })).toBe(false);
+    // Genuine resource-exhaustion reasons still count even at reconcile, so a job
+    // that truly OOMs / hangs every run still fail-closes.
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'timeout', reconciledAfterRestart: true })).toBe(true);
+    expect(isGenuineExecutionFailure('cancelled', { terminationReason: 'oom', reconciledAfterRestart: true })).toBe(true);
   });
 
   it('never counts `cancelled reason=none` — a bare/operator/reconciliation cancel', () => {
@@ -1726,16 +1742,21 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
     }
   });
 
-  it('COUNTS a boot-reconciled `unknown` when NO redeploy marker is present (hard crash while down)', async () => {
-    // Codex review finding: `unknown` alone does not prove restart causation — a
-    // genuine crash while the server was down also reconciles to `unknown`.
-    // Without the graceful-redeploy marker it must keep counting so repeated
-    // real crashes still fail-close (#2353). server-restart, being unambiguous,
-    // is still exempted even here.
-    const { service, store, cleanup } = harness(/* serverRestarting */ false);
+  it('does NOT count a boot-reconciled `unknown` even when NO redeploy marker is present (host freeze / reboot — issue #2539)', async () => {
+    // Supersedes the earlier #2512 reading (a Codex finding that a marker-less
+    // boot `unknown` should keep counting as a "hard crash while down"). Issue
+    // #2539 governs: a host freeze / reboot / power loss writes no
+    // `server-restarting.json` marker, yet reconcileOnStartup only runs
+    // post-restart and only reaches a run that was mid-flight when the process
+    // stopped — so that `unknown` death is restart-induced by construction and
+    // must not, by itself, drive the schedule toward operatorHold (acceptance #1).
+    // Genuine resource-exhaustion reasons (`timeout`/`oom`) still count at
+    // reconcile, and the LIVE path still counts a marker-less `unknown`, so a
+    // truly broken job still fail-closes.
+    const { service, store, alerts, cleanup } = harness(/* serverRestarting */ false);
     try {
       const schedule = store.create({
-        name: 'HardCrashWhileDown',
+        name: 'HostFreezeReboot',
         cron: '* * * * *',
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
@@ -1743,13 +1764,104 @@ describe('ScheduleService restart reconciliation vs consecutiveFailures (issue #
       const unknownRun = midFlightThenTerminated('unknown');
       await seedMidFlight(service, store, schedule.id, unknownRun.taskId, '2026-08-14T09:00:00.000Z');
       await service.reconcileOnStartup(unknownRun.taskStore);
-      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
 
-      // A `server-restart` reason is still exempt even without a marker.
+      // A `server-restart` reason is likewise exempt.
       const restartRun = midFlightThenTerminated('server-restart');
       await seedMidFlight(service, store, schedule.id, restartRun.taskId, '2026-08-14T09:05:00.000Z');
       await service.reconcileOnStartup(restartRun.taskStore);
+      expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+      expect(alerts).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a genuine reaped hang (timeout) reconciled after restart STILL counts and fail-closes at 3 (breaker preserved)', async () => {
+    // The excuse is scoped to `unknown` (ambiguous, host-freeze-shaped). A
+    // `timeout` means the hung-task reaper actively caught a run past the silence
+    // threshold — real hang-thrash (#2353) that must still trip even across
+    // restarts, so a genuinely broken loop cannot hide behind a reboot.
+    const { service, store, cleanup } = harness(/* serverRestarting */ false);
+    try {
+      const schedule = store.create({
+        name: 'HangThrashAcrossRestarts',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      for (const at of ['2026-08-14T10:00:00.000Z', '2026-08-14T10:05:00.000Z', '2026-08-14T10:10:00.000Z']) {
+        const { taskStore, taskId } = midFlightThenTerminated('timeout');
+        await seedMidFlight(service, store, schedule.id, taskId, at);
+        await service.reconcileOnStartup(taskStore);
+      }
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(3);
+      expect(after.enabled).toBe(false);
+      expect(after.stopReason).toBe('consecutive_failures');
+      expect(after.operatorHold).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reproduces issue #2539: a host outage (reboot → zombie carryover → outage-window dispatch_failed) does not trip operatorHold', async () => {
+    // The exact evidence trace from the issue, on a 30-minute safety-net cadence.
+    // No graceful redeploy marker anywhere — this is a host freeze/reboot, not a
+    // `prod-restart`. Before this fix the reboot-reconciled `unknown` counted, and
+    // together with the outage-window dispatch_failed the streak crossed 3 and set
+    // a permanent silent operatorHold that disabled the pagers themselves for days.
+    const { service, store, alerts, cleanup } = harness(/* serverRestarting */ false);
+    try {
+      const schedule = store.create({
+        name: 'Lucy Orchestration Effectiveness',
+        cron: '*/30 * * * *',
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // 08:00 fire starts running, then the host freezes → the run is a zombie the
+      // frozen reaper never marks; on reboot it reconciles as `unknown`.
+      const zombie = midFlightThenTerminated('unknown');
+      await seedMidFlight(service, store, schedule.id, zombie.taskId, '2026-08-12T08:00:00.000Z');
+      await service.reconcileOnStartup(zombie.taskStore);
+      expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
+
+      // 09:00 fire during the still-degraded window: the grok-build agent launch
+      // times out after 180s → dispatch_failed (launch_error). One genuine-looking
+      // dispatch failure counts (1), but it is far below the threshold on its own.
+      const dispatchReceipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-08-12T09:00:00.000Z');
+      await service.markExecutionOutcome(
+        schedule.id,
+        dispatchReceipt.id,
+        'dispatch_failed',
+        'launch_error',
+        'Agent launch timed out after 180s (grok-build)',
+      );
       expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      // 10:00 and 10:30 fires are cancelled "Previous run still active" — the
+      // zombie 08:00 run still shows as blocking. Overlap-skips never count (#2458).
+      for (const at of ['2026-08-12T10:00:00.000Z', '2026-08-12T10:30:00.000Z']) {
+        const skipReceipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+        await service.markExecutionOutcome(
+          schedule.id,
+          skipReceipt.id,
+          'skipped_active',
+          'previous_run_active',
+          'Previous run still active',
+        );
+      }
+
+      const after = store.get(schedule.id)!;
+      // Streak stayed at the single dispatch_failed — nowhere near the threshold.
+      expect(after.consecutiveFailures).toBe(1);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      // No fail-closed auto-pause alert fired for the outage.
+      expect(alerts.some((a) => a.summary.includes('auto-paused'))).toBe(false);
     } finally {
       cleanup();
     }
@@ -2081,11 +2193,13 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
         playbook: { path: 'daily.md', parameters: {} },
         cwd: '/tmp',
       });
-      // Three cancelled (reason=none) terminals — the #2512 cascade shape.
+      // Three genuine live failures (reaped hangs) — a real #2353 cascade. Post
+      // #2521 a reason-less cancel no longer counts, so the terminals must carry a
+      // genuine terminationReason to build the auto-pause this test asserts.
       for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
         const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
         await service.markExecutionAccepted(schedule.id, receipt.id, `task-${i}`, false);
-        await service.recordTaskTerminalOutcome(`task-${i}`, 'cancelled');
+        await service.recordTaskTerminalOutcome(`task-${i}`, 'cancelled', 'timeout');
       }
       const paused = store.get(schedule.id)!;
       expect(paused.enabled).toBe(false);
@@ -2205,13 +2319,15 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
   it('one-command recovers a bug cascade; never auto-clears an operator hold (AC4)', async () => {
     const { service, store, cleanup } = harness(3);
     try {
-      // The cascade victim (reason=none daemon hold) — the auto re-arm path
-      // (#2459) intentionally leaves it dark (reason is not transient)...
+      // The cascade victim — a genuine failure streak (reaped hangs) whose
+      // latestExecution reasonCode is `none`, so the auto re-arm path (#2459)
+      // intentionally leaves it dark (reason is not transient). Post #2521 the
+      // terminal must carry a genuine terminationReason to build the cascade.
       const victim = store.create({ name: 'Cross-Repo Orchestrator', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
       for (const [i, at] of ['2026-08-14T00:00:00.000Z', '2026-08-14T00:05:00.000Z', '2026-08-14T00:10:00.000Z'].entries()) {
         const receipt = await service.reserveExecution(store.get(victim.id)!, 'cron', at);
         await service.markExecutionAccepted(victim.id, receipt.id, `victim-${i}`, false);
-        await service.recordTaskTerminalOutcome(`victim-${i}`, 'cancelled');
+        await service.recordTaskTerminalOutcome(`victim-${i}`, 'cancelled', 'timeout');
       }
       expect(store.get(victim.id)!.holdSource).toBe('daemon');
       expect(store.get(victim.id)!.latestExecution?.reasonCode).toBe('none');
