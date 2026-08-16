@@ -181,9 +181,24 @@ export interface ExecutionFailureContext {
    * Whether a graceful redeploy drain was in flight (issue #2512), backed by the
    * short-lived `server-restarting.json` marker. Disambiguates an `unknown`
    * session-death caused by a redeploy (churn, excused) from a hard crash
-   * (genuine, still counts).
+   * (genuine, still counts) — on the LIVE path. On the reconcile path see
+   * {@link reconciledAfterRestart}, which excuses `unknown` regardless of this
+   * marker.
    */
   serverRestartActive?: boolean;
+  /**
+   * Whether this outcome is produced by `reconcileOnStartup` after a process
+   * restart (issue #2539). When true, the run was still mid-flight
+   * (running/queued) when the process stopped, so an `unknown` session-death is
+   * restart-induced *by construction* — the reconcile only runs post-restart and
+   * only reaches a run the restart interrupted. It is therefore excused exactly
+   * like a graceful redeploy, even when no `server-restarting.json` marker exists
+   * (host freeze / reboot / power loss / hard crash while down — the outage class
+   * #2539 documents, which `serverRestartActive` alone missed). Never set on the
+   * live terminal path, where an `unknown` is not restart-attributable and still
+   * counts.
+   */
+  reconciledAfterRestart?: boolean;
 }
 
 /**
@@ -193,10 +208,21 @@ export interface ExecutionFailureContext {
  * fail-close the schedule.
  *
  * Genuine (counts): `timeout` (hung past the silence threshold → reaped; #2353
- * hang-thrash) and `oom` (killed by the OOM killer mid-run). `unknown` (all
- * sessions died without a clean turn) is genuine ONLY when no graceful redeploy
- * was in flight — a hard crash while the server was down also reconciles to
- * `unknown`, so it keeps counting unless the marker attributes it to a redeploy.
+ * hang-thrash) and `oom` (killed by the OOM killer mid-run) — both count even at
+ * reconcile, so a job that truly exhausts resources every run still fail-closes.
+ *
+ * `unknown` (all sessions died without a clean turn) is genuine ONLY when no
+ * restart can be blamed for it — i.e. neither a graceful redeploy
+ * (`serverRestartActive`) nor a boot reconcile (`reconciledAfterRestart`, issue
+ * #2539) was involved. On the LIVE path an `unknown` still counts (no restart
+ * context). On the RECONCILE path it never counts: `reconcileOnStartup` runs
+ * only after the process restarted and only reaches a run that was mid-flight
+ * when it stopped, so that death is restart-induced by construction. A host
+ * freeze / reboot / power loss writes no `server-restarting.json` marker, so
+ * `serverRestartActive` alone missed exactly that class — the outage #2539
+ * documents, where three reboot-reconciled `unknown` fires tripped the #2353
+ * breaker into a permanent silent operatorHold that disabled the safety-net
+ * pagers themselves for ~5 days.
  *
  * Not genuine (never counts): `server-restart` (unambiguous redeploy artifact),
  * `manual`/`supervisor` (deliberate operator/controller kills — not the
@@ -208,13 +234,14 @@ export interface ExecutionFailureContext {
 function isGenuineTerminationFailure(
   terminationReason: TerminationReason | undefined,
   serverRestartActive: boolean,
+  reconciledAfterRestart: boolean,
 ): boolean {
   switch (terminationReason) {
     case 'timeout':
     case 'oom':
       return true;
     case 'unknown':
-      return !serverRestartActive;
+      return !serverRestartActive && !reconciledAfterRestart;
     case 'server-restart':
     case 'manual':
     case 'supervisor':
@@ -238,8 +265,9 @@ function isGenuineTerminationFailure(
  *    run (a real, schedule-attributable fault; #2353 wants this to fail-close).
  *  - `cancelled` whose task carries a genuine termination reason
  *    (see {@link isGenuineTerminationFailure}) — the task reached the runner and
- *    its execution went wrong on its own (`timeout`/`oom`, or `unknown` with no
- *    redeploy marker).
+ *    its execution went wrong on its own (`timeout`/`oom`, or a LIVE `unknown`
+ *    with neither a redeploy marker nor a boot reconcile in play). A boot
+ *    `unknown` reconciled after restart is excused (issue #2539).
  *
  * Everything else is an infrastructure-lifecycle result and never counts:
  * `completed`/`running`/`queued`/`queued_capacity`, every `skipped_*` (overlap
@@ -263,6 +291,7 @@ export function isGenuineExecutionFailure(
       return isGenuineTerminationFailure(
         context.terminationReason,
         context.serverRestartActive ?? false,
+        context.reconciledAfterRestart ?? false,
       );
     default:
       return false;
@@ -1226,9 +1255,13 @@ export class ScheduleService {
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
     let changed = false;
-    // Issue #2512: read the redeploy marker once for the whole boot reconcile —
-    // it discriminates a graceful-restart `unknown` interruption (excused) from a
-    // hard-crash-while-down `unknown` (a genuine failure that still counts).
+    // Issue #2512: read the redeploy marker once for the whole boot reconcile.
+    // Issue #2539 makes every boot-reconciled `unknown` restart-induced (the run
+    // was mid-flight when the process stopped), so the classifier is called with
+    // `reconciledAfterRestart: true` below and this marker no longer changes the
+    // `unknown` verdict — it is retained so the call stays explicit and so any
+    // future reconcile-path outcome that DOES key off a graceful redeploy has the
+    // signal at hand.
     const serverRestartActive = this.isServerRestarting?.() ?? false;
     for (const listed of this.store.list()) {
       let schedule = listed;
@@ -1343,22 +1376,30 @@ export class ScheduleService {
         // it by construction rather than via an ever-growing exemption list (which
         // #2458 → #2517 proved cannot converge).
         //
-        // isGenuineExecutionFailure counts `timeout` hang-thrash (#2353) and `oom`,
-        // and `unknown` only when NO redeploy marker attributes the death to a
-        // graceful restart (a hard-crash-while-down `unknown` still fail-closes).
-        // `server-restart`, deliberate `manual`/`supervisor` kills, and the
-        // self-retried `provider_transient` are lifecycle/deliberate stops and
-        // never count. `terminationReason` is only read for a `terminated` task
-        // (gated below) so a stale reason from a reopened task cannot leak —
-        // neither reopenTask nor cancelTask clears the field. A non-genuine cancel
-        // carries the streak forward (not reset) so a real pre-restart streak
-        // survives, and the alert edge below sees priorCount === nextCount → no
-        // spurious crossing alert.
+        // isGenuineExecutionFailure counts `timeout` hang-thrash (#2353) and
+        // `oom` even here — a job that truly exhausts resources every run still
+        // fail-closes. An `unknown` session-death, however, is excused on this
+        // path by `reconciledAfterRestart: true` (issue #2539): reconcileOnStartup
+        // runs ONLY after a restart and only reaches a run that was mid-flight
+        // when the process stopped, so that death is restart-induced by
+        // construction. `serverRestartActive` (the graceful-redeploy marker) alone
+        // missed the host-freeze / reboot / power-loss class — those write no
+        // marker — which is exactly how three reboot-reconciled `unknown` fires
+        // tripped the breaker into a permanent silent operatorHold that disabled
+        // the safety-net pagers for ~5 days. `server-restart`, deliberate
+        // `manual`/`supervisor` kills, and the self-retried `provider_transient`
+        // are lifecycle/deliberate stops and never count. `terminationReason` is
+        // only read for a `terminated` task (gated below) so a stale reason from a
+        // reopened task cannot leak — neither reopenTask nor cancelTask clears the
+        // field. A non-genuine cancel carries the streak forward (not reset) so a
+        // real pre-restart streak survives, and the alert edge below sees
+        // priorCount === nextCount → no spurious crossing alert.
         const reconciledTerminationReason =
           task.status === 'terminated' ? task.terminationReason : undefined;
         const genuineReconciledFailure = isGenuineExecutionFailure(scheduleOutcome, {
           terminationReason: reconciledTerminationReason,
           serverRestartActive,
+          reconciledAfterRestart: true,
         });
         const reconciledFailures =
           scheduleOutcome === 'completed'
