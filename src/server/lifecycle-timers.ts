@@ -58,6 +58,7 @@ import {
   createDeliveredCompletionTracker,
   type DeliveredCompletionTracker,
 } from './delivered-task-completion-sweep.js';
+import { autoCompleteTerminalVerdictTasks } from './terminal-verdict-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
 import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
 // Domain job bodies extracted from this scheduler (issue #1822). Each lives
@@ -192,6 +193,13 @@ export interface TimerDeps {
    * tick. Falls back to the module default when absent (older wiring/tests).
    */
   getPostMergeCleanupBudgetMs?: () => number;
+  /**
+   * Live enable flag for the terminal-success verdict auto-complete sweep
+   * (issue #2532). Read on every liveness tick. Absent ⇒ enabled — the sweep is
+   * self-gating (only fires on a `needs_input` park with a terminal-success
+   * verdict), so it defaults on; a getter returning false is the ops kill switch.
+   */
+  getTerminalVerdictAutoCompleteEnabled?: () => boolean;
   /**
    * Delivery attribution for the delivered-completion sweep (issue #1560):
    * a task's attributable merged PR, or null. Wired at bootstrap to read
@@ -1476,6 +1484,30 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         )
         : { completedTaskIds: [] };
 
+      // Terminal-success verdict auto-complete (issue #2532): a running task
+      // parked in `needs_input` with an unambiguous success verdict (e.g. a
+      // Deploy Convergence run that resolved to `converged`) is completed to
+      // release its slot, instead of holding it awaiting input with nothing to
+      // ask. Non-success parks / genuine questions never match and keep parking.
+      // Self-gating on the live needs_input anomaly; `getTerminalVerdictAutoCompleteEnabled`
+      // (absent ⇒ enabled) is the ops kill switch. Never provider-pause-completes.
+      const terminalVerdictResult =
+        (deps.getTerminalVerdictAutoCompleteEnabled?.() ?? true)
+          ? await autoCompleteTerminalVerdictTasks({
+            taskStore,
+            lifecycleDeps: {
+              ...lifecycleDeps,
+              ...(deps.agentLifecycleDeps?.interactionLog
+                ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+                : {}),
+            },
+            monitor,
+            isProviderPaused: isTaskProviderPaused,
+            auditLogPath: deps.auditLogPath,
+            broadcastToAll: deps.broadcastToAll,
+          })
+          : { completedTaskIds: [] };
+
       // Pending-task TTL sweep (issue #1526 Phase C / C3): expire tasks that
       // have starved in the queue past the TTL, freeing depth for the 429
       // depth limit. interactionLog rides in from agentLifecycleDeps — the
@@ -1925,6 +1957,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || result.worktreesChanged.length > 0
         || autoCloseResult.closedTaskIds.length > 0
         || deliveredResult.completedTaskIds.length > 0
+        || terminalVerdictResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0

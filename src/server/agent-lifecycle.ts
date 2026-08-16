@@ -524,15 +524,19 @@ export async function completeTask(
      * finishedAwaitingAck TTL reclaim (issue #1884) stamps
      * `'finished_awaiting_ack_ttl'`, meta FAA auto-complete (issue #2070)
      * stamps `'finished_awaiting_ack_auto_complete'`, and the ack-path reaper
-     * (issue #2170) stamps `'finished_awaiting_ack_ack_reap'`, so the log
-     * distinguishes autonomous slot reclaim from a manual ack.
+     * (issue #2170) stamps `'finished_awaiting_ack_ack_reap'`, and the
+     * terminal-success verdict auto-complete (issue #2532) — an agent parked in
+     * `needs_input` with an unambiguous success verdict — stamps
+     * `'terminal_success_auto_complete'`, so the log distinguishes autonomous
+     * slot reclaim from a manual ack.
      */
     interactionLogReason?:
       | 'user_marked'
       | 'finished_awaiting_ack_ttl'
       | 'finished_awaiting_ack_capacity_pressure'
       | 'finished_awaiting_ack_auto_complete'
-      | 'finished_awaiting_ack_ack_reap';
+      | 'finished_awaiting_ack_ack_reap'
+      | 'terminal_success_auto_complete';
   } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);

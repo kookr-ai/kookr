@@ -37,6 +37,9 @@ export type InteractionEvent =
        * `finished_awaiting_ack_capacity_pressure` — soft-TTL reclaim under capacity pressure (issue #2355).
        * `finished_awaiting_ack_auto_complete` — meta/playbook FAA auto-complete (issue #2070).
        * `finished_awaiting_ack_ack_reap` — bounded-deadline ack-path reaper (issue #2170).
+       * `terminal_success_auto_complete` — terminal-success verdict auto-complete (issue #2532):
+       *   an agent parked in `needs_input` whose final message is an unambiguous
+       *   success verdict (e.g. `converged`) is completed to free the slot.
        */
       reason:
         | 'user_marked'
@@ -44,7 +47,8 @@ export type InteractionEvent =
         | 'finished_awaiting_ack_ttl'
         | 'finished_awaiting_ack_capacity_pressure'
         | 'finished_awaiting_ack_auto_complete'
-        | 'finished_awaiting_ack_ack_reap';
+        | 'finished_awaiting_ack_ack_reap'
+        | 'terminal_success_auto_complete';
       durationMs: number;
       timestamp: string;
     }
