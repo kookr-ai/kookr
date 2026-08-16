@@ -1118,6 +1118,123 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
+  it('never auto-pauses the bootstrap-critical merge watchdog (issue #2530)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Three consecutive failures — the exact streak that fail-closes an
+      // ordinary schedule (#2353).
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:05:00.000Z');
+      await failOnce(service, store, watchdog.id, '2026-01-01T09:10:00.000Z');
+
+      const after = store.get(watchdog.id)!;
+      // The floor: it stays enabled and is NOT parked behind an operatorHold, so
+      // it is always alive to land the fix that would re-arm the fleet.
+      expect(after.enabled).toBe(true);
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.stopReason).toBeUndefined();
+      // Counter is still maintained and it still alerts out-of-fleet (#1665) —
+      // the alert just does not claim it was paused.
+      expect(after.consecutiveFailures).toBe(3);
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).not.toContain('auto-paused');
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('regression: a fleet cascade parks the general fleet but never the merge watchdog (issue #2530)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const general = ['Cross-Repo Orchestrator', 'Queue Feeder', 'Incident Sentinel'].map((name, i) =>
+        store.create({
+          name,
+          cron: '* * * * *',
+          playbook: { path: `general-${i}.md`, parameters: {} },
+          cwd: '/tmp',
+        }),
+      );
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // The cascade: every schedule, including the watchdog, fails 3× in the
+      // same window.
+      const all = [...general, watchdog];
+      for (const s of all) {
+        for (let i = 0; i < 3; i++) {
+          await failOnce(service, store, s.id, `2026-01-01T1${i}:00:00.000Z`);
+        }
+      }
+
+      // Fail-closed for the general fleet is unchanged.
+      for (const s of general) {
+        const parked = store.get(s.id)!;
+        expect(parked.enabled).toBe(false);
+        expect(parked.stopReason).toBe('consecutive_failures');
+        expect(parked.operatorHold).toBe(true);
+      }
+
+      // The recovery floor holds: the merge watchdog is still enabled…
+      const wd = store.get(watchdog.id)!;
+      expect(wd.enabled).toBe(true);
+      expect(wd.operatorHold).toBeUndefined();
+
+      // …and can still land a PR: a subsequent fire reserves, accepts, and
+      // completes, clearing its own streak.
+      const receipt = await service.reserveExecution(store.get(watchdog.id)!, 'cron', '2026-01-01T14:00:00.000Z');
+      await service.markExecutionAccepted(watchdog.id, receipt.id, 'task-land', false);
+      await service.recordTaskTerminalOutcome('task-land', 'completed');
+      const recovered = store.get(watchdog.id)!;
+      expect(recovered.enabled).toBe(true);
+      expect(recovered.consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('enforceFailureAutoPauses skips the bootstrap-critical merge watchdog (issue #2530)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      // Pre-existing high counters (e.g. persisted from before the fix), both
+      // still enabled — exactly what enforceFailureAutoPauses sweeps.
+      const general = store.create({
+        name: 'General',
+        cron: '* * * * *',
+        playbook: { path: 'general.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const watchdog = store.create({
+        name: 'PR Merge/Rebase Watchdog',
+        cron: '* * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      store.replace({ ...store.get(general.id)!, consecutiveFailures: 5 });
+      store.replace({ ...store.get(watchdog.id)!, consecutiveFailures: 5 });
+
+      const paused = await service.enforceFailureAutoPauses();
+      expect(paused).toBe(1);
+      expect(store.get(general.id)!.enabled).toBe(false);
+      expect(store.get(watchdog.id)!.enabled).toBe(true);
+      expect(store.get(watchdog.id)!.operatorHold).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
   it('re-enable clears the consecutive-failure counter and stopReason (issue #2353)', async () => {
     const { service, store, cleanup } = alertServiceHarness(2);
     try {

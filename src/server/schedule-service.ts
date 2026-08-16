@@ -23,7 +23,10 @@ import type { ScheduleRollup } from '../core/schedule-rollup.js';
 import type { TerminationReason } from '../shared/contracts/task-status.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
-import { decideTransientFailureRearm } from '../core/critical-schedule-rearm.js';
+import {
+  decideTransientFailureRearm,
+  isBootstrapCriticalSchedule,
+} from '../core/critical-schedule-rearm.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
 import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
@@ -363,6 +366,14 @@ export class ScheduleService {
    * (issue #2353). Parks the schedule (`enabled: false`) with
    * `stopReason: consecutive_failures` and `operatorHold: true` so critical
    * recovery re-arm cannot re-enable a known-dead loop. Empty when no pause.
+   *
+   * Bootstrap-safe exception (issue #2530): a schedule in the recovery sub-tier
+   * (the PR merge/rebase watchdog) is NEVER auto-paused. Its liveness gates the
+   * fleet's ability to land its own fixes, so disabling it can sever the very
+   * recovery path a cascade needs. It stays enabled and relies on the
+   * edge-triggered failure alert (#1665) for out-of-fleet visibility, falling
+   * back to its normal cron cadence rather than fail-closed disable. The general
+   * fleet's fail-closed behavior is unchanged.
    */
   private autoPausePatch(
     schedule: Schedule,
@@ -370,6 +381,9 @@ export class ScheduleService {
   ): Partial<Pick<Schedule, 'enabled' | 'stopReason' | 'operatorHold'>> {
     const threshold = this.resolveFailureAlertThreshold();
     if (!shouldAutoPauseForConsecutiveFailures(consecutiveFailures, threshold, schedule.enabled)) {
+      return {};
+    }
+    if (isBootstrapCriticalSchedule(schedule)) {
       return {};
     }
     return {
@@ -467,8 +481,11 @@ export class ScheduleService {
     for (const schedule of this.store.list()) {
       const count = schedule.consecutiveFailures ?? 0;
       if (!shouldAutoPauseForConsecutiveFailures(count, threshold, schedule.enabled)) continue;
-      const now = new Date().toISOString();
       const patch = this.autoPausePatch(schedule, count);
+      // Bootstrap-critical members (#2530) yield an empty patch — they are
+      // never auto-paused. Nothing to enforce; leave them enabled.
+      if (Object.keys(patch).length === 0) continue;
+      const now = new Date().toISOString();
       this.store.replace({
         ...schedule,
         ...patch,
