@@ -2836,6 +2836,42 @@ describe('diagnostics routes', () => {
       expect(stats.snapshot(nowMs)!.cacheAgeMs).toBe(250);
     });
 
+    test('defers the SWR background refresh off the stale-serve path (issue #2492)', async () => {
+      // assembleHealthBody has a large synchronous prefix (viewTasks + capacity
+      // ledger) before its first await. #2492 requires the expired body be served
+      // IMMEDIATELY, so the refresh must be scheduled off the request path, never
+      // run inline. Capture the scheduled task instead of running it to prove the
+      // stale serve does no assembly work.
+      let nowMs = 1_700_000_000_000;
+      const taskStore = new TaskStore();
+      const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      let deferred: (() => void) | undefined;
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        nowMs: () => nowMs,
+        healthRefreshScheduler: (fn) => { deferred = fn; }, // capture, don't run
+      });
+
+      // Prime the cache (cold path assembles once).
+      await app.request('/api/health');
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+
+      // Expire the TTL and hit it: the stale body returns without a second
+      // assembly on the request path — viewTasks is NOT called again inline.
+      nowMs += HEALTH_BODY_CACHE_MS + 1;
+      const stale = await app.request('/api/health');
+      expect(stale.status).toBe(200);
+      expect(viewSpy).toHaveBeenCalledTimes(1);
+      expect(deferred).toBeTypeOf('function');
+
+      // Only when the scheduled task runs does the single background refresh
+      // assemble (the deferral, not a dropped refresh).
+      deferred!();
+      await vi.waitFor(() => expect(viewSpy).toHaveBeenCalledTimes(2));
+    });
+
     test('a failed assembly is not sticky — the next request rebuilds', async () => {
       const taskStore = new TaskStore();
       const viewSpy = vi.spyOn(taskStore, 'viewTasks');

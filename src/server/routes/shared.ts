@@ -551,6 +551,14 @@ export interface RouteDeps {
    */
   healthBodyCacheStats?: HealthBodyCacheStats;
   /**
+   * Schedules the #2492 stale-while-revalidate background health re-assembly off
+   * the request path. Default is `setImmediate` so the refresh runs on a later
+   * macrotask — after the expired body is returned and flushed — rather than
+   * inline (assembleHealthBody has a large synchronous prefix). Injected in tests
+   * for deterministic scheduling; production leaves it unset.
+   */
+  healthRefreshScheduler?: (task: () => void) => void;
+  /**
    * Shared stale-process /proc summary cache (issues #1723, #2081, #2350).
    * Health reads via SWR `getSummary()`; session reaper + resource watchdog
    * share the same instance for pressure gauges so only one /proc walk runs

@@ -106,7 +106,10 @@ describe('/api/health lesson-yield scheduling (issue #1553)', () => {
       vi.setSystemTime(new Date('2026-07-27T00:00:00.000Z'));
       const resolvers: Array<(value: LessonYieldSnapshot) => void> = [];
       scanMock.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
-      const app = mkApp(baseDeps());
+      // Run the #2492 SWR refresh inline so the lesson-scan scheduling this test
+      // pins is deterministic under fake timers (production defers via
+      // setImmediate; that deferral is covered separately in diagnostics-routes.test.ts).
+      const app = mkApp({ ...baseDeps(), healthRefreshScheduler: (fn) => fn() });
 
       const settleUntil = async (predicate: () => boolean) => {
         for (let i = 0; i < 200 && !predicate(); i++) await vi.advanceTimersByTimeAsync(0);

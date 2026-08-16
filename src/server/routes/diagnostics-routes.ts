@@ -264,6 +264,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     | undefined;
   let healthBodyInFlight: Promise<Record<string, unknown>> | undefined;
   const healthBodyStats = deps.healthBodyCacheStats ?? new HealthBodyCacheStats();
+  // #2492 SWR background-refresh scheduler. Default: setImmediate, so the refresh
+  // runs on a later macrotask (after the stale body is returned and flushed) and
+  // never on the request path. Injectable so tests drive it deterministically.
+  const scheduleHealthRefresh: (task: () => void) => void =
+    deps.healthRefreshScheduler ?? ((task) => { setImmediate(task); });
 
   async function assembleHealthBody(): Promise<Record<string, unknown>> {
     const terminalBackend = deps.terminalBackend;
@@ -767,10 +772,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // background refresh. A wedged loop is out of scope for an in-process
       // cache — this only spares the stampede-before-wedge case.
       if (healthBodyCache.expiresAtMs <= now) {
-        void startHealthAssembly().catch(() => {
-          // Soft: a failed background refresh must never reject the response we
-          // are about to serve from the still-valid stale body. The failed
-          // assembly clears healthBodyInFlight, so the next request retries.
+        // Defer the refresh to a macrotask. assembleHealthBody has a large
+        // *synchronous* prefix (viewTasks + capacity-ledger build) before its
+        // first await, so calling startHealthAssembly() inline — even as a
+        // discarded promise — would run that walk on the stale-serve path and
+        // delay the "immediate" body #2492 promises. The default scheduler is
+        // setImmediate so the cached body returns (and flushes) first; the kick
+        // is injectable for deterministic tests. Single-flight still holds
+        // because the deferred kicks run after this one set healthBodyInFlight.
+        scheduleHealthRefresh(() => {
+          void startHealthAssembly().catch(() => {
+            // Soft: a failed background refresh must never surface — the stale
+            // body was already served. The failed assembly clears
+            // healthBodyInFlight, so the next request retries.
+          });
         });
       }
       return serveHealthBody(healthBodyCache, now);
