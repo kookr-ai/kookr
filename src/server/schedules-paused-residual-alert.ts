@@ -40,6 +40,62 @@ export const DEFAULT_SCHEDULES_PAUSED_COUNT_BOUND = 3;
 export const DEFAULT_SCHEDULES_PAUSED_COOLDOWN_MS = 60 * 60_000;
 
 /**
+ * One idempotent, provenance-filtered command that re-enables every
+ * cascade-origin held schedule (issue #2531). Embedded verbatim in every page
+ * so a Discord-only operator can copy-paste one line instead of running
+ * `kookr schedule enable <id>` N times. See `bin/kookr-schedule.js`.
+ */
+export const CASCADE_BATCH_REENABLE_COMMAND = 'kookr schedule enable --held-by cascade' as const;
+
+/**
+ * Age-based escalation ladder (issue #2531). The residual page is edge-
+ * triggered on the paused count crossing the bound (#2426); this ladder
+ * re-raises that page with rising urgency the longer the *same* episode stays
+ * unrecovered, so a dropped, fire-and-forget escalation cannot sit ignored for
+ * 24h+ (the motivating window). Each step is `{ afterMs, severity, urgency }`:
+ * once the open episode's age reaches `afterMs`, the next page uses that step's
+ * severity/urgency. Steps are ascending by `afterMs`; step 0 (`afterMs: 0`)
+ * reproduces the original warning-severity page byte-for-byte.
+ *
+ * `AnomalySeverity` has only `info | warning | critical`, so severity tops out
+ * at `critical`; the `urgency` label carries the finer gradation into the page
+ * copy. Escalation stops when the episode recovers (paused count → 0) — which,
+ * in practice, is exactly what running {@link CASCADE_BATCH_REENABLE_COMMAND}
+ * causes — so recovery *is* the ack signal and no separate ack channel is
+ * introduced.
+ */
+export interface SchedulesPausedEscalationStep {
+  /** Open-episode age (ms) at or beyond which this step's page applies. */
+  afterMs: number;
+  severity: 'warning' | 'critical';
+  /** Fine-grained urgency label surfaced in the page copy. */
+  urgency: string;
+}
+
+export const DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER: readonly SchedulesPausedEscalationStep[] = [
+  { afterMs: 0, severity: 'warning', urgency: 'ELEVATED' },
+  { afterMs: 6 * 60 * 60_000, severity: 'critical', urgency: 'HIGH' },
+  { afterMs: 12 * 60 * 60_000, severity: 'critical', urgency: 'SEVERE' },
+];
+
+/**
+ * Resolve the ladder step for an open episode of `ageMs`. Returns the index of
+ * the highest step whose `afterMs ≤ ageMs` (always ≥ 0 — step 0 has
+ * `afterMs: 0`). A negative/NaN age floors to step 0.
+ */
+export function resolveEscalationTier(
+  ageMs: number,
+  ladder: readonly SchedulesPausedEscalationStep[] = DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER,
+): number {
+  let tier = 0;
+  for (let i = 1; i < ladder.length; i++) {
+    if (Number.isFinite(ageMs) && ageMs >= ladder[i].afterMs) tier = i;
+    else break;
+  }
+  return tier;
+}
+
+/**
  * Cap how many paused rows the Discord body lists. Production currently
  * parks about eight schedules on a full belt stall; 16 leaves headroom
  * without blowing the page.
@@ -62,6 +118,12 @@ export interface SchedulesPausedResidualAlerterDeps {
   getCountBound?: () => number;
   /** Live re-page cooldown (ms). Falls back to {@link DEFAULT_SCHEDULES_PAUSED_COOLDOWN_MS}. */
   getCooldownMs?: () => number;
+  /**
+   * Age-based escalation ladder (issue #2531). Falls back to
+   * {@link DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER}. Injectable so tests can
+   * exercise the ladder on a compressed clock.
+   */
+  getEscalationLadder?: () => readonly SchedulesPausedEscalationStep[];
   /** Injectable clock (tests). */
   now?: () => number;
 }
@@ -78,6 +140,10 @@ export interface SchedulesPausedResidualAlerterStats {
   lastCount: number;
   /** When the last fire/re-page was emitted, or null. */
   lastAlertedAtMs: number | null;
+  /** When the current open episode began (first fire), or null. */
+  episodeStartedAtMs: number | null;
+  /** Highest escalation-ladder step paged in the current episode (issue #2531). */
+  escalationTier: number;
 }
 
 /**
@@ -89,6 +155,10 @@ export class SchedulesPausedResidualAlerter {
   private firing = false;
   private lastCount = 0;
   private lastAlertedAtMs: number | null = null;
+  /** First-fire timestamp of the current open episode (issue #2531). */
+  private episodeStartedAtMs: number | null = null;
+  /** Highest ladder step paged in the current episode (issue #2531). */
+  private escalationTier = 0;
   private readonly deps: SchedulesPausedResidualAlerterDeps;
 
   constructor(deps: SchedulesPausedResidualAlerterDeps) {
@@ -111,6 +181,11 @@ export class SchedulesPausedResidualAlerter {
       }
       this.firing = false;
       this.lastCount = 0;
+      // Recovery is the ack (issue #2531): running the batch re-enable drops
+      // the count to 0, ending the episode and stopping escalation. Reset the
+      // episode clock/tier so the next crossing starts a fresh ladder.
+      this.episodeStartedAtMs = null;
+      this.escalationTier = 0;
       // lastAlertedAtMs is retained for diagnostics only. After clear, a new
       // episode pages on the next crossing (!firing short-circuits the
       // cooldown gate on the next fire).
@@ -126,19 +201,37 @@ export class SchedulesPausedResidualAlerter {
 
     this.lastCount = count;
 
+    // New episode: stamp the episode clock so age-based escalation measures
+    // from the first fire, not from process start.
+    if (!this.firing || this.episodeStartedAtMs === null) {
+      this.episodeStartedAtMs = nowMs;
+      this.escalationTier = 0;
+    }
+
+    const ladder = this.resolveLadder();
+    const ageMs = nowMs - this.episodeStartedAtMs;
+    const tier = resolveEscalationTier(ageMs, ladder);
+
     const cooldownMs = this.resolveCooldownMs();
-    const canPage =
-      !this.firing
-      || this.lastAlertedAtMs === null
-      || nowMs - this.lastAlertedAtMs >= cooldownMs;
+    const cooldownElapsed =
+      this.lastAlertedAtMs === null || nowMs - this.lastAlertedAtMs >= cooldownMs;
+    // Page when: (a) opening the episode, (b) the episode aged into a higher
+    // ladder step (escalation edge — bypasses the cooldown so a severity bump
+    // is never swallowed), or (c) the same-tier re-page cooldown elapsed.
+    const escalated = tier > this.escalationTier;
+    const canPage = !this.firing || escalated || cooldownElapsed;
     if (!canPage) return;
 
     this.firing = true;
+    this.escalationTier = Math.max(this.escalationTier, tier);
     this.lastAlertedAtMs = nowMs;
     this.emit(
       buildSchedulesPausedResidualAlert({
         paused,
         countBound: bound,
+        tier,
+        ageMs,
+        ladder,
       }),
     );
   }
@@ -149,6 +242,8 @@ export class SchedulesPausedResidualAlerter {
       firing: this.firing,
       lastCount: this.lastCount,
       lastAlertedAtMs: this.lastAlertedAtMs,
+      episodeStartedAtMs: this.episodeStartedAtMs,
+      escalationTier: this.escalationTier,
     };
   }
 
@@ -177,6 +272,12 @@ export class SchedulesPausedResidualAlerter {
       return Math.floor(value);
     }
     return DEFAULT_SCHEDULES_PAUSED_COOLDOWN_MS;
+  }
+
+  private resolveLadder(): readonly SchedulesPausedEscalationStep[] {
+    const value = this.deps.getEscalationLadder?.();
+    if (Array.isArray(value) && value.length > 0) return value;
+    return DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER;
   }
 }
 
@@ -221,24 +322,62 @@ export function formatPausedScheduleLines(
   return lines.join('\n');
 }
 
+/**
+ * Render a coarse "Nh"/"Nm" age string for the page copy. Sub-minute ages
+ * (the very first fire) render as `0m` rather than an empty string.
+ */
+export function formatEpisodeAge(ageMs: number): string {
+  if (!Number.isFinite(ageMs) || ageMs <= 0) return '0m';
+  const totalMinutes = Math.floor(ageMs / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
+  return `${minutes}m`;
+}
+
 export function buildSchedulesPausedResidualAlert(args: {
   paused: ReadonlyArray<PausedScheduleSample>;
   countBound: number;
+  /** Escalation-ladder step index for this page (issue #2531). Defaults to 0. */
+  tier?: number;
+  /** Open-episode age (ms) at page time (issue #2531). Defaults to 0. */
+  ageMs?: number;
+  /** Ladder in effect; defaults to {@link DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER}. */
+  ladder?: readonly SchedulesPausedEscalationStep[];
 }): Extract<ServerMessage, { type: 'alert' }> {
   const count = args.paused.length;
   const list = formatPausedScheduleLines(args.paused);
+  const ladder = args.ladder ?? DEFAULT_SCHEDULES_PAUSED_ESCALATION_LADDER;
+  const tierIndex = Math.min(Math.max(args.tier ?? 0, 0), ladder.length - 1);
+  const step = ladder[tierIndex];
+  const ageMs = args.ageMs ?? 0;
+  // Escalated pages (tier > 0) prefix the urgency + episode age so an operator
+  // (and Discord) can see the page is a re-raise, not a fresh one.
+  const escalated = tierIndex > 0;
+  const summary = escalated
+    ? `[${step.urgency}] schedules fail-closed paused ${formatEpisodeAge(ageMs)}+: `
+      + `${count} schedule(s) still parked after consecutive failures`
+    : `schedules fail-closed paused: ${count} schedule(s) parked after consecutive failures`;
+  const ageLine = escalated
+    ? `This episode has been unrecovered for ~${formatEpisodeAge(ageMs)} `
+      + `(urgency ${step.urgency}); it will keep re-raising until cleared.\n`
+    : '';
   return {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
-    summary:
-      `schedules fail-closed paused: ${count} schedule(s) parked after consecutive failures`,
+    summary,
     details:
       `Issue #2426: ${count} schedule(s) are fail-closed paused `
       + `(stopReason=consecutive_failures), crossing the page bound of ${args.countBound}. `
-      + 'Page only — no schedule is re-enabled by this alert. '
-      + 'Diagnose the loop, then re-enable with `kookr schedule enable <id>`.\n'
+      + 'Page only — no schedule is re-enabled by this alert.\n'
+      + ageLine
+      + 'Recover ALL cascade-origin holds in one idempotent command '
+      + '(issue #2531 — #2517 makes cascade re-enable safe: false failure '
+      + 'increments cannot recur, so genuine operator holds are left untouched):\n'
+      + `    ${CASCADE_BATCH_REENABLE_COMMAND}\n`
+      + 'Or re-enable one at a time with `kookr schedule enable <id>`:\n'
       + list,
-    severity: 'warning',
+    severity: step.severity,
     operationalAlert: {
       key: SCHEDULES_PAUSED_RESIDUAL_ALERT_KEY,
       metric: SCHEDULES_PAUSED_RESIDUAL_METRIC,

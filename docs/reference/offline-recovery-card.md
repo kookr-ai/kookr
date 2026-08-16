@@ -130,9 +130,10 @@ print([c for c in d.get("checks", []) if c.get("id")=="ops.schedules-paused-by-f
 ```
 
 - Discord/operator key: `schedules:paused:residual` (signal `op:schedules:paused:residual:alert`).
-- Page-only. **Do not** treat the page as a resume. Re-enable one schedule at a time with `kookr schedule enable <id>` after diagnosing the loop.
-- Recovered page (`op:schedules:paused:residual:clear`) fires only when the paused count returns to 0.
-- Episode state is process memory — a restart can re-page immediately if ≥3 are still parked.
+- Page-only. **Do not** treat the page as a resume. After diagnosing the loop, batch-recover all cascade-origin holds in one command: `kookr schedule enable --held-by cascade` (idempotent; leaves genuine operator holds untouched; safe per issue #2517). Or resume one at a time with `kookr schedule enable <id>`.
+- The page re-raises with rising urgency by episode age (warning → critical HIGH at ≥6h → critical SEVERE at ≥12h, issue #2531); each re-raise embeds the batch command.
+- Recovered page (`op:schedules:paused:residual:clear`) fires only when the paused count returns to 0 — running the batch command is what clears it (recovery = ack).
+- Episode state is process memory — a restart can re-page immediately if ≥3 are still parked, and resets the escalation age clock.
 
 ## 4. Resource watchdog env
 

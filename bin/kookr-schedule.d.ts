@@ -14,6 +14,8 @@ export interface ParsedArgs {
   id: string | null;
   json: boolean;
   help: boolean;
+  /** Batch re-enable provenance selector (issue #2531). `null` when absent. */
+  heldBy: 'cascade' | null;
 }
 
 export interface RequestJsonArgs {
@@ -39,6 +41,8 @@ export interface ScheduleLike {
   nextRunAt?: string | null;
   maxTriggers?: number;
   remainingTriggers?: number;
+  /** Auto-pause provenance (issue #2353) — cascade holds carry this value. */
+  stopReason?: string;
   [k: string]: unknown;
 }
 
@@ -54,4 +58,6 @@ export function parseArgs(argv: string[]): ParsedArgs;
 export function resolveId(raw: string | null | undefined): string | null;
 export function requestJson(args: RequestJsonArgs): Promise<RequestJsonResult>;
 export function formatScheduleLine(schedule: ScheduleLike): string;
+/** Cascade-origin held schedules: disabled + stopReason=consecutive_failures (#2531). */
+export function selectCascadeHeld(schedules: unknown): ScheduleLike[];
 export function main(deps?: MainDeps): Promise<void>;

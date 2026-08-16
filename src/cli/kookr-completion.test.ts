@@ -212,7 +212,7 @@ describe('bash completion behavior', () => {
 
   it('completes schedule subcommands and flags', async () => {
     await expect(completeBash(['kookr', 'schedule', ''])).resolves.toEqual(
-      expect.arrayContaining(['list', 'run', 'enable', 'disable', '--json']),
+      expect.arrayContaining(['list', 'run', 'enable', 'disable', '--held-by', '--json']),
     );
   });
 

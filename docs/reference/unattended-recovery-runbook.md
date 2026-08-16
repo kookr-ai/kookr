@@ -35,7 +35,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
-| Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` | `schedules.schedulesPausedByFailure` | Diagnose each loop, then `kookr schedule enable <id>` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
+| Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
@@ -245,17 +245,51 @@ PY
 **Actions (ordered):**
 
 1. Read the page body (or the health array): each row has `name`,
-   `consecutiveFailures`, and `kookr schedule enable <id>`.
+   `consecutiveFailures`, and `kookr schedule enable <id>`. The page also prints
+   the one-command batch re-enable (below).
 2. Diagnose the loop (last error, recent tasks) **before** re-enabling.
    Re-enabling a still-broken belt just re-pauses it.
-3. Re-enable one schedule at a time. The recovered page fires only when the
-   paused count returns to **0**. Re-pages at most once per hour while the
-   count stays ≥ 3.
-4. Do **not** write a script that enables every id on the page. Operator
-   re-enable is the only resume path.
+3. Once the underlying cause is resolved, recover **all** cascade-origin holds
+   in one idempotent command instead of running `kookr schedule enable <id>` N
+   times (issue #2531):
+
+   ```bash
+   kookr schedule enable --held-by cascade
+   ```
+
+   This selects only schedules parked by the fail-closed auto-pause
+   (`enabled=false` **and** `stopReason=consecutive_failures`) and re-enables
+   each. A genuine operator `disable` does **not** set that `stopReason`, so
+   this **never** flips an intentional hold — verify with `--json` (the
+   `reenabled` / `failed` arrays list exactly what changed). Re-running it on a
+   clean fleet is a no-op ("No cascade-held schedules to re-enable").
+
+   **Why the batch is safe:** issue #2517 fixed the root cause — restart-
+   interrupted `cancelled` runs no longer increment `consecutiveFailures`, so a
+   false increment cannot recur and re-enabling a cascade-parked schedule will
+   not immediately re-trip the auto-pause on a phantom streak. To resume one
+   belt at a time instead, `kookr schedule enable <id>` still works.
+4. The recovered page fires only when the paused count returns to **0**.
+   Running the batch command drops the count to 0, which **is** the ack — no
+   separate acknowledgement step exists.
+
+**Escalation ladder (issue #2531).** While a paused set stays unrecovered, the
+`schedules:paused:residual` page **re-raises with rising urgency by episode
+age**, so a single dropped escalation cannot sit ignored for 24h+:
+
+| Episode age | Severity | Urgency label |
+| --- | --- | --- |
+| 0 (first page) | `warning` | ELEVATED |
+| ≥ 6h | `critical` | HIGH |
+| ≥ 12h | `critical` | SEVERE |
+
+Each re-raise embeds the copy-paste `kookr schedule enable --held-by cascade`
+block. Same-tier re-pages are still rate-limited to once per hour; an
+age-boundary crossing pages immediately so a severity bump is never swallowed.
+Escalation stops the moment the paused count returns to 0 (recovery = ack).
 
 Episode state is process memory. A restart can re-page immediately if ≥3
-schedules are still parked.
+schedules are still parked, and resets the escalation age clock.
 
 ---
 

@@ -1021,12 +1021,14 @@ List, trigger, enable, or disable schedules from the shell — the same operatio
 kookr schedule list [--json]
 kookr schedule run <id> [--json]
 kookr schedule enable <id> [--json]
+kookr schedule enable --held-by cascade [--json]
 kookr schedule disable <id> [--json]
 ```
 
 - `list` renders one line per schedule — `<id>  <enabled|disabled>  <name>  cron="<cron>"  next=<nextRunAt|->` plus `triggers=<remaining>/<max>` when a trigger cap is set. Pass `--json` for the raw `{schedules, status}` payload so scripts don't parse the human format.
 - `run <id>` fires the schedule once now and prints the spawned task id (`(queued)` when the server accepted the fire but is at capacity, so the task waits in the pending queue until a slot frees).
 - `enable <id>` / `disable <id>` toggle the schedule without editing its definition.
+- `enable --held-by cascade` batch-re-enables **every** schedule the fail-closed auto-pause parked (`enabled=false` and `stopReason=consecutive_failures`, issue #2353) in one idempotent command (issue #2531) — collapsing a `consecutive_failures` cascade recovery from N `enable <id>` calls to one. It **never** flips a genuine operator `disable` (that hold carries no `consecutive_failures` stopReason), prints exactly what it re-enabled, and is a no-op on a clean fleet. `consecutive-failures` is an accepted alias for `cascade`. `--held-by` is only valid with `enable` and cannot be combined with an `<id>`. With `--json`, the `details` envelope lists `{heldBy, total, reenabled[], failed[]}`; a partial failure exits `4`. Safe because issue #2517 removed the false-increment source, so a re-enabled schedule will not immediately re-trip on a phantom streak.
 
 The server is discovered the same way as `kookr spawn` (`KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then a probe of `4800`/`4801`); `KOOKR_API_TOKEN` is forwarded to non-loopback servers.
 
