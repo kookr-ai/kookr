@@ -1236,168 +1236,172 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * wave 22 (queue-feeder 2026-08-17, invent-product-wave #2069) #3092–#3094
  * (feedless feed_url discovery / connection-drop stealth / listing-hub
  * href follow) shipped and are title-exhausted. Invent wave 23
+ * (queue-feeder 2026-08-17, invent-product-wave #2069) #3114–#3116
+ * (stale q4-json re-probe / empty list feed_no_match / IR-advisory
+ * clock) shipped and are title-exhausted. Invent wave 24
  * (queue-feeder 2026-08-17, invent-product-wave #2069) is the next
- * Goal-1 slice after wave 22: leftovers the 17 Aug T-20h/T-25h floor
- * checks still show on the armed 18–20 Aug cluster. DE has a stored
- * q4-json feed_url but the last probe (6 Aug) is failed "no historical
- * q4 earnings item"; today's floor checks still see
- * GetPressReleaseListResult: [] and no issue was filed. That parked
- * fail must be re-probed before the 20 Aug window, and an empty list
- * must be a named feed_no_match rather than a permanent skip of the
- * feed or the issuer page. ROST is armed 19 Aug 06:30 ET (12h unknown-
- * session cover closing 19 Aug 18:30 ET) while the Ross IR advisory
- * still says ~16:00 ET on 20 Aug — the current window does not cover
- * that clock. Do not re-file #3092–#3094 / #3082–#3084 / #2558 /
- * #2601 / #2605 / #2882 / #2945 / #3041. Live GitHub leaves are filed
- * this run. Title idempotency prevents re-emit once those exist.
+ * Goal-1 slice after wave 23: leftovers the 17 Aug T-15h floor check
+ * and the live prod registry still show on the armed 18–20 Aug
+ * cluster. After the 18:45Z armed q4 re-probe, GOOGL / AAPL / DE
+ * stamped "q4 feed earnings items did not validate" — the list was
+ * not empty (#3115) and the probe was not stale (#3114), but the
+ * issuer news page still has to run in that same window. HD / LOW /
+ * ADI / TJX / WMT IR pages are advisory-or-calendar only (dated
+ * "will report", webcast, no results file) and must stamp
+ * event_seen_no_content instead of terminal no_source. ROST / WMT /
+ * TGT store an overview/homepage ir_url; persist the same-host
+ * press-releases child before the window, not only after
+ * verification_reject (#3094) or content_too_short (#2986). Do not
+ * re-file #3114–#3116 / #3092–#3094 / #3082–#3084 / #2986 / #2684 /
+ * #2558 / #3131–#3133. Live GitHub leaves are filed this run. Title
+ * idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): re-probe a stale failed q4-json feed before the armed window',
+      'feat(acquisition): still collect the issuer page when q4-json items fail earnings validation',
     goal:
-      'We already store a company JSON press-release feed URL ' +
-      '(q4-json / GetPressReleaseList). If the last probe failed or ' +
-      'came back empty, that old stamp just sits there — when the ' +
-      'ticker is about to fire, a later item can have appeared and we ' +
-      'never look again. Deere (armed 20 Aug BMO) is the example: the ' +
-      'feed URL is stored, but the last issuer_report_retrieval probe ' +
-      'is from 6 Aug ("no historical q4 earnings item"). The 17 Aug ' +
-      'T-20h/T-25h readiness checks still saw an empty list and no ' +
-      'issue was filed. Wave 22 (#3092) only discovers a missing feed ' +
-      'URL; it does not refresh a stored feed whose last probe is stale ' +
-      'and failed. Under umbrella #1587, re-probe once when the ticker ' +
-      'is armed or about to arm, has a non-empty q4-json feed_url, and ' +
-      'the last failed/empty retrieval is older than valid_until or ' +
-      'older than T-24h before fire. Do not re-file #3092. Do not ' +
-      'rewrite detections.jsonl.',
+      'A company JSON press-release feed can list headlines that look ' +
+      'like earnings while the linked body or PDF fails the "this is ' +
+      'actually a report" check. Lucy then treats that failed feed as if ' +
+      'the issuer path is done, and does not also fetch the company\'s ' +
+      'own news page in the same window — after the 17 Aug 18:45Z ' +
+      're-check of already-queued tickers, GOOGL, AAPL, and DE all ' +
+      'stopped there with reason "q4 feed earnings items did not ' +
+      'validate." Under umbrella #1587, a non-empty q4-json list ' +
+      '(GetPressReleaseList) whose items fail that check must still ' +
+      'collect the issuer HTML page and continue through stealth render ' +
+      '(JS/bot-wall) and SEC/classic; the failure must not spend the ' +
+      'issuer attempt as a dead feed. Nearby #3114 only re-probes a ' +
+      'stale failed/empty feed; #3115 only names a truly empty list ' +
+      'feed_no_match (surface checked, no matching item). Do not re-file ' +
+      'those. Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'Trigger: armed or next-window arm set, usable q4-json feed_url, ' +
-        'and issuer_report_retrieval failed/skipped with checked_at older ' +
-        'than valid_until (or older than 24h before fire). Action: one ' +
-        're-probe. If the list now has a validating current-period item, ' +
-        'persist issuer_verified. A Deere-shaped (DE) row that still ' +
-        'carries the 6 Aug fail must not still be that stamp when the 20 ' +
-        'Aug window opens. Do not invent a URL. Do not rewrite ' +
-        'detections.jsonl.',
-      'Re-probe at most once per resolve validity window, or once per ' +
-        'arm. Skip operator-aborted and source-blocklisted tickers. Leave ' +
-        'a fresh issuer_verified row alone. Missing feed_url is #3092, ' +
-        'not this leaf. An empty list after the re-probe is a named miss ' +
-        '(sibling leaf), not a crash. Do not re-file #3092.',
-      'Unit/fixture tests cover: (a) DE-shaped feed_url + failed stamp ' +
-        'older than 24h + list now has a validating earnings item → ' +
-        'issuer_verified persisted; (b) stamp younger than the window → ' +
-        'no extra probe; (c) missing feed_url unchanged; (d) aborted/' +
+      'Trigger: armed or about-to-arm ticker, usable q4-json feed_url, ' +
+        'and collectQ4Feed / the armed re-probe returns sawEarnings && ' +
+        '!sawValidated (reason "q4 feed earnings items did not validate" ' +
+        'or "q4 feed pdf-only body empty"). Action: issuer-page collect ' +
+        '(and already-scheduled stealth / SEC / classic) still run in ' +
+        'the same window. A GOOGL/AAPL/DE-shaped row must not skip the ' +
+        'issuer page solely because the feed items failed validation. ' +
+        'Do not invent a URL. Do not rewrite detections.jsonl.',
+      'An empty list remains #3115. A stale failed stamp re-probe ' +
+        'remains #3114. A list with a validating current-period item is ' +
+        'unchanged (issuer_verified). Operator-aborted and source-' +
+        'blocklisted jobs still skip. Do not invent a new missClass. ' +
+        'Do not re-file #3114 or #3115.',
+      'Unit/fixture tests cover: (a) non-empty list whose items fail ' +
+        'validate → issuer page still attempted; (b) validating item ' +
+        'still hits the feed and does not force an extra page; (c) empty ' +
+        'list unchanged (#3115); (d) aborted/blocklisted skip; (e) no ' +
+        'jsonl rewrite.',
+    ],
+    fileHints: [
+      'src/acquisition/tiers/issuer.js (collectQ4Feed / q4MissReason)',
+      'src/acquisition/issuer-url-resolver.js (armedQ4ReprobeReason)',
+      'src/scheduler-active-window-poll.js (do not skip issuer page)',
+    ],
+    testHints: [
+      'unit: sawEarnings && !sawValidated → issuer page still runs',
+      'unit: validating q4 item still hits the feed',
+      'unit: empty list still follows #3115',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): stamp event_seen_no_content on advisory-only issuer pages and keep the watch live',
+    goal:
+      'Some issuer calendars announce an upcoming earnings release ' +
+      '(date, time, webcast) without linking the results document yet. ' +
+      'The 17 Aug check fifteen hours before the window found Home ' +
+      'Depot\'s IR events page listing "August 18, 2026 9:00 am ET — Q2 ' +
+      '2026 EARNINGS RELEASE" with a webcast and no results file; LOW, ' +
+      'ADI, TJX, and WMT look the same for 19–20 Aug. Lucy already ' +
+      'alerts operators when the share of "we saw the event but have no ' +
+      'report text" misses is high (#2684), but that advisory/calendar ' +
+      'row is still easy to record as no_source (pure silence — nothing ' +
+      'seen). Under umbrella #1587, treat that page as event-seen: set ' +
+      'eventDetected so the miss classifies as event_seen_no_content ' +
+      '(existing codes), and keep the watch live until a results ' +
+      'document appears. Do not re-file #2684. Do not rewrite ' +
+      'detections.jsonl.',
+    acceptanceCriteria: [
+      'An issuer page that is an events / advisory / calendar listing ' +
+        'with a dated current-period "will report" or earnings-release ' +
+        'row and no results PDF/HTML href must stamp eventDetected + ' +
+        'event_seen_no_content (existing codes — do not invent a ' +
+        'missClass). The watch stays armed. An HD-shaped calendar + ' +
+        'webcast page must not become a terminal no_source solely for ' +
+        'lack of a results file. Do not rewrite detections.jsonl.',
+      'A page that already has a validating earnings-release href is ' +
+        'unchanged (#3094). Operator-aborted and source-blocklisted jobs ' +
+        'still refuse. #2684 alert thresholds are unchanged. Do not ' +
+        're-file #2684 or #3094.',
+      'Unit/fixture tests cover: (a) HD-shaped calendar + dated event + ' +
+        'webcast, no results → event_seen_no_content and the watch stays ' +
+        'live; (b) page with a results href still collects; (c) no dated ' +
+        'event → do not invent event_seen_no_content; (d) aborted/' +
         'blocklisted skip; (e) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/acquisition/tiers/issuer.js (probeHistoricalQ4Feed / collectQ4Feed)',
-      'src/scheduler-runner.js (arm / next-window re-probe trigger)',
-      'data/issuers.json (issuer_report_retrieval.checked_at on armed rows)',
+      'src/acquisition/event-content-status.js (EVENT_SEEN_NO_CONTENT)',
+      'src/acquisition/listing-hub-href-follow.js (SCHEDULING_LISTING_RE)',
+      'src/acquisition/tiers/issuer.js (issuer page collect)',
     ],
     testHints: [
-      'unit: stale failed q4-json + new earnings item → issuer_verified',
-      'unit: fresh stamp is not re-probed',
-      'unit: missing feed_url is unchanged (#3092)',
+      'unit: advisory/calendar + dated event, no results → event_seen_no_content',
+      'unit: results href still collects',
+      'unit: no dated event does not invent the stamp',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): treat an empty q4-json press-release list as feed_no_match, not a parked fail',
+      'feat(acquisition): persist a press-releases child URL when ir_url is an overview hub',
     goal:
-      'An empty JSON press-release list is not a broken feed — it only ' +
-      'means no matching earnings item is published yet. Today the probe ' +
-      'path stamps that empty list as a failed retrieval and the fail ' +
-      'sits parked, so we treat a still-usable feed as dead. The 17 Aug ' +
-      'T-20h/T-25h readiness checks found Deere\'s list empty ' +
-      '(GetPressReleaseListResult: []); the live prod row has sat on ' +
-      '"no historical q4 earnings item" since 6 Aug. Live collectQ4Feed ' +
-      'already names this feed_no_match when nothing matches today; the ' +
-      'probe/readiness path does not. Under umbrella #1587, an empty ' +
-      'q4-json list must be a named feed_no_match, issuer page + stealth ' +
-      '+ SEC/classic must still run, and the feed must stay eligible for ' +
-      'a later poll. Do not re-file #2882 (newswire feed_no_match). Do ' +
-      'not rewrite detections.jsonl.',
+      'Several tickers queued for the 18–20 Aug window store a company ' +
+      'investor-relations homepage or "overview" hub instead of the ' +
+      'news/press-releases listing (ROST investors.rossstores.com titled ' +
+      '"overview"; WMT stock.walmart.com; TGT corporate.target.com/' +
+      'investors). Later fetches therefore start from the hub every ' +
+      'time. Two earlier fixes walk to a better URL only after a later ' +
+      'failure: #3094 follows an on-page earnings-release link after ' +
+      'verification_reject (body failed the earnings check); #2986 ' +
+      're-resolves a listing hub after content_too_short (extracted ' +
+      'text below the usable-length floor). Under umbrella #1587, when ' +
+      'a ticker is queued and the stored IR URL (ir_url) is an overview ' +
+      'or homepage that already links a same-host news or press-releases ' +
+      'child, persist that child as the working IR URL now. Do not ' +
+      're-file #3094 or #2986. Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'A q4-json / GetPressReleaseList payload whose ' +
-        'GetPressReleaseListResult is missing or [] must stamp an existing ' +
-        'failureCode (feed_no_match or the documented issuer-feed ' +
-        'empty-match already in the scoreboard set — do not invent a new ' +
-        'missClass) and must not park issuer_report_retrieval.status=failed ' +
-        'with only "no historical q4 earnings item". Issuer-page, stealth, ' +
-        'and classic/SEC still run in the same window. A Deere-shaped ' +
-        'empty list must not consume the full issuer budget as a dead ' +
-        'feed. Do not rewrite detections.jsonl.',
-      'A list that contains a validating current-period earnings item is ' +
-        'unchanged (issuer_verified / collectQ4Feed hit). HTTP 403/401 on ' +
-        'the feed host still use the existing access_denied path. ' +
-        'Operator-aborted and source-blocklisted jobs still refuse. Do not ' +
-        're-file #2882 or #3092.',
-      'Unit/fixture tests cover: (a) empty GetPressReleaseListResult → ' +
-        'named feed_no_match + issuer page still attempted; (b) list with ' +
-        'a validating earnings item still hits; (c) 403 still uses ' +
-        'access_denied; (d) no new missClass; (e) no jsonl rewrite.',
-    ],
-    fileHints: [
-      'src/acquisition/tiers/issuer.js (q4ProbeMissReason / q4MissFailureCode)',
-      'src/acquisition/acquire.js (feed_no_match empty-match set)',
-      'src/scheduler-active-window-poll.js (do not skip issuer page on empty list)',
-    ],
-    testHints: [
-      'unit: empty GetPressReleaseListResult → feed_no_match, page still runs',
-      'unit: list with validating earnings item still hits',
-      'unit: 403 still uses existing access_denied path',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): cover an IR-advisory release clock when it disagrees with the armed estimate',
-    goal:
-      'We sometimes arm a poll from an estimated earnings time that is a ' +
-      'full trading session (or more) earlier than the datetime the ' +
-      'company IR page actually states. The watch then closes before that ' +
-      'advisory clock and we miss the release. Ross (ROST) is the ' +
-      'example: armed 19 Aug 06:30 ET as session=unknown, 12h poll ' +
-      'closing 19 Aug 18:30 ET, while the IR advisory still says ~16:00 ' +
-      'ET on 20 Aug. Dual-session cover (#2558) only widens BMO↔AMC on ' +
-      'the same date; it does not move the watch to the advisory date. ' +
-      'Under umbrella #1587, when the issuer page or IR advisory states a ' +
-      'release datetime that disagrees with the armed job by a session or ' +
-      'more, extend or re-arm so the advisory clock sits inside an open ' +
-      'poll. Do not treat ROST as a one-off. Do not rewrite ' +
-      'detections.jsonl.',
-    acceptanceCriteria: [
-      'When an armed (or about-to-arm) job has a high-confidence IR ' +
-        'advisory / "will report" datetime at least one session away from ' +
-        'job.date+time, the scheduler must extend the open window or ' +
-        're-arm a sibling watch so that advisory clock is inside an open ' +
-        'poll. A ROST-shaped 19 Aug 06:30 ET job with an IR advisory of ' +
-        '20 Aug ~16:00 ET must not stay closed before that advisory ' +
-        'clock. Do not invent a datetime from prose that lacks a day. Do ' +
+      'Trigger: armed or about-to-arm, usable ir_url whose page is an ' +
+        'overview or homepage hub (title or path), and a same-host child ' +
+        'matching the existing listing-hub news/press-releases leaves. ' +
+        'Action: persist that child on the issuer row (ir_url or a ' +
+        'documented working-IR field). A ROST-shaped overview URL must ' +
+        'not stay the only IR URL through the 19 Aug window when a ' +
+        'press-releases child is on the page. Do not invent a URL. Do ' +
         'not rewrite detections.jsonl.',
-      'Same-session dual-cover (#2558) is unchanged. Operator-aborted ' +
-        'and source-blocklisted jobs still refuse. A missing or ' +
-        'ambiguous advisory is a named skip, not a crash and not a ' +
-        'moved watch. Do not re-file #2558 or the existing ROST ' +
-        'session=unknown informational leftover.',
-      'Unit/fixture tests cover: (a) ROST-shaped 19 Aug 06:30 ET job + ' +
-        '20 Aug 16:00 ET advisory → window extended or sibling armed ' +
-        'through that clock; (b) advisory on the same session → no ' +
-        'move; (c) no dated advisory → no move; (d) aborted/blocklisted ' +
-        'skip; (e) no jsonl rewrite.',
+      'Do not follow a webcast or advisory href as the child. A missing ' +
+        'child is a named skip, not a crash. #3094 verification_reject ' +
+        'follow and #2986 content_too_short re-resolve stay as they are. ' +
+        'Operator-aborted and source-blocklisted jobs skip. Do not ' +
+        're-file #3094 or #2986.',
+      'Unit/fixture tests cover: (a) overview hub + press-releases ' +
+        'child → child persisted; (b) already-a-press-releases URL ' +
+        'unchanged; (c) no child → no write; (d) webcast-only child ' +
+        'rejected; (e) aborted/blocklisted skip; (f) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/scheduler-window-lifecycle.js (extend / re-arm)',
-      'src/acquisition issuer-page / advisory datetime parse',
-      'src/scheduler-active-window-poll.js (unknown-session dual cover stays)',
+      'src/acquisition/listing-hub-href-follow.js (LISTING_HUB_LEAVES)',
+      'src/acquisition/issuer-url-resolver.js (persist working IR URL)',
+      'data/issuers.json (ir_url on armed ROST / WMT / TGT rows)',
     ],
     testHints: [
-      'unit: 19 Aug 06:30 ET job + 20 Aug 16:00 ET advisory → cover advisory clock',
-      'unit: same-session advisory does not move the watch',
-      'unit: missing/ambiguous advisory is a named skip',
+      'unit: overview hub + press-releases child → child persisted',
+      'unit: already-a-releases URL is unchanged',
+      'unit: webcast-only child is rejected',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),

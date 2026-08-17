@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): re-probe a stale failed q4-json feed before the armed window',
-      'feat(acquisition): treat an empty q4-json press-release list as feed_no_match, not a parked fail',
-      'feat(acquisition): cover an IR-advisory release clock when it disagrees with the armed estimate',
+      'feat(acquisition): still collect the issuer page when q4-json items fail earnings validation',
+      'feat(acquisition): stamp event_seen_no_content on advisory-only issuer pages and keep the watch live',
+      'feat(acquisition): persist a press-releases child URL when ir_url is an overview hub',
     ]);
   });
 
