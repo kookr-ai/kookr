@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { OnboardingTour } from './OnboardingTour.js';
+import { NARRATED_DEMO_YOUTUBE_URL, OnboardingTour } from './OnboardingTour.js';
 import { close, open } from '../store/onboarding-store.js';
 
 async function flush() {
@@ -55,6 +55,23 @@ describe('OnboardingTour readiness guidance', () => {
     act(() => root.unmount());
     document.body.innerHTML = '';
     localStorage.clear();
+  });
+
+  test('welcome card links the published narrated demo', async () => {
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour));
+    });
+    act(() => open());
+    await flush();
+
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Welcome to Kookr');
+    expect(NARRATED_DEMO_YOUTUBE_URL).toBe('https://youtu.be/DHZrO8T_6Xg');
+    const demo = container.querySelector<HTMLAnchorElement>('[data-testid="onboarding-welcome-demo"]');
+    expect(demo).not.toBeNull();
+    expect(demo?.href).toBe(NARRATED_DEMO_YOUTUBE_URL);
+    expect(demo?.textContent).toBe('Watch the 2-minute demo');
+    expect(demo?.target).toBe('_blank');
+    expect(demo?.rel.split(/\s+/)).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
   });
 
   test('renders first-launch readiness guidance in the tour flow', async () => {

@@ -13,6 +13,9 @@ import type { TourTargetClass } from './onboarding-tour-targets.js';
 
 export { TOUR_TARGET_CLASSES } from './onboarding-tour-targets.js';
 
+/** Same published YouTube URL as the README hero and Getting Started. Update all three if the video is replaced. */
+export const NARRATED_DEMO_YOUTUBE_URL = 'https://youtu.be/DHZrO8T_6Xg';
+
 interface Card {
   title: string;
   /** Body content. Renders inside `.onboarding-card-body`. */
@@ -35,6 +38,17 @@ export const ONBOARDING_CARDS: Card[] = [
         <p>
           Kookr is a smart attention router for developers running multiple AI coding agents.
           It does not write code — it watches your agents and tells you which one needs you next.
+        </p>
+        <p>
+          <a
+            className="onboarding-demo-link"
+            href={NARRATED_DEMO_YOUTUBE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="onboarding-welcome-demo"
+          >
+            Watch the 2-minute demo
+          </a>
         </p>
         <p className="onboarding-card-footer-hint">
           You can re-open this tour from the <strong>?</strong> Help button at the top right anytime.

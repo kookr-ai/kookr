@@ -13110,6 +13110,20 @@ button.act-tool-entry:focus-visible {
   color: var(--text-muted);
 }
 
+.onboarding-demo-link {
+  color: var(--accent, #61dafb);
+  text-decoration: underline;
+}
+
+.onboarding-demo-link:hover,
+.onboarding-demo-link:visited:hover {
+  color: var(--text-bright);
+}
+
+.onboarding-demo-link:visited {
+  color: var(--accent, #61dafb);
+}
+
 .onboarding-layout-diagram {
   width: 100%;
   height: auto;
