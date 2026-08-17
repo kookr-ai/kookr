@@ -325,8 +325,8 @@ space, and SAFE MODE status. That is what an operator (or Lucy over Discord)
 needs to see when the server itself will not answer.
 
 A companion on-disk surface is the **last-good `/api/health` snapshot**
-(`~/.kookr/last-good-health.json`, issue #2495): the server mirrors a redacted,
-size-capped copy of the full health body after each successful assembly, so
+(`~/.kookr/last-good-health.json`, issues #2495 / #2561): the server mirrors a redacted,
+size-capped, owner-only (`0o600`) copy of the full health body after each successful assembly, so
 unlike `ops-status.json`'s edge ring it carries the *whole* last-good body plus
 an mtime. `kookr ops digest --offline` reads it directly — and a plain
 `kookr ops digest` auto-degrades to it when HTTP is dark, printing how stale the

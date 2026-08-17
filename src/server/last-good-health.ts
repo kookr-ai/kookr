@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isSecretFieldName, redactSecrets as redactSecretString } from '../core/redact-secrets.js';
 
@@ -15,6 +15,11 @@ import { isSecretFieldName, redactSecrets as redactSecretString } from '../core/
  * Guarantees:
  * - **Atomic + rotate-by-overwrite**: temp file + rename, so a crash mid-write
  *   cannot truncate the live file and history never grows unbounded.
+ * - **Owner-only**: the snapshot is written at mode `0o600` (issue #2561). The
+ *   temp file is created with that mode, chmod'd past umask, then the final
+ *   path is chmod'd again after rename so a leftover world-readable file cannot
+ *   stay group/other-readable. Stays on this sync path so `/api/health` never
+ *   awaits disk.
  * - **Never throws on the hot path**: `record()` swallows every error — a failed
  *   or read-only state dir must never turn `/api/health` into a 500.
  * - **Redacted**: any key that looks like a credential (authorization, token,
@@ -30,6 +35,9 @@ import { isSecretFieldName, redactSecrets as redactSecretString } from '../core/
 
 export const LAST_GOOD_HEALTH_FILE = 'last-good-health.json';
 export const LAST_GOOD_HEALTH_SCHEMA_VERSION = 'last-good-health.v1';
+
+/** Owner-read/write only. Matches settings.json and other operational snapshots. */
+export const LAST_GOOD_HEALTH_FILE_MODE = 0o600;
 
 /** Hard cap for the on-disk file, per issue #2495 (~32 KiB). */
 export const LAST_GOOD_HEALTH_SIZE_CAP_BYTES = 32 * 1024;
@@ -229,8 +237,25 @@ export class LastGoodHealthWriter {
   private writeAtomic(text: string): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.tmp-${process.pid}`;
-    writeFileSync(tmp, text, 'utf8');
+    // mode on write only applies when the temp path is created; chmod forces
+    // exact bits after open (umask / leftover .tmp) before rename.
+    writeFileSync(tmp, text, { encoding: 'utf8', mode: LAST_GOOD_HEALTH_FILE_MODE });
+    try {
+      chmodSync(tmp, LAST_GOOD_HEALTH_FILE_MODE);
+    } catch {
+      // Best-effort: create mode already requested 0o600. Do not fail the
+      // write — record() still needs to update throttle bookkeeping.
+    }
     renameSync(tmp, this.filePath);
+    // Rename replaces the path with the temp inode on POSIX, but chmod the
+    // final path so a leftover 0644 dest is tightened even if a filesystem
+    // preserves dest mode across overwrite.
+    try {
+      chmodSync(this.filePath, LAST_GOOD_HEALTH_FILE_MODE);
+    } catch {
+      // Best-effort: content is already durable. A chmod failure must not
+      // throw into /api/health or skip lastWriteMs / lastSignature.
+    }
   }
 }
 
