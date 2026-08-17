@@ -22,6 +22,7 @@ const ACTIONS: CommandAction[] = [
   action('diagnostics', 'Diagnostics', 'view', ['operations', 'health']),
   action('schedules', 'Schedules', 'tools', ['cron', 'routine']),
   action('settings', 'Settings', 'session', ['preferences']),
+  action('tour', 'Take the tour', 'session', ['onboarding', 'walkthrough', 'product tour']),
   action('shortcuts', 'Help & shortcuts', 'session', ['keys']),
 ];
 
@@ -50,7 +51,11 @@ describe('scoreMatch', () => {
 
 describe('filterActions', () => {
   test('empty query preserves source order', () => {
-    expect(filterActions(ACTIONS, '').map((a) => a.id)).toEqual(['diagnostics', 'schedules', 'settings', 'shortcuts']);
+    expect(filterActions(ACTIONS, '').map((a) => a.id)).toEqual(['diagnostics', 'schedules', 'settings', 'tour', 'shortcuts']);
+  });
+
+  test('typing tour lists Take the tour', () => {
+    expect(filterActions(ACTIONS, 'tour').map((a) => a.id)).toEqual(['tour']);
   });
 
   test('matches against label and keywords', () => {
@@ -142,6 +147,6 @@ describe('groupActionsBySection', () => {
   test('groups in task→view→tools→session order, dropping empty sections', () => {
     const groups = groupActionsBySection(ACTIONS);
     expect(groups.map((g) => g.section)).toEqual(['view', 'tools', 'session']);
-    expect(groups.find((g) => g.section === 'session')!.actions.map((a) => a.id)).toEqual(['settings', 'shortcuts']);
+    expect(groups.find((g) => g.section === 'session')!.actions.map((a) => a.id)).toEqual(['settings', 'tour', 'shortcuts']);
   });
 });

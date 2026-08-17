@@ -8,11 +8,18 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
+import {
+  PlaybookUsageTracker,
+  resolveRecentPlaybookLabel,
+} from '../store/playbook-usage.js';
 import { findingTypeLabel, findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
 const MAX_WAITING_ROWS = 6;
+
+/** Recent playbooks shown on the overview; the tracker itself keeps up to five. */
+export const OVERVIEW_RECENT_PLAYBOOK_LIMIT = 3;
 
 /** Published install + first-agent walkthrough (docs-only; no in-app copy). */
 export const GETTING_STARTED_GUIDE_URL =
@@ -30,6 +37,8 @@ interface Props {
   /** Agents in a terminal task state (rail `completed` bucket length). */
   completedCount: number;
   onLaunch: () => void;
+  /** Opens Launch on the Playbooks tab (recent-playbook chips). */
+  onLaunchPlaybooks?: () => void;
   /**
    * Opens the Diagnostics / Operations panel (same surface as the command
    * palette). First-run empty state only — returning "All clear" hides it.
@@ -48,12 +57,24 @@ export function OverviewEmptyState({
   runningCount,
   completedCount,
   onLaunch,
+  onLaunchPlaybooks,
   onCheckSetup,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
   const sttUrl = useKookrStore((s) => s.sttUrl);
+  const playbooks = useKookrStore((s) => s.playbooks);
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  // Read localStorage on every render. Same-tab recordLaunch does not fire
+  // `storage`, and the overview stays mounted after a playbook launch from
+  // this screen (new tasks do not auto-select), so a playbooks-only memo
+  // would keep the pre-launch order.
+  const recentPlaybooks = new PlaybookUsageTracker().getRecent()
+    .slice(0, OVERVIEW_RECENT_PLAYBOOK_LIMIT)
+    .map((key) => ({
+      key,
+      label: resolveRecentPlaybookLabel(key, playbooks),
+    }));
 
   return (
     <div className="overview-empty" data-testid="overview-empty-state">
@@ -110,6 +131,26 @@ export function OverviewEmptyState({
         )}
 
         <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+
+        {recentPlaybooks.length > 0 && (
+          <div className="overview-recent-playbooks" data-testid="overview-recent-playbooks">
+            <h3 className="overview-waiting-title">Recent playbooks</h3>
+            <div className="overview-recent-playbooks-list">
+              {recentPlaybooks.map((playbook) => (
+                <button
+                  type="button"
+                  key={playbook.key}
+                  className="btn-secondary overview-recent-playbook"
+                  data-testid="overview-recent-playbook"
+                  data-playbook-key={playbook.key}
+                  onClick={() => onLaunchPlaybooks?.()}
+                >
+                  {playbook.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {!hasAnyTask && (
           <p className="overview-tour-reentry">

@@ -4,10 +4,14 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { AgentState } from '../../shared/protocol.js';
+import type { AgentState, Playbook } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
-import { GETTING_STARTED_GUIDE_URL, OverviewEmptyState } from './OverviewEmptyState.js';
+import {
+  GETTING_STARTED_GUIDE_URL,
+  OVERVIEW_RECENT_PLAYBOOK_LIMIT,
+  OverviewEmptyState,
+} from './OverviewEmptyState.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
   open: vi.fn(),
@@ -40,6 +44,25 @@ function makeWaitingAgent(agentId: string, taskName: string, overrides: Partial<
   };
 }
 
+function seedRecentPlaybooks(keys: string[]): void {
+  localStorage.setItem('kookr:recentPlaybooks', JSON.stringify(keys));
+}
+
+function samplePlaybook(overrides: Partial<Playbook> = {}): Playbook {
+  return {
+    id: 'deploy.md',
+    name: 'Deploy to prod',
+    description: 'Ship it',
+    parameters: [],
+    checklist: [],
+    tags: [],
+    body: 'Deploy.',
+    sourceCwd: '/project',
+    scope: 'project',
+    ...overrides,
+  };
+}
+
 describe('OverviewEmptyState', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -47,6 +70,7 @@ describe('OverviewEmptyState', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
     vi.mocked(openOnboardingTour).mockClear();
     syncGlobalStore();
     container = document.createElement('div');
@@ -238,5 +262,72 @@ describe('OverviewEmptyState', () => {
     useKookrStore.setState({ sttUrl: 'http://localhost:9000/stt' });
     render();
     expect(container.querySelector('.detail-empty-hint')?.textContent).toContain('voice');
+  });
+
+  test('keeps first-run setup links when recents exist and no task has been created', () => {
+    seedRecentPlaybooks(['/project::deploy.md']);
+    render();
+
+    expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).not.toBeNull();
+    expect(container.querySelector('.overview-tour-reentry')?.textContent).toContain('New to Kookr?');
+    expect(container.textContent).toContain('Take the tour');
+    expect(container.textContent).toContain('Getting Started');
+    expect(container.textContent).toContain('Check setup');
+  });
+
+  test('does not show a recents heading when PlaybookUsageTracker is empty', () => {
+    render();
+
+    expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).toBeNull();
+    expect(container.textContent).not.toContain('Recent playbooks');
+  });
+
+  test('re-reads recents after a same-tab launch updates localStorage', () => {
+    seedRecentPlaybooks(['/project::old.md']);
+    render({ runningCount: 1 });
+    expect(container.querySelector('[data-testid="overview-recent-playbook"]')?.textContent).toBe('old');
+
+    seedRecentPlaybooks(['/project::new.md', '/project::old.md']);
+    render({ runningCount: 2 });
+    const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
+    expect(chips.map((chip) => chip.textContent)).toEqual(['new', 'old']);
+  });
+
+  test('shows up to three recent playbooks and calls onLaunchPlaybooks', () => {
+    seedRecentPlaybooks([
+      '/project::deploy.md',
+      '/project::review.md',
+      '/other::sweep.md',
+      '/other::extra.md',
+    ]);
+    useKookrStore.setState({ playbooks: [samplePlaybook()] });
+    const onLaunchPlaybooks = vi.fn();
+    render({ onLaunchPlaybooks });
+
+    const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
+    expect(container.textContent).toContain('Recent playbooks');
+    expect(chips).toHaveLength(OVERVIEW_RECENT_PLAYBOOK_LIMIT);
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      'Deploy to prod',
+      'review',
+      'sweep',
+    ]);
+    expect(chips[0].dataset.playbookKey).toBe('/project::deploy.md');
+
+    act(() => {
+      chips[1].click();
+    });
+    expect(onLaunchPlaybooks).toHaveBeenCalledTimes(1);
+  });
+
+  test('recent playbooks stay visible after tasks exist and leave first-run links alone', () => {
+    seedRecentPlaybooks(['legacy-bare.md']);
+    render({ runningCount: 2 });
+
+    expect(container.textContent).toContain('All clear — agents working autonomously.');
+    expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="overview-recent-playbook"]')?.textContent).toBe('legacy-bare');
+    expect(container.querySelector('.overview-tour-reentry')).toBeNull();
+    expect(container.textContent).not.toContain('Getting Started');
   });
 });

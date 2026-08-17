@@ -54,7 +54,7 @@ import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
 import { CoordinatorFindingsPane } from './components/CoordinatorSurfaces.js';
-import { maybeOpenForFirstRun } from './store/onboarding-store.js';
+import { maybeOpenForFirstRun, open as openOnboardingTour } from './store/onboarding-store.js';
 import {
   clampFindingsWidth,
   loadFindingsWidth,
@@ -1252,6 +1252,7 @@ export function App() {
       agent={selectedAgent}
       send={send}
       onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); openModal('launch'); }}
+      onLaunchPlaybooks={() => openLaunchFromPalette('playbooks', 'overview_recent_playbook')}
       onCheckSetup={() => setShowOperations(true)}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;
@@ -1333,6 +1334,7 @@ export function App() {
     { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => openModal('bugReport') },
     { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => openModal('shareViewer') },
     { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); openModal('settings'); } },
+    { id: 'tour', label: 'Take the tour', section: 'session', keywords: ['onboarding', 'walkthrough', 'product tour'], run: () => openOnboardingTour() },
     { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => openModal('shortcuts') },
   ].filter((action) =>
     // #811: a read-only viewer cannot run owner-only / mutating commands (the
