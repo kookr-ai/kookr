@@ -139,6 +139,16 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.statusbar')).toContainText('0 findings');
     await expect(page.locator('.btn-launch')).toBeVisible();
     await expect(page.locator('[data-testid="overview-empty-state"]')).toContainText('No agents running');
+    const overview = page.locator('[data-testid="overview-empty-state"]');
+    const gettingStarted = overview.getByRole('link', { name: 'Getting Started' });
+    await expect(gettingStarted).toBeVisible();
+    await expect(gettingStarted).toHaveAttribute(
+      'href',
+      'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md',
+    );
+    await expect(gettingStarted).toHaveAttribute('target', '_blank');
+    await expect(overview.getByRole('button', { name: 'Check setup' })).toBeVisible();
+    await expect(overview).toContainText('pnpm run doctor');
   });
 
   // --- Launch ---

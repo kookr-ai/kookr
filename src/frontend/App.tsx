@@ -1233,6 +1233,7 @@ export function App() {
       agent={selectedAgent}
       send={send}
       onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); openModal('launch'); }}
+      onCheckSetup={() => setShowOperations(true)}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;
         openCompleteConfirmation({

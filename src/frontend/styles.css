@@ -1911,8 +1911,8 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 11px;
   color: var(--text-muted);
 }
-/* First-run only: quiet re-entry back into the onboarding tour, kept
-   secondary so it doesn't compete with the primary Launch CTA above it. */
+/* First-run only: tour re-entry plus Getting Started / Check setup, kept
+   secondary so they don't compete with the primary Launch CTA above. */
 .overview-tour-reentry {
   margin-top: -8px;
   font-size: 12px;
@@ -1929,6 +1929,16 @@ button.section-header.detection-stats-header:focus-visible {
 }
 .overview-tour-link:hover {
   color: var(--text-bright);
+}
+a.overview-tour-link:visited {
+  color: var(--accent, #61dafb);
+}
+a.overview-tour-link:visited:hover {
+  color: var(--text-bright);
+}
+.overview-setup-fallback {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .detail-header {
