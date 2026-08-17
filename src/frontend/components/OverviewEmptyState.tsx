@@ -7,6 +7,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
+import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { findingTypeLabel, findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
@@ -99,6 +100,19 @@ export function OverviewEmptyState({
         )}
 
         <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+
+        {!hasAnyTask && (
+          <p className="overview-tour-reentry">
+            New to Kookr?{' '}
+            <button
+              type="button"
+              className="overview-tour-link"
+              onClick={() => openOnboardingTour()}
+            >
+              Take the tour
+            </button>
+          </p>
+        )}
 
         <p className="detail-empty-hint">
           {/* Palette chord is fixed in App.tsx keydown — not in SHORTCUT_ACTIONS. */}
