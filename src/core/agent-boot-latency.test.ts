@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   AgentBootLatencyMonitor,
+  DEFAULT_SLOW_BOOT_MS,
+  GROK_BUILD_SLOW_BOOT_MS,
+  defaultSlowBootMsFor,
   extractAgentBootSample,
   type AgentBootLatencyConfig,
 } from './agent-boot-latency.js';
@@ -46,6 +49,15 @@ function monitor(overrides: AgentBootLatencyConfig = {}): AgentBootLatencyMonito
   // that exercise staleness inject their own advancing `now`.
   return new AgentBootLatencyMonitor({ now: () => 1_000, ...overrides });
 }
+
+describe('defaultSlowBootMsFor', () => {
+  it('uses a higher bar for grok-build than for Claude/Codex', () => {
+    expect(defaultSlowBootMsFor('grok-build')).toBe(GROK_BUILD_SLOW_BOOT_MS);
+    expect(defaultSlowBootMsFor('claude-code')).toBe(DEFAULT_SLOW_BOOT_MS);
+    expect(defaultSlowBootMsFor('codex-cli')).toBe(DEFAULT_SLOW_BOOT_MS);
+    expect(GROK_BUILD_SLOW_BOOT_MS).toBeGreaterThan(DEFAULT_SLOW_BOOT_MS);
+  });
+});
 
 describe('extractAgentBootSample', () => {
   it('reads the agent-boot duration and completed flag', () => {
@@ -94,6 +106,32 @@ describe('AgentBootLatencyMonitor', () => {
     m.record('grok-build', healthyBoot(25_000));
     m.record('grok-build', healthyBoot(30_000));
     expect(m.isUnhealthy('grok-build')).toBe(true);
+  });
+
+  it('does not treat a routine grok-build boot as slow under default bars', () => {
+    // Live fleet: grok-build median ~27s, contention ~50s. A shared 20s bar
+    // permanently deprioritized grok and schedule_sub'd every default fire
+    // onto claude-code. These samples must stay healthy with production defaults.
+    const m = monitor({ minSlowSamples: 2 });
+    m.record('grok-build', healthyBoot(27_000));
+    m.record('grok-build', healthyBoot(50_000));
+    expect(m.isUnhealthy('grok-build')).toBe(false);
+    expect(m.deprioritizedTypes(ALL_AGENTS)).toEqual([]);
+  });
+
+  it('still flags a hang-adjacent grok-build completed boot as slow', () => {
+    const m = monitor({ minSlowSamples: 2 });
+    m.record('grok-build', healthyBoot(80_000));
+    m.record('grok-build', healthyBoot(80_000));
+    expect(m.isUnhealthy('grok-build')).toBe(true);
+  });
+
+  it('keeps the 20s bar for claude-code under default config', () => {
+    const m = monitor({ minSlowSamples: 2 });
+    m.record('claude-code', healthyBoot(25_000));
+    m.record('claude-code', healthyBoot(25_000));
+    expect(m.isUnhealthy('claude-code')).toBe(true);
+    expect(m.deprioritizedTypes(ALL_AGENTS)).toEqual(['claude-code']);
   });
 
   it('does not flag an agent whose boots are fast', () => {

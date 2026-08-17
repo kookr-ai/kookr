@@ -27,6 +27,14 @@
  *
  * The monitor is generic across agent types; grok-build is the motivating case
  * but the mechanism is fair to any provider whose recent boots degrade.
+ *
+ * Slow-boot bars are per-agent. Claude/Codex healthy boots finish in well
+ * under 20s. grok-build's healthy boot under load is ~25–50s (session auth
+ * + first token), so a shared 20s bar permanently marks it unhealthy after
+ * two routine launches. The schedule runner then substitutes every
+ * grok-default fire onto claude-code (`schedule_sub`) even while grok is
+ * succeeding. The grok bar sits above that healthy band and below the >90s
+ * hang class (#1642).
  */
 import type { AgentType } from '../shared/contracts/agent-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
@@ -46,10 +54,11 @@ export interface AgentBootLatencySample {
 
 export interface AgentBootLatencyConfig {
   /**
-   * `agent-boot` duration (ms) at or above which a sample counts as "slow".
-   * A healthy grok-build boot completes in a few seconds; the >90s hang class
-   * (#1642) sits far above this. Default 20_000 — comfortably above a healthy
-   * boot, comfortably below the 45s fire() cap (#1708).
+   * `agent-boot` duration (ms) at or above which a completed sample counts as
+   * "slow". When set, this override applies to every agent (tests). When
+   * omitted, each agent uses {@link defaultSlowBootMsFor}: 20s for
+   * Claude/Codex, 75s for grok-build. Hung boots (`bootHung`) always count
+   * as slow regardless of this bar.
    */
   slowBootMs?: number;
   /** How many most-recent samples per agent to retain and consider. Default 5. */
@@ -80,10 +89,36 @@ export interface AgentBootLatencyStatus {
   unhealthy: boolean;
 }
 
-const DEFAULT_SLOW_BOOT_MS = 20_000;
+/** Default slow-boot bar for Claude Code / Codex CLI. */
+export const DEFAULT_SLOW_BOOT_MS = 20_000;
+
+/**
+ * grok-build slow-boot bar. Healthy boots under load land in the 25–50s
+ * band; the >90s hang class (#1642) is the failure we still want to catch.
+ * 75s sits above the observed healthy max (~50s under contention) and below
+ * that hang.
+ */
+export const GROK_BUILD_SLOW_BOOT_MS = 75_000;
+
 const DEFAULT_WINDOW_SIZE = 5;
 const DEFAULT_MIN_SLOW_SAMPLES = 2;
 const DEFAULT_STALE_MS = 10 * 60_000;
+
+/**
+ * Per-agent slow-boot bar used when {@link AgentBootLatencyConfig.slowBootMs}
+ * is omitted. Exhaustive `Record<AgentType, number>` so a new agent type
+ * fails the typecheck instead of silently inheriting the Claude/Codex 20s
+ * bar (same #1343 lesson as `effortLevelsForAgent`).
+ */
+const SLOW_BOOT_MS_BY_AGENT: Record<AgentType, number> = {
+  'claude-code': DEFAULT_SLOW_BOOT_MS,
+  'codex-cli': DEFAULT_SLOW_BOOT_MS,
+  'grok-build': GROK_BUILD_SLOW_BOOT_MS,
+};
+
+export function defaultSlowBootMsFor(agentType: AgentType): number {
+  return SLOW_BOOT_MS_BY_AGENT[agentType];
+}
 
 /**
  * Extract the `agent-boot` boot-latency sample from a launch's #1589 phase
@@ -118,7 +153,8 @@ export function extractAgentBootSample(
  * no persistence is warranted.
  */
 export class AgentBootLatencyMonitor {
-  private readonly slowBootMs: number;
+  /** Explicit override from config; `undefined` means use per-agent defaults. */
+  private readonly slowBootMsOverride: number | undefined;
   private readonly windowSize: number;
   private readonly minSlowSamples: number;
   private readonly staleMs: number;
@@ -126,11 +162,15 @@ export class AgentBootLatencyMonitor {
   private readonly samplesByAgent = new Map<AgentType, AgentBootLatencySample[]>();
 
   constructor(config: AgentBootLatencyConfig = {}) {
-    this.slowBootMs = config.slowBootMs ?? DEFAULT_SLOW_BOOT_MS;
+    this.slowBootMsOverride = config.slowBootMs;
     this.windowSize = Math.max(1, config.windowSize ?? DEFAULT_WINDOW_SIZE);
     this.minSlowSamples = Math.max(1, config.minSlowSamples ?? DEFAULT_MIN_SLOW_SAMPLES);
     this.staleMs = config.staleMs ?? DEFAULT_STALE_MS;
     this.now = config.now ?? Date.now;
+  }
+
+  private slowBootMsFor(agentType: AgentType): number {
+    return this.slowBootMsOverride ?? defaultSlowBootMsFor(agentType);
   }
 
   /**
@@ -190,7 +230,7 @@ export class AgentBootLatencyMonitor {
     for (const s of arr) {
       if (s.atMs < cutoff) continue;
       fresh += 1;
-      if (s.bootHung || s.bootMs >= this.slowBootMs) slow += 1;
+      if (s.bootHung || s.bootMs >= this.slowBootMsFor(agentType)) slow += 1;
     }
     return { fresh, slow };
   }
