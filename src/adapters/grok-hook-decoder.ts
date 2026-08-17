@@ -71,8 +71,10 @@ export const GROK_TOOL_ALIASES: Readonly<Record<string, string>> = {
  * ("Tool permission requested") and occasional `permission_denied` while
  * tools continue — mapping those to `permission_request` flickers a
  * `permission_blocked` finding (and "permission required" / "needs input"
- * alerts) on every such hook. Bypass payloads stay notifications / tool
- * errors; a real menu is still caught by pane semantics.
+ * alerts) on every such hook. Bypass `permission_prompt` is dropped so it
+ * does not flood the activity log as "Tool permission requested". Bypass
+ * `permission_denied` stays a tool error (completed deny, not a wait). A
+ * real menu is still caught by pane semantics.
  */
 export const GROK_KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   'session_start',
@@ -319,17 +321,12 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       // PermissionRequest hook, Grok does not.
       //
       // In bypass mode Grok still emits the same notification while
-      // auto-allowing the tool, so treating it as a wait is a false
-      // `permission_blocked` flash. Keep it as a plain notification.
+      // auto-allowing the tool. Mapping it to permission_request flashes a
+      // finding; keeping it as a notification still fills the activity
+      // log with "Tool permission requested". Drop it.
       if (notificationType === 'permission_prompt') {
         if (isGrokBypassPermissionMode(str(parsed.permissionMode))) {
-          return {
-            type: 'notification',
-            sessionId,
-            notificationType,
-            message: str(parsed.message) ?? '',
-            ...(cwd ? { cwd } : {}),
-          };
+          return null;
         }
         return {
           type: 'permission_request',

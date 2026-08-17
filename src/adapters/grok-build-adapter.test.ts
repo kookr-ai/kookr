@@ -619,7 +619,7 @@ describe('GrokBuildAdapter', () => {
       });
     });
 
-    test('does not dispatch a bypass permission_prompt as permission_request', async () => {
+    test('drops a bypass permission_prompt instead of dispatching it', async () => {
       const { adapter, sessionId } = await launched();
       const events: AgentEvent[] = [];
       adapter.onEvent((_id, e) => events.push(e));
@@ -634,13 +634,9 @@ describe('GrokBuildAdapter', () => {
           permissionMode: 'bypassPermissions',
         }),
       );
-      expect(r.parseStatus).toBe('ok');
+      expect(r.parseStatus).toBe('dropped');
       expect(events.some((e) => e.type === 'permission_request')).toBe(false);
-      expect(events.find((e) => e.type === 'notification')).toMatchObject({
-        type: 'notification',
-        notificationType: 'permission_prompt',
-        message: 'Tool permission requested',
-      });
+      expect(events.some((e) => e.type === 'notification')).toBe(false);
     });
 
     test('stop lastMessage falls back to a bounded tail of the last captured display', async () => {
