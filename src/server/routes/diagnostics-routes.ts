@@ -3,6 +3,8 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { timingSafeTokenEqual } from '../admin-token.js';
 import { readInteractionLog } from '../../core/interaction-log.js';
+import { computeTimeToUnblockFromDir, emptySnapshot as emptyTimeToUnblockSnapshot } from '../../core/time-to-unblock.js';
+import { TIME_TO_UNBLOCK_WINDOW_MS } from '../../shared/contracts/time-to-unblock.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
 import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-calibration.js';
@@ -1045,6 +1047,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/diagnostics/launch-dependencies', (c) => (
     c.json(buildLaunchDependencyDiagnostics(taskStore.viewTasks()))
   ));
+
+  // Median human-reply wait over the last 24 hours (issue #2583). Reads the
+  // existing session interaction JSONL files; does not invent a store.
+  // The StatusBar chip hides itself below five samples — this route still
+  // returns the raw snapshot so the threshold stays a UI rule.
+  app.get('/api/diagnostics/time-to-unblock', async (c) => {
+    const nowMs = deps.nowMs?.() ?? Date.now();
+    if (!deps.kookrDir) {
+      return c.json(emptyTimeToUnblockSnapshot(nowMs, TIME_TO_UNBLOCK_WINDOW_MS));
+    }
+    return c.json(await computeTimeToUnblockFromDir(deps.kookrDir, {
+      nowMs,
+      windowMs: TIME_TO_UNBLOCK_WINDOW_MS,
+    }));
+  });
 
   app.get('/api/diagnostics/session-health', (c) => {
     try {
