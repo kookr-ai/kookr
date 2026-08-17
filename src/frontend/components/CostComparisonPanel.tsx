@@ -337,6 +337,15 @@ function AgentAggregateCard({ label, m }: { label: string; m: AggregateMetrics }
         <span className="cost-stat-label">total</span> <span className="cost-stat-val">{formatUsd(m.totalCostUsd)}</span>
       </div>
       <div className="cost-stat">
+        <span className="cost-stat-label">in tok</span> <span className="cost-stat-val">{formatTokens(m.inputTokens)}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">out tok</span> <span className="cost-stat-val">{formatTokens(m.outputTokens)}</span>
+      </div>
+      <div className="cost-stat">
+        <span className="cost-stat-label">cache rd</span> <span className="cost-stat-val">{formatTokens(m.cacheReadTokens)}</span>
+      </div>
+      <div className="cost-stat">
         <span className="cost-stat-label">med dur</span> <span className="cost-stat-val">{formatDur(m.medianDurationMs)}</span>
       </div>
       <div className="cost-stat">
