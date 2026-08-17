@@ -44,6 +44,11 @@ import {
   shouldShowPausedSchedulesPill,
 } from './paused-schedules-pill.js';
 import { formatOldestFindingWait } from '../presentation.js';
+import {
+  formatCompletedInWindowChipLabel,
+  formatCompletedInWindowChipTitle,
+  shouldShowCompletedInWindowChip,
+} from './status-bar-completed-count.js';
 
 interface Props {
   findings: number;
@@ -54,6 +59,12 @@ interface Props {
    */
   oldestFindingWaitStartedAt?: Date | string;
   total: number;
+  /**
+   * Live-list count of agents whose `finishedAt` falls in the last 24 hours
+   * (issue #2618). Hidden at 0. A lower bound when completed rows have aged
+   * out of the snapshot.
+   */
+  completedLast24h?: number;
   compact?: boolean;
   onShowShortcuts: () => void;
   /**
@@ -349,6 +360,7 @@ export function StatusBar({
   findings,
   oldestFindingWaitStartedAt,
   total,
+  completedLast24h = 0,
   compact = false,
   onShowShortcuts,
   onOpenCapacity,
@@ -426,6 +438,7 @@ export function StatusBar({
   const showFrictionChip = shouldShowLiveFrictionChip(liveFriction);
   const frictionCounts = liveFriction ? liveFrictionChipCounts(liveFriction) : null;
   const frictionLabel = frictionCounts ? formatLiveFrictionChipLabel(frictionCounts) : '';
+  const showCompletedChip = shouldShowCompletedInWindowChip(completedLast24h);
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -443,6 +456,16 @@ export function StatusBar({
       <span className="statusbar-left">
         {zoneLabel && <span className="focus-zone-pill">{zoneLabel}</span>}
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
+        {showCompletedChip && (
+          <span
+            className="completed-24h-pill"
+            data-testid="completed-24h-chip"
+            role="status"
+            title={formatCompletedInWindowChipTitle(completedLast24h)}
+          >
+            {formatCompletedInWindowChipLabel(completedLast24h)}
+          </span>
+        )}
         {oldestWaitLabel && (
           <span
             className="oldest-finding-wait-pill"

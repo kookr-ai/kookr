@@ -2,6 +2,7 @@ import type { AgentState } from '../shared/protocol.js';
 import type { CoordinatorSnapshotState } from '../shared/contracts/coordinator.js';
 import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
+import { TIME_TO_UNBLOCK_WINDOW_MS } from '../shared/contracts/time-to-unblock.js';
 import { isActiveFinding, isHealthyRunning } from './store/finding-helpers.js';
 import { compareRoutableAgents, computeStartedAtMs } from './agent-priority-order.js';
 
@@ -26,6 +27,30 @@ export function computeFinishedAtMs(agent: AgentState): number {
   if (Number.isFinite(finished)) return finished;
   const started = agent.startedAt ? Date.parse(agent.startedAt) : Number.NaN;
   return Number.isFinite(started) ? started : 0;
+}
+
+/**
+ * How many live agents reached a terminal status inside the rolling window.
+ *
+ * Uses `finishedAt` only — the startedAt fallback in {@link computeFinishedAtMs}
+ * is for sort order, not throughput. The live snapshot drops aged/capped
+ * completed rows, so this count is a lower bound on true 24h completions.
+ */
+export function countCompletedInWindow(
+  agents: readonly Pick<AgentState, 'taskStatus' | 'finishedAt'>[],
+  nowMs: number,
+  windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
+): number {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(windowMs) || windowMs < 0) return 0;
+  const cutoffMs = nowMs - windowMs;
+  let count = 0;
+  for (const agent of agents) {
+    if (!isTerminalTaskStatus(agent.taskStatus) || !agent.finishedAt) continue;
+    const finishedMs = Date.parse(agent.finishedAt);
+    if (!Number.isFinite(finishedMs)) continue;
+    if (finishedMs >= cutoffMs && finishedMs <= nowMs) count += 1;
+  }
+  return count;
 }
 
 export function compareCompletedAgents(
