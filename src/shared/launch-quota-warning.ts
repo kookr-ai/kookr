@@ -15,10 +15,11 @@ import {
   type QuotaHeadroomSample,
 } from './quota-headroom-admission.js';
 import {
+  AVAILABLE_AGENT_TYPES,
   resolveRoundRobinAgent,
   type AgentSelection,
   type AgentType,
-} from '../shared/contracts/agent-types.js';
+} from './contracts/agent-types.js';
 
 /** Same five-minute staleness the status-bar quota pills already use. */
 export const QUOTA_STATUS_STALE_MS = 5 * 60 * 1000;
@@ -44,25 +45,48 @@ export interface DescribeLaunchQuotaWarningInput {
   available: readonly AgentType[];
   /** Next round-robin cursor; ignored unless `selection` is `round-robin`. */
   roundRobinIndex?: number;
+  /**
+   * Same signal the picker and launch service use: when `false`, drop
+   * `grok-build` from the rotation before asking who is next. Omitted /
+   * unknown stays fail-open (Grok remains in the rotation).
+   */
+  grokAuthUsable?: boolean;
   quota: LaunchQuotaSample | null | undefined;
   /** Live `settings.quotaHeadroomThreshold`. Default matches the server gate. */
   threshold?: number;
   nowMs?: number;
 }
 
+function launchableRotation(
+  available: readonly AgentType[],
+  grokAuthUsable?: boolean,
+): AgentType[] {
+  let rotation = available.length > 0
+    ? [...available]
+    : AVAILABLE_AGENT_TYPES.map((entry) => entry.type);
+  if (grokAuthUsable === false) {
+    rotation = rotation.filter((type) => type !== 'grok-build');
+  }
+  return rotation;
+}
+
 /**
  * True when this picker selection would launch Claude Code — directly, or as
- * the next round-robin pick. Matches the server gate, which only inspects
- * `claude-code` launches.
+ * the next round-robin pick after the same Grok-unusable filter the server
+ * and picker already apply.
  */
 export function selectionMayLaunchClaudeCode(
   selection: AgentSelection,
   available: readonly AgentType[],
   roundRobinIndex: number = 0,
+  grokAuthUsable?: boolean,
 ): boolean {
   if (selection === 'claude-code') return true;
   if (selection !== 'round-robin') return false;
-  return resolveRoundRobinAgent(roundRobinIndex, available) === 'claude-code';
+  return resolveRoundRobinAgent(
+    roundRobinIndex,
+    launchableRotation(available, grokAuthUsable),
+  ) === 'claude-code';
 }
 
 function windowLabel(window: QuotaBindingWindow): string {
@@ -76,6 +100,7 @@ export function formatQuotaResetPhrase(resetsAt: string, nowMs: number): string 
   const diffMs = resetMs - nowMs;
   if (diffMs <= 0) return 'resets now';
   const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'resets now';
   if (minutes < 60) return `resets in ${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remainMins = minutes % 60;
@@ -113,13 +138,16 @@ export function describeLaunchQuotaWarning(
     selection,
     available,
     roundRobinIndex = 0,
+    grokAuthUsable,
     quota,
     threshold = QUOTA_NO_HEADROOM_UTILIZATION,
     nowMs = Date.now(),
   } = input;
 
   if (!quota) return null;
-  if (!selectionMayLaunchClaudeCode(selection, available, roundRobinIndex)) return null;
+  if (!selectionMayLaunchClaudeCode(selection, available, roundRobinIndex, grokAuthUsable)) {
+    return null;
+  }
 
   const decision = evaluateQuotaHeadroomAdmission(toSample(quota), threshold);
   if (decision.admit || !decision.bindingWindow) return null;

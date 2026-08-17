@@ -1,4 +1,3 @@
-import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../core/quota-headroom-admission.js';
 import { useKookrStore } from './useStore.js';
 
 /**
@@ -11,5 +10,3 @@ export function applyQuotaHeadroomThreshold(value: unknown): void {
   const next = Math.max(0, Math.min(100, Math.round(value)));
   useKookrStore.setState({ quotaHeadroomThreshold: next });
 }
-
-export { QUOTA_NO_HEADROOM_UTILIZATION };

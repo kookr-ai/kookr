@@ -26,8 +26,9 @@ describe('quota headroom threshold hydration', () => {
     expect(useKookrStore.getState().quotaHeadroomThreshold).toBe(100);
     applyQuotaHeadroomThreshold(-5);
     expect(useKookrStore.getState().quotaHeadroomThreshold).toBe(0);
+    applyQuotaHeadroomThreshold(85);
     applyQuotaHeadroomThreshold('off');
     applyQuotaHeadroomThreshold(Number.NaN);
-    expect(useKookrStore.getState().quotaHeadroomThreshold).toBe(0);
+    expect(useKookrStore.getState().quotaHeadroomThreshold).toBe(85);
   });
 });

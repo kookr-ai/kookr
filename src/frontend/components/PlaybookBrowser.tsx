@@ -309,7 +309,10 @@ export function PlaybookBrowser({
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
   );
-  const quotaWarning = useLaunchQuotaWarning(agentType);
+  const quotaWarning = useLaunchQuotaWarning(
+    agentType,
+    grokAuth ? !grokAuth.launchWouldRefuse : undefined,
+  );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);

@@ -6,7 +6,7 @@ import {
   QUOTA_STATUS_STALE_MS,
 } from './launch-quota-warning.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from './quota-headroom-admission.js';
-import type { AgentType } from '../shared/contracts/agent-types.js';
+import type { AgentType } from './contracts/agent-types.js';
 
 const ALL: readonly AgentType[] = ['claude-code', 'codex-cli', 'grok-build'];
 const NOW = Date.parse('2026-08-17T12:00:00.000Z');
@@ -35,6 +35,11 @@ describe('selectionMayLaunchClaudeCode', () => {
   it('is true for round-robin only when the next pick is Claude Code', () => {
     expect(selectionMayLaunchClaudeCode('round-robin', ALL, 0)).toBe(true);
     expect(selectionMayLaunchClaudeCode('round-robin', ALL, 1)).toBe(false);
+  });
+
+  it('treats unusable Grok as skipped so the next pick can be Claude Code', () => {
+    expect(selectionMayLaunchClaudeCode('round-robin', ALL, 2)).toBe(false);
+    expect(selectionMayLaunchClaudeCode('round-robin', ALL, 2, false)).toBe(true);
   });
 
   it('is false when the picker cannot land on Claude Code', () => {
@@ -90,6 +95,21 @@ describe('describeLaunchQuotaWarning', () => {
       nowMs: NOW,
     });
     expect(warning).not.toBeNull();
+    expect(warning?.bindingWindow).toBe('fiveHour');
+    expect(warning?.message).toContain('92%');
+  });
+
+  it('warns for round-robin when Grok is the raw next pick but unusable', () => {
+    const warning = describeLaunchQuotaWarning({
+      selection: 'round-robin',
+      available: ALL,
+      roundRobinIndex: 2,
+      grokAuthUsable: false,
+      quota: quota(),
+      nowMs: NOW,
+    });
+    expect(warning).not.toBeNull();
+    expect(warning?.message).toContain('5-hour');
   });
 
   it('is hidden when the evaluator would admit', () => {

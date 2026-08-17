@@ -323,7 +323,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
   );
-  const quotaWarning = useLaunchQuotaWarning(agentType);
+  const quotaWarning = useLaunchQuotaWarning(
+    agentType,
+    grokAuth ? !grokAuth.launchWouldRefuse : undefined,
+  );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const dialogRef = useRef<HTMLDivElement>(null);
   const playbooksTabRef = useRef<HTMLButtonElement>(null);

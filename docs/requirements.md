@@ -479,7 +479,7 @@ The system SHALL warn in the Launch dialog before submit when the existing Claud
 - When the quota sample is older than five minutes, the banner mentions that the reading is stale
 - Server admission and `quotaHeadroomThreshold` stay unchanged; Launch stays enabled (warning only)
 
-**Evidence:** `src/core/quota-headroom-admission.ts`, `src/core/launch-quota-warning.ts`, `src/core/launch-quota-warning.test.ts`, `src/frontend/components/LaunchQuotaBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.quota.test.ts`.
+**Evidence:** `src/shared/quota-headroom-admission.ts`, `src/shared/launch-quota-warning.ts`, `src/shared/launch-quota-warning.test.ts`, `src/frontend/components/LaunchQuotaBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.quota.test.ts`.
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
@@ -1304,6 +1304,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
+| R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |
