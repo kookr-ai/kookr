@@ -7998,7 +7998,8 @@ label.task-share-row {
   margin-left: 6px;
 }
 
-.time-to-unblock-pill {
+.time-to-unblock-pill,
+.oldest-finding-wait-pill {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
