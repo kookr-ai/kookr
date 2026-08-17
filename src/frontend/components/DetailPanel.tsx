@@ -5,7 +5,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatDuration, formatCost, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import { formatDuration, formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -307,6 +307,7 @@ function DetailMetadataMenu({
   onShowHookSettings: () => void;
 }) {
   const hasUsageCost = agent.tokenUsage && agent.tokenUsage.costUsd > 0;
+  const costRate = formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt);
   const hasTokenCount = agent.tokenUsage && (agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens) > 0;
   const hasCacheReads = agent.tokenUsage && agent.tokenUsage.cacheReadTokens > 0;
   const hasProject = Boolean(agentProjectLabel(agent));
@@ -367,7 +368,7 @@ function DetailMetadataMenu({
           <div className="detail-meta-row">
             <span className="detail-meta-label">Cost</span>
             <span className="detail-cost" title={`In: ${formatTokens(agent.tokenUsage!.inputTokens)} / Out: ${formatTokens(agent.tokenUsage!.outputTokens)}`}>
-              {formatCost(agent.tokenUsage!.costUsd)}
+              {formatCost(agent.tokenUsage!.costUsd)}{costRate ? ` · ${costRate}` : ''}
             </span>
           </div>
         )}

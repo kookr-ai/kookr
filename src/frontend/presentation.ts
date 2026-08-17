@@ -305,6 +305,35 @@ export function formatCost(costUsd: number): string {
 }
 
 /**
+ * Two-minute floor shared by {@link formatAge} and {@link formatCostRate}.
+ * Fresh launches would otherwise flash a nonsense age or dollars-per-hour.
+ */
+export const FRESH_SESSION_FLOOR_MS = 120_000;
+
+/**
+ * Compact dollars-per-hour from total session cost and wall-clock start.
+ *
+ * Rate is cost divided by hours since start, not a recent-window average.
+ * Hidden when cost is missing/non-positive, start is missing/invalid, the
+ * session is younger than two minutes, or the result would not be finite.
+ */
+export function formatCostRate(
+  costUsd: number | undefined,
+  startedAt: Date | string | undefined,
+  nowMs: number = Date.now(),
+): string {
+  if (costUsd === undefined || !(costUsd > 0) || !Number.isFinite(costUsd)) return '';
+  const start = parseValidDate(startedAt);
+  if (!start) return '';
+  const elapsedMs = nowMs - start.getTime();
+  if (elapsedMs < FRESH_SESSION_FLOOR_MS) return '';
+  const hours = elapsedMs / 3_600_000;
+  const rate = costUsd / hours;
+  if (!Number.isFinite(rate)) return '';
+  return `$${rate.toFixed(2)}/h`;
+}
+
+/**
  * Format a token count compactly (e.g., 1234 → "1.2k", 12345 → "12k").
  */
 export function formatTokens(count: number): string {
@@ -368,7 +397,7 @@ export function formatCacheHit(usage: TokenUsage | undefined): string {
 export function formatAge(detectedAt: Date | string | undefined): string {
   if (!detectedAt) return '';
   const ms = Date.now() - new Date(detectedAt).getTime();
-  if (ms < 120_000) return '';
+  if (ms < FRESH_SESSION_FLOOR_MS) return '';
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
   if (ms >= 86_400_000) return `${Math.floor(ms / 86_400_000)}d`;
   const h = Math.floor(ms / 3_600_000);
