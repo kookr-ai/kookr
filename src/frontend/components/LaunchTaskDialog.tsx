@@ -19,13 +19,14 @@ import {
   type LaunchTaskDialogDraft,
 } from '../store/launch-task-dialog-draft.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
+import { saveLastLaunchPins } from '../store/last-launch-pins.js';
 
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
-import { optionalLaunchPins } from './launch-effort-model.js';
+import { optionalLaunchPins, restoreLastLaunchPins, sanitizeLaunchPins } from './launch-effort-model.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
@@ -308,8 +309,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
-  const [effort, setEffort] = useState('');
-  const [model, setModel] = useState('');
+  const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
+  const [effort, setEffort] = useState(initialPins.effort);
+  const [model, setModel] = useState(initialPins.model);
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,
@@ -459,6 +461,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       // task is visible, restored otherwise).
       markLaunchTaskDialogDraftSubmitted();
       saveLastAgentType(agentType);
+      saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
@@ -756,8 +759,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               value={agentType}
               onChange={(next) => {
                 setAgentType(next);
-                setEffort('');
-                setModel('');
+                const nextPins = sanitizeLaunchPins(next, effort, model);
+                setEffort(nextPins.effort);
+                setModel(nextPins.model);
               }}
               options={agentOptions}
               roundRobinIndex={roundRobinIndex}

@@ -731,6 +731,22 @@ The system SHALL let the operator pin reasoning effort and model on a dashboard 
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchEffortModelPickers.tsx`, `src/shared/contracts/messages.ts`, `src/server/ws-handlers/lifecycle-handler.ts`. Tests: `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`, `src/server/ws-handlers/lifecycle-handler.test.ts`, `src/shared/contracts/client-message-schema.test.ts`.
 
+### R4b.10: Remember Last Launch Effort and Model [F4.1] — SHALL — `done`
+
+The system SHALL remember the last effort and model pins sent from dashboard Launch or Quick Launch and restore them on the next open when the current agent still accepts them.
+
+**Acceptance criteria:**
+- Closing and reopening Launch after a pinned launch shows the same effort and model in the dropdowns
+- Switching to an agent that does not accept a stored pin falls back to "Agent default" for that pin
+- A failed send (not connected) does not write the new values
+- Last-used agent-type persistence is unchanged
+- Effort and model are stored as separate localStorage keys
+- Server and CLI defaults are unchanged
+
+**Rationale:** Operators who routinely pin a higher effort or non-default model otherwise re-select those menus on every launch. First-run stays on "Agent default" when nothing is stored.
+
+**Evidence:** `src/frontend/store/last-launch-pins.ts`, `src/frontend/components/launch-effort-model.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`. Tests: `src/frontend/store/last-launch-pins.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -1323,6 +1339,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
 | R4b.9 | F4.1 | SHALL | done | LaunchTaskDialog, QuickLaunch, LaunchEffortModelPickers, messages, lifecycle-handler |
+| R4b.10 | F4.1 | SHALL | done | last-launch-pins, LaunchTaskDialog, QuickLaunch, launch-effort-model |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

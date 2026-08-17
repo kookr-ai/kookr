@@ -3,6 +3,7 @@ import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } f
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
+import { saveLastLaunchPins } from '../store/last-launch-pins.js';
 
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
@@ -10,6 +11,8 @@ import {
   effortOptionsForSelection,
   modelOptionsForSelection,
   optionalLaunchPins,
+  restoreLastLaunchPins,
+  sanitizeLaunchPins,
 } from './launch-effort-model.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
@@ -55,8 +58,9 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
     return store.defaultAgentType ?? 'claude-code';
   });
-  const [effort, setEffort] = useState('');
-  const [model, setModel] = useState('');
+  const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
+  const [effort, setEffort] = useState(initialPins.effort);
+  const [model, setModel] = useState(initialPins.model);
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -108,10 +112,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }, []);
 
   // Selected-task / last-used effects can change the agent without the
-  // picker onChange. Drop pins that would no longer match the resolved type.
+  // picker onChange. Keep pins the new agent still accepts; drop the rest.
   useEffect(() => {
-    setEffort('');
-    setModel('');
+    setEffort((current) => sanitizeLaunchPins(agentType, current, '').effort);
+    setModel((current) => sanitizeLaunchPins(agentType, '', current).model);
   }, [agentType]);
 
   const activeDuplicate = useMemo(
@@ -139,6 +143,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     });
     if (sent) {
       saveLastAgentType(agentType);
+      saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(

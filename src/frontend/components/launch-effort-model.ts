@@ -4,6 +4,7 @@ import {
   modelsForAgent,
   type AgentSelection,
 } from '../../shared/protocol.js';
+import { loadLastEffort, loadLastModel } from '../store/last-launch-pins.js';
 
 /**
  * Optional pins for a dashboard launch payload.
@@ -30,4 +31,28 @@ export function effortOptionsForSelection(agentType: AgentSelection): readonly s
 /** Known model ids for a concrete agent; empty when that agent rejects a pin. */
 export function modelOptionsForSelection(agentType: AgentSelection): readonly string[] {
   return isAgentType(agentType) ? modelsForAgent(agentType) : [];
+}
+
+function acceptedPin(value: string, options: readonly string[]): string {
+  return value && options.includes(value) ? value : '';
+}
+
+/**
+ * Keep only pins the resolved agent can show in its pickers.
+ * Anything else becomes "" so the menu stays on "Agent default".
+ */
+export function sanitizeLaunchPins(
+  agentType: AgentSelection,
+  effort: string,
+  model: string,
+): { effort: string; model: string } {
+  return {
+    effort: acceptedPin(effort, effortOptionsForSelection(agentType)),
+    model: acceptedPin(model, modelOptionsForSelection(agentType)),
+  };
+}
+
+/** Restore last-sent pins that the current agent still accepts. */
+export function restoreLastLaunchPins(agentType: AgentSelection): { effort: string; model: string } {
+  return sanitizeLaunchPins(agentType, loadLastEffort() ?? '', loadLastModel() ?? '');
 }
