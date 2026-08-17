@@ -748,6 +748,7 @@ Pasteable one-pager of top unattended failure signals for remote diagnosis (Disc
 ```bash
 kookr ops digest
 kookr ops digest --json
+kookr ops digest --offline
 ```
 
 The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then prints ready status plus up to five elevated warnings with field paths operators can re-query:
@@ -763,11 +764,20 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 
 Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).
 
+### Offline degrade (`--offline`, issue #2495)
+
+After each successful `/api/health` assembly the server mirrors a redacted, size-capped (≤32 KiB) copy of the body to `<kookrDir>/last-good-health.json` (rotate-by-overwrite, throttled to ~5s / on a gauge edge). When the HTTP surface is dark — a wedged loop, a bound-but-unresponsive port, or an operator reachable only over the relay — that file is the remote surface that still works.
+
+`kookr ops digest --offline` skips HTTP entirely and reads that snapshot, printing how stale it is (`last-good: <age> stale  captured=<iso>`) plus the same warning set the live digest would surface, derived from the cached body. The live path *also* auto-degrades to the snapshot when the server is unreachable (`NO_SERVER` / `SERVER_ERROR`): the failing exit code is preserved, but the human output and `details.offline` still carry the cached body so a wedged box stays diagnosable.
+
+The snapshot is located by `KOOKR_DIR` when set (authoritative), else the `KOOKR_PORT`-derived state dir (`~/.kookr` for `4800`, `~/.kookr-<port>` otherwise), else the newest of the two default-port dirs.
+
 Options:
 
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
 | `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `--offline` | none | false | Skip HTTP and read the last-good `/api/health` snapshot from disk (issue #2495), reporting how stale it is. |
 | `-h`, `--help` | none | false | Print command help and exit. |
 
 Environment (server discovery — same precedence as [Server Discovery](#server-discovery)):
@@ -777,14 +787,16 @@ Environment (server discovery — same precedence as [Server Discovery](#server-
 | `KOOKR_API_BASE_URL` | Base URL of a running Kookr server (overrides auto-detect). |
 | `KOOKR_PORT` | Specific port on `127.0.0.1` (overrides auto-detect). |
 | `KOOKR_API_TOKEN` | Bearer token for non-loopback servers. |
+| `KOOKR_DIR` | State dir holding `last-good-health.json` for the `--offline` path (authoritative when set). |
 
 Exit behavior:
 
-- `0` Ready (engine safe to supervise).
+- `0` Ready (engine safe to supervise) — or, with `--offline`, the last-good snapshot was printed (`code: "OFFLINE_SNAPSHOT"`).
 - `1` Ready failed (critical not-ready / HTTP 503).
 - `2` User error (bad flags / unknown verb / invalid `KOOKR_PORT`).
-- `3` No Kookr server reachable.
-- `4` Server rejected `/api/health` or returned an unexpected payload.
+- `3` No Kookr server reachable (with `details.offline` when a snapshot exists).
+- `4` Server rejected `/api/health` or returned an unexpected payload (with `details.offline` when a snapshot exists).
+- `6` `--offline` requested but no last-good snapshot exists on disk (`code: "NO_SNAPSHOT"`).
 
 Related: [`kookr status`](#kookr-status) for agent-finding snapshots; [offline recovery card](./offline-recovery-card.md) and [unattended recovery runbook](./unattended-recovery-runbook.md) for the same field map in prose.
 

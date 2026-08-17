@@ -6,7 +6,17 @@
  *   kookr ops digest [--json]
  *
  * Exit: 0 when ready, 1 when ready fails. Does not mutate server state.
+ *
+ * Offline degrade (issue #2495): when the HTTP surface is dark the server can
+ * no longer answer /api/health, but it mirrors each successful assembly to
+ * `<kookrDir>/last-good-health.json`. `--offline` reads that file directly, and
+ * the live path auto-degrades to it when the server is unreachable — either way
+ * the digest reports how stale the mirror is instead of just "no server".
  */
+
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { readLastGoodHealth, type LastGoodHealthRead } from '../server/last-good-health.js';
 
 const PORTS_TO_TRY = [4800, 4801] as const;
 /** Health payloads can be large on busy prod instances; keep headroom over status's 2s. */
@@ -22,6 +32,12 @@ export const EXIT_READY_FAIL = 1;
 export const EXIT_USER_ERROR = 2;
 export const EXIT_NO_SERVER = 3;
 export const EXIT_SERVER_ERROR = 4;
+/**
+ * `--offline` requested but no last-good snapshot exists on disk (issue #2495).
+ * 6, not 5: exit 5 is reserved across the `kookr` CLI family for the
+ * findings-threshold gate (`kookr status --fail-on`), so ops digest skips it.
+ */
+export const EXIT_NO_SNAPSHOT = 6;
 
 export const OPS_DIGEST_HELP_TEXT = `kookr ops digest — one-pager for remote unattended diagnosis.
 
@@ -33,22 +49,34 @@ Fetches GET /api/ready and GET /api/health, then prints ready status plus the
 top unattended failure signals (pressureWhileDisabled, phantomActive, hung
 residual, pipeline starvation, disk, safeMode) with field paths. ≤20 lines.
 
+When the server is unreachable, the digest auto-degrades to the last-good
+/api/health snapshot on disk (if one exists) and reports how stale it is.
+
 Options:
   --json       Print one machine-readable JSON envelope to stdout.
+  --offline    Skip HTTP and read the last-good snapshot from disk (issue #2495).
   -h, --help   Show this help.
 
 Environment:
   KOOKR_API_BASE_URL   Base URL of a running Kookr server (overrides auto-detect).
   KOOKR_PORT            Specific port on 127.0.0.1 (overrides auto-detect).
   KOOKR_API_TOKEN       Bearer token for non-loopback servers.
+  KOOKR_DIR             Kookr state dir holding last-good-health.json (offline path).
 
 Exit codes:
-  0  Ready (healthy enough to supervise).
+  0  Ready (healthy enough to supervise) — or offline snapshot printed.
   1  Ready failed (critical not-ready / HTTP 503).
   2  User error (bad flags / unknown verb).
   3  No Kookr server reachable.
   4  Server rejected the health request or returned an unexpected payload.
+  6  --offline requested but no last-good snapshot exists on disk.
 `;
+
+/** Reads the freshest last-good snapshot across candidate state dirs, or null. */
+export type OfflineSnapshotLoader = (
+  env: NodeJS.ProcessEnv,
+  nowMs: number,
+) => LastGoodHealthRead | null;
 
 export interface OpsDigestCliIo {
   env?: NodeJS.ProcessEnv;
@@ -56,6 +84,10 @@ export interface OpsDigestCliIo {
   err?: { error: (...args: unknown[]) => void };
   /** Override HTTP fetch (tests). Defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Override last-good snapshot loading (tests). Defaults to on-disk read. */
+  offlineLoader?: OfflineSnapshotLoader;
+  /** Injectable clock (epoch ms) for staleness math. Defaults to `Date.now`. */
+  nowMs?: () => number;
 }
 
 interface ResolvedIo {
@@ -63,11 +95,14 @@ interface ResolvedIo {
   out: { log: (...args: unknown[]) => void };
   err: { error: (...args: unknown[]) => void };
   fetchImpl: typeof fetch;
+  offlineLoader: OfflineSnapshotLoader;
+  nowMs: () => number;
 }
 
 export interface ParsedOpsDigestArgs {
   verb: 'digest' | null;
   json: boolean;
+  offline: boolean;
   help: boolean;
   error?: string;
 }
@@ -102,12 +137,14 @@ export interface OpsDigestSnapshot {
 }
 
 export function parseOpsDigestArgs(argv: string[]): ParsedOpsDigestArgs {
-  const out: ParsedOpsDigestArgs = { verb: null, json: false, help: false };
+  const out: ParsedOpsDigestArgs = { verb: null, json: false, offline: false, help: false };
   for (const tok of argv) {
     if (tok === '-h' || tok === '--help') {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--offline') {
+      out.offline = true;
     } else if (tok.startsWith('-')) {
       return { ...out, error: `unknown option: ${tok}` };
     } else if (out.verb === null) {
@@ -138,6 +175,105 @@ function describeTarget(env: NodeJS.ProcessEnv): string {
   if (env.KOOKR_API_BASE_URL?.trim()) return env.KOOKR_API_BASE_URL.trim();
   if (env.KOOKR_PORT?.trim()) return `port ${env.KOOKR_PORT.trim()}`;
   return `ports ${PORTS_TO_TRY.join(', ')}`;
+}
+
+/**
+ * Candidate Kookr state dirs holding `last-good-health.json`. Explicit config is
+ * **authoritative** so `--offline` never quotes the wrong instance:
+ *  - `KOOKR_DIR` set  → exactly that dir;
+ *  - else `KOOKR_PORT` set → exactly the port-derived dir (mirrors start.ts:
+ *    port 4800 → `~/.kookr`, any other port → `~/.kookr-<port>`);
+ *  - else (auto) → both default-port dirs, and the caller picks the freshest
+ *    (they belong to the same box, so newest-by-mtime is the right heuristic).
+ */
+export function resolveOpsKookrDirs(env: NodeJS.ProcessEnv): string[] {
+  const home = env.HOME ?? env.USERPROFILE ?? homedir();
+  const portDir = (port: number): string =>
+    port === 4800 ? join(home, '.kookr') : join(home, `.kookr-${port}`);
+
+  const explicit = env.KOOKR_DIR?.trim();
+  if (explicit) return [explicit];
+
+  const portRaw = env.KOOKR_PORT?.trim();
+  if (portRaw) {
+    const port = Number(portRaw);
+    // An invalid KOOKR_PORT yields no candidate — the digest's own port
+    // validation already reports it on the live path.
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? [portDir(port)] : [];
+  }
+  return PORTS_TO_TRY.map(portDir);
+}
+
+/** Default loader: read the freshest last-good snapshot across candidate dirs. */
+export function loadOfflineSnapshot(
+  env: NodeJS.ProcessEnv,
+  nowMs: number,
+): LastGoodHealthRead | null {
+  let best: LastGoodHealthRead | null = null;
+  for (const dir of resolveOpsKookrDirs(env)) {
+    const read = readLastGoodHealth(dir, { now: nowMs });
+    if (read && (best === null || read.mtimeMs > best.mtimeMs)) best = read;
+  }
+  return best;
+}
+
+function formatStaleAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'unknown';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/** JSON `details` for an offline / degraded envelope — the same signal set as live. */
+function offlineDetails(read: LastGoodHealthRead): Record<string, unknown> {
+  const collected = collectOpsDigestWarnings(read.snapshot.health ?? {});
+  return {
+    path: read.path,
+    mtimeMs: read.mtimeMs,
+    ageMs: read.ageMs,
+    capturedAt: read.snapshot.capturedAt,
+    truncated: read.snapshot.truncated,
+    warnings: collected.warnings,
+    signals: collected.signals,
+    serverStartedAt: collected.serverStartedAt,
+    sha: collected.sha,
+  };
+}
+
+/**
+ * Human render of an offline last-good snapshot, hard-capped at
+ * MAX_HUMAN_LINES. Reuses {@link collectOpsDigestWarnings} so the offline
+ * digest surfaces the same signal set as the live one — just from a stale body.
+ */
+export function formatOpsDigestOffline(read: LastGoodHealthRead): string {
+  const { snapshot, ageMs, path } = read;
+  const collected = collectOpsDigestWarnings(snapshot.health ?? {});
+  const lines: string[] = [];
+  lines.push('ready: UNKNOWN (offline — HTTP dark, showing last-good /api/health)');
+  lines.push(`last-good: ${formatStaleAge(ageMs)} stale  captured=${snapshot.capturedAt}`);
+  lines.push(`source: ${path}`);
+  if (snapshot.truncated) lines.push('note: snapshot trimmed to gauges (size cap)');
+  if (collected.serverStartedAt || collected.sha) {
+    const parts: string[] = [];
+    if (collected.sha) parts.push(`sha=${collected.sha.slice(0, 12)}`);
+    if (collected.serverStartedAt) parts.push(`started=${collected.serverStartedAt}`);
+    lines.push(`server: ${parts.join('  ')}`);
+  }
+  if (collected.warnings.length === 0) {
+    lines.push('warnings: none');
+  } else {
+    lines.push(`warnings (${collected.warnings.length}/${MAX_WARNINGS}):`);
+    for (const w of collected.warnings) {
+      lines.push(`  - ${w.path}: ${w.summary}`);
+    }
+  }
+  if (lines.length > MAX_HUMAN_LINES) {
+    return lines.slice(0, MAX_HUMAN_LINES - 1).concat('  … (truncated)').join('\n');
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -429,6 +565,66 @@ export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
   return lines.join('\n');
 }
 
+/** Explicit `--offline`: read the last-good snapshot from disk and print it. */
+function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
+  const read = resolved.offlineLoader(resolved.env, resolved.nowMs());
+  if (!read) {
+    const dirs = resolveOpsKookrDirs(resolved.env);
+    const message = `no last-good health snapshot found (looked in ${dirs.join(', ')}).`;
+    if (json) {
+      emitJson(resolved.out, {
+        ok: false,
+        code: 'NO_SNAPSHOT',
+        message,
+        details: { dirs, subcommand: 'ops' },
+      });
+    } else {
+      resolved.err.error(`kookr ops: ${message}`);
+    }
+    return EXIT_NO_SNAPSHOT;
+  }
+  if (json) {
+    emitJson(resolved.out, {
+      ok: true,
+      code: 'OFFLINE_SNAPSHOT',
+      message: 'ops digest (offline last-good snapshot)',
+      details: { offline: offlineDetails(read), subcommand: 'ops' },
+    });
+  } else {
+    resolved.out.log(formatOpsDigestOffline(read));
+  }
+  return EXIT_OK;
+}
+
+/**
+ * Emit a server-unreachable failure envelope, auto-degrading to the last-good
+ * snapshot when one exists. Keeps the failing exit code (the server IS down) but
+ * still hands the operator a recent, redacted body to reason about.
+ */
+function degradeToOffline(
+  resolved: ResolvedIo,
+  json: boolean,
+  failExit: number,
+  envelope: { code: string; message: string; details: Record<string, unknown> },
+): number {
+  const read = resolved.offlineLoader(resolved.env, resolved.nowMs());
+  if (json) {
+    emitJson(resolved.out, {
+      ok: false,
+      code: envelope.code,
+      message: envelope.message,
+      details: {
+        ...envelope.details,
+        ...(read ? { offline: offlineDetails(read) } : {}),
+      },
+    });
+  } else {
+    resolved.err.error(`kookr ops: ${envelope.message}`);
+    if (read) resolved.out.log(formatOpsDigestOffline(read));
+  }
+  return failExit;
+}
+
 export async function runOpsDigestCli(
   argv: string[],
   io: OpsDigestCliIo = {},
@@ -438,12 +634,19 @@ export async function runOpsDigestCli(
     out: io.out ?? console,
     err: io.err ?? console,
     fetchImpl: io.fetchImpl ?? fetch,
+    offlineLoader: io.offlineLoader ?? loadOfflineSnapshot,
+    nowMs: io.nowMs ?? Date.now,
   };
 
   const args = parseOpsDigestArgs(argv);
   if (args.help) {
     resolved.out.log(OPS_DIGEST_HELP_TEXT);
     return EXIT_OK;
+  }
+  if (args.error === undefined && args.offline && args.verb !== null) {
+    // Offline digest (issue #2495): skip HTTP entirely and read the last-good
+    // snapshot from disk. Explicitly requested; degrades gracefully to NO_SNAPSHOT.
+    return runOfflineDigest(resolved, args.json);
   }
   if (args.error) {
     if (args.json) {
@@ -494,17 +697,11 @@ export async function runOpsDigestCli(
     const message =
       `no Kookr server reachable (checked ${describeTarget(resolved.env)}). ` +
       'Start the server or set KOOKR_PORT / KOOKR_API_BASE_URL.';
-    if (args.json) {
-      emitJson(resolved.out, {
-        ok: false,
-        code: 'NO_SERVER',
-        message,
-        details: { subcommand: 'ops' },
-      });
-    } else {
-      resolved.err.error(`kookr ops: ${message}`);
-    }
-    return EXIT_NO_SERVER;
+    return degradeToOffline(resolved, args.json, EXIT_NO_SERVER, {
+      code: 'NO_SERVER',
+      message,
+      details: { subcommand: 'ops' },
+    });
   }
 
   const baseUrl = resolvedBase.baseUrl;
@@ -520,17 +717,11 @@ export async function runOpsDigestCli(
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     const message = `no Kookr server reachable: ${detail}`;
-    if (args.json) {
-      emitJson(resolved.out, {
-        ok: false,
-        code: 'NO_SERVER',
-        message,
-        details: { subcommand: 'ops' },
-      });
-    } else {
-      resolved.err.error(`kookr ops: ${message}`);
-    }
-    return EXIT_NO_SERVER;
+    return degradeToOffline(resolved, args.json, EXIT_NO_SERVER, {
+      code: 'NO_SERVER',
+      message,
+      details: { subcommand: 'ops' },
+    });
   }
 
   // Health is the warning source; require 200. Ready may be 503 when not ready.
@@ -542,17 +733,11 @@ export async function runOpsDigestCli(
         ? String((healthResponse.body as { error: unknown }).error)
         : healthResponse.text || 'unknown error';
     const message = `server rejected /api/health (HTTP ${healthResponse.status}): ${detail}`;
-    if (args.json) {
-      emitJson(resolved.out, {
-        ok: false,
-        code: 'SERVER_ERROR',
-        message,
-        details: { status: healthResponse.status, subcommand: 'ops' },
-      });
-    } else {
-      resolved.err.error(`kookr ops: ${message}`);
-    }
-    return EXIT_SERVER_ERROR;
+    return degradeToOffline(resolved, args.json, EXIT_SERVER_ERROR, {
+      code: 'SERVER_ERROR',
+      message,
+      details: { status: healthResponse.status, subcommand: 'ops' },
+    });
   }
 
   // Ready contract: 200 + ready:true → ok; anything else (503, body ready:false,

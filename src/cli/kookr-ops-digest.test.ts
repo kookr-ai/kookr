@@ -1,16 +1,24 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   EXIT_NO_SERVER,
+  EXIT_NO_SNAPSHOT,
   EXIT_OK,
   EXIT_READY_FAIL,
   EXIT_SERVER_ERROR,
   EXIT_USER_ERROR,
   collectOpsDigestWarnings,
   formatOpsDigestHuman,
+  formatOpsDigestOffline,
+  loadOfflineSnapshot,
   parseOpsDigestArgs,
+  resolveOpsKookrDirs,
   runOpsDigestCli,
   type OpsDigestSnapshot,
 } from './kookr-ops-digest.js';
+import { LastGoodHealthWriter, type LastGoodHealthRead } from '../server/last-good-health.js';
 
 function captureConsole() {
   const logs: string[] = [];
@@ -80,18 +88,26 @@ describe('parseOpsDigestArgs', () => {
     expect(parseOpsDigestArgs(['digest'])).toEqual({
       verb: 'digest',
       json: false,
+      offline: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['digest', '--json'])).toEqual({
       verb: 'digest',
       json: true,
+      offline: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['--json', 'digest'])).toEqual({
       verb: 'digest',
       json: true,
+      offline: false,
       help: false,
     });
+  });
+
+  it('parses --offline', () => {
+    expect(parseOpsDigestArgs(['digest', '--offline']).offline).toBe(true);
+    expect(parseOpsDigestArgs(['digest']).offline).toBe(false);
   });
 
   it('parses --help', () => {
@@ -201,6 +217,8 @@ describe('runOpsDigestCli', () => {
       out: c.out,
       err: c.err,
       fetchImpl: fetchImpl as typeof fetch,
+      // Hermetic: no on-disk snapshot ⇒ the offline degrade is a no-op here.
+      offlineLoader: () => null,
     });
     expect(code).toBe(EXIT_NO_SERVER);
     expect(c.errors.join('\n')).toMatch(/no Kookr server reachable/);
@@ -334,8 +352,162 @@ describe('runOpsDigestCli', () => {
       out: c.out,
       err: c.err,
       fetchImpl: fetchImpl as typeof fetch,
+      // Hermetic: no on-disk snapshot ⇒ the offline degrade is a no-op here.
+      offlineLoader: () => null,
     });
     expect(code).toBe(EXIT_SERVER_ERROR);
     expect(c.errors.join('\n')).toMatch(/HTTP 500/);
+  });
+});
+
+describe('kookr ops digest offline last-good (issue #2495)', () => {
+  function fakeRead(overrides: Partial<LastGoodHealthRead> = {}): LastGoodHealthRead {
+    return {
+      path: '/tmp/kookr-test/.kookr/last-good-health.json',
+      mtimeMs: 1_000_000,
+      ageMs: 42_000,
+      snapshot: {
+        schemaVersion: 'last-good-health.v1',
+        capturedAt: '2026-08-17T00:00:00.000Z',
+        truncated: false,
+        health: HEALTH_WITH_WARNINGS,
+      },
+      ...overrides,
+    };
+  }
+
+  describe('resolveOpsKookrDirs (explicit config is authoritative)', () => {
+    it('returns only KOOKR_DIR when set', () => {
+      expect(resolveOpsKookrDirs({ KOOKR_DIR: '/custom', HOME: '/h', KOOKR_PORT: '4800' }))
+        .toEqual(['/custom']);
+    });
+    it('returns only the port-derived dir when KOOKR_PORT is set', () => {
+      expect(resolveOpsKookrDirs({ HOME: '/h', KOOKR_PORT: '4800' })).toEqual(['/h/.kookr']);
+      expect(resolveOpsKookrDirs({ HOME: '/h', KOOKR_PORT: '4802' })).toEqual(['/h/.kookr-4802']);
+    });
+    it('probes both default-port dirs in the fully-auto case', () => {
+      expect(resolveOpsKookrDirs({ HOME: '/h' })).toEqual(['/h/.kookr', '/h/.kookr-4801']);
+    });
+    it('yields no candidate for an invalid KOOKR_PORT', () => {
+      expect(resolveOpsKookrDirs({ HOME: '/h', KOOKR_PORT: 'nope' })).toEqual([]);
+    });
+  });
+
+  describe('loadOfflineSnapshot picks the freshest across candidate dirs', () => {
+    let root: string;
+    beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'ops-offline-')); });
+    afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+    it('selects the newest last-good-health.json by mtime', () => {
+      const older = join(root, '.kookr');
+      const newer = join(root, '.kookr-4801');
+      new LastGoodHealthWriter({ kookrDir: older, now: () => 1 }).record({ status: 'old', agents: 1 });
+      new LastGoodHealthWriter({ kookrDir: newer, now: () => 2 }).record({ status: 'new', agents: 2 });
+      // Force the newer dir's file to have a later mtime.
+      utimesSync(join(older, 'last-good-health.json'), 1000, 1000);
+      utimesSync(join(newer, 'last-good-health.json'), 2000, 2000);
+      const read = loadOfflineSnapshot({ HOME: root }, 3_000_000);
+      expect(read).not.toBeNull();
+      expect(read!.snapshot.health.status).toBe('new');
+    });
+
+    it('returns null when no snapshot exists', () => {
+      expect(loadOfflineSnapshot({ HOME: root }, 1000)).toBeNull();
+    });
+  });
+
+  it('formatOpsDigestOffline reports staleness and reuses the live warning set', () => {
+    const text = formatOpsDigestOffline(fakeRead());
+    expect(text).toContain('offline');
+    expect(text).toContain('stale');
+    expect(text).toContain('captured=2026-08-17T00:00:00.000Z');
+    // Same signal paths the live digest would surface.
+    expect(text).toContain('resourceWatchdog.pressureWhileDisabled');
+    expect(text).toContain('capacity.phantomActive');
+  });
+
+  it('--offline prints the snapshot and exits 0', async () => {
+    const cap = captureConsole();
+    const code = await runOpsDigestCli(['digest', '--offline'], {
+      ...cap,
+      env: {},
+      offlineLoader: () => fakeRead(),
+      nowMs: () => 5,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(cap.logs.join('\n')).toContain('offline');
+    expect(cap.errors).toEqual([]);
+  });
+
+  it('--offline --json emits an OFFLINE_SNAPSHOT envelope', async () => {
+    const cap = captureConsole();
+    const code = await runOpsDigestCli(['digest', '--offline', '--json'], {
+      ...cap,
+      env: {},
+      offlineLoader: () => fakeRead(),
+    });
+    expect(code).toBe(EXIT_OK);
+    const env = JSON.parse(cap.logs[0]!);
+    expect(env).toMatchObject({
+      ok: true,
+      code: 'OFFLINE_SNAPSHOT',
+      details: { offline: { ageMs: 42_000 } },
+    });
+  });
+
+  it('--offline exits EXIT_NO_SNAPSHOT when none is on disk', async () => {
+    const cap = captureConsole();
+    const code = await runOpsDigestCli(['digest', '--offline', '--json'], {
+      ...cap,
+      env: { HOME: '/nope' },
+      offlineLoader: () => null,
+    });
+    expect(code).toBe(EXIT_NO_SNAPSHOT);
+    const env = JSON.parse(cap.logs[0]!);
+    expect(env).toMatchObject({ ok: false, code: 'NO_SNAPSHOT' });
+    expect(env.details.dirs).toEqual(['/nope/.kookr', '/nope/.kookr-4801']);
+  });
+
+  it('auto-degrades to the snapshot when no server is reachable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+    const cap = captureConsole();
+    const code = await runOpsDigestCli(['digest'], {
+      ...cap,
+      env: {},
+      offlineLoader: () => fakeRead(),
+    });
+    expect(code).toBe(EXIT_NO_SERVER);
+    expect(cap.errors.join('\n')).toContain('no Kookr server reachable');
+    expect(cap.logs.join('\n')).toContain('offline');
+  });
+
+  it('auto-degrade surfaces the snapshot in the --json NO_SERVER envelope', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+    const cap = captureConsole();
+    const code = await runOpsDigestCli(['digest', '--json'], {
+      ...cap,
+      env: {},
+      offlineLoader: () => fakeRead(),
+    });
+    expect(code).toBe(EXIT_NO_SERVER);
+    const env = JSON.parse(cap.logs[0]!);
+    expect(env).toMatchObject({ code: 'NO_SERVER', details: { offline: { ageMs: 42_000 } } });
+  });
+
+  it('does not degrade when the server is reachable (offline loader untouched)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const href = typeof url === 'string' ? url : url.href;
+      if (href.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+      return jsonResponse(HEALTH_WITH_WARNINGS, 200);
+    }));
+    const cap = captureConsole();
+    const loader = vi.fn(() => fakeRead());
+    const code = await runOpsDigestCli(['digest', '--json'], {
+      ...cap,
+      env: { KOOKR_PORT: '4800' },
+      offlineLoader: loader,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(loader).not.toHaveBeenCalled();
   });
 });
