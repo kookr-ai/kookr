@@ -129,6 +129,8 @@ interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
+  /** Opens Diagnostics from the first-run empty-state "Check setup" control. */
+  onCheckSetup?: () => void;
   onRequestComplete: () => void;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
@@ -397,7 +399,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -636,6 +638,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
           runningCount={overview?.runningCount ?? 0}
           completedCount={overview?.completedCount ?? 0}
           onLaunch={onLaunch}
+          onCheckSetup={onCheckSetup}
           shortcutBindings={shortcutBindings}
         />
       </div>

@@ -14,6 +14,10 @@ import { ShortcutKeys } from './ShortcutKeys.js';
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
 const MAX_WAITING_ROWS = 6;
 
+/** Published install + first-agent walkthrough (docs-only; no in-app copy). */
+export const GETTING_STARTED_GUIDE_URL =
+  'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md';
+
 interface Props {
   /**
    * Agents currently needing input — App's rail `findings` bucket
@@ -26,6 +30,11 @@ interface Props {
   /** Agents in a terminal task state (rail `completed` bucket length). */
   completedCount: number;
   onLaunch: () => void;
+  /**
+   * Opens the Diagnostics / Operations panel (same surface as the command
+   * palette). First-run empty state only — returning "All clear" hides it.
+   */
+  onCheckSetup?: () => void;
   shortcutBindings?: ShortcutBindingMap;
 }
 
@@ -39,6 +48,7 @@ export function OverviewEmptyState({
   runningCount,
   completedCount,
   onLaunch,
+  onCheckSetup,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
@@ -111,6 +121,27 @@ export function OverviewEmptyState({
             >
               Take the tour
             </button>
+            {' · '}
+            <a
+              className="overview-tour-link"
+              href={GETTING_STARTED_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Getting Started
+            </a>
+            {' · '}
+            <button
+              type="button"
+              className="overview-tour-link"
+              onClick={() => onCheckSetup?.()}
+            >
+              Check setup
+            </button>
+            <span className="overview-setup-fallback">
+              {' '}
+              (<code>pnpm run doctor</code>)
+            </span>
           </p>
         )}
 

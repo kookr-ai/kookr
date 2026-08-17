@@ -84,6 +84,11 @@ test.describe('UI layout', () => {
     await expect(overview).toContainText('No agents running');
     // Hint kbd set varies with config (STT, tasks); assert the stable prefix.
     await expect(overview.locator('.detail-empty-hint')).toContainText('quick launch');
+    await expect(overview.getByRole('link', { name: 'Getting Started' })).toBeVisible();
+    await expect(overview.getByRole('button', { name: 'Check setup' })).toBeVisible();
+    await expect(overview).toContainText('pnpm run doctor');
+    await overview.getByRole('button', { name: 'Check setup' }).click();
+    await expect(page.getByRole('dialog', { name: 'Diagnostics' })).toBeVisible();
   });
 
   // Keyboard-hint affordances were moved out of the statusbar at some point

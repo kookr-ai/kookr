@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
-import { OverviewEmptyState } from './OverviewEmptyState.js';
+import { GETTING_STARTED_GUIDE_URL, OverviewEmptyState } from './OverviewEmptyState.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
   open: vi.fn(),
@@ -151,23 +151,60 @@ describe('OverviewEmptyState', () => {
   test('first-run empty state shows a Take the tour affordance that reopens the tour', () => {
     render();
 
-    const link = container.querySelector<HTMLButtonElement>('.overview-tour-link');
-    expect(link).not.toBeNull();
+    const tourLink = Array.from(container.querySelectorAll<HTMLButtonElement>('button.overview-tour-link'))
+      .find((el) => el.textContent?.includes('Take the tour'));
+    expect(tourLink).toBeDefined();
     expect(container.querySelector('.overview-tour-reentry')?.textContent).toContain('New to Kookr?');
-    expect(link?.textContent).toContain('Take the tour');
 
     act(() => {
-      link?.click();
+      tourLink?.click();
     });
     expect(openOnboardingTour).toHaveBeenCalledTimes(1);
   });
 
-  test('does not show the Take the tour affordance in the returning-empty all-clear branch', () => {
+  test('first-run empty state shows Getting Started and Check setup next to Take the tour', () => {
+    const onCheckSetup = vi.fn();
+    render({ onCheckSetup });
+
+    const gettingStarted = container.querySelector<HTMLAnchorElement>('a.overview-tour-link');
+    expect(gettingStarted).not.toBeNull();
+    expect(gettingStarted?.textContent).toContain('Getting Started');
+    expect(GETTING_STARTED_GUIDE_URL).toBe(
+      'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md',
+    );
+    expect(gettingStarted?.href).toBe(GETTING_STARTED_GUIDE_URL);
+    expect(gettingStarted?.target).toBe('_blank');
+    expect(gettingStarted?.rel).toBe('noopener noreferrer');
+
+    const checkSetup = Array.from(container.querySelectorAll<HTMLButtonElement>('button.overview-tour-link'))
+      .find((el) => el.textContent?.includes('Check setup'));
+    expect(checkSetup).toBeDefined();
+    expect(container.textContent).toContain('pnpm run doctor');
+
+    act(() => {
+      checkSetup?.click();
+    });
+    expect(onCheckSetup).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not show the first-run setup links in the returning-empty all-clear branch', () => {
     render({ runningCount: 2 });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
     expect(container.querySelector('.overview-tour-reentry')).toBeNull();
     expect(container.querySelector('.overview-tour-link')).toBeNull();
+    expect(container.textContent).not.toContain('Getting Started');
+    expect(container.textContent).not.toContain('Check setup');
+    expect(container.textContent).not.toContain('pnpm run doctor');
+  });
+
+  test('does not show the first-run setup links when only completed agents remain', () => {
+    render({ completedCount: 1 });
+
+    expect(container.textContent).toContain('All clear — agents working autonomously.');
+    expect(container.querySelector('.overview-tour-link')).toBeNull();
+    expect(container.textContent).not.toContain('Getting Started');
+    expect(container.textContent).not.toContain('Check setup');
   });
 
   test('keyboard hint includes the command palette and quick launch shortcuts', () => {
