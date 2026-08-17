@@ -65,6 +65,14 @@ export const GROK_TOOL_ALIASES: Readonly<Record<string, string>> = {
  * belt-and-braces paths — but when it DOES fire, dropping it made a
  * permission-stuck Grok task read as "running" (2026-07-24 incident, task
  * 20e2ddbd: 33h hung mid-`write` right after a dropped `permission_denied`).
+ *
+ * Exception: when the payload carries `permissionMode: "bypassPermissions"`
+ * the session is not waiting on a human. Grok still emits `permission_prompt`
+ * ("Tool permission requested") and occasional `permission_denied` while
+ * tools continue — mapping those to `permission_request` flickers a
+ * `permission_blocked` finding (and "permission required" / "needs input"
+ * alerts) on every such hook. Bypass payloads stay notifications / tool
+ * errors; a real menu is still caught by pane semantics.
  */
 export const GROK_KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   'session_start',
@@ -82,6 +90,13 @@ export const GROK_KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   'pre_compact',
   'post_compact',
 ]);
+
+/** Live Grok hook payloads set this under `--permission-mode bypassPermissions`. */
+export const GROK_BYPASS_PERMISSION_MODE = 'bypassPermissions';
+
+export function isGrokBypassPermissionMode(mode: string | undefined): boolean {
+  return mode === GROK_BYPASS_PERMISSION_MODE;
+}
 
 /** Raw Grok hook payload (camelCase). All fields optional — validated per event. */
 interface RawGrokHookPayload {
@@ -109,6 +124,8 @@ interface RawGrokHookPayload {
   // Notification
   notificationType?: unknown;
   message?: unknown;
+  // Present on every live Grok hook; used to suppress false permission waits.
+  permissionMode?: unknown;
   // UserPromptSubmit
   prompt?: unknown;
   // Subagent
@@ -267,6 +284,21 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       // POC-A payload capture exists for this event (it did not fire in the
       // headless runs), so every field is decoded defensively with the same
       // camelCase keys the other tool events carry.
+      //
+      // Bypass mode is the exception: the tool was rejected (hook/policy)
+      // and the agent continues. That is a completed deny, not a wait.
+      if (isGrokBypassPermissionMode(str(parsed.permissionMode))) {
+        return {
+          type: 'tool_error',
+          sessionId,
+          toolName: str(parsed.toolName) ?? '',
+          toolInput: parsed.toolInput,
+          ...(str(parsed.toolUseId) ? { toolUseId: str(parsed.toolUseId) } : {}),
+          error: 'permission_denied',
+          isInterrupt: false,
+          ...(cwd ? { cwd } : {}),
+        };
+      }
       return {
         type: 'permission_request',
         sessionId,
@@ -285,7 +317,20 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       // permission menu. Normalize it to `permission_request` — Claude Code
       // emits its permission_prompt notification IN ADDITION to a structured
       // PermissionRequest hook, Grok does not.
+      //
+      // In bypass mode Grok still emits the same notification while
+      // auto-allowing the tool, so treating it as a wait is a false
+      // `permission_blocked` flash. Keep it as a plain notification.
       if (notificationType === 'permission_prompt') {
+        if (isGrokBypassPermissionMode(str(parsed.permissionMode))) {
+          return {
+            type: 'notification',
+            sessionId,
+            notificationType,
+            message: str(parsed.message) ?? '',
+            ...(cwd ? { cwd } : {}),
+          };
+        }
         return {
           type: 'permission_request',
           sessionId,

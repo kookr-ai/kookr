@@ -7,6 +7,8 @@ import {
   extractGrokHookHeader,
   parseGrokHookEvent,
   GROK_TOOL_ALIASES,
+  GROK_BYPASS_PERMISSION_MODE,
+  isGrokBypassPermissionMode,
 } from './grok-hook-decoder.js';
 
 const FIXTURE = resolve(
@@ -210,6 +212,68 @@ describe('parseGrokHookEvent — robustness', () => {
   it('decodes a field-less permission_denied defensively rather than dropping it', () => {
     const e = parseGrokHookEvent(JSON.stringify({ hookEventName: 'permission_denied', sessionId: 's1' }));
     expect(e).toMatchObject({ type: 'permission_request', sessionId: 's1', toolName: '' });
+  });
+
+  it('does not treat bypass permission_prompt as a blocking wait', () => {
+    // Live 2026-08-17: grok-build in --permission-mode bypassPermissions still
+    // emits notification{permission_prompt, "Tool permission requested"} while
+    // the tool succeeds. Mapping that to permission_request flickers
+    // permission_blocked / "permission required" on every such hook.
+    const e = parseGrokHookEvent(JSON.stringify({
+      hookEventName: 'notification',
+      sessionId: 's1',
+      notificationType: 'permission_prompt',
+      message: 'Tool permission requested',
+      permissionMode: GROK_BYPASS_PERMISSION_MODE,
+    }));
+    expect(e).toMatchObject({
+      type: 'notification',
+      sessionId: 's1',
+      notificationType: 'permission_prompt',
+      message: 'Tool permission requested',
+    });
+    expect(e?.type).not.toBe('permission_request');
+  });
+
+  it('keeps non-bypass permission_prompt as permission_request (issue #1526 Phase C4)', () => {
+    const e = parseGrokHookEvent(JSON.stringify({
+      hookEventName: 'notification',
+      sessionId: 's1',
+      notificationType: 'permission_prompt',
+      message: 'Tool permission requested',
+      permissionMode: 'default',
+    }));
+    expect(e).toMatchObject({ type: 'permission_request', sessionId: 's1' });
+  });
+
+  it('decodes bypass permission_denied as a completed tool error, not a wait', () => {
+    // Hook/policy deny under bypass: the tool was rejected and the agent
+    // continues. permission_request would ask the operator to approve a
+    // decision that already happened.
+    const e = parseGrokHookEvent(JSON.stringify({
+      hookEventName: 'permission_denied',
+      sessionId: 's1',
+      cwd: '/repo',
+      toolName: 'run_terminal_command',
+      toolUseId: 'call-1',
+      toolInput: { command: 'cat .env' },
+      permissionMode: GROK_BYPASS_PERMISSION_MODE,
+    }));
+    expect(e).toMatchObject({
+      type: 'tool_error',
+      sessionId: 's1',
+      toolName: 'run_terminal_command',
+      toolUseId: 'call-1',
+      error: 'permission_denied',
+      isInterrupt: false,
+      cwd: '/repo',
+    });
+  });
+
+  it('documents the bypass permission-mode token', () => {
+    expect(isGrokBypassPermissionMode(GROK_BYPASS_PERMISSION_MODE)).toBe(true);
+    expect(isGrokBypassPermissionMode('default')).toBe(false);
+    expect(isGrokBypassPermissionMode(undefined)).toBe(false);
   });
 
   it('drops an event missing its sessionId correlation key', () => {

@@ -595,6 +595,30 @@ describe('GrokBuildAdapter', () => {
       expect(perm).toMatchObject({ type: 'permission_request', toolName: 'search_replace' });
     });
 
+    test('does not dispatch a bypass permission_prompt as permission_request', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      adapter.injectHookEvent(sessionId, JSON.stringify({ hookEventName: 'session_start', sessionId: 'S1', cwd: '/workspace' }));
+      const r = adapter.injectHookEvent(
+        sessionId,
+        JSON.stringify({
+          hookEventName: 'notification',
+          sessionId: 'S1',
+          notificationType: 'permission_prompt',
+          message: 'Tool permission requested',
+          permissionMode: 'bypassPermissions',
+        }),
+      );
+      expect(r.parseStatus).toBe('ok');
+      expect(events.some((e) => e.type === 'permission_request')).toBe(false);
+      expect(events.find((e) => e.type === 'notification')).toMatchObject({
+        type: 'notification',
+        notificationType: 'permission_prompt',
+        message: 'Tool permission requested',
+      });
+    });
+
     test('stop lastMessage falls back to a bounded tail of the last captured display', async () => {
       const { adapter, sessionId } = await launched();
       const events: AgentEvent[] = [];
