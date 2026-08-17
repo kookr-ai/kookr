@@ -1,4 +1,4 @@
-import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookScope } from './playbook.js';
+import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookProbe, PlaybookScope } from './playbook.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
@@ -37,6 +37,7 @@ export const KNOWN_PLAYBOOK_FRONTMATTER_KEYS = [
   'parameters',
   'checklist',
   'cwd',
+  'probe',
 ] as const;
 
 /**
@@ -71,6 +72,7 @@ export function parsePlaybook(
 
   const tags = parseTags(meta.tags);
   const loop = parseLoopConfig(meta.loop);
+  const probe = parseProbeConfig(meta.probe);
   const effectiveLoop = tags.includes('loopable') && !loop.error
     ? buildEffectiveLoop(loop.value)
     : undefined;
@@ -93,6 +95,7 @@ export function parsePlaybook(
     checklist: parseStringArray(meta.checklist),
     tags,
     ...(loop.value ? { loop: loop.value } : {}),
+    ...(probe ? { probe } : {}),
     ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
     ...(autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
@@ -184,16 +187,16 @@ function parseFrontmatter(text: string): Record<string, unknown> {
       continue;
     }
 
-    if (key === 'loop' && !inlineValue) {
-      const loop: Record<string, string | boolean> = {};
+    if ((key === 'loop' || key === 'probe') && !inlineValue) {
+      const block: Record<string, string | boolean> = {};
       i++;
       while (i < lines.length) {
-        const loopMatch = lines[i].match(/^\s{2,}(\w[\w-]*):\s*(.*)/);
-        if (!loopMatch) break;
-        loop[loopMatch[1]] = parseScalar(loopMatch[2].trim());
+        const blockMatch = lines[i].match(/^\s{2,}(\w[\w-]*):\s*(.*)/);
+        if (!blockMatch) break;
+        block[blockMatch[1]] = parseScalar(blockMatch[2].trim());
         i++;
       }
-      result[key] = loop;
+      result[key] = block;
       continue;
     }
 
@@ -325,6 +328,41 @@ function parseInlineStringArray(raw: string): string[] {
 function parseTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function parseProbeConfig(raw: unknown): PlaybookProbe | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isPlainRecord(raw)) return undefined;
+  const command = typeof raw.command === 'string' ? raw.command.trim() : '';
+  if (!command) return undefined;
+  const escalateOnExit = parseEscalateOnExit(raw.escalateOnExit);
+  return {
+    command,
+    ...(escalateOnExit ? { escalateOnExit } : {}),
+  };
+}
+
+function parseEscalateOnExit(raw: unknown): number[] | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw === 'number' && Number.isInteger(raw)) return [raw];
+  if (typeof raw === 'boolean') return undefined;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    if (/^-?\d+$/.test(trimmed)) return [Number(trimmed)];
+    return undefined;
+  }
+  if (Array.isArray(raw)) {
+    const codes = raw
+      .map((item) => {
+        if (typeof item === 'number' && Number.isInteger(item)) return item;
+        if (typeof item === 'string' && /^-?\d+$/.test(item.trim())) return Number(item.trim());
+        return null;
+      })
+      .filter((item): item is number => item !== null);
+    return codes.length > 0 ? codes : undefined;
+  }
+  return undefined;
 }
 
 type ParsedLoopConfig = NonNullable<Playbook['loop']>;

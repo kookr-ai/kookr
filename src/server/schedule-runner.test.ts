@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
 import {
   ScheduleRunner,
+  defaultExecScheduleProbe,
   type ScheduleRunnerDeps,
   isTaskBlockingSchedule,
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
@@ -2910,5 +2911,260 @@ Launch and stall.
     // ...but IS in the genuinely-resolved set that gates recovery alerts.
     expect(resolvedIds).toEqual([healthy.id]);
   });
+});
 
+describe('cheap probe pre-check (issue #2569)', () => {
+  let dir: string;
+  let store: ScheduleStore;
+  let service: ScheduleService;
+  let validator: ScheduleValidator;
+  let launched: Array<{ prompt: string }>;
+  let runners: Set<ScheduleRunner>;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'runner-probe-test-'));
+    store = new ScheduleStore(dir);
+    validator = new ScheduleValidator();
+    service = new ScheduleService({ store, validator });
+    launched = [];
+    runners = new Set();
+    await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await Promise.all([...runners].map((runner) => runner.stop()));
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function createProbeRunner(runProbe: ScheduleRunnerDeps['runProbe']): ScheduleRunner {
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async (opts) => {
+        launched.push({ prompt: opts.prompt });
+        return { task: { id: `task-${launched.length}` } as never, queued: false };
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      runProbe,
+    });
+    runners.add(runner);
+    return runner;
+  }
+
+  async function writeConvergencePlaybook(): Promise<void> {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'kookr-deploy-convergence.md'), `---
+name: Kookr Deploy Convergence
+parameters:
+  - name: branch
+    default: main
+  - name: graceMinutes
+    default: "15"
+  - name: act
+    default: "true"
+  - name: dryRun
+    default: "false"
+probe:
+  command: pnpm deploy:convergence -- --branch "{{branch}}" --grace-minutes "{{graceMinutes}}"
+  escalateOnExit: 2
+---
+Run the probe.
+`);
+  }
+
+  function markDue(id: string): void {
+    store.replace({
+      ...store.get(id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+  }
+
+  it('completes a converged tick without launching an agent', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const probes: Array<{ argv: string[]; cwd: string }> = [];
+    const runner = createProbeRunner(async (spec, cwd) => {
+      probes.push({ argv: spec.argv, cwd });
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ receipt: 'deploy-convergence: converged · serving=abc main=abc' }),
+        stderr: '',
+      };
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(probes).toHaveLength(1);
+    expect(probes[0].argv).toContain('--act');
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('completed');
+    expect(after.latestExecution?.reasonCode).toBe('probe_quiet');
+    expect(after.latestExecution?.taskId).toBeUndefined();
+    expect(after.lastRunStatus).toBe('completed');
+    expect(after.latestExecution?.message).toContain('converged');
+  });
+
+  it('treats a probe blip as completed without launching', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const runner = createProbeRunner(async () => ({ exitCode: 1, stdout: '', stderr: 'health down' }));
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_blip');
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('completed');
+  });
+
+  it('escalates a DIVERGENT tick to the existing playbook agent', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return {
+        exitCode: 2,
+        stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
+        stderr: '',
+      };
+    });
+    await runner.tick();
+
+    expect(probes).toHaveLength(1);
+    expect(probes[0]).toContain('--act');
+    expect(launched).toHaveLength(1);
+    expect(launched[0].prompt).toContain('Run the probe.');
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+  });
+
+  it('uses a declared probe command that is not the basename fallback', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'custom-probe.md'), `---
+name: Custom Probe
+probe:
+  command: node scripts/custom-probe.mjs --branch "{{branch}}"
+  escalateOnExit: 2
+---
+Custom body.
+`);
+    const schedule = store.create({
+      name: 'Custom Probe',
+      cron: '* * * * *',
+      playbook: { path: 'custom-probe.md', parameters: { branch: 'staging' } },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return { exitCode: 0, stdout: 'ok', stderr: '' };
+    });
+    await runner.tick();
+
+    expect(probes).toEqual([['node', 'scripts/custom-probe.mjs', '--branch', 'staging']]);
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
+  it('treats a throwing probe runner as a blip', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const runner = createProbeRunner(async () => {
+      throw new Error('probe exploded');
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('completed');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_blip');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBeUndefined();
+  });
+
+  it('does not escalate a dry-run DIVERGENT tick', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: {
+        path: 'kookr-deploy-convergence.md',
+        parameters: { dryRun: 'true', act: 'true' },
+      },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const runner = createProbeRunner(async (spec) => {
+      expect(spec.argv).not.toContain('--act');
+      expect(spec.escalateOnExit).toEqual([]);
+      return { exitCode: 2, stdout: 'DIVERGENT', stderr: '' };
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
+  it('uses the Lucy fallback so that schedule is cheap without a Lucy PR', async () => {
+    const schedule = store.create({
+      name: 'Lucy Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'lucy-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return { exitCode: 0, stdout: 'converged', stderr: '' };
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(probes[0][0]).toBe('node');
+    expect(probes[0]).toContain('scripts/deploy-convergence-check.mjs');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
+  it('maps a real execFile exit 2 through defaultExecScheduleProbe', async () => {
+    const result = await defaultExecScheduleProbe(
+      {
+        argv: ['node', '-e', 'process.exit(2)'],
+        escalateOnExit: [2],
+        timeoutMs: 5_000,
+      },
+      dir,
+    );
+    expect(result.exitCode).toBe(2);
+  });
 });

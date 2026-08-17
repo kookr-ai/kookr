@@ -123,7 +123,11 @@ export type ScheduleExecutionReasonCode =
    */
   | 'auth_expired'
   | 'reconciled_after_restart'
-  | 'unknown_after_restart';
+  | 'unknown_after_restart'
+  /** Cheap probe completed without an agent (issue #2569) — exit 0. */
+  | 'probe_quiet'
+  /** Cheap probe failed/blipped without an agent (issue #2569) — exit 1. */
+  | 'probe_blip';
 
 export interface ScheduleExecutionLedgerEntry {
   id: string;

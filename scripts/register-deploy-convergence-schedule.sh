@@ -5,6 +5,10 @@
 #   (POST /api/deploy/trigger -> prod-update.sh) and -- if that fails to
 #   converge -- file a P0.
 #
+# Issue #2569: the scheduler execs the playbook's probe.command first. A
+# converged / probe-blip tick records completed with no agent slot. Exit 2
+# still launches the playbook for heal + P0.
+#
 # Requires: kookr server up on $KOOKR_API_BASE_URL; the project-tier playbook
 # present at $KOOKR_DEV/.kookr/playbooks/kookr-deploy-convergence.md.
 set -euo pipefail

@@ -107,6 +107,38 @@ Ask first.
     expect(pb.deliveryPreAuthorized).toBe(false);
   });
 
+  test('parses probe frontmatter used by cheap schedule ticks', () => {
+    const content = `---
+name: Deploy Convergence
+probe:
+  command: pnpm deploy:convergence -- --branch "{{branch}}"
+  escalateOnExit: 2
+---
+Run the probe.
+`;
+
+    const pb = parsePlaybook(content, 'kookr-deploy-convergence.md', '/project');
+
+    expect(pb.probe).toEqual({
+      command: 'pnpm deploy:convergence -- --branch "{{branch}}"',
+      escalateOnExit: [2],
+    });
+  });
+
+  test('omits probe when the block has no command', () => {
+    const content = `---
+name: Empty probe
+probe:
+  escalateOnExit: 2
+---
+Nothing.
+`;
+
+    const pb = parsePlaybook(content, 'empty-probe.md', '/project');
+
+    expect(pb.probe).toBeUndefined();
+  });
+
   test('parses autoCloseOnSignal frontmatter', () => {
     const content = `---
 name: Auto-close chain

@@ -10,7 +10,7 @@ See [Prompt assembly](#prompt-assembly).
 This page documents the authoring contract implemented by
 [`parsePlaybook` in `src/core/playbook-parser.ts`](../../src/core/playbook-parser.ts).
 The field list below maps to `parsePlaybook`, `parseParameters`,
-`parseLoopConfig`, `parseLaunchDependencies`, and `parseParameterGatedBy`.
+`parseLoopConfig`, `parseProbeConfig`, `parseLaunchDependencies`, and `parseParameterGatedBy`.
 The parser intentionally accepts only the fixed shape below; it is not a full
 YAML parser.
 
@@ -77,6 +77,7 @@ discovery, precedence, and plugin portability rules.
 | `checklist` | list of strings | no | `[]` | Task completion criteria. These become the launched task's criteria. |
 | `tags` | list of strings | no | `[]` | Display and behavior tags. `loopable` enables bounded loop metadata and defaults. |
 | `loop` | mapping | no | absent | Optional loop settings for playbooks tagged `loopable`. Invalid loop metadata is recorded as `loopValidationError`; standard launch metadata still parses. |
+| `probe` | mapping | no | absent | Cheap pre-check the scheduler execs instead of launching an agent (issue #2569). Requires `command` (shell-less argv template; `{{param}}` interpolated from schedule parameters). Optional `escalateOnExit` (integer or list; default `[2]`). Non-escalate exits complete the fire with no task; escalate codes still launch the playbook agent. A well-known playbook basename (kookr/lucy deploy-convergence) supplies a fallback command when this block is absent. |
 | `deliveryPreAuthorized` | boolean | no | absent | Server delivery-policy flag. Absent (or `true`) launches tasks with pre-authorized delivery — the full commit/push/PR cycle without asking. Set `false` to require the agent to ask before pushing and opening a PR. Unrecognized values (e.g. `no`, `0`) fail safe to ask-first. |
 | `autoCloseOnSignal` | boolean | no | absent | When `true`, tasks launched from this playbook auto-complete after their agent's `completion_ready` signal has been pending for the configured Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30 minutes), instead of waiting indefinitely for manual review. Successors spawned via `parentTaskId` inherit it automatically. Only `true` and `false` are recognized. See [auto-close-on-signal](./auto-close-on-signal.md). |
 | `cwd` | string | no | launch dialog cwd | Target working directory override for launched tasks. Portable home spellings (`~`, `$HOME`, `${HOME}`, and their `/path` forms) are expanded at launch and schedule validation — see [CWD expansion](../playbook-scoping.md#cwd-expansion). |
