@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): try issuer_feed on detect-now before the fan-out expires',
-      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped issuer or newswire URL',
-      'feat(acquisition): keep an earnings-release URL when newswire fails expectedDate only',
+      'feat(acquisition): discover and persist feed_url for armed feedless issuers',
+      'feat(acquisition): treat issuer connection-drop as obstruction and early-promote stealth',
+      'feat(acquisition): follow on-page earnings-release href after listing-hub verification_reject',
     ]);
   });
 

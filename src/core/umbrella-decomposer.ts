@@ -1230,166 +1230,164 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * (queue-feeder 2026-08-17, invent-product-wave #2069) #3061–#3063
  * (finished-watch recapture-terminal / SEC exhibit URL pull / mixed
  * issuer CTS+403 majority) shipped and are title-exhausted. Invent
- * wave 21 (queue-feeder 2026-08-17, invent-product-wave #2069) is the
- * next Goal-1 slice after wave 20: August live misses. CSCO 2026-08-06
- * detect-now never attempted issuer_feed (classic + newswire_feed +
- * newswire only; reason "no matching newswire feed item"); the same
- * ticker hit 2026-08-12 on issuer_feed at investor.cisco.com. LOW
- * 2026-08-06 detect-now stamped the real PR Newswire earnings URL on
- * row.url with verification_reject expectedDate-only and empty
- * candidateUrls, so Path B refused. Do not re-file #3061–#3063 /
- * #3062 SEC-only pull / #2779 / #2855 / #2929 / #1712. Live GitHub
- * leaves jeanibarz/lucy#3082–#3084. Title idempotency prevents re-emit
- * once those exist.
+ * wave 21 (queue-feeder 2026-08-17, invent-product-wave #2069) #3082–#3084
+ * (detect-now issuer_feed / stored issuer-or-newswire URL pull /
+ * expectedDate-only keep-URL) shipped and are title-exhausted. Invent
+ * wave 22 (queue-feeder 2026-08-17, invent-product-wave #2069) is the
+ * next Goal-1 slice after wave 21: imminent-fire leftovers the 17 Aug
+ * coverage audit and live miss rows still show. HD / LOW / ADI / ROST /
+ * TGT / TJX / WMT skip issuer_feed with reason no-feed-url even when
+ * the IR page is reachable — wave 21 only tries the feed when a URL is
+ * already stored. ADI / ROST / TJX IR hosts drop the TCP connection
+ * (curl 000 / bot-wall); #2779/#2855 promote on access_denied or
+ * verification_reject, not on a fetch that never connects. TMUS / BA /
+ * UNP issuer pages fail earningsReport because row.url is the news
+ * listing hub; #2986 re-resolves after content_too_short, it does not
+ * follow an on-page earnings-release href. Do not re-file #3082–#3084 /
+ * #1651 / #1689 / #1379 / #2779 / #2855 / #2994 / #2986 / #1712 /
+ * #3041. Live GitHub leaves are filed this run. Title idempotency
+ * prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): try issuer_feed on detect-now before the fan-out expires',
+      'feat(acquisition): discover and persist feed_url for armed feedless issuers',
     goal:
-      'When Lucy does a one-shot fetch for a report that is already public ' +
-      '(already-published recapture and the control-room detect-now button), ' +
-      'it sometimes never asks the company IR feed. Cisco on 6 Aug 2026 ' +
-      'spent the budget on SEC, newswire RSS, and newswire HTML, then gave ' +
-      'up with "no matching newswire feed item." Six days later the same ' +
-      'ticker hit on issuer_feed at investor.cisco.com. Under umbrella ' +
-      '#1587, that one-shot must try the IR feed whenever the issuer ' +
-      'registry already has a usable IR root or feed URL, before the ' +
-      'fan-out expires. Do not wait for the IR HTML page to fail first ' +
-      '(#2779). Do not rewrite detections.jsonl.',
+      'Wave 21 (#3082) only asks the company IR feed when the registry ' +
+      'already has a feed URL. The 17 Aug 2026 coverage audit of the next ' +
+      'armed fires (Home Depot on 18 Aug, Lowe\'s / Analog Devices / Ross / ' +
+      'Target / TJX on 19 Aug, Walmart on 20 Aug) found they are still ' +
+      'feedless: issuer retrieval is skipped with reason no-feed-url even ' +
+      'when the IR page is reachable. Under umbrella #1587, an armed or ' +
+      'about-to-arm ticker with a usable IR root and an empty feed URL must ' +
+      'run one feed-discovery pass and persist a verified publisher feed so ' +
+      'issuer_feed can join the live fan-out and detect-now. Do not re-file ' +
+      'the WELL/MSFT one-off seeds (#1651/#1689). Do not store a non-feed ' +
+      'listing URL as the feed (#1379). Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'The already-published one-shot (detectPublication / detectNow, ' +
-        'including Path A recapture and control-room / !bot acquire detect) ' +
-        'includes issuer_feed in the live fan-out when data/issuers.json has ' +
-        'a non-empty ir_url or feed_url for that ticker. A Cisco-shaped run ' +
-        'that today only records classic + newswire_feed + newswire must ' +
-        'also record an issuer_feed attempt, or an explicit skip such as ' +
-        'no-feed-url — never a silent omission. Do not require the IR HTML ' +
-        'page to have already failed. Do not re-file #2779 or #2855. If the ' +
-        'one-shot is about to run out of time, prefer issuer_feed over a ' +
-        'trailing newswire HTML search when a feed URL exists.',
-      'A later Cisco-shaped hit via issuer_feed must be possible on the ' +
-        'same one-shot that missed the newswire feed. Classic / newswire_feed ' +
-        '/ newswire still run. Missing ir_url and feed_url is a named skip, ' +
-        'not a crash. Operator-aborted and source-blocklisted jobs still ' +
-        'refuse. Do not invent a new missClass. Do not rewrite detections.jsonl.',
-      'Unit/fixture tests cover: (a) Cisco-shaped registry with ir_url / ' +
-        'feed_url → issuer_feed attempted even when newswire_feed returns ' +
-        'feed_no_match; (b) no registry feed URL → named skip, no invented ' +
-        'URL; (c) #2779 page-obstruction promote still works; (d) one-shot ' +
-        'time budget prefers issuer_feed over a trailing newswire HTML ' +
-        'search when both remain; (e) no jsonl rewrite.',
+      'When a ticker is armed or in the next-window arm set and issuers.json ' +
+        'has a non-empty ir_url with empty/missing feed_url, run one ' +
+        'feed-discovery against that IR root (reuse the existing issuer-URL ' +
+        'resolver feed check). If a publisher-declared RSS, Atom, or JSON ' +
+        'earnings/news feed is found and reachable, persist feed_url on the ' +
+        'row. An HD/LOW/TGT/WMT-shaped row that today stays skipped ' +
+        '(no-feed-url) must either gain a feed_url or a named reason such as ' +
+        'no-publisher-feed / feed-unreachable — never remain a silent ' +
+        'forever-skip. Do not invent a URL. Do not rewrite detections.jsonl.',
+      'Discovery is at most once per resolve validity window (or once per ' +
+        'arm). Operator-aborted and source-blocklisted tickers skip. A ' +
+        'non-feed IR news listing URL must not be stored as feed_url (#1379). ' +
+        'Rows that already have feed_url are left alone. Missing ir_url is a ' +
+        'named skip, not a crash. Do not re-file #1651 or #1689.',
+      'Unit/fixture tests cover: (a) HD-shaped ir_url + empty feed_url + ' +
+        'reachable RSS on the IR page → feed_url persisted; (b) IR page with ' +
+        'no feed → named no-publisher-feed, feed_url stays empty; (c) listing-' +
+        'hub URL is not persisted as feed_url; (d) existing feed_url unchanged; ' +
+        '(e) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/report-acquisition.js (detectPublication)',
-      'src/scheduler-no-source-recapture.js (Path A detectNow)',
-      'src/acquisition/issuer-feed-early-promote.js (reuse hasUsableIssuerFeedUrl; do not require page obstruction)',
-      'src/scheduler-active-window-poll.js (fan-out order — detect-now must not omit a tier the live poll would try)',
+      'src/acquisition/issuer-url-resolver.js (feed check / persist feed_url)',
+      'src/scheduler-runner.js (arm / next-window discovery trigger)',
+      'data/issuers.json (feed_url on armed rows)',
     ],
     testHints: [
-      'unit: Cisco-shaped detect-now with feed URL attempts issuer_feed after newswire_feed miss',
-      'unit: missing feed URL → named skip',
-      'unit: #2779 page-obstruction path unchanged',
+      'unit: HD-shaped IR page with RSS → feed_url persisted',
+      'unit: IR page with no feed → named skip, feed_url empty',
+      'unit: listing-hub URL is not stored as feed_url (#1379)',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped issuer or newswire URL',
+      'feat(acquisition): treat issuer connection-drop as obstruction and early-promote stealth',
     goal:
-      'Lucy sometimes already stores the earnings-release URL on a missed ' +
-      'row, then ignores it on the second-chance pull. Wave 20 (#3062) ' +
-      'pulls an SEC exhibit URL sitting on the row. It still ignores a ' +
-      'company IR or newswire URL on the same field. Lowe\'s on 6 Aug 2026 ' +
-      'stamped the real PR Newswire earnings release on the row, but ' +
-      'candidateUrls was empty, so Path B refused. Older TMUS / BA expired ' +
-      'watches carry IR news URLs the same way. Under umbrella #1587, one ' +
-      'pullKnownUrlReport must fire on a recapture-terminal miss whose ' +
-      'row.url is already an issuer or newswire release page. Do not run a ' +
-      'fresh search. Do not re-file #3062.',
+      'The 17 Aug 2026 coverage audit saw Analog Devices, Ross, and TJX IR ' +
+      'hosts drop the connection (curl 000 / bot-wall). The issuer tier ' +
+      'burns the window on a dead TCP socket and never queues stealth, even ' +
+      'though stealth plus EDGAR are the documented floor for this class. ' +
+      '#2779 and #2855 early-promote the IR feed after access_denied or ' +
+      'page verification_reject — they do not treat a fetch that never ' +
+      'connects as obstruction. #2994 queues stealth when the feed is ' +
+      'blocked, not when the page fetch never connects. Under umbrella ' +
+      '#1587, a connection-drop / ECONNRESET / empty-transport issuer fetch ' +
+      'must be a named obstruction that early-promotes stealth (and SEC) ' +
+      'instead of retrying the same dead host. Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'When the miss is recapture-terminal (existing TERMINAL_RESOLUTION or ' +
-        'the finished-watch rule from #3061) and row.url is an http(s) ' +
-        'issuer or newswire release page — not an SEC submissions JSON, not ' +
-        'an 8-K index, not an SEC exhibit already handled by #3062 — ' +
-        'schedule one pullKnownUrlReport on that URL. Eligible missClasses ' +
-        'include verification_reject, possible_gate_miss, no_source, and ' +
-        'tier_infra_down. Do not require candidateUrls[]. ' +
-        'CANDIDATE_URL_RECAPTURE_MISS_CLASSES stays verification_reject / ' +
-        'possible_gate_miss only for Path B. Operator-aborted, disabled, ' +
-        'source-blocklisted, and outside-6h-grace rows refuse. Do not ' +
-        'rewrite detections.jsonl.',
-      'A Lowe\'s-shaped PR Newswire earnings URL + detect_now_exhausted + ' +
-        'verification_reject + resolutionStatus=final arms. TMUS/BA-shaped ' +
-        'investor.* / investors.* news URLs arm. An SEC exhibit URL still ' +
-        'uses #3062, not this leaf. Path B is unchanged when candidateUrls[] ' +
-        'is already populated. Double-fire key includes ticker+date+url so ' +
-        'this path cannot loop with detectNow Path A or #3062 on the same job.',
-      'Unit/fixture tests cover: (a) Lowe\'s PRN URL + detect_now_exhausted + ' +
-        'verification_reject + final → one pullKnownUrlReport; (b) TMUS IR ' +
-        'news URL + expired provisional + verification_reject → one pull; ' +
-        '(c) SEC exhibit URL does not take this path (#3062 does); (d) ' +
-        'submissions/CIK.json URL refuses; (e) mid-window provisional ' +
-        'refuses; (f) detectNow is not called.',
+      'An issuer (or issuer_feed) fetch that fails with connection-drop, ' +
+        'ECONNRESET, socket hang-up, or HTTP-000-equivalent empty transport ' +
+        'must stamp an existing failureCode (access_denied or a documented ' +
+        'obstruction already in the early-promote set — do not invent a new ' +
+        'missClass) and enter the same obstruction early-promote path that ' +
+        '#2779 / #2855 / #2923 / #3056 use, so stealth and classic/SEC run ' +
+        'before the window expires. An ADI/ROST/TJX-shaped connection-drop ' +
+        'must not consume the full issuer poll budget. Do not rewrite ' +
+        'detections.jsonl.',
+      'A normal HTTP 200 issuer page is unchanged. HTTP 403/401 still use ' +
+        'the existing access_denied path (#2779, #3088). empty_spa_shell ' +
+        '(#3056) still promotes. Operator-aborted and source-blocklisted ' +
+        'jobs still refuse. Do not re-file #2994.',
+      'Unit/fixture tests cover: (a) ECONNRESET / curl-000-shaped issuer ' +
+        'fetch → obstruction + stealth queued; (b) HTTP 200 issuer page does ' +
+        'not promote; (c) 403 still uses #2779; (d) no new missClass; (e) no ' +
+        'jsonl rewrite.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js (sibling of the #3062 pullKnownUrlReport gate)',
-      'src/scheduler-runner.js',
-      'src/commands/acquire.js (pullKnownUrlReport — inject, do not compose Discord here)',
+      'src/acquisition/issuer-feed-early-promote.js (obstruction set)',
+      'src/acquisition fetch / classifySecFetchError (connection-drop mapping)',
+      'src/scheduler-active-window-poll.js (do not burn issuer budget on dead TCP)',
     ],
     testHints: [
-      'unit: Lowe\'s PR Newswire URL arms pullKnownUrlReport',
-      'unit: TMUS IR news URL arms',
-      'unit: SEC exhibit URL does not use this gate',
-      'unit: detectNow is not invoked',
+      'unit: ECONNRESET issuer fetch → obstruction + stealth queued',
+      'unit: HTTP 200 issuer page does not promote',
+      'unit: 403 still uses existing access_denied path',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): keep an earnings-release URL when newswire fails expectedDate only',
+      'feat(acquisition): follow on-page earnings-release href after listing-hub verification_reject',
     goal:
-      'Lucy found Lowe\'s real earnings press release on 6 Aug 2026 and then ' +
-      'threw it away. The page URL is the earnings release; ticker identity ' +
-      'and earnings-report shape passed; only the expected-date check ' +
-      'failed. The miss became a total verification_reject with no ' +
-      'candidateUrls, so the second-chance pull could not use the URL Lucy ' +
-      'already had. Under umbrella #1587, keep that URL pullable when the ' +
-      'only failed check is expectedDate. Still reject guidance and ' +
-      'prior-quarter pages (#1712). Do not re-file #2929.',
+      'Live rows for T-Mobile, Boeing, and Union Pacific fail issuer ' +
+      'verification with earningsReport (sometimes plus expectedDate) ' +
+      'because row.url is the IR news listing hub, not the earnings release. ' +
+      '#2986 re-resolves the hub URL after content_too_short; it does not ' +
+      'follow an on-page earnings-release link after verification_reject. ' +
+      'Under umbrella #1587, when the issuer page fails earnings-report ' +
+      'shape (listing hub) but the same HTML contains one high-confidence ' +
+      'current-period earnings-release href, follow that href once and ' +
+      'retry verification on the article. Do not re-file #2986. Still reject ' +
+      'guidance and prior-quarter pages (#1712). Do not rewrite ' +
+      'detections.jsonl.',
     acceptanceCriteria: [
-      'A newswire (or issuer) page whose verification result is ticker=pass, ' +
-        'earnings-report shape=pass, expectedDate=fail only must keep the ' +
-        'rejecting URL on candidateUrls[] (and on row.url) and must not be ' +
-        'the sole reason the watch or detect-now ends as an un-pullable ' +
-        'verification_reject. Prefer naming possible_gate_miss (or an ' +
-        'existing date-mismatch projection the scorecard already understands) ' +
-        'so Path B (#2540) and the sibling stored-URL pull can arm. Guidance, ' +
-        'outlook, and prior-quarter pages still reject. Do not treat recapture ' +
-        'expectedDate as a dateMatch for adjacent-day 8-Ks (#2929). Do not ' +
-        'rewrite detections.jsonl.',
-      'A Lowe\'s-shaped PR Newswire URL + "newswire: verification failed: ' +
-        'expectedDate" + detect_now_exhausted + resolutionStatus=final leaves ' +
-        'a pullable URL. A page that also fails ticker or earnings-report ' +
-        'stays verification_reject with no new candidate. NUE-class guidance ' +
-        'false-accepts (#1712) stay rejected. Existing Path B candidateUrls ' +
-        'rows keep working.',
-      'Unit/fixture tests cover: (a) Lowe\'s-shaped expectedDate-only fail + ' +
-        'earnings headline → candidate URL persisted / Path B can arm; (b) ' +
-        'ticker fail still total verification_reject; (c) guidance/outlook ' +
-        'page still rejected; (d) #2929 adjacent-day 8-K recapture rule ' +
-        'unchanged; (e) no jsonl rewrite.',
+      'An issuer page verification_reject whose failed checks include ' +
+        'earningsReport, and whose extracted HTML has exactly one ' +
+        'high-confidence current-period earnings-release link (headline ' +
+        'contains earnings/results plus period, or URL path looks like a ' +
+        'press-release slug), must fetch that href once and re-verify. If ' +
+        'ticker and earnings-report pass, that article URL becomes the ' +
+        'candidate / row.url. A TMUS/BA-shaped investor.* / investors.* news ' +
+        'listing with an on-page "Q2 2026 earnings" link must not stay ' +
+        'listing-hub verification_reject solely because the hub itself is ' +
+        'not a report. Do not rewrite detections.jsonl.',
+      'Zero matching links → no follow; the existing verification_reject ' +
+        'stands. Multiple ambiguous links → no follow (do not guess). ' +
+        'Guidance, outlook, and prior-quarter links stay rejected (#1712). ' +
+        '#2986 content_too_short re-resolve still works. Operator-aborted ' +
+        'and source-blocklisted jobs still refuse. Do not re-file #2986.',
+      'Unit/fixture tests cover: (a) listing hub + one earnings href → ' +
+        'follow and accept the article; (b) no href → no follow; (c) two ' +
+        'competing hrefs → no follow; (d) guidance href still rejected; ' +
+        '(e) #2986 path unchanged; (f) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/acquisition verification / expectedDate gate (newswire page)',
-      'src/scheduled-detection-persistence.js (persist candidateUrls on detect-now)',
-      'src/scheduler-no-source-recapture.js (Path B #2540 / #2969)',
-      'src/detection-scorecard.js (possible_gate_miss projection — do not invent a new missClass)',
+      'src/acquisition issuer-page verification / listing-hub follow',
+      'src/acquisition/issuer-url-resolver.js (sibling of #2986 hub re-resolve)',
+      'src/scheduled-detection-persistence.js (candidate / row.url after follow)',
     ],
     testHints: [
-      'unit: expectedDate-only fail + earnings-release URL → candidate persisted',
-      'unit: ticker fail stays verification_reject',
-      'unit: guidance page still rejected',
+      'unit: listing hub + one earnings href → follow and accept article',
+      'unit: no href / two competing hrefs → no follow',
+      'unit: guidance href still rejected; #2986 path unchanged',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
