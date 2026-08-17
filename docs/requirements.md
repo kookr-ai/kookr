@@ -759,8 +759,9 @@ The system SHALL display a scrollable agent list panel with status indicators.
 - Each entry shows agent name/task and status indicator
 - Agents needing attention sorted to top
 - Clicking an agent selects it
+- When a finding's task has at least one PR in `githubState`, the card shows a compact `#<number>` + status chip; failed checks or `changes_requested` add a visible cue; clicking the chip selects the task and activates the GitHub pane (issue #2601)
 
-**Evidence:** `src/frontend/components/FindingsPanel.tsx` (scrollable list, status indicators, click selection, sorting).
+**Evidence:** `src/frontend/components/FindingsPanel.tsx` (scrollable list, status indicators, click selection, sorting), `src/frontend/components/FindingsPanel/FindingPrChip.tsx`.
 
 ### R5.2: Agent Detail / Terminal Panel [F5.2] — SHALL — `done`
 
