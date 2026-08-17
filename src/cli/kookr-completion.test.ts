@@ -130,6 +130,9 @@ describe('renderCompletion', () => {
     expect(script).toContain('spawn signal issue doctor status ops github logs command ralph schedule drain resume migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
     expect(script).toContain('compgen -W "spawn signal issue doctor status ops github logs command ralph schedule drain resume migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "status --json -h --help"');
+    // #2562: --offline is a live ops digest flag; keep it next to --json.
+    expect(script).toContain('compgen -W "digest --json --offline -h --help"');
+    expect(script).toContain('compgen -W "--json --offline -h --help"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
@@ -156,6 +159,9 @@ describe('renderCompletion', () => {
     expect(script).toContain('#compdef kookr');
     expect(script).toContain('root_commands=(spawn signal issue doctor status ops github logs command ralph schedule drain resume migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
     expect(script).toContain('compadd -- status --json -h --help');
+    // #2562: --offline is a live ops digest flag; keep it next to --json.
+    expect(script).toContain('compadd -- digest --json --offline -h --help');
+    expect(script).toContain('compadd -- --json --offline -h --help');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
@@ -340,6 +346,23 @@ describe('bash completion behavior', () => {
     ]);
   });
 
+  // #2562: ops digest --offline must complete the same way as --json.
+  it('completes ops subcommands and --offline', async () => {
+    await expect(completeBash(['kookr', 'ops', ''])).resolves.toEqual([
+      'digest',
+      '--json',
+      '--offline',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'ops', 'digest', ''])).resolves.toEqual([
+      '--json',
+      '--offline',
+      '-h',
+      '--help',
+    ]);
+  });
+
   it('completes status flags and fail-on values', async () => {
     await expect(completeBash(['kookr', 'status', ''])).resolves.toEqual([
       '--json',
@@ -451,6 +474,23 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual([
       '--json',
       '--strict',
+      '-h',
+      '--help',
+    ]);
+  });
+
+  // #2562: ops digest --offline must complete the same way as --json.
+  it('completes ops subcommands and --offline', async () => {
+    await expect(completeZsh(['kookr', 'ops', ''], 3)).resolves.toEqual([
+      'digest',
+      '--json',
+      '--offline',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'ops', 'digest', ''], 4)).resolves.toEqual([
+      '--json',
+      '--offline',
       '-h',
       '--help',
     ]);
