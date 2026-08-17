@@ -134,6 +134,11 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerGrokAuthRoutes(app, {
     homedir: sharedDeps.hookHomeDir,
     settings: sharedDeps.settings,
+    // #2537: same cache the launch path reads, so the preflight verdict and a
+    // concurrent launch cannot disagree within the cache TTL.
+    ...(sharedDeps.grokAuthAvailability
+      ? { grokAuthAvailability: sharedDeps.grokAuthAvailability }
+      : {}),
   });
   registerFileRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);

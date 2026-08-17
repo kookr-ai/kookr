@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { GROK_DEFAULT_AUTH_SCOPE } from '../../adapters/grok-auth-preflight.js';
+import { GROK_DEFAULT_AUTH_SCOPE, type GrokAuthPreflightResult } from '../../adapters/grok-auth-preflight.js';
+import {
+  filterLaunchableAgentTypes,
+  GrokAuthAvailabilityCache,
+} from '../../adapters/grok-auth-availability.js';
 import { GROK_LOGIN_COMMAND } from '../../shared/contracts/grok-auth-status.js';
 
 const GROK_AUTH_STATUS_PATH = '/api/grok-auth-status';
@@ -118,5 +122,99 @@ describe('GET /api/grok-auth-status', () => {
     expect(body.status).toBe('invalid');
     expect(body.launchWouldRefuse).toBe(true);
     expect(String(body.message)).toContain(GROK_LOGIN_COMMAND);
+  });
+});
+
+describe('GET /api/grok-auth-status parity with launch-time verdict (#2537)', () => {
+  const OK: GrokAuthPreflightResult = {
+    kind: 'ok',
+    credentialCount: 1,
+    authMode: 'oidc',
+    expiresAt: '2027-01-01T00:00:00.000Z',
+  };
+  const EXPIRED: GrokAuthPreflightResult = { kind: 'expired', expiresAt: '2020-01-01T00:00:00.000Z' };
+
+  /** Build an endpoint that shares one cache with the (simulated) launch path. */
+  function harness() {
+    let nowMs = 1_000_000;
+    let diskResult: GrokAuthPreflightResult = OK;
+    const cache = new GrokAuthAvailabilityCache({
+      resolveAuthPath: () => '/tmp/ignored/auth.json',
+      inspect: async () => diskResult,
+      now: () => nowMs,
+    });
+    const app = new Hono();
+    registerGrokAuthRoutes(app, { grokAuthAvailability: cache, settings: { get: () => ({ roundRobinIndex: 0 }) } });
+
+    async function endpointVerdict(): Promise<boolean> {
+      const res = await app.request(GROK_AUTH_STATUS_PATH);
+      const body = await res.json() as { launchWouldRefuse: boolean };
+      return body.launchWouldRefuse;
+    }
+    // What the launch path would compute right now: refresh the shared cache
+    // (as launch-service does before selection) then read `isUsable()`.
+    async function launchWouldStripGrok(): Promise<boolean> {
+      await cache.ensureFresh();
+      const launchable = filterLaunchableAgentTypes(['claude-code', 'grok-build'], {
+        grokAuthUsable: cache.isUsable(),
+      });
+      return !launchable.includes('grok-build');
+    }
+
+    return {
+      cache,
+      endpointVerdict,
+      launchWouldStripGrok,
+      advance: (ms: number) => { nowMs += ms; },
+      setDisk: (r: GrokAuthPreflightResult) => { diskResult = r; },
+    };
+  }
+
+  it('endpoint launchWouldRefuse tracks the shared cache verdict, not fresh disk, within the TTL', async () => {
+    const h = harness();
+
+    // T0: credentials usable — endpoint and launch agree, grok is launchable.
+    expect(await h.endpointVerdict()).toBe(false);
+    expect(await h.launchWouldStripGrok()).toBe(false);
+    expect(h.cache.isUsable()).toBe(true);
+
+    // Credentials expire on disk, but we are still inside the cache TTL (~30s).
+    // The OLD endpoint re-read disk and would flip to refuse; the launch path,
+    // reusing the cached "usable" verdict, would still resolve grok. The fix
+    // makes the endpoint report the SAME cached verdict as launch.
+    h.setDisk(EXPIRED);
+    h.advance(10_000); // < GROK_AUTH_AVAILABILITY_TTL_MS (30_000)
+    const endpointInTtl = await h.endpointVerdict();
+    expect(endpointInTtl).toBe(false); // matches the still-cached usable verdict
+    expect(await h.launchWouldStripGrok()).toBe(false);
+    expect(endpointInTtl).toBe(await h.launchWouldStripGrok());
+
+    // Past the TTL: the shared cache refreshes and both converge on refuse.
+    h.advance(30_001);
+    const endpointPastTtl = await h.endpointVerdict();
+    expect(endpointPastTtl).toBe(true);
+    expect(await h.launchWouldStripGrok()).toBe(true);
+    expect(endpointPastTtl).toBe(await h.launchWouldStripGrok());
+    expect(h.cache.isUsable()).toBe(false);
+  });
+
+  it('agrees on the inverse transition (re-login) within the same TTL window', async () => {
+    const h = harness();
+    h.setDisk(EXPIRED);
+    // Prime the cache with the expired verdict.
+    expect(await h.endpointVerdict()).toBe(true);
+    expect(await h.launchWouldStripGrok()).toBe(true);
+
+    // Operator re-logs in on disk, still inside the TTL: endpoint keeps reporting
+    // the cached "refuse" verdict, exactly as the launch path would.
+    h.setDisk(OK);
+    h.advance(5_000);
+    expect(await h.endpointVerdict()).toBe(true);
+    expect(await h.launchWouldStripGrok()).toBe(true);
+
+    // After the TTL both pick up the re-login together.
+    h.advance(30_001);
+    expect(await h.endpointVerdict()).toBe(false);
+    expect(await h.launchWouldStripGrok()).toBe(false);
   });
 });

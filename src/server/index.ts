@@ -2528,6 +2528,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         getDeliveryCounts: () => webhookNotifier.getDeliveryCounts(),
       },
     } : {}),
+    // #2537: share the launch-time Grok-auth verdict source with the preflight
+    // endpoint so GET /api/grok-auth-status can never disagree with a concurrent
+    // launch within the cache TTL.
+    grokAuthAvailability,
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     ttsUrl, ttsVoice: config.ttsVoice, speakFindingEnabled: config.speakFindingEnabled,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
