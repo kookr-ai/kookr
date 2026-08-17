@@ -48,6 +48,8 @@ const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsMod
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 /** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
 const REPLY_MAX_HEIGHT_PX = 140;
+/** Visible chip count in the response box; extras stay in the overflow dropdown. */
+const REPLY_SNIPPET_CHIP_LIMIT = 8;
 
 /**
  * Exhaustive terminal-status check tolerant of the optional taskStatus.
@@ -1409,23 +1411,42 @@ export function DetailPanel({ agent, send, onLaunch, onCheckSetup, onRequestComp
         )}
         {replySnippets.length > 0 && (
           <div className="reply-snippet-picker">
-            <label className="reply-snippet-picker-label" htmlFor="reply-snippet-picker">
+            <span className="reply-snippet-picker-label" id="reply-snippet-chips-label">
               Saved replies
-            </label>
-            <select
-              id="reply-snippet-picker"
-              className="reply-snippet-picker-select"
-              value=""
-              onChange={(e) => {
-                const snippet = replySnippets[Number(e.target.value)];
-                if (snippet) insertReplySnippet(snippet.text);
-              }}
-            >
-              <option value="" disabled>Insert snippet...</option>
-              {replySnippets.map((snippet, index) => (
-                <option key={`${snippet.label}-${index}`} value={index}>{snippet.label}</option>
+            </span>
+            <div className="sample-prompt-chips" role="group" aria-labelledby="reply-snippet-chips-label">
+              {replySnippets.slice(0, REPLY_SNIPPET_CHIP_LIMIT).map((snippet, index) => (
+                <button
+                  key={`${snippet.label}-${index}`}
+                  type="button"
+                  className="sample-prompt-chip"
+                  title={snippet.text}
+                  onClick={() => insertReplySnippet(snippet.text)}
+                >
+                  {snippet.label}
+                </button>
               ))}
-            </select>
+            </div>
+            {replySnippets.length > REPLY_SNIPPET_CHIP_LIMIT && (
+              <select
+                id="reply-snippet-picker"
+                className="reply-snippet-picker-select"
+                value=""
+                aria-label="More saved replies"
+                onChange={(e) => {
+                  const snippet = replySnippets[Number(e.target.value)];
+                  if (snippet) insertReplySnippet(snippet.text);
+                }}
+              >
+                <option value="" disabled>Insert snippet...</option>
+                {replySnippets.slice(REPLY_SNIPPET_CHIP_LIMIT).map((snippet, overflowIndex) => {
+                  const index = overflowIndex + REPLY_SNIPPET_CHIP_LIMIT;
+                  return (
+                    <option key={`${snippet.label}-${index}`} value={index}>{snippet.label}</option>
+                  );
+                })}
+              </select>
+            )}
           </div>
         )}
         <div className="response-row">

@@ -2937,8 +2937,12 @@ a.overview-tour-link:visited:hover {
 .reply-snippet-picker {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+}
+.reply-snippet-picker .sample-prompt-chips {
+  margin: 0;
 }
 .reply-snippet-picker-label {
   color: var(--text-muted);
