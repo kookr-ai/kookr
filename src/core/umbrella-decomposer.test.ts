@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(metrics): alert when scorecard tier_infra_down miss share exceeds threshold',
-      'feat(acquisition): recapture already-published when window ends with tier_infra_down',
-      'feat(acquisition): classify classic fetch_error via classifySecFetchError before the acquire fold',
+      'feat(acquisition): treat finished watches as recapture-terminal regardless of date-resolution stamp',
+      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped SEC exhibit URL',
+      'feat(acquisition): name mixed issuer content_too_short+access_denied by majority blocked code',
     ]);
   });
 
