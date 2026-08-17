@@ -6,8 +6,11 @@ import {
   resolvePinnedAgentFallback,
   buildAgentSelectionOptions,
   previewRoundRobinNextLabel,
+  agentSelectionHint,
   DEFAULT_AGENT_TYPE,
   AVAILABLE_AGENT_TYPES,
+  AGENT_SELECTION_HINTS,
+  AGENT_SELECTIONS,
   ROUND_ROBIN_AGENT_TYPE,
   ROUND_ROBIN_OPTION,
   CLAUDE_CODE_EFFORT_LEVELS,
@@ -66,6 +69,23 @@ describe('AVAILABLE_AGENT_TYPES', () => {
     for (const entry of AVAILABLE_AGENT_TYPES) {
       expect(entry.label).toBeTruthy();
     }
+  });
+});
+
+describe('agentSelectionHint', () => {
+  test('covers every picker selection with a non-empty identity line', () => {
+    expect(Object.keys(AGENT_SELECTION_HINTS).sort()).toEqual([...AGENT_SELECTIONS].sort());
+    for (const selection of AGENT_SELECTIONS) {
+      expect(AGENT_SELECTION_HINTS[selection].length).toBeGreaterThan(0);
+      expect(agentSelectionHint(selection)).toBe(AGENT_SELECTION_HINTS[selection]);
+    }
+  });
+
+  test('returns undefined for empty or unknown picker values', () => {
+    expect(agentSelectionHint('')).toBeUndefined();
+    expect(agentSelectionHint(undefined)).toBeUndefined();
+    expect(agentSelectionHint(null)).toBeUndefined();
+    expect(agentSelectionHint('not-an-agent')).toBeUndefined();
   });
 });
 

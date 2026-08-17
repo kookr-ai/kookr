@@ -47,6 +47,25 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
 ];
 
 /**
+ * One-line identity copy for the Launch agent picker (#2608). Factual only —
+ * does not rank runtimes or name a preferred agent. Kept as a map so the
+ * snapshot `availableAgentTypes` contract stays type+label.
+ */
+export const AGENT_SELECTION_HINTS: { readonly [K in AgentSelection]: string } = {
+  'claude-code': 'Anthropic Claude; native Kookr hooks and the bundled toolkit plugin',
+  'codex-cli': "OpenAI Codex (Kookr's Claude-compatible fork)",
+  'grok-build': 'xAI Grok, using the signed-in subscription session',
+  'round-robin': 'Spreads launches across whatever runtimes are available',
+};
+
+/** Identity line for the current picker value, or undefined when none applies. */
+export function agentSelectionHint(value: string | undefined | null): string | undefined {
+  if (value === ROUND_ROBIN_AGENT_TYPE) return AGENT_SELECTION_HINTS[ROUND_ROBIN_AGENT_TYPE];
+  if (isAgentType(value)) return AGENT_SELECTION_HINTS[value];
+  return undefined;
+}
+
+/**
  * Reasoning-effort levels, per agent type (#681). Each set describes the
  * levels Kookr exposes for the configured agent policy; model-specific
  * selection is handled by the adapter:
