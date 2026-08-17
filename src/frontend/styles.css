@@ -6261,16 +6261,31 @@ label.task-share-row {
 }
 
 /* Keep the "Resume all" action beside the toggle without nesting buttons,
-   mirroring .completed-section-header-row. */
+   mirroring .completed-section-header-row. The row itself carries the sticky
+   pinning that the .section-header child normally owns (and the child resets
+   to static), so wrapping the toggle does not cost it its pin-to-top behaviour
+   as the snoozed list scrolls. */
 .snoozed-section-header-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .snoozed-section-header-row .section-header {
+  position: static;
+  z-index: auto;
   flex: 1 1 auto;
   width: auto;
   min-width: 0;
+  background: transparent;
+}
+.snoozed-section-header-row .btn-resume-all {
+  flex-shrink: 0;
 }
 .btn-resume-all {
   flex-shrink: 0;

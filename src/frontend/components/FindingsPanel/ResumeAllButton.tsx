@@ -30,6 +30,8 @@ export function ResumeAllButton({
   if (resumable.length === 0) return null;
 
   const resumeAll = (e: React.MouseEvent) => {
+    // The button sits inside the clickable section header; stop the click from
+    // bubbling to the section toggle / panel selection handler.
     e.stopPropagation();
     for (const agent of resumable) {
       send({ type: 'cancelSnooze', agentId: agent.agentId, taskId: agent.taskId });
