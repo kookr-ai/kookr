@@ -1944,6 +1944,44 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 11px;
   color: var(--text-muted);
 }
+.overview-completed {
+  width: 100%;
+}
+.overview-completed-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.overview-completed-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.overview-completed-name {
+  color: var(--text-bright);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.overview-completed-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.overview-completed-actions {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
 .overview-recent-playbooks {
   width: 100%;
 }

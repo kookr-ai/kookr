@@ -14,7 +14,7 @@ import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
-import { getSettingsSnapshot, getTask, getTaskShares } from '../api/index.js';
+import { getSettingsSnapshot, getTaskShares } from '../api/index.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { TaskDependencyRail } from './TaskDependencyRail.js';
@@ -27,7 +27,8 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
-import type { DetailPaneMode, RelaunchTask } from '../store/store-types.js';
+import type { DetailPaneMode } from '../store/store-types.js';
+import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -148,7 +149,7 @@ interface Props {
   overview?: {
     waiting: AgentState[];
     runningCount: number;
-    completedCount: number;
+    completed: AgentState[];
   };
 }
 
@@ -640,7 +641,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onCheckS
         <OverviewEmptyState
           waiting={overview?.waiting ?? []}
           runningCount={overview?.runningCount ?? 0}
-          completedCount={overview?.completedCount ?? 0}
+          completed={overview?.completed ?? []}
           onLaunch={onLaunch}
           onLaunchPlaybooks={onLaunchPlaybooks}
           onCheckSetup={onCheckSetup}
@@ -803,30 +804,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onCheckS
   async function handleRelaunch() {
     if (!agent) return;
     track({ type: 'task_relaunched', agentId: agent.agentId });
-
-    // For playbook tasks, include playbook context so the launch dialog
-    // can open the playbook form pre-filled with original parameter values
-    if (agent.playbookId && agent.playbookParameterValues) {
-      setRelaunchTask({
-        prompt: agent.description ?? '',
-        cwd: agent.cwd ?? '',
-        agentType: agent.agentType,
-        playbookId: agent.playbookId,
-        playbookParameterValues: agent.playbookParameterValues,
-      });
-      return;
-    }
-
-    try {
-      // Relaunch needs the full prompt/criteria bodies, so fetch this one task's
-      // detail (GET /api/tasks/:id) rather than the whole list. The list endpoint
-      // now serves a compact projection that omits prompt bodies.
-      if (!agent.taskId) return;
-      const task = await getTask<RelaunchTask & { error?: unknown }>(agent.taskId);
-      if (task && !task.error) {
-        setRelaunchTask({ prompt: task.prompt, cwd: task.cwd, criteria: task.criteria, agentType: task.agentType });
-      }
-    } catch { /* ignore fetch errors */ }
+    await relaunchFromAgent(agent, setRelaunchTask);
   }
 
   function handleComplete() {

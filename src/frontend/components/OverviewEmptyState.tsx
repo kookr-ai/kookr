@@ -12,7 +12,10 @@ import {
   PlaybookUsageTracker,
   resolveRecentPlaybookLabel,
 } from '../store/playbook-usage.js';
-import { findingTypeLabel, findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
+import { compareCompletedAgents } from '../agent-buckets.js';
+import { findingTypeLabel, findingWaitStartedAt, formatAge, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
+import { relaunchFromAgent } from '../relaunch-from-agent.js';
+import { track } from '../telemetry.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
@@ -20,6 +23,9 @@ const MAX_WAITING_ROWS = 6;
 
 /** Recent playbooks shown on the overview; the tracker itself keeps up to five. */
 export const OVERVIEW_RECENT_PLAYBOOK_LIMIT = 3;
+
+/** Recently finished tasks shown on the overview; the rail keeps the rest. */
+export const OVERVIEW_RECENT_COMPLETED_LIMIT = 3;
 
 /** Published install + first-agent walkthrough (docs-only; no in-app copy). */
 export const GETTING_STARTED_GUIDE_URL =
@@ -34,8 +40,12 @@ interface Props {
   waiting: AgentState[];
   /** Healthy running agents (rail `healthy` bucket length). */
   runningCount: number;
-  /** Agents in a terminal task state (rail `completed` bucket length). */
-  completedCount: number;
+  /**
+   * Agents in a terminal task state — App's rail `completed` bucket
+   * (buildAgentBuckets), already newest-first. Passed through so the
+   * overview count and the short recent list share one source.
+   */
+  completed: AgentState[];
   onLaunch: () => void;
   /** Opens Launch on the Playbooks tab (recent-playbook chips). */
   onLaunchPlaybooks?: () => void;
@@ -55,16 +65,21 @@ interface Props {
 export function OverviewEmptyState({
   waiting,
   runningCount,
-  completedCount,
+  completed,
   onLaunch,
   onLaunchPlaybooks,
   onCheckSetup,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
+  const setRelaunchTask = useKookrStore((s) => s.setRelaunchTask);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const playbooks = useKookrStore((s) => s.playbooks);
+  const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  const recentCompleted = [...completed]
+    .sort(compareCompletedAgents)
+    .slice(0, OVERVIEW_RECENT_COMPLETED_LIMIT);
   // Read localStorage on every render. Same-tab recordLaunch does not fire
   // `storage`, and the overview stays mounted after a playbook launch from
   // this screen (new tasks do not auto-select), so a playbooks-only memo
@@ -128,6 +143,59 @@ export function OverviewEmptyState({
           <p className={hasAnyTask ? 'findings-all-clear' : undefined}>
             {hasAnyTask ? 'All clear — agents working autonomously.' : 'No agents running.'}
           </p>
+        )}
+
+        {recentCompleted.length > 0 && (
+          <div className="overview-completed" data-testid="overview-recent-completed">
+            <h3 className="overview-waiting-title">Recently completed</h3>
+            <ul className="overview-completed-list">
+              {recentCompleted.map((agent) => {
+                const name = agent.taskName ?? agent.agentId;
+                const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
+                const canRelaunch = Boolean(
+                  agent.taskId || (agent.playbookId && agent.playbookParameterValues),
+                );
+                return (
+                  <li key={agent.agentId} className="overview-completed-row">
+                    <span className="overview-completed-name">{name}</span>
+                    {finishedAgo && (
+                      <span className="overview-completed-meta">{finishedAgo}</span>
+                    )}
+                    <span className="overview-completed-actions">
+                      <button
+                        type="button"
+                        className="btn-xs"
+                        data-testid="overview-completed-open"
+                        aria-label={`Open ${name}`}
+                        onClick={() => selectAgent(agent.agentId, agent.taskId)}
+                      >
+                        Open
+                      </button>
+                      {canRelaunch && (
+                        <button
+                          type="button"
+                          className="btn-xs"
+                          data-testid="overview-completed-relaunch"
+                          aria-label={`Relaunch ${name}`}
+                          onClick={() => {
+                            track({ type: 'task_relaunched', agentId: agent.agentId });
+                            void relaunchFromAgent(agent, setRelaunchTask);
+                          }}
+                        >
+                          Relaunch
+                        </button>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {completed.length > OVERVIEW_RECENT_COMPLETED_LIMIT && (
+              <p className="overview-waiting-more">
+                +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
+              </p>
+            )}
+          </div>
         )}
 
         <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
