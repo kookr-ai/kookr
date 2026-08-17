@@ -53,9 +53,16 @@ export async function getSessionHealth(): Promise<unknown> {
   return (await res.json()) as unknown;
 }
 
-/** GET the live-friction calibration snapshot. Throws `HTTP <status>` on a non-2xx. */
-export function getLiveFrictionCalibration<T>(): Promise<T> {
-  return getJson<T>('/api/live-friction-calibration');
+/**
+ * GET the live-friction calibration snapshot. Throws `HTTP <status>` on a
+ * non-2xx. The StatusBar chip hides itself when this fails or when the body
+ * is not a `live-friction-calibration.v1` snapshot with `signalCount > 0`.
+ */
+export function getLiveFrictionCalibration<T>(signal?: AbortSignal): Promise<T> {
+  return getJson<T>('/api/live-friction-calibration', {
+    cache: 'no-store',
+    signal,
+  });
 }
 
 /** GET the finding-evidence operations diagnostics. Throws `HTTP <status>` on a non-2xx. */

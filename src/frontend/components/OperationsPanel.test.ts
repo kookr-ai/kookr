@@ -12,12 +12,16 @@ import { __resetDndForTests, disableDnd } from '../hooks/useDnd.js';
 let root: Root | null;
 let container: HTMLDivElement;
 
-function mount(onClose = vi.fn()) {
+function mount(onClose = vi.fn(), extra: { expandLiveFriction?: boolean } = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   act(() => {
     root = createRoot(container);
-    root.render(React.createElement(OperationsPanel, { send: vi.fn(), onClose }));
+    root.render(React.createElement(OperationsPanel, {
+      send: vi.fn(),
+      onClose,
+      expandLiveFriction: extra.expandLiveFriction,
+    }));
   });
   return { el: container, onClose };
 }
@@ -395,6 +399,19 @@ describe('OperationsPanel', () => {
     expect(el.textContent).toContain('Needs Input');
     expect(el.textContent).toContain('Skipped finding');
     expect(el.textContent).toContain('2 signals across 2 agents');
+  });
+
+  test('expandLiveFriction opens the live friction section without a click', async () => {
+    const { el } = mount(vi.fn(), { expandLiveFriction: true });
+    await flush();
+
+    const section = el.querySelector('[data-testid="live-friction-calibration"]');
+    expect(section).not.toBeNull();
+    const header = el.querySelector<HTMLButtonElement>('.live-calibration-header');
+    expect(header?.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(header);
+    expect(el.textContent).toContain('Diagnostics only');
+    expect(el.textContent).toContain('Does not reorder findings');
   });
 
   test('renders live friction calibration fetch errors inside the diagnostics panel', async () => {

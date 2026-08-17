@@ -378,6 +378,21 @@ export function App() {
   // diagnostics popover, the inline coordinator-findings pane, and the command
   // palette (a launcher toggled from anywhere, including over another surface).
   const [showOperations, setShowOperations] = useState(false);
+  const [operationsFocus, setOperationsFocus] = useState<'live-friction' | null>(null);
+  const closeOperations = useCallback(() => {
+    setShowOperations(false);
+    setOperationsFocus(null);
+  }, []);
+  const openLiveFrictionDiagnostics = useCallback(() => {
+    setOperationsFocus('live-friction');
+    setShowOperations(true);
+  }, []);
+  const toggleOperations = useCallback(() => {
+    setShowOperations((open) => {
+      if (open) setOperationsFocus(null);
+      return !open;
+    });
+  }, []);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
@@ -658,12 +673,12 @@ export function App() {
       const target = event.target as HTMLElement | null;
       if (target?.closest('.operations-trigger')) return;
       if (operationsPopoverRef.current?.contains(event.target as Node)) return;
-      setShowOperations(false);
+      closeOperations();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        setShowOperations(false);
+        closeOperations();
       }
     }
 
@@ -673,7 +688,7 @@ export function App() {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showOperations]);
+  }, [showOperations, closeOperations]);
 
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
@@ -1288,7 +1303,7 @@ export function App() {
   // quick icons too (they carry glanceable alert/badge state), so the palette is
   // a superset, not a replacement.
   const commandActions: CommandAction[] = [
-    { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: () => setShowOperations((value) => !value) },
+    { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: toggleOperations },
     { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
     { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
     { id: 'launch', label: 'Launch task', section: 'tools', keywords: ['spawn', 'new task'], run: () => {
@@ -1382,7 +1397,7 @@ export function App() {
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
         scheduleHintActive={scheduleHintActive}
-        onOperations={() => setShowOperations((value) => !value)}
+        onOperations={toggleOperations}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
         coordinatorFindingsOpen={showCoordinatorFindings}
@@ -1398,7 +1413,11 @@ export function App() {
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
           <Suspense fallback={null}>
-            <OperationsPanel send={send} onClose={() => setShowOperations(false)} />
+            <OperationsPanel
+              send={send}
+              expandLiveFriction={operationsFocus === 'live-friction'}
+              onClose={closeOperations}
+            />
           </Suspense>
         </div>
       )}
@@ -1519,6 +1538,7 @@ export function App() {
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
         onOpenCapacity={openSettingsAtMaxActiveTasks}
+        onOpenLiveFriction={openLiveFrictionDiagnostics}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}
