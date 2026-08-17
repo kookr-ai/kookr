@@ -27,6 +27,16 @@ export function FindingPrChip({
     !model.ciFailed && model.changesRequested ? 'finding-pr-chip--attention' : '',
   ].filter(Boolean).join(' ');
 
+  function handleClick(event: React.MouseEvent<HTMLButtonElement>): void {
+    event.stopPropagation();
+    onSelect();
+    setLeftPane('github');
+    setNarrowTab('github');
+    if (useKookrStore.getState().detailPaneMode === 'right') {
+      setDetailPaneMode('split');
+    }
+  }
+
   return (
     <button
       type="button"
@@ -34,15 +44,7 @@ export function FindingPrChip({
       data-testid="finding-pr-chip"
       data-attention={attention ? 'true' : 'false'}
       aria-label={findingPrChipAriaLabel(model)}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-        setLeftPane('github');
-        setNarrowTab('github');
-        if (useKookrStore.getState().detailPaneMode === 'right') {
-          setDetailPaneMode('split');
-        }
-      }}
+      onClick={handleClick}
     >
       {findingPrChipLabel(model)}
     </button>

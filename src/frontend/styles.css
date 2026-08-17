@@ -965,7 +965,7 @@ kbd {
   line-height: 1;
 }
 
-/* Context line: project · branch · autonomy below task name */
+/* Context line: task id, project, worktree health, PR chip */
 .finding-context {
   display: flex;
   align-items: center;
@@ -996,6 +996,10 @@ kbd {
 .finding-pr-chip:hover {
   border-color: var(--text-muted);
   color: var(--text);
+}
+.finding-pr-chip:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
 }
 .finding-pr-chip--attention {
   border-color: var(--amber);
