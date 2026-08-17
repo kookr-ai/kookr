@@ -166,6 +166,16 @@ const SKIP_POINTER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
 ]);
 
 /**
+ * Outcomes that are a healthy deferral, not a run result. They must write
+ * `lastRunStatus: 'skipped'` so a leftover `failed` from an earlier genuine
+ * fault cannot keep looking like the last fire failed (issue #2568).
+ * `deduplicated` is the same class (the tick was folded, not launched).
+ */
+function isHealthySkipOutcome(outcome: ScheduleExecutionOutcome): boolean {
+  return outcome === 'deduplicated' || outcome.startsWith('skipped_');
+}
+
+/**
  * Context the single failure classifier reads to decide whether an outcome is a
  * genuine execution failure. Every field is optional so both write paths — the
  * dispatch path (schedule-level `reasonCode`) and the terminal/reconcile path
@@ -1112,13 +1122,21 @@ export class ScheduleService {
       ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
       : schedule.consecutiveFailures ?? 0;
     const autoPause = this.autoPausePatch(schedule, consecutiveFailures);
+    // Issue #2568: merely omitting lastRunStatus on a skip leaves a prior
+    // `failed` in place via `...schedule`. The merge watchdog (bootstrap-
+    // critical, never auto-paused) then keeps showing lastRunStatus=failed
+    // after a healthy previous_run_active skip. Write `skipped` for those
+    // deferrals; only a genuine dispatch failure writes `failed`.
+    const lastRunStatus: Schedule['lastRunStatus'] = isFailure
+      ? 'failed'
+      : isHealthySkipOutcome(outcome)
+        ? 'skipped'
+        : schedule.lastRunStatus;
     this.store.replace({
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
       lastRunTaskId: receipt.taskId,
-      // Overlap-skips and other benign deferrals must not look like a failed
-      // run (issue #2458). Only a genuine dispatch failure writes lastRunStatus.
-      ...(isFailure ? { lastRunStatus: 'failed' as const } : {}),
+      ...(lastRunStatus ? { lastRunStatus } : {}),
       consecutiveFailures,
       ...consumeCronTrigger(schedule, receipt.trigger, outcome === 'dispatch_failed', evaluatedAt),
       // Auto-pause (issue #2353) wins over a still-enabled trigger-budget

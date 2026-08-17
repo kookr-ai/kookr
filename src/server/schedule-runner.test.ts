@@ -619,6 +619,7 @@ Do the test thing.
     expect(after.latestExecution?.reasonCode).toBe('previous_run_active');
     expect(after.latestExecution?.message).toBe('Previous run still active');
     expect(after.consecutiveFailures ?? 0).toBe(0);
+    expect(after.lastRunStatus).toBe('skipped');
     expect(after.enabled).toBe(true);
     expect(after.stopReason).toBeUndefined();
     expect(after.operatorHold).toBeUndefined();

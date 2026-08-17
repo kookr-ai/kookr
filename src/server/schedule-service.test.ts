@@ -982,6 +982,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
           await service.markExecutionOutcome(schedule.id, r.id, benign, 'none');
         }
         expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+        expect(store.get(schedule.id)!.lastRunStatus).toBe('skipped');
         expect(alerts).toHaveLength(0);
       } finally {
         cleanup();
@@ -1474,12 +1475,107 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
       expect(after.consecutiveFailures ?? 0).toBe(0);
       expect(after.stopReason).toBeUndefined();
       expect(after.operatorHold).toBeUndefined();
-      expect(after.lastRunStatus).toBeUndefined();
+      expect(after.lastRunStatus).toBe('skipped');
       expect(after.latestExecution).toMatchObject({
         outcome: 'skipped_active',
         reasonCode: 'previous_run_active',
         message: 'Previous run still active',
       });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('merge-watchdog overlap-skip (prior task still inProgress) does not write lastRunStatus=failed (issue #2568)', async () => {
+    // Incident 2026-08-17: the PR merge/rebase watchdog's 08:45 tick correctly
+    // recorded skipped_active / previous_run_active because the 08:34 task was
+    // still inProgress. The skip left lastRunStatus=failed and
+    // consecutiveFailures=5 — a leftover from earlier genuine faults that
+    // `...schedule` kept in place because markExecutionOutcome only wrote
+    // lastRunStatus on a failure. The watchdog is bootstrap-critical so it
+    // stays enabled; another few of those skips would not pause it, but the
+    // failed status is what operators (and fail-closed bookkeeping) read.
+    const { service, store, cleanup } = overlapHarness();
+    try {
+      const schedule = store.create({
+        name: 'Kookr PR merge/rebase watchdog',
+        cron: '*/15 * * * *',
+        playbook: { path: 'pr-merge-rebase-watchdog.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      const accepted = await service.reserveExecution(
+        store.get(schedule.id)!,
+        'cron',
+        '2026-08-17T08:34:00.000Z',
+      );
+      await service.markExecutionAccepted(schedule.id, accepted.id, 'task-86567b85', false);
+      store.replace({
+        ...store.get(schedule.id)!,
+        consecutiveFailures: 5,
+        lastRunStatus: 'failed',
+      });
+
+      const skipReceipt = await service.reserveExecution(
+        store.get(schedule.id)!,
+        'cron',
+        '2026-08-17T08:45:00.000Z',
+      );
+      await service.markExecutionOutcome(
+        schedule.id,
+        skipReceipt.id,
+        'skipped_active',
+        'previous_run_active',
+        'Previous run still active',
+        { blockingTaskId: 'task-86567b85' },
+      );
+
+      const afterSkip = store.get(schedule.id)!;
+      expect(afterSkip.latestExecution).toMatchObject({
+        outcome: 'skipped_active',
+        reasonCode: 'previous_run_active',
+        message: 'Previous run still active',
+        taskId: 'task-86567b85',
+      });
+      expect(afterSkip.lastRunStatus).toBe('skipped');
+      expect(afterSkip.lastRunStatus).not.toBe('failed');
+      expect(afterSkip.consecutiveFailures).toBe(5);
+      expect(afterSkip.enabled).toBe(true);
+      expect(afterSkip.operatorHold ?? false).toBe(false);
+
+      // A coalesced tick (previous fire still pending) is the same class.
+      const coalesceReceipt = await service.reserveExecution(
+        store.get(schedule.id)!,
+        'cron',
+        '2026-08-17T09:00:00.000Z',
+      );
+      await service.markExecutionOutcome(
+        schedule.id,
+        coalesceReceipt.id,
+        'skipped_coalesced',
+        'previous_run_pending',
+        'Previous fire is still pending launch',
+        { blockingTaskId: 'task-86567b85' },
+      );
+      expect(store.get(schedule.id)!.lastRunStatus).toBe('skipped');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(5);
+
+      // A genuine launch failure after the skip still increments and writes failed.
+      const failReceipt = await service.reserveExecution(
+        store.get(schedule.id)!,
+        'cron',
+        '2026-08-17T09:15:00.000Z',
+      );
+      await service.markExecutionOutcome(
+        schedule.id,
+        failReceipt.id,
+        'dispatch_failed',
+        'launch_error',
+        'boom',
+      );
+      const afterFail = store.get(schedule.id)!;
+      expect(afterFail.lastRunStatus).toBe('failed');
+      expect(afterFail.consecutiveFailures).toBe(6);
     } finally {
       cleanup();
     }
@@ -1507,6 +1603,7 @@ describe('ScheduleService overlap-skip vs consecutiveFailures (issue #2458)', ()
       expect(after.latestExecution?.outcome).toBe('skipped_active');
       expect(after.latestExecution?.reasonCode).toBe('previous_run_active');
       expect(after.latestExecution?.message).toBe('Previous run still active');
+      expect(after.lastRunStatus).toBe('skipped');
       expect(after.lastRunStatus).not.toBe('cancelled');
       expect(after.consecutiveFailures ?? 0).toBe(0);
       expect(after.enabled).toBe(true);

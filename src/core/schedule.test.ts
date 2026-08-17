@@ -716,6 +716,26 @@ describe('ScheduleStore', () => {
     expect(reloaded.list()[0].exhaustedAt).toBe('2026-01-01T00:05:00.000Z');
   });
 
+  it('persists lastRunStatus=skipped across reload (issue #2568)', async () => {
+    const created = store.create({
+      name: 'Skip persist',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    store.replace({
+      ...created,
+      lastRunStatus: 'skipped',
+      consecutiveFailures: 5,
+    });
+    await store.persist();
+
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.list()[0].lastRunStatus).toBe('skipped');
+    expect(reloaded.list()[0].consecutiveFailures).toBe(5);
+  });
+
   it('writes schedules.json compactly (no pretty indentation) (#2217)', async () => {
     store.create({
       name: 'Compact Write',
