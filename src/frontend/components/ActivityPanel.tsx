@@ -377,13 +377,6 @@ export function formatElapsed(totalSeconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-/**
- * Foot-of-stream indicator shown while the agent's turn is running. Surfaces
- * the in-flight tool call (icon + label) or a generic "Working…" state between
- * calls. Events carry no wall-clock timestamp, so the elapsed timer is anchored
- * client-side from when this row first observes a given call `key` and resets
- * only when the agent moves to a different call.
- */
 function ActivityRoleFilterChips({
   value,
   onChange,
@@ -413,6 +406,13 @@ function ActivityRoleFilterChips({
   );
 }
 
+/**
+ * Foot-of-stream indicator shown while the agent's turn is running. Surfaces
+ * the in-flight tool call (icon + label) or a generic "Working…" state between
+ * calls. Events carry no wall-clock timestamp, so the elapsed timer is anchored
+ * client-side from when this row first observes a given call `key` and resets
+ * only when the agent moves to a different call.
+ */
 function LiveToolRow({ inFlight }: { inFlight: InFlightTool | null }) {
   const key = inFlight?.key ?? '__working__';
   const startRef = useRef(Date.now());
@@ -546,7 +546,11 @@ export function ActivityPanel({
           </div>
         )}
         {showFilterEmpty && (
-          <div className="act-empty act-empty-filter" data-testid="act-empty-filter">
+          <div
+            className="act-empty act-empty-filter"
+            data-testid="act-empty-filter"
+            role="status"
+          >
             <p>No matching activity</p>
             <button
               type="button"

@@ -32,7 +32,7 @@ function getStorage(): Storage | null {
   return typeof localStorage === 'undefined' ? null : localStorage;
 }
 
-export function isActivityRoleFilter(value: unknown): value is ActivityRoleFilter {
+function isActivityRoleFilter(value: unknown): value is ActivityRoleFilter {
   return ACTIVITY_ROLE_FILTERS.some((filter) => filter === value);
 }
 
@@ -56,7 +56,7 @@ export function activityItemRole(item: ActivityItem): ActivityItemRole {
   }
 }
 
-export function itemMatchesActivityFilter(
+function itemMatchesActivityFilter(
   item: ActivityItem,
   filter: ActivityRoleFilter,
 ): boolean {

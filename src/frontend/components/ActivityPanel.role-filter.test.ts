@@ -75,6 +75,7 @@ describe('ActivityPanel role-filter chips (issue #2576)', () => {
     expect(container.querySelector('.act-msg-agent')).toBeNull();
     expect(container.querySelector('.act-tool-group')).not.toBeNull();
     expect(container.querySelector('.act-tool-group')?.textContent).toMatch(/command/i);
+    expect(container.querySelector('[data-testid="act-empty-filter"]')).toBeNull();
     expect(chip(container, 'tools').getAttribute('aria-checked')).toBe('true');
     expect(chip(container, 'all').getAttribute('aria-checked')).toBe('false');
   });
