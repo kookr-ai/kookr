@@ -577,6 +577,18 @@ function RelayConnectionSection() {
   );
 }
 
+/**
+ * Reads the current browser notification-permission state, or `null` when the
+ * Notification API is unavailable (e.g. insecure context, jsdom, older browser)
+ * so callers can skip rendering the permission row entirely.
+ */
+function readNotificationPermission(): NotificationPermission | null {
+  if (typeof window === 'undefined') return null;
+  const ctor = (window as Window & { Notification?: typeof Notification }).Notification;
+  if (!ctor) return null;
+  return ctor.permission;
+}
+
 export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
@@ -588,6 +600,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [searchQuery, setSearchQuery] = useState('');
   const [noSearchResults, setNoSearchResults] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | null>(
+    () => readNotificationPermission(),
+  );
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -609,6 +624,22 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   useEffect(() => {
     latestSettingsRef.current = settings;
   }, [settings]);
+
+  // Re-read the notification permission when the tab regains focus. The `denied`
+  // guidance sends the user to the browser's site settings; without this, the
+  // row would keep showing "Blocked" after they re-enable it elsewhere and come
+  // back to the still-open dialog. There is no dedicated permission-change event
+  // that fires reliably across browsers, so visibility/focus is the practical hook.
+  useEffect(() => {
+    if (readNotificationPermission() === null) return;
+    const sync = () => setNotificationPermission(readNotificationPermission());
+    document.addEventListener('visibilitychange', sync);
+    window.addEventListener('focus', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('focus', sync);
+    };
+  }, []);
 
   useEffect(() => {
     getSettings<ServerSettings>()
@@ -885,6 +916,29 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     sound.setEnabled(!sound.enabled);
   }
 
+  // Prompt for desktop-notification permission from this user gesture. Browsers
+  // only honor the request while permission is `default`; once `denied`, the
+  // request resolves to `denied` without re-prompting, so this button is only
+  // shown for the `default` state.
+  async function handleEnableNotifications() {
+    const ctor = typeof window === 'undefined'
+      ? undefined
+      : (window as Window & { Notification?: typeof Notification }).Notification;
+    if (!ctor) return;
+    try {
+      // Legacy callback-only implementations (very old Safari) return `undefined`
+      // and deliver the result via a callback instead of resolving the promise,
+      // so coalesce to a fresh read rather than storing `undefined` (which would
+      // pass the `!== null` render guard yet match no branch — a dead row).
+      const result = await ctor.requestPermission();
+      setNotificationPermission(result ?? readNotificationPermission());
+    } catch {
+      // Defensive: if awaiting the request throws, re-read the current
+      // permission so the UI still reflects reality.
+      setNotificationPermission(readNotificationPermission());
+    }
+  }
+
   function handleSoundVolumeChange(value: string) {
     sound.setVolume(Number(value));
   }
@@ -1039,6 +1093,50 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                   {/* Notifications & Alerts */}
                   <div className="settings-section">
                     <div className="settings-section-title">Notifications & Alerts</div>
+                    {notificationPermission !== null && (
+                      <div className="settings-row">
+                        <div className="settings-row-info">
+                          <span className="settings-label">Desktop notifications</span>
+                          <span className="settings-desc">
+                            Desktop notifications are the fallback alert channel when this tab is
+                            hidden and sound is muted. They require browser permission for this site.
+                          </span>
+                          {notificationPermission === 'denied' && (
+                            <span className="settings-hint">
+                              Notifications are blocked for this site. Re-enable them in your
+                              browser's site settings — browsers ignore in-page requests once
+                              notifications have been blocked.
+                            </span>
+                          )}
+                        </div>
+                        <div className="settings-permission">
+                          {notificationPermission === 'granted' && (
+                            <span
+                              className="settings-permission-status granted"
+                              role="status"
+                              aria-label="Desktop notifications permission: on"
+                            >
+                              On
+                            </span>
+                          )}
+                          {notificationPermission === 'default' && (
+                            <button
+                              type="button"
+                              className="settings-button"
+                              onClick={handleEnableNotifications}
+                              aria-label="Enable desktop notifications"
+                            >
+                              Enable
+                            </button>
+                          )}
+                          {notificationPermission === 'denied' && (
+                            <span className="settings-permission-status denied">
+                              Blocked
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="settings-row">
                       <div className="settings-row-info">
                         <span className="settings-label">Sound alerts</span>
