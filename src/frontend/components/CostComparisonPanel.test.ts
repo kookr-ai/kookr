@@ -132,8 +132,8 @@ describe('CostComparisonPanel', () => {
 
   test('renders aggregate cards when both agents have tasks', async () => {
     const aggregate = {
-      'claude-code': emptyAgg('claude-code', { taskCount: 18, pricedTaskCount: 18, totalCostUsd: 4.21, medianDurationMs: 720_000 }),
-      'codex-cli':   emptyAgg('codex-cli',   { taskCount: 12, pricedTaskCount: 12, totalCostUsd: 6.83, medianDurationMs: 1_080_000 }),
+      'claude-code': emptyAgg('claude-code', { taskCount: 18, pricedTaskCount: 18, totalCostUsd: 4.21, medianDurationMs: 720_000, inputTokens: 1_250_000, outputTokens: 84_000, cacheReadTokens: 512 }),
+      'codex-cli':   emptyAgg('codex-cli',   { taskCount: 12, pricedTaskCount: 12, totalCostUsd: 6.83, medianDurationMs: 1_080_000, inputTokens: 2_000_000, outputTokens: 120_500, cacheReadTokens: 0 }),
     };
     mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
     const el = mount();
@@ -146,11 +146,11 @@ describe('CostComparisonPanel', () => {
     expect(cards).toEqual([
       {
         title: 'Claude',
-        stats: ['tasks 18', 'total $4.21', 'med dur 12m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
+        stats: ['tasks 18', 'total $4.21', 'in tok 1.3M', 'out tok 84.0k', 'cache rd 512', 'med dur 12m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
       },
       {
         title: 'Codex',
-        stats: ['tasks 12', 'total $6.83', 'med dur 18m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
+        stats: ['tasks 12', 'total $6.83', 'in tok 2.0M', 'out tok 120.5k', 'cache rd 0', 'med dur 18m00s', 'p95 dur —', 'max dur —', '👍 rate —'],
       },
     ]);
   });
