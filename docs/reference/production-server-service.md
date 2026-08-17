@@ -191,6 +191,93 @@ when the scheduler tick dies (issue #1707 / #1699 WS0).
 `/api/health` remains a soft always-200 operator surface; do not use it as a
 restart gate.
 
+## When HTTP Is Dark (hang recovery)
+
+`Restart=on-failure` in the unit **does not recover a hang.** It fires only when
+the process *exits* with a failure status (a crash, an unhandled rejection that
+kills the process, an OOM kill). A wedged server is different: the process is
+still alive and still holding the listen socket, but its event loop no longer
+makes progress, so nothing exits and systemd never restarts it. The malloc knobs
+above reduce the OOM pressure that *causes* some crashes; they do nothing for a
+loop that is stuck.
+
+Do not begin hang triage with `curl .../api/health`. `/api/health` is always-200
+and is served from an in-process cache (stale-while-revalidate), so a wedged
+server can still return a stale `200` from the cached body — a green `/api/health`
+does **not** prove the loop is live. Start from the process supervisor instead:
+
+1. **Is the unit still "running"?** A hang looks `active (running)` here — that is
+   the point. This step is only to rule out a plain crash-loop or a clean exit.
+
+   ```bash
+   systemctl --user status kookr.service
+   journalctl --user -u kookr.service --since '-10min' --no-pager
+   ```
+
+2. **Probe the live readiness endpoint, with a timeout.** `/api/ready` is
+   uncached and answered on the event loop, so a wedged loop cannot return it.
+   The `--max-time` is what turns a hang into a detectable failure — without it
+   `curl` blocks with the loop.
+
+   ```bash
+   curl -fsS --max-time 5 http://127.0.0.1:4800/api/ready
+   ```
+
+   - Times out / no response → HTTP is dark; the loop is wedged. Go to step 4.
+   - `503` with a `checks` body → not a hang; a *critical* subsystem is down.
+     Read the failing check and treat it as a normal degradation, not a wedge.
+   - `200` → the loop is live; the symptom is elsewhere (client, network, a slow
+     but not dead subsystem).
+
+3. **Or let the doctor time it for you.** `kookr doctor` runs the same probe
+   under a latency budget (`GET /api/ready` at 500 ms, then `GET /api/health` at
+   2 s) and reports `ops.http-latency`; a timeout or multi-second response is the
+   hung-HTTP signature.
+
+   ```bash
+   kookr doctor
+   ```
+
+4. **Recover a confirmed wedge.** `Restart=` will not do this for you — restart
+   the unit by hand:
+
+   ```bash
+   systemctl --user restart kookr.service
+   curl -fsS --max-time 5 http://127.0.0.1:4800/api/ready
+   ```
+
+   If even `systemctl --user restart` will not bring it down, escalate to
+   `systemctl --user kill --signal=SIGKILL kookr.service` and let the unit start
+   a fresh process.
+
+**Reading the last-good state without touching HTTP.** The server writes a
+durable ops card to `~/.kookr/ops-status.json` on every `ready → degraded`
+transition (issue #1995). It is an on-disk file, so `cat` reads it even while the
+loop is wedged and HTTP is dark — no request reaches the stuck event loop:
+
+```bash
+cat ~/.kookr/ops-status.json
+```
+
+It records a ring of the most recent critical edges — including the
+`ready → degraded` transition and its operator-facing detail — plus fields
+sampled at write time: serving SHA, hung-suspect count, data-directory free
+space, and SAFE MODE status. That is what an operator (or Lucy over Discord)
+needs to see when the server itself will not answer. Note that
+`kookr ops digest` is **not** a
+substitute here: it fetches `/api/ready` and `/api/health` live, so against a
+wedged server it just reports no-server rather than reading this file. Use `cat`
+on the file directly when HTTP is dark.
+
+**Automating the restart (when present).** The manual step 4 above is today's
+recovery path. systemd can turn a wedge into an automatic restart with a
+`WatchdogSec=` deadline on a `Type=notify` unit: the server must ping systemd on
+the event loop within each interval, so a wedged loop misses the ping and systemd
+restarts the process on its own. This runbook phrases that "when present" because
+the shipped unit is `Type=simple` with no watchdog — until it gains
+`WatchdogSec=`, a missed watchdog is not available and a hang stays a manual
+step 4.
+
 ## Verify
 
 After installing the unit, verify the basic lifecycle:
