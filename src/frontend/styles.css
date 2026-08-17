@@ -3144,6 +3144,22 @@ a.overview-tour-link:visited:hover {
   border-radius: 2px;
   color: var(--blue);
 }
+.playbook-empty-docs {
+  margin: 10px 0 0;
+}
+.playbook-empty-docs-link {
+  color: var(--accent, #61dafb);
+  text-decoration: underline;
+}
+.playbook-empty-docs-link:hover {
+  color: var(--text-bright);
+}
+a.playbook-empty-docs-link:visited {
+  color: var(--accent, #61dafb);
+}
+a.playbook-empty-docs-link:visited:hover {
+  color: var(--text-bright);
+}
 
 .playbook-detail-header {
   display: flex;
