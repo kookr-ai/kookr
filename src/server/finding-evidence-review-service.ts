@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { LlmClient } from '../core/llm-client.js';
@@ -254,7 +254,15 @@ export function getOrCreateFindingEvidenceReviewHmacKey(kookrDir: string): Buffe
   const path = join(kookrDir, REVIEW_HMAC_KEY_FILE);
   if (existsSync(path)) {
     const value = readFileSync(path, 'utf8').trim();
-    if (/^[a-f0-9]{64}$/i.test(value)) return Buffer.from(value, 'hex');
+    if (/^[a-f0-9]{64}$/i.test(value)) {
+      // Tighten leftover looser modes from copy/restore without rewriting key bytes.
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        // chmod is best-effort: reviews must still run if the mode cannot be tightened.
+      }
+      return Buffer.from(value, 'hex');
+    }
   }
   mkdirSync(dirname(path), { recursive: true });
   const key = randomBytes(32);

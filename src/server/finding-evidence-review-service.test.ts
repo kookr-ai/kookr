@@ -1,5 +1,23 @@
 import { describe, expect, test, vi } from 'vitest';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+const { chmodSyncControl } = vi.hoisted(() => ({
+  chmodSyncControl: { throwOnCall: false },
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    chmodSync: (path: Parameters<typeof actual.chmodSync>[0], mode: Parameters<typeof actual.chmodSync>[1]) => {
+      if (chmodSyncControl.throwOnCall) {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      }
+      return actual.chmodSync(path, mode);
+    },
+  };
+});
+
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -327,15 +345,46 @@ describe('FindingEvidenceReviewService', () => {
       expect(created).toHaveLength(32);
       expect(existsSync(keyPath)).toBe(true);
       expect(readFileSync(keyPath, 'utf8').trim()).toMatch(/^[a-f0-9]{64}$/);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o600);
 
       const reused = getOrCreateFindingEvidenceReviewHmacKey(dir);
       expect(reused.equals(created)).toBe(true);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+
+      const hex = created.toString('hex');
+      chmodSync(keyPath, 0o644);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o644);
+      const tightened = getOrCreateFindingEvidenceReviewHmacKey(dir);
+      expect(tightened.equals(created)).toBe(true);
+      expect(readFileSync(keyPath, 'utf8').trim()).toBe(hex);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o600);
 
       writeFileSync(keyPath, 'not-a-valid-key');
       const replaced = getOrCreateFindingEvidenceReviewHmacKey(dir);
       expect(replaced).toHaveLength(32);
       expect(replaced.equals(created)).toBe(false);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o600);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not throw or rotate the key when chmod fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'finding-review-key-chmod-'));
+    try {
+      const keyPath = join(dir, 'finding-evidence-review-hmac-key');
+      writeFileSync(keyPath, 'ab'.repeat(32), { mode: 0o644 });
+      chmodSync(keyPath, 0o644);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o644);
+      const hex = readFileSync(keyPath, 'utf8');
+
+      chmodSyncControl.throwOnCall = true;
+      const reused = getOrCreateFindingEvidenceReviewHmacKey(dir);
+      expect(reused.equals(Buffer.from(hex, 'hex'))).toBe(true);
+      expect(readFileSync(keyPath, 'utf8')).toBe(hex);
+      expect(statSync(keyPath).mode & 0o777).toBe(0o644);
+    } finally {
+      chmodSyncControl.throwOnCall = false;
       await rm(dir, { recursive: true, force: true });
     }
   });
