@@ -7,6 +7,7 @@ import {
   ageColor,
   findingWaitStartedAt,
   formatTokenUsage,
+  formatCostRate,
   worktreeHealthLabel,
   worktreeHealthTitle,
   turnStateLabel,
@@ -220,9 +221,11 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {(agent.tokenUsage || agent.startedAt) && (
           <div className="finding-cost">
-            {formatTokenUsage(agent.tokenUsage)}
-            {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
-            {formatDuration(agent.startedAt)}
+            {[
+              formatTokenUsage(agent.tokenUsage),
+              formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt),
+              formatDuration(agent.startedAt),
+            ].filter(Boolean).join(' · ')}
           </div>
         )}
         <div className="finding-actions">

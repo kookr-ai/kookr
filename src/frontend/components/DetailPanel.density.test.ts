@@ -124,6 +124,7 @@ describe('DetailPanel dense metadata', () => {
     act(() => root?.unmount());
     container.remove();
     document.body.innerHTML = '';
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -145,6 +146,38 @@ describe('DetailPanel dense metadata', () => {
     expect(metaMenu.querySelector('.detail-branch')?.textContent).toContain('main');
     expect(metaMenu.textContent).toContain('$0.42');
     expect(metaMenu.textContent).toContain('1.5k tok');
+  });
+
+  test('shows $X.XX/h on the Cost row when the session is older than two minutes', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T11:00:00.000Z'));
+    root = renderDetailPanel(container, makeAgent({
+      startedAt: '2026-06-11T10:00:00.000Z',
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 4,
+      },
+    }));
+    expect(container.querySelector('.detail-cost')?.textContent).toBe('$4.00 · $4.00/h');
+  });
+
+  test('omits the Cost-row rate for a session younger than two minutes', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T10:01:00.000Z'));
+    root = renderDetailPanel(container, makeAgent({
+      startedAt: '2026-06-11T10:00:00.000Z',
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 4,
+      },
+    }));
+    expect(container.querySelector('.detail-cost')?.textContent).toBe('$4.00');
   });
 
   test('terminal focus mode removes secondary detail chrome while keeping terminal active', () => {

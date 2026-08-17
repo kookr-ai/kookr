@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -491,5 +491,55 @@ describe('cacheHitRatio / formatCacheHit', () => {
     const u = usage({ inputTokens: 1, cacheReadTokens: 2 });
     expect(cacheHitRatio(u)).toBeCloseTo(2 / 3, 5);
     expect(formatCacheHit(u)).toBe('67%');
+  });
+});
+
+describe('formatCostRate', () => {
+  const START = '2026-06-11T10:00:00.000Z';
+
+  test('one-hour fixture is total cost as $X.XX/h', () => {
+    const nowMs = Date.parse('2026-06-11T11:00:00.000Z');
+    expect(formatCostRate(4, START, nowMs)).toBe('$4.00/h');
+  });
+
+  test('omits the rate when the session is younger than two minutes', () => {
+    const justUnderFloor = Date.parse(START) + 119_999;
+    expect(formatCostRate(4, START, justUnderFloor)).toBe('');
+  });
+
+  test('shows the rate at the two-minute floor (same cutoff as formatAge)', () => {
+    const atFloor = Date.parse(START) + 120_000;
+    // $4 over 2 minutes = $120/h
+    expect(formatCostRate(4, START, atFloor)).toBe('$120.00/h');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(atFloor));
+    expect(formatAge(START)).toBe('2m');
+    vi.useRealTimers();
+  });
+
+  test('omits the rate when cost or start is missing, zero, or invalid', () => {
+    const nowMs = Date.parse('2026-06-11T11:00:00.000Z');
+    expect(formatCostRate(undefined, START, nowMs)).toBe('');
+    expect(formatCostRate(0, START, nowMs)).toBe('');
+    expect(formatCostRate(-1, START, nowMs)).toBe('');
+    expect(formatCostRate(Number.NaN, START, nowMs)).toBe('');
+    expect(formatCostRate(Number.POSITIVE_INFINITY, START, nowMs)).toBe('');
+    expect(formatCostRate(4, undefined, nowMs)).toBe('');
+    expect(formatCostRate(4, 'not-a-date', nowMs)).toBe('');
+    expect(formatCostRate(4, START, Date.parse('2026-06-11T09:00:00.000Z'))).toBe('');
+  });
+
+  test('never returns NaN or Infinity in the string', () => {
+    const nowMs = Date.parse('2026-06-11T11:00:00.000Z');
+    const samples = [
+      formatCostRate(4, START, nowMs),
+      formatCostRate(4, START, Date.parse(START) + 119_999),
+      formatCostRate(0, START, nowMs),
+      formatCostRate(Number.NaN, START, nowMs),
+      formatCostRate(Number.POSITIVE_INFINITY, START, nowMs),
+    ];
+    for (const sample of samples) {
+      expect(sample).not.toMatch(/NaN|Infinity/i);
+    }
   });
 });

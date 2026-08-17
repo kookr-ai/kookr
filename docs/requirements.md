@@ -1205,6 +1205,18 @@ The system SHALL price transcript token usage against the model that produced ea
 
 **Evidence:** `src/core/pricing-tables.ts`, `src/core/token-tracker.ts`, `src/core/usage-types.ts`, `src/core/tasks.ts`, `src/shared/contracts/usage.ts`, `src/core/pricing-tables.test.ts`, `src/core/token-tracker.test.ts`, `src/core/tasks.test.ts`.
 
+### R13.2: Show Session Dollars-Per-Hour Next to Cost [#2575] [F4.9] — SHALL — `done`
+
+The dashboard SHALL show a compact dollars-per-hour figure next to session cost so a supervisor can tell a four-dollar burst from a four-dollar afternoon without dividing by hand.
+
+**Acceptance criteria:**
+- Given a session with a positive cost and a start time older than two minutes, the detail Cost row and the finding-card cost line show a compact `$X.XX/h` figure.
+- Given a session younger than two minutes, or missing cost or start time, those surfaces omit the rate and never render `NaN` or an infinite value.
+- The two-minute floor is the same cutoff `formatAge` already uses for finding age (`FRESH_SESSION_FLOOR_MS`, 120000 ms).
+- The rate is total session cost divided by wall-clock hours since start, not a recent-window average.
+
+**Evidence:** `src/frontend/presentation.ts` (`formatCostRate`), `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel/FindingCard.tsx`, `src/frontend/presentation.test.ts`, `src/frontend/components/DetailPanel.density.test.ts`, `src/frontend/components/FindingsPanel/FindingCard.cost-rate.test.tsx`.
+
 ---
 
 ## R14: Text-to-Speech Input Safety
@@ -1315,6 +1327,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
 | R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
+| R13.2 | F4.9 | SHALL | done | presentation formatCostRate, DetailPanel, FindingCard |
 | R14.1 | #1445 | SHALL | done | TTS server input validation |
 
 ---
