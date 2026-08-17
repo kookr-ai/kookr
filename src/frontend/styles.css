@@ -10324,6 +10324,29 @@ button.project-drawer-link:focus-visible {
   color: var(--text-muted);
 }
 
+.settings-permission {
+  display: flex;
+  align-items: center;
+}
+
+.settings-permission-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-dim);
+}
+
+.settings-permission-status.granted {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.settings-permission-status.denied {
+  color: var(--red);
+  border-color: var(--red);
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;

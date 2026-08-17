@@ -1203,3 +1203,155 @@ describe('SettingsDialog tabs', () => {
     }
   });
 });
+
+describe('SettingsDialog desktop-notification permission row', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  function stubNotification(
+    permission: NotificationPermission,
+    requestPermission?: ReturnType<typeof vi.fn>,
+  ): void {
+    const ctor = vi.fn() as unknown as {
+      permission: NotificationPermission;
+      requestPermission: () => Promise<NotificationPermission>;
+    };
+    ctor.permission = permission;
+    ctor.requestPermission = requestPermission ?? vi.fn(async () => permission);
+    vi.stubGlobal('Notification', ctor);
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => DEFAULT_SETTINGS,
+    })));
+    __resetSoundPreferenceForTests();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await act(async () => {
+      root.unmount();
+    });
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+    localStorage.clear();
+    __resetSoundPreferenceForTests();
+  });
+
+  test('shows an On indicator and no enable button when permission is granted', async () => {
+    stubNotification('granted');
+    root = renderDialog(container);
+    await flush();
+
+    const status = container.querySelector('.settings-permission-status.granted');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toContain('On');
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
+    expect(container.textContent).not.toContain('Re-enable them in your');
+  });
+
+  test('offers a working enable action when permission is default', async () => {
+    const requestPermission = vi.fn(async () => 'granted' as NotificationPermission);
+    stubNotification('default', requestPermission);
+    root = renderDialog(container);
+    await flush();
+
+    const enableButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Enable desktop notifications"]',
+    );
+    expect(enableButton).not.toBeNull();
+    expect(container.querySelector('.settings-permission-status')).toBeNull();
+
+    await act(async () => {
+      enableButton!.click();
+    });
+    await flush();
+
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    // After granting, the row flips to the On indicator and the button is gone.
+    const status = container.querySelector('.settings-permission-status.granted');
+    expect(status).not.toBeNull();
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
+  });
+
+  test('flips to blocked guidance when the enable prompt is dismissed', async () => {
+    const requestPermission = vi.fn(async () => 'denied' as NotificationPermission);
+    stubNotification('default', requestPermission);
+    root = renderDialog(container);
+    await flush();
+
+    const enableButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Enable desktop notifications"]',
+    );
+    expect(enableButton).not.toBeNull();
+
+    await act(async () => {
+      enableButton!.click();
+    });
+    await flush();
+
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    // A dismissed/blocked prompt resolves to 'denied'; the row must surface the
+    // re-enable guidance and drop the now-dead Enable button.
+    const status = container.querySelector('.settings-permission-status.denied');
+    expect(status).not.toBeNull();
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
+    expect(container.textContent).toContain('Re-enable them in your');
+  });
+
+  test('keeps reflecting reality when requestPermission rejects', async () => {
+    // Legacy callback-style implementations can throw when awaited. The handler
+    // must fall back to re-reading the current permission rather than crashing.
+    const requestPermission = vi.fn(async () => {
+      throw new Error('legacy callback API');
+    });
+    stubNotification('default', requestPermission as unknown as ReturnType<typeof vi.fn>);
+    root = renderDialog(container);
+    await flush();
+
+    const enableButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Enable desktop notifications"]',
+    );
+    expect(enableButton).not.toBeNull();
+
+    await act(async () => {
+      enableButton!.click();
+    });
+    await flush();
+
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    // Permission stayed 'default', so the row keeps offering the enable action
+    // instead of getting stuck or throwing.
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).not.toBeNull();
+    expect(container.querySelector('.settings-permission-status')).toBeNull();
+  });
+
+  test('shows re-enable guidance and no dead button when permission is denied', async () => {
+    stubNotification('denied');
+    root = renderDialog(container);
+    await flush();
+
+    const status = container.querySelector('.settings-permission-status.denied');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toContain('Blocked');
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
+    expect(container.textContent).toContain('Re-enable them in your');
+  });
+
+  test('renders no permission row when the Notification API is unavailable', async () => {
+    vi.stubGlobal('Notification', undefined);
+    root = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain('Notifications & Alerts');
+    expect(container.querySelector('.settings-permission')).toBeNull();
+    expect(container.querySelector('[aria-label="Enable desktop notifications"]')).toBeNull();
+  });
+});
