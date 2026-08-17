@@ -15,7 +15,6 @@ import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets } from './agent-buckets.js';
-
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';

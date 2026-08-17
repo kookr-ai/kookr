@@ -63,6 +63,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
     __resetAudioAlertLogForTests();
     __resetSoundPreferenceForTests();
+    vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
 

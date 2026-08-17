@@ -137,6 +137,8 @@ describe('finding wait age', () => {
     expect(formatOldestFindingWait('2026-06-11T18:45:00Z')).toBe('12m');
     expect(formatOldestFindingWait('2026-06-11T18:56:00Z')).toBe('<2m');
     expect(formatOldestFindingWait(undefined)).toBeNull();
+    expect(formatOldestFindingWait('not-a-date')).toBeNull();
+    expect(formatOldestFindingWait('2026-06-11T19:00:00Z')).toBeNull();
 
     vi.useRealTimers();
   });
