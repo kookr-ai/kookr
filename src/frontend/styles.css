@@ -7972,6 +7972,18 @@ label.task-share-row {
   margin-left: 6px;
 }
 
+.time-to-unblock-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text-secondary);
+  margin-left: 6px;
+}
+
 /* Issue #2037 / #2082 / #2364 / #2432: smoke-tick failing streak,
    resourceWatchdog disabled, chronic FAA residual, launch-dependency
    degradation, and fail-closed paused-schedules pills. Hidden entirely

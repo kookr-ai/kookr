@@ -14,6 +14,13 @@ import {
 } from '../resource-status.js';
 import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
 import {
+  TIME_TO_UNBLOCK_MIN_SAMPLES,
+  TIME_TO_UNBLOCK_WINDOW_MS,
+  formatUnblockWait,
+  type TimeToUnblockSnapshot,
+} from '../../shared/contracts/time-to-unblock.js';
+import { getTimeToUnblock } from '../api/index.js';
+import {
   formatFaaResidualAge,
   formatFaaResidualLabel,
   shouldShowFaaResidualPill,
@@ -339,6 +346,30 @@ export function StatusBar({
   const audioAlertSnapshot = useAudioAlertLog(1);
   const soundOn = sound.enabled;
   const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
+  const [timeToUnblock, setTimeToUnblock] = useState<TimeToUnblockSnapshot | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const body = await getTimeToUnblock();
+        if (!cancelled) setTimeToUnblock(body);
+      } catch {
+        if (!cancelled) setTimeToUnblock(null);
+      }
+    };
+    void load();
+    const timer = setInterval(() => { void load(); }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const showUnblockChip = timeToUnblock !== null
+    && timeToUnblock.sampleCount >= TIME_TO_UNBLOCK_MIN_SAMPLES
+    && timeToUnblock.medianMs !== null
+    && Number.isFinite(timeToUnblock.medianMs);
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -356,6 +387,16 @@ export function StatusBar({
       <span className="statusbar-left">
         {zoneLabel && <span className="focus-zone-pill">{zoneLabel}</span>}
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
+        {showUnblockChip && timeToUnblock?.medianMs != null && (
+          <span
+            className="time-to-unblock-pill"
+            data-testid="time-to-unblock-chip"
+            role="status"
+            title={`Median time a finding waited for a human reply over the last ${Math.round((timeToUnblock.windowMs || TIME_TO_UNBLOCK_WINDOW_MS) / 3_600_000)} hours (${timeToUnblock.sampleCount} samples)`}
+          >
+            median unblock {formatUnblockWait(timeToUnblock.medianMs)}
+          </span>
+        )}
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
         <OpsHealthPills onOpenCapacity={onOpenCapacity} />
