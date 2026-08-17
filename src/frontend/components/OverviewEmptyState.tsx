@@ -13,13 +13,16 @@ import {
   resolveRecentPlaybookLabel,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
-import { findingTypeLabel, findingWaitStartedAt, formatAge, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
+import { findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { track } from '../telemetry.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
 const MAX_WAITING_ROWS = 6;
+
+/** Rows shown in the "Running" list; the rest stay in the healthy rail. */
+export const OVERVIEW_RUNNING_LIMIT = 6;
 
 /** Recent playbooks shown on the overview; the tracker itself keeps up to five. */
 export const OVERVIEW_RECENT_PLAYBOOK_LIMIT = 3;
@@ -38,8 +41,12 @@ interface Props {
    * through rather than recomputed so the overview always matches the rail.
    */
   waiting: AgentState[];
-  /** Healthy running agents (rail `healthy` bucket length). */
-  runningCount: number;
+  /**
+   * Healthy running agents — App's rail `healthy` bucket
+   * (buildAgentBuckets / isHealthyRunning). Passed through so the
+   * overview count and the short running list share one source.
+   */
+  running: AgentState[];
   /**
    * Agents in a terminal task state — App's rail `completed` bucket
    * (buildAgentBuckets), already newest-first. Passed through so the
@@ -64,7 +71,7 @@ interface Props {
  */
 export function OverviewEmptyState({
   waiting,
-  runningCount,
+  running,
   completed,
   onLaunch,
   onLaunchPlaybooks,
@@ -75,6 +82,7 @@ export function OverviewEmptyState({
   const setRelaunchTask = useKookrStore((s) => s.setRelaunchTask);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const playbooks = useKookrStore((s) => s.playbooks);
+  const runningCount = running.length;
   const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
   const recentCompleted = [...completed]
@@ -143,6 +151,37 @@ export function OverviewEmptyState({
           <p className={hasAnyTask ? 'findings-all-clear' : undefined}>
             {hasAnyTask ? 'All clear — agents working autonomously.' : 'No agents running.'}
           </p>
+        )}
+
+        {runningCount > 0 && (
+          <div className="overview-running" data-testid="overview-running">
+            <h3 className="overview-waiting-title">Running</h3>
+            <ul className="overview-waiting-list">
+              {running.slice(0, OVERVIEW_RUNNING_LIMIT).map((agent) => {
+                const duration = formatDuration(agent.startedAt);
+                return (
+                  <li key={agent.agentId}>
+                    <button
+                      type="button"
+                      className="overview-waiting-row"
+                      onClick={() => selectAgent(agent.agentId, agent.taskId)}
+                    >
+                      <span className="overview-waiting-name">{agent.taskName ?? agent.agentId}</span>
+                      <span className="overview-waiting-meta">
+                        {agent.projectDisplayLabel ?? projectLabel(agent.cwd)}
+                        {duration && <> · running {duration}</>}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {runningCount > OVERVIEW_RUNNING_LIMIT && (
+              <p className="overview-waiting-more">
+                +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
+              </p>
+            )}
+          </div>
         )}
 
         {recentCompleted.length > 0 && (

@@ -148,7 +148,7 @@ interface Props {
    */
   overview?: {
     waiting: AgentState[];
-    runningCount: number;
+    running: AgentState[];
     completed: AgentState[];
   };
 }
@@ -640,7 +640,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onCheckS
       <div className="detail-panel kookr-tour-target-layout">
         <OverviewEmptyState
           waiting={overview?.waiting ?? []}
-          runningCount={overview?.runningCount ?? 0}
+          running={overview?.running ?? []}
           completed={overview?.completed ?? []}
           onLaunch={onLaunch}
           onLaunchPlaybooks={onLaunchPlaybooks}

@@ -1272,7 +1272,7 @@ export function App() {
       shortcutBindings={shortcutBindings}
       // Overview data for the no-selection state (F8) — the rail's own bucket
       // classification, so "Waiting on you" and the counts match the rail.
-      overview={{ waiting: findings, runningCount: healthy.length, completed }}
+      overview={{ waiting: findings, running: healthy, completed }}
     />
   );
 
