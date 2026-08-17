@@ -68,6 +68,18 @@ Use `pnpm dev` only when you are actively developing Kookr and need hot reload o
 
 `pnpm dev` also builds the vendored dtach binary on demand if it is not already present (idempotent, fast when cached), so the first run works even if `pnpm install`'s `prepare` hook was skipped (e.g., under `ignore-scripts=true`).
 
+## Explore The Dashboard With Sample Data
+
+Want to see what Kookr looks like before installing an agent CLI or launching real work? Demo mode boots a **populated** dashboard — synthetic tasks, findings, and scripted terminal output — with no Claude Code, Codex, or Grok install required:
+
+```bash
+pnpm dev:demo
+```
+
+This starts a fake backend on port `4801` and the Vite frontend on port `5173`, then seeds synthetic tasks across three projects (a permission-blocked agent, a needs-input agent, healthy running agents, plus completed, pending, and token-spend states). Open `http://127.0.0.1:5173`.
+
+Demo data is temporary and resets each time the command starts. This is an evaluation path only; for real supervision, use the production-style instance on port `4800` described above. See [Demo Mode](development.md#demo-mode) for the full scenario details.
+
 ## First Agent
 
 1. Open the dashboard.

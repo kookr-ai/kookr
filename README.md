@@ -42,6 +42,8 @@ pnpm prod:update
 
 Open `http://localhost:4800`.
 
+**Just want a look first?** Run `pnpm dev:demo` for a no-install populated dashboard (fake backend on `4801`, Vite on `5173` — open `http://127.0.0.1:5173`). See [Getting Started](docs/getting-started.md#explore-the-dashboard-with-sample-data).
+
 Use the production-style instance for normal Kookr usage. It runs from the sibling `../kookr-prod` worktree, so it stays stable while you edit this checkout or run another dev server to test changes.
 
 Use `pnpm dev` only when you are actively developing Kookr and need hot reload on your modifications. Dev mode runs on `4801` with Vite on `5173`; because it restarts and can break while source changes are being applied, it is a poor supervisor for real agent work. The usual contributor setup is stable Kookr on `4800` plus a separate `pnpm dev` instance for live verification.
