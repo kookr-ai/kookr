@@ -249,6 +249,14 @@ function ResolvedCwdLabel({
   );
 }
 
+/** User-guide Playbooks section on the default branch. */
+export const PLAYBOOKS_USER_GUIDE_URL =
+  'https://github.com/kookr-ai/kookr/blob/main/docs/user-guide.md#playbooks';
+
+/** Playbook authoring schema reference on the default branch. */
+export const PLAYBOOKS_AUTHORING_REFERENCE_URL =
+  'https://github.com/kookr-ai/kookr/blob/main/docs/reference/playbooks.md';
+
 export function PlaybookBrowser({
   send,
   onClose,
@@ -1013,6 +1021,25 @@ export function PlaybookBrowser({
           No playbooks found.
           <br />
           Create <code>.kookr/playbooks/*.md</code> in your project.
+          <p className="playbook-empty-docs">
+            <a
+              className="playbook-empty-docs-link"
+              href={PLAYBOOKS_USER_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Playbooks in the user guide
+            </a>
+            {' · '}
+            <a
+              className="playbook-empty-docs-link"
+              href={PLAYBOOKS_AUTHORING_REFERENCE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Authoring reference
+            </a>
+          </p>
         </div>
       </>
     );
