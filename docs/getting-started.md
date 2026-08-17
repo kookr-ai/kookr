@@ -2,6 +2,8 @@
 
 This guide is for a first local Kookr install. It keeps optional features out of the critical path so you can see the dashboard quickly.
 
+[Watch the 2-minute demo](https://youtu.be/DHZrO8T_6Xg) to see how Kookr watches several agents and routes you to the one that needs you, before you install.
+
 ## Prerequisites
 
 - `git`
