@@ -10,6 +10,7 @@ import {
   CLAUDE_CODE_EFFORT_LEVELS,
   CLAUDE_CODE_MODEL_IDS,
 } from '../../shared/contracts/agent-types.js';
+import { LAST_EFFORT_KEY, LAST_MODEL_KEY } from '../store/last-launch-pins.js';
 import type { AgentSelection, ClientMessage } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
@@ -67,13 +68,14 @@ function getModelSelect(container: HTMLElement): HTMLSelectElement | null {
 function renderDialog(
   container: HTMLElement,
   defaultAgentType: AgentSelection = 'claude-code',
+  sendImpl: (msg: ClientMessage) => boolean = () => true,
 ): { root: Root; sent: ClientMessage[] } {
   const sent: ClientMessage[] = [];
   const root = createRoot(container);
   act(() => {
     root.render(
       React.createElement(LaunchTaskDialog, {
-        send: (msg: ClientMessage) => { sent.push(msg); return true; },
+        send: (msg: ClientMessage) => { sent.push(msg); return sendImpl(msg); },
         onClose: () => {},
         defaultAgentType: defaultAgentType === 'round-robin' ? undefined : defaultAgentType,
       }),
@@ -186,5 +188,112 @@ describe('LaunchTaskDialog effort and model pickers (#2448)', () => {
     expect(sent[0]).not.toHaveProperty('effort');
     expect(sent[0]).not.toHaveProperty('model');
     act(() => root.unmount());
+  });
+});
+
+describe('LaunchTaskDialog last-used effort and model (#2616)', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    syncGlobalStore();
+    useKookrStore.setState({
+      serverCwd: '/tmp/work',
+      sttUrl: '',
+      availableAgentTypes: [
+        { type: 'claude-code', label: 'Claude Code' },
+        { type: 'codex-cli', label: 'Codex CLI' },
+        { type: 'grok-build', label: 'Grok Build' },
+      ],
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    localStorage.clear();
+  });
+
+  test('reopening after a pinned launch restores the same effort and model in the dropdowns', async () => {
+    const first = renderDialog(container, 'claude-code');
+    await flush();
+    await act(async () => { setSelectValue(getEffortSelect(container)!, 'max'); });
+    await act(async () => { setSelectValue(getModelSelect(container)!, 'claude-fable-5'); });
+    await submitManualLaunch(container);
+    expect(localStorage.getItem(LAST_EFFORT_KEY)).toBe('max');
+    expect(localStorage.getItem(LAST_MODEL_KEY)).toBe('claude-fable-5');
+    act(() => first.root.unmount());
+
+    const second = renderDialog(container, 'claude-code');
+    await flush();
+    expect(getEffortSelect(container)?.value).toBe('max');
+    expect(getModelSelect(container)?.value).toBe('claude-fable-5');
+    act(() => second.root.unmount());
+  });
+
+  test('switching to an agent that rejects a stored pin falls back to Agent default for that pin', async () => {
+    localStorage.setItem(LAST_EFFORT_KEY, 'high');
+    localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
+
+    const { root } = renderDialog(container, 'claude-code');
+    await flush();
+    expect(getEffortSelect(container)?.value).toBe('high');
+    expect(getModelSelect(container)?.value).toBe('claude-fable-5');
+
+    await act(async () => { setSelectValue(getAgentSelectEl(container), 'codex-cli'); });
+    await flush();
+    expect(getEffortSelect(container)?.value).toBe('high');
+    expect(getModelSelect(container)).toBeNull();
+    act(() => root.unmount());
+  });
+
+  test('a stored Codex-only effort falls back to Agent default while a valid model stays', async () => {
+    localStorage.setItem(LAST_EFFORT_KEY, 'ultra');
+    localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
+
+    const { root } = renderDialog(container, 'claude-code');
+    await flush();
+    expect(getEffortSelect(container)?.value).toBe('');
+    expect(getModelSelect(container)?.value).toBe('claude-fable-5');
+    act(() => root.unmount());
+  });
+
+  test('failed send does not write the new pins', async () => {
+    localStorage.setItem(LAST_EFFORT_KEY, 'high');
+    localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
+
+    const { root, sent } = renderDialog(container, 'claude-code', () => false);
+    await flush();
+    await act(async () => { setSelectValue(getEffortSelect(container)!, 'max'); });
+    await act(async () => { setSelectValue(getModelSelect(container)!, 'claude-sonnet-5'); });
+    await submitManualLaunch(container);
+
+    expect(sent).toHaveLength(1);
+    expect(localStorage.getItem(LAST_EFFORT_KEY)).toBe('high');
+    expect(localStorage.getItem(LAST_MODEL_KEY)).toBe('claude-fable-5');
+    act(() => root.unmount());
+  });
+
+  test('a default launch clears stored pins so the next open stays on Agent default', async () => {
+    localStorage.setItem(LAST_EFFORT_KEY, 'high');
+    localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
+
+    const first = renderDialog(container, 'claude-code');
+    await flush();
+    await act(async () => { setSelectValue(getEffortSelect(container)!, ''); });
+    await act(async () => { setSelectValue(getModelSelect(container)!, ''); });
+    await submitManualLaunch(container);
+    expect(localStorage.getItem(LAST_EFFORT_KEY)).toBeNull();
+    expect(localStorage.getItem(LAST_MODEL_KEY)).toBeNull();
+    act(() => first.root.unmount());
+
+    const second = renderDialog(container, 'claude-code');
+    await flush();
+    expect(getEffortSelect(container)?.value).toBe('');
+    expect(getModelSelect(container)?.value).toBe('');
+    act(() => second.root.unmount());
   });
 });
