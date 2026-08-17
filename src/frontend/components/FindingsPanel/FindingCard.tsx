@@ -35,6 +35,7 @@ import { RalphLoopBadge } from './RalphLoopBadge.js';
 import { FindingTranscriptContext } from './FindingTranscriptContext.js';
 import { recommendedResponseFor } from './recommendedResponses.js';
 import { CopyExplanationButton } from './CopyExplanationButton.js';
+import { FindingPrChip } from './FindingPrChip.js';
 
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
@@ -97,6 +98,9 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
     () => coordinatorChipForTask(coordinator, agent.taskId),
     [coordinator, agent.taskId],
   );
+  const taskGithub = useKookrStore((s) => (
+    agent.taskId ? s.githubState[agent.taskId] : undefined
+  ));
 
   function selectFinding() {
     track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
@@ -179,6 +183,10 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
+          <FindingPrChip
+            prs={taskGithub?.prs}
+            onSelect={selectFindingImmediately}
+          />
           {/* Branch / worktree is intentionally omitted here — it's detail-panel
               context, too granular for the card. See the detail panel's
               `.detail-branch` row. */}
