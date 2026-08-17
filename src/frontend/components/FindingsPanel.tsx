@@ -51,6 +51,7 @@ import { CompletedRow } from './FindingsPanel/CompletedRow.js';
 import { ClearCompletedButton } from './FindingsPanel/ClearCompletedButton.js';
 import { AbortActiveButton } from './FindingsPanel/AbortActiveButton.js';
 import { SnoozeAllButton } from './FindingsPanel/SnoozeAllButton.js';
+import { ResumeAllButton } from './FindingsPanel/ResumeAllButton.js';
 import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
 import { BottomSectionsResizer } from './FindingsPanel/BottomSectionsResizer.js';
@@ -459,13 +460,16 @@ export function FindingsPanel({
           )}
           {snoozed.length > 0 && (
             <div className="snoozed-section">
-              <SectionToggleButton
-                collapsed={snoozedCollapsed}
-                label="Snoozed"
-                count={snoozed.length}
-                labelClassName="snoozed-label"
-                onToggle={toggleSnoozed}
-              />
+              <div className="snoozed-section-header-row">
+                <SectionToggleButton
+                  collapsed={snoozedCollapsed}
+                  label="Snoozed"
+                  count={snoozed.length}
+                  labelClassName="snoozed-label"
+                  onToggle={toggleSnoozed}
+                />
+                <ResumeAllButton snoozed={snoozed} send={send} />
+              </div>
               {!snoozedCollapsed && snoozed.map((agent) => (
                 <SnoozedRow
                   key={agentRowKey(agent)}
