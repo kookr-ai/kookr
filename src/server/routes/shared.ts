@@ -380,6 +380,15 @@ export interface RouteDeps {
    */
   taskTailStore?: import('../../core/task-tail-store.js').TaskTailStore;
   launchServiceDeps: LaunchServiceDeps;
+  /**
+   * Shared Grok session-auth availability cache (issue #2537). Wired so the
+   * GET /api/grok-auth-status preflight reads the SAME cached verdict the launch
+   * path reads, keeping `launchWouldRefuse` from diverging within the cache TTL.
+   */
+  grokAuthAvailability?: Pick<
+    import('../../adapters/grok-auth-availability.js').GrokAuthAvailabilityCache,
+    'ensureFresh'
+  >;
   sttUrl?: string;
   /** Optional Pocket TTS HTTP URL — when set, the speak-finding route is reachable. */
   ttsUrl?: string;

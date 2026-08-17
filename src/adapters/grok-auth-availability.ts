@@ -70,6 +70,41 @@ export function defaultGrokAuthPath(sourceGrokHome?: string): string {
 }
 
 /**
+ * Re-project a cached usability verdict back into the {@link inspectGrokAuthFile}
+ * result shape so a caller can build the same DTO from the cached verdict the
+ * launch path reads, instead of re-inspecting disk (issue #2537). The cache
+ * stores `reason` + `detail` (which mirrors the source `result.reason` /
+ * `result.expiresAt`), so this reconstruction is lossless for every field the
+ * Launch-dialog DTO surfaces; token-bearing fields were never cached.
+ *
+ * The `ok` branch fills placeholder `credentialCount` / `authMode` values the
+ * status DTO discards — they are never real credential material.
+ */
+export function grokAuthUsabilityToPreflightResult(
+  verdict: GrokAuthUsability,
+): GrokAuthPreflightResult {
+  if (verdict.usable) {
+    return { kind: 'ok', credentialCount: 1, authMode: 'oidc', expiresAt: verdict.expiresAt };
+  }
+  switch (verdict.reason) {
+    case 'expired':
+      return { kind: 'expired', expiresAt: verdict.detail ?? '' };
+    case 'missing':
+      return {
+        kind: 'missing',
+        reason: (verdict.detail as 'file_missing' | 'empty' | 'no_usable_credential' | undefined)
+          ?? 'no_usable_credential',
+      };
+    case 'invalid':
+      return {
+        kind: 'invalid',
+        reason: (verdict.detail as 'unreadable' | 'malformed_json' | 'invalid_record' | undefined)
+          ?? 'invalid_record',
+      };
+  }
+}
+
+/**
  * TTL-cached Grok session-auth usability. Sync readers use the last known
  * verdict; {@link refresh} / {@link ensureFresh} update it from disk.
  *
