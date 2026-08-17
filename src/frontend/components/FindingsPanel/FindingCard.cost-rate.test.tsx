@@ -106,7 +106,9 @@ describe('FindingCard cost-rate line', () => {
         startedAt: '2026-06-11T10:00:00.000Z',
       }),
     ]);
-    expect(container.querySelector('.finding-cost')?.textContent).toContain('$4.00/h');
+    expect(container.querySelector('.finding-cost')?.textContent).toBe(
+      '$4.00 / 1.2k tok · $4.00/h · 1h 0m',
+    );
   });
 
   test('omits the rate for a session younger than two minutes', () => {

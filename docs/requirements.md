@@ -1215,7 +1215,7 @@ The dashboard SHALL show a compact dollars-per-hour figure next to session cost 
 - The two-minute floor is the same cutoff `formatAge` already uses for finding age (`FRESH_SESSION_FLOOR_MS`, 120000 ms).
 - The rate is total session cost divided by wall-clock hours since start, not a recent-window average.
 
-**Evidence:** `src/frontend/presentation.ts` (`formatCostRate`), `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel/FindingCard.tsx`, `src/frontend/presentation.test.ts`.
+**Evidence:** `src/frontend/presentation.ts` (`formatCostRate`), `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel/FindingCard.tsx`, `src/frontend/presentation.test.ts`, `src/frontend/components/DetailPanel.density.test.ts`, `src/frontend/components/FindingsPanel/FindingCard.cost-rate.test.tsx`.
 
 ---
 
