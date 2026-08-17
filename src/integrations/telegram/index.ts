@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
+import { dashboardTaskUrl } from '../../shared/dashboard-task-url.js';
 import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 import {
   TelegramApiClient,
@@ -226,9 +227,7 @@ function specHash(spec: ValidatedTaskSpec, chatId: number): string {
   return h.digest('hex').slice(0, 32);
 }
 
-function dashboardUrl(base: string, taskId: string): string {
-  return `${base.replace(/\/$/, '')}/?task=${encodeURIComponent(taskId)}`;
-}
+
 
 /**
  * Backoff in ms for a poll-loop error. Honors Telegram's `retry_after` on 429.
@@ -676,11 +675,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     let body: string;
     if (result.duplicate) {
-      body = `Duplicate of existing task: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+      body = `Duplicate of existing task: ${result.task.id}\n${dashboardTaskUrl(deps.dashboardBaseUrl, result.task.id)}`;
     } else if (result.queued) {
-      body = `Queued (concurrency cap). Task: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+      body = `Queued (concurrency cap). Task: ${result.task.id}\n${dashboardTaskUrl(deps.dashboardBaseUrl, result.task.id)}`;
     } else {
-      body = `Spawned: ${result.task.id}\n${dashboardUrl(deps.dashboardBaseUrl, result.task.id)}`;
+      body = `Spawned: ${result.task.id}\n${dashboardTaskUrl(deps.dashboardBaseUrl, result.task.id)}`;
     }
     if (cb.message) {
       await api.editMessageText(consumed.chatId, cb.message.message_id, body).catch(() => undefined);
@@ -715,7 +714,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     // Redact BEFORE truncating: a credential that lives past char 200 would
     // be silently dropped by the truncate, hiding the redaction signal.
     const safe = truncate(redactCredentials(promptText), 200);
-    const url = dashboardUrl(deps.dashboardBaseUrl, taskId);
+    const url = dashboardTaskUrl(deps.dashboardBaseUrl, taskId);
     void api
       .sendMessage(chatId, `Task ${taskId} blocked: ${safe}\nApprove: ${url}`)
       .then(() => audit({ kind: 'block_alert_sent', taskId, chatId }))
@@ -723,7 +722,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   };
 
   const formatTaskOutcomeMessage = (taskId: string, outcome: TelegramTaskOutcome): string => {
-    const url = dashboardUrl(deps.dashboardBaseUrl, taskId);
+    const url = dashboardTaskUrl(deps.dashboardBaseUrl, taskId);
     switch (outcome.kind) {
       case 'completion_ready': {
         const safeNote = outcome.note ? `\nNote: ${truncate(redactCredentials(outcome.note), 200)}` : '';

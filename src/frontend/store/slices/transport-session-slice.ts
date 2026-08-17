@@ -2,6 +2,11 @@ import type { AgentState, FocusZone, TransportSessionSlice, StoreGet, StoreSet }
 import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
 import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
+import {
+  DASHBOARD_TASK_QUERY,
+  parseDashboardTaskId,
+  stripDashboardTaskQuery,
+} from '../../../shared/dashboard-task-url.js';
 import { clearSelectedTask, loadSelectedTask } from '../selected-task-storage.js';
 import { loadDeployIntentActive, saveDeployIntent } from '../deploy-intent-storage.js';
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
@@ -74,10 +79,49 @@ function selectedAgentUpdateAfterServerState(
   return {};
 }
 
+function consumeDashboardTaskIdFromWindow(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const search = window.location.search;
+    const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    if (!params.has(DASHBOARD_TASK_QUERY)) return parseDashboardTaskId(search);
+    const next = stripDashboardTaskQuery(
+      `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    );
+    window.history.replaceState(window.history.state, '', next);
+    return parseDashboardTaskId(search);
+  } catch {
+    return null;
+  }
+}
+
+function selectionFromTaskId(nextAgents: AgentState[], taskId: string): {
+  selectedAgentId: string;
+  selectedTaskId: string | null;
+  selectedAgentSource: 'manual';
+  respondAllAgentIds: null;
+  leftPane: 'activity';
+  narrowTab: 'activity';
+  shortcutsArmed: false;
+} | null {
+  const matched = nextAgents.find((agent) => agent.taskId === taskId);
+  if (!matched) return null;
+  return {
+    selectedAgentId: matched.agentId,
+    selectedTaskId: matched.taskId ?? null,
+    selectedAgentSource: 'manual',
+    respondAllAgentIds: null,
+    leftPane: 'activity',
+    narrowTab: 'activity',
+    shortcutsArmed: false,
+  };
+}
+
 function selectedAgentRestoreAfterFirstSnapshot(
   agentsHydrated: boolean,
   selectedAgentId: string | null,
   nextAgents: AgentState[],
+  deepLinkTaskId: string | null,
 ): {
   update: {
     selectedAgentId?: string | null;
@@ -91,7 +135,14 @@ function selectedAgentRestoreAfterFirstSnapshot(
   };
   missed: boolean;
 } {
-  if (agentsHydrated || selectedAgentId) return { update: {}, missed: false };
+  if (agentsHydrated) return { update: {}, missed: false };
+  if (selectedAgentId) return { update: {}, missed: false };
+
+  if (deepLinkTaskId) {
+    const linked = selectionFromTaskId(nextAgents, deepLinkTaskId);
+    if (linked) return { update: linked, missed: false };
+    // Unknown id: ignore it and fall through to the stored last selection.
+  }
 
   const stored = loadSelectedTask();
   if (!stored) return { update: {}, missed: false };
@@ -170,6 +221,10 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
 
     handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions, drainStatus, sweepProgress) => {
       let restoreMissed = false;
+      // Consume `?task=` outside the Zustand updater so a double recipe run
+      // cannot strip the query on the first pass and restore last-selected
+      // on the second. Only the first hydration reads the deep link.
+      const deepLinkTaskId = get().agentsHydrated ? null : consumeDashboardTaskIdFromWindow();
       withSelectionTransitionSource({ source: 'selectedAgentUpdateAfterServerState', reason: 'snapshot_reconcile' }, () => {
         set((prev) => {
           const previousByKey = new Map(prev.agents.map((agent) => [`${agent.agentId}:${agent.taskId ?? ''}`, agent]));
@@ -182,7 +237,12 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           ));
           const descriptorSttUrl = firstReadyKookrSTTEndpoint(speechCapabilities);
           const nextSttUrl = sttEnabled && sttUrl ? sttUrl : descriptorSttUrl;
-          const restoredSelection = selectedAgentRestoreAfterFirstSnapshot(prev.agentsHydrated, prev.selectedAgentId, mergedAgents);
+          const restoredSelection = selectedAgentRestoreAfterFirstSnapshot(
+            prev.agentsHydrated,
+            prev.selectedAgentId,
+            mergedAgents,
+            deepLinkTaskId,
+          );
           restoreMissed = restoredSelection.missed;
           return {
             agents: mergedAgents,

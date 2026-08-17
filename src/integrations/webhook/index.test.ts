@@ -99,7 +99,7 @@ describe('webhook notifier', () => {
       event: 'finding.admitted',
       fingerprint: 'permission_blocked::Agent is waiting for permission',
       sentAt: sentAt.toISOString(),
-      dashboardUrl: 'http://127.0.0.1:4801',
+      dashboardUrl: `http://127.0.0.1:4801/?task=${task.id}`,
       finding: {
         agentId: 'session-1',
         type: 'permission_blocked',
@@ -116,6 +116,34 @@ describe('webhook notifier', () => {
         status: 'inProgress',
       },
     });
+  });
+
+  test('omits dashboardUrl when no dashboard base URL is configured', async () => {
+    const { notifier, fetchImpl } = setup(undefined, { dashboardBaseUrl: undefined });
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::no-dashboard',
+    })).resolves.toBe(true);
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+    expect(body).not.toHaveProperty('dashboardUrl');
+  });
+
+  test('keeps the bare dashboard base URL when the finding has no mapped task', async () => {
+    const { notifier, fetchImpl } = setup();
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-unmapped',
+      anomaly: anomaly({ agentId: 'session-unmapped' }),
+      fingerprint: 'permission_blocked::unmapped',
+    })).resolves.toBe(true);
+
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({
+      dashboardUrl: 'http://127.0.0.1:4801',
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)).task).toBeUndefined();
   });
 
   test('omits the signature header when no webhook secret is configured', async () => {
@@ -705,6 +733,8 @@ describe('payload body schema documentation', () => {
     // constant when WEBHOOK_PAYLOAD_SCHEMA_VERSION is bumped.
     expect(doc).toContain(WEBHOOK_PAYLOAD_SCHEMA_VERSION);
     expect(doc).toContain('### Payload body schema');
+    expect(doc).not.toContain('#/agent/');
+    expect(doc).toContain('/?task=task-99');
   });
 
   test('documents every WebhookFindingPayload field', () => {

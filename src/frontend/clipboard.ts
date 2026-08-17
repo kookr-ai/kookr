@@ -3,7 +3,7 @@
  * back to a hidden-textarea + `execCommand('copy')` for browsers/contexts where
  * `navigator.clipboard` is unavailable (e.g. non-secure origins).
  *
- * Shared by the copy controls (task id, supervisor explanation, share URL).
+ * Shared by the copy controls (task id, dashboard link, supervisor explanation, share URL).
  */
 export async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
