@@ -208,6 +208,22 @@ describe('summarizeActivity', () => {
     expect(items.some((item) => item.type === 'system_notice')).toBe(false);
   });
 
+  test('permission_prompt between tool calls does not split the tool group', () => {
+    const items = summarizeActivity([
+      toolUse('Read', { file_path: '/src/a.ts' }),
+      {
+        type: 'notification',
+        sessionId: 's1',
+        notificationType: 'permission_prompt',
+        message: 'Tool permission requested',
+      },
+      toolUse('Read', { file_path: '/src/b.ts' }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe('tool_group');
+    expect((items[0] as ToolGroup).totalCalls).toBe(2);
+  });
+
   test('still shows non-permission notifications', () => {
     const items = summarizeActivity([
       {
