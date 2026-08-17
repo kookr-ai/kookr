@@ -5,6 +5,11 @@ cwd: $HOME/git/kookr
 deliveryPreAuthorized: true
 autoCloseOnSignal: true
 tags: [deploy, monitoring, scheduled]
+# Scheduler execs this first (issue #2569). Exit 0/1 complete with no agent
+# slot; exit 2 still launches this playbook for heal + P0.
+probe:
+  command: pnpm deploy:convergence -- --branch "{{branch}}" --grace-minutes "{{graceMinutes}}"
+  escalateOnExit: 2
 parameters:
   - name: branch
     description: 'Deploy branch kookr-prod must track.'
@@ -48,9 +53,12 @@ from "feeder live but empty backlog"). Your job is to assert **kookr-prod's
 serving commit includes `origin/main` HEAD** and treat a stale prod as an
 incident, not lag.
 
-**Schedule:** every 15 minutes (`*/15 * * * *`, server TZ). Never run deep
-reasoning from this playbook. The only issue you ever file is the P0 in Phase 3,
-and only after a redeploy failed to converge.
+**Schedule:** every 15 minutes (`*/15 * * * *`, server TZ). The scheduler
+runs the `probe.command` frontmatter first and **does not launch this
+playbook** on a converged or probe-failure tick (issue #2569). You only wake
+when the probe exits 2 (DIVERGENT past grace). Never run deep reasoning from
+this playbook. The only issue you ever file is the P0 in Phase 3, and only
+after a redeploy failed to converge.
 
 ## §0 Hard rules
 

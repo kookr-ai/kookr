@@ -189,6 +189,10 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'reconciled after restart';
     case 'unknown_after_restart':
       return 'unknown after restart';
+    case 'probe_quiet':
+      return 'probe quiet';
+    case 'probe_blip':
+      return 'probe blip';
   }
 }
 

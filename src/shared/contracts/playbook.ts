@@ -38,6 +38,17 @@ export interface PlaybookLoopConfig {
   stopPredicate?: string;
 }
 
+/**
+ * Cheap pre-check the scheduler execs instead of launching an agent
+ * (issue #2569). When the command exits a non-escalate code (default: not 2),
+ * the fire completes with no task and no fleet slot. Exit 2 (or a declared
+ * escalateOnExit) still launches the playbook agent for heal + P0.
+ */
+export interface PlaybookProbe {
+  command: string;
+  escalateOnExit?: number[];
+}
+
 export interface EffectivePlaybookLoop {
   iterationCap: number;
   costCapUsd?: number;
@@ -80,6 +91,12 @@ export interface Playbook {
   tags: string[];
   /** Raw loop defaults declared in frontmatter. */
   loop?: PlaybookLoopConfig;
+  /**
+   * Optional cheap probe the scheduler execs before launching an agent
+   * (issue #2569). Absent playbooks still match a well-known path fallback
+   * (kookr/lucy deploy-convergence).
+   */
+  probe?: PlaybookProbe;
   /**
    * Server-consumed policy flag. Delivery is pre-authorized by default: playbook
    * launches complete the full delivery cycle (commit, push, open/update PR)

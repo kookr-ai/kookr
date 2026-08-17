@@ -1176,6 +1176,57 @@ export class ScheduleService {
     this.emitFailureAlertOnEdge(schedule, consecutiveFailures, message, Object.keys(autoPause).length > 0);
   }
 
+  /**
+   * Close a reserved fire that ran a cheap probe and did not escalate to an
+   * agent (issue #2569). Counts as a successful completed run: lastRunStatus
+   * is `completed`, the failure streak resets, and there is no task id so the
+   * next tick is not blocked by a phantom previous run.
+   */
+  async markProbeCompleted(
+    scheduleId: string,
+    receiptId: string,
+    details: { reasonCode: 'probe_quiet' | 'probe_blip'; message?: string },
+  ): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const receipt = this.requireReceipt(schedule, receiptId);
+    const evaluatedAt = new Date().toISOString();
+    const consecutiveFailures = nextConsecutiveFailures(schedule.consecutiveFailures, 'completed');
+    this.store.replace({
+      ...schedule,
+      lastRunAt: evaluatedAt,
+      lastRunStatus: 'completed',
+      lastRunTaskId: undefined,
+      consecutiveFailures,
+      ...consumeCronTrigger(schedule, receipt.trigger, true, evaluatedAt),
+      latestExecution: {
+        receiptId,
+        executionToken: receipt.executionToken,
+        ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
+        evaluatedAt: receipt.evaluatedAt,
+        trigger: receipt.trigger,
+        outcome: 'completed',
+        reasonCode: details.reasonCode,
+        ...(details.message ? { message: details.message } : {}),
+      },
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
+        schedule,
+        receipt,
+        'completed',
+        details.reasonCode,
+        {
+          completedAt: evaluatedAt,
+          ...(details.message ? { message: details.message } : {}),
+        },
+      )),
+      currentExecution: {
+        ...receipt,
+        status: 'terminal',
+      },
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
   async recordTaskTerminalOutcome(
     taskId: string,
     status: 'completed' | 'cancelled',

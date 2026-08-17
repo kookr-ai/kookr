@@ -10,6 +10,7 @@ export type {
   PlaybookParameter,
   PlaybookParameterOption,
   PlaybookLoopConfig,
+  PlaybookProbe,
   EffectivePlaybookLoop,
   PlaybookScope,
   LaunchDependency,

@@ -239,7 +239,14 @@ export type ScheduleExecutionReasonCode =
    */
   | 'auth_expired'
   | 'reconciled_after_restart'
-  | 'unknown_after_restart';
+  | 'unknown_after_restart'
+  /**
+   * Cheap probe completed without launching an agent (issue #2569).
+   * `probe_quiet` is exit 0 (converged / within grace); `probe_blip` is
+   * exit 1 or a probe exec failure — logged, not escalated.
+   */
+  | 'probe_quiet'
+  | 'probe_blip';
 
 export interface ScheduleExecutionLedgerEntry {
   id: string;

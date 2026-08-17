@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { nextRun } from '../core/cron.js';
 import {
   type ScheduleStore,
@@ -33,6 +34,16 @@ import type { ScheduleDeadManStats } from './schedule-dead-man.js';
 import type { TaskStatus } from '../core/types.js';
 import type { ClaimKey } from '../core/issue-claim-types.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
+import { expandConfiguredCwd } from './cwd-paths.js';
+import { parsePlaybook } from '../core/playbook-parser.js';
+import {
+  probeReceiptLine,
+  resolveScheduleProbe,
+  shouldEscalateProbe,
+  type PlaybookProbeConfig,
+  type ProbeExecResult,
+  type ResolvedScheduleProbe,
+} from '../core/schedule-probe.js';
 
 /**
  * Synthetic relaunch-arbiter identity for a schedule unit (issue #1900 catch-up
@@ -240,6 +251,12 @@ export interface ScheduleRunnerDeps {
    * and is ledger-stamped, but the pool-health counter is not incremented.
    */
   recordAgentSubstitution?: () => void;
+  /**
+   * Optional cheap-probe runner (issue #2569). Injected for tests. Default
+   * execs the resolved argv with `execFile` (no shell). A probe that does not
+   * escalate completes the fire without launching an agent.
+   */
+  runProbe?: (spec: ResolvedScheduleProbe, cwd: string) => Promise<ProbeExecResult>;
   /**
    * Per-fire wall-clock cap in ms (issue #1708). Parameterized for tests;
    * defaults to {@link FIRE_WALL_CLOCK_CAP_MS}. A launcher that hangs past this
@@ -759,6 +776,42 @@ export class ScheduleRunner {
       return { error: 'SAFE MODE — automation kill-switch engaged' };
     }
 
+    // issue #2569: cheap probe first. Converged / probe-blip ticks complete
+    // here with no agent and no fleet slot. Exit 2 (or a declared escalate
+    // code) falls through to the existing playbook launch for heal + P0.
+    const probe = this.resolveProbeForSchedule(schedule);
+    if (probe) {
+      const runProbe = this.deps.runProbe ?? defaultExecScheduleProbe;
+      let probeResult: ProbeExecResult;
+      try {
+        probeResult = await runProbe(probe.spec, probe.cwd);
+      } catch (err) {
+        probeResult = {
+          exitCode: 1,
+          stdout: '',
+          stderr: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (!shouldEscalateProbe(probe.spec, probeResult.exitCode)) {
+        const message = probeReceiptLine(probeResult.stdout)
+          || probeResult.stderr.trim()
+          || `probe exit ${probeResult.exitCode}`;
+        const reasonCode = probeResult.exitCode === 1 ? 'probe_blip' : 'probe_quiet';
+        await this.deps.service.markProbeCompleted(schedule.id, receipt.id, {
+          reasonCode,
+          message,
+        });
+        console.log(
+          `[schedule] Probe "${schedule.name}" completed without agent `
+          + `(exit ${probeResult.exitCode}, ${reasonCode})`,
+        );
+        return {};
+      }
+      console.log(
+        `[schedule] Probe "${schedule.name}" exit ${probeResult.exitCode} — escalating to agent`,
+      );
+    }
+
     // issue #2194: refresh Grok session-auth cache before agent resolution so
     // a re-login is visible within one tick and expired auth does not keep
     // selecting grok-build when a healthy non-Grok backend is registered.
@@ -1220,6 +1273,72 @@ export class ScheduleRunner {
       }
     }
   }
+
+  /**
+   * Resolve a cheap probe for this fire. Frontmatter `probe.command` wins;
+   * otherwise a well-known playbook path (kookr/lucy deploy-convergence)
+   * supplies the argv. Returns null for ordinary playbooks.
+   */
+  private resolveProbeForSchedule(schedule: Schedule): { spec: ResolvedScheduleProbe; cwd: string } | null {
+    let declared: PlaybookProbeConfig | undefined;
+    let cwd = schedule.cwd;
+    const parameterDefaults: Record<string, string> = {};
+    try {
+      const scope = schedule.playbook.scope ?? 'project';
+      const resolved = resolveSchedulePlaybookSync(schedule.playbook.path, scope, schedule.cwd);
+      if (resolved) {
+        const raw = readFileSync(resolved.filePath, 'utf-8');
+        const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd, scope);
+        declared = playbook.probe;
+        if (playbook.cwd) cwd = expandConfiguredCwd(playbook.cwd);
+        for (const param of playbook.parameters) {
+          if (param.default !== undefined) parameterDefaults[param.name] = param.default;
+        }
+      }
+    } catch {
+      // Path fallback still applies when the playbook cannot be parsed.
+    }
+    const spec = resolveScheduleProbe({
+      playbookPath: schedule.playbook.path,
+      probe: declared,
+      parameters: { ...parameterDefaults, ...schedule.playbook.parameters },
+    });
+    if (!spec) return null;
+    return { spec, cwd };
+  }
+}
+
+/** Default probe exec — `execFile` with array args, no shell (issue #2569). */
+export function defaultExecScheduleProbe(
+  spec: ResolvedScheduleProbe,
+  cwd: string,
+): Promise<ProbeExecResult> {
+  return new Promise((resolve) => {
+    const [cmd, ...args] = spec.argv;
+    if (!cmd) {
+      resolve({ exitCode: 1, stdout: '', stderr: 'probe command is empty' });
+      return;
+    }
+    execFile(cmd, args, {
+      cwd,
+      timeout: spec.timeoutMs,
+      maxBuffer: 1024 * 1024,
+      env: process.env,
+    }, (err, stdout, stderr) => {
+      const out = typeof stdout === 'string' ? stdout : '';
+      const errOut = typeof stderr === 'string' ? stderr : '';
+      if (!err) {
+        resolve({ exitCode: 0, stdout: out, stderr: errOut });
+        return;
+      }
+      const code = typeof err.code === 'number' ? err.code : 1;
+      resolve({
+        exitCode: code,
+        stdout: out,
+        stderr: errOut || err.message,
+      });
+    });
+  });
 }
 
 /**

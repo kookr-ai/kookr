@@ -38,7 +38,7 @@ there rather than trusting the repo the check happens to run in.
 | Stale residual classifier | `src/core/deploy-stale-residual.ts` | `evaluateDeployStaleResidual`: **behindCount≥1 + deploying=false for ≥T** (default **20 min**) → alert. Pure — issue #2226. |
 | In-process controller | `src/server/deploy-convergence-controller.ts` | Lifecycle tick (default every **5 min** on port 4800): past grace → `POST /api/deploy/trigger`; residual → operator signal `deploy:stale-residual`. Does **not** depend on agent schedules (the 2026-08-11 stall was a missing schedule). |
 | Probe CLI | `scripts/deploy-convergence-check.ts` (`pnpm deploy:convergence`) | Probes `/api/health` + `git` ancestry against `origin/main`, persists a baseline so divergence age accrues across ticks, exits **0** converged/within-grace · **2** DIVERGENT · **1** probe failure. |
-| Schedule playbook | `.kookr/playbooks/kookr-deploy-convergence.md` | Every-15-min agent path (belt-and-suspenders). On DIVERGENT triggers redeploy, re-probes, files a P0 only if redeploy fails. |
+| Schedule playbook | `.kookr/playbooks/kookr-deploy-convergence.md` | Every-15-min belt-and-suspenders. The scheduler execs `probe.command` first (issue #2569) so a converged tick occupies **no** agent slot. Exit 2 still launches the playbook to re-probe and file a P0 if heal fails. Lucy's `lucy-deploy-convergence.md` uses the same cheap path via a well-known-path fallback. |
 | Register script | `scripts/register-deploy-convergence-schedule.sh` | Creates/updates that schedule via `POST /api/schedules`. Prefers `kookr-prod` when the main checkout lacks the playbook. |
 
 ## Running the probe
@@ -93,6 +93,14 @@ This registers the **Kookr Deploy Convergence** schedule (`*/15 * * * *`) bound
 to the project-tier playbook. Override via `CONVERGENCE_CRON`,
 `CONVERGENCE_GRACE_MINUTES`, `CONVERGENCE_ACT`, `CONVERGENCE_AGENT_TYPE`, or
 `CONVERGENCE_DRY_RUN`.
+
+A fire does **not** occupy a Grok/Codex slot when the probe exits 0
+(converged / within grace) or 1 (single-tick probe failure). The schedule
+ledger records `completed` with reason `probe_quiet` or `probe_blip`. Exit 2
+(DIVERGENT past grace) still launches the playbook agent so the existing
+redeploy + one-P0-if-heal-fails contract is unchanged. The same cheap path
+applies to Lucy's deploy-convergence schedule (matched by playbook basename)
+without a Lucy-side change.
 
 ## Merged vs delivered
 

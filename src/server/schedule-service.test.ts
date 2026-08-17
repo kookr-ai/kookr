@@ -873,6 +873,37 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     await service.markExecutionOutcome(scheduleId, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
   }
 
+  it('records a cheap probe completion without a task and resets the failure streak (issue #2569)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'Kookr Deploy Convergence',
+        cron: '* * * * *',
+        playbook: { path: 'kookr-deploy-convergence.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:15:00.000Z');
+      await service.markProbeCompleted(schedule.id, receipt.id, {
+        reasonCode: 'probe_quiet',
+        message: 'deploy-convergence: converged · serving=abc main=abc',
+      });
+
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(0);
+      expect(after.lastRunStatus).toBe('completed');
+      expect(after.lastRunTaskId).toBeUndefined();
+      expect(after.latestExecution?.outcome).toBe('completed');
+      expect(after.latestExecution?.reasonCode).toBe('probe_quiet');
+      expect(after.latestExecution?.taskId).toBeUndefined();
+      expect(after.latestExecution?.message).toContain('converged');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('increments consecutiveFailures on failures and resets it on a completed run', async () => {
     const { service, store, cleanup } = alertServiceHarness(3);
     try {
