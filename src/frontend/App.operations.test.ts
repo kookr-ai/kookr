@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App, DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
+import { close as closeOnboardingTour } from './store/onboarding-store.js';
 import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
 import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
@@ -37,10 +38,11 @@ vi.mock('./telemetry.js', () => ({
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
-  DetailPanel: (props: { onRequestComplete: () => void }) => React.createElement(
+  DetailPanel: (props: { onRequestComplete: () => void; onLaunchPlaybooks?: () => void }) => React.createElement(
     'div',
     { 'data-testid': 'detail-panel' },
     React.createElement('button', { 'data-testid': 'mock-complete-button', onClick: props.onRequestComplete }, 'Complete'),
+    React.createElement('button', { 'data-testid': 'mock-launch-playbooks', onClick: props.onLaunchPlaybooks }, 'Recent playbook'),
   ),
 }));
 
@@ -170,6 +172,9 @@ describe('App operations modal shortcuts', () => {
     __resetViewerSessionForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    act(() => {
+      closeOnboardingTour();
+    });
   });
 
   test('global help shortcut is suppressed while diagnostics is modal', async () => {
@@ -1029,6 +1034,7 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector('[data-action-id="schedules"]')).toBeNull();
     expect(container.querySelector('[data-action-id="launch"]')).toBeNull();
     expect(container.querySelector('[data-action-id="playbooks"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="tour"]')).not.toBeNull();
 
     const input = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
     await act(async () => setInputValue(input, 'api error'));
@@ -1109,6 +1115,54 @@ describe('App operations modal shortcuts', () => {
     });
     await waitForElement(container, '#launch-task-dialog-title');
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+  });
+
+  test('command palette exposes Take the tour after tasks exist and opens the existing overlay', async () => {
+    useKookrStore.setState({
+      agents: [makeAgent({ agentId: 'agent-1', taskId: 'task-1' })],
+      agentsHydrated: true,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    expect(container.querySelector('[data-testid="onboarding-overlay"]')).toBeNull();
+
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+
+    const tour = await waitForElement<HTMLButtonElement>(container, '[data-action-id="tour"]');
+    expect(tour.textContent).toContain('Take the tour');
+
+    const paletteInput = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(paletteInput, 'tour'));
+    const tourHits = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'))
+      .map((row) => row.dataset.actionId);
+    expect(tourHits).toContain('tour');
+
+    const tourAfterFilter = await waitForElement<HTMLButtonElement>(container, '[data-action-id="tour"]');
+    await act(async () => {
+      tourAfterFilter.click();
+    });
+    await waitForElement(container, '[data-testid="onboarding-overlay"]');
+    expect(container.querySelector('[data-testid="onboarding-overlay"]')).not.toBeNull();
+    expect(container.textContent).toContain('Welcome to Kookr');
+  });
+
+  test('overview recent-playbook callback opens Launch on the Playbooks tab', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const recent = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-playbooks"]');
+    await act(async () => {
+      recent.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

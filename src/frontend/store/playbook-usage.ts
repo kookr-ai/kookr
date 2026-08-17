@@ -16,6 +16,26 @@ export function matchesUsageKey(stored: string, playbookId: string, sourceCwd: s
   return stored === snapshotKey(playbookId, sourceCwd) || stored === playbookId;
 }
 
+/** Playbook id portion of a stored usage key (`sourceCwd::id` or legacy bare id). */
+export function usageKeyPlaybookId(stored: string): string {
+  const sep = stored.lastIndexOf('::');
+  return sep === -1 ? stored : stored.slice(sep + 2);
+}
+
+/**
+ * Label for a stored recent/pin key: catalog `name` when a playbook matches
+ * (composite or legacy bare id), otherwise the file stem of the stored id.
+ */
+export function resolveRecentPlaybookLabel(
+  stored: string,
+  playbooks: readonly { id: string; sourceCwd: string; name: string }[],
+): string {
+  const match = playbooks.find((pb) => matchesUsageKey(stored, pb.id, pb.sourceCwd));
+  if (match?.name) return match.name;
+  const id = usageKeyPlaybookId(stored);
+  return id.replace(/\.md$/i, '') || stored;
+}
+
 export class PlaybookUsageTracker {
   private recent: string[];
   private pinned: Set<string>;

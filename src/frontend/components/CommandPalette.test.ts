@@ -18,10 +18,12 @@ let root: Root;
 const runDiagnostics = vi.fn();
 const runSchedules = vi.fn();
 
+const runTour = vi.fn();
 const actions: CommandAction[] = [
   { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['health'], run: runDiagnostics },
   { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron'], run: runSchedules },
   { id: 'settings', label: 'Settings', section: 'session', run: vi.fn() },
+  { id: 'tour', label: 'Take the tour', section: 'session', keywords: ['onboarding', 'walkthrough'], run: runTour },
 ];
 const tasks: CommandTaskItem[] = [
   { taskId: 't1', agentId: 'a1', label: 'Fix telegram STT', status: 'inProgress' },
@@ -93,6 +95,7 @@ describe('CommandPalette', () => {
     root = createRoot(container);
     runDiagnostics.mockClear();
     runSchedules.mockClear();
+    runTour.mockClear();
   });
 
   afterEach(() => {
@@ -103,7 +106,7 @@ describe('CommandPalette', () => {
   test('browse mode shows all actions grouped by section, no tasks', () => {
     render();
     const rows = container.querySelectorAll('[data-testid="command-palette-action"]');
-    expect(rows.length).toBe(3);
+    expect(rows.length).toBe(4);
     expect(container.querySelectorAll('[data-testid="command-palette-task"]').length).toBe(0);
     expect(container.querySelectorAll('[data-testid="command-palette-finding"]').length).toBe(0);
     expect(container.querySelectorAll('[data-testid="command-palette-project"]').length).toBe(0);
@@ -149,6 +152,17 @@ describe('CommandPalette', () => {
     act(() => schedules.click());
     expect(runSchedules).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('typing tour lists Take the tour', () => {
+    render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'tour'));
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'));
+    expect(rows.map((row) => row.dataset.actionId)).toEqual(['tour']);
+    expect(rows[0].textContent).toContain('Take the tour');
+    act(() => rows[0].click());
+    expect(runTour).toHaveBeenCalledTimes(1);
   });
 
   test('Enter runs the first matching action by keyboard', () => {

@@ -131,6 +131,8 @@ interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
+  /** Opens Launch on the Playbooks tab (overview recent-playbook chips). */
+  onLaunchPlaybooks?: () => void;
   /** Opens Diagnostics from the first-run empty-state "Check setup" control. */
   onCheckSetup?: () => void;
   onRequestComplete: () => void;
@@ -401,7 +403,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -640,6 +642,7 @@ export function DetailPanel({ agent, send, onLaunch, onCheckSetup, onRequestComp
           runningCount={overview?.runningCount ?? 0}
           completedCount={overview?.completedCount ?? 0}
           onLaunch={onLaunch}
+          onLaunchPlaybooks={onLaunchPlaybooks}
           onCheckSetup={onCheckSetup}
           shortcutBindings={shortcutBindings}
         />

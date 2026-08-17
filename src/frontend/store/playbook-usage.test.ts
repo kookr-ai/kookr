@@ -2,7 +2,9 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
   PlaybookUsageTracker,
   matchesUsageKey,
+  resolveRecentPlaybookLabel,
   snapshotKey,
+  usageKeyPlaybookId,
 } from './playbook-usage.js';
 
 function fakeStorage(data?: Map<string, string>) {
@@ -26,6 +28,21 @@ describe('snapshotKey / matchesUsageKey', () => {
     expect(matchesUsageKey('deploy.md', 'deploy.md', '/project-a')).toBe(true);
     expect(matchesUsageKey('/project-b::deploy.md', 'deploy.md', '/project-a')).toBe(false);
     expect(matchesUsageKey('other.md', 'deploy.md', '/project-a')).toBe(false);
+  });
+
+  test('usageKeyPlaybookId reads the id from composite and legacy keys', () => {
+    expect(usageKeyPlaybookId('/project-a::deploy.md')).toBe('deploy.md');
+    expect(usageKeyPlaybookId('deploy.md')).toBe('deploy.md');
+  });
+
+  test('resolveRecentPlaybookLabel prefers a catalog name, else the file stem', () => {
+    const playbooks = [
+      { id: 'deploy.md', sourceCwd: '/project-a', name: 'Deploy to prod' },
+    ];
+    expect(resolveRecentPlaybookLabel('/project-a::deploy.md', playbooks)).toBe('Deploy to prod');
+    expect(resolveRecentPlaybookLabel('deploy.md', playbooks)).toBe('Deploy to prod');
+    expect(resolveRecentPlaybookLabel('/other::review.md', playbooks)).toBe('review');
+    expect(resolveRecentPlaybookLabel('review.md', [])).toBe('review');
   });
 });
 

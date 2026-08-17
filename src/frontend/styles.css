@@ -1911,6 +1911,20 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 11px;
   color: var(--text-muted);
 }
+.overview-recent-playbooks {
+  width: 100%;
+}
+.overview-recent-playbooks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.overview-recent-playbook {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* First-run only: tour re-entry plus Getting Started / Check setup, kept
    secondary so they don't compete with the primary Launch CTA above. */
 .overview-tour-reentry {
