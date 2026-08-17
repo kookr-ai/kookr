@@ -44,6 +44,29 @@ const recentPaths = new RecentPaths();
 /** Time-to-live for the playbook list cache, in milliseconds. */
 const PLAYBOOK_CACHE_TTL_MS = 30_000;
 
+/**
+ * First-agent starter prompts on the Manual tab (issue #2582). Click fills
+ * the description only — cwd and Launch stay operator-controlled. Keep the
+ * set tiny, local-first, and non-destructive.
+ */
+export const SAMPLE_LAUNCH_PROMPTS = [
+  {
+    id: 'review-diff',
+    label: 'Review the latest diff',
+    prompt: 'Review the diff since origin/main and summarize risks',
+  },
+  {
+    id: 'run-tests',
+    label: 'Run tests and fix failures',
+    prompt: 'Run tests and fix failures',
+  },
+  {
+    id: 'explain-status',
+    label: 'Explain git status',
+    prompt: 'Explain git status and the last few commits',
+  },
+] as const;
+
 type Tab = 'manual' | 'playbooks';
 
 /** A cwd dropdown entry: an MRU path, optionally labeled as a tracked project. */
@@ -618,10 +641,27 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 </button>
               </div>
             )}
-            <label>
-              Task description
+            <div className="launch-prompt-field">
+              <label htmlFor="launch-task-description">Task description</label>
+              <div className="sample-prompt-chips" role="group" aria-label="Sample prompts">
+                {SAMPLE_LAUNCH_PROMPTS.map((sample) => (
+                  <button
+                    key={sample.id}
+                    type="button"
+                    className="sample-prompt-chip"
+                    title={sample.prompt}
+                    onClick={() => {
+                      setPrompt(sample.prompt);
+                      promptRef.current?.focus();
+                    }}
+                  >
+                    {sample.label}
+                  </button>
+                ))}
+              </div>
               <div className="input-with-voice">
                 <textarea
+                  id="launch-task-description"
                   ref={promptRef}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -635,7 +675,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   </Suspense>
                 )}
               </div>
-            </label>
+            </div>
             <label>
               <div className="cwd-label-row">
                 <span>Working directory</span>

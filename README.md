@@ -64,7 +64,7 @@ For operating-system install commands and first-agent walkthroughs, see [Getting
 
 ## First Agent
 
-In the dashboard, click **Launch**, choose a working directory, and enter a task prompt. Kookr starts the agent in a persistent dtach session, streams the terminal, and queues findings when the agent needs attention.
+In the dashboard, click **Launch**, choose a working directory, and enter a task prompt (the Manual tab offers a few sample prompts that fill the box without launching). Kookr starts the agent in a persistent dtach session, streams the terminal, and queues findings when the agent needs attention.
 
 Terminal users can launch a task from any project:
 

@@ -4501,6 +4501,48 @@ button.section-header.detection-stats-header:focus-visible {
   color: var(--text-secondary);
 }
 
+.launch-prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.launch-prompt-field > label {
+  display: block;
+  margin-bottom: 0;
+}
+
+.sample-prompt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+
+.sample-prompt-chip {
+  background: none;
+  border: 1px solid var(--border-dim);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.sample-prompt-chip:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+
+.sample-prompt-chip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
 .dialog input,
 .dialog textarea {
   background: var(--bg-input);
