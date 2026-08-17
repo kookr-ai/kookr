@@ -27,6 +27,16 @@ describe('kookr-deploy-convergence playbook', () => {
       parameters: { branch: 'main', graceMinutes: '15', act: 'true' },
     });
     expect(spec).not.toBeNull();
+    expect(spec!.argv).toEqual([
+      'pnpm',
+      'deploy:convergence',
+      '--',
+      '--branch',
+      'main',
+      '--grace-minutes',
+      '15',
+      '--act',
+    ]);
     expect(shouldEscalateProbe(spec!, 0)).toBe(false);
     expect(shouldEscalateProbe(spec!, 2)).toBe(true);
   });

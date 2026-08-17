@@ -12,16 +12,11 @@
  * the default exec lives in the runner so tests can inject a fake.
  */
 
+import type { PlaybookProbe } from './playbook.js';
+
 export const DEFAULT_PROBE_ESCALATE_ON_EXIT = [2] as const;
 /** Stay well under the 45s fire wall-clock cap so an escalate+launch still fits. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 20_000;
-
-export interface PlaybookProbeConfig {
-  /** Shell-less argv template. `{{param}}` is interpolated from schedule parameters. */
-  command: string;
-  /** Exit codes that should launch the playbook agent. Default: `[2]`. */
-  escalateOnExit?: number[];
-}
 
 export interface ResolvedScheduleProbe {
   argv: string[];
@@ -140,7 +135,7 @@ export function dropEmptyFlagValues(argv: string[]): string[] {
 
 export function resolveScheduleProbe(input: {
   playbookPath: string;
-  probe?: PlaybookProbeConfig | null;
+  probe?: PlaybookProbe | null;
   parameters?: Record<string, string>;
 }): ResolvedScheduleProbe | null {
   const parameters = { ...BUILTIN_PARAM_DEFAULTS, ...(input.parameters ?? {}) };

@@ -36,11 +36,11 @@ import type { ClaimKey } from '../core/issue-claim-types.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import { parsePlaybook } from '../core/playbook-parser.js';
+import type { PlaybookProbe } from '../core/playbook.js';
 import {
   probeReceiptLine,
   resolveScheduleProbe,
   shouldEscalateProbe,
-  type PlaybookProbeConfig,
   type ProbeExecResult,
   type ResolvedScheduleProbe,
 } from '../core/schedule-probe.js';
@@ -1280,7 +1280,7 @@ export class ScheduleRunner {
    * supplies the argv. Returns null for ordinary playbooks.
    */
   private resolveProbeForSchedule(schedule: Schedule): { spec: ResolvedScheduleProbe; cwd: string } | null {
-    let declared: PlaybookProbeConfig | undefined;
+    let declared: PlaybookProbe | undefined;
     let cwd = schedule.cwd;
     const parameterDefaults: Record<string, string> = {};
     try {

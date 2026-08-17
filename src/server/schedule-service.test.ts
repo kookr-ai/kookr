@@ -899,6 +899,12 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       expect(after.latestExecution?.reasonCode).toBe('probe_quiet');
       expect(after.latestExecution?.taskId).toBeUndefined();
       expect(after.latestExecution?.message).toContain('converged');
+      expect(after.executionLedger.at(-1)).toEqual(expect.objectContaining({
+        outcome: 'completed',
+        reasonCode: 'probe_quiet',
+        message: 'deploy-convergence: converged · serving=abc main=abc',
+      }));
+      expect(after.executionLedger.at(-1)?.taskId).toBeUndefined();
     } finally {
       cleanup();
     }

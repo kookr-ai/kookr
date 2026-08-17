@@ -190,9 +190,9 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
     case 'unknown_after_restart':
       return 'unknown after restart';
     case 'probe_quiet':
-      return 'probe quiet';
+      return 'probe completed (no agent)';
     case 'probe_blip':
-      return 'probe blip';
+      return 'probe failed (no agent)';
   }
 }
 

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
 import {
   ScheduleRunner,
+  defaultExecScheduleProbe,
   type ScheduleRunnerDeps,
   isTaskBlockingSchedule,
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
@@ -2965,6 +2966,9 @@ parameters:
     default: "true"
   - name: dryRun
     default: "false"
+probe:
+  command: pnpm deploy:convergence -- --branch "{{branch}}" --grace-minutes "{{graceMinutes}}"
+  escalateOnExit: 2
 ---
 Run the probe.
 `);
@@ -3037,17 +3041,73 @@ Run the probe.
     });
     markDue(schedule.id);
 
-    const runner = createProbeRunner(async () => ({
-      exitCode: 2,
-      stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
-      stderr: '',
-    }));
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return {
+        exitCode: 2,
+        stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
+        stderr: '',
+      };
+    });
     await runner.tick();
 
+    expect(probes).toHaveLength(1);
+    expect(probes[0]).toContain('--act');
     expect(launched).toHaveLength(1);
     expect(launched[0].prompt).toContain('Run the probe.');
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
     expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+  });
+
+  it('uses a declared probe command that is not the basename fallback', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'custom-probe.md'), `---
+name: Custom Probe
+probe:
+  command: node scripts/custom-probe.mjs --branch "{{branch}}"
+  escalateOnExit: 2
+---
+Custom body.
+`);
+    const schedule = store.create({
+      name: 'Custom Probe',
+      cron: '* * * * *',
+      playbook: { path: 'custom-probe.md', parameters: { branch: 'staging' } },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return { exitCode: 0, stdout: 'ok', stderr: '' };
+    });
+    await runner.tick();
+
+    expect(probes).toEqual([['node', 'scripts/custom-probe.mjs', '--branch', 'staging']]);
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
+  it('treats a throwing probe runner as a blip', async () => {
+    await writeConvergencePlaybook();
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    const runner = createProbeRunner(async () => {
+      throw new Error('probe exploded');
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('completed');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_blip');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBeUndefined();
   });
 
   it('does not escalate a dry-run DIVERGENT tick', async () => {
@@ -3094,5 +3154,17 @@ Run the probe.
     expect(probes[0][0]).toBe('node');
     expect(probes[0]).toContain('scripts/deploy-convergence-check.mjs');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
+  it('maps a real execFile exit 2 through defaultExecScheduleProbe', async () => {
+    const result = await defaultExecScheduleProbe(
+      {
+        argv: ['node', '-e', 'process.exit(2)'],
+        escalateOnExit: [2],
+        timeoutMs: 5_000,
+      },
+      dir,
+    );
+    expect(result.exitCode).toBe(2);
   });
 });
