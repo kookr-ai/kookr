@@ -228,7 +228,7 @@ describe('StatusBar reflection prompt', () => {
     expect(container.textContent).toContain('Loop 180ms');
   });
 
-  test('shows the median-unblock chip once five human-reply samples exist', async () => {
+  test('shows the time-to-unblock chip once five human-reply samples exist', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -254,11 +254,11 @@ describe('StatusBar reflection prompt', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('median unblock 12m');
+    expect(container.textContent).toContain('5 unblocked (24h) · median 12m');
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).not.toBeNull();
   });
 
-  test('hides the median-unblock chip below the five-sample floor', async () => {
+  test('hides the time-to-unblock chip below the five-sample floor', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -284,7 +284,8 @@ describe('StatusBar reflection prompt', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain('median unblock');
+    expect(container.textContent).not.toContain('unblocked');
+    expect(container.textContent).not.toContain('median 12m');
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
   });
 });

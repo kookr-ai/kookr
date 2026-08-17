@@ -15,8 +15,8 @@ import {
 import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
 import {
   TIME_TO_UNBLOCK_MIN_SAMPLES,
-  TIME_TO_UNBLOCK_WINDOW_MS,
-  formatUnblockWait,
+  formatTimeToUnblockChipLabel,
+  formatTimeToUnblockChipTitle,
   type TimeToUnblockSnapshot,
 } from '../../shared/contracts/time-to-unblock.js';
 import { getLiveFrictionCalibration, getTimeToUnblock } from '../api/index.js';
@@ -458,9 +458,17 @@ export function StatusBar({
             className="time-to-unblock-pill"
             data-testid="time-to-unblock-chip"
             role="status"
-            title={`Median time a finding waited for a human reply over the last ${Math.round((timeToUnblock.windowMs || TIME_TO_UNBLOCK_WINDOW_MS) / 3_600_000)} hours (${timeToUnblock.sampleCount} samples)`}
+            title={formatTimeToUnblockChipTitle(
+              timeToUnblock.sampleCount,
+              timeToUnblock.medianMs,
+              timeToUnblock.windowMs,
+            )}
           >
-            median unblock {formatUnblockWait(timeToUnblock.medianMs)}
+            {formatTimeToUnblockChipLabel(
+              timeToUnblock.sampleCount,
+              timeToUnblock.medianMs,
+              timeToUnblock.windowMs,
+            )}
           </span>
         )}
         {showFrictionChip && frictionCounts && (

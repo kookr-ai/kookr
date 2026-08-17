@@ -129,7 +129,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
 
     expect(container.textContent).toContain('oldest 4m');
-    expect(container.textContent).toContain('median unblock 12m');
+    expect(container.textContent).toContain('5 unblocked (24h) · median 12m');
     expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).not.toBeNull();
   });

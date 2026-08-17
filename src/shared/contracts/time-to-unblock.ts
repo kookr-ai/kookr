@@ -42,8 +42,8 @@ export function emptyTimeToUnblockSnapshot(
 
 /**
  * Format a wait for the StatusBar chip: "45s", "12m", "1h 5m", "2d".
- * The issue example is "median unblock 12m"; seconds only appear under a minute.
- * Lives here (not in core) so the dashboard can import it without Node fs.
+ * Seconds only appear under a minute. Lives here (not in core) so the
+ * dashboard can import it without Node fs.
  */
 export function formatUnblockWait(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
@@ -56,4 +56,41 @@ export function formatUnblockWait(ms: number): string {
   }
   const days = Math.round(ms / 86_400_000);
   return `${days}d`;
+}
+
+/** Hours in the rolling window, floored at 1 so a tiny window still reads as time. */
+function unblockWindowHours(windowMs: number): number {
+  return Math.max(1, Math.round(windowMs / 3_600_000));
+}
+
+/** Rolling-window suffix so the count is not read as calendar-today. */
+function formatUnblockWindowLabel(windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS): string {
+  return `${unblockWindowHours(windowMs)}h`;
+}
+
+/**
+ * StatusBar chip label: volume next to speed, e.g. "12 unblocked (24h) · median 8m".
+ * When `sampleCount` is 0, omit the count so a zero does not look like a cleared queue.
+ */
+export function formatTimeToUnblockChipLabel(
+  sampleCount: number,
+  medianMs: number,
+  windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
+): string {
+  const median = `median ${formatUnblockWait(medianMs)}`;
+  if (sampleCount <= 0) return median;
+  return `${sampleCount} unblocked (${formatUnblockWindowLabel(windowMs)}) · ${median}`;
+}
+
+/** Tooltip: same rolling window as the visible count, human-reply only. */
+export function formatTimeToUnblockChipTitle(
+  sampleCount: number,
+  medianMs: number,
+  windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
+): string {
+  const hours = unblockWindowHours(windowMs);
+  if (sampleCount <= 0) {
+    return `Median time a finding waited for a human reply over the last ${hours} hours`;
+  }
+  return `${sampleCount} findings unblocked by a human reply over the last ${hours} hours; median wait ${formatUnblockWait(medianMs)}. Skip and snooze are not counted.`;
 }
