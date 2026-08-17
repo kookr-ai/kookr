@@ -20,7 +20,8 @@ Use the dashboard **Launch** button for an interactive start:
 2. Choose the agent provider when available.
 3. Optionally pin reasoning effort and model. Leave them on "Agent default"
    to keep the server / CLI default. Codex hides Model; Grok Build hides both.
-4. Enter the task prompt.
+4. Enter the task prompt, or click a sample on the Manual tab to fill one
+   (working directory and Launch stay yours).
 5. Add optional completion criteria.
 6. Launch.
 
