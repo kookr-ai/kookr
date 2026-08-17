@@ -6260,6 +6260,39 @@ label.task-share-row {
   color: var(--text-muted);
 }
 
+/* Keep the "Resume all" action beside the toggle without nesting buttons,
+   mirroring .completed-section-header-row. */
+.snoozed-section-header-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.snoozed-section-header-row .section-header {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.btn-resume-all {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  opacity: 0.7;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.btn-resume-all:hover {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.btn-resume-all:focus-visible {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 2px;
+}
+
 .snoozed-row {
   display: flex;
   flex-direction: column;
