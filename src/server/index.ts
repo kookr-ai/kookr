@@ -241,6 +241,7 @@ import { PostRecoveryService } from './post-recovery-service.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
+import type { SystemdNotifier } from './systemd-notify.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import {
   TaskTailStore,
@@ -379,6 +380,12 @@ export interface KookrConfig {
    * gets the real check. See `LaunchServiceDeps.validateLaunchCwd`.
    */
   validateLaunchCwd?: (cwd: string) => Promise<void>;
+  /**
+   * Optional systemd readiness/watchdog notifier (issue #2491). Created in
+   * `start.ts` and threaded to the liveness tick, which pings `WATCHDOG=1` each
+   * fire. Absent (tests, non-systemd runs) ⇒ no watchdog pings are sent.
+   */
+  systemdNotifier?: SystemdNotifier;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -464,6 +471,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceStatusSampler,
     resourceStatusIntervalMs,
     lifecycleSignal,
+    systemdNotifier,
   } = config;
   const apiAuth: ApiAuthConfig = config.apiAuth ?? { required: false };
 
@@ -3066,6 +3074,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
+      // systemd watchdog ping (issue #2491) — inert unless running under a
+      // Type=notify unit; the liveness tick pings WATCHDOG=1 to prove liveness.
+      systemdNotifier,
       // Coalesced + load-shed path: timer ticks must never force full snapshots.
       requestSnapshotBroadcast,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,

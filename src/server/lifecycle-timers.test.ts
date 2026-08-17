@@ -2360,3 +2360,93 @@ describe('reap-warning grace phase (RFC rfc-reap-grace-warning.md)', () => {
     expect(coordinator.activeWarningCount()).toBe(0);
   });
 });
+
+describe('startLifecycleTimers systemd watchdog wiring (issue #2491)', () => {
+  // The production property under test: the liveness tick pings the systemd
+  // watchdog on EVERY delivered timer, and does so BEFORE the re-entrancy guard,
+  // so a still-running reconcile can never starve the watchdog and bounce a
+  // healthy server. A regression that dropped the ping — or moved it back below
+  // the `livenessTickRunning` guard — would fail these tests.
+  function makeWatchdogDeps(overrides: Partial<TimerDeps> = {}): {
+    deps: TimerDeps;
+    systemdNotifier: { ready: ReturnType<typeof vi.fn>; watchdog: ReturnType<typeof vi.fn> };
+  } {
+    const systemdNotifier = {
+      enabled: true,
+      watchdogEnabled: true,
+      watchdogIntervalMs: 15_000,
+      ready: vi.fn(),
+      watchdog: vi.fn(),
+    };
+    const deps: TimerDeps = {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+        unregisterAgent: vi.fn(),
+      } as any,
+      taskStore: new TaskStore(),
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => ''), stop: vi.fn(async () => undefined) } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 })),
+      } as any,
+      watchdog: { getTrackedAgents: vi.fn(() => []), recordTokenActivity: vi.fn(), tick: vi.fn() } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 3_600_000,
+      livenessIntervalMs: 5_000,
+      broadcastToAll: vi.fn(),
+      systemdNotifier: systemdNotifier as any,
+      ...overrides,
+    };
+    return { deps, systemdNotifier };
+  }
+
+  test('pings the watchdog on each liveness tick', async () => {
+    vi.useFakeTimers();
+    const { deps, systemdNotifier } = makeWatchdogDeps();
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(systemdNotifier.watchdog).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(systemdNotifier.watchdog).toHaveBeenCalledTimes(2);
+    } finally {
+      clearAllTimers(handles);
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps pinging while a prior tick is still in flight (before the re-entrancy guard)', async () => {
+    vi.useFakeTimers();
+    // Wedge the first tick's reconcile on a never-resolving worktree refresh so
+    // `livenessTickRunning` stays true and every later fire bails at the guard.
+    const refresh = vi.fn(() => new Promise<void>(() => {}));
+    const { deps, systemdNotifier } = makeWatchdogDeps({
+      worktreeRegistry: { refresh } as any,
+      worktreeRegistryRepoPath: '/tmp/repo',
+      getDashboardClientCount: () => 1,
+    });
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(15_000); // three 5s fires
+      // Reconcile body was entered exactly once (it is stuck), but the watchdog
+      // was pinged on all three fires — the ping is decoupled from the guard.
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(systemdNotifier.watchdog).toHaveBeenCalledTimes(3);
+    } finally {
+      clearAllTimers(handles);
+      vi.useRealTimers();
+    }
+  });
+});
