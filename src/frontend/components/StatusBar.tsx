@@ -35,9 +35,16 @@ import {
   formatPausedSchedulesTitle,
   shouldShowPausedSchedulesPill,
 } from './paused-schedules-pill.js';
+import { formatOldestFindingWait } from '../presentation.js';
 
 interface Props {
   findings: number;
+  /**
+   * Earliest live finding wait among the same agents as {@link findings}.
+   * App passes this from the rail bucket so the chip matches the count
+   * without polling `/api/health`.
+   */
+  oldestFindingWaitStartedAt?: Date | string;
   total: number;
   compact?: boolean;
   onShowShortcuts: () => void;
@@ -327,6 +334,7 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
 
 export function StatusBar({
   findings,
+  oldestFindingWaitStartedAt,
   total,
   compact = false,
   onShowShortcuts,
@@ -347,6 +355,7 @@ export function StatusBar({
   const soundOn = sound.enabled;
   const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
   const [timeToUnblock, setTimeToUnblock] = useState<TimeToUnblockSnapshot | null>(null);
+  const [, setOldestWaitTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -366,10 +375,20 @@ export function StatusBar({
     };
   }, []);
 
+  useEffect(() => {
+    if (findings <= 0 || oldestFindingWaitStartedAt === undefined) return;
+    const timer = setInterval(() => setOldestWaitTick((tick) => tick + 1), 30_000);
+    return () => clearInterval(timer);
+  }, [findings, oldestFindingWaitStartedAt]);
+
   const showUnblockChip = timeToUnblock !== null
     && timeToUnblock.sampleCount >= TIME_TO_UNBLOCK_MIN_SAMPLES
     && timeToUnblock.medianMs !== null
     && Number.isFinite(timeToUnblock.medianMs);
+
+  const oldestWaitLabel = findings > 0
+    ? formatOldestFindingWait(oldestFindingWaitStartedAt)
+    : null;
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -387,6 +406,16 @@ export function StatusBar({
       <span className="statusbar-left">
         {zoneLabel && <span className="focus-zone-pill">{zoneLabel}</span>}
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
+        {oldestWaitLabel && (
+          <span
+            className="oldest-finding-wait-pill"
+            data-testid="oldest-finding-wait-chip"
+            role="status"
+            title="Age of the oldest unanswered finding — live wait, not the historical median"
+          >
+            oldest {oldestWaitLabel}
+          </span>
+        )}
         {showUnblockChip && timeToUnblock?.medianMs != null && (
           <span
             className="time-to-unblock-pill"

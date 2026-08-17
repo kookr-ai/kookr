@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatOldestFindingWait, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -95,6 +95,50 @@ describe('finding wait age', () => {
     } satisfies AgentState;
 
     expect(findingWaitStartedAt(agent)).toBe('2026-06-07T22:47:00Z');
+  });
+
+  test('picks the earliest wait among several findings', () => {
+    const newer = {
+      agentId: 'newer',
+      events: [],
+      anomaly: {
+        agentId: 'newer',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'newer wait',
+        detectedAt: new Date('2026-06-11T18:50:00Z'),
+      },
+    } satisfies AgentState;
+    const older = {
+      agentId: 'older',
+      events: [],
+      turnState: 'completed_turn',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: '2026-06-11T18:10:00Z',
+      },
+      anomaly: {
+        agentId: 'older',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'older wait',
+        detectedAt: new Date('2026-06-11T18:49:00Z'),
+      },
+    } satisfies AgentState;
+
+    expect(oldestFindingWaitStartedAt([newer, older])).toBe('2026-06-11T18:10:00Z');
+    expect(oldestFindingWaitStartedAt([])).toBeUndefined();
+  });
+
+  test('formats a live oldest wait and keeps sub-two-minute findings visible', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T18:57:00Z'));
+
+    expect(formatOldestFindingWait('2026-06-11T18:45:00Z')).toBe('12m');
+    expect(formatOldestFindingWait('2026-06-11T18:56:00Z')).toBe('<2m');
+    expect(formatOldestFindingWait(undefined)).toBeNull();
+
+    vi.useRealTimers();
   });
 });
 

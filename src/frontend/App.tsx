@@ -15,6 +15,7 @@ import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets } from './agent-buckets.js';
+
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -81,7 +82,7 @@ import {
   isDebugTimelineEnabled,
 } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
-import { findingTypeLabel } from './presentation.js';
+import { findingTypeLabel, oldestFindingWaitStartedAt } from './presentation.js';
 import { activeModalReducer } from './app-modal-reducer.js';
 import type { ActiveModal } from './app-modal-reducer.js';
 import { useCompletionConfirmation } from './hooks/useCompletionConfirmation.js';
@@ -1093,6 +1094,10 @@ export function App() {
     () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
     [agents, coordinator, projectPriorityRanks],
   );
+  const oldestFindingWait = useMemo(
+    () => oldestFindingWaitStartedAt(findings),
+    [findings],
+  );
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -1510,6 +1515,7 @@ export function App() {
       )}
       <StatusBar
         findings={findings.length}
+        oldestFindingWaitStartedAt={oldestFindingWait}
         total={filteredAgents.length}
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
