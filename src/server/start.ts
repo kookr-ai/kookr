@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { createKookrServer } from './index.js';
+import { createSystemdNotifier } from './systemd-notify.js';
 import { resolveApiAuth, type ApiAuthConfig } from './auth.js';
 import {
   resolveSessionTransport,
@@ -228,6 +229,11 @@ async function main(): Promise<void> {
 
   const lifecycleAc = new AbortController();
 
+  // Optional systemd readiness/watchdog notifier (issue #2491). Inert unless the
+  // unit runs us with Type=notify (NOTIFY_SOCKET set); threaded into the liveness
+  // tick so a wedged event loop stops pinging WATCHDOG=1 and systemd bounces us.
+  const systemdNotifier = createSystemdNotifier();
+
   const server = await createKookrServer({
     port: PORT,
     host: HOST,
@@ -252,7 +258,12 @@ async function main(): Promise<void> {
     lifecycleSignal: lifecycleAc.signal,
     apiAuth,
     sessionAuth,
+    systemdNotifier,
   });
+
+  // The listener is up and background services have started — tell systemd the
+  // unit is ready. No-op unless NOTIFY_SOCKET is set (issue #2491).
+  systemdNotifier.ready();
 
   // Issue #1320: a single re-entrancy-guarded handler backs both signals so a
   // second Ctrl-C during a slow graceful shutdown force-exits instead of

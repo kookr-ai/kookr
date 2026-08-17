@@ -7,7 +7,25 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-Type=simple
+# Type=notify + WatchdogSec give us hang recovery that lives OUTSIDE the event
+# loop (issue #2491). The server pings WATCHDOG=1 from its liveness tick; if the
+# loop wedges, HTTP goes dark but the process stays alive, so Restart=on-failure
+# alone never fires. When the pings stop for WatchdogSec, systemd kills the unit
+# (a watchdog timeout counts as a failure) and Restart=on-failure restarts it.
+# The notifier is a no-op unless NOTIFY_SOCKET is set, so nothing changes for the
+# pid-file/nohup path. NotifyAccess=all is required because the datagram is sent
+# by the `systemd-notify` helper (a child process), not the main PID: Node core
+# cannot open the AF_UNIX SOCK_DGRAM socket sd_notify uses.
+Type=notify
+NotifyAccess=all
+WatchdogSec=30
+# Type=notify holds the unit "activating" until READY=1 arrives (sent once the
+# server is listening + booted), then fails the start after TimeoutStartSec. The
+# server normally boots in seconds — heavy startup recovery is deferred, not
+# awaited — so this generous 180s ceiling only guards a genuinely stuck boot. A
+# dropped/failed READY=1 (e.g. a transient systemd-notify spawn error) fails the
+# start, and Restart=on-failure then retries: the notification is not acked.
+TimeoutStartSec=180
 WorkingDirectory=%h/git/kookr-prod
 Environment=NODE_ENV=production
 # glibc allocator tuning (issue #1753). The server RSS sawtooths 2.3-4.1 GB on

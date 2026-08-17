@@ -86,6 +86,59 @@ Expected direction: a lower and flatter RSS floor. A native periodic
 `malloc_trim(0)` (which needs a compiled addon) is tracked as an optional
 follow-up, not part of this change.
 
+## Watchdog (Hang Recovery)
+
+The unit runs the server as a `Type=notify` service with a systemd watchdog
+(issue #2491):
+
+```ini
+Type=notify
+NotifyAccess=all
+WatchdogSec=30
+```
+
+**Why.** The server is a bare `node` process. When its event loop wedges — a
+runaway synchronous section, a deadlock — HTTP goes dark but the process stays
+alive, so `Restart=on-failure` never fires: a hung server looks healthy to
+systemd. Hang recovery has to live outside the event loop. The watchdog provides
+exactly that. The server pings `WATCHDOG=1` from its liveness tick, which fires
+every 5s, throttled to send at most once per half-deadline (~15s). The ping is
+sent on every timer delivery — a delivered timer callback *is* the liveness
+signal — independent of how long the tick's own work takes, so a slow-but-alive
+tick never looks wedged. If the loop wedges it stops delivering timers, the pings
+stop, and after `WatchdogSec` (30s) systemd kills the unit. A watchdog timeout
+counts as a failure, so the existing `Restart=on-failure` restarts it.
+
+`WatchdogSec=30` is deliberately generous — a long GC pause or a slow reconcile
+must not bounce a healthy server. The ping cadence (deadline ÷ 2 = 15s) leaves
+margin for a missed tick before the deadline is reached.
+
+This is the layer below the [readiness probe](#readiness-probe-engine-not-relay):
+`GET /api/ready` catches subsystems that fail while the loop still runs (a dead
+schedule tick, a non-writable data dir); the watchdog catches the case a probe
+cannot — a wedged event loop that can no longer answer HTTP at all.
+
+**How the ping is sent.** `Type=notify` makes systemd export `NOTIFY_SOCKET`
+(and `WATCHDOG_USEC`) into the service. The server sends the `READY=1` and
+`WATCHDOG=1` datagrams via the `systemd-notify` helper, because Node core cannot
+open the `AF_UNIX` `SOCK_DGRAM` socket sd_notify uses. That helper runs as a
+child process, not the main PID, so `NotifyAccess=all` is required for systemd to
+accept its notifications.
+
+**No effect off systemd.** The notifier is inert unless `NOTIFY_SOCKET` is set.
+Running the server directly (`node dist/server/start.js`) or through the
+`scripts/prod-restart.sh` pid-file/nohup fallback sends no notifications and
+behaves exactly as before — only the `Type=notify` unit arms the watchdog.
+
+To tune the deadline per host, override it with a drop-in rather than editing the
+template:
+
+```bash
+systemctl --user edit kookr.service
+# [Service]
+# WatchdogSec=60
+```
+
 ## Start At Boot
 
 User units normally start when the user logs in. To let the service start after
@@ -275,14 +328,14 @@ substitute here: it fetches `/api/ready` and `/api/health` live, so against a
 wedged server it just reports no-server rather than reading this file. Use `cat`
 on the file directly when HTTP is dark.
 
-**Automating the restart (when present).** The manual step 4 above is today's
-recovery path. systemd can turn a wedge into an automatic restart with a
-`WatchdogSec=` deadline on a `Type=notify` unit: the server must ping systemd on
-the event loop within each interval, so a wedged loop misses the ping and systemd
-restarts the process on its own. This runbook phrases that "when present" because
-the shipped unit is `Type=simple` with no watchdog — until it gains
-`WatchdogSec=`, a missed watchdog is not available and a hang stays a manual
-step 4.
+**Automating the restart.** The shipped unit turns a wedge into an automatic
+restart: it runs `Type=notify` with `WatchdogSec=30` (issue #2491, see
+[Watchdog (Hang Recovery)](#watchdog-hang-recovery)). The server pings systemd
+from its event loop every ~15s, so a wedged loop misses the ping and systemd
+kills and restarts the process on its own after 30s. Manual step 4 above is now
+only for recovering *immediately* rather than waiting out the deadline, or for
+hosts where the watchdog is unavailable (no `NOTIFY_SOCKET` — the pid-file/nohup
+path, or a non-systemd host).
 
 ## Verify
 

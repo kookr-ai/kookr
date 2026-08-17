@@ -11,7 +11,12 @@ describe('production server systemd unit', () => {
     const unit = readFileSync('deploy/server/kookr.service', 'utf8');
 
     expect(unit).toContain('Description=Kookr production server');
-    expect(unit).toContain('Type=simple');
+    // systemd watchdog for hang recovery (issue #2491): Type=notify + WatchdogSec,
+    // with NotifyAccess=all because the WATCHDOG=1 datagram is sent by the
+    // `systemd-notify` child helper rather than the main PID.
+    expect(unit).toContain('Type=notify');
+    expect(unit).toContain('NotifyAccess=all');
+    expect(unit).toContain('WatchdogSec=30');
     expect(unit).toContain('WorkingDirectory=%h/git/kookr-prod');
     expect(unit).toContain('EnvironmentFile=-%h/.config/kookr/kookr.env');
     expect(unit).toContain('ExecStart=/usr/bin/env node dist/server/start.js');

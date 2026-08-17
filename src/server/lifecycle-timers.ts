@@ -29,6 +29,7 @@ import type { ProjectConfigStore } from '../core/project-config-store.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import type { SystemdNotifier } from './systemd-notify.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { ShadowDetectorRegistry } from '../core/shadow-detector.js';
 import type { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -568,6 +569,14 @@ export interface TimerDeps {
    * no pruning is needed.
    */
   loopDeliveryWatchdog?: LoopDeliveryWatchdogRegistry;
+  /**
+   * Optional systemd watchdog notifier (issue #2491). The liveness tick pings
+   * `WATCHDOG=1` through it each fire, proving the event loop still delivers
+   * timers; a wedged loop stops firing the tick, the pings stop, and systemd
+   * bounces the unit after `WatchdogSec`. Absent (tests, non-systemd runs) ⇒
+   * no pings are sent. Self-throttling — safe to call every tick.
+   */
+  systemdNotifier?: SystemdNotifier;
 }
 
 
@@ -1379,6 +1388,17 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   timerHealth?.register('liveness', livenessIntervalMs);
   let livenessTickRunning = false;
   const livenessInterval = setInterval(async () => {
+    // systemd watchdog ping (issue #2491). Deliberately BEFORE the re-entrancy
+    // guard: a delivered timer callback is itself the liveness signal, so we ping
+    // on every fire even while a previous tick's reconcile is still in flight.
+    // Placing it after the guard would starve the watchdog whenever a single
+    // reconcile pass ran longer than the deadline (a slow worktree refresh, a
+    // busy disk) and bounce a perfectly healthy server. Only a truly wedged event
+    // loop — one that stops delivering timers — stops pinging. The notifier is
+    // self-throttled to WATCHDOG_USEC/2 and inert unless under a Type=notify unit,
+    // so calling it on every 5s fire is safe. It can never throw (safeSend wraps
+    // the sender), so it cannot break the tick.
+    deps.systemdNotifier?.watchdog();
     if (livenessTickRunning) return;
     livenessTickRunning = true;
     timerHealth?.recordFire('liveness', livenessIntervalMs);
