@@ -193,9 +193,10 @@ export interface KookrSettings {
   deadManScheduleMinutes: number;
   /**
    * Per-schedule consecutive-failure alert threshold (issue #1665). When a
-   * schedule's `consecutiveFailures` counter crosses this value (each terminal
-   * run whose `lastRunStatus` is not `completed` increments it; a `completed`
-   * run resets it), the schedule service emits one operational `alert`
+   * schedule's `consecutiveFailures` counter crosses this value (only a
+   * genuine launch / timeout / task failure increments it; a `completed` run
+   * resets it; healthy skips leave it unchanged), the schedule service emits
+   * one operational `alert`
    * (severity warning) through the dashboard alert channel, and a matching
    * `info` recovery alert when the schedule next completes. Read via a live
    * getter so a settings change applies to the next recorded run.

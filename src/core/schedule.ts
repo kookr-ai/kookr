@@ -86,6 +86,18 @@ export function normalizeScheduleLoopConfig(raw: unknown): ScheduleLoopConfig | 
  *   schedule.
  */
 export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
+export type ScheduleLastRunStatus = 'completed' | 'cancelled' | 'failed' | 'skipped';
+
+const SCHEDULE_LAST_RUN_STATUSES: ReadonlySet<string> = new Set([
+  'completed',
+  'cancelled',
+  'failed',
+  'skipped',
+]);
+
+export function isScheduleLastRunStatus(value: unknown): value is ScheduleLastRunStatus {
+  return typeof value === 'string' && SCHEDULE_LAST_RUN_STATUSES.has(value);
+}
 
 /**
  * Provenance of the current {@link Schedule.operatorHold} (issue #2520).
@@ -429,7 +441,13 @@ export interface Schedule {
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
-  lastRunStatus?: 'completed' | 'cancelled' | 'failed';
+  /**
+   * Coarse status of the most recently recorded fire. Healthy overlap-skips
+   * (`skipped_active` / `skipped_coalesced` and the other `skipped_*`
+   * deferrals) write `skipped` so a leftover `failed` from an earlier genuine
+   * fault cannot keep looking like the last run failed (issue #2568).
+   */
+  lastRunStatus?: ScheduleLastRunStatus;
   /**
    * Count of consecutive genuine failures (issue #1665). Incremented on a
    * `dispatch_failed` launch or a cancelled/timeout run; reset to 0 on a
@@ -991,7 +1009,9 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),
     ...(typeof candidate.lastRunTaskId === 'string' ? { lastRunTaskId: candidate.lastRunTaskId } : {}),
-    ...(candidate.lastRunStatus ? { lastRunStatus: candidate.lastRunStatus } : {}),
+    ...(isScheduleLastRunStatus(candidate.lastRunStatus)
+      ? { lastRunStatus: candidate.lastRunStatus }
+      : {}),
     ...(typeof candidate.consecutiveFailures === 'number'
       && Number.isFinite(candidate.consecutiveFailures)
       && candidate.consecutiveFailures > 0

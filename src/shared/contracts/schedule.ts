@@ -222,7 +222,12 @@ export interface Schedule {
   model?: string;
   lastRunAt?: string;
   lastRunTaskId?: string;
-  lastRunStatus?: 'completed' | 'cancelled' | 'failed';
+  /**
+   * Coarse status of the most recently recorded fire. Healthy overlap-skips
+   * write `skipped` so a leftover `failed` cannot keep looking like the last
+   * run failed (issue #2568). Mirrors `core/schedule`.
+   */
+  lastRunStatus?: 'completed' | 'cancelled' | 'failed' | 'skipped';
   /**
    * Count of consecutive genuine failures (issue #1665). Mirrors the
    * `core/schedule` definition — reset to 0 on a `completed` run, incremented
