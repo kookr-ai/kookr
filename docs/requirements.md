@@ -398,6 +398,20 @@ The findings rail SHOULD let the operator show only selected anomaly types with 
 
 **Evidence:** `src/frontend/finding-type-filter.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/finding-type-filter.test.ts`, `src/frontend/components/FindingsPanel.type-filter.test.ts`.
 
+### R3.11: Activity Transcript Role-Filter Chips [#2576] — SHOULD — `done`
+
+The activity panel SHOULD let the operator show only one role of the running transcript: what they typed, what the agent said, or the tool stream.
+
+**Acceptance criteria:**
+- The panel header renders exclusive All / You / Agent / Tools chips
+- You keeps operator-typed rows; Agent keeps assistant text; Tools keeps tool groups; All keeps every row
+- While a turn is still running, the live "agent is working" row stays visible even when Tools is hidden
+- The last chip choice persists in `localStorage` (`kookr:activityPanel.roleFilter`) per browser, not per task
+- When a non-All filter matches nothing, the panel shows "No matching activity" and a control that returns to All
+- Selecting Tools hides user and assistant rows and keeps tool rows
+
+**Evidence:** `src/frontend/activity-role-filter.ts`, `src/frontend/components/ActivityPanel.tsx`, `src/frontend/activity-role-filter.test.ts`, `src/frontend/components/ActivityPanel.role-filter.test.ts`.
+
 ---
 
 ## R4: Agent Lifecycle
@@ -1269,6 +1283,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
 | R3.10 | F5.1 | SHOULD | done | finding-type-filter, FindingsPanel |
+| R3.11 | F3.1 | SHOULD | done | activity-role-filter, ActivityPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |

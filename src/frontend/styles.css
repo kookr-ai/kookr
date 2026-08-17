@@ -7010,7 +7010,41 @@ label.task-share-row {
   flex: 1;
   position: relative;
   display: flex;
+  flex-direction: column;
   min-height: 0;
+}
+.act-role-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 16px 0;
+  flex-shrink: 0;
+}
+.act-role-chip {
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.act-role-chip:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.act-role-chip.selected {
+  background: rgba(120, 200, 255, 0.18);
+  border-color: rgba(120, 200, 255, 0.45);
+  color: var(--text-primary);
+}
+.act-role-chip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 .activity-panel {
   flex: 1;
@@ -7063,6 +7097,30 @@ label.task-share-row {
 .act-empty-hint {
   font-size: 11px;
   color: var(--text-muted);
+}
+.act-empty-filter {
+  height: auto;
+  justify-content: flex-start;
+  padding: 24px 0;
+}
+.act-empty-filter-clear {
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.act-empty-filter-clear:hover {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.act-empty-filter-clear:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 
 /* Alert banner (anomaly explanation) */

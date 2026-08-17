@@ -26,6 +26,7 @@ describe('ActivityPanel density', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = null;

@@ -12,6 +12,14 @@ import type {
 import { buildActivityDisclosure, buildActivityItems, categorizeTool, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
 import { activityDisplayItemsToEvents, buildActivityDisplayItems } from '../store/activity-display.js';
+import {
+  ACTIVITY_ROLE_FILTER_LABELS,
+  ACTIVITY_ROLE_FILTERS,
+  filterActivityItems,
+  shouldShowActivityFilterEmptyState,
+  useActivityRoleFilter,
+  type ActivityRoleFilter,
+} from '../activity-role-filter.js';
 
 /**
  * Click target data for an Edit/Write entry. Sourced from
@@ -376,6 +384,35 @@ export function formatElapsed(totalSeconds: number): string {
  * client-side from when this row first observes a given call `key` and resets
  * only when the agent moves to a different call.
  */
+function ActivityRoleFilterChips({
+  value,
+  onChange,
+}: {
+  value: ActivityRoleFilter;
+  onChange: (next: ActivityRoleFilter) => void;
+}) {
+  return (
+    <div className="act-role-filters" role="radiogroup" aria-label="Filter activity">
+      {ACTIVITY_ROLE_FILTERS.map((filter) => {
+        const selected = value === filter;
+        return (
+          <button
+            key={filter}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            className={`act-role-chip${selected ? ' selected' : ''}`}
+            data-testid={`activity-role-chip-${filter}`}
+            onClick={() => onChange(filter)}
+          >
+            {ACTIVITY_ROLE_FILTER_LABELS[filter]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function LiveToolRow({ inFlight }: { inFlight: InFlightTool | null }) {
   const key = inFlight?.key ?? '__working__';
   const startRef = useRef(Date.now());
@@ -443,6 +480,16 @@ export function ActivityPanel({
     () => buildActivityItems({ providerEvents, userInputDeliveries }),
     [providerEvents, userInputDeliveries],
   );
+  const [roleFilter, setRoleFilter] = useActivityRoleFilter();
+  const visibleItems = useMemo(
+    () => filterActivityItems(items, roleFilter),
+    [items, roleFilter],
+  );
+  const showFilterEmpty = shouldShowActivityFilterEmptyState({
+    filter: roleFilter,
+    matchedCount: visibleItems.length,
+    isActive: Boolean(isActive),
+  });
   const disclosure = useMemo(
     () => buildActivityDisclosure(events.length, activityMeta),
     [events.length, activityMeta],
@@ -461,7 +508,7 @@ export function ActivityPanel({
     }
     const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
     setHasUnreadBelow(distance > 8);
-  }, [items, anomalyExplanation, inFlight, isActive]);
+  }, [visibleItems, showFilterEmpty, anomalyExplanation, inFlight, isActive]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -479,22 +526,11 @@ export function ActivityPanel({
     setHasUnreadBelow(false);
   }
 
-  // Keep the empty state only when nothing is happening. If the turn is running
-  // we fall through to render the live row even before any item has landed.
-  if (items.length === 0 && !isActive) {
-    return (
-      <div className="activity-panel">
-        {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
-        <div className="act-empty">
-          <p>No activity yet.</p>
-          <p className="act-empty-hint">Messages and tool activity will appear here as the agent works.</p>
-        </div>
-      </div>
-    );
-  }
+  const showNoActivity = items.length === 0 && !isActive && roleFilter === 'all';
 
   return (
     <div className="activity-panel-wrap">
+      <ActivityRoleFilterChips value={roleFilter} onChange={setRoleFilter} />
       <div className="activity-panel" ref={scrollRef} onScroll={handleScroll}>
         {anomalyExplanation && (
           <div className="act-alert-banner">
@@ -503,7 +539,26 @@ export function ActivityPanel({
           </div>
         )}
         {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
-        {items.map((item, i) => (
+        {showNoActivity && (
+          <div className="act-empty">
+            <p>No activity yet.</p>
+            <p className="act-empty-hint">Messages and tool activity will appear here as the agent works.</p>
+          </div>
+        )}
+        {showFilterEmpty && (
+          <div className="act-empty act-empty-filter" data-testid="act-empty-filter">
+            <p>No matching activity</p>
+            <button
+              type="button"
+              className="act-empty-filter-clear"
+              data-testid="activity-role-filter-clear"
+              onClick={() => setRoleFilter('all')}
+            >
+              Show all
+            </button>
+          </div>
+        )}
+        {visibleItems.map((item, i) => (
           <ActivityItemView key={i} item={item} onOpenDiff={onOpenDiff} />
         ))}
         {isActive && <LiveToolRow inFlight={inFlight} />}

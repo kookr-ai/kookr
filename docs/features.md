@@ -82,7 +82,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F3.1 | **View blocked agent's context** | When navigating to a blocked agent, show what it's asking and relevant conversation history. |
+| F3.1 | **View blocked agent's context** | When navigating to a blocked agent, show what it's asking and relevant conversation history. The activity transcript can be filtered to All / You / Agent / Tools (exclusive chips, last choice persisted in `localStorage`). |
 | F3.2 | **Respond to agent** | Type a response in Kookr's UI and have it delivered to the agent's managed dtach session via byte-level writes (`backend.write` / `backend.writeSequence`). Same effect as the developer typing directly in the terminal. See [ADR-007](adr/007-managed-terminal-sessions.md) and [ADR-014](adr/014-local-dtach-backend.md). |
 | F3.3 | **Auto-advance after response** | After sending a response, automatically navigate to the next agent that needs attention. |
 | F3.4 | **"All clear" state** | When no agents need attention, show a clear "all agents working autonomously" state. |
