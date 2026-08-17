@@ -2,8 +2,9 @@
 
 /**
  * Status-bar 24-hour unblocked-finding count (issue #2609). Reuses the
- * existing time-to-unblock snapshot — no second event source. Hidden when
- * sampleCount is 0; visible next to the median when samples exist.
+ * existing time-to-unblock snapshot — no second event source. The chip
+ * still hides below the five-sample floor (and therefore at sampleCount 0);
+ * when visible, the count sits next to the median.
  */
 
 import React from 'react';
@@ -97,8 +98,9 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
     const chip = container.querySelector('[data-testid="time-to-unblock-chip"]');
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toBe('12 unblocked (24h) · median 8m');
-    expect(chip?.getAttribute('title')).toContain('last 24 hours');
-    expect(chip?.getAttribute('title')).toContain('12 findings');
+    expect(chip?.getAttribute('title')).toBe(
+      '12 findings unblocked by a human reply over the last 24 hours; median wait 8m. Skip and snooze are not counted.',
+    );
   });
 
   test('hides the chip and the unblocked copy when sampleCount is 0', async () => {
@@ -126,7 +128,7 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
     expect(container.textContent).not.toContain('24h');
   });
 
-  test('does not reuse the oldest-wait or live-friction labels', async () => {
+  test('keeps oldest-wait and unblocked-count labels distinct', async () => {
     stubTimeToUnblock({
       schemaVersion: 'time-to-unblock.v1',
       medianMs: 8 * 60_000,
@@ -138,18 +140,20 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
     await act(async () => {
       root.render(
         React.createElement(StatusBar, {
-          findings: 0,
+          findings: 1,
           total: 2,
+          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
           onShowShortcuts: vi.fn(),
         }),
       );
     });
     await flushEffects();
 
-    const chip = container.querySelector('[data-testid="time-to-unblock-chip"]');
-    expect(chip?.textContent).toContain('12 unblocked (24h)');
-    expect(chip?.textContent).not.toContain('oldest');
-    expect(chip?.textContent).not.toContain('skip');
-    expect(chip?.textContent).not.toContain('snooze');
+    const unblock = container.querySelector('[data-testid="time-to-unblock-chip"]');
+    const oldest = container.querySelector('[data-testid="oldest-finding-wait-chip"]');
+    expect(unblock?.textContent).toBe('12 unblocked (24h) · median 8m');
+    expect(oldest?.textContent).toContain('oldest');
+    expect(unblock?.textContent).not.toContain('oldest');
+    expect(oldest?.textContent).not.toContain('unblocked');
   });
 });

@@ -58,10 +58,14 @@ export function formatUnblockWait(ms: number): string {
   return `${days}d`;
 }
 
+/** Hours in the rolling window, floored at 1 so a tiny window still reads as time. */
+function unblockWindowHours(windowMs: number): number {
+  return Math.max(1, Math.round(windowMs / 3_600_000));
+}
+
 /** Rolling-window suffix so the count is not read as calendar-today. */
-export function formatUnblockWindowLabel(windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS): string {
-  const hours = Math.max(1, Math.round(windowMs / 3_600_000));
-  return `${hours}h`;
+function formatUnblockWindowLabel(windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS): string {
+  return `${unblockWindowHours(windowMs)}h`;
 }
 
 /**
@@ -84,7 +88,7 @@ export function formatTimeToUnblockChipTitle(
   medianMs: number,
   windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
 ): string {
-  const hours = Math.max(1, Math.round(windowMs / 3_600_000));
+  const hours = unblockWindowHours(windowMs);
   if (sampleCount <= 0) {
     return `Median time a finding waited for a human reply over the last ${hours} hours`;
   }

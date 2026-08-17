@@ -130,15 +130,29 @@ describe('formatTimeToUnblockChipLabel', () => {
     expect(formatTimeToUnblockChipLabel(0, 8 * 60_000)).toBe('median 8m');
     expect(formatTimeToUnblockChipLabel(0, 8 * 60_000)).not.toContain('unblocked');
   });
+
+  test('labels a non-default window from windowMs', () => {
+    expect(formatTimeToUnblockChipLabel(12, 8 * 60_000, 12 * 3_600_000)).toBe(
+      '12 unblocked (12h) · median 8m',
+    );
+  });
 });
 
 describe('formatTimeToUnblockChipTitle', () => {
   test('explains the rolling 24-hour window and excludes skip/snooze', () => {
-    const title = formatTimeToUnblockChipTitle(12, 8 * 60_000);
-    expect(title).toContain('last 24 hours');
-    expect(title).toContain('12 findings');
-    expect(title).toContain('median wait 8m');
-    expect(title).toContain('Skip and snooze are not counted');
+    expect(formatTimeToUnblockChipTitle(12, 8 * 60_000)).toBe(
+      '12 findings unblocked by a human reply over the last 24 hours; median wait 8m. Skip and snooze are not counted.',
+    );
+  });
+
+  test('omits volume from the title when sampleCount is 0', () => {
+    expect(formatTimeToUnblockChipTitle(0, 8 * 60_000)).toBe(
+      'Median time a finding waited for a human reply over the last 24 hours',
+    );
+  });
+
+  test('names a non-default window in hours', () => {
+    expect(formatTimeToUnblockChipTitle(12, 8 * 60_000, 12 * 3_600_000)).toContain('last 12 hours');
   });
 });
 
