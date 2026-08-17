@@ -6,7 +6,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
+
+vi.mock('../store/onboarding-store.js', () => ({
+  open: vi.fn(),
+}));
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -42,6 +47,7 @@ describe('OverviewEmptyState', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.mocked(openOnboardingTour).mockClear();
     syncGlobalStore();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -140,6 +146,28 @@ describe('OverviewEmptyState', () => {
     render({ runningCount: 2 });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
+  });
+
+  test('first-run empty state shows a Take the tour affordance that reopens the tour', () => {
+    render();
+
+    const link = container.querySelector<HTMLButtonElement>('.overview-tour-link');
+    expect(link).not.toBeNull();
+    expect(container.querySelector('.overview-tour-reentry')?.textContent).toContain('New to Kookr?');
+    expect(link?.textContent).toContain('Take the tour');
+
+    act(() => {
+      link?.click();
+    });
+    expect(openOnboardingTour).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not show the Take the tour affordance in the returning-empty all-clear branch', () => {
+    render({ runningCount: 2 });
+
+    expect(container.textContent).toContain('All clear — agents working autonomously.');
+    expect(container.querySelector('.overview-tour-reentry')).toBeNull();
+    expect(container.querySelector('.overview-tour-link')).toBeNull();
   });
 
   test('keyboard hint includes the command palette and quick launch shortcuts', () => {
