@@ -2792,6 +2792,13 @@ Launch and stall.
     store.replace({ ...store.get(schedule.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
 
     let launchCount = 0;
+    // Resolves the instant the launcher is entered — a deterministic signal that
+    // the first fire reached its launcher, independent of the wall-clock cap
+    // (issue #2542).
+    let signalLauncherEntered!: () => void;
+    const launcherEntered = new Promise<void>((resolve) => {
+      signalLauncherEntered = resolve;
+    });
     const runner = new ScheduleRunner({
       store,
       service,
@@ -2799,6 +2806,7 @@ Launch and stall.
       fireTimeoutMs: 200,
       launcher: async () => {
         launchCount += 1;
+        signalLauncherEntered();
         return new Promise<never>(() => {}); // never settles — the fire stays in flight
       },
       getActiveCount: () => 0,
@@ -2813,9 +2821,35 @@ Launch and stall.
     const forceDue = () =>
       store.replace({ ...store.get(schedule.id)!, lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
 
-    // First tick launches once and is bounded by the cap.
-    await runner.tick();
+    // First tick launches once and is bounded by the cap. Wait on the
+    // launcher-entered signal — NOT the wall-clock cap — before asserting the
+    // launch happened (issue #2542): fire()'s fs-persist prefix races the 200ms
+    // cap, so under parallel-load CPU contention the cap can fire before fire()
+    // reaches the launcher, leaving launchCount at 0 here. `launcherEntered`
+    // resolves deterministically the moment the launcher runs, regardless of
+    // scheduler slack; awaiting `firstTick` afterward lets the cap release the
+    // tick's `firing` gate so the subsequent ticks below actually run their
+    // fire loop.
+    const firstTick = runner.tick();
+    // Bound the signal wait so a genuine regression — fire()'s pre-launcher
+    // prefix failing before it ever reaches the launcher — fails fast with a
+    // clear message instead of hanging to the vitest test timeout (which, since
+    // .hooks/pre-push runs the suite, would wedge the very gate this fix keeps
+    // green). The happy path resolves via `launcherEntered` far under this
+    // bound; the timer is a diagnostic guard, not a race the assertion depends
+    // on, and is cleared the instant the signal wins so it never lingers.
+    let entryGuard: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      launcherEntered.finally(() => { if (entryGuard) clearTimeout(entryGuard); }),
+      new Promise<never>((_, reject) => {
+        entryGuard = setTimeout(
+          () => reject(new Error('launcher was never entered within 5s — fire() prefix likely threw before reaching the launcher (issue #2542)')),
+          5_000,
+        );
+      }),
+    ]);
     expect(launchCount).toBe(1);
+    await firstTick;
 
     // Subsequent ticks — schedule due each time, fire still in flight — must
     // NOT launch again.

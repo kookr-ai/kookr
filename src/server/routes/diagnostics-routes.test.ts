@@ -2687,10 +2687,17 @@ describe('diagnostics routes', () => {
     test('overlapping requests share one assembly', async () => {
       const taskStore = new TaskStore();
       const viewSpy = vi.spyOn(taskStore, 'viewTasks');
+      // Freeze the clock (issue #2542): healthCacheAgeMs is computed from nowMs()
+      // at each emit. On the real clock the two overlapping emits can land ~1ms
+      // apart under parallel-load CPU contention, breaking the whole-body toEqual
+      // on that live gauge alone even though the single-flight cache is shared.
+      // A fixed clock makes the volatile field deterministic without weakening
+      // the assertion.
       const app = mkApp({
         taskStore,
         queue: new AttentionQueue(),
         buildInfo: {} as never,
+        nowMs: () => 1_700_000_000_000,
       });
 
       const [first, second] = await Promise.all([
