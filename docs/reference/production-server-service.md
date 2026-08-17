@@ -201,10 +201,16 @@ makes progress, so nothing exits and systemd never restarts it. The malloc knobs
 above reduce the OOM pressure that *causes* some crashes; they do nothing for a
 loop that is stuck.
 
-Do not begin hang triage with `curl .../api/health`. `/api/health` is always-200
-and is served from an in-process cache (stale-while-revalidate), so a wedged
-server can still return a stale `200` from the cached body — a green `/api/health`
-does **not** prove the loop is live. Start from the process supervisor instead:
+Do not begin hang triage with `curl .../api/health`. `/api/health` is a soft
+surface: it returns `200` by design even while a *critical* subsystem is degraded
+(that state is what `/api/ready` reports as `503`), and it is served from an
+in-process stale-while-revalidate cache, so during partial degradation or the
+moments before a loop fully wedges it can hand back a stale `200` from the cached
+body. A green `/api/health` therefore does **not** prove the loop is healthy. (A
+*fully* wedged single-threaded loop serves nothing at all — `/api/health`
+included — so there the symptom is a timeout, not a green check; the cache cannot
+heal a fully wedged loop, only the stampede-before-wedge window.) Start from the
+process supervisor instead:
 
 1. **Is the unit still "running"?** A hang looks `active (running)` here — that is
    the point. This step is only to rule out a plain crash-loop or a clean exit.
