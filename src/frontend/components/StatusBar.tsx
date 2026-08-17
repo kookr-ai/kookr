@@ -15,9 +15,11 @@ import {
 import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
 import {
   TIME_TO_UNBLOCK_MIN_SAMPLES,
+  TIME_TO_UNBLOCK_WINDOW_MS,
   formatUnblockWait,
   type TimeToUnblockSnapshot,
 } from '../../shared/contracts/time-to-unblock.js';
+import { getTimeToUnblock } from '../api/index.js';
 import {
   formatFaaResidualAge,
   formatFaaResidualLabel,
@@ -349,11 +351,8 @@ export function StatusBar({
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (typeof fetch !== 'function') return;
       try {
-        const res = await fetch('/api/diagnostics/time-to-unblock', { cache: 'no-store' });
-        if (!res.ok) return;
-        const body = await res.json() as TimeToUnblockSnapshot;
+        const body = await getTimeToUnblock();
         if (!cancelled) setTimeToUnblock(body);
       } catch {
         if (!cancelled) setTimeToUnblock(null);
@@ -393,7 +392,7 @@ export function StatusBar({
             className="time-to-unblock-pill"
             data-testid="time-to-unblock-chip"
             role="status"
-            title={`Median time a finding waited for a human reply over the last 24 hours (${timeToUnblock.sampleCount} samples)`}
+            title={`Median time a finding waited for a human reply over the last ${Math.round((timeToUnblock.windowMs || TIME_TO_UNBLOCK_WINDOW_MS) / 3_600_000)} hours (${timeToUnblock.sampleCount} samples)`}
           >
             median unblock {formatUnblockWait(timeToUnblock.medianMs)}
           </span>

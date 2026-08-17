@@ -1,6 +1,7 @@
 import { fetchResult, getJson, apiFetch, type ApiResult } from './client.js';
 import type { CostComparisonResponse } from '../../shared/contracts/cost-comparison.js';
 import type { OutcomeLedgerResponse } from '../../shared/contracts/outcome-ledger.js';
+import type { TimeToUnblockSnapshot } from '../../shared/contracts/time-to-unblock.js';
 
 export interface CostComparisonQuery {
   window: string;
@@ -60,4 +61,16 @@ export function getLiveFrictionCalibration<T>(): Promise<T> {
 /** GET the finding-evidence operations diagnostics. Throws `HTTP <status>` on a non-2xx. */
 export function getFindingEvidenceOperationsDiagnostics<T>(signal: AbortSignal): Promise<T> {
   return getJson<T>('/api/finding-evidence-operations-diagnostics', { signal });
+}
+
+/**
+ * GET the 24-hour median human-reply wait (issue #2583). Throws `HTTP <status>`
+ * on a non-2xx; the StatusBar chip hides itself when this fails or when
+ * `sampleCount` is below five.
+ */
+export function getTimeToUnblock(signal?: AbortSignal): Promise<TimeToUnblockSnapshot> {
+  return getJson<TimeToUnblockSnapshot>('/api/diagnostics/time-to-unblock', {
+    cache: 'no-store',
+    signal,
+  });
 }

@@ -8,6 +8,7 @@ import { StatusBar } from './StatusBar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests, recordAudioAlertDecision } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
+import { TIME_TO_UNBLOCK_MIN_SAMPLES } from '../../shared/contracts/time-to-unblock.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -233,7 +234,7 @@ describe('StatusBar reflection prompt', () => {
       json: async () => ({
         schemaVersion: 'time-to-unblock.v1',
         medianMs: 12 * 60_000,
-        sampleCount: 5,
+        sampleCount: TIME_TO_UNBLOCK_MIN_SAMPLES,
         windowMs: 24 * 60 * 60 * 1000,
         generatedAt: new Date().toISOString(),
       }),
@@ -263,7 +264,7 @@ describe('StatusBar reflection prompt', () => {
       json: async () => ({
         schemaVersion: 'time-to-unblock.v1',
         medianMs: 12 * 60_000,
-        sampleCount: 4,
+        sampleCount: TIME_TO_UNBLOCK_MIN_SAMPLES - 1,
         windowMs: 24 * 60 * 60 * 1000,
         generatedAt: new Date().toISOString(),
       }),

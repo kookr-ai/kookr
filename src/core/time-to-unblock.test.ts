@@ -110,6 +110,11 @@ describe('formatUnblockWait', () => {
     expect(formatUnblockWait(HOUR + 5 * 60_000)).toBe('1h 5m');
     expect(formatUnblockWait(2 * 24 * HOUR)).toBe('2d');
   });
+
+  test('non-finite and negative waits render as an em dash', () => {
+    expect(formatUnblockWait(Number.NaN)).toBe('—');
+    expect(formatUnblockWait(-1)).toBe('—');
+  });
 });
 
 describe('computeTimeToUnblockFromDir', () => {

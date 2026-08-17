@@ -1,7 +1,6 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  emptyTimeToUnblockSnapshot,
   TIME_TO_UNBLOCK_SCHEMA_VERSION,
   TIME_TO_UNBLOCK_WINDOW_MS,
   type TimeToUnblockSnapshot,
@@ -113,11 +112,4 @@ export async function listRecentInteractionLogPaths(
     }
   }
   return recent;
-}
-
-export function emptySnapshot(
-  nowMs: number,
-  windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
-): TimeToUnblockSnapshot {
-  return emptyTimeToUnblockSnapshot(nowMs, windowMs);
 }
