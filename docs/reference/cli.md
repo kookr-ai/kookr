@@ -766,7 +766,7 @@ Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"`
 
 ### Offline degrade (`--offline`, issue #2495)
 
-After each successful `/api/health` assembly the server mirrors a redacted, size-capped (≤32 KiB) copy of the body to `<kookrDir>/last-good-health.json` (rotate-by-overwrite, throttled to ~5s / on a gauge edge). When the HTTP surface is dark — a wedged loop, a bound-but-unresponsive port, or an operator reachable only over the relay — that file is the remote surface that still works.
+After each successful `/api/health` assembly the server mirrors a redacted, size-capped (≤32 KiB) copy of the body to `<kookrDir>/last-good-health.json` (rotate-by-overwrite, owner-only mode `0o600`, throttled to ~5s / on a gauge edge). When the HTTP surface is dark — a wedged loop, a bound-but-unresponsive port, or an operator reachable only over the relay — that file is the remote surface that still works.
 
 `kookr ops digest --offline` skips HTTP entirely and reads that snapshot, printing how stale it is (`last-good: <age> stale  captured=<iso>`) plus the same warning set the live digest would surface, derived from the cached body. The live path *also* auto-degrades to the snapshot when the server is unreachable (`NO_SERVER` / `SERVER_ERROR`): the failing exit code is preserved, but the human output and `details.offline` still carry the cached body so a wedged box stays diagnosable.
 

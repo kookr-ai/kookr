@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   LastGoodHealthWriter,
+  LAST_GOOD_HEALTH_FILE_MODE,
   LAST_GOOD_HEALTH_SCHEMA_VERSION,
   LAST_GOOD_HEALTH_SIZE_CAP_BYTES,
   lastGoodHealthPath,
@@ -135,6 +136,33 @@ describe('LastGoodHealthWriter', () => {
     writeFileSync(filePath, 'not a dir');
     const writer = new LastGoodHealthWriter({ kookrDir: join(filePath, 'nested') });
     expect(() => writer.record(baseHealth())).not.toThrow();
+  });
+
+  test('writes last-good-health.json owner-only (mode 0o600)', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth());
+    expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(LAST_GOOD_HEALTH_FILE_MODE);
+  });
+
+  test('tightens a pre-existing world-readable snapshot to 0o600', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth());
+    chmodSync(lastGoodHealthPath(dir), 0o644);
+    expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(0o644);
+    // Gauge edge forces a rewrite inside the throttle window.
+    writer.record(baseHealth({ status: 'degraded' }));
+    expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(LAST_GOOD_HEALTH_FILE_MODE);
+  });
+
+  test('forces 0o600 even when umask would leave the file world-readable', () => {
+    const previousUmask = process.umask(0o000);
+    try {
+      const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+      writer.record(baseHealth());
+      expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(LAST_GOOD_HEALTH_FILE_MODE);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 });
 
