@@ -12,6 +12,7 @@ import {
   GETTING_STARTED_GUIDE_URL,
   OVERVIEW_RECENT_COMPLETED_LIMIT,
   OVERVIEW_RECENT_PLAYBOOK_LIMIT,
+  OVERVIEW_RUNNING_LIMIT,
   OverviewEmptyState,
 } from './OverviewEmptyState.js';
 
@@ -46,6 +47,20 @@ function makeWaitingAgent(agentId: string, taskName: string, overrides: Partial<
     },
     cwd: '/home/user/projects/demo',
     taskStatus: 'inProgress',
+    ...overrides,
+  };
+}
+
+function makeRunningAgent(agentId: string, taskName: string, overrides: Partial<AgentState> = {}): AgentState {
+  return {
+    agentId,
+    taskId: `task-${agentId}`,
+    taskName,
+    events: [],
+    anomaly: null,
+    cwd: '/tmp/projects/demo',
+    taskStatus: 'inProgress',
+    startedAt: '2026-06-20T10:00:00.000Z',
     ...overrides,
   };
 }
@@ -110,7 +125,7 @@ describe('OverviewEmptyState', () => {
     act(() => {
       root.render(React.createElement(OverviewEmptyState, {
         waiting: [],
-        runningCount: 0,
+        running: [],
         completed: [],
         onLaunch: vi.fn(),
         ...props,
@@ -121,7 +136,11 @@ describe('OverviewEmptyState', () => {
   test('renders aggregate counts for running / needs input / completed', () => {
     render({
       waiting: [makeWaitingAgent('agent-1', 'Fix the build')],
-      runningCount: 3,
+      running: [
+        makeRunningAgent('run-1', 'Watch logs'),
+        makeRunningAgent('run-2', 'Ship the dashboard'),
+        makeRunningAgent('run-3', 'Keep the worker warm'),
+      ],
       completed: [
         makeCompletedAgent('done-1', 'Ship the fix'),
         makeCompletedAgent('done-2', 'Tidy the changelog'),
@@ -145,7 +164,7 @@ describe('OverviewEmptyState', () => {
       makeWaitingAgent('agent-2', 'Review the diff'),
     ];
     useKookrStore.setState({ agents: waiting });
-    render({ waiting, runningCount: 0 });
+    render({ waiting });
 
     expect(container.textContent).toContain('Waiting on you');
     const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('.overview-waiting-row'));
@@ -179,7 +198,7 @@ describe('OverviewEmptyState', () => {
       }),
     ];
 
-    render({ waiting, runningCount: 0 });
+    render({ waiting });
 
     expect(container.querySelector('.overview-waiting-row')?.textContent).toContain('waiting 3d');
   });
@@ -189,12 +208,115 @@ describe('OverviewEmptyState', () => {
 
     expect(container.textContent).toContain('No agents running.');
     expect(container.querySelector('.overview-waiting')).toBeNull();
+    expect(container.querySelector('[data-testid="overview-running"]')).toBeNull();
+    expect(container.textContent).not.toContain('Running');
   });
 
   test('shows the all-clear message when agents run but none need input', () => {
-    render({ runningCount: 2 });
+    render({
+      running: [
+        makeRunningAgent('run-1', 'Watch logs'),
+        makeRunningAgent('run-2', 'Ship the dashboard'),
+      ],
+    });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
+  });
+
+  test('lists running tasks and clicking a row selects that agent', () => {
+    const running = [
+      makeRunningAgent('run-1', 'Watch logs'),
+      makeRunningAgent('run-2', 'Ship the dashboard'),
+    ];
+    useKookrStore.setState({ agents: running });
+    render({ running });
+
+    const section = container.querySelector('[data-testid="overview-running"]');
+    expect(section).not.toBeNull();
+    expect(container.textContent).toContain('Running');
+    const rows = Array.from(section?.querySelectorAll<HTMLButtonElement>('.overview-waiting-row') ?? []);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('Watch logs');
+    expect(rows[0].textContent).toContain('demo');
+    expect(rows[1].textContent).toContain('Ship the dashboard');
+    expect(section?.textContent).not.toContain('Relaunch');
+
+    act(() => {
+      rows[1].click();
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('run-2');
+    expect(useKookrStore.getState().selectedTaskId).toBe('task-run-2');
+  });
+
+  test('hides the Running block when no healthy agents are live', () => {
+    render({ waiting: [makeWaitingAgent('agent-1', 'Fix the build')] });
+
+    expect(container.querySelector('[data-testid="overview-running"]')).toBeNull();
+    expect(container.textContent).toContain('Waiting on you');
+    expect(container.textContent).toContain('Fix the build');
+    expect(container.querySelectorAll('.overview-waiting-row')).toHaveLength(1);
+  });
+
+  test('caps the Running list at six and points overflow at the healthy rail', () => {
+    render({
+      running: Array.from({ length: OVERVIEW_RUNNING_LIMIT + 2 }, (_, i) =>
+        makeRunningAgent(`run-${i}`, `Live task ${i}`),
+      ),
+    });
+
+    const section = container.querySelector('[data-testid="overview-running"]');
+    expect(section?.querySelectorAll('.overview-waiting-row')).toHaveLength(OVERVIEW_RUNNING_LIMIT);
+    expect(container.textContent).toContain('Live task 0');
+    expect(container.textContent).toContain(`Live task ${OVERVIEW_RUNNING_LIMIT - 1}`);
+    expect(container.textContent).not.toContain(`Live task ${OVERVIEW_RUNNING_LIMIT}`);
+    expect(container.textContent).toContain('+2 more in Healthy');
+    expect(section?.textContent).not.toContain('Relaunch');
+  });
+
+  test('does not show an overflow line when exactly six running tasks exist', () => {
+    render({
+      running: Array.from({ length: OVERVIEW_RUNNING_LIMIT }, (_, i) =>
+        makeRunningAgent(`run-${i}`, `Live task ${i}`),
+      ),
+    });
+
+    const section = container.querySelector('[data-testid="overview-running"]');
+    expect(section?.querySelectorAll('.overview-waiting-row')).toHaveLength(OVERVIEW_RUNNING_LIMIT);
+    expect(container.textContent).not.toContain('more in Healthy');
+  });
+
+  test('omits the running duration when startedAt is missing', () => {
+    render({
+      running: [makeRunningAgent('run-1', 'Watch logs', { startedAt: undefined })],
+    });
+
+    const row = container.querySelector('[data-testid="overview-running"] .overview-waiting-row');
+    expect(row?.textContent).toContain('Watch logs');
+    expect(row?.textContent).toContain('demo');
+    expect(row?.textContent).not.toMatch(/running /);
+  });
+
+  test('shows how long a running task has been live', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T10:12:00.000Z'));
+    render({
+      running: [makeRunningAgent('run-1', 'Watch logs', { startedAt: '2026-06-20T10:00:00.000Z' })],
+    });
+
+    expect(container.querySelector('[data-testid="overview-running"]')?.textContent).toContain('running 12m');
+  });
+
+  test('leaves the waiting list and first-run links alone when both waiting and running exist', () => {
+    const waiting = [makeWaitingAgent('agent-1', 'Fix the build')];
+    const running = [makeRunningAgent('run-1', 'Watch logs')];
+    render({ waiting, running });
+
+    expect(container.textContent).toContain('Waiting on you');
+    expect(container.textContent).toContain('Fix the build');
+    expect(container.textContent).toContain('Watch logs');
+    expect(container.querySelector('.overview-tour-reentry')).toBeNull();
+    expect(container.textContent).not.toContain('Getting Started');
+    expect(container.textContent).not.toContain('Check setup');
   });
 
   test('first-run empty state shows a Take the tour affordance that reopens the tour', () => {
@@ -237,7 +359,12 @@ describe('OverviewEmptyState', () => {
   });
 
   test('does not show the first-run setup links in the returning-empty all-clear branch', () => {
-    render({ runningCount: 2 });
+    render({
+      running: [
+        makeRunningAgent('run-1', 'Watch logs'),
+        makeRunningAgent('run-2', 'Ship the dashboard'),
+      ],
+    });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
     expect(container.querySelector('.overview-tour-reentry')).toBeNull();
@@ -309,11 +436,16 @@ describe('OverviewEmptyState', () => {
 
   test('re-reads recents after a same-tab launch updates localStorage', () => {
     seedRecentPlaybooks(['/project::old.md']);
-    render({ runningCount: 1 });
+    render({ running: [makeRunningAgent('run-1', 'Watch logs')] });
     expect(container.querySelector('[data-testid="overview-recent-playbook"]')?.textContent).toBe('old');
 
     seedRecentPlaybooks(['/project::new.md', '/project::old.md']);
-    render({ runningCount: 2 });
+    render({
+      running: [
+        makeRunningAgent('run-1', 'Watch logs'),
+        makeRunningAgent('run-2', 'Ship the dashboard'),
+      ],
+    });
     const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
     expect(chips.map((chip) => chip.textContent)).toEqual(['new', 'old']);
   });
@@ -347,7 +479,12 @@ describe('OverviewEmptyState', () => {
 
   test('recent playbooks stay visible after tasks exist and leave first-run links alone', () => {
     seedRecentPlaybooks(['legacy-bare.md']);
-    render({ runningCount: 2 });
+    render({
+      running: [
+        makeRunningAgent('run-1', 'Watch logs'),
+        makeRunningAgent('run-2', 'Ship the dashboard'),
+      ],
+    });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
     expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).not.toBeNull();
