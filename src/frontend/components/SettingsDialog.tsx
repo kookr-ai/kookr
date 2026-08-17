@@ -27,6 +27,7 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useKookrStore } from '../store/useStore.js';
 import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
+import { applyQuotaHeadroomThreshold } from '../store/quota-headroom-threshold.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import type {
@@ -54,6 +55,8 @@ interface ServerSettings {
   cleanupWorktreeOnComplete: boolean;
   defaultAgentType: AgentSelection;
   roundRobinIndex?: number;
+  /** Live Claude plan-quota gate; Launch dialog reuses this without changing it. */
+  quotaHeadroomThreshold?: number;
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
@@ -650,6 +653,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         // effect immediately, even before the operator edits anything.
         setQuietHoursWindows(data.quietHours ?? []);
         applyRoundRobinIndex(data.roundRobinIndex);
+        applyQuotaHeadroomThreshold(data.quotaHeadroomThreshold);
         setLoading(false);
       })
       .catch((err) => {
@@ -766,6 +770,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         // Re-mirror the server-normalized windows (invalid ones dropped) so the
         // live gate matches exactly what was persisted.
         setQuietHoursWindows(saved.quietHours ?? []);
+        applyQuotaHeadroomThreshold(saved.quotaHeadroomThreshold);
         onSettingsSaved?.(saved);
       } catch (err) {
         if (saveId === latestSaveIdRef.current) {

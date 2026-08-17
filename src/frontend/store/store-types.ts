@@ -142,6 +142,12 @@ export interface TransportSessionSlice {
    * when the Launch dialog preflight runs.
    */
   roundRobinIndex: number;
+  /**
+   * Live `settings.quotaHeadroomThreshold` (0–100). Launch dialog copy uses
+   * this with the same evaluator as server admission; 0 disables the warning
+   * because the server gate is also off. Default 90 until settings hydrate.
+   */
+  quotaHeadroomThreshold: number;
   buildInfo: BuildInfo | null;
   serverStartedAt: string | null;
   playbooks: Playbook[];

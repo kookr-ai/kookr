@@ -10,6 +10,7 @@ import {
 import { clearSelectedTask, loadSelectedTask } from '../selected-task-storage.js';
 import { loadDeployIntentActive, saveDeployIntent } from '../deploy-intent-storage.js';
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
+import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../../shared/quota-headroom-admission.js';
 
 function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'terminated';
@@ -197,6 +198,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     availableAgentTypes: [],
     defaultAgentType: 'claude-code',
     roundRobinIndex: 0,
+    quotaHeadroomThreshold: QUOTA_NO_HEADROOM_UTILIZATION,
     buildInfo: null,
     serverStartedAt: null,
     playbooks: [],

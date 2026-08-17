@@ -4160,7 +4160,8 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-bright);
 }
 
-.grok-auth-banner {
+.grok-auth-banner,
+.launch-quota-banner {
   margin: 8px 0 12px;
   padding: 8px 12px;
   background: rgba(251, 191, 36, 0.12);

@@ -28,7 +28,9 @@ import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import { optionalLaunchPins } from './launch-effort-model.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
+import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
+import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import { ROUND_ROBIN_AGENT_TYPE } from '../../shared/contracts/agent-types.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
@@ -320,6 +322,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     grokAuth?.status,
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
+  );
+  const quotaWarning = useLaunchQuotaWarning(
+    agentType,
+    grokAuth ? !grokAuth.launchWouldRefuse : undefined,
   );
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -767,6 +773,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             {showGrokAuthBanner && grokAuth?.message && (
               <GrokAuthPreflightBanner message={grokAuth.message} />
             )}
+            {quotaWarning && (
+              <LaunchQuotaBanner message={quotaWarning.message} />
+            )}
             {activeDuplicate && (
               <LaunchDuplicateBanner
                 taskName={activeDuplicate.taskName ?? undefined}
@@ -809,6 +818,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch || Boolean(activeDuplicate)}
                 aria-describedby={[
                   showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
+                  quotaWarning ? LAUNCH_QUOTA_BANNER_ID : null,
                   activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
                 ].filter(Boolean).join(' ') || undefined}
               >

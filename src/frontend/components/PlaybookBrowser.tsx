@@ -19,6 +19,8 @@ import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/pl
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
+import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { launchLoopedPlaybook, replaceRalphLoopWithNew } from '../api/index.js';
 import { FilterableSelect } from './FilterableSelect.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -306,6 +308,10 @@ export function PlaybookBrowser({
     grokAuth?.status,
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
+  );
+  const quotaWarning = useLaunchQuotaWarning(
+    agentType,
+    grokAuth ? !grokAuth.launchWouldRefuse : undefined,
   );
   const [showOtherAuthorWarning, setShowOtherAuthorWarning] = useState(false);
   const [suppressOtherAuthorWarning, setSuppressOtherAuthorWarning] = useState(false);
@@ -890,6 +896,9 @@ export function PlaybookBrowser({
         {showGrokAuthBanner && grokAuth?.message && (
           <GrokAuthPreflightBanner message={grokAuth.message} />
         )}
+        {quotaWarning && (
+          <LaunchQuotaBanner message={quotaWarning.message} />
+        )}
 
         {conflict && (
           conflict.kind === 'duplicate_active_loop' ? (
@@ -974,7 +983,10 @@ export function PlaybookBrowser({
             type="submit"
             className="btn-primary"
             disabled={!canLaunch() || conflict !== null}
-            aria-describedby={showGrokAuthBanner ? GROK_AUTH_BANNER_ID : undefined}
+            aria-describedby={[
+              showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
+              quotaWarning ? LAUNCH_QUOTA_BANNER_ID : null,
+            ].filter(Boolean).join(' ') || undefined}
           >
             {launchMode === 'looped' ? 'Launch Looped' : 'Launch Playbook'}
           </button>
