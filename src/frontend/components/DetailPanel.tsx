@@ -11,6 +11,7 @@ import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
+import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { getSettingsSnapshot, getTask, getTaskShares } from '../api/index.js';
@@ -995,6 +996,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
         </div>
         <div className="detail-header-right">
           <TaskIdCopyButton taskId={agent.taskId} />
+          <DashboardLinkCopyButton taskId={agent.taskId} />
           {agent.taskId && (
             <button
               type="button"

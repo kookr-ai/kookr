@@ -4,6 +4,7 @@ import type { Anomaly, AnomalySeverity } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { DeliveryTraceRecorder } from '../../core/delivery-trace.js';
 import type { ProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
+import { dashboardTaskUrl } from '../../shared/dashboard-task-url.js';
 
 export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = 'kookr.finding.webhook.v1';
 /** Hard cap on KOOKR_WEBHOOK_URL length (env/config abuse / log noise). */
@@ -346,7 +347,13 @@ export class WebhookNotifier {
       event: 'finding.admitted',
       fingerprint: event.fingerprint,
       sentAt: this.now().toISOString(),
-      ...(this.config.dashboardBaseUrl ? { dashboardUrl: this.config.dashboardBaseUrl } : {}),
+      ...(this.config.dashboardBaseUrl
+        ? {
+            dashboardUrl: latestTask
+              ? dashboardTaskUrl(this.config.dashboardBaseUrl, latestTask.id)
+              : this.config.dashboardBaseUrl,
+          }
+        : {}),
       finding: {
         agentId: event.agentId,
         type: event.anomaly.type,

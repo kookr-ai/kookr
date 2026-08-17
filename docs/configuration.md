@@ -311,7 +311,7 @@ Top-level fields:
 | `event` | string | yes | Event discriminator. Currently the literal `finding.admitted` (a finding entered the active attention queue). |
 | `fingerprint` | string | yes | Stable dedupe key for this finding. Repeated values are the same logical finding; treat delivery as an idempotent no-op. |
 | `sentAt` | string | yes | ISO 8601 timestamp of when Kookr sent this POST. |
-| `dashboardUrl` | string | no | Absolute link to the finding in the dashboard. Present only when a dashboard base URL is configured. |
+| `dashboardUrl` | string | no | Absolute dashboard link. Present only when a dashboard base URL is configured. When the finding maps to a known task, this is the per-task deep link (`/?task=<id>`); otherwise it is the configured base URL. |
 | `finding` | object | yes | The finding details (see below). |
 | `task` | object | no | The originating task (see below). Present only when the finding maps to a known task. |
 
@@ -347,7 +347,7 @@ Example body:
   "event": "finding.admitted",
   "fingerprint": "sess-42:needs_input:abc123",
   "sentAt": "2026-01-15T09:24:31.000Z",
-  "dashboardUrl": "http://127.0.0.1:4801/#/agent/sess-42",
+  "dashboardUrl": "http://127.0.0.1:4801/?task=task-99",
   "finding": {
     "agentId": "sess-42",
     "type": "needs_input",
