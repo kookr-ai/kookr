@@ -1239,169 +1239,215 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * (queue-feeder 2026-08-17, invent-product-wave #2069) #3114–#3116
  * (stale q4-json re-probe / empty list feed_no_match / IR-advisory
  * clock) shipped and are title-exhausted. Invent wave 24
- * (queue-feeder 2026-08-17, invent-product-wave #2069) is the next
- * Goal-1 slice after wave 23: leftovers the 17 Aug T-15h floor check
+ * (queue-feeder 2026-08-17, invent-product-wave #2069) #3134–#3136
+ * (q4-unvalidated issuer-page continue / advisory event_seen /
+ * overview→press-releases persist) shipped and are title-exhausted
+ * (lucy PRs #3141 / #3143 / #3140). Invent wave 25
+ * (queue-feeder 2026-08-18, invent-product-wave #2069) is the next
+ * Goal-1 slice after wave 24: leftovers the 17 Aug T-11h floor
+ * check (post-4f7a32fe recreate, HD ~11h out, verdict FLOOR_INTACT)
  * and the live prod registry still show on the armed 18–20 Aug
- * cluster. After the 18:45Z armed q4 re-probe, GOOGL / AAPL / DE
- * stamped "q4 feed earnings items did not validate" — the list was
- * not empty (#3115) and the probe was not stale (#3114), but the
- * issuer news page still has to run in that same window. HD / LOW /
- * ADI / TJX / WMT IR pages are advisory-or-calendar only (dated
- * "will report", webcast, no results file) and must stamp
- * event_seen_no_content instead of terminal no_source. ROST / WMT /
- * TGT store an overview/homepage ir_url; persist the same-host
- * press-releases child before the window, not only after
- * verification_reject (#3094) or content_too_short (#2986). Do not
- * re-file #3114–#3116 / #3092–#3094 / #3082–#3084 / #2986 / #2684 /
- * #2558 / #3131–#3133. Live GitHub leaves are filed this run. Title
- * idempotency prevents re-emit once those exist.
+ * cluster. #3134 only continues the issuer page after a *q4-json*
+ * list fails validation; CMG is still parked
+ * `failed` / "rss feed earnings items did not validate" (checked
+ * 2026-07-26) and the RSS collect/probe path must not spend the
+ * issuer HTML attempt. After #3140, HD's stored IR URL is the
+ * year-archive `ir.homedepot.com/news-releases/2026` (200, title
+ * "News Releases 2026") with no current-period earnings href —
+ * #3135 only stamps events/advisory/calendar pages, not a news
+ * listing; the same host already exposes
+ * `/financial-reports/quarterly-earnings/2026` (200, also no Q2
+ * file yet — that is where the package will land). WMT is still
+ * `stock.walmart.com/financial-information/financial-results`
+ * (not an overview hub, so #3136 did not move it); T-11h: no Q2
+ * FY27 release file on that archive, hub still lists the Aug-20
+ * conference-call advisory — do not accept a prior-period file as
+ * the current report and do not terminal-no_source. Do not re-file
+ * #3134–#3136 / #3114–#3116 / #3092–#3094 / #3082–#3084 / #2986 /
+ * #2684. Live GitHub leaves are filed this run. Title idempotency
+ * prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): still collect the issuer page when q4-json items fail earnings validation',
+      'feat(acquisition): still collect the issuer page when RSS items fail earnings validation',
     goal:
-      'A company JSON press-release feed can list headlines that look ' +
-      'like earnings while the linked body or PDF fails the "this is ' +
-      'actually a report" check. Lucy then treats that failed feed as if ' +
-      'the issuer path is done, and does not also fetch the company\'s ' +
-      'own news page in the same window — after the 17 Aug 18:45Z ' +
-      're-check of already-queued tickers, GOOGL, AAPL, and DE all ' +
-      'stopped there with reason "q4 feed earnings items did not ' +
-      'validate." Under umbrella #1587, a non-empty q4-json list ' +
-      '(GetPressReleaseList) whose items fail that check must still ' +
-      'collect the issuer HTML page and continue through stealth render ' +
-      '(JS/bot-wall) and SEC/classic; the failure must not spend the ' +
-      'issuer attempt as a dead feed. Nearby #3114 only re-probes a ' +
-      'stale failed/empty feed; #3115 only names a truly empty list ' +
-      'feed_no_match (surface checked, no matching item). Do not re-file ' +
-      'those. Do not rewrite detections.jsonl.',
-    acceptanceCriteria: [
-      'Trigger: armed or about-to-arm ticker, usable q4-json feed_url, ' +
-        'and collectQ4Feed / the armed re-probe returns sawEarnings && ' +
-        '!sawValidated (reason "q4 feed earnings items did not validate" ' +
-        'or "q4 feed pdf-only body empty"). Action: issuer-page collect ' +
-        '(and already-scheduled stealth / SEC / classic) still run in ' +
-        'the same window. A GOOGL/AAPL/DE-shaped row must not skip the ' +
-        'issuer page solely because the feed items failed validation. ' +
-        'Do not invent a URL. Do not rewrite detections.jsonl.',
-      'An empty list remains #3115. A stale failed stamp re-probe ' +
-        'remains #3114. A list with a validating current-period item is ' +
-        'unchanged (issuer_verified). Operator-aborted and source-' +
-        'blocklisted jobs still skip. Do not invent a new missClass. ' +
-        'Do not re-file #3114 or #3115.',
-      'Unit/fixture tests cover: (a) non-empty list whose items fail ' +
-        'validate → issuer page still attempted; (b) validating item ' +
-        'still hits the feed and does not force an extra page; (c) empty ' +
-        'list unchanged (#3115); (d) aborted/blocklisted skip; (e) no ' +
-        'jsonl rewrite.',
-    ],
-    fileHints: [
-      'src/acquisition/tiers/issuer.js (collectQ4Feed / q4MissReason)',
-      'src/acquisition/issuer-url-resolver.js (armedQ4ReprobeReason)',
-      'src/scheduler-active-window-poll.js (do not skip issuer page)',
-    ],
-    testHints: [
-      'unit: sawEarnings && !sawValidated → issuer page still runs',
-      'unit: validating q4 item still hits the feed',
-      'unit: empty list still follows #3115',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): stamp event_seen_no_content on advisory-only issuer pages and keep the watch live',
-    goal:
-      'Some issuer calendars announce an upcoming earnings release ' +
-      '(date, time, webcast) without linking the results document yet. ' +
-      'The 17 Aug check fifteen hours before the window found Home ' +
-      'Depot\'s IR events page listing "August 18, 2026 9:00 am ET — Q2 ' +
-      '2026 EARNINGS RELEASE" with a webcast and no results file; LOW, ' +
-      'ADI, TJX, and WMT look the same for 19–20 Aug. Lucy already ' +
-      'alerts operators when the share of "we saw the event but have no ' +
-      'report text" misses is high (#2684), but that advisory/calendar ' +
-      'row is still easy to record as no_source (pure silence — nothing ' +
-      'seen). Under umbrella #1587, treat that page as event-seen: set ' +
-      'eventDetected so the miss classifies as event_seen_no_content ' +
-      '(existing codes), and keep the watch live until a results ' +
-      'document appears. Do not re-file #2684. Do not rewrite ' +
+      'A company RSS or Atom feed can list earnings-looking ' +
+      'headlines whose linked articles fail the "this is actually a ' +
+      'report" check. Lucy then treats that failed feed as the end ' +
+      'of the issuer path and never fetches the company\'s own news ' +
+      'HTML in the same window. Wave 24 already fixed this only for ' +
+      'company JSON feeds (q4-json / GetPressReleaseList). Chipotle ' +
+      'is still marked failed with "rss feed earnings items did not ' +
+      'validate" (RSS news-releases?pagetemplate=rss, checked ' +
+      '2026-07-26), while the HTML listing ir.chipotle.com/' +
+      'news-releases is a different URL and still loads. This leaf: ' +
+      'when a non-empty RSS/Atom feed\'s items fail that check ' +
+      '(historical reason "rss feed earnings items did not ' +
+      'validate", or live collect "feed entry did not validate as ' +
+      'today\'s release"), still collect the issuer HTML page and ' +
+      'continue through later fallbacks (stealth render, SEC, ' +
+      'classic). Do not re-file #3134. Do not rewrite ' +
       'detections.jsonl.',
     acceptanceCriteria: [
-      'An issuer page that is an events / advisory / calendar listing ' +
-        'with a dated current-period "will report" or earnings-release ' +
-        'row and no results PDF/HTML href must stamp eventDetected + ' +
-        'event_seen_no_content (existing codes — do not invent a ' +
-        'missClass). The watch stays armed. An HD-shaped calendar + ' +
-        'webcast page must not become a terminal no_source solely for ' +
-        'lack of a results file. Do not rewrite detections.jsonl.',
-      'A page that already has a validating earnings-release href is ' +
-        'unchanged (#3094). Operator-aborted and source-blocklisted jobs ' +
-        'still refuse. #2684 alert thresholds are unchanged. Do not ' +
-        're-file #2684 or #3094.',
-      'Unit/fixture tests cover: (a) HD-shaped calendar + dated event + ' +
-        'webcast, no results → event_seen_no_content and the watch stays ' +
-        'live; (b) page with a results href still collects; (c) no dated ' +
-        'event → do not invent event_seen_no_content; (d) aborted/' +
+      'Trigger: an armed or about-to-arm ticker with a usable RSS ' +
+        'feed_url, and the RSS probe/collect (probeHistoricalRssFeed ' +
+        '/ collectRssFeed) saw earnings-shaped items that failed the ' +
+        'real-report check (sawEarnings && !validated, reasons "rss ' +
+        'feed earnings items did not validate" or "feed entry did ' +
+        'not validate as today\'s release"). Action: still run ' +
+        'issuer-page collect and the already-scheduled later ' +
+        'fallbacks in the same window. A Chipotle-shaped row must ' +
+        'not skip the HTML news listing solely because the RSS ' +
+        'items failed validation. Do not invent a URL. Do not ' +
+        'rewrite detections.jsonl.',
+      'A q4-json validation-fail remains #3134. An empty RSS with ' +
+        'no earnings-shaped item is a different miss (feed_no_match ' +
+        '/ no historical rss earnings item), not this leaf. A ' +
+        'validating current-period RSS item is unchanged ' +
+        '(issuer_verified). Operator-aborted and source-blocklisted ' +
+        'jobs still skip. Do not add a new miss class. Do not ' +
+        're-file #3134.',
+      'Unit/fixture tests cover: (a) RSS items fail validate → ' +
+        'issuer HTML page still attempted; (b) validating RSS item ' +
+        'still hits the feed and does not force an extra page; ' +
+        '(c) q4-json path unchanged (#3134); (d) aborted/' +
         'blocklisted skip; (e) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/acquisition/event-content-status.js (EVENT_SEEN_NO_CONTENT)',
-      'src/acquisition/listing-hub-href-follow.js (SCHEDULING_LISTING_RE)',
-      'src/acquisition/tiers/issuer.js (issuer page collect)',
+      'src/acquisition/tiers/issuer.js (collectRssFeed / probeHistoricalRssFeed)',
+      'src/scheduler-active-window-poll.js (do not skip issuer page)',
+      'src/acquisition/issuer-url-resolver.js (feed_kind=rss miss must not park issuer HTML)',
     ],
     testHints: [
-      'unit: advisory/calendar + dated event, no results → event_seen_no_content',
-      'unit: results href still collects',
-      'unit: no dated event does not invent the stamp',
+      'unit: RSS sawEarnings && !validated → issuer page still runs',
+      'unit: validating RSS item still hits the feed',
+      'unit: q4-json validation-fail still follows #3134',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): persist a press-releases child URL when ir_url is an overview hub',
+      'feat(acquisition): follow a same-host quarterly-earnings child when the news listing has no current-period item',
     goal:
-      'Several tickers queued for the 18–20 Aug window store a company ' +
-      'investor-relations homepage or "overview" hub instead of the ' +
-      'news/press-releases listing (ROST investors.rossstores.com titled ' +
-      '"overview"; WMT stock.walmart.com; TGT corporate.target.com/' +
-      'investors). Later fetches therefore start from the hub every ' +
-      'time. Two earlier fixes walk to a better URL only after a later ' +
-      'failure: #3094 follows an on-page earnings-release link after ' +
-      'verification_reject (body failed the earnings check); #2986 ' +
-      're-resolves a listing hub after content_too_short (extracted ' +
-      'text below the usable-length floor). Under umbrella #1587, when ' +
-      'a ticker is queued and the stored IR URL (ir_url) is an overview ' +
-      'or homepage that already links a same-host news or press-releases ' +
-      'child, persist that child as the working IR URL now. Do not ' +
-      're-file #3094 or #2986. Do not rewrite detections.jsonl.',
+      'Home Depot\'s saved investor-relations URL is the 2026 ' +
+      'news-releases year archive (ir.homedepot.com/news-releases/' +
+      '2026, HTTP 200, title "News Releases 2026"). That listing ' +
+      'tops out at Aug 12 (interim CEO) and Aug 4 (conference-call ' +
+      'advisory) — no Q2 2026 earnings link. The same host already ' +
+      'publishes /financial-reports/quarterly-earnings and ' +
+      '/financial-reports/quarterly-earnings/2026 (200, title ' +
+      '"Quarterly Earnings 2026"), which is where the results ' +
+      'package will land. Wave 24 only marks events / advisory / ' +
+      'calendar pages as "event seen, no report yet" ' +
+      '(event_seen_no_content, #3135), and only follows a ' +
+      'press-releases child off an overview homepage (#3140 / ' +
+      '#3136). A news listing is neither, and quarterly-earnings is ' +
+      'not in LISTING_HUB_LEAVES, so #3136 will not save that child. ' +
+      'This leaf: when a news or year-archive listing has no ' +
+      'current-period validating earnings link, and the same host ' +
+      'already links a quarterly-earnings or financial-reports ' +
+      'child, save that child as the working IR URL and keep the ' +
+      'ticker armed. Do not re-file #3135, #3136, or #3094. Do not ' +
+      'rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'Trigger: armed or about-to-arm, usable ir_url whose page is an ' +
-        'overview or homepage hub (title or path), and a same-host child ' +
-        'matching the existing listing-hub news/press-releases leaves. ' +
-        'Action: persist that child on the issuer row (ir_url or a ' +
-        'documented working-IR field). A ROST-shaped overview URL must ' +
-        'not stay the only IR URL through the 19 Aug window when a ' +
-        'press-releases child is on the page. Do not invent a URL. Do ' +
-        'not rewrite detections.jsonl.',
-      'Do not follow a webcast or advisory href as the child. A missing ' +
-        'child is a named skip, not a crash. #3094 verification_reject ' +
-        'follow and #2986 content_too_short re-resolve stay as they are. ' +
+      'Trigger: armed or about-to-arm; saved ir_url is a news / ' +
+        'news-releases / year-archive listing with no current-period ' +
+        'validating earnings link; the same host already links a ' +
+        'quarterly-earnings or financial-reports child. Action: ' +
+        'persist that child (ir_url or a documented working-IR ' +
+        'field) and keep the watch armed (event_seen_no_content / ' +
+        'eventDetected, existing codes, if the child also has no ' +
+        'current-period validating earnings file — do not treat a ' +
+        'prior-quarter 10-Q as done). An HD-shaped /news-releases/2026 page ' +
+        'must not remain the only IR URL through the 18 Aug window ' +
+        'when /financial-reports/quarterly-earnings/2026 is already ' +
+        'on the host. Do not invent a URL. Do not rewrite ' +
+        'detections.jsonl.',
+      'An events/advisory/calendar page remains #3135. An overview ' +
+        '→ press-releases persist remains #3136. A unique ' +
+        'earnings-release href follow after verification_reject ' +
+        'remains #3094. Missing child is a named skip, not a crash. ' +
         'Operator-aborted and source-blocklisted jobs skip. Do not ' +
-        're-file #3094 or #2986.',
-      'Unit/fixture tests cover: (a) overview hub + press-releases ' +
-        'child → child persisted; (b) already-a-press-releases URL ' +
-        'unchanged; (c) no child → no write; (d) webcast-only child ' +
-        'rejected; (e) aborted/blocklisted skip; (f) no jsonl rewrite.',
+        're-file #3135, #3136, or #3094.',
+      'Unit/fixture tests cover: (a) news/year-archive + ' +
+        'quarterly-earnings child → child persisted and watch stays ' +
+        'live; (b) news listing that already has a current-period ' +
+        'earnings href unchanged; (c) no child → no write; ' +
+        '(d) advisory/calendar page unchanged (#3135); (e) aborted/' +
+        'blocklisted skip; (f) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/acquisition/listing-hub-href-follow.js (LISTING_HUB_LEAVES)',
+      'src/acquisition/listing-hub-href-follow.js (LISTING_HUB_LEAVES — quarterly-earnings is not a leaf today)',
       'src/acquisition/issuer-url-resolver.js (persist working IR URL)',
-      'data/issuers.json (ir_url on armed ROST / WMT / TGT rows)',
+      'src/acquisition/event-content-status.js (EVENT_SEEN_NO_CONTENT if child also has no file)',
     ],
     testHints: [
-      'unit: overview hub + press-releases child → child persisted',
-      'unit: already-a-releases URL is unchanged',
-      'unit: webcast-only child is rejected',
+      'unit: news/year-archive + quarterly-earnings child → child persisted',
+      'unit: current-period earnings href on the news listing is unchanged',
+      'unit: advisory/calendar page still follows #3135',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): keep a financial-results archive live when it has no current-period file',
+    goal:
+      'Some saved investor-relations URLs are already a ' +
+      'financial-results or quarterly-results archive — not an ' +
+      'overview homepage and not a news listing. After wave 24 ' +
+      '(#3136), Walmart is still stock.walmart.com/financial-' +
+      'information/financial-results (title "Financial Results :: ' +
+      'Walmart Inc. (WMT)") because that path is not an overview/' +
+      'homepage. The 17 Aug live check (11 hours before the window) ' +
+      'found no Q2 FY27 release file; the page still lists the ' +
+      'Aug-20 conference-call advisory. Lockheed (/financial-' +
+      'information/quarterly-results) and SLB (/financials/' +
+      'quarterly-results) are the same shape. Lucy can then either ' +
+      'treat the latest prior-period 10-Q or release as this ' +
+      'window\'s report, or record a terminal "nothing seen" ' +
+      '(no_source) because the archive has files but none for this ' +
+      'window. This leaf: if that archive has been fetched and has ' +
+      'no current-period validating earnings file, refuse the ' +
+      'prior-period file, mark "event seen, no content yet" ' +
+      '(event_seen_no_content, existing codes), and keep the ticker ' +
+      'armed. Do not re-file #3135 or #3136. Do not rewrite ' +
+      'detections.jsonl.',
+    acceptanceCriteria: [
+      'Trigger: armed or about-to-arm; saved ir_url is a ' +
+        'financial-results / quarterly-results / financials archive ' +
+        '(path or title); the page fetches; no current-period ' +
+        'validating earnings link or file is present. Action: set ' +
+        'eventDetected + event_seen_no_content (existing codes — do ' +
+        'not add a new miss class), do not accept a prior-period ' +
+        'file as the current report, and keep the watch armed. A ' +
+        'Walmart-shaped financial-results row must not become a ' +
+        'terminal no_source solely because older quarter files are ' +
+        'on the page. Do not invent a URL. Do not rewrite ' +
+        'detections.jsonl.',
+      'An events/advisory/calendar page remains #3135. An overview ' +
+        'to press-releases persist remains #3136. A page that ' +
+        'already has a validating current-period earnings file is ' +
+        'unchanged (collect it). Operator-aborted and ' +
+        'source-blocklisted jobs skip. Do not re-file #3135 or ' +
+        '#3136.',
+      'Unit/fixture tests cover: (a) financial-results archive + ' +
+        'prior-period files only → event_seen_no_content, watch ' +
+        'stays live, prior-period file not accepted; (b) archive ' +
+        'with a current-period file still collects; (c) overview ' +
+        'hub unchanged (#3136); (d) advisory calendar unchanged ' +
+        '(#3135); (e) aborted/blocklisted skip; (f) no jsonl ' +
+        'rewrite.',
+    ],
+    fileHints: [
+      'src/acquisition/tiers/issuer.js (issuer page collect / period match)',
+      'src/acquisition/event-content-status.js (EVENT_SEEN_NO_CONTENT)',
+      'src/acquisition/listing-hub-href-follow.js (financial-results / quarterly-results already in LISTING_HUB_LEAVES)',
+    ],
+    testHints: [
+      'unit: financial-results archive + only prior-period files → event_seen_no_content, watch live',
+      'unit: current-period file on the archive still collects',
+      'unit: overview hub still follows #3136',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
