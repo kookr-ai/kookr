@@ -19,6 +19,7 @@ describe('evaluateQuotaHeadroomAdmission', () => {
     expect(decision.admit).toBe(true);
     expect(decision.maxUtilization).toBe(40);
     expect(decision.threshold).toBe(QUOTA_NO_HEADROOM_UTILIZATION);
+    expect(decision.bindingWindow).toBe('fiveHour');
   });
 
   it('denies when five-hour utilization is at the threshold', () => {
@@ -29,6 +30,7 @@ describe('evaluateQuotaHeadroomAdmission', () => {
     expect(decision.admit).toBe(false);
     expect(decision.maxUtilization).toBe(90);
     expect(decision.resetsAt).toBe('2026-08-02T18:00:00Z');
+    expect(decision.bindingWindow).toBe('fiveHour');
   });
 
   it('denies when seven-day utilization is exhausted even if five-hour is fine', () => {
@@ -39,6 +41,7 @@ describe('evaluateQuotaHeadroomAdmission', () => {
     expect(decision.admit).toBe(false);
     expect(decision.maxUtilization).toBe(99);
     expect(decision.resetsAt).toBe('later');
+    expect(decision.bindingWindow).toBe('sevenDay');
   });
 
   it('admits just under the threshold', () => {

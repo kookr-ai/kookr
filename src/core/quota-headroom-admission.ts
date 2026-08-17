@@ -27,6 +27,9 @@ export interface QuotaHeadroomSample {
   sevenDay: { utilization: number; resetsAt?: string } | null;
 }
 
+/** Which plan window produced {@link QuotaHeadroomAdmissionDecision.maxUtilization}. */
+export type QuotaBindingWindow = 'fiveHour' | 'sevenDay';
+
 export interface QuotaHeadroomAdmissionDecision {
   /** True when the launch should be admitted (no sample, or under threshold). */
   admit: boolean;
@@ -41,6 +44,12 @@ export interface QuotaHeadroomAdmissionDecision {
    * known — so callers can surface "retry after …" without re-deriving it.
    */
   resetsAt: string | null;
+  /**
+   * Window that produced {@link maxUtilization}. Null when no usable window
+   * was present (fail-open / missing data). Admission is unchanged; this is
+   * for operator copy only.
+   */
+  bindingWindow: QuotaBindingWindow | null;
 }
 
 /**
@@ -53,21 +62,27 @@ export function evaluateQuotaHeadroomAdmission(
   threshold: number = QUOTA_NO_HEADROOM_UTILIZATION,
 ): QuotaHeadroomAdmissionDecision {
   if (!sample) {
-    return { admit: true, maxUtilization: 0, threshold, resetsAt: null };
+    return { admit: true, maxUtilization: 0, threshold, resetsAt: null, bindingWindow: null };
   }
   // Non-positive threshold disables the gate (mirrors host-load opt-out).
   if (!(threshold > 0)) {
-    return { admit: true, maxUtilization: 0, threshold: 0, resetsAt: null };
+    return { admit: true, maxUtilization: 0, threshold: 0, resetsAt: null, bindingWindow: null };
   }
 
   let maxUtilization = 0;
   let resetsAt: string | null = null;
-  for (const window of [sample.fiveHour, sample.sevenDay]) {
+  let bindingWindow: QuotaBindingWindow | null = null;
+  const windows: Array<{ key: QuotaBindingWindow; window: QuotaHeadroomSample['fiveHour'] }> = [
+    { key: 'fiveHour', window: sample.fiveHour },
+    { key: 'sevenDay', window: sample.sevenDay },
+  ];
+  for (const { key, window } of windows) {
     if (!window) continue;
     if (!Number.isFinite(window.utilization)) continue;
     if (window.utilization >= maxUtilization) {
       maxUtilization = window.utilization;
       resetsAt = typeof window.resetsAt === 'string' ? window.resetsAt : null;
+      bindingWindow = key;
     }
   }
 
@@ -76,5 +91,6 @@ export function evaluateQuotaHeadroomAdmission(
     maxUtilization,
     threshold,
     resetsAt,
+    bindingWindow,
   };
 }

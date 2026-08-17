@@ -5,6 +5,7 @@ import { resolveCleanupOverride } from './cleanup-override.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { applyRoundRobinIndex } from './store/round-robin-cursor.js';
+import { applyQuotaHeadroomThreshold } from './store/quota-headroom-threshold.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
 import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
@@ -630,12 +631,14 @@ export function App() {
         speakVerbosity?: VerbosityScale;
         cleanupWorktreeOnComplete?: boolean;
         roundRobinIndex?: number;
+        quotaHeadroomThreshold?: number;
       }) => {
         if (cancelled) return;
         setShortcutOverrides(settings.shortcutBindings ?? {});
         setSpeakVerbositySnapshot(settings.speakVerbosity);
         setCleanupWorktreeOnComplete(settings.cleanupWorktreeOnComplete);
         applyRoundRobinIndex(settings.roundRobinIndex);
+        applyQuotaHeadroomThreshold(settings.quotaHeadroomThreshold);
       })
       .catch(() => {});
     return () => { cancelled = true; };
