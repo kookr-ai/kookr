@@ -163,15 +163,13 @@ describe('DetailPanel reply draft persistence', () => {
     );
   });
 
-  test('inserts a saved reply snippet without sending it', async () => {
+  function stubSettingsSnippets(replySnippets: Array<{ label: string; text: string }>) {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const path = typeof url === 'string' ? url : url instanceof URL ? url.pathname : url.url;
       if (path === '/api/settings') {
         return {
           ok: true,
-          json: async () => ({
-            replySnippets: [{ label: 'Run tests', text: 'pnpm test -- settings-store settings-routes' }],
-          }),
+          json: async () => ({ replySnippets }),
         } as Response;
       }
       if (path === '/api/share/task') {
@@ -184,6 +182,17 @@ describe('DetailPanel reply draft persistence', () => {
       callback(0);
       return 0;
     });
+    return fetchMock;
+  }
+
+  function snippetChips(): HTMLButtonElement[] {
+    return Array.from(container.querySelectorAll<HTMLButtonElement>('.reply-snippet-picker .sample-prompt-chip'));
+  }
+
+  test('inserts a saved reply snippet without sending it', async () => {
+    const fetchMock = stubSettingsSnippets([
+      { label: 'Run tests', text: 'pnpm test -- settings-store settings-routes' },
+    ]);
     const agent = makeAgent('agent-1');
     const sent: ClientMessage[] = [];
 
@@ -193,11 +202,13 @@ describe('DetailPanel reply draft persistence', () => {
     });
     await act(async () => {});
 
-    const picker = container.querySelector<HTMLSelectElement>('#reply-snippet-picker');
-    expect(picker).toBeInstanceOf(HTMLSelectElement);
+    const chips = snippetChips();
+    expect(chips).toHaveLength(1);
+    expect(chips[0].textContent).toBe('Run tests');
+    expect(container.querySelector('#reply-snippet-picker')).toBeNull();
+
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(picker, '0');
-      picker!.dispatchEvent(new Event('change', { bubbles: true }));
+      chips[0].click();
     });
 
     expect(responseInput(container).value).toBe('pnpm test -- settings-store settings-routes');
@@ -205,6 +216,59 @@ describe('DetailPanel reply draft persistence', () => {
     expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
       JSON.stringify({ input: 'pnpm test -- settings-store settings-routes' }),
     );
+    expect(sent).toEqual([]);
+  });
+
+  test('shows eight chips and no overflow dropdown at the chip cap', async () => {
+    const snippets = Array.from({ length: 8 }, (_, index) => ({
+      label: `Snippet ${index + 1}`,
+      text: `text-${index + 1}`,
+    }));
+    stubSettingsSnippets(snippets);
+    renderDetailPanel(root, makeAgent('agent-1'));
+    await act(async () => {});
+
+    expect(snippetChips().map((chip) => chip.textContent)).toEqual(
+      snippets.map((snippet) => snippet.label),
+    );
+    expect(container.querySelector('#reply-snippet-picker')).toBeNull();
+  });
+
+  test('caps snippet chips at eight and keeps the dropdown as overflow', async () => {
+    const snippets = Array.from({ length: 10 }, (_, index) => ({
+      label: `Snippet ${index + 1}`,
+      text: `text-${index + 1}`,
+    }));
+    stubSettingsSnippets(snippets);
+    const agent = makeAgent('agent-1');
+    const sent: ClientMessage[] = [];
+
+    renderDetailPanel(root, agent, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+    await act(async () => {});
+
+    const chips = snippetChips();
+    expect(chips).toHaveLength(8);
+    expect(chips.map((chip) => chip.textContent)).toEqual(
+      snippets.slice(0, 8).map((snippet) => snippet.label),
+    );
+
+    const picker = container.querySelector<HTMLSelectElement>('#reply-snippet-picker');
+    expect(picker).toBeInstanceOf(HTMLSelectElement);
+    const overflowOptions = Array.from(picker!.options).slice(1);
+    expect(overflowOptions.map((option) => option.textContent)).toEqual(['Snippet 9', 'Snippet 10']);
+    expect(overflowOptions.map((option) => option.value)).toEqual(['8', '9']);
+
+    const ninth = overflowOptions.find((option) => option.textContent === 'Snippet 9');
+    expect(ninth).toBeDefined();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(picker, ninth!.value);
+      picker!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    expect(responseInput(container).value).toBe('text-9');
     expect(sent).toEqual([]);
   });
 });

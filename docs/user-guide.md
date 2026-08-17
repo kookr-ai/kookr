@@ -79,7 +79,7 @@ When a finding appears:
 
 Quick actions and AI suggestions may appear when Kookr can infer likely responses. AI suggestions require an LLM provider key — see [Configuration](configuration.md#ai-suggestions).
 
-When you reply with the same text often, save it as a **reply snippet** so you do not retype it. Create and edit snippets under **Settings → Reply Snippets**: each snippet has a short label and its reusable text, and Kookr keeps up to 20 of them. Once at least one snippet exists, an **Insert snippet…** picker appears with the reply box; choosing a snippet inserts its text at the cursor. Selecting a snippet never sends it automatically — you still send the reply yourself — so you can edit a snippet or combine it with free-text first.
+When you reply with the same text often, save it as a **reply snippet** so you do not retype it. Create and edit snippets under **Settings → Reply Snippets**: each snippet has a short label and its reusable text, and Kookr keeps up to 20 of them. Once at least one snippet exists, the reply box shows a chip for each snippet (up to eight). If you have more than eight, an **Insert snippet…** dropdown lists the rest. Choosing a chip or dropdown entry inserts the snippet text at the cursor. Selecting a snippet never sends it automatically — you still send the reply yourself — so you can edit a snippet or combine it with free-text first.
 
 When grouped findings contain identical pending prompts, Kookr may show **Reply to matching** for that subset. For policy-covered low-risk prompts, it may show **Approve matching**, which sends the shown approval only to the matching agents. Merge, scope, destructive, permission, credential, and secret-related prompts remain manual.
 
