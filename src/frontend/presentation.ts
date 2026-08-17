@@ -457,6 +457,45 @@ export function findingWaitStartedAt(agent: AgentState): Date | string | undefin
 }
 
 /**
+ * Earliest live finding wait among the same agents the status bar counts.
+ * Uses {@link findingWaitStartedAt} so completion-ready signals keep the
+ * original raise time instead of a restamped anomaly clock.
+ */
+export function oldestFindingWaitStartedAt(
+  agents: readonly AgentState[],
+): Date | string | undefined {
+  let oldest: Date | string | undefined;
+  let oldestMs = Number.POSITIVE_INFINITY;
+  for (const agent of agents) {
+    const started = findingWaitStartedAt(agent);
+    if (started === undefined) continue;
+    const ms = new Date(started).getTime();
+    if (!Number.isFinite(ms)) continue;
+    if (ms < oldestMs) {
+      oldestMs = ms;
+      oldest = started;
+    }
+  }
+  return oldest;
+}
+
+/**
+ * Status-bar label for a live finding wait. Reuses {@link formatAge};
+ * waits under the two-minute floor become `<2m` so the chip stays visible
+ * for a brand-new finding.
+ */
+export function formatOldestFindingWait(
+  startedAt: Date | string | undefined,
+): string | null {
+  if (startedAt === undefined) return null;
+  const startedMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return null;
+  const ageMs = Date.now() - startedMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+  return formatAge(startedAt) || '<2m';
+}
+
+/**
  * Return a CSS class suffix for the age badge color.
  * gray (<30m) → fresh, yellow (<2h) → aging, orange (≥2h) → stale.
  * Accepts Date or ISO string.

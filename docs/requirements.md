@@ -782,8 +782,9 @@ The system SHOULD display a status bar with agent counts and keyboard shortcut h
 - Bottom bar shows count of agents needing attention
 - Keyboard shortcut hints displayed
 - When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a median time-to-unblock chip (issue #2583)
+- When at least one finding is active, show an oldest-wait chip next to the finding count using the same live wait timestamps as the overview (issue #2588). The chip is hidden when the finding count is zero. It does not replace the historical median chip.
 
-**Evidence:** `src/frontend/components/StatusBar.tsx`, `src/core/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`.
+**Evidence:** `src/frontend/components/StatusBar.tsx`, `src/frontend/presentation.ts`, `src/core/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`.
 
 ### R5.4: Keyboard Shortcuts [F5.4] — SHOULD — `done`
 

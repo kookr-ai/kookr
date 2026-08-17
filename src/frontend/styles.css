@@ -3148,6 +3148,22 @@ a.overview-tour-link:visited:hover {
   border-radius: 2px;
   color: var(--blue);
 }
+.playbook-empty-docs {
+  margin: 10px 0 0;
+}
+.playbook-empty-docs-link {
+  color: var(--accent, #61dafb);
+  text-decoration: underline;
+}
+.playbook-empty-docs-link:hover {
+  color: var(--text-bright);
+}
+a.playbook-empty-docs-link:visited {
+  color: var(--accent, #61dafb);
+}
+a.playbook-empty-docs-link:visited:hover {
+  color: var(--text-bright);
+}
 
 .playbook-detail-header {
   display: flex;
@@ -7986,7 +8002,8 @@ label.task-share-row {
   margin-left: 6px;
 }
 
-.time-to-unblock-pill {
+.time-to-unblock-pill,
+.oldest-finding-wait-pill {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
