@@ -271,7 +271,8 @@ describe('parseGrokHookEvent — robustness', () => {
   });
 
   it('documents the bypass permission-mode token', () => {
-    expect(isGrokBypassPermissionMode(GROK_BYPASS_PERMISSION_MODE)).toBe(true);
+    expect(GROK_BYPASS_PERMISSION_MODE).toBe('bypassPermissions');
+    expect(isGrokBypassPermissionMode('bypassPermissions')).toBe(true);
     expect(isGrokBypassPermissionMode('default')).toBe(false);
     expect(isGrokBypassPermissionMode(undefined)).toBe(false);
   });
