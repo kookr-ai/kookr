@@ -48,14 +48,35 @@ describe('selectFindingPrChip', () => {
     });
   });
 
-  test('prefers a PR that failed CI over a quiet open PR', () => {
+  test('prefers a PR that failed CI over a quiet open PR in either order', () => {
     const quiet = makePr({ number: 10, status: 'open' });
+    const laterQuiet = makePr({ number: 12, status: 'open' });
     const failed = makePr({
       number: 11,
       status: 'open',
       checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }],
     });
-    expect(selectFindingPrChip([quiet, failed])?.number).toBe(11);
+    expect(selectFindingPrChip([quiet, failed, laterQuiet])).toEqual({
+      number: 11,
+      status: 'open',
+      ciFailed: true,
+      changesRequested: false,
+    });
+    expect(selectFindingPrChip([failed, quiet, laterQuiet])?.number).toBe(11);
+  });
+
+  test('prefers an open PR over a merged one when neither needs attention', () => {
+    expect(selectFindingPrChip([
+      makePr({ number: 3, status: 'merged' }),
+      makePr({ number: 9, status: 'open' }),
+    ])?.status).toBe('open');
+  });
+
+  test('breaks quiet-PR ties by the lower number', () => {
+    expect(selectFindingPrChip([
+      makePr({ number: 20, status: 'open' }),
+      makePr({ number: 7, status: 'open' }),
+    ])?.number).toBe(7);
   });
 
   test('marks changes_requested on the selected PR', () => {

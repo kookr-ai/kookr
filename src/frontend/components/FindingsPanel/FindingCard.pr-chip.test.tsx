@@ -122,6 +122,7 @@ describe('FindingCard GitHub PR chip', () => {
   afterEach(() => {
     act(() => root?.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
@@ -133,16 +134,14 @@ describe('FindingCard GitHub PR chip', () => {
     root = renderPanel(container, [makeAgent()]);
     const chip = container.querySelector('[data-testid="finding-pr-chip"]');
     expect(chip).not.toBeNull();
-    expect(chip?.textContent).toContain('#88');
-    expect(chip?.textContent).toContain('open');
+    expect(chip?.textContent).toBe('#88 · open');
   });
 
-  test('adds a visible cue when checks failed or changes were requested', () => {
+  test('adds a CI-failed class when checks failed', () => {
     useKookrStore.setState({
       githubState: {
         'task-1': stubTaskGitHub({
           prs: [makePr({
-            reviewDecision: 'changes_requested',
             checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }],
           })],
         }),
@@ -150,12 +149,28 @@ describe('FindingCard GitHub PR chip', () => {
     });
     root = renderPanel(container, [makeAgent()]);
     const chip = container.querySelector('[data-testid="finding-pr-chip"]');
-    expect(chip?.textContent).toContain('CI failed');
-    expect(chip?.textContent).toContain('changes requested');
-    expect(chip?.getAttribute('data-attention')).toBe('true');
+    expect(chip?.textContent).toBe('#88 · open · CI failed');
+    expect(chip?.className).toContain('finding-pr-chip--failed');
+    expect(chip?.className).not.toContain('finding-pr-chip--attention');
   });
 
-  test('clicking the chip selects the task and activates the GitHub pane', () => {
+  test('adds an attention class when a reviewer requested changes', () => {
+    useKookrStore.setState({
+      githubState: {
+        'task-1': stubTaskGitHub({
+          prs: [makePr({ reviewDecision: 'changes_requested' })],
+        }),
+      },
+    });
+    root = renderPanel(container, [makeAgent()]);
+    const chip = container.querySelector('[data-testid="finding-pr-chip"]');
+    expect(chip?.textContent).toBe('#88 · open · changes requested');
+    expect(chip?.className).toContain('finding-pr-chip--attention');
+    expect(chip?.className).not.toContain('finding-pr-chip--failed');
+  });
+
+  test('clicking the chip selects the task and keeps the GitHub pane after the card click timer', () => {
+    vi.useFakeTimers();
     useKookrStore.setState({
       githubState: { 'task-1': stubTaskGitHub() },
       detailPaneMode: 'right',
@@ -166,12 +181,58 @@ describe('FindingCard GitHub PR chip', () => {
     act(() => {
       chip!.click();
     });
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
     const state = useKookrStore.getState();
     expect(state.selectedAgentId).toBe('agent-1');
     expect(state.selectedTaskId).toBe('task-1');
     expect(state.leftPane).toBe('github');
     expect(state.narrowTab).toBe('github');
     expect(state.detailPaneMode).toBe('split');
+    vi.useRealTimers();
+  });
+
+  test('only the finding whose task owns the PR gets a chip', () => {
+    useKookrStore.setState({
+      githubState: {
+        'task-2': stubTaskGitHub({
+          taskId: 'task-2',
+          prs: [makePr({ ref: {
+            type: 'pr',
+            owner: 'kookr-ai',
+            repo: 'kookr',
+            number: 91,
+            url: 'https://github.com/kookr-ai/kookr/pull/91',
+            detectedAt: new Date('2026-08-17T10:00:00.000Z'),
+            detectedFrom: 'test',
+            taskId: 'task-2',
+          } })],
+        }),
+      },
+    });
+    root = renderPanel(container, [
+      makeAgent(),
+      makeAgent({
+        agentId: 'agent-2',
+        taskId: 'task-2',
+        taskName: 'Task 2',
+        anomaly: {
+          agentId: 'agent-2',
+          type: 'stuck',
+          severity: 'warning',
+          explanation: 'No progress',
+          detectedAt: new Date('2026-06-11T08:00:00Z'),
+        },
+      }),
+    ]);
+    const chips = Array.from(container.querySelectorAll('[data-testid="finding-pr-chip"]'));
+    expect(chips).toHaveLength(1);
+    expect(chips[0]?.textContent).toBe('#91 · open');
+    const cards = Array.from(container.querySelectorAll('.finding-card'));
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.querySelector('[data-testid="finding-pr-chip"]')).toBeNull();
+    expect(cards[1]?.querySelector('[data-testid="finding-pr-chip"]')).not.toBeNull();
   });
 
   test('cards with no GitHub refs stay unchanged', () => {
