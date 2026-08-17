@@ -7,14 +7,20 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState, Playbook } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
+import { getTask } from '../api/tasks.js';
 import {
   GETTING_STARTED_GUIDE_URL,
+  OVERVIEW_RECENT_COMPLETED_LIMIT,
   OVERVIEW_RECENT_PLAYBOOK_LIMIT,
   OverviewEmptyState,
 } from './OverviewEmptyState.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
   open: vi.fn(),
+}));
+
+vi.mock('../api/tasks.js', () => ({
+  getTask: vi.fn(),
 }));
 
 function syncGlobalStore() {
@@ -40,6 +46,21 @@ function makeWaitingAgent(agentId: string, taskName: string, overrides: Partial<
     },
     cwd: '/home/user/projects/demo',
     taskStatus: 'inProgress',
+    ...overrides,
+  };
+}
+
+function makeCompletedAgent(agentId: string, taskName: string, overrides: Partial<AgentState> = {}): AgentState {
+  return {
+    agentId,
+    taskId: `task-${agentId}`,
+    taskName,
+    events: [],
+    anomaly: null,
+    cwd: '/tmp/kookr',
+    taskStatus: 'completed',
+    finishedAt: '2026-06-20T10:00:00.000Z',
+    agentType: 'claude-code',
     ...overrides,
   };
 }
@@ -72,6 +93,7 @@ describe('OverviewEmptyState', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
     vi.mocked(openOnboardingTour).mockClear();
+    vi.mocked(getTask).mockReset();
     syncGlobalStore();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -89,7 +111,7 @@ describe('OverviewEmptyState', () => {
       root.render(React.createElement(OverviewEmptyState, {
         waiting: [],
         runningCount: 0,
-        completedCount: 0,
+        completed: [],
         onLaunch: vi.fn(),
         ...props,
       }));
@@ -100,7 +122,10 @@ describe('OverviewEmptyState', () => {
     render({
       waiting: [makeWaitingAgent('agent-1', 'Fix the build')],
       runningCount: 3,
-      completedCount: 2,
+      completed: [
+        makeCompletedAgent('done-1', 'Ship the fix'),
+        makeCompletedAgent('done-2', 'Tidy the changelog'),
+      ],
     });
 
     const counts = Array.from(container.querySelectorAll('.overview-count')).map((el) => ({
@@ -120,7 +145,7 @@ describe('OverviewEmptyState', () => {
       makeWaitingAgent('agent-2', 'Review the diff'),
     ];
     useKookrStore.setState({ agents: waiting });
-    render({ waiting, runningCount: 0, completedCount: 0 });
+    render({ waiting, runningCount: 0 });
 
     expect(container.textContent).toContain('Waiting on you');
     const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('.overview-waiting-row'));
@@ -154,7 +179,7 @@ describe('OverviewEmptyState', () => {
       }),
     ];
 
-    render({ waiting, runningCount: 0, completedCount: 0 });
+    render({ waiting, runningCount: 0 });
 
     expect(container.querySelector('.overview-waiting-row')?.textContent).toContain('waiting 3d');
   });
@@ -223,7 +248,7 @@ describe('OverviewEmptyState', () => {
   });
 
   test('does not show the first-run setup links when only completed agents remain', () => {
-    render({ completedCount: 1 });
+    render({ completed: [makeCompletedAgent('done-1', 'Ship the fix')] });
 
     expect(container.textContent).toContain('All clear — agents working autonomously.');
     expect(container.querySelector('.overview-tour-link')).toBeNull();
@@ -329,5 +354,100 @@ describe('OverviewEmptyState', () => {
     expect(container.querySelector('[data-testid="overview-recent-playbook"]')?.textContent).toBe('legacy-bare');
     expect(container.querySelector('.overview-tour-reentry')).toBeNull();
     expect(container.textContent).not.toContain('Getting Started');
+  });
+
+  test('does not list recently completed tasks when the completed bucket is empty', () => {
+    render();
+
+    expect(container.querySelector('[data-testid="overview-recent-completed"]')).toBeNull();
+    expect(container.textContent).not.toContain('Recently completed');
+    expect(container.querySelector('[data-testid="overview-completed-open"]')).toBeNull();
+    expect(container.querySelector('[data-testid="overview-completed-relaunch"]')).toBeNull();
+  });
+
+  test('lists up to three most recently finished tasks by name', () => {
+    render({
+      completed: [
+        makeCompletedAgent('old', 'Oldest done', { finishedAt: '2026-06-20T09:00:00.000Z' }),
+        makeCompletedAgent('newest', 'Newest done', { finishedAt: '2026-06-20T12:00:00.000Z' }),
+        makeCompletedAgent('middle', 'Middle done', { finishedAt: '2026-06-20T11:00:00.000Z' }),
+        makeCompletedAgent('fourth', 'Should stay in the rail', { finishedAt: '2026-06-20T08:00:00.000Z' }),
+      ],
+    });
+
+    const section = container.querySelector('[data-testid="overview-recent-completed"]');
+    expect(section).not.toBeNull();
+    expect(container.textContent).toContain('Recently completed');
+    const names = Array.from(section?.querySelectorAll('.overview-completed-name') ?? [])
+      .map((el) => el.textContent);
+    expect(names).toEqual(['Newest done', 'Middle done', 'Oldest done']);
+    expect(names).toHaveLength(OVERVIEW_RECENT_COMPLETED_LIMIT);
+    expect(container.textContent).not.toContain('Should stay in the rail');
+    expect(container.textContent).toContain('+1 more in Completed');
+  });
+
+  test('does not show an overflow line when exactly three completed tasks exist', () => {
+    render({
+      completed: [
+        makeCompletedAgent('a', 'First', { finishedAt: '2026-06-20T12:00:00.000Z' }),
+        makeCompletedAgent('b', 'Second', { finishedAt: '2026-06-20T11:00:00.000Z' }),
+        makeCompletedAgent('c', 'Third', { finishedAt: '2026-06-20T10:00:00.000Z' }),
+      ],
+    });
+
+    expect(container.querySelectorAll('.overview-completed-name')).toHaveLength(3);
+    expect(container.textContent).not.toContain('more in Completed');
+  });
+
+  test('Open selects the completed task from the overview', () => {
+    const completed = [makeCompletedAgent('done-1', 'Ship the fix')];
+    useKookrStore.setState({ agents: completed });
+    render({ completed });
+
+    const open = container.querySelector<HTMLButtonElement>('[data-testid="overview-completed-open"]');
+    expect(open).not.toBeNull();
+    expect(open?.getAttribute('aria-label')).toBe('Open Ship the fix');
+    act(() => {
+      open?.click();
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('done-1');
+    expect(useKookrStore.getState().selectedTaskId).toBe('task-done-1');
+  });
+
+  test('hides Relaunch when the completed row has no task id', () => {
+    render({
+      completed: [makeCompletedAgent('done-1', 'Ship the fix', { taskId: undefined })],
+    });
+
+    expect(container.textContent).toContain('Ship the fix');
+    expect(container.querySelector('[data-testid="overview-completed-open"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="overview-completed-relaunch"]')).toBeNull();
+  });
+
+  test('Relaunch prefills Launch with the completed task prompt, cwd, criteria, and agent type', async () => {
+    vi.mocked(getTask).mockResolvedValue({
+      prompt: 'Ship the dashboard next actions slice',
+      cwd: '/tmp/kookr',
+      criteria: 'Merged PR, tests green',
+      agentType: 'claude-code',
+    });
+    render({
+      completed: [makeCompletedAgent('done-1', 'Ship the fix', { taskId: 'task-done-1' })],
+    });
+
+    const relaunch = container.querySelector<HTMLButtonElement>('[data-testid="overview-completed-relaunch"]');
+    expect(relaunch).not.toBeNull();
+    expect(relaunch?.getAttribute('aria-label')).toBe('Relaunch Ship the fix');
+    await act(async () => {
+      relaunch?.click();
+    });
+
+    expect(getTask).toHaveBeenCalledWith('task-done-1');
+    expect(useKookrStore.getState().relaunchTask).toEqual({
+      prompt: 'Ship the dashboard next actions slice',
+      cwd: '/tmp/kookr',
+      criteria: 'Merged PR, tests green',
+      agentType: 'claude-code',
+    });
   });
 });
