@@ -214,11 +214,11 @@ describe('parseGrokHookEvent — robustness', () => {
     expect(e).toMatchObject({ type: 'permission_request', sessionId: 's1', toolName: '' });
   });
 
-  it('does not treat bypass permission_prompt as a blocking wait', () => {
+  it('drops bypass permission_prompt instead of showing it as a wait or activity row', () => {
     // Live 2026-08-17: grok-build in --permission-mode bypassPermissions still
     // emits notification{permission_prompt, "Tool permission requested"} while
-    // the tool succeeds. Mapping that to permission_request flickers
-    // permission_blocked / "permission required" on every such hook.
+    // the tool succeeds. Mapping that to permission_request flickers a
+    // finding; keeping it as a notification floods the activity log.
     const e = parseGrokHookEvent(JSON.stringify({
       hookEventName: 'notification',
       sessionId: 's1',
@@ -226,13 +226,7 @@ describe('parseGrokHookEvent — robustness', () => {
       message: 'Tool permission requested',
       permissionMode: GROK_BYPASS_PERMISSION_MODE,
     }));
-    expect(e).toMatchObject({
-      type: 'notification',
-      sessionId: 's1',
-      notificationType: 'permission_prompt',
-      message: 'Tool permission requested',
-    });
-    expect(e?.type).not.toBe('permission_request');
+    expect(e).toBeNull();
   });
 
   it('keeps non-bypass permission_prompt as permission_request (issue #1526 Phase C4)', () => {

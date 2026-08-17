@@ -192,6 +192,36 @@ describe('summarizeActivity', () => {
     expect(items).toHaveLength(0);
   });
 
+  test('skips permission_prompt notifications that Grok emits on auto-allowed tools', () => {
+    const items = summarizeActivity([
+      userPrompt('Fix the tests'),
+      {
+        type: 'notification',
+        sessionId: 's1',
+        notificationType: 'permission_prompt',
+        message: 'Tool permission requested',
+      },
+      toolUse('Read', { file_path: '/src/a.ts' }),
+      stop('Done'),
+    ]);
+    expect(items.map((item) => item.type)).toEqual(['user_message', 'tool_group', 'agent_message']);
+    expect(items.some((item) => item.type === 'system_notice')).toBe(false);
+  });
+
+  test('still shows non-permission notifications', () => {
+    const items = summarizeActivity([
+      {
+        type: 'notification',
+        sessionId: 's1',
+        notificationType: 'idle_prompt',
+        message: 'Claude is waiting for your input',
+      },
+    ]);
+    expect(items).toEqual([
+      { type: 'system_notice', subType: 'notification', text: 'Claude is waiting for your input' },
+    ]);
+  });
+
   test('groups consecutive tool calls between messages', () => {
     const events: AgentEvent[] = [
       userPrompt('Fix the tests'),
