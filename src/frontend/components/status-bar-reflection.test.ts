@@ -254,7 +254,7 @@ describe('StatusBar reflection prompt', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('median unblock 12m');
+    expect(container.textContent).toContain('5 unblocked (24h) · median 12m');
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).not.toBeNull();
   });
 
@@ -284,7 +284,8 @@ describe('StatusBar reflection prompt', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain('median unblock');
+    expect(container.textContent).not.toContain('unblocked');
+    expect(container.textContent).not.toContain('median 12m');
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
   });
 });

@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import type { InteractionEvent } from './interaction-log.js';
-import { formatUnblockWait } from '../shared/contracts/time-to-unblock.js';
+import {
+  formatTimeToUnblockChipLabel,
+  formatTimeToUnblockChipTitle,
+  formatUnblockWait,
+} from '../shared/contracts/time-to-unblock.js';
 import {
   collectInputResolutionDurations,
   computeTimeToUnblockFromDir,
@@ -114,6 +118,27 @@ describe('formatUnblockWait', () => {
   test('non-finite and negative waits render as an em dash', () => {
     expect(formatUnblockWait(Number.NaN)).toBe('—');
     expect(formatUnblockWait(-1)).toBe('—');
+  });
+});
+
+describe('formatTimeToUnblockChipLabel', () => {
+  test('puts volume next to median when samples exist', () => {
+    expect(formatTimeToUnblockChipLabel(12, 8 * 60_000)).toBe('12 unblocked (24h) · median 8m');
+  });
+
+  test('omits the count copy when sampleCount is 0', () => {
+    expect(formatTimeToUnblockChipLabel(0, 8 * 60_000)).toBe('median 8m');
+    expect(formatTimeToUnblockChipLabel(0, 8 * 60_000)).not.toContain('unblocked');
+  });
+});
+
+describe('formatTimeToUnblockChipTitle', () => {
+  test('explains the rolling 24-hour window and excludes skip/snooze', () => {
+    const title = formatTimeToUnblockChipTitle(12, 8 * 60_000);
+    expect(title).toContain('last 24 hours');
+    expect(title).toContain('12 findings');
+    expect(title).toContain('median wait 8m');
+    expect(title).toContain('Skip and snooze are not counted');
   });
 });
 

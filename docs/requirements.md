@@ -795,7 +795,7 @@ The system SHOULD display a status bar with agent counts and keyboard shortcut h
 **Acceptance criteria:**
 - Bottom bar shows count of agents needing attention
 - Keyboard shortcut hints displayed
-- When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a median time-to-unblock chip (issue #2583)
+- When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a time-to-unblock chip with the rolling 24-hour unblocked count next to the median wait (issues #2583, #2609). Hide the count copy when `sampleCount` is 0. Skip and snooze are not counted.
 - When at least one finding is active, show an oldest-wait chip next to the finding count using the same live wait timestamps as the overview (issue #2588). The chip is hidden when the finding count is zero. It does not replace the historical median chip.
 - When the live-friction snapshot has `signalCount > 0`, show a chip whose skip and snooze counts (and false-positive count, if that kind is present) match `signals[]` (issue #2596). Hidden when `signalCount` is 0. Tooltip states it is diagnostics-only and does not reorder findings. Clicking it opens the existing Live friction diagnostics panel. Does not change attention-queue ranking or `routingMutationAllowed`.
 

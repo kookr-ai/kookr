@@ -71,9 +71,10 @@ export function getFindingEvidenceOperationsDiagnostics<T>(signal: AbortSignal):
 }
 
 /**
- * GET the 24-hour median human-reply wait (issue #2583). Throws `HTTP <status>`
- * on a non-2xx; the StatusBar chip hides itself when this fails or when
- * `sampleCount` is below five.
+ * GET the 24-hour human-reply wait snapshot (issues #2583, #2609). Throws
+ * `HTTP <status>` on a non-2xx; the StatusBar chip hides itself when this
+ * fails or when `sampleCount` is below five. The chip label reuses
+ * `sampleCount` as the unblocked volume next to the median.
  */
 export function getTimeToUnblock(signal?: AbortSignal): Promise<TimeToUnblockSnapshot> {
   return getJson<TimeToUnblockSnapshot>('/api/diagnostics/time-to-unblock', {
