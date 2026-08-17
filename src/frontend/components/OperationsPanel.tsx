@@ -15,14 +15,20 @@ import { useDialogFocus } from '../hooks/useDialogFocus.js';
 interface Props {
   send: (msg: ClientMessage) => void;
   onClose: () => void;
+  /** Expand the live-friction section (status-bar chip deep-link, issue #2596). */
+  expandLiveFriction?: boolean;
 }
 
-export function OperationsPanel({ send, onClose }: Props) {
+export function OperationsPanel({ send, onClose, expandLiveFriction = false }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const liveFrictionHeaderRef = useRef<HTMLButtonElement>(null);
   const titleId = 'operations-panel-title';
 
-  useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
+  useDialogFocus({
+    dialogRef,
+    initialFocusRef: expandLiveFriction ? liveFrictionHeaderRef : closeButtonRef,
+  });
   useEscapeToClose(onClose);
 
   return (
@@ -55,7 +61,10 @@ export function OperationsPanel({ send, onClose }: Props) {
           <SessionHealthPanel />
           <PipelineStarvationPanel />
           <LessonYieldPanel />
-          <LiveFrictionCalibrationPanel />
+          <LiveFrictionCalibrationPanel
+            defaultExpanded={expandLiveFriction}
+            headerRef={liveFrictionHeaderRef}
+          />
           <FindingEvidenceDiagnosticsPanel />
           <CircuitBreakerPanel send={send} defaultExpanded showEmpty />
         </div>

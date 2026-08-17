@@ -8003,7 +8003,8 @@ label.task-share-row {
 }
 
 .time-to-unblock-pill,
-.oldest-finding-wait-pill {
+.oldest-finding-wait-pill,
+.live-friction-pill {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
@@ -8013,6 +8014,22 @@ label.task-share-row {
   background: rgba(148, 163, 184, 0.14);
   color: var(--text-secondary);
   margin-left: 6px;
+}
+
+button.live-friction-pill {
+  cursor: pointer;
+  font-family: inherit;
+  line-height: inherit;
+  border: none;
+}
+
+button.live-friction-pill:hover {
+  background: rgba(148, 163, 184, 0.26);
+}
+
+button.live-friction-pill:focus-visible {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 1px;
 }
 
 /* Issue #2037 / #2082 / #2364 / #2432: smoke-tick failing streak,

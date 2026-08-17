@@ -19,7 +19,15 @@ import {
   formatUnblockWait,
   type TimeToUnblockSnapshot,
 } from '../../shared/contracts/time-to-unblock.js';
-import { getTimeToUnblock } from '../api/index.js';
+import { getLiveFrictionCalibration, getTimeToUnblock } from '../api/index.js';
+import {
+  formatLiveFrictionChipLabel,
+  isLiveFrictionSnapshot,
+  liveFrictionChipCounts,
+  shouldShowLiveFrictionChip,
+  LIVE_FRICTION_CHIP_TITLE,
+  type LiveFrictionSnapshot,
+} from './live-friction-chip.js';
 import {
   formatFaaResidualAge,
   formatFaaResidualLabel,
@@ -53,6 +61,11 @@ interface Props {
    * (issue #2082). Optional so isolated StatusBar tests need no App wiring.
    */
   onOpenCapacity?: () => void;
+  /**
+   * Open Diagnostics at the live-friction panel (issue #2596). Optional so
+   * isolated StatusBar tests need no App wiring.
+   */
+  onOpenLiveFriction?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -339,6 +352,7 @@ export function StatusBar({
   compact = false,
   onShowShortcuts,
   onOpenCapacity,
+  onOpenLiveFriction,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -355,6 +369,7 @@ export function StatusBar({
   const soundOn = sound.enabled;
   const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
   const [timeToUnblock, setTimeToUnblock] = useState<TimeToUnblockSnapshot | null>(null);
+  const [liveFriction, setLiveFriction] = useState<LiveFrictionSnapshot | null>(null);
   const [, setOldestWaitTick] = useState(0);
 
   useEffect(() => {
@@ -365,6 +380,24 @@ export function StatusBar({
         if (!cancelled) setTimeToUnblock(body);
       } catch {
         if (!cancelled) setTimeToUnblock(null);
+      }
+    };
+    void load();
+    const timer = setInterval(() => { void load(); }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const body = await getLiveFrictionCalibration<unknown>();
+        if (!cancelled) setLiveFriction(isLiveFrictionSnapshot(body) ? body : null);
+      } catch {
+        if (!cancelled) setLiveFriction(null);
       }
     };
     void load();
@@ -389,6 +422,10 @@ export function StatusBar({
   const oldestWaitLabel = findings > 0
     ? formatOldestFindingWait(oldestFindingWaitStartedAt)
     : null;
+
+  const showFrictionChip = shouldShowLiveFrictionChip(liveFriction);
+  const frictionCounts = liveFriction ? liveFrictionChipCounts(liveFriction) : null;
+  const frictionLabel = frictionCounts ? formatLiveFrictionChipLabel(frictionCounts) : '';
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -425,6 +462,29 @@ export function StatusBar({
           >
             median unblock {formatUnblockWait(timeToUnblock.medianMs)}
           </span>
+        )}
+        {showFrictionChip && frictionCounts && (
+          onOpenLiveFriction ? (
+            <button
+              type="button"
+              className="live-friction-pill"
+              data-testid="live-friction-chip"
+              title={LIVE_FRICTION_CHIP_TITLE}
+              aria-label={`${frictionLabel}. Open live friction diagnostics. Diagnostics only, does not reorder findings.`}
+              onClick={onOpenLiveFriction}
+            >
+              {frictionLabel}
+            </button>
+          ) : (
+            <span
+              className="live-friction-pill"
+              data-testid="live-friction-chip"
+              role="status"
+              title={LIVE_FRICTION_CHIP_TITLE}
+            >
+              {frictionLabel}
+            </span>
+          )
         )}
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}

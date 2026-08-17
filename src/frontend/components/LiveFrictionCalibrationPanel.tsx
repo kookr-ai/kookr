@@ -44,6 +44,11 @@ interface LiveFrictionCalibrationState {
   error: string | null;
 }
 
+interface LiveFrictionCalibrationPanelProps {
+  defaultExpanded?: boolean;
+  headerRef?: React.Ref<HTMLButtonElement>;
+}
+
 const EMPTY_STATE: LiveFrictionCalibrationState = {
   snapshot: null,
   error: null,
@@ -61,11 +66,19 @@ function summary(snapshot: LiveFrictionCalibrationSnapshot | null, loading: bool
   return 'no live friction';
 }
 
-export function LiveFrictionCalibrationPanel() {
-  const [expanded, setExpanded] = useState(false);
+export function LiveFrictionCalibrationPanel({
+  defaultExpanded = false,
+  headerRef,
+}: LiveFrictionCalibrationPanelProps = {}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [loading, setLoading] = useState(true);
   const [state, setState] = useState<LiveFrictionCalibrationState>(EMPTY_STATE);
   const hasLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!defaultExpanded) return;
+    setExpanded(true);
+  }, [defaultExpanded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,8 +119,13 @@ export function LiveFrictionCalibrationPanel() {
   const activeFindingCount = snapshot?.activeFindingCount ?? 0;
 
   return (
-    <div className="live-calibration-section">
+    <div
+      id="live-friction-calibration"
+      className="live-calibration-section"
+      data-testid="live-friction-calibration"
+    >
       <button
+        ref={headerRef}
         type="button"
         className="section-header live-calibration-header"
         onClick={() => setExpanded(!expanded)}
