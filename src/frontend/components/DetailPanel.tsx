@@ -5,7 +5,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import { formatDuration, formatCost, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -308,10 +308,11 @@ function DetailMetadataMenu({
 }) {
   const hasUsageCost = agent.tokenUsage && agent.tokenUsage.costUsd > 0;
   const hasTokenCount = agent.tokenUsage && (agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens) > 0;
+  const hasCacheReads = agent.tokenUsage && agent.tokenUsage.cacheReadTokens > 0;
   const hasProject = Boolean(agentProjectLabel(agent));
   const hasBranch = Boolean(agent.gitBranch || agent.gitCommit);
   const hasAgentType = Boolean(agent.agentType && provider);
-  const hasAnyDetail = hasUsageCost || hasTokenCount || hasProject || hasBranch || hasAgentType;
+  const hasAnyDetail = hasUsageCost || hasTokenCount || hasCacheReads || hasProject || hasBranch || hasAgentType;
 
   if (!hasAnyDetail) return null;
 
@@ -375,6 +376,17 @@ function DetailMetadataMenu({
             <span className="detail-meta-label">Tokens</span>
             <span className="detail-tokens">
               {formatTokens(agent.tokenUsage!.inputTokens + agent.tokenUsage!.outputTokens)} tok
+            </span>
+          </div>
+        )}
+        {hasCacheReads && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Cache</span>
+            <span
+              className="detail-tokens"
+              title="Cache-hit % = cacheReadTokens / (inputTokens + cacheReadTokens): share of input served from the prompt cache"
+            >
+              {formatTokens(agent.tokenUsage!.cacheReadTokens)} rd · {formatCacheHit(agent.tokenUsage)} hit
             </span>
           </div>
         )}

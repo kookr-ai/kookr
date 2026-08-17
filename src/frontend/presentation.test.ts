@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
-import type { AgentEvent, AgentState, GitHubPRState } from '../shared/protocol.js';
+import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
   return {
@@ -445,5 +445,51 @@ describe('findingTypeLabel', () => {
     expect(anomalyTypeLabel('permission_blocked')).toBe('Permission');
     expect(anomalyTypeLabel('needs_input')).toBe('Needs Input');
     expect(anomalyTypeLabel('future_kind')).toBe('future kind');
+  });
+});
+
+describe('cacheHitRatio / formatCacheHit', () => {
+  function usage(overrides: Partial<TokenUsage> = {}): TokenUsage {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0,
+      ...overrides,
+    };
+  }
+
+  test('returns null / empty string when there is no billed input (zero-cache, zero-input)', () => {
+    expect(cacheHitRatio(usage())).toBeNull();
+    expect(cacheHitRatio(undefined)).toBeNull();
+    expect(formatCacheHit(usage())).toBe('');
+    expect(formatCacheHit(undefined)).toBe('');
+  });
+
+  test('yields a well-defined 0% when input was paid in full with no cache reads', () => {
+    const u = usage({ inputTokens: 1000, cacheReadTokens: 0 });
+    expect(cacheHitRatio(u)).toBe(0);
+    expect(formatCacheHit(u)).toBe('0%');
+  });
+
+  test('computes the mixed cache-hit ratio over inputTokens + cacheReadTokens', () => {
+    // 8500 read / (1500 fresh + 8500 read) = 0.85
+    const u = usage({ inputTokens: 1500, cacheReadTokens: 8500 });
+    expect(cacheHitRatio(u)).toBeCloseTo(0.85, 5);
+    expect(formatCacheHit(u)).toBe('85%');
+  });
+
+  test('all input served from cache reads as 100%', () => {
+    const u = usage({ inputTokens: 0, cacheReadTokens: 4000 });
+    expect(cacheHitRatio(u)).toBe(1);
+    expect(formatCacheHit(u)).toBe('100%');
+  });
+
+  test('rounds a non-exact ratio to the nearest whole percent', () => {
+    // 2 read / (1 fresh + 2 read) = 0.6666… → rounds up to 67%
+    const u = usage({ inputTokens: 1, cacheReadTokens: 2 });
+    expect(cacheHitRatio(u)).toBeCloseTo(2 / 3, 5);
+    expect(formatCacheHit(u)).toBe('67%');
   });
 });

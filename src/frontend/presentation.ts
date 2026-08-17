@@ -335,6 +335,32 @@ export function formatTokenUsage(usage: TokenUsage | undefined): string {
 }
 
 /**
+ * Fraction of billed input tokens that were served from the prompt cache:
+ * `cacheReadTokens / (inputTokens + cacheReadTokens)`, in the range [0, 1].
+ *
+ * Returns `null` when there is no billed input at all (both `inputTokens` and
+ * `cacheReadTokens` are zero), so callers avoid a 0/0 → NaN and can render
+ * cache-free sessions cleanly. A session that paid full input price with no
+ * cache reads yields a well-defined `0`.
+ */
+export function cacheHitRatio(usage: TokenUsage | undefined): number | null {
+  if (!usage) return null;
+  const denominator = usage.inputTokens + usage.cacheReadTokens;
+  if (denominator <= 0) return null;
+  return usage.cacheReadTokens / denominator;
+}
+
+/**
+ * Format the prompt-cache hit ratio as a rounded percentage (e.g. `85%`).
+ * Returns `''` when {@link cacheHitRatio} is undefined (no billed input).
+ */
+export function formatCacheHit(usage: TokenUsage | undefined): string {
+  const ratio = cacheHitRatio(usage);
+  if (ratio === null) return '';
+  return `${Math.round(ratio * 100)}%`;
+}
+
+/**
  * Format the age of an anomaly detection as a compact human-readable string.
  * Returns '' for age < 2 minutes (avoids flash on fresh findings).
  * Accepts Date or ISO string (JSON-serialized Date arrives as string over WebSocket).
