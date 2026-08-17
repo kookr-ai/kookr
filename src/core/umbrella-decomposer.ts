@@ -1227,175 +1227,173 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * content_too_short / name issuer-only access_denied / re-resolve
  * listing-hub IR URLs) shipped and are title-exhausted (durable kookr
  * plan never landed on main; titles exist on GitHub). Invent wave 20
- * (queue-feeder 2026-08-14, invent-product-wave #2069) continues the next
- * Goal-1 slice after wave 19: the live scorecard (generated 2026-08-14)
- * now splits 7 content_too_short + 7 ir_403 out of the old 27
- * infra-down rows, leaving 13 classic-only infra-down + 11 other + 29
- * window_too_short. Recapture still refuses two finished-watch shapes
- * because TERMINAL_RESOLUTION is only final/recheck_exhausted/recheck:
- * 16 watch_expired_without_detection rows stay provisional (JNJ, HON,
- * HBAN, GOOGL, TSLA, AAPL, …), and 18 watchdog-timeout rows stamp
- * official_confirmed (date resolution, not window outcome) with no
- * missClass so #2945 cannot arm. HON and NEM already carry an SEC
- * exhibit URL on the miss row; detectNow would re-hit dead submissions
- * JSON. Mixed HBAN issuer content_too_short (7987) + access_denied
- * (1471) still stays infra-down per wave 19's no-winner rule; majority
- * count is now measurable. Do not re-file #2966/#2967/#2548. Do not
- * stamp missClass=ir_403. Live GitHub leaves jeanibarz/lucy#3061–#3063.
- * Title idempotency prevents re-emit once those exist.
+ * (queue-feeder 2026-08-17, invent-product-wave #2069) #3061–#3063
+ * (finished-watch recapture-terminal / SEC exhibit URL pull / mixed
+ * issuer CTS+403 majority) shipped and are title-exhausted. Invent
+ * wave 21 (queue-feeder 2026-08-17, invent-product-wave #2069) is the
+ * next Goal-1 slice after wave 20: August live misses. CSCO 2026-08-06
+ * detect-now never attempted issuer_feed (classic + newswire_feed +
+ * newswire only; reason "no matching newswire feed item"); the same
+ * ticker hit 2026-08-12 on issuer_feed at investor.cisco.com. LOW
+ * 2026-08-06 detect-now stamped the real PR Newswire earnings URL on
+ * row.url with verification_reject expectedDate-only and empty
+ * candidateUrls, so Path B refused. Do not re-file #3061–#3063 /
+ * #3062 SEC-only pull / #2779 / #2855 / #2929 / #1712. Live GitHub
+ * leaves jeanibarz/lucy#3082–#3084. Title idempotency prevents re-emit
+ * once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(acquisition): treat finished watches as recapture-terminal regardless of date-resolution stamp',
+      'feat(acquisition): try issuer_feed on detect-now before the fan-out expires',
     goal:
-      'When a live watch is already over, already-published recapture must be ' +
-      'allowed to arm even if the row still carries a date-resolution stamp ' +
-      '(provisional, official_confirmed, pattern_estimated, single_source_estimate) ' +
-      'instead of final/recheck_exhausted/recheck, under umbrella #1587. ' +
-      'Path A–A6 and #2945 currently share TERMINAL_RESOLUTION = final / ' +
-      'recheck_exhausted / recheck, so 16 expired-provisional misses and 18 ' +
-      'watchdog-timeout official_confirmed misses never recapture. Mid-window ' +
-      'provisional must still refuse. Do not rewrite detections.jsonl.',
+      'When Lucy does a one-shot fetch for a report that is already public ' +
+      '(already-published recapture and the control-room detect-now button), ' +
+      'it sometimes never asks the company IR feed. Cisco on 6 Aug 2026 ' +
+      'spent the budget on SEC, newswire RSS, and newswire HTML, then gave ' +
+      'up with "no matching newswire feed item." Six days later the same ' +
+      'ticker hit on issuer_feed at investor.cisco.com. Under umbrella ' +
+      '#1587, that one-shot must try the IR feed whenever the issuer ' +
+      'registry already has a usable IR root or feed URL, before the ' +
+      'fan-out expires. Do not wait for the IR HTML page to fail first ' +
+      '(#2779). Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'A finished-watch mode (watch_expired_without_detection, watchdog-timeout, ' +
-        'or watch_expired_resolution) is recapture-terminal for every existing ' +
-        'Path A / A2 / A3 / A5 / A6 / #2945 / #2958 gate even when ' +
-        'resolutionStatus is provisional, official_confirmed, pattern_estimated, ' +
-        'or single_source_estimate. Do NOT add those stamps to the global ' +
-        'TERMINAL_RESOLUTION set — mid-window provisional (mode null / still ' +
-        'open) must keep refusing. Operator-aborted, disabled, source-blocklisted, ' +
-        'and outside-6h-grace rows still refuse. Do not recapture mid-window. ' +
-        'Do not rewrite detections.jsonl.',
-      'When missClass is missing and mode is watchdog-timeout, the recapture ' +
-        'gate projects missClass=window_too_short (same mapping the scorecard ' +
-        'already uses via WINDOW_TOO_SHORT_MODES) so #2945 can arm the 18 ' +
-        'official_confirmed SAR/KRUS/LEVI-class rows. Do not change ' +
-        'classifyMissCause. Do not re-file #2548 (mid-window stamp). Existing ' +
-        'final / recheck_exhausted / recheck rows keep working unchanged.',
-      'Unit/fixture tests cover now-shaped rows (July leftovers are outside 6h ' +
-        'grace and must not be claimed as live recapture): (a) JNJ-shaped ' +
-        'watch_expired_without_detection + provisional + missClass=tier_infra_down ' +
-        '→ #2958 arms; (b) SAR-shaped watchdog-timeout + official_confirmed + ' +
-        'missing missClass → #2945 arms as window_too_short; (c) mid-window ' +
-        'provisional + missClass=tier_infra_down (mode null) refuses; (d) ' +
-        'recheck_exhausted + tier_infra_down still arms; (e) operator-aborted ' +
-        'and source-blocklisted refuse; (f) TERMINAL_RESOLUTION itself is still ' +
-        'only final / recheck_exhausted / recheck.',
+      'The already-published one-shot (detectPublication / detectNow, ' +
+        'including Path A recapture and control-room / !bot acquire detect) ' +
+        'includes issuer_feed in the live fan-out when data/issuers.json has ' +
+        'a non-empty ir_url or feed_url for that ticker. A Cisco-shaped run ' +
+        'that today only records classic + newswire_feed + newswire must ' +
+        'also record an issuer_feed attempt, or an explicit skip such as ' +
+        'no-feed-url — never a silent omission. Do not require the IR HTML ' +
+        'page to have already failed. Do not re-file #2779 or #2855. If the ' +
+        'one-shot is about to run out of time, prefer issuer_feed over a ' +
+        'trailing newswire HTML search when a feed URL exists.',
+      'A later Cisco-shaped hit via issuer_feed must be possible on the ' +
+        'same one-shot that missed the newswire feed. Classic / newswire_feed ' +
+        '/ newswire still run. Missing ir_url and feed_url is a named skip, ' +
+        'not a crash. Operator-aborted and source-blocklisted jobs still ' +
+        'refuse. Do not invent a new missClass. Do not rewrite detections.jsonl.',
+      'Unit/fixture tests cover: (a) Cisco-shaped registry with ir_url / ' +
+        'feed_url → issuer_feed attempted even when newswire_feed returns ' +
+        'feed_no_match; (b) no registry feed URL → named skip, no invented ' +
+        'URL; (c) #2779 page-obstruction promote still works; (d) one-shot ' +
+        'time budget prefers issuer_feed over a trailing newswire HTML ' +
+        'search when both remain; (e) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js (TERMINAL_RESOLUTION, shouldSchedule*Recapture)',
-      'src/scheduler-runner.js (scheduleNoSourceRecapture)',
-      'src/detection-scorecard.js (WINDOW_TOO_SHORT_MODES — reuse, do not fork)',
+      'src/report-acquisition.js (detectPublication)',
+      'src/scheduler-no-source-recapture.js (Path A detectNow)',
+      'src/acquisition/issuer-feed-early-promote.js (reuse hasUsableIssuerFeedUrl; do not require page obstruction)',
+      'src/scheduler-active-window-poll.js (fan-out order — detect-now must not omit a tier the live poll would try)',
     ],
     testHints: [
-      'unit: expired + provisional + tier_infra_down arms Path A3',
-      'unit: watchdog-timeout + official_confirmed + no missClass arms #2945',
-      'unit: mid-window provisional still refuses',
-      'unit: TERMINAL_RESOLUTION set membership unchanged',
+      'unit: Cisco-shaped detect-now with feed URL attempts issuer_feed after newswire_feed miss',
+      'unit: missing feed URL → named skip',
+      'unit: #2779 page-obstruction path unchanged',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped SEC exhibit URL',
+      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped issuer or newswire URL',
     goal:
-      'When a finished miss already carries the SEC exhibit URL of the earnings ' +
-      'release, pull that URL instead of running detectNow against a still-dead ' +
-      'submissions JSON, under umbrella #1587. Live HON (tier_infra_down) and ' +
-      'NEM (no_source) rows already store ' +
-      'https://www.sec.gov/Archives/edgar/data/…/exhibit99-*.htm on row.url, but ' +
-      'Path B only accepts verification_reject / possible_gate_miss + ' +
-      'candidateUrls[], and Path A detectNow re-hits classic fetch_error. Do ' +
-      'not invent a new missClass.',
+      'Lucy sometimes already stores the earnings-release URL on a missed ' +
+      'row, then ignores it on the second-chance pull. Wave 20 (#3062) ' +
+      'pulls an SEC exhibit URL sitting on the row. It still ignores a ' +
+      'company IR or newswire URL on the same field. Lowe\'s on 6 Aug 2026 ' +
+      'stamped the real PR Newswire earnings release on the row, but ' +
+      'candidateUrls was empty, so Path B refused. Older TMUS / BA expired ' +
+      'watches carry IR news URLs the same way. Under umbrella #1587, one ' +
+      'pullKnownUrlReport must fire on a recapture-terminal miss whose ' +
+      'row.url is already an issuer or newswire release page. Do not run a ' +
+      'fresh search. Do not re-file #3062.',
     acceptanceCriteria: [
-      'When the miss is recapture-terminal (existing TERMINAL_RESOLUTION OR ' +
-        'the finished-watch rule from the sibling leaf) and row.url is an SEC ' +
-        'Archives exhibit HTML URL (path under /Archives/edgar/data/ and ' +
-        'filename matching exhibit99 / ex99 / earningsrelea, .htm or .html), ' +
-        'schedule one pullKnownUrlReport on that URL. Any missClass is ' +
-        'eligible — including tier_infra_down and no_source. Do not require ' +
-        'candidateUrls[]. Do not route this through detectNow. CANDIDATE_URL_' +
-        'RECAPTURE_MISS_CLASSES stays verification_reject / possible_gate_miss ' +
-        'only. Operator-aborted, disabled, source-blocklisted, and outside-6h-' +
-        'grace rows refuse. Do not rewrite detections.jsonl.',
-      'HON-shaped ' +
-        '`…/000077384026000120/exhibit99-q22026earningsre.htm` and NEM-shaped ' +
-        '`…/000116472726000034/newmontq22026earningsrelea.htm` arm. A ' +
-        'submissions JSON URL or an 8-K index URL does not. Path B ' +
-        '(#2540 / #2990) is unchanged for verification_reject rows that ' +
-        'already have candidateUrls. Double-fire key includes ticker+date+url ' +
-        'so this path cannot loop with detectNow Path A on the same job.',
-      'Unit/fixture tests cover: (a) HON exhibit URL + expired provisional + ' +
-        'tier_infra_down → one pullKnownUrlReport; (b) NEM exhibit URL + ' +
-        'expired provisional + no_source → one pullKnownUrlReport; (c) ' +
-        'submissions/CIK.json URL refuses; (d) verification_reject with ' +
-        'candidateUrls still uses Path B, not this leaf; (e) mid-window ' +
-        'provisional refuses; (f) detectNow is not called.',
+      'When the miss is recapture-terminal (existing TERMINAL_RESOLUTION or ' +
+        'the finished-watch rule from #3061) and row.url is an http(s) ' +
+        'issuer or newswire release page — not an SEC submissions JSON, not ' +
+        'an 8-K index, not an SEC exhibit already handled by #3062 — ' +
+        'schedule one pullKnownUrlReport on that URL. Eligible missClasses ' +
+        'include verification_reject, possible_gate_miss, no_source, and ' +
+        'tier_infra_down. Do not require candidateUrls[]. ' +
+        'CANDIDATE_URL_RECAPTURE_MISS_CLASSES stays verification_reject / ' +
+        'possible_gate_miss only for Path B. Operator-aborted, disabled, ' +
+        'source-blocklisted, and outside-6h-grace rows refuse. Do not ' +
+        'rewrite detections.jsonl.',
+      'A Lowe\'s-shaped PR Newswire earnings URL + detect_now_exhausted + ' +
+        'verification_reject + resolutionStatus=final arms. TMUS/BA-shaped ' +
+        'investor.* / investors.* news URLs arm. An SEC exhibit URL still ' +
+        'uses #3062, not this leaf. Path B is unchanged when candidateUrls[] ' +
+        'is already populated. Double-fire key includes ticker+date+url so ' +
+        'this path cannot loop with detectNow Path A or #3062 on the same job.',
+      'Unit/fixture tests cover: (a) Lowe\'s PRN URL + detect_now_exhausted + ' +
+        'verification_reject + final → one pullKnownUrlReport; (b) TMUS IR ' +
+        'news URL + expired provisional + verification_reject → one pull; ' +
+        '(c) SEC exhibit URL does not take this path (#3062 does); (d) ' +
+        'submissions/CIK.json URL refuses; (e) mid-window provisional ' +
+        'refuses; (f) detectNow is not called.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js (shouldScheduleCandidateUrlRecapture / pullKnownUrlReport)',
+      'src/scheduler-no-source-recapture.js (sibling of the #3062 pullKnownUrlReport gate)',
       'src/scheduler-runner.js',
       'src/commands/acquire.js (pullKnownUrlReport — inject, do not compose Discord here)',
     ],
     testHints: [
-      'unit: HON exhibit99 HTML URL arms pullKnownUrlReport',
-      'unit: NEM earningsrelea HTML URL arms pullKnownUrlReport',
-      'unit: submissions JSON URL refuses',
+      'unit: Lowe\'s PR Newswire URL arms pullKnownUrlReport',
+      'unit: TMUS IR news URL arms',
+      'unit: SEC exhibit URL does not use this gate',
       'unit: detectNow is not invoked',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): name mixed issuer content_too_short+access_denied by majority blocked code',
+      'feat(acquisition): keep an earnings-release URL when newswire fails expectedDate only',
     goal:
-      'When the issuer (or issuer feed) is blocked by both a short extract and ' +
-      'HTTP 403, name the majority failureCode instead of leaving the row as ' +
-      'infrastructure-down, under umbrella #1587. Wave 19 (#2984 / #2985) kept ' +
-      'mixed folds as tier_infra_down because there was no winner rule. Live ' +
-      'HBAN is 7987 content_too_short vs 1471 access_denied on the same issuer ' +
-      'fold (plus classic fetch_error) — majority is now measurable. Equal ' +
-      'counts stay infra-down. Do not invent missClass=ir_403.',
+      'Lucy found Lowe\'s real earnings press release on 6 Aug 2026 and then ' +
+      'threw it away. The page URL is the earnings release; ticker identity ' +
+      'and earnings-report shape passed; only the expected-date check ' +
+      'failed. The miss became a total verification_reject with no ' +
+      'candidateUrls, so the second-chance pull could not use the URL Lucy ' +
+      'already had. Under umbrella #1587, keep that URL pullable when the ' +
+      'only failed check is expectedDate. Still reject guidance and ' +
+      'prior-quarter pages (#1712). Do not re-file #2929.',
     acceptanceCriteria: [
-      'missClassForWindow / issuerSideOnlyBlockedCode (classic fetch_error ' +
-        'ignored, same as #2984/#2985) returns content_too_short when the ' +
-        'issuer-side blocked bag has both content_too_short and access_denied ' +
-        'and content_too_short count is strictly greater. Returns access_denied ' +
-        'when access_denied count is strictly greater (scorecard cause stays ' +
-        'ir_403 via MISS_CLASS_TO_CAUSE). Equal counts stay tier_infra_down. ' +
-        'verification_reject, possible_gate_miss, host_cooling_down, and ' +
-        'confirmed-date window_too_short still win. Do not substring-match ' +
-        '`fetch failed` or `HTTP 403`. Do not rewrite detections.jsonl.',
-      'Historical HBAN stays missClass=tier_infra_down on disk; classifyMissCause ' +
-        'projects the majority cause the same way #2984 projects issuer-only ' +
-        'content_too_short. GOOGL/JNJ classic-only fetch_error stays ' +
-        'tier_infra_down. TSLA issuer-only access_denied stays ir_403 (not mixed). ' +
-        '#2986 listing-hub re-resolve may now arm on majority content_too_short ' +
-        '(live HBAN URL is still ir.huntington.com/news-presentations/press-releases). ' +
-        'Do not stamp missClass=ir_403. Do not add mixed_issuer as a new class.',
-      'Unit/fixture tests cover: (a) HBAN-shaped 7987 content_too_short + 1471 ' +
-        'access_denied + classic fetch_error → content_too_short; (b) inverted ' +
-        'counts → access_denied / cause ir_403; (c) 100/100 tie stays ' +
-        'tier_infra_down; (d) GOOGL classic-only fetch_error stays ' +
-        'tier_infra_down; (e) TSLA issuer-only access_denied stays ir_403; ' +
-        '(f) no jsonl rewrite.',
+      'A newswire (or issuer) page whose verification result is ticker=pass, ' +
+        'earnings-report shape=pass, expectedDate=fail only must keep the ' +
+        'rejecting URL on candidateUrls[] (and on row.url) and must not be ' +
+        'the sole reason the watch or detect-now ends as an un-pullable ' +
+        'verification_reject. Prefer naming possible_gate_miss (or an ' +
+        'existing date-mismatch projection the scorecard already understands) ' +
+        'so Path B (#2540) and the sibling stored-URL pull can arm. Guidance, ' +
+        'outlook, and prior-quarter pages still reject. Do not treat recapture ' +
+        'expectedDate as a dateMatch for adjacent-day 8-Ks (#2929). Do not ' +
+        'rewrite detections.jsonl.',
+      'A Lowe\'s-shaped PR Newswire URL + "newswire: verification failed: ' +
+        'expectedDate" + detect_now_exhausted + resolutionStatus=final leaves ' +
+        'a pullable URL. A page that also fails ticker or earnings-report ' +
+        'stays verification_reject with no new candidate. NUE-class guidance ' +
+        'false-accepts (#1712) stay rejected. Existing Path B candidateUrls ' +
+        'rows keep working.',
+      'Unit/fixture tests cover: (a) Lowe\'s-shaped expectedDate-only fail + ' +
+        'earnings headline → candidate URL persisted / Path B can arm; (b) ' +
+        'ticker fail still total verification_reject; (c) guidance/outlook ' +
+        'page still rejected; (d) #2929 adjacent-day 8-K recapture rule ' +
+        'unchanged; (e) no jsonl rewrite.',
     ],
     fileHints: [
-      'src/scheduler-active-window-poll.js (missClassForWindow / issuerSideOnlyBlockedCode)',
-      'src/detection-scorecard.js (classifyMissCause projection — do not reorder missClass-first)',
-      'src/scheduler-no-source-recapture.js (#2986 listing re-resolve may now see HBAN)',
+      'src/acquisition verification / expectedDate gate (newswire page)',
+      'src/scheduled-detection-persistence.js (persist candidateUrls on detect-now)',
+      'src/scheduler-no-source-recapture.js (Path B #2540 / #2969)',
+      'src/detection-scorecard.js (possible_gate_miss projection — do not invent a new missClass)',
     ],
     testHints: [
-      'unit: HBAN 7987/1471 mixed → content_too_short',
-      'unit: inverted mixed → access_denied / ir_403',
-      'unit: equal counts stay tier_infra_down',
-      'unit: classic-only fetch_error stays tier_infra_down',
+      'unit: expectedDate-only fail + earnings-release URL → candidate persisted',
+      'unit: ticker fail stays verification_reject',
+      'unit: guidance page still rejected',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
 ]);
-
 
 /**
  * lucy#1590 "headline metrics in tested code". Wave-1 residual leaves

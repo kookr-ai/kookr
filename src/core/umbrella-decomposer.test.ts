@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): treat finished watches as recapture-terminal regardless of date-resolution stamp',
-      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped SEC exhibit URL',
-      'feat(acquisition): name mixed issuer content_too_short+access_denied by majority blocked code',
+      'feat(acquisition): try issuer_feed on detect-now before the fan-out expires',
+      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped issuer or newswire URL',
+      'feat(acquisition): keep an earnings-release URL when newswire fails expectedDate only',
     ]);
   });
 
