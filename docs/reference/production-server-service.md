@@ -269,11 +269,20 @@ It records a ring of the most recent critical edges — including the
 `ready → degraded` transition and its operator-facing detail — plus fields
 sampled at write time: serving SHA, hung-suspect count, data-directory free
 space, and SAFE MODE status. That is what an operator (or Lucy over Discord)
-needs to see when the server itself will not answer. Note that
-`kookr ops digest` is **not** a
-substitute here: it fetches `/api/ready` and `/api/health` live, so against a
-wedged server it just reports no-server rather than reading this file. Use `cat`
-on the file directly when HTTP is dark.
+needs to see when the server itself will not answer.
+
+A companion on-disk surface is the **last-good `/api/health` snapshot**
+(`~/.kookr/last-good-health.json`, issue #2495): the server mirrors a redacted,
+size-capped copy of the full health body after each successful assembly, so
+unlike `ops-status.json`'s edge ring it carries the *whole* last-good body plus
+an mtime. `kookr ops digest --offline` reads it directly — and a plain
+`kookr ops digest` auto-degrades to it when HTTP is dark, printing how stale the
+snapshot is instead of only reporting no-server:
+
+```bash
+kookr ops digest --offline
+cat ~/.kookr/last-good-health.json
+```
 
 **Automating the restart (when present).** The manual step 4 above is today's
 recovery path. systemd can turn a wedge into an automatic restart with a

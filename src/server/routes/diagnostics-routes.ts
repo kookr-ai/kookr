@@ -67,6 +67,7 @@ import {
 import { summarizeOssAttemptsForHealth } from '../oss-attempts-snapshot.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
+import { LastGoodHealthWriter } from '../last-good-health.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
   formatSafeModeDigestLine,
@@ -264,6 +265,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     | undefined;
   let healthBodyInFlight: Promise<Record<string, unknown>> | undefined;
   const healthBodyStats = deps.healthBodyCacheStats ?? new HealthBodyCacheStats();
+  // Last-good health mirror (issue #2495): after each successful assembly, drop
+  // a redacted, size-capped copy on disk so an offline digest (`kookr ops digest
+  // --offline`) can still quote a recent body + its mtime when the HTTP surface
+  // is dark. Writer throttles itself (5s / gauge-edge) and never throws. Absent
+  // when kookrDir is unwired (tests / non-server hosts) or a writer is injected.
+  const lastGoodHealthWriter = deps.lastGoodHealthWriter
+    ?? (deps.kookrDir ? new LastGoodHealthWriter({ kookrDir: deps.kookrDir }) : undefined);
   // #2492 SWR background-refresh scheduler. Default: setImmediate, so the refresh
   // runs on a later macrotask (after the stale body is returned and flushed) and
   // never on the request path. Injectable so tests drive it deterministically.
@@ -741,6 +749,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           body,
         };
         healthBodyStats.record(healthBodyCache.assemblyMs, finishedAtMs);
+        // Mirror the just-assembled body to the last-good file (issue #2495).
+        // This is a *bounded synchronous* write (temp+rename of a ≤32 KiB blob,
+        // throttled to ≤once/5s) — small and infrequent enough for the health
+        // path, and it never throws, so a read-only state dir cannot turn an
+        // assembly into a failure. On a cold cache the first request awaits this
+        // `.then`, so the write is not off-thread; the throttle keeps warm-cache
+        // reassemblies from paying it every second.
+        lastGoodHealthWriter?.record(body);
         return body;
       })
       .finally(() => {

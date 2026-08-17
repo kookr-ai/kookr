@@ -776,6 +776,99 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — last-good snapshot mirror (issue #2495)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health last-good snapshot mirror (issue #2495)', () => {
+    test('mirrors a redacted snapshot to <kookrDir>/last-good-health.json after assembly', async () => {
+      const { readLastGoodHealth } = await import('../last-good-health.js');
+      const kookrDir = join(tempDir, 'state');
+      mkdirSync(kookrDir, { recursive: true });
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: { version: '1.2.3' } as never,
+        kookrDir,
+      });
+
+      const res = await app.request('/api/health');
+      expect(res.status).toBe(200);
+
+      const read = readLastGoodHealth(kookrDir);
+      expect(read).not.toBeNull();
+      expect(read!.snapshot.schemaVersion).toBe('last-good-health.v1');
+      expect(read!.snapshot.health.status).toBe('ok');
+    });
+
+    test('omits the mirror when kookrDir is not wired', async () => {
+      const { readLastGoodHealth } = await import('../last-good-health.js');
+      const kookrDir = join(tempDir, 'unwired');
+      mkdirSync(kookrDir, { recursive: true });
+      // No kookrDir on deps ⇒ no writer ⇒ nothing written into this dir.
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      });
+      await app.request('/api/health');
+      expect(readLastGoodHealth(kookrDir)).toBeNull();
+    });
+
+    test('a failed re-assembly leaves the previous good file intact (AC1)', async () => {
+      const { readLastGoodHealth } = await import('../last-good-health.js');
+      const kookrDir = join(tempDir, 'failed-assembly');
+      mkdirSync(kookrDir, { recursive: true });
+      const taskStore = new TaskStore();
+      let clock = 0;
+      const app = mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: { version: 'good' } as never,
+        kookrDir,
+        nowMs: () => clock,
+        // Run the SWR background refresh synchronously so the test is deterministic.
+        healthRefreshScheduler: (fn: () => void) => fn(),
+      });
+
+      // First request warms the cache and writes a good snapshot.
+      expect((await app.request('/api/health')).status).toBe(200);
+      const good = readLastGoodHealth(kookrDir);
+      expect(good).not.toBeNull();
+      const goodBytes = readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8');
+
+      // Break assembly, then expire the 1s body cache so the next request triggers
+      // a background re-assembly that rejects (record() must not run).
+      vi.spyOn(taskStore, 'viewTasks').mockImplementation(() => {
+        throw new Error('assembly boom');
+      });
+      clock = 5_000;
+      // Stale-while-revalidate serves the previous body (200) and kicks the failing refresh.
+      expect((await app.request('/api/health')).status).toBe(200);
+
+      // The failed assembly must not have rewritten the mirror.
+      const after = readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8');
+      expect(after).toBe(goodBytes);
+      expect(readLastGoodHealth(kookrDir)!.snapshot.capturedAt).toBe(good!.snapshot.capturedAt);
+    });
+
+    test('uses an injected writer when provided', async () => {
+      const { LastGoodHealthWriter, readLastGoodHealth } = await import('../last-good-health.js');
+      const kookrDir = join(tempDir, 'injected');
+      mkdirSync(kookrDir, { recursive: true });
+      const writer = new LastGoodHealthWriter({ kookrDir, now: () => 5_000 });
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        // kookrDir intentionally omitted: the injected writer must still fire.
+        lastGoodHealthWriter: writer,
+      });
+      await app.request('/api/health');
+      const read = readLastGoodHealth(kookrDir);
+      expect(read).not.toBeNull();
+      expect(read!.snapshot.capturedAt).toBe(new Date(5_000).toISOString());
+    });
+  });
+
   // GET /api/health — serving SHA (issue #1750)
   // ---------------------------------------------------------------------------
   describe('GET /api/health serving SHA (issue #1750)', () => {

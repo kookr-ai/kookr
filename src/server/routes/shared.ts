@@ -559,6 +559,15 @@ export interface RouteDeps {
    */
   healthRefreshScheduler?: (task: () => void) => void;
   /**
+   * Last-good `/api/health` mirror writer (issue #2495). After each successful
+   * assembly, diagnostics drops a redacted, size-capped copy to
+   * `<kookrDir>/last-good-health.json` so an offline digest can still quote a
+   * recent body when HTTP is dark. Absent ⇒ diagnostics builds a default writer
+   * from `kookrDir` (or omits the mirror when `kookrDir` is unwired). Injected in
+   * tests for a deterministic clock.
+   */
+  lastGoodHealthWriter?: import('../last-good-health.js').LastGoodHealthWriter;
+  /**
    * Shared stale-process /proc summary cache (issues #1723, #2081, #2350).
    * Health reads via SWR `getSummary()`; session reaper + resource watchdog
    * share the same instance for pressure gauges so only one /proc walk runs
