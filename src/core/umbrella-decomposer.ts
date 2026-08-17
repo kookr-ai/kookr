@@ -1216,174 +1216,181 @@ export const LUCY_1588_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
  * invent-product-wave #2069) #2944–#2946 (window_too_short share alert /
  * window_too_short recapture / complementary dual-session cover) shipped
  * and are title-exhausted. Invent wave 17 (queue-feeder 2026-08-13,
- * invent-product-wave #2069) continues the next Goal-1 slice after wave 16:
- * tier_infra_down is 26/85 product misses (30.6%) with no product-metric
- * page; missClassForWindow prefers hasTierInfraDown over windowTooShort so
- * #2945 never arms those rows; classic throws collapse to opaque
- * fetch_error before classifySecFetchError can name timeout/403/429.
- * Live GitHub leaves jeanibarz/lucy#2957–#2959. Title idempotency
- * prevents re-emit once those exist.
+ * invent-product-wave #2069) #2957–#2959 (tier_infra_down share alert /
+ * recapture / classify classic fetch_error) shipped and are
+ * title-exhausted. Invent wave 18 (queue-feeder 2026-08-13,
+ * invent-product-wave #2069) #2968–#2970 (project other from reason /
+ * persist reject URL / stamp fetch_error on rejected-tier throws)
+ * shipped and are title-exhausted (durable kookr plan never landed on
+ * main; titles exist on GitHub). Invent wave 19 (queue-feeder 2026-08-13,
+ * invent-product-wave #2069) #2984–#2986 (name issuer-only
+ * content_too_short / name issuer-only access_denied / re-resolve
+ * listing-hub IR URLs) shipped and are title-exhausted (durable kookr
+ * plan never landed on main; titles exist on GitHub). Invent wave 20
+ * (queue-feeder 2026-08-14, invent-product-wave #2069) continues the next
+ * Goal-1 slice after wave 19: the live scorecard (generated 2026-08-14)
+ * now splits 7 content_too_short + 7 ir_403 out of the old 27
+ * infra-down rows, leaving 13 classic-only infra-down + 11 other + 29
+ * window_too_short. Recapture still refuses two finished-watch shapes
+ * because TERMINAL_RESOLUTION is only final/recheck_exhausted/recheck:
+ * 16 watch_expired_without_detection rows stay provisional (JNJ, HON,
+ * HBAN, GOOGL, TSLA, AAPL, …), and 18 watchdog-timeout rows stamp
+ * official_confirmed (date resolution, not window outcome) with no
+ * missClass so #2945 cannot arm. HON and NEM already carry an SEC
+ * exhibit URL on the miss row; detectNow would re-hit dead submissions
+ * JSON. Mixed HBAN issuer content_too_short (7987) + access_denied
+ * (1471) still stays infra-down per wave 19's no-winner rule; majority
+ * count is now measurable. Do not re-file #2966/#2967/#2548. Do not
+ * stamp missClass=ir_403. Live GitHub leaves jeanibarz/lucy#3061–#3063.
+ * Title idempotency prevents re-emit once those exist.
  */
 export const LUCY_1587_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title:
-      'feat(metrics): alert when scorecard tier_infra_down miss share exceeds threshold',
+      'feat(acquisition): treat finished watches as recapture-terminal regardless of date-resolution stamp',
     goal:
-      'Page when infrastructure-down misses are a large slice of the live Goal-1 ' +
-      'miss mix under umbrella #1587. The detection-scorecard missRateByCause bag ' +
-      '(same bag #2730 and #2944 already read) attributes 26 of 85 product misses ' +
-      '(30.6%) to cause tier_infra_down — the second-largest miss cause — while ' +
-      'the product-metric pager stays green. Live rows are already typed ' +
-      'missClass=tier_infra_down (JNJ/BLK/MS; reason often regulatory: fetch_error). ' +
-      'Do not invent a new 7-day rolling window: August has no fresh infra-down ' +
-      'slice, so a 7d filter would never page. Do not invent a 0% rate for an ' +
-      'unmeasurable mix. Do not change classifyMissCause.',
+      'When a live watch is already over, already-published recapture must be ' +
+      'allowed to arm even if the row still carries a date-resolution stamp ' +
+      '(provisional, official_confirmed, pattern_estimated, single_source_estimate) ' +
+      'instead of final/recheck_exhausted/recheck, under umbrella #1587. ' +
+      'Path A–A6 and #2945 currently share TERMINAL_RESOLUTION = final / ' +
+      'recheck_exhausted / recheck, so 16 expired-provisional misses and 18 ' +
+      'watchdog-timeout official_confirmed misses never recapture. Mid-window ' +
+      'provisional must still refuse. Do not rewrite detections.jsonl.',
     acceptanceCriteria: [
-      'The current detection-scorecard missRateByCause bag (not a new 7-day / ' +
-        'ISO-week slice, not acquisition-weekly-scoreboard.json) with misses at ' +
-        'or above a documented sample floor (default 10) and ' +
-        'tier_infra_down / misses at or above a documented threshold (default ' +
-        '0.30) produces one alert of a new kind (e.g. tierInfraDownShare) naming ' +
-        'the count, share, and threshold. A 26/85 mix pages even when ' +
-        'window_too_short is 29/85. Misses === 0 or a missing bag do not page ' +
-        '(unmeasurable, not 0%). Do not filter the bag by resolutionStatus. Do ' +
-        'not require this cause to be the unique top cause. Do not skip when a ' +
-        'sibling share alert is also firing.',
-      'verificationRejectShare (#2730), windowTooShortShare (#2944), ' +
-        'eventSeenNoContent (#2684), and recaptureZeroAttempts (#2876) stay on ' +
-        'their existing kinds. Clone evaluateWindowTooShortShareAlert. ' +
-        'classifyMissCause order stays missClass-first so this numerator does ' +
-        'not evaporate into fetch_error / ir_403. .env.example documents floor ' +
-        '/ share overrides.',
-      'Unit/fixture tests cover: (a) 26/85 tier_infra_down pages; (b) 0/85 does ' +
-        'not; (c) misses === 0 does not; (d) missing bag does not; (e) a 26/85 ' +
-        'mix still pages when window_too_short is 29/85; (f) a 7-day-empty / ' +
-        'full-bag-26/85 fixture still pages (no new rolling window).',
-    ],
-    fileHints: [
-      'src/product-metric-alerts.js (evaluateWindowTooShortShareAlert sibling)',
-      'src/detection-scorecard.js (missRateByCause / classifyMissCause — do not reorder)',
-      '.env.example',
-    ],
-    testHints: [
-      'unit: 26/85 tier_infra_down pages',
-      'unit: 0/85 does not page',
-      'unit: misses === 0 / missing bag do not page',
-      'unit: 26/85 still pages when window_too_short is 29/85',
-    ],
-    labels: ['acquisition', 'product-metric', 'enhancement'],
-  }),
-  Object.freeze({
-    title:
-      'feat(acquisition): recapture already-published when window ends with tier_infra_down',
-    goal:
-      'Arm Path A3 already-published recapture when a live window\'s terminal ' +
-      'miss is missClass=tier_infra_down, under umbrella #1587. ' +
-      'missClassForWindow prefers hasTierInfraDown over windowTooShort, so #2945 ' +
-      'never arms the 26 typed infra-down rows (JNJ watch_expired + ' +
-      'missClass=tier_infra_down). #2518 only arms no_source. Reuse the same ' +
-      'detectNow worker, grace, and source-blocklist. Do not invent a new ' +
-      'missClass. Do not widen missClassForWindow. Immediate detectNow into a ' +
-      'still-dead SEC is an accepted residual (RFC-012 wanted retry-on-health-' +
-      'recovery); do not add a health gate live never stamps.',
-    acceptanceCriteria: [
-      'When a live armed window is over and produced no hit, and the row\'s ' +
-        'missClass is tier_infra_down, and resolutionStatus is in the same ' +
-        'TERMINAL_RESOLUTION set as Path A/A2 (final, recheck_exhausted, AND ' +
-        'recheck — the second pass ended via safety cap is still last-pass), ' +
-        'arm one already-published recapture via the same detectNow worker as ' +
-        '#2518. provisional (first pass still has a recheck), operator-aborted, ' +
-        'disabled, source-blocklisted, and outside-grace rows refuse. Do not ' +
-        'recapture mid-window. Do not require failureCode, a regulatory: ' +
-        'reason prefix, or SEC_FETCH_FAILURE (live JNJ-class rows have ' +
-        'failureCode=null and byFailureCode.fetch_error). Do not require ' +
-        'resolutionStatus===final alone (0 live infra-down rows are final).',
-      'no_source recapture (#2518) and window_too_short recapture (#2945) stay ' +
-        'on their existing gates. The double-fire key is the current ' +
-        'noSourceRecaptureKey INCLUDING missClass ' +
-        '(${jobId}|${ticker}|${date}|${missClass}) so Path A / A2 / A3 do not ' +
-        'consume each other. Do not strip missClass from the key. Recapture-' +
-        'source jobs stay excluded. Do not widen missClassForWindow so ' +
-        'windowTooShort beats hasTierInfraDown.',
-      'Unit/fixture tests cover now-shaped rows (the July 26 are outside 6h ' +
+      'A finished-watch mode (watch_expired_without_detection, watchdog-timeout, ' +
+        'or watch_expired_resolution) is recapture-terminal for every existing ' +
+        'Path A / A2 / A3 / A5 / A6 / #2945 / #2958 gate even when ' +
+        'resolutionStatus is provisional, official_confirmed, pattern_estimated, ' +
+        'or single_source_estimate. Do NOT add those stamps to the global ' +
+        'TERMINAL_RESOLUTION set — mid-window provisional (mode null / still ' +
+        'open) must keep refusing. Operator-aborted, disabled, source-blocklisted, ' +
+        'and outside-6h-grace rows still refuse. Do not recapture mid-window. ' +
+        'Do not rewrite detections.jsonl.',
+      'When missClass is missing and mode is watchdog-timeout, the recapture ' +
+        'gate projects missClass=window_too_short (same mapping the scorecard ' +
+        'already uses via WINDOW_TOO_SHORT_MODES) so #2945 can arm the 18 ' +
+        'official_confirmed SAR/KRUS/LEVI-class rows. Do not change ' +
+        'classifyMissCause. Do not re-file #2548 (mid-window stamp). Existing ' +
+        'final / recheck_exhausted / recheck rows keep working unchanged.',
+      'Unit/fixture tests cover now-shaped rows (July leftovers are outside 6h ' +
         'grace and must not be claimed as live recapture): (a) JNJ-shaped ' +
-        'recheck_exhausted + missClass=tier_infra_down → recapture armed; ' +
-        '(b) MS-shaped recheck + missClass=tier_infra_down → recapture armed; ' +
-        '(c) provisional + missClass=tier_infra_down refuses; (d) no_source ' +
-        'and window_too_short still use their existing gates; (e) two rows ' +
-        'same job/ticker/date different missClass → two keys, each path can ' +
-        'arm once; (f) operator-aborted and source-blocklisted refuse.',
+        'watch_expired_without_detection + provisional + missClass=tier_infra_down ' +
+        '→ #2958 arms; (b) SAR-shaped watchdog-timeout + official_confirmed + ' +
+        'missing missClass → #2945 arms as window_too_short; (c) mid-window ' +
+        'provisional + missClass=tier_infra_down (mode null) refuses; (d) ' +
+        'recheck_exhausted + tier_infra_down still arms; (e) operator-aborted ' +
+        'and source-blocklisted refuse; (f) TERMINAL_RESOLUTION itself is still ' +
+        'only final / recheck_exhausted / recheck.',
     ],
     fileHints: [
-      'src/scheduler-no-source-recapture.js (shouldScheduleWindowTooShortRecapture sibling, noSourceRecaptureKey, TERMINAL_RESOLUTION)',
+      'src/scheduler-no-source-recapture.js (TERMINAL_RESOLUTION, shouldSchedule*Recapture)',
       'src/scheduler-runner.js (scheduleNoSourceRecapture)',
-      'src/scheduler-active-window-poll.js (missClassForWindow / hasTierInfraDown — do not widen)',
+      'src/detection-scorecard.js (WINDOW_TOO_SHORT_MODES — reuse, do not fork)',
     ],
     testHints: [
-      'unit: recheck_exhausted tier_infra_down arms one detectNow',
-      'unit: recheck (safety-cap last pass) tier_infra_down arms one detectNow',
-      'unit: provisional tier_infra_down refuses',
-      'unit: key includes missClass so Path A/A2/A3 do not collide',
+      'unit: expired + provisional + tier_infra_down arms Path A3',
+      'unit: watchdog-timeout + official_confirmed + no missClass arms #2945',
+      'unit: mid-window provisional still refuses',
+      'unit: TERMINAL_RESOLUTION set membership unchanged',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
   Object.freeze({
     title:
-      'feat(acquisition): classify classic fetch_error via classifySecFetchError before the acquire fold',
+      'feat(acquisition): pullKnownUrlReport a miss row\'s already-stamped SEC exhibit URL',
     goal:
-      'Replace opaque classic fetch_error with the existing SEC timeout/403/429/' +
-      'reset/byte_cap taxonomy at the throw site, under umbrella #1587. Live ' +
-      'JNJ-class rows carry reason regulatory: fetch_error, no top-level ' +
-      'failureCode, and tierOutcomes.classic.byFailureCode.fetch_error in the ' +
-      'thousands. classifySecFetchError already exists on the exhibit path; ' +
-      'classicFetchExceptionResult collapses every throw to ' +
-      'CLASSIC_FETCH_ERROR_FAILURE_CODE=fetch_error. Decorating ' +
-      'totalMissMetadata after the fold cannot recover timeout vs 403. missClass ' +
-      'stays tier_infra_down so the 26/85 scorecard numerator does not evaporate.',
+      'When a finished miss already carries the SEC exhibit URL of the earnings ' +
+      'release, pull that URL instead of running detectNow against a still-dead ' +
+      'submissions JSON, under umbrella #1587. Live HON (tier_infra_down) and ' +
+      'NEM (no_source) rows already store ' +
+      'https://www.sec.gov/Archives/edgar/data/…/exhibit99-*.htm on row.url, but ' +
+      'Path B only accepts verification_reject / possible_gate_miss + ' +
+      'candidateUrls[], and Path A detectNow re-hits classic fetch_error. Do ' +
+      'not invent a new missClass.',
     acceptanceCriteria: [
-      'classicFetchExceptionResult (or the classic throw site that feeds it) ' +
-        'calls classifySecFetchError so timeout / 403 / 429 / reset / byte_cap ' +
-        'replace opaque fetch_error BEFORE the acquire fold. The written ' +
-        'detection row copies that code through acquire → totalMissMetadata. ' +
-        'Live JNJ-class throws are `new Error(\"SEC 403 for https://data.sec.gov/' +
-        'submissions/…\")` from secJson — no .status / .failureCode, and not ' +
-        'the HTTP 403 / TimeoutError fixtures already in ' +
-        'test/earnings-source-sec-fetch-error-taxonomy.test.js. Those live ' +
-        'SEC ${status} throws MUST become sec_403 (or the matching SEC_* code) ' +
-        'on the acquire fold: extend classifySecFetchError to treat `SEC 403` ' +
-        'like `HTTP 403`, or stamp .status on the secJson throw. Do not call ' +
-        'the leaf done because the existing HTTP 403 fixture already maps. ' +
-        'Unclassifiable non-status throws may stay fetch_error; do not invent ' +
-        'sec_other for every leftover.',
-      'missClass stays tier_infra_down. classifyMissCause order stays ' +
-        'missClass-first — do not prefer failureCode or the 26/85 leaf-1 ' +
-        'numerator splits into fetch_error / ir_403 / content_too_short. ' +
-        'hasOnlyNamedNotFoundFailures still prevents named empty-match from ' +
-        'becoming tier_infra_down. Issuer-side content_too_short / access_denied ' +
-        'halves of the 26 already have specific byFailureCode; this leaf does ' +
-        'not re-attribute those.',
-      'Unit/fixture tests cover: (a) classic timeout throw → SEC timeout code ' +
-        'on the fold + copied onto the detection row, missClass=tier_infra_down; ' +
-        '(b) `new Error(\"SEC 403 for https://data.sec.gov/submissions/CIK.json\")` ' +
-        '(no .status) → sec_403 on the acquire fold, missClass unchanged — not ' +
-        'only the existing `fetch failed: HTTP 403` fixture; (c) JNJ-shaped ' +
-        'absent top-level failureCode + byFailureCode.fetch_error is the ' +
-        'starting fixture, not a pre-stamped sec_* row; (d) classifyMissCause ' +
-        'on that row is still tier_infra_down; (e) named-not-found still is not ' +
-        'tier_infra_down.',
+      'When the miss is recapture-terminal (existing TERMINAL_RESOLUTION OR ' +
+        'the finished-watch rule from the sibling leaf) and row.url is an SEC ' +
+        'Archives exhibit HTML URL (path under /Archives/edgar/data/ and ' +
+        'filename matching exhibit99 / ex99 / earningsrelea, .htm or .html), ' +
+        'schedule one pullKnownUrlReport on that URL. Any missClass is ' +
+        'eligible — including tier_infra_down and no_source. Do not require ' +
+        'candidateUrls[]. Do not route this through detectNow. CANDIDATE_URL_' +
+        'RECAPTURE_MISS_CLASSES stays verification_reject / possible_gate_miss ' +
+        'only. Operator-aborted, disabled, source-blocklisted, and outside-6h-' +
+        'grace rows refuse. Do not rewrite detections.jsonl.',
+      'HON-shaped ' +
+        '`…/000077384026000120/exhibit99-q22026earningsre.htm` and NEM-shaped ' +
+        '`…/000116472726000034/newmontq22026earningsrelea.htm` arm. A ' +
+        'submissions JSON URL or an 8-K index URL does not. Path B ' +
+        '(#2540 / #2990) is unchanged for verification_reject rows that ' +
+        'already have candidateUrls. Double-fire key includes ticker+date+url ' +
+        'so this path cannot loop with detectNow Path A on the same job.',
+      'Unit/fixture tests cover: (a) HON exhibit URL + expired provisional + ' +
+        'tier_infra_down → one pullKnownUrlReport; (b) NEM exhibit URL + ' +
+        'expired provisional + no_source → one pullKnownUrlReport; (c) ' +
+        'submissions/CIK.json URL refuses; (d) verification_reject with ' +
+        'candidateUrls still uses Path B, not this leaf; (e) mid-window ' +
+        'provisional refuses; (f) detectNow is not called.',
     ],
     fileHints: [
-      'src/earnings-source.js (classicFetchExceptionResult / CLASSIC_FETCH_ERROR_FAILURE_CODE)',
-      'src/earnings-source/sec-exhibit.js (classifySecFetchError — reuse, do not fork)',
-      'src/earnings-source/sec-client.js (secJson `SEC ${status}` throw — stamp .status or extend the classifier)',
-      'src/scheduler-active-window-poll.js (totalMissMetadata copies result.failureCode)',
-      'src/detection-scorecard.js (classifyMissCause — do not reorder)',
+      'src/scheduler-no-source-recapture.js (shouldScheduleCandidateUrlRecapture / pullKnownUrlReport)',
+      'src/scheduler-runner.js',
+      'src/commands/acquire.js (pullKnownUrlReport — inject, do not compose Discord here)',
     ],
     testHints: [
-      'unit: classic timeout throw classified before acquire fold',
-      'unit: `SEC 403 for https://data.sec.gov/submissions/…` (no .status) → sec_403',
-      'unit: classifyMissCause still returns tier_infra_down',
-      'unit: named-not-found is not tier_infra_down',
+      'unit: HON exhibit99 HTML URL arms pullKnownUrlReport',
+      'unit: NEM earningsrelea HTML URL arms pullKnownUrlReport',
+      'unit: submissions JSON URL refuses',
+      'unit: detectNow is not invoked',
+    ],
+    labels: ['acquisition', 'product-metric', 'enhancement'],
+  }),
+  Object.freeze({
+    title:
+      'feat(acquisition): name mixed issuer content_too_short+access_denied by majority blocked code',
+    goal:
+      'When the issuer (or issuer feed) is blocked by both a short extract and ' +
+      'HTTP 403, name the majority failureCode instead of leaving the row as ' +
+      'infrastructure-down, under umbrella #1587. Wave 19 (#2984 / #2985) kept ' +
+      'mixed folds as tier_infra_down because there was no winner rule. Live ' +
+      'HBAN is 7987 content_too_short vs 1471 access_denied on the same issuer ' +
+      'fold (plus classic fetch_error) — majority is now measurable. Equal ' +
+      'counts stay infra-down. Do not invent missClass=ir_403.',
+    acceptanceCriteria: [
+      'missClassForWindow / issuerSideOnlyBlockedCode (classic fetch_error ' +
+        'ignored, same as #2984/#2985) returns content_too_short when the ' +
+        'issuer-side blocked bag has both content_too_short and access_denied ' +
+        'and content_too_short count is strictly greater. Returns access_denied ' +
+        'when access_denied count is strictly greater (scorecard cause stays ' +
+        'ir_403 via MISS_CLASS_TO_CAUSE). Equal counts stay tier_infra_down. ' +
+        'verification_reject, possible_gate_miss, host_cooling_down, and ' +
+        'confirmed-date window_too_short still win. Do not substring-match ' +
+        '`fetch failed` or `HTTP 403`. Do not rewrite detections.jsonl.',
+      'Historical HBAN stays missClass=tier_infra_down on disk; classifyMissCause ' +
+        'projects the majority cause the same way #2984 projects issuer-only ' +
+        'content_too_short. GOOGL/JNJ classic-only fetch_error stays ' +
+        'tier_infra_down. TSLA issuer-only access_denied stays ir_403 (not mixed). ' +
+        '#2986 listing-hub re-resolve may now arm on majority content_too_short ' +
+        '(live HBAN URL is still ir.huntington.com/news-presentations/press-releases). ' +
+        'Do not stamp missClass=ir_403. Do not add mixed_issuer as a new class.',
+      'Unit/fixture tests cover: (a) HBAN-shaped 7987 content_too_short + 1471 ' +
+        'access_denied + classic fetch_error → content_too_short; (b) inverted ' +
+        'counts → access_denied / cause ir_403; (c) 100/100 tie stays ' +
+        'tier_infra_down; (d) GOOGL classic-only fetch_error stays ' +
+        'tier_infra_down; (e) TSLA issuer-only access_denied stays ir_403; ' +
+        '(f) no jsonl rewrite.',
+    ],
+    fileHints: [
+      'src/scheduler-active-window-poll.js (missClassForWindow / issuerSideOnlyBlockedCode)',
+      'src/detection-scorecard.js (classifyMissCause projection — do not reorder missClass-first)',
+      'src/scheduler-no-source-recapture.js (#2986 listing re-resolve may now see HBAN)',
+    ],
+    testHints: [
+      'unit: HBAN 7987/1471 mixed → content_too_short',
+      'unit: inverted mixed → access_denied / ir_403',
+      'unit: equal counts stay tier_infra_down',
+      'unit: classic-only fetch_error stays tier_infra_down',
     ],
     labels: ['acquisition', 'product-metric', 'enhancement'],
   }),
