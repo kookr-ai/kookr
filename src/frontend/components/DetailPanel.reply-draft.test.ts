@@ -219,8 +219,23 @@ describe('DetailPanel reply draft persistence', () => {
     expect(sent).toEqual([]);
   });
 
+  test('shows eight chips and no overflow dropdown at the chip cap', async () => {
+    const snippets = Array.from({ length: 8 }, (_, index) => ({
+      label: `Snippet ${index + 1}`,
+      text: `text-${index + 1}`,
+    }));
+    stubSettingsSnippets(snippets);
+    renderDetailPanel(root, makeAgent('agent-1'));
+    await act(async () => {});
+
+    expect(snippetChips().map((chip) => chip.textContent)).toEqual(
+      snippets.map((snippet) => snippet.label),
+    );
+    expect(container.querySelector('#reply-snippet-picker')).toBeNull();
+  });
+
   test('caps snippet chips at eight and keeps the dropdown as overflow', async () => {
-    const snippets = Array.from({ length: 9 }, (_, index) => ({
+    const snippets = Array.from({ length: 10 }, (_, index) => ({
       label: `Snippet ${index + 1}`,
       text: `text-${index + 1}`,
     }));
@@ -242,13 +257,14 @@ describe('DetailPanel reply draft persistence', () => {
 
     const picker = container.querySelector<HTMLSelectElement>('#reply-snippet-picker');
     expect(picker).toBeInstanceOf(HTMLSelectElement);
-    expect(Array.from(picker!.options).map((option) => option.textContent)).toEqual([
-      'Insert snippet...',
-      'Snippet 9',
-    ]);
+    const overflowOptions = Array.from(picker!.options).slice(1);
+    expect(overflowOptions.map((option) => option.textContent)).toEqual(['Snippet 9', 'Snippet 10']);
+    expect(overflowOptions.map((option) => option.value)).toEqual(['8', '9']);
 
+    const ninth = overflowOptions.find((option) => option.textContent === 'Snippet 9');
+    expect(ninth).toBeDefined();
     act(() => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(picker, '8');
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(picker, ninth!.value);
       picker!.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
