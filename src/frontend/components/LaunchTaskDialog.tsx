@@ -430,6 +430,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     [duplicateCandidates, cwd],
   );
   const showBusyDirectoryBanner = busyDirectoryTasks.length > 0 && !activeDuplicate;
+  const canSubmitLaunch = Boolean(prompt.trim() && cwd.trim() && !submitting && !grokAuthBlocksLaunch);
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
@@ -803,6 +804,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 tasks={busyDirectoryTasks}
                 onOpenExisting={() => openExistingTask(busyDirectoryTasks[0])}
                 onLaunchAnyway={() => submitLaunch(false)}
+                launchAnywayDisabled={!canSubmitLaunch}
               />
             )}
             <label>

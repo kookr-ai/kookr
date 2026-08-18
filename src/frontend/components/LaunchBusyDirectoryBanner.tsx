@@ -7,11 +7,12 @@ interface Props {
   tasks: readonly LaunchDuplicateCandidate[];
   onOpenExisting: () => void;
   onLaunchAnyway: () => void;
+  launchAnywayDisabled?: boolean;
 }
 
-function displayName(task: LaunchDuplicateCandidate): string {
+function taskDisplayName(task: LaunchDuplicateCandidate): string {
   const named = task.taskName?.trim();
-  if (named) return named;
+  if (named) return named.length > 40 ? `${named.slice(0, 39)}…` : named;
   const desc = (task.description ?? task.userPrompt ?? task.prompt ?? '').trim();
   if (!desc) return task.taskId ?? task.id ?? 'untitled task';
   return desc.length > 40 ? `${desc.slice(0, 39)}…` : desc;
@@ -22,11 +23,16 @@ function displayName(task: LaunchDuplicateCandidate): string {
  * even when those agents have different prompts. Warning only — does not block
  * the main Launch button.
  */
-export function LaunchBusyDirectoryBanner({ tasks, onOpenExisting, onLaunchAnyway }: Props) {
+export function LaunchBusyDirectoryBanner({ tasks, onOpenExisting, onLaunchAnyway, launchAnywayDisabled }: Props) {
   const count = tasks.length;
-  const names = tasks.map(displayName).join(', ');
+  const visible = tasks.slice(0, 4);
+  const extra = count - visible.length;
+  const names = [
+    ...visible.map(taskDisplayName),
+    ...(extra > 0 ? [`and ${extra} more`] : []),
+  ].join(', ');
   const agentWord = count === 1 ? 'live agent' : 'live agents';
-  const oldestName = tasks[0] ? displayName(tasks[0]) : undefined;
+  const oldestName = tasks[0] ? taskDisplayName(tasks[0]) : undefined;
   const existingLabel = oldestName ? `Open existing (${oldestName})` : 'Open existing';
 
   return (
@@ -60,6 +66,7 @@ export function LaunchBusyDirectoryBanner({ tasks, onOpenExisting, onLaunchAnywa
           className="btn-secondary"
           onMouseDown={(e) => e.preventDefault()}
           onClick={onLaunchAnyway}
+          disabled={launchAnywayDisabled}
           data-testid="launch-busy-directory-launch-anyway"
         >
           Launch anyway

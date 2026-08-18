@@ -2,11 +2,23 @@
 
 import React from 'react';
 import { act } from 'react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+
+vi.mock('../api/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/index.js')>();
+  return {
+    ...actual,
+    getCompactTasks: () => Promise.resolve([
+      { taskId: 'task-older', cwd: '/tmp/demo' },
+      { taskId: 'task-newer', cwd: '/tmp/demo' },
+      { taskId: 'task-other', cwd: '/tmp/other' },
+    ]),
+  };
+});
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -52,7 +64,7 @@ function liveTask(overrides: Partial<AgentState> & Pick<AgentState, 'agentId' | 
   return {
     events: [],
     anomaly: null,
-    cwd: '/tmp/demo',
+    cwd: '/tmp/kookr-wt-demo',
     agentType: 'claude-code',
     taskStatus: 'inProgress',
     ...overrides,
@@ -92,13 +104,6 @@ describe('LaunchTaskDialog busy-directory warning', () => {
       ],
       agents: [
         liveTask({
-          agentId: 'sess-older',
-          taskId: 'task-older',
-          taskName: 'Auth fix',
-          description: 'Fix the auth bug',
-          startedAt: '2026-08-01T10:00:00.000Z',
-        }),
-        liveTask({
           agentId: 'sess-newer',
           taskId: 'task-newer',
           taskName: 'Review tests',
@@ -106,9 +111,16 @@ describe('LaunchTaskDialog busy-directory warning', () => {
           startedAt: '2026-08-01T11:00:00.000Z',
         }),
         liveTask({
+          agentId: 'sess-older',
+          taskId: 'task-older',
+          taskName: 'Auth fix',
+          description: 'Fix the auth bug',
+          startedAt: '2026-08-01T10:00:00.000Z',
+        }),
+        liveTask({
           agentId: 'sess-other',
           taskId: 'task-other',
-          cwd: '/tmp/other',
+          cwd: '/tmp/kookr-wt-other',
           taskName: 'Elsewhere',
           description: 'Work in another repo',
           startedAt: '2026-08-01T09:00:00.000Z',
@@ -124,7 +136,7 @@ describe('LaunchTaskDialog busy-directory warning', () => {
     localStorage.clear();
   });
 
-  test('two in-progress tasks in /tmp/demo with different prompts show the busy-directory banner; /tmp/other does not', async () => {
+  test('two in-progress /tmp/demo tasks show the busy-directory banner; the /tmp/other task is not listed there', async () => {
     const { root } = renderDialog(container);
     await flush();
     await act(async () => { setInputValue(getPromptEl(container), 'A brand new prompt'); });
@@ -189,6 +201,7 @@ describe('LaunchTaskDialog busy-directory warning', () => {
       prompt: 'A brand new prompt',
       cwd: '/tmp/demo',
     });
+    expect(sent[0]).not.toHaveProperty('disableDedup');
     act(() => root.unmount());
   });
 

@@ -4227,6 +4227,7 @@ a.playbook-empty-docs-link:visited:hover {
 .launch-duplicate-banner__copy,
 .launch-busy-directory-banner__copy {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .launch-duplicate-banner__actions,

@@ -1,13 +1,16 @@
 import type { AgentSelection } from './contracts/agent-types.js';
 
 /**
- * Client-side duplicate-launch match — same equality `kookr spawn` uses
+ * Client-side launch-directory matching — same equality `kookr spawn` uses
  * (`taskMatchesSpawn` in `bin/kookr-spawn.js`).
  *
- * A match is an *active* task (not completed / cancelled / terminated) with
- * the same *launch* working directory and the same authored prompt. Agent type
- * is compared only when the new launch pinned a concrete agent; `round-robin`
- * is treated as unpinned because no stored task carries that sentinel.
+ * Two questions share this helper:
+ * - Prompt-duplicate: an *active* task with the same *launch* working directory
+ *   and the same authored prompt. Agent type is compared only when the new
+ *   launch pinned a concrete agent; `round-robin` is treated as unpinned
+ *   because no stored task carries that sentinel.
+ * - Busy-directory: every active task already launched in that directory,
+ *   regardless of prompt (`findLiveTasksInDirectory`).
  *
  * Trailing slashes on cwd are ignored (`/repo` ≡ `/repo/`). Prefer the compact
  * task-list cwd (the directory the operator launched in) over the dashboard

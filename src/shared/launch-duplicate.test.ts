@@ -148,9 +148,28 @@ describe('findLiveTasksInDirectory', () => {
     taskName: 'Finished',
     description: 'Already done',
   };
+  const cancelled = {
+    taskId: 'cancelled',
+    agentId: 'sess-cancelled',
+    taskStatus: 'cancelled',
+    cwd: '/tmp/demo',
+    taskName: 'Cancelled',
+    description: 'Stopped early',
+  };
+  const terminated = {
+    taskId: 'terminated',
+    agentId: 'sess-terminated',
+    status: 'terminated',
+    cwd: '/tmp/demo',
+    taskName: 'Terminated',
+    description: 'Reaped',
+  };
 
   it('returns live tasks in the launch directory, oldest first, ignoring trailing slashes', () => {
-    const found = findLiveTasksInDirectory([newer, otherDir, done, older], '/tmp/demo');
+    const found = findLiveTasksInDirectory(
+      [newer, otherDir, done, cancelled, terminated, older],
+      '/tmp/demo',
+    );
     expect(found.map((task) => task.taskId)).toEqual(['older', 'newer']);
   });
 
