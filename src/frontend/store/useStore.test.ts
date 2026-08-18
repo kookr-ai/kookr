@@ -139,6 +139,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().launchDependencies).toBeNull();
     expect(store.getState().pausedSchedules).toBeNull();
     expect(store.getState().lessonYield).toBeNull();
+    expect(store.getState().timerHealth).toBeNull();
 
     store.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 2, status: 'alert', failingChecks: ['health'] },
@@ -173,6 +174,7 @@ describe('Kookr Zustand Store', () => {
         completedInWindow: 4,
         buckets: { wroteLesson: 2, explicitSkip: 1, searchOnly: 0, noKbActivity: 1 },
       },
+      timerHealth: { overdue: 2, oldestName: 'maintenancePrune' },
     });
 
     expect(store.getState().prodSmokeTick).toEqual({
@@ -208,6 +210,10 @@ describe('Kookr Zustand Store', () => {
       completedInWindow: 4,
       buckets: { wroteLesson: 2, explicitSkip: 1, searchOnly: 0, noKbActivity: 1 },
     });
+    expect(store.getState().timerHealth).toEqual({
+      overdue: 2,
+      oldestName: 'maintenancePrune',
+    });
 
     // Partial update: only smoke — watchdog + capacity residual + starvation + launch deps + schedules left alone.
     store.getState().handleOpsHealth({
@@ -220,6 +226,7 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().launchDependencies?.totalDegradedTasks).toBe(8);
     expect(store.getState().pausedSchedules?.schedulesPausedByFailure).toHaveLength(1);
     expect(store.getState().lessonYield?.yieldRate).toBe(0.75);
+    expect(store.getState().timerHealth?.overdue).toBe(2);
     // Must not collide with the ScheduleResponse[] list used by ScheduleSection.
     expect(store.getState().schedules).toEqual([]);
 
@@ -227,6 +234,10 @@ describe('Kookr Zustand Store', () => {
     store.getState().handleOpsHealth({ pausedSchedules: null });
     expect(store.getState().pausedSchedules).toBeNull();
     expect(store.getState().schedules).toEqual([]);
+
+    // Missing health.timerHealth parses to null and must clear a prior projection.
+    store.getState().handleOpsHealth({ timerHealth: null });
+    expect(store.getState().timerHealth).toBeNull();
   });
 
   test('handleUpdate updates single agent', () => {

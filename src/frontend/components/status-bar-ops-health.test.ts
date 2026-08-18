@@ -4,8 +4,8 @@
  * Status-bar pills for prod smoke-tick failing streak + resourceWatchdog
  * disabled (issue #2037) + chronic FAA residual (issue #2082) + launch
  * dependency degradation (issue #2364) + fail-closed paused schedules
- * (issue #2432). Fixtures drive the store directly — the poll hook is
- * covered separately.
+ * (issue #2432) + overdue lifecycle timers (issue #2643). Fixtures drive
+ * the store directly — the poll hook is covered separately.
  */
 
 import React from 'react';
@@ -31,7 +31,10 @@ async function flush() {
   });
 }
 
-async function renderStatusBar(root: Root, props: { onOpenCapacity?: () => void } = {}): Promise<void> {
+async function renderStatusBar(
+  root: Root,
+  props: { onOpenCapacity?: () => void; onOpenDiagnostics?: () => void } = {},
+): Promise<void> {
   await act(async () => {
     root.render(
       React.createElement(StatusBar, {
@@ -39,13 +42,14 @@ async function renderStatusBar(root: Root, props: { onOpenCapacity?: () => void 
         total: 1,
         onShowShortcuts: vi.fn(),
         onOpenCapacity: props.onOpenCapacity,
+        onOpenDiagnostics: props.onOpenDiagnostics,
       }),
     );
   });
   await flush();
 }
 
-describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () => {
+describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #2643)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -77,13 +81,14 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
     document.body.innerHTML = '';
   });
 
-  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear, deps clear, no paused schedules)', async () => {
+  test('hides all pills when healthy (no smoke failures, watchdog enabled, FAA clear, deps clear, no paused schedules, no overdue timers)', async () => {
     useKookrStore.getState().handleOpsHealth({
       prodSmokeTick: { consecutiveFailures: 0, status: 'ok', failingChecks: [] },
       resourceWatchdog: { enabled: true, lastDecision: 'idle' },
       capacityResidual: { finishedAwaitingAck: 0, oldestFinishedAwaitingAckAgeMs: null },
       launchDependencies: { totalDegradedTasks: 0, totalFindings: 0, dependencies: [] },
       pausedSchedules: { schedulesPausedByFailure: [] },
+      timerHealth: { overdue: 0, oldestName: null },
     });
 
     await renderStatusBar(root);
@@ -94,11 +99,13 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
     expect(container.querySelector('[data-testid="ops-health-faa-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('Smoke: fail');
     expect(container.textContent).not.toContain('Watchdog: off');
     expect(container.textContent).not.toContain('FAA residual');
     expect(container.textContent).not.toContain('Deps:');
     expect(container.textContent).not.toContain('schedule paused');
+    expect(container.textContent).not.toContain('timer overdue');
   });
 
   test('hides all pills when store has no ops-health data yet', async () => {
@@ -110,6 +117,8 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
     expect(container.textContent).not.toContain('FAA residual');
     expect(container.textContent).not.toContain('Deps:');
     expect(container.textContent).not.toContain('schedule paused');
+    expect(container.textContent).not.toContain('timer overdue');
+    expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
   });
 
   test('shows Smoke: fail×N when consecutiveFailures >= 1', async () => {
@@ -341,5 +350,63 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432)', () 
     expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')?.textContent)
       .toBe('Smoke: fail×2');
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
+  });
+
+  test('hides the timer-overdue pill when overdue is 0 (issue #2643)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      timerHealth: { overdue: 0, oldestName: 'save' },
+    });
+
+    await renderStatusBar(root);
+
+    expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain('timer overdue');
+  });
+
+  test('hides the timer-overdue pill when the health block is missing (issue #2643)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      timerHealth: null,
+    });
+
+    await renderStatusBar(root);
+
+    expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain('timer overdue');
+  });
+
+  test('shows the timer-overdue pill with count and oldest name (issue #2643)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      timerHealth: { overdue: 2, oldestName: 'maintenancePrune' },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-timer-overdue-pill"]');
+    expect(pill).not.toBeNull();
+    expect(pill?.tagName).toBe('SPAN');
+    expect(pill?.getAttribute('role')).toBe('status');
+    expect(pill?.textContent).toBe('2 timers overdue · maintenancePrune');
+    expect(pill?.getAttribute('title')).toContain('2 lifecycle timers overdue');
+    expect(pill?.getAttribute('title')).toContain('oldest maintenancePrune');
+    expect(pill?.getAttribute('title')).toContain('A safety-net loop stopped ticking');
+    expect(pill?.getAttribute('title')).toContain('GET /api/health.timerHealth');
+    expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')).toBeNull();
+  });
+
+  test('timer-overdue pill click opens Diagnostics (issue #2643)', async () => {
+    const onOpenDiagnostics = vi.fn();
+    useKookrStore.getState().handleOpsHealth({
+      timerHealth: { overdue: 1, oldestName: 'deployLagDetector' },
+    });
+
+    await renderStatusBar(root, { onOpenDiagnostics });
+
+    const pill = container.querySelector('[data-testid="ops-health-timer-overdue-pill"]');
+    expect(pill?.tagName).toBe('BUTTON');
+    expect(pill?.textContent).toBe('1 timer overdue · deployLagDetector');
+    await act(async () => {
+      (pill as HTMLButtonElement).click();
+    });
+    expect(onOpenDiagnostics).toHaveBeenCalledOnce();
   });
 });
