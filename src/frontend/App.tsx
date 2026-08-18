@@ -1743,7 +1743,13 @@ export function App() {
       )}
       {ossShowView && (
         <Suspense fallback={null}>
-          <OssProductivityView onClose={closeOssView} />
+          <OssProductivityView
+            onClose={closeOssView}
+            onBrowsePlaybooks={() => {
+              closeOssView();
+              openLaunchFromPalette('playbooks', 'oss_empty_cta');
+            }}
+          />
         </Suspense>
       )}
       {activeModal === 'workspace' && selectedProject && (
