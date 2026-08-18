@@ -289,8 +289,8 @@ function formatStaleAge(ms: number): string {
 }
 
 /** JSON `details` for an offline / degraded envelope — the same signal set as live. */
-function offlineDetails(read: LastGoodHealthRead): Record<string, unknown> {
-  const collected = collectOpsDigestWarnings(read.snapshot.health ?? {});
+function offlineDetails(read: LastGoodHealthRead, nowMs?: number): Record<string, unknown> {
+  const collected = collectOpsDigestWarnings(read.snapshot.health ?? {}, { nowMs });
   return {
     path: read.path,
     mtimeMs: read.mtimeMs,
@@ -309,9 +309,12 @@ function offlineDetails(read: LastGoodHealthRead): Record<string, unknown> {
  * MAX_HUMAN_LINES. Reuses {@link collectOpsDigestWarnings} so the offline
  * digest surfaces the same signal set as the live one — just from a stale body.
  */
-export function formatOpsDigestOffline(read: LastGoodHealthRead): string {
+export function formatOpsDigestOffline(
+  read: LastGoodHealthRead,
+  opts?: { nowMs?: number },
+): string {
   const { snapshot, ageMs, path } = read;
-  const collected = collectOpsDigestWarnings(snapshot.health ?? {});
+  const collected = collectOpsDigestWarnings(snapshot.health ?? {}, { nowMs: opts?.nowMs });
   const lines: string[] = [];
   lines.push('ready: UNKNOWN (offline — HTTP dark, showing last-good /api/health)');
   lines.push(`last-good: ${formatStaleAge(ageMs)} stale  captured=${snapshot.capturedAt}`);
@@ -916,10 +919,10 @@ function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
       ok: true,
       code: 'OFFLINE_SNAPSHOT',
       message: 'ops digest (offline last-good snapshot)',
-      details: { offline: offlineDetails(read), subcommand: 'ops' },
+      details: { offline: offlineDetails(read, resolved.nowMs()), subcommand: 'ops' },
     });
   } else {
-    resolved.out.log(formatOpsDigestOffline(read));
+    resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs() }));
   }
   return EXIT_OK;
 }
@@ -943,12 +946,12 @@ function degradeToOffline(
       message: envelope.message,
       details: {
         ...envelope.details,
-        ...(read ? { offline: offlineDetails(read) } : {}),
+        ...(read ? { offline: offlineDetails(read, resolved.nowMs()) } : {}),
       },
     });
   } else {
     resolved.err.error(`kookr ops: ${envelope.message}`);
-    if (read) resolved.out.log(formatOpsDigestOffline(read));
+    if (read) resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs() }));
   }
   return failExit;
 }
@@ -1197,7 +1200,7 @@ export async function runOpsDigestCli(
     }
   }
 
-  const collected = collectOpsDigestWarnings(healthBody);
+  const collected = collectOpsDigestWarnings(healthBody, { nowMs: resolved.nowMs() });
   const snap: OpsDigestSnapshot = {
     baseUrl,
     ready,

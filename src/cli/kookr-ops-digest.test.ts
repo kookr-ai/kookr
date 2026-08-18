@@ -313,6 +313,61 @@ describe('collectOpsDigestWarnings', () => {
     expect(warnings[0]?.summary).toContain('prodSmokeTick');
   });
 
+  it('stays quiet when a never-fired hourly timer is younger than its interval', () => {
+    expect(collectOpsDigestWarnings({
+      serverStartedAt: '2026-08-18T00:00:00.000Z',
+      timerHealth: {
+        overdue: 0,
+        generatedAt: '2026-08-18T00:30:00.000Z',
+        loops: [
+          {
+            name: 'prodSmokeTick',
+            lastFiredAt: null,
+            expectedIntervalMs: 3_600_000,
+            overdue: false,
+          },
+        ],
+      },
+    }).warnings).toEqual([]);
+  });
+
+  it('uses opts.nowMs when timerHealth.generatedAt is missing', () => {
+    const { warnings } = collectOpsDigestWarnings(
+      {
+        serverStartedAt: '2026-08-18T00:00:00.000Z',
+        timerHealth: {
+          overdue: 0,
+          loops: [
+            {
+              name: 'prodSmokeTick',
+              lastFiredAt: null,
+              expectedIntervalMs: 3_600_000,
+              overdue: false,
+            },
+          ],
+        },
+      },
+      { nowMs: Date.parse('2026-08-18T02:00:00.000Z') },
+    );
+    expect(warnings[0]?.summary).toMatch(/hourly timer never fired/);
+  });
+
+  it('stays quiet when never-fired hourly age cannot be computed', () => {
+    expect(collectOpsDigestWarnings({
+      timerHealth: {
+        overdue: 0,
+        loops: [
+          {
+            name: 'prodSmokeTick',
+            lastFiredAt: null,
+            expectedIntervalMs: 3_600_000,
+            overdue: false,
+          },
+        ],
+      },
+    }).warnings).toEqual([]);
+  });
+
   it('keeps existing warnings and stays under the line cap when mixed (issue #2637)', () => {
     const mixed = {
       ...HEALTH_WITH_WARNINGS,
@@ -325,11 +380,15 @@ describe('collectOpsDigestWarnings', () => {
       timerHealth: { overdue: 1, oldestOverdueName: 'save' },
     };
     const collected = collectOpsDigestWarnings(mixed);
-    expect(collected.warnings.length).toBeLessThanOrEqual(5);
     const paths = collected.warnings.map((w) => w.path);
-    expect(paths).toContain('resourceWatchdog.pressureWhileDisabled');
-    expect(paths).toContain('timerHealth.overdue');
-    const snap: OpsDigestSnapshot = {
+    expect(paths).toEqual([
+      'resourceWatchdog.pressureWhileDisabled',
+      'capacity.phantomActive',
+      'capacity.byClass.hungSuspect',
+      'timerHealth.overdue',
+      'hookIngestion.p95LagMs',
+    ]);
+    const text = formatOpsDigestHuman({
       baseUrl: 'http://127.0.0.1:4800',
       ready: true,
       readyHttpStatus: 200,
@@ -338,8 +397,11 @@ describe('collectOpsDigestWarnings', () => {
       signals: collected.signals,
       serverStartedAt: collected.serverStartedAt,
       sha: collected.sha,
-    };
-    expect(formatOpsDigestHuman(snap).split('\n').length).toBeLessThanOrEqual(20);
+    });
+    expect(text.split('\n').length).toBeLessThanOrEqual(20);
+    for (const path of paths) {
+      expect(text).toContain(path);
+    }
   });
 });
 
@@ -496,10 +558,41 @@ describe('runOpsDigestCli', () => {
   });
 
   it('falls back to diagnostics timer-health when health.timerHealth is missing (issue #2637)', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+        if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok' }, 200);
+        if (url.endsWith('/api/diagnostics/timer-health')) {
+          return jsonResponse(TIMER_HEALTH_BODY, 200);
+        }
+        return jsonResponse({ error: 'not found' }, 404);
+      });
+      const c = captureConsole();
+      const code = await runOpsDigestCli(['digest'], {
+        env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+        out: c.out,
+        err: c.err,
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(c.logs.join('\n')).toContain('timerHealth.overdue');
+      const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+      expect(urls.some((u) => u.endsWith('/api/diagnostics/timer-health'))).toBe(true);
+      expect(timeoutSpy).toHaveBeenCalledWith(OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('treats timerHealth: null like a missing block and fetches diagnostics', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
-      if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok' }, 200);
+      if (url.endsWith('/api/health')) {
+        return jsonResponse({ status: 'ok', timerHealth: null }, 200);
+      }
       if (url.endsWith('/api/diagnostics/timer-health')) {
         return jsonResponse(TIMER_HEALTH_BODY, 200);
       }
@@ -514,15 +607,41 @@ describe('runOpsDigestCli', () => {
     });
     expect(code).toBe(EXIT_OK);
     expect(c.logs.join('\n')).toContain('timerHealth.overdue');
-    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
-    expect(urls.some((u) => u.endsWith('/api/diagnostics/timer-health'))).toBe(true);
-    const timerCall = fetchImpl.mock.calls.find((call) =>
-      String(call[0]).endsWith('/api/diagnostics/timer-health'),
-    );
-    expect(timerCall?.[1]).toMatchObject({
-      signal: expect.any(AbortSignal),
+    expect(
+      fetchImpl.mock.calls.some((call) => String(call[0]).endsWith('/api/diagnostics/timer-health')),
+    ).toBe(true);
+  });
+
+  it('prints hook-ingestion p95 and one paused schedule from the live health body', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+      if (url.endsWith('/api/health')) {
+        return jsonResponse({
+          status: 'ok',
+          timerHealth: { overdue: 0 },
+          hookIngestion: { p95LagMs: 43_000 },
+          schedules: {
+            schedulesPausedByFailure: [
+              { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
+            ],
+          },
+        }, 200);
+      }
+      throw new Error(`unexpected fetch ${url}`);
     });
-    expect(OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS).toBe(2_000);
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['digest'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_OK);
+    const text = c.logs.join('\n');
+    expect(text).toContain('hookIngestion.p95LagMs');
+    expect(text).toContain('schedules.schedulesPausedByFailure');
+    expect(text.split('\n').length).toBeLessThanOrEqual(20);
   });
 
   it('does not fetch timer-health when health already has a timerHealth object', async () => {
