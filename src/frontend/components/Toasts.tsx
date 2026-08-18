@@ -33,7 +33,7 @@ function alertAnnouncementText(alert: Alert): string {
  * double-read.
  */
 export function Toasts() {
-  const { alerts, dismissAlert } = useKookrStore();
+  const { alerts, dismissAlert, selectAgent } = useKookrStore();
   const timersRef = useRef<Map<string, DismissTimer>>(new Map());
 
   const scheduleTimer = (key: string, timer: DismissTimer) => {
@@ -124,37 +124,59 @@ export function Toasts() {
       </div>
       {alerts.length > 0 && (
         <div className="toasts">
-          {alerts.map((alert, i) => (
-            <div
-              key={alertKey(alert)}
-              className={`toast ${alert.severity === 'error' ? 'toast-error' : 'toast-info'}`}
-              onMouseEnter={() => pauseTimer(alertKey(alert), 'hover')}
-              onMouseLeave={() => resumeTimer(alertKey(alert), 'hover')}
-              onFocus={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) {
-                  pauseTimer(alertKey(alert), 'focus');
-                }
-              }}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) {
-                  resumeTimer(alertKey(alert), 'focus');
-                }
-              }}
-            >
-              <span className="toast-message">
-                <span>{alert.summary}</span>
-                {alert.details && <span className="toast-details">{alert.details}</span>}
-              </span>
-              <button
-                type="button"
-                className="toast-dismiss"
-                aria-label={`Dismiss: ${alert.summary}`}
-                onClick={() => dismissAlert(i)}
+          {alerts.map((alert, i) => {
+            // Info toasts that carry an agent become the shortest path to that
+            // task: activating the message region selects the agent and clears
+            // the toast. Error toasts and agent-less info toasts stay static.
+            const navigable = alert.severity !== 'error' && alert.agentId.length > 0;
+            const navigate = () => {
+              selectAgent(alert.agentId);
+              dismissAlert(i);
+            };
+            return (
+              <div
+                key={alertKey(alert)}
+                className={`toast ${alert.severity === 'error' ? 'toast-error' : 'toast-info'}`}
+                onMouseEnter={() => pauseTimer(alertKey(alert), 'hover')}
+                onMouseLeave={() => resumeTimer(alertKey(alert), 'hover')}
+                onFocus={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    pauseTimer(alertKey(alert), 'focus');
+                  }
+                }}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    resumeTimer(alertKey(alert), 'focus');
+                  }
+                }}
               >
-                &times;
-              </button>
-            </div>
-          ))}
+                {navigable ? (
+                  <button
+                    type="button"
+                    className="toast-message toast-message-navigate"
+                    aria-label={`Open task: ${alert.summary}`}
+                    onClick={navigate}
+                  >
+                    <span>{alert.summary}</span>
+                    {alert.details && <span className="toast-details">{alert.details}</span>}
+                  </button>
+                ) : (
+                  <span className="toast-message">
+                    <span>{alert.summary}</span>
+                    {alert.details && <span className="toast-details">{alert.details}</span>}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="toast-dismiss"
+                  aria-label={`Dismiss: ${alert.summary}`}
+                  onClick={() => dismissAlert(i)}
+                >
+                  &times;
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </>

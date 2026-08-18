@@ -5502,6 +5502,27 @@ label.task-share-row {
   color: var(--text-secondary);
 }
 
+/* Navigable info toasts render their message region as a button so it is
+   focusable and activates on click/Enter/Space, while still reading as the
+   plain toast text. */
+.toast-message-navigate {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.toast-message-navigate:hover > span:first-child {
+  text-decoration: underline;
+}
+.toast-message-navigate:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
 .toast-dismiss {
   background: none;
   border: none;
