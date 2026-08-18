@@ -5,6 +5,7 @@ import {
   resolveRecentPlaybookLabel,
   snapshotKey,
   usageKeyPlaybookId,
+  usageKeysOverlap,
 } from './playbook-usage.js';
 
 function fakeStorage(data?: Map<string, string>) {
@@ -33,6 +34,14 @@ describe('snapshotKey / matchesUsageKey', () => {
   test('usageKeyPlaybookId reads the id from composite and legacy keys', () => {
     expect(usageKeyPlaybookId('/project-a::deploy.md')).toBe('deploy.md');
     expect(usageKeyPlaybookId('deploy.md')).toBe('deploy.md');
+  });
+
+  test('usageKeysOverlap treats a legacy bare id as the same playbook', () => {
+    expect(usageKeysOverlap('/project-a::deploy.md', 'deploy.md')).toBe(true);
+    expect(usageKeysOverlap('deploy.md', '/project-a::deploy.md')).toBe(true);
+    expect(usageKeysOverlap('/project-a::deploy.md', '/project-a::deploy.md')).toBe(true);
+    expect(usageKeysOverlap('/project-a::deploy.md', '/project-b::deploy.md')).toBe(false);
+    expect(usageKeysOverlap('deploy.md', 'review.md')).toBe(false);
   });
 
   test('resolveRecentPlaybookLabel prefers a catalog name, else the file stem', () => {
