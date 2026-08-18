@@ -28,6 +28,7 @@ import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import { optionalLaunchPins, restoreLastLaunchPins, sanitizeLaunchPins } from './launch-effort-model.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { LAUNCH_BUSY_DIRECTORY_BANNER_ID, LaunchBusyDirectoryBanner } from './LaunchBusyDirectoryBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
@@ -35,7 +36,12 @@ import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from '../../shared/contracts/worktree-protection.js';
 import { ROUND_ROBIN_AGENT_TYPE } from '../../shared/contracts/agent-types.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
-import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
+import {
+  findActiveLaunchDuplicate,
+  findLiveTasksInDirectory,
+  withLaunchTaskCwds,
+  type LaunchDuplicateCandidate,
+} from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { copyText } from '../clipboard.js';
 
@@ -419,6 +425,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
     [duplicateCandidates, prompt, cwd, agentType],
   );
+  const busyDirectoryTasks = useMemo(
+    () => findLiveTasksInDirectory(duplicateCandidates, cwd),
+    [duplicateCandidates, cwd],
+  );
+  const showBusyDirectoryBanner = busyDirectoryTasks.length > 0 && !activeDuplicate;
+  const canSubmitLaunch = Boolean(prompt.trim() && cwd.trim() && !submitting && !grokAuthBlocksLaunch);
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
@@ -478,11 +490,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     submitLaunch(false);
   }
 
-  function openExistingDuplicate() {
-    if (!activeDuplicate) return;
-    const agentId = activeDuplicate.agentId;
+  function openExistingTask(task: LaunchDuplicateCandidate | undefined) {
+    if (!task) return;
+    const agentId = task.agentId;
     if (agentId) {
-      useKookrStore.getState().selectAgent(agentId, activeDuplicate.taskId ?? activeDuplicate.id ?? null);
+      useKookrStore.getState().selectAgent(agentId, task.taskId ?? task.id ?? null);
     }
     track({ type: 'launch_dialog_closed', submitted: false, dwellMs: Date.now() - openedAtRef.current });
     onClose();
@@ -783,8 +795,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             {activeDuplicate && (
               <LaunchDuplicateBanner
                 taskName={activeDuplicate.taskName ?? undefined}
-                onOpenExisting={openExistingDuplicate}
+                onOpenExisting={() => openExistingTask(activeDuplicate)}
                 onLaunchAnyway={() => submitLaunch(true)}
+              />
+            )}
+            {showBusyDirectoryBanner && (
+              <LaunchBusyDirectoryBanner
+                tasks={busyDirectoryTasks}
+                onOpenExisting={() => openExistingTask(busyDirectoryTasks[0])}
+                onLaunchAnyway={() => submitLaunch(false)}
+                launchAnywayDisabled={!canSubmitLaunch}
               />
             )}
             <label>
@@ -824,6 +844,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
                   quotaWarning ? LAUNCH_QUOTA_BANNER_ID : null,
                   activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
+                  showBusyDirectoryBanner ? LAUNCH_BUSY_DIRECTORY_BANNER_ID : null,
                 ].filter(Boolean).join(' ') || undefined}
               >
                 {submitting ? 'Launching...' : 'Launch'}

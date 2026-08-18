@@ -1,13 +1,16 @@
 import type { AgentSelection } from './contracts/agent-types.js';
 
 /**
- * Client-side duplicate-launch match — same equality `kookr spawn` uses
+ * Client-side launch-directory matching — same equality `kookr spawn` uses
  * (`taskMatchesSpawn` in `bin/kookr-spawn.js`).
  *
- * A match is an *active* task (not completed / cancelled / terminated) with
- * the same *launch* working directory and the same authored prompt. Agent type
- * is compared only when the new launch pinned a concrete agent; `round-robin`
- * is treated as unpinned because no stored task carries that sentinel.
+ * Two questions share this helper:
+ * - Prompt-duplicate: an *active* task with the same *launch* working directory
+ *   and the same authored prompt. Agent type is compared only when the new
+ *   launch pinned a concrete agent; `round-robin` is treated as unpinned
+ *   because no stored task carries that sentinel.
+ * - Busy-directory: every active task already launched in that directory,
+ *   regardless of prompt (`findLiveTasksInDirectory`).
  *
  * Trailing slashes on cwd are ignored (`/repo` ≡ `/repo/`). Prefer the compact
  * task-list cwd (the directory the operator launched in) over the dashboard
@@ -36,6 +39,8 @@ export interface LaunchDuplicateCandidate {
   prompt?: string | null;
   description?: string | null;
   taskName?: string | null;
+  /** ISO start time when present; used to pick the oldest live task in a directory. */
+  startedAt?: string | null;
 }
 
 export interface LaunchDuplicateQuery {
@@ -156,4 +161,39 @@ export function findActiveLaunchDuplicate(
   const cwd = query.cwd.trim();
   if (!prompt || !cwd) return undefined;
   return tasks.find((task) => taskMatchesLaunchDuplicate(task, { ...query, prompt, cwd }));
+}
+
+function isLiveLaunchTask(task: LaunchDuplicateCandidate): boolean {
+  if (!task || typeof task !== 'object') return false;
+  const status = typeof (task.taskStatus ?? task.status) === 'string'
+    ? (task.taskStatus ?? task.status)
+    : null;
+  return !(status && isTerminalLaunchStatus(status));
+}
+
+/**
+ * Active tasks whose *launch* directory is this cwd (trailing slashes ignored).
+ *
+ * Prompt is ignored — this is the busy-directory warning, not prompt-duplicate
+ * matching. Prefer compact-list cwd (via {@link withLaunchTaskCwds}) so a
+ * session that later moved into a linked worktree still counts against the
+ * directory the operator launched in.
+ *
+ * Oldest first when `startedAt` is present so "Open existing" has a stable pick.
+ * Empty cwd never matches. Does not change `kookr spawn` defaults.
+ */
+export function findLiveTasksInDirectory(
+  tasks: readonly LaunchDuplicateCandidate[],
+  cwd: string,
+): LaunchDuplicateCandidate[] {
+  const trimmed = cwd.trim();
+  if (!trimmed) return [];
+  return tasks
+    .filter((task) => isLiveLaunchTask(task) && cwdEquivalent(task.cwd, trimmed))
+    .sort((a, b) => {
+      const aTime = typeof a.startedAt === 'string' ? a.startedAt : '';
+      const bTime = typeof b.startedAt === 'string' ? b.startedAt : '';
+      if (aTime && bTime && aTime !== bTime) return aTime < bTime ? -1 : 1;
+      return 0;
+    });
 }
