@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { AgentSelection, Playbook, ScheduleResponse } from '../../shared/protocol.js';
+import type { AgentSelection, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
@@ -11,6 +11,7 @@ import {
   createSchedule,
   deleteSchedule,
   listPlaybooksForCwd,
+  listScheduleRollups,
   listSchedules,
   previewScheduleCron,
   runScheduleNow,
@@ -18,7 +19,12 @@ import {
   type ScheduleApiErrorBody,
   type SchedulePreviewResponse,
 } from '../schedule-api.js';
-import { formatScheduleRelativeTime, scheduleNextRunLabel } from '../schedule-format.js';
+import {
+  formatScheduleRelativeTime,
+  formatScheduleRollupLine,
+  scheduleNextRunLabel,
+  scheduleRollupTooltip,
+} from '../schedule-format.js';
 
 /**
  * Seed data for opening the dialog straight into a pre-filled create form,
@@ -209,6 +215,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ScheduleResponse | null>(null);
+  const [rollupsById, setRollupsById] = useState<ReadonlyMap<string, ScheduleRollup>>(() => new Map());
   const selectedPlaybook = useMemo(
     () => playbooks.find((playbook) => playbook.id === playbookId) ?? null,
     [playbooks, playbookId],
@@ -219,6 +226,19 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
       .then(handleSchedules)
       .catch(() => {});
   }, [handleSchedules]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listScheduleRollups()
+      .then((rollups) => {
+        if (cancelled) return;
+        setRollupsById(new Map(rollups.map((rollup) => [rollup.scheduleId, rollup])));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Clear any stale "couldn't pre-select" note when the directory changes —
@@ -501,48 +521,61 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
               No schedules yet. Create one from an existing playbook.
             </div>
           )}
-          {schedules.map((schedule) => (
-            <div key={schedule.id} className={`schedule-manager-row${schedule.enabled ? '' : ' paused'}`}>
-              <div className="schedule-manager-main">
-                <div className="schedule-manager-title">{schedule.name}</div>
-                <div className="schedule-manager-meta">
-                  <span>{schedule.cronDescription}</span>
-                  <span>Next: {scheduleNextRunLabel(schedule)}</span>
-                  <span>{quotaLabel(schedule)}</span>
-                  <span>Last: {latestExecutionLabel(schedule)}</span>
-                  {schedule.latestExecution?.taskId && (
-                    <span className="schedule-task-ref">Task {schedule.latestExecution.taskId.slice(0, 8)}</span>
+          {schedules.map((schedule) => {
+            const rollup = rollupsById.get(schedule.id);
+            const rollupLine = rollup ? formatScheduleRollupLine(rollup) : null;
+            return (
+              <div key={schedule.id} className={`schedule-manager-row${schedule.enabled ? '' : ' paused'}`}>
+                <div className="schedule-manager-main">
+                  <div className="schedule-manager-title">{schedule.name}</div>
+                  <div className="schedule-manager-meta">
+                    <span>{schedule.cronDescription}</span>
+                    <span>Next: {scheduleNextRunLabel(schedule)}</span>
+                    <span>{quotaLabel(schedule)}</span>
+                    <span>Last: {latestExecutionLabel(schedule)}</span>
+                    {schedule.latestExecution?.taskId && (
+                      <span className="schedule-task-ref">Task {schedule.latestExecution.taskId.slice(0, 8)}</span>
+                    )}
+                  </div>
+                  {rollup && rollupLine && (
+                    <div
+                      className="schedule-manager-meta schedule-manager-roi"
+                      title={scheduleRollupTooltip(rollup)}
+                      aria-description={scheduleRollupTooltip(rollup)}
+                    >
+                      {rollupLine}
+                    </div>
+                  )}
+                  {schedule.executionLedger.length > 0 && (
+                    <div className="schedule-ledger">
+                      {schedule.executionLedger.slice(-3).reverse().map((entry) => (
+                        <div key={entry.id} className="schedule-ledger-entry" title={entry.message}>
+                          <span className="schedule-ledger-time">{formatScheduleRelativeTime(entry.completedAt ?? entry.evaluatedAt)}</span>
+                          <span>{ledgerSummary(entry)}</span>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-                {schedule.executionLedger.length > 0 && (
-                  <div className="schedule-ledger">
-                    {schedule.executionLedger.slice(-3).reverse().map((entry) => (
-                      <div key={entry.id} className="schedule-ledger-entry" title={entry.message}>
-                        <span className="schedule-ledger-time">{formatScheduleRelativeTime(entry.completedAt ?? entry.evaluatedAt)}</span>
-                        <span>{ledgerSummary(entry)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div className="schedule-manager-actions">
+                  <button
+                    type="button"
+                    className={`btn-secondary${!schedule.enabled && schedule.stopReason !== 'trigger_limit_reached' ? ' teal' : ''}`}
+                    onClick={() => toggleEnabled(schedule)}
+                    disabled={schedule.stopReason === 'trigger_limit_reached'}
+                  >
+                    {schedule.stopReason === 'trigger_limit_reached' ? 'Exhausted' : (schedule.enabled ? 'Pause' : 'Resume')}
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => runNow(schedule)}>
+                    Run Now
+                  </button>
+                  <button type="button" className="btn-secondary danger" onClick={() => setPendingDelete(schedule)}>
+                    Delete
+                  </button>
+                </div>
               </div>
-              <div className="schedule-manager-actions">
-                <button
-                  type="button"
-                  className={`btn-secondary${!schedule.enabled && schedule.stopReason !== 'trigger_limit_reached' ? ' teal' : ''}`}
-                  onClick={() => toggleEnabled(schedule)}
-                  disabled={schedule.stopReason === 'trigger_limit_reached'}
-                >
-                  {schedule.stopReason === 'trigger_limit_reached' ? 'Exhausted' : (schedule.enabled ? 'Pause' : 'Resume')}
-                </button>
-                <button type="button" className="btn-secondary" onClick={() => runNow(schedule)}>
-                  Run Now
-                </button>
-                <button type="button" className="btn-secondary danger" onClick={() => setPendingDelete(schedule)}>
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {pendingDelete && (

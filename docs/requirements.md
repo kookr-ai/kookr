@@ -1236,6 +1236,19 @@ The system SHALL describe both standard Sunday day-of-week values, `0` and `7`, 
 
 **Evidence:** `src/core/cron.ts`, `src/core/cron.test.ts`.
 
+### R10.4: Schedule ROI Glance [F11.7] — SHALL — `done`
+
+The system SHALL show a per-schedule scorecard on each Schedules dialog card from the materialized rollup store, without scanning `tasks.json` or hook logs.
+
+**Acceptance criteria:**
+- When the Schedules dialog opens, it fetches `GET /api/schedules/rollups` once and joins rows by `scheduleId`
+- A card with a rollup row that has retained fires shows fire count, measured cost, and artifact count
+- A card with no rollup row, or a zero-fire row, omits the scorecard line
+- Unmeasured fires (those without token usage) never render as $0; the tooltip names the `measuredFires` denominator
+- The last-execution line and last-three ledger rows remain the detail tier
+
+**Evidence:** `src/frontend/components/SchedulesDialog.tsx`, `src/frontend/schedule-api.ts`, `src/frontend/schedule-format.ts`, `src/frontend/components/SchedulesDialog.test.ts`, `src/frontend/schedule-format.test.ts`, `src/frontend/schedule-api.test.ts`.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1435,6 +1448,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
 | R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
 | R10.3 | F11 | SHALL | done | cron description helpers |
+| R10.4 | F11.7 | SHALL | done | SchedulesDialog rollup glance, schedule-api, schedule-format |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |

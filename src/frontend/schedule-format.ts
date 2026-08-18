@@ -1,4 +1,5 @@
-import type { ScheduleResponse } from '../shared/protocol.js';
+import type { ScheduleResponse, ScheduleRollup } from '../shared/protocol.js';
+import { formatCost } from './presentation.js';
 
 /**
  * Relative next-run / last-run label used by the schedules list, dialog, and
@@ -30,6 +31,33 @@ export function scheduleNextRunLabel(
   if (schedule.stopReason === 'trigger_limit_reached') return 'exhausted';
   if (!schedule.enabled) return 'paused';
   return formatScheduleRelativeTime(schedule.nextRunAt, nowMs);
+}
+
+type ScheduleRollupGlance = Pick<ScheduleRollup, 'fires' | 'measuredFires' | 'costUsd' | 'artifacts'>;
+
+function countLabel(count: number, singular: string, plural: string): string {
+  return count === 1 ? `1 ${singular}` : `${count} ${plural}`;
+}
+
+/**
+ * One-glance scorecard: fires · measured spend · artifacts.
+ * Returns null when there are no retained fires so a never-run schedule
+ * (the store still materializes a zero row) does not read as "unmeasured".
+ * Unmeasured fires (no token usage) never render as $0.
+ */
+export function formatScheduleRollupLine(rollup: ScheduleRollupGlance): string | null {
+  if (rollup.fires === 0) return null;
+  const fires = countLabel(rollup.fires, 'fire', 'fires');
+  const artifacts = countLabel(rollup.artifacts, 'artifact', 'artifacts');
+  const cost = rollup.measuredFires > 0
+    ? `${formatCost(rollup.costUsd)} measured`
+    : 'unmeasured';
+  return `${fires} · ${cost} · ${artifacts}`;
+}
+
+/** Names the measuredFires denominator so $0 is not inferred from missing usage. */
+export function scheduleRollupTooltip(rollup: Pick<ScheduleRollup, 'fires' | 'measuredFires'>): string {
+  return `Measured spend covers ${rollup.measuredFires} of ${rollup.fires} fires that reported token usage. Unmeasured fires are omitted from cost, not counted as $0.`;
 }
 
 function nextRunSortKey(schedule: Pick<ScheduleResponse, 'nextRunAt'>): number {

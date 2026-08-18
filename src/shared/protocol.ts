@@ -127,7 +127,7 @@ export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
 export type { QuickAction } from './contracts/quick-action.js';
 export type { PermissionRequestBinding } from './contracts/permission-request-binding.js';
-export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot } from './contracts/schedule.js';
+export type { ScheduleResponse, ScheduleListResponse, ScheduleStatusSnapshot, ScheduleRollup } from './contracts/schedule.js';
 export type {
   CollaborationCapabilities,
   SpeechCapability,

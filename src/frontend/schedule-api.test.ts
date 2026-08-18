@@ -3,6 +3,7 @@ import {
   createSchedule,
   deleteSchedule,
   listPlaybooksForCwd,
+  listScheduleRollups,
   listSchedules,
   previewScheduleCron,
   runScheduleNow,
@@ -30,6 +31,22 @@ describe('schedule api client', () => {
 
     await expect(listSchedules()).resolves.toEqual(response);
     expect(fetchMock).toHaveBeenCalledWith('/api/schedules', undefined);
+  });
+
+  test('loads fleet rollups from the materialized rollup endpoint', async () => {
+    const rollups = [{ scheduleId: 'sched-1', fires: 2, measuredFires: 1, costUsd: 0.25, artifacts: 1 }];
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ rollups }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(listScheduleRollups()).resolves.toEqual(rollups);
+    expect(fetchMock).toHaveBeenCalledWith('/api/schedules/rollups', undefined);
+  });
+
+  test('treats a missing rollups array as empty instead of inventing zeros', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(listScheduleRollups()).resolves.toEqual([]);
   });
 
   test('loads playbooks with an encoded cwd query', async () => {
