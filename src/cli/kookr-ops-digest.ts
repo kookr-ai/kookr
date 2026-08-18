@@ -1,10 +1,11 @@
 /**
- * `kookr ops digest` — pasteable one-pager for remote unattended diagnosis
- * (issue #2347). Fetches GET /api/ready + GET /api/health and prints ≤20 lines:
+ * `kookr ops` — thin remote-ops verbs over a running Kookr HTTP surface.
+ *
+ *   kookr ops digest [--json] [--offline]   issue #2347
+ *   kookr ops timers [--json]               issue #2639
+ *
+ * `digest` fetches GET /api/ready + GET /api/health and prints ≤20 lines:
  * ready status plus the top unattended failure signals (with field paths).
- *
- *   kookr ops digest [--json]
- *
  * Exit: 0 when ready, 1 when ready fails. Does not mutate server state.
  *
  * Offline degrade (issue #2495): when the HTTP surface is dark the server can
@@ -12,6 +13,13 @@
  * `<kookrDir>/last-good-health.json`. `--offline` reads that file directly, and
  * the live path auto-degrades to it when the server is unreachable — either way
  * the digest reports how stale the mirror is instead of just "no server".
+ *
+ * `timers` fetches GET /api/diagnostics/timer-health (issue #1771) and lists
+ * each *registered* lifecycle loop: last-fired or `never`, expected interval,
+ * and overdue. It does not invent names the server did not register, and it
+ * does not fall back to last-good-health (that snapshot has no timer stamps).
+ * The fetch uses a 5s timeout so a wedged HTTP path fails closed instead of
+ * hanging a Discord paste.
  */
 
 import { homedir } from 'node:os';
@@ -21,8 +29,15 @@ import { readLastGoodHealth, type LastGoodHealthRead } from '../server/last-good
 const PORTS_TO_TRY = [4800, 4801] as const;
 /** Health payloads can be large on busy prod instances; keep headroom over status's 2s. */
 const REQUEST_TIMEOUT_MS = 8_000;
+/**
+ * Timer-health is a tiny in-memory snapshot. Five seconds is long enough for a
+ * slow box and short enough that a wedged HTTP path does not hang a remote
+ * Discord paste (issue #2639).
+ */
+export const OPS_TIMERS_TIMEOUT_MS = 5_000;
 const HEALTH_PATH = '/api/health';
 const READY_PATH = '/api/ready';
+const TIMER_HEALTH_PATH = '/api/diagnostics/timer-health';
 const MAX_WARNINGS = 5;
 const MAX_HUMAN_LINES = 20;
 
@@ -39,22 +54,28 @@ export const EXIT_SERVER_ERROR = 4;
  */
 export const EXIT_NO_SNAPSHOT = 6;
 
-export const OPS_DIGEST_HELP_TEXT = `kookr ops digest — one-pager for remote unattended diagnosis.
+export const OPS_DIGEST_HELP_TEXT = `kookr ops — remote diagnosis verbs (digest, timers).
 
 Usage:
-  kookr ops digest [--json]
+  kookr ops digest [--json] [--offline]
+  kookr ops timers [--json]
   kookr ops --help
 
-Fetches GET /api/ready and GET /api/health, then prints ready status plus the
+digest: GET /api/ready and GET /api/health, then print ready status plus the
 top unattended failure signals (pressureWhileDisabled, phantomActive, hung
 residual, pipeline starvation, disk, safeMode) with field paths. ≤20 lines.
 
-When the server is unreachable, the digest auto-degrades to the last-good
+When the server is unreachable, digest auto-degrades to the last-good
 /api/health snapshot on disk (if one exists) and reports how stale it is.
+
+timers: GET /api/diagnostics/timer-health and print each registered lifecycle
+loop's last-fired (or never), expected interval, and overdue flag. Does not
+invent loop names the server did not register. 5s fetch timeout. --offline
+is digest-only.
 
 Options:
   --json       Print one machine-readable JSON envelope to stdout.
-  --offline    Skip HTTP and read the last-good snapshot from disk (issue #2495).
+  --offline    digest only: skip HTTP and read the last-good snapshot (issue #2495).
   -h, --help   Show this help.
 
 Environment:
@@ -64,11 +85,11 @@ Environment:
   KOOKR_DIR             Kookr state dir holding last-good-health.json (offline path).
 
 Exit codes:
-  0  Ready (healthy enough to supervise) — or offline snapshot printed.
-  1  Ready failed (critical not-ready / HTTP 503).
+  0  Ready (digest) or timer-health printed (timers) — or offline snapshot printed.
+  1  Ready failed (critical not-ready / HTTP 503). Digest only.
   2  User error (bad flags / unknown verb).
-  3  No Kookr server reachable.
-  4  Server rejected the health request or returned an unexpected payload.
+  3  No Kookr server reachable (or timers fetch timed out).
+  4  Server rejected the request or returned an unexpected payload.
   6  --offline requested but no last-good snapshot exists on disk.
 `;
 
@@ -99,12 +120,29 @@ interface ResolvedIo {
   nowMs: () => number;
 }
 
+export type OpsVerb = 'digest' | 'timers';
+
 export interface ParsedOpsDigestArgs {
-  verb: 'digest' | null;
+  verb: OpsVerb | null;
   json: boolean;
   offline: boolean;
   help: boolean;
   error?: string;
+}
+
+export interface OpsTimerLoop {
+  name: string;
+  lastFiredAt: string | null;
+  expectedIntervalMs: number | null;
+  overdue: boolean;
+}
+
+export interface OpsTimersSnapshot {
+  schemaVersion: string | null;
+  generatedAt: string | null;
+  loops: OpsTimerLoop[];
+  /** Names of loops the server marked overdue — never invented locally. */
+  overdue: string[];
 }
 
 export interface OpsDigestWarning {
@@ -148,10 +186,10 @@ export function parseOpsDigestArgs(argv: string[]): ParsedOpsDigestArgs {
     } else if (tok.startsWith('-')) {
       return { ...out, error: `unknown option: ${tok}` };
     } else if (out.verb === null) {
-      if (tok !== 'digest') {
+      if (tok !== 'digest' && tok !== 'timers') {
         return { ...out, error: `unknown verb: ${tok}` };
       }
-      out.verb = 'digest';
+      out.verb = tok;
     } else {
       return { ...out, error: `unexpected argument: ${tok}` };
     }
@@ -318,6 +356,7 @@ export async function resolveOpsDigestBaseUrl(io: {
 async function fetchJson(
   io: ResolvedIo,
   url: string,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<{ status: number; body: unknown; text: string }> {
   const res = await io.fetchImpl(url, {
     method: 'GET',
@@ -326,7 +365,7 @@ async function fetchJson(
       'User-Agent': `kookr-ops-digest/node-${process.versions.node}`,
       ...apiAuthHeaders(io.env),
     },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   let body: unknown = null;
@@ -565,6 +604,61 @@ export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
   return lines.join('\n');
 }
 
+/**
+ * Accept only loops the server registered. A missing `name` is dropped rather
+ * than invented; `overdue` is trusted from the snapshot (the CLI does not
+ * recompute it — never-fired loops use registration time, which is not on the
+ * wire).
+ */
+export function parseTimerHealthBody(body: unknown): OpsTimersSnapshot | null {
+  const o = asRecord(body);
+  if (!o || !Array.isArray(o.loops)) return null;
+  const loops: OpsTimerLoop[] = [];
+  for (const raw of o.loops) {
+    const row = asRecord(raw);
+    if (!row) continue;
+    if (typeof row.name !== 'string' || row.name.length === 0) continue;
+    const lastFiredAt =
+      row.lastFiredAt === null
+        ? null
+        : typeof row.lastFiredAt === 'string'
+          ? row.lastFiredAt
+          : null;
+    loops.push({
+      name: row.name,
+      lastFiredAt,
+      expectedIntervalMs: finiteNumber(row.expectedIntervalMs),
+      overdue: row.overdue === true,
+    });
+  }
+  return {
+    schemaVersion: typeof o.schemaVersion === 'string' ? o.schemaVersion : null,
+    generatedAt: typeof o.generatedAt === 'string' ? o.generatedAt : null,
+    loops,
+    overdue: loops.filter((loop) => loop.overdue).map((loop) => loop.name),
+  };
+}
+
+/** One line per registered loop: name, last-fired or `never`, interval, overdue. */
+export function formatOpsTimersHuman(snap: OpsTimersSnapshot): string {
+  const parts = [`timers  loops=${snap.loops.length}  overdue=${snap.overdue.length}`];
+  if (snap.generatedAt) parts[0] += `  generated=${snap.generatedAt}`;
+  const lines = [parts[0]!];
+  if (snap.loops.length === 0) {
+    lines.push('(none registered)');
+    return lines.join('\n');
+  }
+  for (const loop of snap.loops) {
+    const last = loop.lastFiredAt ?? 'never';
+    const interval =
+      loop.expectedIntervalMs === null ? 'unknown' : `${loop.expectedIntervalMs}ms`;
+    lines.push(
+      `${loop.name}  last=${last}  interval=${interval}  overdue=${loop.overdue}`,
+    );
+  }
+  return lines.join('\n');
+}
+
 /** Explicit `--offline`: read the last-good snapshot from disk and print it. */
 function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
   const read = resolved.offlineLoader(resolved.env, resolved.nowMs());
@@ -625,6 +719,98 @@ function degradeToOffline(
   return failExit;
 }
 
+function emitTimersNoServer(
+  resolved: ResolvedIo,
+  json: boolean,
+  message: string,
+  details: Record<string, unknown> = {},
+): number {
+  if (json) {
+    emitJson(resolved.out, {
+      ok: false,
+      code: 'NO_SERVER',
+      message,
+      details: { subcommand: 'ops', verb: 'timers', ...details },
+    });
+  } else {
+    resolved.err.error(`kookr ops: ${message}`);
+  }
+  return EXIT_NO_SERVER;
+}
+
+async function runOpsTimers(
+  resolved: ResolvedIo,
+  opts: { json: boolean; baseUrl: string },
+): Promise<number> {
+  let response: { status: number; body: unknown; text: string };
+  try {
+    response = await fetchJson(
+      resolved,
+      `${opts.baseUrl}${TIMER_HEALTH_PATH}`,
+      OPS_TIMERS_TIMEOUT_MS,
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return emitTimersNoServer(resolved, opts.json, `no Kookr server reachable: ${detail}`);
+  }
+
+  if (response.status !== 200 || response.body === null) {
+    const detail =
+      response.body &&
+      typeof response.body === 'object' &&
+      'error' in response.body
+        ? String((response.body as { error: unknown }).error)
+        : response.text || 'unknown error';
+    const message = `server rejected /api/diagnostics/timer-health (HTTP ${response.status}): ${detail}`;
+    if (opts.json) {
+      emitJson(resolved.out, {
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { status: response.status, subcommand: 'ops', verb: 'timers' },
+      });
+    } else {
+      resolved.err.error(`kookr ops: ${message}`);
+    }
+    return EXIT_SERVER_ERROR;
+  }
+
+  const snap = parseTimerHealthBody(response.body);
+  if (!snap) {
+    const message = 'server returned an unexpected timer-health payload.';
+    if (opts.json) {
+      emitJson(resolved.out, {
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { subcommand: 'ops', verb: 'timers' },
+      });
+    } else {
+      resolved.err.error(`kookr ops: ${message}`);
+    }
+    return EXIT_SERVER_ERROR;
+  }
+
+  if (opts.json) {
+    // Existing timer-health document plus a computed overdue list (issue #2639).
+    emitJson(resolved.out, {
+      ok: true,
+      code: 'OK',
+      message: 'ops timers',
+      details: {
+        schemaVersion: snap.schemaVersion,
+        generatedAt: snap.generatedAt,
+        loops: snap.loops,
+        overdue: snap.overdue,
+        baseUrl: opts.baseUrl,
+      },
+    });
+  } else {
+    resolved.out.log(formatOpsTimersHuman(snap));
+  }
+  return EXIT_OK;
+}
+
 export async function runOpsDigestCli(
   argv: string[],
   io: OpsDigestCliIo = {},
@@ -638,15 +824,18 @@ export async function runOpsDigestCli(
     nowMs: io.nowMs ?? Date.now,
   };
 
-  const args = parseOpsDigestArgs(argv);
+  let args = parseOpsDigestArgs(argv);
   if (args.help) {
     resolved.out.log(OPS_DIGEST_HELP_TEXT);
     return EXIT_OK;
   }
-  if (args.error === undefined && args.offline && args.verb !== null) {
+  if (args.error === undefined && args.offline && args.verb === 'digest') {
     // Offline digest (issue #2495): skip HTTP entirely and read the last-good
     // snapshot from disk. Explicitly requested; degrades gracefully to NO_SNAPSHOT.
     return runOfflineDigest(resolved, args.json);
+  }
+  if (args.error === undefined && args.offline && args.verb === 'timers') {
+    args = { ...args, error: '--offline is not supported for timers' };
   }
   if (args.error) {
     if (args.json) {
@@ -663,7 +852,7 @@ export async function runOpsDigestCli(
     return EXIT_USER_ERROR;
   }
   if (args.verb === null) {
-    const message = 'a verb is required (e.g. `kookr ops digest`).';
+    const message = 'a verb is required (e.g. `kookr ops digest` or `kookr ops timers`).';
     if (args.json) {
       emitJson(resolved.out, {
         ok: false,
@@ -697,6 +886,10 @@ export async function runOpsDigestCli(
     const message =
       `no Kookr server reachable (checked ${describeTarget(resolved.env)}). ` +
       'Start the server or set KOOKR_PORT / KOOKR_API_BASE_URL.';
+    // Timer-health is not in last-good-health.json — do not invent a loop table.
+    if (args.verb === 'timers') {
+      return emitTimersNoServer(resolved, args.json, message);
+    }
     return degradeToOffline(resolved, args.json, EXIT_NO_SERVER, {
       code: 'NO_SERVER',
       message,
@@ -705,6 +898,10 @@ export async function runOpsDigestCli(
   }
 
   const baseUrl = resolvedBase.baseUrl;
+
+  if (args.verb === 'timers') {
+    return runOpsTimers(resolved, { json: args.json, baseUrl });
+  }
 
   let readyResponse: { status: number; body: unknown; text: string };
   let healthResponse: { status: number; body: unknown; text: string };

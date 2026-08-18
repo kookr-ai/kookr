@@ -16,6 +16,7 @@ Usage:
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
   kookr ops digest [--json] [--offline]  One-pager of top unattended failure signals (ready + health); --offline reads the last-good snapshot when HTTP is dark.
+  kookr ops timers [--json]              List lifecycle-timer lastFiredAt and overdue flags (GET /api/diagnostics/timer-health).
   kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
@@ -42,7 +43,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json with spawn, doctor, status, ops digest, signal, or ralph for one machine-readable output envelope.
+Use --json with spawn, doctor, status, ops digest, ops timers, signal, or ralph for one machine-readable output envelope.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.

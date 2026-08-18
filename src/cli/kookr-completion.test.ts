@@ -131,7 +131,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "spawn signal issue doctor status ops github logs command ralph schedule drain resume migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "status --json -h --help"');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
-    expect(script).toContain('compgen -W "digest --json --offline -h --help"');
+    // #2639: `timers` is a sibling verb of `digest`.
+    expect(script).toContain('compgen -W "digest timers --json --offline -h --help"');
     expect(script).toContain('compgen -W "--json --offline -h --help"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
@@ -160,7 +161,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('root_commands=(spawn signal issue doctor status ops github logs command ralph schedule drain resume migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
     expect(script).toContain('compadd -- status --json -h --help');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
-    expect(script).toContain('compadd -- digest --json --offline -h --help');
+    // #2639: `timers` is a sibling verb of `digest`.
+    expect(script).toContain('compadd -- digest timers --json --offline -h --help');
     expect(script).toContain('compadd -- --json --offline -h --help');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
@@ -350,12 +352,19 @@ describe('bash completion behavior', () => {
   it('completes ops subcommands and --offline', async () => {
     await expect(completeBash(['kookr', 'ops', ''])).resolves.toEqual([
       'digest',
+      'timers',
       '--json',
       '--offline',
       '-h',
       '--help',
     ]);
     await expect(completeBash(['kookr', 'ops', 'digest', ''])).resolves.toEqual([
+      '--json',
+      '--offline',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'ops', 'timers', ''])).resolves.toEqual([
       '--json',
       '--offline',
       '-h',
@@ -483,12 +492,19 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes ops subcommands and --offline', async () => {
     await expect(completeZsh(['kookr', 'ops', ''], 3)).resolves.toEqual([
       'digest',
+      'timers',
       '--json',
       '--offline',
       '-h',
       '--help',
     ]);
     await expect(completeZsh(['kookr', 'ops', 'digest', ''], 4)).resolves.toEqual([
+      '--json',
+      '--offline',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'ops', 'timers', ''], 4)).resolves.toEqual([
       '--json',
       '--offline',
       '-h',

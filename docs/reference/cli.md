@@ -620,7 +620,7 @@ Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -648,6 +648,7 @@ Examples:
 kookr spawn --json --prompt-file /tmp/prompt.md
 kookr status --json
 kookr ops digest --json
+kookr ops timers --json
 kookr github status --json
 kookr ralph status <taskId> --json
 ```
@@ -799,6 +800,51 @@ Exit behavior:
 - `6` `--offline` requested but no last-good snapshot exists on disk (`code: "NO_SNAPSHOT"`).
 
 Related: [`kookr status`](#kookr-status) for agent-finding snapshots; [offline recovery card](./offline-recovery-card.md) and [unattended recovery runbook](./unattended-recovery-runbook.md) for the same field map in prose.
+
+## `kookr ops timers`
+
+Pasteable table of lifecycle-timer last-fired times and overdue flags (issue #2639). Complements [`kookr ops digest`](#kookr-ops-digest): digest answers "is the box ready?"; timers answers "did prune/save/watchdog actually tick?" without a second `curl` + `jq` of [`GET /api/diagnostics/timer-health`](./api.md).
+
+```bash
+kookr ops timers
+kookr ops timers --json
+```
+
+The command prints every **registered** loop the server reported — name, last-fired ISO timestamp or `never`, expected interval in milliseconds, and `overdue` true/false. It does not invent names for loops the process did not start. `--offline` is digest-only (last-good-health has no timer stamps); a missing or wedged HTTP path fails closed after a 5-second fetch timeout (`exit 3`) instead of hanging.
+
+Human output looks like:
+
+```text
+timers  loops=2  overdue=1  generated=2026-08-18T12:00:00.000Z
+maintenancePrune  last=never  interval=3600000ms  overdue=true
+save  last=2026-08-18T11:59:00.000Z  interval=30000ms  overdue=false
+```
+
+With `--json`, stdout is one envelope (`code: "OK"`) whose `details` holds the existing timer-health document (`schemaVersion`, `generatedAt`, `loops`) plus a computed `overdue` name list.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Environment (server discovery — same precedence as [Server Discovery](#server-discovery)):
+
+| Variable | Meaning |
+| --- | --- |
+| `KOOKR_API_BASE_URL` | Base URL of a running Kookr server (overrides auto-detect). |
+| `KOOKR_PORT` | Specific port on `127.0.0.1` (overrides auto-detect). |
+| `KOOKR_API_TOKEN` | Bearer token for non-loopback servers. |
+
+Exit behavior:
+
+- `0` Timer-health printed.
+- `2` User error (bad flags / unknown verb / `--offline` / invalid `KOOKR_PORT`).
+- `3` No Kookr server reachable, or the 5-second fetch timed out.
+- `4` Server rejected `/api/diagnostics/timer-health` or returned an unexpected payload.
+
+Related: [`kookr ops digest`](#kookr-ops-digest); [`GET /api/diagnostics/timer-health`](./api.md).
 
 ## `kookr github`
 
@@ -1456,6 +1502,8 @@ kookr doctor --json  # same launch preflight as JSON (CI/bootstrap) — see `koo
 kookr doctor --strict # fail exit on advisory WARNs (e.g. sustained smoke-tick streak)
 kookr ops digest     # one-pager of top unattended failure signals (GET /api/ready + /api/health)
 kookr ops digest --json  # same digest as one JSON envelope (exit 1 on ready fail)
+kookr ops timers     # lifecycle-timer lastFiredAt + overdue (GET /api/diagnostics/timer-health)
+kookr ops timers --json  # same timer table as one JSON envelope (includes overdue list)
 kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
 kookr github status --json  # same scanner status as one JSON envelope
 ```
