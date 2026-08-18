@@ -35,7 +35,7 @@ function getPromptEl(container: HTMLElement): HTMLTextAreaElement {
 }
 
 function getCwdEl(container: HTMLElement): HTMLInputElement {
-  const el = container.querySelector('input[placeholder="/home/user/my-project"]');
+  const el = container.querySelector('.combo-input input');
   if (!el) throw new Error('cwd input not rendered');
   return el as HTMLInputElement;
 }

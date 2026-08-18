@@ -216,6 +216,8 @@ Task edges are stored as `task:<task-id>`. Milestone edges are stored as `milest
 
 The Launch dialog and Quick Launch bar show the same warning before submit. You can open the existing task or launch anyway; launch-anyway marks the new task as an intentional duplicate so the coordinator does not group it as accidental. CLI defaults are unchanged.
 
+The Launch dialog also warns when the chosen working directory already has live agents with *different* prompts. That banner shows the live count and task names, plus Open existing and Launch anyway. It is a warning only — Launch stays enabled — and it does not change `kookr spawn` defaults.
+
 The dashboard duplicate chip is the follow-up surface for active duplicates that already exist. The CLI interrupt and the launch-form warning prevent many duplicates before they start.
 
 ## Multi-Project Tracking
