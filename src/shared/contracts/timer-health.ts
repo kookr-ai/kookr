@@ -26,7 +26,19 @@ export const LIFECYCLE_TIMER_NAMES = [
 
 export type LifecycleTimerName = (typeof LIFECYCLE_TIMER_NAMES)[number];
 
+const LIFECYCLE_TIMER_NAME_SET: ReadonlySet<string> = new Set(LIFECYCLE_TIMER_NAMES);
+
+export function isLifecycleTimerName(value: string): value is LifecycleTimerName {
+  return LIFECYCLE_TIMER_NAME_SET.has(value);
+}
+
 export const TIMER_HEALTH_SCHEMA_VERSION = 'timer-health.v1' as const;
+
+/** On-disk last-fired stamps so overdue math survives a crash (issue #2638). */
+export const TIMER_HEALTH_PERSIST_SCHEMA_VERSION = 'timer-health-persist.v1' as const;
+
+/** Filename under the data directory (`KOOKR_DIR` / `~/.kookr`). */
+export const TIMER_HEALTH_STATE_FILE = 'timer-health.state.json';
 
 /**
  * How many missed expected intervals make a loop `overdue`. Two intervals is
@@ -38,7 +50,10 @@ export const TIMER_HEALTH_OVERDUE_INTERVALS = 2;
 
 export interface TimerHealthLoopEntry {
   name: LifecycleTimerName;
-  /** ISO-8601 last fire; null until the loop has fired at least once. */
+  /**
+   * ISO-8601 last fire; null until the loop has fired at least once.
+   * Survives process restart when a persist file is configured (issue #2638).
+   */
   lastFiredAt: string | null;
   /** Expected cadence in ms (adaptive for `quotaPoll`). */
   expectedIntervalMs: number;
