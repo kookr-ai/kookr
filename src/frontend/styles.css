@@ -4535,6 +4535,64 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-secondary);
   background: rgba(148, 163, 184, 0.08);
 }
+.outcome-agent-scoreboard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.outcome-agent-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.outcome-agent-table-scroll {
+  overflow-x: auto;
+}
+.outcome-agent-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.outcome-agent-table th,
+.outcome-agent-table td {
+  padding: 4px 6px;
+  text-align: right;
+  white-space: nowrap;
+}
+.outcome-agent-table thead th {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-dim);
+}
+.outcome-agent-table tbody tr:nth-child(even) {
+  background: rgba(148, 163, 184, 0.05);
+}
+.outcome-agent-table th[scope='col']:first-child,
+.outcome-agent-name {
+  text-align: left;
+}
+.outcome-agent-name {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.outcome-agent-detail {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.outcome-agent-lowsample {
+  color: var(--text-muted);
+}
+.outcome-agent-lowsample-tag {
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--orange, #f59e0b);
+  background: rgba(245, 158, 11, 0.12);
+}
 .outcome-findings-list,
 .outcome-task-audit {
   display: flex;

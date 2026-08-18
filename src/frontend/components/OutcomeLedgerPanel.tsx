@@ -1,11 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type {
+  OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
   OutcomeLedgerResponse,
   OutcomeLedgerTaskRow,
 } from '../../shared/contracts/outcome-ledger.js';
 import type { TimeWindow } from '../../shared/contracts/cost-comparison.js';
+import { AVAILABLE_AGENT_TYPES } from '../../shared/contracts/agent-types.js';
 import { getOutcomeLedger } from '../api/index.js';
+
+/**
+ * Below this many terminal tasks, a per-agent completion rate is drawn from too
+ * few samples to trust. We show the raw count instead of a headline percentage
+ * so a 1-of-1 "100%" agent never masquerades as a proven winner — the same
+ * "guard rates under a threshold" discipline the ledger applies elsewhere.
+ */
+const MIN_AGENT_SAMPLE = 5;
+
+const AGENT_LABELS = new Map(AVAILABLE_AGENT_TYPES.map((entry) => [entry.type, entry.label]));
 
 const WINDOWS: { value: TimeWindow; label: string }[] = [
   { value: '24h', label: '24h' },
@@ -44,6 +56,7 @@ export function OutcomeLedgerPanel(): React.ReactElement {
 
   const findings = Array.isArray(data?.findings) ? data.findings : [];
   const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+  const byAgent = Array.isArray(data?.byAgent) ? data.byAgent : [];
   const visibleFindings = useMemo(() => findings.slice(0, 5), [findings]);
   const visibleTasks = useMemo(() => tasks.filter((task) => task.flags.length > 0).slice(0, 5), [tasks]);
 
@@ -95,6 +108,7 @@ export function OutcomeLedgerPanel(): React.ReactElement {
                 <span>{data.quality.invalidTimestampTasks} invalid time</span>
                 <span>{pct(data.quality.interventionCoverage)} interventions known</span>
               </div>
+              <AgentScoreboard rows={byAgent} />
               {visibleFindings.length > 0 ? (
                 <ul className="outcome-findings-list" aria-label="Outcome data quality findings">
                   {visibleFindings.map((finding) => <FindingRow key={`${finding.taskId}:${finding.kind}:${finding.metric}`} finding={finding} />)}
@@ -126,6 +140,64 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
       <strong>{value}</strong>
       {detail && <span className="outcome-metric-detail">{detail}</span>}
     </div>
+  );
+}
+
+function AgentScoreboard({ rows }: { rows: OutcomeLedgerByAgentRow[] }): React.ReactElement | null {
+  if (rows.length === 0) return null;
+  return (
+    <div className="outcome-agent-scoreboard">
+      <div className="outcome-agent-title">By agent</div>
+      <div className="outcome-agent-table-scroll">
+        <table className="outcome-agent-table">
+          <thead>
+            <tr>
+              <th scope="col">agent</th>
+              <th scope="col">completed</th>
+              <th scope="col">median</th>
+              <th scope="col">p95</th>
+              <th scope="col">known cost</th>
+              <th scope="col">👍</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => <AgentScoreboardRow key={row.agentType} row={row} />)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AgentScoreboardRow({ row }: { row: OutcomeLedgerByAgentRow }): React.ReactElement {
+  const lowSample = row.terminalTaskCount < MIN_AGENT_SAMPLE;
+  const completedFraction = `${row.completedTaskCount}/${row.terminalTaskCount}`;
+  return (
+    <tr>
+      <th scope="row" className="outcome-agent-name">{agentLabel(row.agentType)}</th>
+      <td>
+        {lowSample ? (
+          <span className="outcome-agent-lowsample" title={`Only ${row.terminalTaskCount} terminal task(s); rate withheld until ${MIN_AGENT_SAMPLE}.`}>
+            {completedFraction} <span className="outcome-agent-lowsample-tag">low sample</span>
+          </span>
+        ) : (
+          <span>{formatRate(row.completionRate)} <span className="outcome-agent-detail">{completedFraction}</span></span>
+        )}
+      </td>
+      <td>{formatMs(row.medianDurationMs)}</td>
+      <td>{formatMs(row.p95DurationMs)}</td>
+      <td>
+        {formatMoney(row.totalKnownCostUsd)} <span className="outcome-agent-detail">{pct(row.costCoverage)} cov</span>
+      </td>
+      {/*
+        Feedback votes can never exceed terminal tasks, so a low-sample agent
+        also has a low-sample thumbs-up rate — withhold it too, or a 1-of-1
+        "100%" would leak through the very guard the completion column applies.
+        (The row contract carries no feedback-vote count, so this is the
+        tightest guard available without a contract change.)
+      */}
+      <td>{lowSample ? <span className="outcome-agent-detail">—</span> : formatRate(row.thumbsUpRate)}</td>
+    </tr>
   );
 }
 
@@ -164,6 +236,23 @@ function pct(value: number | null): string {
 
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`;
+}
+
+function formatMs(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return 'unknown';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSec = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  if (minutes === 0) return `${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours === 0) return `${minutes}m ${seconds}s`;
+  return `${hours}h ${remMinutes}m`;
+}
+
+function agentLabel(agentType: OutcomeLedgerByAgentRow['agentType']): string {
+  return AGENT_LABELS.get(agentType) ?? agentType;
 }
 
 function isOutcomeLedgerResponse(value: unknown): value is OutcomeLedgerResponse {
