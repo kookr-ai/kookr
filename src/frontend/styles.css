@@ -6786,6 +6786,40 @@ label.task-share-row {
   border-color: var(--teal);
 }
 
+.schedule-cron-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.schedule-cron-preset {
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 999px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.schedule-cron-preset:hover {
+  border-color: var(--teal);
+  color: var(--text-bright);
+}
+
+.schedule-cron-preset:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+.schedule-cron-preset[aria-pressed='true'] {
+  background: rgba(45, 212, 191, 0.14);
+  border-color: var(--teal);
+  color: var(--text-bright);
+}
+
 .schedule-form-params {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

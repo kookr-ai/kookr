@@ -547,3 +547,107 @@ describe('SchedulesDialog rollup ROI', () => {
     expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last:');
   });
 });
+
+describe('SchedulesDialog cron presets', () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  function stubFetch() {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/playbooks')) {
+        return { ok: true, json: async () => [] };
+      }
+      if (url.startsWith('/api/schedules/preview')) {
+        return { ok: true, json: async () => ({ cronDescription: 'Daily at 09:00', nextRuns: [], timezone: 'UTC' }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          revision: 1,
+          schedules: [],
+          status: { timezone: 'UTC', catchUpMode: 'auto', catchUpEnabled: true, schedulerHealthy: true },
+        }),
+      };
+    }));
+  }
+
+  function presetButton(label: string): HTMLButtonElement {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>('.schedule-cron-preset'))
+      .find((b) => b.textContent === label);
+    if (!button) throw new Error(`preset button not found: ${label}`);
+    return button;
+  }
+
+  function cronInput(): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>('.schedule-form-field input[placeholder="0 9 * * *"]');
+    if (!input) throw new Error('cron input not found');
+    return input;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    useKookrStore.setState({ serverCwd: '/repo', schedules: [] });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    stubFetch();
+  });
+
+  afterEach(() => {
+    if (root) {
+      const r = root;
+      act(() => { r.unmount(); });
+    }
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  test('clicking "Weekdays 9am" sets the cron field to 0 9 * * 1-5', async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+
+    await act(async () => { presetButton('Weekdays 9am').click(); });
+
+    expect(cronInput().value).toBe('0 9 * * 1-5');
+  });
+
+  test('the chip matching the current cron value renders as pressed', async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+
+    // Default cron is "0 9 * * *" → the "Daily 9am" chip is pressed, others are not.
+    expect(presetButton('Daily 9am').getAttribute('aria-pressed')).toBe('true');
+    expect(presetButton('Hourly').getAttribute('aria-pressed')).toBe('false');
+
+    await act(async () => { presetButton('Hourly').click(); });
+
+    expect(presetButton('Hourly').getAttribute('aria-pressed')).toBe('true');
+    expect(presetButton('Daily 9am').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  test('typing a custom cron keeps the field and leaves every chip unpressed', async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+
+    // Type a value that matches no preset — presets are additive, not a picker.
+    const input = cronInput();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(input, '*/5 * * * *');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    expect(cronInput().value).toBe('*/5 * * * *');
+    const anyPressed = Array.from(container.querySelectorAll<HTMLButtonElement>('.schedule-cron-preset'))
+      .some((b) => b.getAttribute('aria-pressed') === 'true');
+    expect(anyPressed).toBe(false);
+  });
+});
