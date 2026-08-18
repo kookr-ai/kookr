@@ -25,3 +25,19 @@ export async function copyText(text: string): Promise<void> {
     document.body.removeChild(textarea);
   }
 }
+
+/**
+ * Read text from the clipboard via the async Clipboard API.
+ *
+ * Fails closed: returns `null` — never throws — when the API is unavailable
+ * (e.g. non-secure origins) or the browser denies/aborts the read. The caller
+ * decides what to do with a `null` result. Never logs the clipboard contents.
+ */
+export async function readClipboardText(): Promise<string | null> {
+  if (!navigator.clipboard?.readText) return null;
+  try {
+    return await navigator.clipboard.readText();
+  } catch {
+    return null;
+  }
+}

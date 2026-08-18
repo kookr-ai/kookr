@@ -4718,6 +4718,45 @@ a.playbook-empty-docs-link:visited:hover {
   outline-offset: 2px;
 }
 
+/* Row holding the sample-prompts group and the paste action side by side.
+   The paste chip lives outside the group so a screen reader does not announce
+   it as a "Sample prompt" (issue #2671). */
+.launch-prompt-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+
+.launch-prompt-chip-row .sample-prompt-chips {
+  margin: 0;
+}
+
+/* Sibling of the sample chips: pulls the clipboard into the prompt (issue
+   #2671). Kept visually distinct from the canned sample chips with a dashed
+   border so it reads as an action, not a starter prompt. */
+.paste-prompt-chip {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.paste-prompt-chip:hover {
+  color: var(--text-bright);
+  border-color: var(--teal);
+}
+
+.paste-prompt-chip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
 .dialog input,
 .dialog textarea {
   background: var(--bg-input);
