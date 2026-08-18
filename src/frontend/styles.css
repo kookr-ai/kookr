@@ -2008,6 +2008,9 @@ button.section-header.detection-stats-header:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.overview-next-schedule {
+  width: 100%;
+}
 /* First-run only: tour re-entry plus Getting Started / Check setup, kept
    secondary so they don't compete with the primary Launch CTA above. */
 .overview-tour-reentry {

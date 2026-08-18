@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ScheduleResponse } from '../../shared/protocol.js';
 import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { formatScheduleRelativeTime, scheduleNextRunLabel } from '../schedule-format.js';
 
 interface Props {
   schedules: ScheduleResponse[];
@@ -8,29 +9,12 @@ interface Props {
 
 export const SCHEDULE_SECTION_COLLAPSED_KEY = 'kookr:scheduleSectionCollapsed';
 
-function formatRelativeTime(iso: string | null): string {
-  if (!iso) return 'N/A';
-  const diff = new Date(iso).getTime() - Date.now();
-  const absDiff = Math.abs(diff);
-  const minutes = Math.floor(absDiff / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  let label: string;
-  if (days > 0) label = `${days}d`;
-  else if (hours > 0) label = `${hours}h`;
-  else if (minutes > 0) label = `${minutes}m`;
-  else label = '<1m';
-
-  return diff < 0 ? `${label} ago` : `in ${label}`;
-}
-
 function latestExecutionLabel(schedule: ScheduleResponse): string {
   const latest = schedule.latestExecution;
   if (!latest) return 'never';
   const when = latest.triggeredAt ?? latest.evaluatedAt;
   const suffix = latest.message ? ` \u00B7 ${latest.message}` : '';
-  return `${latestExecutionOutcomeLabel(latest.outcome)} ${formatRelativeTime(when)}${suffix}`;
+  return `${latestExecutionOutcomeLabel(latest.outcome)} ${formatScheduleRelativeTime(when)}${suffix}`;
 }
 
 function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['latestExecution']>['outcome']): string {
@@ -71,12 +55,6 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
-}
-
-function nextRunLabel(schedule: ScheduleResponse): string {
-  if (schedule.stopReason === 'trigger_limit_reached') return 'exhausted';
-  if (!schedule.enabled) return 'paused';
-  return formatRelativeTime(schedule.nextRunAt);
 }
 
 function quotaLabel(schedule: ScheduleResponse): string {
@@ -137,7 +115,7 @@ export function ScheduleSection({ schedules }: Props) {
                 {quotaLabel(s)}
               </span>
               <span className="schedule-next-run">
-                Next: {nextRunLabel(s)}
+                Next: {scheduleNextRunLabel(s)}
               </span>
             </div>
           </div>
