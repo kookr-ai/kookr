@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Drift guard for issue #2642: after a restart the hourly safety-net loops
- * stay dark for one interval. The unattended recovery runbook must name that
- * window so a remote operator does not treat empty last-fired stamps as a
- * dead loop — or ignore a truly dead loop because "it always looks like that."
+ * Drift guard for issue #2642 / #2635: after a restart the hourly safety-net
+ * loops stay dark for the deferred startup delay (~60s), not a full interval.
+ * The unattended recovery runbook must name that window so a remote operator
+ * does not treat empty last-fired stamps as a dead loop — or ignore a truly
+ * dead loop because "it always looks like that."
  */
 const runbookPath = join(
   import.meta.dirname,
@@ -20,7 +21,7 @@ const runbookPath = join(
 describe('unattended recovery runbook hourly-timer boot window (issue #2642)', () => {
   const doc = readFileSync(runbookPath, 'utf-8');
 
-  test('names the four interval-only safety-net loops and the timer-health last-fired surface', () => {
+  test('names the four hourly safety-net loops and the timer-health last-fired surface', () => {
     expect(doc).toContain('## 7. Hourly-timer boot window');
     expect(doc).toMatch(/smoke/i);
     expect(doc).toMatch(/prune/i);
@@ -34,9 +35,9 @@ describe('unattended recovery runbook hourly-timer boot window (issue #2642)', (
     expect(doc).toMatch(/lastFiredAt|last-fired/);
   });
 
-  test('tells the operator not to treat never-fired as dead until one interval has passed', () => {
+  test('tells the operator not to treat never-fired as dead until the startup fire has had time to stamp', () => {
     expect(doc.toLowerCase()).toMatch(/never-fired|never fired/);
-    expect(doc.toLowerCase()).toMatch(/one interval|first interval/);
+    expect(doc.toLowerCase()).toMatch(/60s|60 seconds|about a minute/);
     expect(doc).toMatch(/overdue/);
     expect(doc.toLowerCase()).toMatch(/two expected intervals|two intervals/);
   });

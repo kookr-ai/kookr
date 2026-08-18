@@ -270,6 +270,30 @@ describe('DeployLagDetector.maybeRun', () => {
     expect(calls).toBe(2);
   });
 
+  it('a cadence-free startup fire does not skip the next on-grid hourly tick (issue #2635)', async () => {
+    let clock = 0;
+    let calls = 0;
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      targets: [
+        target('kookr', async () => {
+          calls++;
+          return healthyTarget('kookr').resolve();
+        }),
+      ],
+      intervalMs: HOUR_MS,
+      now: () => clock,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+    });
+    clock = 60_000;
+    await expect(detector.maybeRun({ ignoreCadence: true })).resolves.not.toBeNull();
+    clock = HOUR_MS;
+    await expect(detector.maybeRun()).resolves.not.toBeNull();
+    expect(calls).toBe(2);
+  });
+
   it('a resolver that hangs past the deadline degrades to a NAMED unknown (no false alert)', async () => {
     const store = memoryArtifactStore();
     const detector = new DeployLagDetector({
