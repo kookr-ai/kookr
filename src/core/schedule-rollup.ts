@@ -352,7 +352,9 @@ export class ScheduleRollupStore {
       liveVerifiedCommits: Array.from(this.liveVerifiedCommits),
       ...(this.lastVerifiedSha ? { lastVerifiedSha: this.lastVerifiedSha } : {}),
     };
-    const data = JSON.stringify(payload, null, 2);
+    // Compact JSON — persist is on a hot path (every schedule persist chains here).
+    // Load still accepts pretty-printed legacy files via JSON.parse (#2648).
+    const data = JSON.stringify(payload);
     const tmpPath = join(dirname(this.filePath), `.schedule-rollups-${randomUUID()}.tmp`);
     await mkdir(dirname(this.filePath), { recursive: true });
     const fh = await open(tmpPath, 'w');
