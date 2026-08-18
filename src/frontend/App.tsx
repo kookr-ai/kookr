@@ -15,7 +15,7 @@ import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
-import { buildAgentBuckets, countCompletedInWindow } from './agent-buckets.js';
+import { buildAgentBuckets, countCompletedInWindow, countLaunchedInWindow } from './agent-buckets.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -1115,14 +1115,18 @@ export function App() {
     () => oldestFindingWaitStartedAt(findings),
     [findings],
   );
-  const [completedWindowNowMs, setCompletedWindowNowMs] = useState(() => Date.now());
+  const [windowNowMs, setWindowNowMs] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setCompletedWindowNowMs(Date.now()), 60_000);
+    const timer = setInterval(() => setWindowNowMs(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
   const completedLast24h = useMemo(
-    () => countCompletedInWindow(completed, completedWindowNowMs),
-    [completed, completedWindowNowMs],
+    () => countCompletedInWindow(completed, windowNowMs),
+    [completed, windowNowMs],
+  );
+  const launchedLast24h = useMemo(
+    () => countLaunchedInWindow(filteredAgents, windowNowMs),
+    [filteredAgents, windowNowMs],
   );
 
   useEffect(() => {
@@ -1551,6 +1555,7 @@ export function App() {
         oldestFindingWaitStartedAt={oldestFindingWait}
         total={filteredAgents.length}
         completedLast24h={completedLast24h}
+        launchedLast24h={launchedLast24h}
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
         onOpenCapacity={openSettingsAtMaxActiveTasks}

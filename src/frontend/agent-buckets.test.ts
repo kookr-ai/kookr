@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { AgentState } from '../shared/protocol.js';
 import { TIME_TO_UNBLOCK_WINDOW_MS } from '../shared/contracts/time-to-unblock.js';
-import { buildAgentBuckets, countCompletedInWindow } from './agent-buckets.js';
+import { buildAgentBuckets, countCompletedInWindow, countLaunchedInWindow } from './agent-buckets.js';
 
 function agent(id: string, projectId: string, patch: Partial<AgentState> = {}): AgentState {
   return {
@@ -213,5 +213,68 @@ describe('countCompletedInWindow (issue #2618)', () => {
       agent('future', 'p', { taskStatus: 'completed', finishedAt: iso(60_000) }),
     ];
     expect(countCompletedInWindow(agents, NOW)).toBe(0);
+  });
+});
+
+describe('countLaunchedInWindow (issue #2632)', () => {
+  const NOW = Date.parse('2026-08-18T18:00:00.000Z');
+
+  function iso(offsetMs: number): string {
+    return new Date(NOW + offsetMs).toISOString();
+  }
+
+  test('counts three agents that started inside the 24-hour window', () => {
+    const agents = [
+      agent('a', 'p', { startedAt: iso(-1 * 60 * 60 * 1000) }),
+      agent('b', 'p', { taskStatus: 'completed', startedAt: iso(-8 * 60 * 60 * 1000) }),
+      agent('c', 'p', { taskStatus: 'pending', startedAt: iso(-23 * 60 * 60 * 1000) }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(3);
+  });
+
+  test('includes starts exactly at now and exactly at the window cutoff', () => {
+    const agents = [
+      agent('now', 'p', { startedAt: iso(0) }),
+      agent('cutoff', 'p', { startedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS) }),
+      agent('just-outside', 'p', { startedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS - 1) }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(2);
+  });
+
+  test('returns 0 for a non-finite now or a negative window', () => {
+    const agents = [
+      agent('a', 'p', { startedAt: iso(-60_000) }),
+    ];
+    expect(countLaunchedInWindow(agents, Number.NaN)).toBe(0);
+    expect(countLaunchedInWindow(agents, NOW, -1)).toBe(0);
+  });
+
+  test('ignores agents that started before the window', () => {
+    const agents = [
+      agent('old', 'p', { startedAt: iso(-25 * 60 * 60 * 1000) }),
+      agent('fresh', 'p', { startedAt: iso(-10 * 60 * 1000) }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(1);
+  });
+
+  test('skips a missing or unparseable start time instead of inventing one', () => {
+    const agents = [
+      agent('no-start', 'p', { taskStatus: 'completed', finishedAt: iso(-10 * 60 * 1000) }),
+      agent('bad-start', 'p', { startedAt: 'not-a-date', finishedAt: iso(-10 * 60 * 1000) }),
+      agent('future', 'p', { startedAt: iso(60_000) }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(0);
+  });
+
+  test('does not count an old start just because the finish is still in the window', () => {
+    const agents = [
+      agent('old-start-fresh-finish', 'p', {
+        taskStatus: 'completed',
+        startedAt: iso(-25 * 60 * 60 * 1000),
+        finishedAt: iso(-1 * 60 * 60 * 1000),
+      }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(0);
+    expect(countCompletedInWindow(agents, NOW)).toBe(1);
   });
 });

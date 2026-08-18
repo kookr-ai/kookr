@@ -53,6 +53,30 @@ export function countCompletedInWindow(
   return count;
 }
 
+/**
+ * How many live agents started inside the rolling window.
+ *
+ * Uses `startedAt` only. A missing or unparseable start time is skipped —
+ * never inferred from `finishedAt`. The live snapshot drops aged/capped
+ * rows, so this count is a lower bound on true 24h launches.
+ */
+export function countLaunchedInWindow(
+  agents: readonly Pick<AgentState, 'startedAt'>[],
+  nowMs: number,
+  windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,
+): number {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(windowMs) || windowMs < 0) return 0;
+  const cutoffMs = nowMs - windowMs;
+  let count = 0;
+  for (const agent of agents) {
+    if (!agent.startedAt) continue;
+    const startedMs = Date.parse(agent.startedAt);
+    if (!Number.isFinite(startedMs)) continue;
+    if (startedMs >= cutoffMs && startedMs <= nowMs) count += 1;
+  }
+  return count;
+}
+
 export function compareCompletedAgents(
   left: AgentState,
   right: AgentState,
