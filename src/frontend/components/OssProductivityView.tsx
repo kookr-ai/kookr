@@ -333,7 +333,7 @@ export function OssProductivityView({ onClose, onBrowsePlaybooks }: Props) {
               >
                 Browse playbooks
               </button>
-              <p className="oss-productivity-empty-docs">
+              <p>
                 Start the OSS Contribution Pipeline playbook, or read{' '}
                 <a
                   className="oss-productivity-empty-docs-link"

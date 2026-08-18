@@ -1746,7 +1746,6 @@ export function App() {
           <OssProductivityView
             onClose={closeOssView}
             onBrowsePlaybooks={() => {
-              closeOssView();
               openLaunchFromPalette('playbooks', 'oss_empty_cta');
             }}
           />
