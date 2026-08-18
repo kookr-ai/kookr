@@ -180,7 +180,7 @@ import {
   type OperationalAlertLike,
 } from '../observability/signal-delivery/index.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
-import { TimerHealthTracker } from '../core/timer-health.js';
+import { TimerHealthTracker, timerHealthStatePath } from '../core/timer-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
@@ -2266,8 +2266,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const persistenceHealth = new PersistenceHealthTracker();
   // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
   // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
-  // in production so a wedged save/liveness loop is detectable.
-  const timerHealth = new TimerHealthTracker();
+  // in production so a wedged save/liveness loop is detectable. Persist
+  // lastFiredAt to the data dir (issue #2638) so a crash does not reset
+  // overdue math to "never fired."
+  const timerHealth = new TimerHealthTracker(() => Date.now(), {
+    persistPath: timerHealthStatePath(kookrDir),
+  });
   const taskStateSaveScheduler = new TaskStateSaveScheduler({
     taskStore,
     tasksFile,

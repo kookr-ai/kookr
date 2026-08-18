@@ -1,7 +1,15 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach } from 'vitest';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   TIMER_HEALTH_OVERDUE_INTERVALS,
+  TIMER_HEALTH_PERSIST_FILE_MODE,
+  TIMER_HEALTH_PERSIST_SCHEMA_VERSION,
+  TIMER_HEALTH_PERSIST_SIZE_CAP_BYTES,
   TIMER_HEALTH_SCHEMA_VERSION,
+  TIMER_HEALTH_STATE_FILE,
+  timerHealthStatePath,
   TimerHealthTracker,
 } from './timer-health.js';
 
@@ -74,5 +82,219 @@ describe('TimerHealthTracker (issue #1771)', () => {
       'save',
       'watchdog',
     ]);
+  });
+});
+
+describe('TimerHealthTracker persist (issue #2638)', () => {
+  let dir: string;
+  let persistPath: string;
+  let pendingWrites: Array<() => void>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'timer-health-'));
+    persistPath = timerHealthStatePath(dir);
+    pendingWrites = [];
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function drainWrites(): void {
+    const queued = pendingWrites.splice(0);
+    for (const work of queued) work();
+  }
+
+  function makeTracker(now: () => number): TimerHealthTracker {
+    return new TimerHealthTracker(now, {
+      persistPath,
+      scheduleWrite: (work) => pendingWrites.push(work),
+    });
+  }
+
+  test('survives a hard kill: reloaded tracker shows the pre-crash last-fired time', () => {
+    const firedAt = Date.parse('2026-08-18T02:00:00.000Z');
+    const first = makeTracker(() => firedAt);
+    first.register('maintenancePrune', 3_600_000);
+    first.recordFire('maintenancePrune');
+    drainWrites();
+
+    const restartNow = Date.parse('2026-08-18T02:05:00.000Z');
+    const restarted = makeTracker(() => restartNow);
+    restarted.register('maintenancePrune', 3_600_000);
+    const prune = restarted.snapshot().loops.find((l) => l.name === 'maintenancePrune');
+    expect(prune?.lastFiredAt).toBe('2026-08-18T02:00:00.000Z');
+    expect(prune?.overdue).toBe(false);
+  });
+
+  test('reload is history, not a new fire: lastFiredAt stays pre-crash and register does not rewrite', () => {
+    const firedAt = Date.parse('2026-08-18T03:00:00.000Z');
+    const first = makeTracker(() => firedAt);
+    first.register('prodSmokeTick', 3_600_000);
+    first.recordFire('prodSmokeTick');
+    drainWrites();
+    const before = readFileSync(persistPath, 'utf8');
+
+    const restartNow = Date.parse('2026-08-18T03:10:00.000Z');
+    const restarted = makeTracker(() => restartNow);
+    restarted.register('prodSmokeTick', 3_600_000);
+    expect(pendingWrites).toHaveLength(0);
+    expect(readFileSync(persistPath, 'utf8')).toBe(before);
+    expect(restarted.snapshot().loops[0]?.lastFiredAt).toBe('2026-08-18T03:00:00.000Z');
+  });
+
+  test('overdue becomes true when now minus the persisted stamp exceeds 2× interval', () => {
+    const intervalMs = 3_600_000;
+    const firedAt = Date.parse('2026-08-18T00:00:00.000Z');
+    const first = makeTracker(() => firedAt);
+    first.register('deployLagDetector', intervalMs);
+    first.recordFire('deployLagDetector');
+    drainWrites();
+
+    let nowMs = firedAt + intervalMs * TIMER_HEALTH_OVERDUE_INTERVALS;
+    const restarted = makeTracker(() => nowMs);
+    restarted.register('deployLagDetector', intervalMs);
+    expect(restarted.snapshot().loops[0]?.overdue).toBe(false);
+
+    nowMs += 1;
+    expect(restarted.snapshot().loops[0]?.overdue).toBe(true);
+    expect(restarted.snapshot().loops[0]?.lastFiredAt).toBe('2026-08-18T00:00:00.000Z');
+  });
+
+  test('recordFire queues the write and does not wait on disk', () => {
+    const tracker = makeTracker(() => Date.parse('2026-08-18T04:00:00.000Z'));
+    tracker.register('save', 60_000);
+    tracker.recordFire('save');
+    expect(existsSync(persistPath)).toBe(false);
+    expect(tracker.snapshot().loops[0]?.lastFiredAt).toBe('2026-08-18T04:00:00.000Z');
+    drainWrites();
+    expect(existsSync(persistPath)).toBe(true);
+  });
+
+  test('default scheduler writes after recordFire returns', async () => {
+    const tracker = new TimerHealthTracker(() => Date.parse('2026-08-18T04:30:00.000Z'), {
+      persistPath,
+    });
+    tracker.register('save', 60_000);
+    tracker.recordFire('save');
+    expect(existsSync(persistPath)).toBe(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(existsSync(persistPath)).toBe(true);
+  });
+
+  test('writes owner-only mode 0600 and stays under the size cap', () => {
+    const tracker = makeTracker(() => Date.parse('2026-08-18T05:00:00.000Z'));
+    tracker.register('save', 60_000);
+    tracker.recordFire('save');
+    drainWrites();
+    expect(statSync(persistPath).mode & 0o777).toBe(TIMER_HEALTH_PERSIST_FILE_MODE);
+    expect(statSync(persistPath).size).toBeLessThanOrEqual(TIMER_HEALTH_PERSIST_SIZE_CAP_BYTES);
+    expect(persistPath.endsWith(TIMER_HEALTH_STATE_FILE)).toBe(true);
+    const raw = JSON.parse(readFileSync(persistPath, 'utf8')) as {
+      schemaVersion: string;
+      loops: { save: { lastFiredAtMs: number } };
+    };
+    expect(raw.schemaVersion).toBe(TIMER_HEALTH_PERSIST_SCHEMA_VERSION);
+    expect(raw.loops.save.lastFiredAtMs).toBe(Date.parse('2026-08-18T05:00:00.000Z'));
+  });
+
+  test('skips write when serialized stamps would exceed the injected cap', () => {
+    const tracker = new TimerHealthTracker(() => Date.parse('2026-08-18T05:15:00.000Z'), {
+      persistPath,
+      scheduleWrite: (work) => pendingWrites.push(work),
+      sizeCapBytes: 20,
+    });
+    tracker.register('save', 60_000);
+    tracker.recordFire('save');
+    drainWrites();
+    expect(existsSync(persistPath)).toBe(false);
+  });
+
+  test('tightens a leftover world-readable stamp file to 0600 on the next fire', () => {
+    const tracker = makeTracker(() => Date.parse('2026-08-18T05:30:00.000Z'));
+    tracker.register('save', 60_000);
+    tracker.recordFire('save');
+    drainWrites();
+    chmodSync(persistPath, 0o644);
+    tracker.recordFire('save');
+    drainWrites();
+    expect(statSync(persistPath).mode & 0o777).toBe(TIMER_HEALTH_PERSIST_FILE_MODE);
+  });
+
+  test('corrupt JSON does not block startup (fail-open, lastFiredAt stays null)', () => {
+    writeFileSync(persistPath, '{not json', 'utf8');
+    const tracker = makeTracker(() => Date.parse('2026-08-18T06:00:00.000Z'));
+    tracker.register('maintenancePrune', 3_600_000);
+    expect(tracker.snapshot().loops[0]?.lastFiredAt).toBeNull();
+    expect(tracker.snapshot().loops[0]?.overdue).toBe(false);
+  });
+
+  test('wrong schema version fails open', () => {
+    writeFileSync(persistPath, JSON.stringify({
+      schemaVersion: 'nope',
+      loops: { save: { lastFiredAtMs: 1 } },
+    }));
+    const wrongSchema = makeTracker(() => Date.parse('2026-08-18T07:00:00.000Z'));
+    wrongSchema.register('save', 60_000);
+    expect(wrongSchema.snapshot().loops[0]?.lastFiredAt).toBeNull();
+  });
+
+  test('oversized but valid persist file fails open (size check, not parse)', () => {
+    const firedAt = Date.parse('2026-08-18T01:00:00.000Z');
+    const payload = JSON.stringify({
+      schemaVersion: TIMER_HEALTH_PERSIST_SCHEMA_VERSION,
+      loops: { save: { lastFiredAtMs: firedAt } },
+    });
+    writeFileSync(persistPath, payload);
+    const oversized = new TimerHealthTracker(() => Date.parse('2026-08-18T07:01:00.000Z'), {
+      persistPath,
+      scheduleWrite: (work) => pendingWrites.push(work),
+      sizeCapBytes: Buffer.byteLength(payload, 'utf8') - 1,
+    });
+    oversized.register('save', 60_000);
+    expect(oversized.snapshot().loops[0]?.lastFiredAt).toBeNull();
+  });
+
+  test('unknown loop names and non-finite stamps are ignored', () => {
+    writeFileSync(persistPath, JSON.stringify({
+      schemaVersion: TIMER_HEALTH_PERSIST_SCHEMA_VERSION,
+      loops: {
+        notALoop: { lastFiredAtMs: Date.parse('2026-08-18T01:00:00.000Z') },
+        save: { lastFiredAtMs: Number.NaN },
+        liveness: { lastFiredAtMs: Date.parse('2026-08-18T01:05:00.000Z') },
+      },
+    }));
+    const tracker = makeTracker(() => Date.parse('2026-08-18T08:00:00.000Z'));
+    tracker.register('save', 60_000);
+    tracker.register('liveness', 15_000);
+    const byName = Object.fromEntries(tracker.snapshot().loops.map((l) => [l.name, l.lastFiredAt]));
+    expect(byName.save).toBeNull();
+    expect(byName.liveness).toBe('2026-08-18T01:05:00.000Z');
+    expect(tracker.snapshot().loops.find((l) => l.name === 'notALoop')).toBeUndefined();
+  });
+
+  test('a disk error on the queued write does not throw from recordFire', () => {
+    const blocker = join(dir, 'not-a-dir');
+    writeFileSync(blocker, 'file');
+    const tracker = new TimerHealthTracker(() => Date.parse('2026-08-18T09:00:00.000Z'), {
+      persistPath: join(blocker, TIMER_HEALTH_STATE_FILE),
+      scheduleWrite: (work) => pendingWrites.push(work),
+    });
+    tracker.register('save', 60_000);
+    expect(() => tracker.recordFire('save')).not.toThrow();
+    expect(() => drainWrites()).not.toThrow();
+  });
+
+  test('unregistered persisted loops stay off the snapshot until register', () => {
+    const firedAt = Date.parse('2026-08-18T10:00:00.000Z');
+    const first = makeTracker(() => firedAt);
+    first.register('quotaPoll', 120_000);
+    first.recordFire('quotaPoll');
+    drainWrites();
+
+    const restarted = makeTracker(() => Date.parse('2026-08-18T10:01:00.000Z'));
+    expect(restarted.snapshot().loops).toEqual([]);
+    restarted.register('quotaPoll', 120_000);
+    expect(restarted.snapshot().loops[0]?.lastFiredAt).toBe('2026-08-18T10:00:00.000Z');
   });
 });
