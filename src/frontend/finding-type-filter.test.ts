@@ -3,6 +3,7 @@ import type { AgentState } from '../shared/protocol.js';
 import {
   FINDING_TYPE_FILTER_KEY,
   activeFindingTypeFilter,
+  countFindingsByType,
   filterFindingsBySelectedTypes,
   loadFindingTypeFilter,
   presentFindingTypes,
@@ -33,6 +34,25 @@ describe('presentFindingTypes', () => {
       { agentId: 'd', events: [], anomaly: null } as AgentState,
     ];
     expect(presentFindingTypes(findings)).toEqual(['permission_blocked', 'budget_exceeded']);
+  });
+});
+
+describe('countFindingsByType', () => {
+  test('counts findings per type and skips findings without an anomaly', () => {
+    const findings = [
+      makeFinding('a', 'permission_blocked'),
+      makeFinding('b', 'budget_exceeded'),
+      makeFinding('c', 'permission_blocked'),
+      { agentId: 'd', events: [], anomaly: null } as AgentState,
+    ];
+    const counts = countFindingsByType(findings);
+    expect(counts.get('permission_blocked')).toBe(2);
+    expect(counts.get('budget_exceeded')).toBe(1);
+    expect(counts.size).toBe(2);
+  });
+
+  test('returns an empty map when there are no findings', () => {
+    expect(countFindingsByType([]).size).toBe(0);
   });
 });
 

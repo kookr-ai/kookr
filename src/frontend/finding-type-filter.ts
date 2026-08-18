@@ -33,6 +33,19 @@ export function presentFindingTypes(findings: readonly AgentState[]): AnomalyTyp
   return types;
 }
 
+/** Live count of findings per anomaly type, keyed by type. */
+export function countFindingsByType(
+  findings: readonly AgentState[],
+): Map<AnomalyType, number> {
+  const counts = new Map<AnomalyType, number>();
+  for (const agent of findings) {
+    const type = agent.anomaly?.type;
+    if (!type) continue;
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /**
  * Types from the stored selection that still exist on the rail.
  *
