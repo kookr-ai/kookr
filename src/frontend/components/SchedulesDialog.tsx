@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import type { AgentSelection, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -37,6 +37,18 @@ export interface SchedulePrefill {
   playbookId: string;
   name?: string;
 }
+
+/**
+ * Cron preset chips shown under the Cron field so a user can create a common
+ * schedule without knowing cron syntax. Clicking a chip sets the field to
+ * `expression`; the live `cronDescription` preview confirms the choice.
+ */
+const CRON_PRESETS: ReadonlyArray<{ label: string; expression: string }> = [
+  { label: 'Daily 9am', expression: '0 9 * * *' },
+  { label: 'Hourly', expression: '0 * * * *' },
+  { label: 'Weekdays 9am', expression: '0 9 * * 1-5' },
+  { label: 'Weekly Mon', expression: '0 9 * * 1' },
+];
 
 interface Props {
   onClose: () => void;
@@ -196,6 +208,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   const [cwd, setCwd] = useState(prefill?.cwd?.trim() || serverCwd);
   const [name, setName] = useState(prefill?.name ?? '');
   const [cron, setCron] = useState('0 9 * * *');
+  const cronFieldId = useId();
   const [maxTriggers, setMaxTriggers] = useState('');
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(false);
@@ -438,11 +451,31 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                 {fieldErrors.cwd && <span className="schedule-field-error">{fieldErrors.cwd}</span>}
               </label>
 
-              <label className="schedule-form-field">
-                <span>Cron</span>
-                <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 9 * * *" />
+              {/*
+                This field is a plain <div>, not a wrapping <label>, on purpose:
+                the preset chips below are text-bearing interactive controls, and
+                inside a <label> their text would be folded into the input's
+                accessible name (and a <button> is an invalid labelable descendant
+                of a <label>). An explicit htmlFor label keeps the name clean.
+              */}
+              <div className="schedule-form-field">
+                <label htmlFor={cronFieldId}>Cron</label>
+                <input id={cronFieldId} value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 9 * * *" />
+                <div className="schedule-cron-presets" role="group" aria-label="Cron presets">
+                  {CRON_PRESETS.map((preset) => (
+                    <button
+                      key={preset.expression}
+                      type="button"
+                      className="schedule-cron-preset"
+                      aria-pressed={cron.trim() === preset.expression}
+                      onClick={() => setCron(preset.expression)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
                 {fieldErrors.cron && <span className="schedule-field-error">{fieldErrors.cron}</span>}
-              </label>
+              </div>
 
               <label className="schedule-form-field">
                 <span>Stop after N scheduled runs (optional)</span>
