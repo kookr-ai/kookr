@@ -96,6 +96,82 @@ describe('LastGoodHealthWriter', () => {
     expect(snap.health.build).toEqual({ version: 'abc123' });
   });
 
+  test('keeps timerHealth counts when the full body is truncated (issue #2636)', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      timerHealth: {
+        registered: 8,
+        overdue: 1,
+        neverFired: 2,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: 'save',
+      },
+    }));
+    const snap = readFile(dir);
+    expect(snap.truncated).toBe(true);
+    expect(snap.health.timerHealth).toEqual({
+      registered: 8,
+      overdue: 1,
+      neverFired: 2,
+      oldestNeverFiredName: 'maintenancePrune',
+      oldestOverdueName: 'save',
+    });
+  });
+
+  test('forces an out-of-band write when timerHealth neverFired flips', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth({
+      timerHealth: {
+        registered: 8,
+        overdue: 0,
+        neverFired: 1,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: null,
+      },
+    }));
+    t = 1_000;
+    writer.record(baseHealth({
+      timerHealth: {
+        registered: 8,
+        overdue: 0,
+        neverFired: 0,
+        oldestNeverFiredName: null,
+        oldestOverdueName: null,
+      },
+    }));
+    expect(readFile(dir).capturedAt).toBe(new Date(1_000).toISOString());
+    expect((readFile(dir).health.timerHealth as { neverFired: number }).neverFired).toBe(0);
+  });
+
+  test('forces an out-of-band write when timerHealth overdue flips', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth({
+      timerHealth: {
+        registered: 8,
+        overdue: 0,
+        neverFired: 1,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: null,
+      },
+    }));
+    t = 1_000;
+    writer.record(baseHealth({
+      timerHealth: {
+        registered: 8,
+        overdue: 1,
+        neverFired: 1,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: 'maintenancePrune',
+      },
+    }));
+    const snap = readFile(dir);
+    expect(snap.capturedAt).toBe(new Date(1_000).toISOString());
+    expect((snap.health.timerHealth as { overdue: number }).overdue).toBe(1);
+  });
+
   test('keeps helperLlm pause state when the full body is truncated (issue #2641)', () => {
     const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
     writer.record(baseHealth({

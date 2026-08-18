@@ -17,7 +17,8 @@
  * `timers` fetches GET /api/diagnostics/timer-health (issue #1771) and lists
  * each *registered* lifecycle loop: last-fired or `never`, expected interval,
  * and overdue. It does not invent names the server did not register, and it
- * does not fall back to last-good-health (that snapshot has no timer stamps).
+ * does not fall back to last-good-health (that snapshot has counts only —
+ * issue #2636 — not the per-loop last-fired table).
  * The fetch uses a 5s timeout so a wedged HTTP path fails closed instead of
  * hanging a Discord paste.
  */
@@ -929,7 +930,8 @@ export async function runOpsDigestCli(
     const message =
       `no Kookr server reachable (checked ${describeTarget(resolved.env)}). ` +
       'Start the server or set KOOKR_PORT / KOOKR_API_BASE_URL.';
-    // Timer-health is not in last-good-health.json — do not invent a loop table.
+    // Last-good health has timerHealth counts (issue #2636), not the
+    // per-loop last-fired table `ops timers` prints — do not invent one.
     if (args.verb === 'timers') {
       return emitTimersNoServer(resolved, args.json, message);
     }

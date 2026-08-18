@@ -50,6 +50,10 @@ import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
 import { TIMER_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/timer-health.js';
+import {
+  EMPTY_TIMER_HEALTH_SUMMARY,
+  summarizeTimerHealth,
+} from '../../core/timer-health.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
 import {
   buildCapacityLedger,
@@ -736,6 +740,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // in-memory auth-pause map. Always present so last-good health and
       // `kookr ops digest` can name a paused provider without grepping logs.
       helperLlm: (deps.getHelperLlmHealthSnapshot ?? getHelperLlmHealthSnapshot)(),
+      // Issue #2636: four-field timer-health summary so last-good health
+      // (the snapshot Lucy reads after HTTP goes dark) can say whether a
+      // safety-net timer is overdue without a second curl. Counts only —
+      // the per-loop list stays on GET /api/diagnostics/timer-health.
+      // Overdue reuses the existing 2×-interval rule, so a loop still
+      // inside its first cadence after boot is not overdue. In-memory only.
+      timerHealth: timerHealthSummaryForHealth(deps.timerHealth),
     };
   }
 
@@ -1869,6 +1880,21 @@ export function resolveStartupRecoveryHealthBlock(
     summary ?? EMPTY_CRASH_RECOVERY_RESULT,
     generatedAt,
   );
+}
+
+/**
+ * Four-field timer-health counts for GET `/api/health` (issue #2636).
+ * Prefer the tracker's `summary()` (uses register time for oldest never-fired);
+ * fall back to summarizing a stubbed `snapshot()` so partial test harnesses
+ * still publish the block. Always returns a summary so last-good health has
+ * the keys even when no tracker is wired (all zeros).
+ */
+function timerHealthSummaryForHealth(
+  recorder: RouteDeps['timerHealth'],
+) {
+  if (!recorder) return EMPTY_TIMER_HEALTH_SUMMARY;
+  if (typeof recorder.summary === 'function') return recorder.summary();
+  return summarizeTimerHealth(recorder.snapshot());
 }
 
 /**

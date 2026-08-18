@@ -614,9 +614,12 @@ export interface RouteDeps {
   /**
    * Lifecycle-timer health (issue #1771). Cheap in-memory last-fired stamps
    * for each startLifecycleTimers loop. Absent ⇒ GET /api/diagnostics/timer-health
-   * returns an empty loops list (tests / partial harnesses).
+   * returns an empty loops list (tests / partial harnesses). `summary` feeds
+   * the four-field GET /api/health block (issue #2636); when omitted the
+   * route falls back to summarizing `snapshot()`.
    */
-  timerHealth?: Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'snapshot'>;
+  timerHealth?: Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'snapshot'>
+    & Partial<Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'summary'>>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
   startupRecoverySummary?: CrashRecoveryResult | null;
   /**

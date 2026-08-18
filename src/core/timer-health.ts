@@ -17,15 +17,18 @@ import {
   type LifecycleTimerName,
   type TimerHealthLoopEntry,
   type TimerHealthSnapshot,
+  type TimerHealthSummary,
 } from '../shared/contracts/timer-health.js';
 
 export type {
   LifecycleTimerName,
   TimerHealthLoopEntry,
   TimerHealthSnapshot,
+  TimerHealthSummary,
 } from '../shared/contracts/timer-health.js';
 
 export {
+  EMPTY_TIMER_HEALTH_SUMMARY,
   isLifecycleTimerName,
   LIFECYCLE_TIMER_NAMES,
   TIMER_HEALTH_OVERDUE_INTERVALS,
@@ -85,6 +88,11 @@ export interface TimerHealthRecorder {
   recordFire(name: LifecycleTimerName, expectedIntervalMs?: number): void;
   /** Cheap in-memory snapshot for GET /api/diagnostics/timer-health. */
   snapshot(nowMs?: number): TimerHealthSnapshot;
+  /**
+   * Four-field counts for GET /api/health (issue #2636). Pure in-memory walk
+   * of the registered loops — no disk or network.
+   */
+  summary(nowMs?: number): TimerHealthSummary;
 }
 
 interface LoopState {
@@ -249,6 +257,110 @@ export class TimerHealthTracker implements TimerHealthRecorder {
       loops,
     };
   }
+
+  summary(nowMs: number = this.now()): TimerHealthSummary {
+    return summarizeTimerHealthFromStates(this.loops.values(), nowMs);
+  }
+}
+
+/**
+ * Collapse registered loop state into the /api/health four-field summary.
+ * Overdue reuses the same 2×-interval rule as the diagnostics snapshot, so a
+ * loop still inside its first cadence after boot is not overdue.
+ */
+function summarizeTimerHealthFromStates(
+  states: Iterable<LoopState>,
+  nowMs: number,
+): TimerHealthSummary {
+  let registered = 0;
+  let overdue = 0;
+  let neverFired = 0;
+  let oldestNeverFiredName: LifecycleTimerName | null = null;
+  let oldestNeverFiredAt = Number.POSITIVE_INFINITY;
+  let oldestOverdueName: LifecycleTimerName | null = null;
+  let oldestOverdueProgressAt = Number.POSITIVE_INFINITY;
+
+  for (const state of states) {
+    registered += 1;
+    const entry = toEntry(state, nowMs);
+    const progressMs = state.lastFiredAtMs ?? state.registeredAtMs;
+    if (entry.overdue) {
+      overdue += 1;
+      if (
+        progressMs < oldestOverdueProgressAt
+        || (progressMs === oldestOverdueProgressAt
+          && (oldestOverdueName === null || state.name < oldestOverdueName))
+      ) {
+        oldestOverdueProgressAt = progressMs;
+        oldestOverdueName = state.name;
+      }
+    }
+    if (state.lastFiredAtMs === null) {
+      neverFired += 1;
+      if (
+        state.registeredAtMs < oldestNeverFiredAt
+        || (state.registeredAtMs === oldestNeverFiredAt
+          && (oldestNeverFiredName === null || state.name < oldestNeverFiredName))
+      ) {
+        oldestNeverFiredAt = state.registeredAtMs;
+        oldestNeverFiredName = state.name;
+      }
+    }
+  }
+
+  return {
+    registered,
+    overdue,
+    neverFired,
+    oldestNeverFiredName,
+    oldestOverdueName,
+  };
+}
+
+/**
+ * Fallback when a test harness only stubs `snapshot()`. Name-sort stands in
+ * for register order because the snapshot does not carry `registeredAt`.
+ */
+export function summarizeTimerHealth(
+  snapshot: Pick<TimerHealthSnapshot, 'loops'>,
+): TimerHealthSummary {
+  let overdue = 0;
+  let neverFired = 0;
+  let oldestNeverFiredName: LifecycleTimerName | null = null;
+  let oldestOverdueName: LifecycleTimerName | null = null;
+  let oldestOverdueFiredAt = Number.POSITIVE_INFINITY;
+
+  for (const loop of snapshot.loops) {
+    if (loop.overdue) {
+      overdue += 1;
+      const firedAt = loop.lastFiredAt === null
+        ? Number.NEGATIVE_INFINITY
+        : Date.parse(loop.lastFiredAt);
+      const progressAt = Number.isFinite(firedAt) ? firedAt : Number.NEGATIVE_INFINITY;
+      if (
+        progressAt < oldestOverdueFiredAt
+        || (progressAt === oldestOverdueFiredAt
+          && (oldestOverdueName === null || loop.name < oldestOverdueName))
+      ) {
+        oldestOverdueFiredAt = progressAt;
+        oldestOverdueName = loop.name;
+      }
+    }
+    if (loop.lastFiredAt === null) {
+      neverFired += 1;
+      if (oldestNeverFiredName === null || loop.name < oldestNeverFiredName) {
+        oldestNeverFiredName = loop.name;
+      }
+    }
+  }
+
+  return {
+    registered: snapshot.loops.length,
+    overdue,
+    neverFired,
+    oldestNeverFiredName,
+    oldestOverdueName,
+  };
 }
 
 function toEntry(state: LoopState, nowMs: number): TimerHealthLoopEntry {

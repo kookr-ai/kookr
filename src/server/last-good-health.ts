@@ -122,6 +122,8 @@ function slimBuild(health: Record<string, unknown>): { version: unknown } | unde
  * First truncation tier: drop free-form/large fields, keep the operator gauges.
  * `attentionQueue` and `capacity` are small today but not size-bounded, so a
  * second tier ({@link pickMinimalGauges}) backstops the hard cap.
+ * `timerHealth` is four counts (issue #2636) so last-good still answers
+ * "did prune run?" when the full body is too big.
  */
 function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
   const gauges: Record<string, unknown> = {};
@@ -132,6 +134,7 @@ function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
     'attentionQueue',
     'capacity',
     'helperLlm',
+    'timerHealth',
   ] as const) {
     if (health[key] !== undefined) gauges[key] = health[key];
   }
@@ -171,6 +174,14 @@ function gaugeSignature(health: Record<string, unknown>): string {
   const pausedProviders = (helperLlm?.paused ?? [])
     .map((row) => (typeof row.provider === 'string' ? row.provider : ''))
     .join(',');
+  const timerHealth = health.timerHealth as
+    | {
+      overdue?: unknown;
+      neverFired?: unknown;
+      oldestNeverFiredName?: unknown;
+      oldestOverdueName?: unknown;
+    }
+    | undefined;
   return JSON.stringify([
     status,
     agents,
@@ -178,6 +189,14 @@ function gaugeSignature(health: Record<string, unknown>): string {
     capacity?.active,
     pausedProviders,
     helperLlm?.stormsSuppressed ?? 0,
+    timerHealth?.overdue ?? 0,
+    timerHealth?.neverFired ?? 0,
+    typeof timerHealth?.oldestNeverFiredName === 'string'
+      ? timerHealth.oldestNeverFiredName
+      : '',
+    typeof timerHealth?.oldestOverdueName === 'string'
+      ? timerHealth.oldestOverdueName
+      : '',
   ]);
 }
 

@@ -43,7 +43,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Ready or health slower than the doctor budget, or the probe times out | `kookr doctor` `ops.http-latency` | Treat the WARN as the hung-HTTP signal — ready budget 500ms, health 2s; do not trust sibling probes that skip on timeout — [HTTP latency](#0a-http-latency-doctor-warn) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
 | Discord silent after a real edge | `$KOOKR_DIR/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
-| After restart, hourly safety-net last-fired stamps are empty | `GET /api/diagnostics/timer-health` `lastFiredAt` | Expected for one interval; do not page until `overdue` — [hourly-timer boot window](#7-hourly-timer-boot-window) |
+| After restart, hourly safety-net last-fired stamps are empty | `GET /api/health.timerHealth` (`neverFired` / `overdue`) or `GET /api/diagnostics/timer-health` `lastFiredAt` | Expected for one interval; do not page until `overdue` — [hourly-timer boot window](#7-hourly-timer-boot-window). After HTTP goes dark, read the same four fields from last-good health. |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
@@ -694,4 +694,5 @@ tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hostStaleDtachReaper`, `staleProcesses`, `sessionReaper`,
 `schedules.schedulesPausedByFailure`,
 `data_directory_disk_critical`) and the timer-health last-fired surface
-(`GET /api/diagnostics/timer-health` `lastFiredAt` / `overdue`).
+(`GET /api/health.timerHealth` counts plus `GET /api/diagnostics/timer-health`
+`lastFiredAt` / `overdue`).

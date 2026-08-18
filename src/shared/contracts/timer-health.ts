@@ -69,3 +69,31 @@ export interface TimerHealthSnapshot {
   generatedAt: string;
   loops: TimerHealthLoopEntry[];
 }
+
+/**
+ * Compact counts for `GET /api/health.timerHealth` (issue #2636).
+ *
+ * Last-good health persists `/api/health` only, so these four fields are what
+ * a remote operator can still read after HTTP goes dark. The per-loop list
+ * stays on `GET /api/diagnostics/timer-health`.
+ */
+export interface TimerHealthSummary {
+  registered: number;
+  overdue: number;
+  neverFired: number;
+  oldestNeverFiredName: LifecycleTimerName | null;
+  /**
+   * Oldest overdue loop by progress time (last fire, or register if never
+   * fired). Optional extra so the already-shipped overdue pill can name a
+   * loop that has fired but gone stale; not one of the four required fields.
+   */
+  oldestOverdueName: LifecycleTimerName | null;
+}
+
+export const EMPTY_TIMER_HEALTH_SUMMARY: TimerHealthSummary = {
+  registered: 0,
+  overdue: 0,
+  neverFired: 0,
+  oldestNeverFiredName: null,
+  oldestOverdueName: null,
+};

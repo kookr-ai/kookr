@@ -811,7 +811,7 @@ kookr ops timers
 kookr ops timers --json
 ```
 
-The command prints every **registered** loop the server reported — name, last-fired ISO timestamp or `never`, expected interval in milliseconds, and `overdue` true/false. It does not invent names for loops the process did not start. `--offline` is digest-only (last-good-health has no timer stamps). If no server is reachable the command exits `3` immediately. If a server is selected but `GET /api/diagnostics/timer-health` hangs, the fetch aborts after 5 seconds and also exits `3`.
+The command prints every **registered** loop the server reported — name, last-fired ISO timestamp or `never`, expected interval in milliseconds, and `overdue` true/false. It does not invent names for loops the process did not start. `--offline` is digest-only: last-good health keeps the four-field `timerHealth` counts (issue #2636) but not the per-loop last-fired table this command prints. If no server is reachable the command exits `3` immediately. If a server is selected but `GET /api/diagnostics/timer-health` hangs, the fetch aborts after 5 seconds and also exits `3`.
 
 Human output looks like:
 

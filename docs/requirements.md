@@ -1050,6 +1050,19 @@ The system SHALL publish a slim, secret-free helper-LLM pause view on `GET /api/
 
 **Evidence:** `src/core/llm-factory.ts` (`getHelperLlmHealthSnapshot`), `src/server/routes/diagnostics-routes.ts`, `src/cli/kookr-ops-digest.ts`, `src/core/llm-factory.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
 
+### R6.10: Publish Timer-Health Counts on GET /api/health [#2636] — SHALL — `done`
+
+The system SHALL publish a four-field lifecycle-timer summary on `GET /api/health` so last-good health can answer whether a safety-net timer is overdue after HTTP goes dark, without a second call to `GET /api/diagnostics/timer-health`.
+
+**Acceptance criteria:**
+- `GET /api/health` includes `timerHealth.registered`, `timerHealth.overdue`, `timerHealth.neverFired`, and `timerHealth.oldestNeverFiredName`
+- Building that summary does no extra disk or network I/O
+- `GET /api/diagnostics/timer-health` still returns the full per-loop list
+- A loop still inside its first expected interval after boot is not counted overdue
+- Last-good health keeps the `timerHealth` block when the full body is truncated
+
+**Evidence:** `src/core/timer-health.ts` (`summary`, `summarizeTimerHealth`), `src/server/routes/diagnostics-routes.ts` (`timerHealthSummaryForHealth`), `src/server/last-good-health.ts` (`pickGauges`), `src/core/timer-health.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `src/server/last-good-health.test.ts`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1395,6 +1408,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R6.7 | arch | SHALL | done | server/index |
 | R6.8 | #2429 | SHALL | done | diagnostics-routes health body cache |
 | R6.9 | #2641 | SHALL | done | llm-factory helperLlm health snapshot, diagnostics-routes, ops digest |
+| R6.10 | #2636 | SHALL | done | timer-health summary on GET /api/health, last-good pickGauges |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
