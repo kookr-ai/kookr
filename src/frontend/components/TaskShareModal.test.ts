@@ -1030,6 +1030,38 @@ describe('TaskShareModal', () => {
     expect(writeText).toHaveBeenNthCalledWith(4, JOIN_URL);
   });
 
+  test('copies a share-ready invite message that omits the password', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    stubCopyShareFetch();
+    root = renderModal(container);
+    await flush();
+    await selectGuestLink(container);
+
+    await act(async () => {
+      getButtonByText(container, 'Create guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      getButton(container, 'Copy invite').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const invite = writeText.mock.calls[0][0] as string;
+    expect(invite).toContain('Shared task');
+    expect(invite).toContain(JOIN_URL);
+    // Assert the real formatted expiry flows through, not just the literal
+    // "expires " token — the share expires 2026-05-17, so formatExpiry renders
+    // a dated string containing the year (guarding against the 'soon' fallback).
+    expect(invite).toMatch(/\(expires [^)]*2026[^)]*\)/);
+    // The manual password must never be appended as its own field beyond the
+    // share URL the viewer clicks (the URL fragment carries the auto-join
+    // secret, exactly as the "Copy guest link" action already does).
+    expect(invite.replace(JOIN_URL, '')).not.toContain(PASSWORD);
+    expect(container.textContent).toContain('The password is not included');
+  });
+
   test('hides generated credentials after the same share becomes revoked while polling', async () => {
     vi.useFakeTimers();
     const writeText = vi.fn().mockResolvedValue(undefined);
