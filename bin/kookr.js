@@ -422,7 +422,7 @@ async function runOpsCommand(argv, { env = process.env, out = console, err = con
   const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-ops-digest.ts');
   const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    err.error('[kookr] ops digest module not found at ' + entry);
+    err.error('[kookr] ops module not found at ' + entry);
     err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exitCode = 1;
     return;

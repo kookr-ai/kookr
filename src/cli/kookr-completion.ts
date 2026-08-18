@@ -100,7 +100,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     name: 'ops',
     subcommands: ['digest', 'timers'],
     // Flags live on `ops`, not the verb, so `--json` and `--offline` complete
-    // the same way (`kookr ops <TAB>` and `kookr ops digest <TAB>`).
+    // the same way (`kookr ops digest <TAB>` and `kookr ops timers <TAB>`).
     flags: ['--json', '--offline', '-h', '--help'],
   },
   {

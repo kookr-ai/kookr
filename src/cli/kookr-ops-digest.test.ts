@@ -609,10 +609,20 @@ describe('kookr ops timers (issue #2639)', () => {
     });
     expect(code).toBe(EXIT_OK);
     const text = c.logs.join('\n');
-    expect(text).toContain('maintenancePrune  last=never');
-    expect(text).toContain('overdue=true');
-    expect(text).toContain('save  last=2026-08-18T11:59:00.000Z');
-    expect(text).toContain('overdue=false');
+    expect(text).toContain(
+      'timers  loops=2  overdue=1  generated=2026-08-18T12:00:00.000Z',
+    );
+    expect(text).toContain(
+      'maintenancePrune  last=never  interval=3600000ms  overdue=true',
+    );
+    expect(text).toContain(
+      'save  last=2026-08-18T11:59:00.000Z  interval=30000ms  overdue=false',
+    );
+    const loopNames = text
+      .split('\n')
+      .slice(1)
+      .map((line) => line.split(/\s+/)[0]);
+    expect(loopNames).toEqual(['maintenancePrune', 'save']);
     expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
       'http://127.0.0.1:4800/api/diagnostics/timer-health',
     ]);
@@ -688,8 +698,45 @@ describe('kookr ops timers (issue #2639)', () => {
       }),
     });
     expect(code).toBe(EXIT_NO_SERVER);
-    expect(c.logs.join('\n')).not.toMatch(/tokenScan|maintenancePrune|last=never/);
+    expect(c.logs).toEqual([]);
     expect(c.errors.join('\n')).toMatch(/no Kookr server reachable/);
+    expect(c.errors.join('\n') + c.logs.join('\n')).not.toMatch(
+      /offline|last-good|ready:/,
+    );
+  });
+
+  it('prints (none registered) when the server reports an empty loop list', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        { schemaVersion: 'timer-health.v1', generatedAt: '2026-08-18T12:00:00.000Z', loops: [] },
+        200,
+      ),
+    );
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['timers'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(c.logs.join('\n')).toContain('(none registered)');
+    expect(c.logs.join('\n')).not.toMatch(/tokenScan|watchdog|maintenancePrune/);
+  });
+
+  it('returns 4 when timer-health is not a loops document', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ status: 'ok' }, 200));
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['timers', '--json'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_SERVER_ERROR);
+    const payload = JSON.parse(c.logs[0]!);
+    expect(payload).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+    expect(payload.message).toMatch(/unexpected timer-health payload/);
   });
 
   it('returns 4 when timer-health is non-2xx', async () => {
@@ -707,13 +754,18 @@ describe('kookr ops timers (issue #2639)', () => {
 
   it('rejects --offline for timers', async () => {
     const c = captureConsole();
-    const code = await runOpsDigestCli(['timers', '--offline'], {
+    const code = await runOpsDigestCli(['timers', '--offline', '--json'], {
       env: {},
       out: c.out,
       err: c.err,
     });
     expect(code).toBe(EXIT_USER_ERROR);
-    expect(c.errors.join('\n')).toMatch(/--offline is not supported for timers/);
+    const payload = JSON.parse(c.logs[0]!);
+    expect(payload).toMatchObject({
+      ok: false,
+      code: 'USER_ERROR',
+      message: '--offline is not supported for timers',
+    });
   });
 
   it('attaches KOOKR_API_TOKEN as Bearer auth', async () => {

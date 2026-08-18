@@ -810,7 +810,7 @@ kookr ops timers
 kookr ops timers --json
 ```
 
-The command prints every **registered** loop the server reported — name, last-fired ISO timestamp or `never`, expected interval in milliseconds, and `overdue` true/false. It does not invent names for loops the process did not start. `--offline` is digest-only (last-good-health has no timer stamps); a missing or wedged HTTP path fails closed after a 5-second fetch timeout (`exit 3`) instead of hanging.
+The command prints every **registered** loop the server reported — name, last-fired ISO timestamp or `never`, expected interval in milliseconds, and `overdue` true/false. It does not invent names for loops the process did not start. `--offline` is digest-only (last-good-health has no timer stamps). If no server is reachable the command exits `3` immediately. If a server is selected but `GET /api/diagnostics/timer-health` hangs, the fetch aborts after 5 seconds and also exits `3`.
 
 Human output looks like:
 
@@ -820,7 +820,7 @@ maintenancePrune  last=never  interval=3600000ms  overdue=true
 save  last=2026-08-18T11:59:00.000Z  interval=30000ms  overdue=false
 ```
 
-With `--json`, stdout is one envelope (`code: "OK"`) whose `details` holds the existing timer-health document (`schemaVersion`, `generatedAt`, `loops`) plus a computed `overdue` name list.
+With `--json`, stdout is one envelope (`code: "OK"`) whose `details` holds the timer-health document (`schemaVersion`, `generatedAt`, `loops`), a computed `overdue` name list, and the resolved `baseUrl`.
 
 Options:
 

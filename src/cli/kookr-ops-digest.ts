@@ -362,7 +362,7 @@ async function fetchJson(
     method: 'GET',
     headers: {
       'X-Kookr-Launch-Source': 'cli',
-      'User-Agent': `kookr-ops-digest/node-${process.versions.node}`,
+      'User-Agent': `kookr-ops/node-${process.versions.node}`,
       ...apiAuthHeaders(io.env),
     },
     signal: AbortSignal.timeout(timeoutMs),
@@ -723,14 +723,13 @@ function emitTimersNoServer(
   resolved: ResolvedIo,
   json: boolean,
   message: string,
-  details: Record<string, unknown> = {},
 ): number {
   if (json) {
     emitJson(resolved.out, {
       ok: false,
       code: 'NO_SERVER',
       message,
-      details: { subcommand: 'ops', verb: 'timers', ...details },
+      details: { subcommand: 'ops', verb: 'timers' },
     });
   } else {
     resolved.err.error(`kookr ops: ${message}`);
