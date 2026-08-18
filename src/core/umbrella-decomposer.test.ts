@@ -957,9 +957,9 @@ describe('lucy#1587 acquisition failover curated plan', () => {
     }
     expect(Object.keys(CURATED_LEAF_PLANS)).toContain('jeanibarz/lucy#1587');
     expect(plan!.map((l) => l.title)).toEqual([
-      'feat(acquisition): still collect the issuer page when RSS items fail earnings validation',
-      'feat(acquisition): follow a same-host quarterly-earnings child when the news listing has no current-period item',
-      'feat(acquisition): keep a financial-results archive live when it has no current-period file',
+      'feat(acquisition): still collect the issuer page when the q4-json press-release list is empty',
+      'feat(acquisition): do not treat a future-tense report advisory as a current-period earnings href',
+      'feat(acquisition): persist a same-host quarterly-results child from a news listing',
     ]);
   });
 
