@@ -171,6 +171,89 @@ describe('Toasts', () => {
     }
   });
 
+  test('clicking an info toast with an agentId selects the agent and dismisses it', () => {
+    useKookrStore.getState().handleAlert('agent-42', 'Agent needs attention', 'info');
+
+    act(() => {
+      root.render(React.createElement(Toasts));
+    });
+
+    const message = container.querySelector<HTMLButtonElement>('.toast-message-navigate');
+    expect(message).toBeInstanceOf(HTMLButtonElement);
+    // The accessible name tells a screen-reader user the toast is actionable.
+    expect(message?.getAttribute('aria-label')).toBe('Open task: Agent needs attention');
+
+    act(() => {
+      message?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-42');
+    expect(container.querySelector('.toast')).toBeNull();
+  });
+
+  test('the navigable message region is a focusable native button (Enter/Space activation)', () => {
+    useKookrStore.getState().handleAlert('agent-7', 'Agent needs attention', 'info');
+
+    act(() => {
+      root.render(React.createElement(Toasts));
+    });
+
+    const message = container.querySelector<HTMLButtonElement>('.toast-message-navigate');
+    expect(message).toBeInstanceOf(HTMLButtonElement);
+
+    // A focusable native <button type="button"> is guaranteed by the platform to
+    // fire onClick on Enter/Space — this is what carries the keyboard-activation
+    // criterion. Pin those semantics so a regression to a <div role="button">
+    // (which would silently break Enter/Space) fails here. jsdom does not
+    // synthesize click-from-keydown, so activation itself is covered by the
+    // platform guarantee plus the click-activation test above.
+    expect(message?.tagName).toBe('BUTTON');
+    expect(message?.getAttribute('type')).toBe('button');
+
+    act(() => message?.focus());
+    expect(document.activeElement).toBe(message);
+  });
+
+  test('the dismiss button only dismisses and does not navigate', () => {
+    useKookrStore.getState().handleAlert('agent-9', 'Agent needs attention', 'info');
+
+    act(() => {
+      root.render(React.createElement(Toasts));
+    });
+
+    const dismiss = container.querySelector<HTMLButtonElement>('.toast-dismiss');
+    expect(dismiss).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => {
+      dismiss?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    expect(container.querySelector('.toast')).toBeNull();
+  });
+
+  test('info toasts without an agentId are not clickable', () => {
+    useKookrStore.getState().handleAlert('', 'Sweep complete', 'info');
+
+    act(() => {
+      root.render(React.createElement(Toasts));
+    });
+
+    expect(container.querySelector('.toast-message-navigate')).toBeNull();
+    expect(container.querySelector('.toast-message')).toBeInstanceOf(HTMLSpanElement);
+  });
+
+  test('error toasts are not clickable even with an agentId', () => {
+    useKookrStore.getState().handleAlert('agent-err', 'Error: launch failed', 'error');
+
+    act(() => {
+      root.render(React.createElement(Toasts));
+    });
+
+    expect(container.querySelector('.toast-message-navigate')).toBeNull();
+    expect(container.querySelector('.toast-message')).toBeInstanceOf(HTMLSpanElement);
+  });
+
   test('dismiss button has an accessible name identifying the toast', () => {
     useKookrStore.getState().handleAlert('', 'Connection lost', 'error');
 
