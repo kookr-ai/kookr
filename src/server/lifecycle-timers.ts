@@ -44,7 +44,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { DetectionStats } from '../core/detection-stats.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
-import type { TimerHealthRecorder } from '../core/timer-health.js';
+import type { LifecycleTimerName, TimerHealthRecorder } from '../core/timer-health.js';
 import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
 import { DEFAULT_REAP_GRACE_SECONDS } from '../core/reap-warning-coordinator.js';
@@ -589,14 +589,22 @@ export interface TimerHandles {
   quotaPollTimeout: ReturnType<typeof setTimeout> | null;
   /** Null unless a scheduled maintenance prune interval was configured. */
   maintenancePruneInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the prune startup fire (issue #2635) is pending. */
+  maintenancePruneStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless mid-process server.log rotation (issue #1991) was configured. */
   serverLogRotationInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the hourly prod smoke tick (issue #1593) was configured. */
   prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the smoke startup fire (issue #2635) is pending. */
+  prodSmokeTickStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the deploy-lag detector (issue #1594) was configured. */
   deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the deploy-lag startup fire (issue #2635) is pending. */
+  deployLagDetectorStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the deploy-convergence controller (issue #2226) was configured. */
   deployConvergenceInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the deploy-convergence startup fire (issue #2635) is pending. */
+  deployConvergenceStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the relay-orphan sweep (issue #1723) was configured. */
   relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the relay-orphan sweep startup reclaim (issue #1885) is pending. */
@@ -1000,6 +1008,14 @@ export const RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS = 30_000;
  * Slightly after the relay-orphan startup reclaim so boot I/O is staggered.
  */
 export const HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS = 45_000;
+/**
+ * Delay before the hourly safety-net loops' one-shot startup fire (issue #2635).
+ * After the host-stale reclaim (45s) so boot I/O stays staggered, and inside
+ * the one-minute last-fired SLA so a remote operator can tell the nets are
+ * alive without waiting a full hour. Same class as the relay-orphan startup
+ * timeout: `unref`, skip under event-loop pressure, never delay 0.
+ */
+export const HOURLY_SAFETY_NET_STARTUP_DELAY_MS = 60_000;
 
 /**
  * Helper for issue #1785: if the optional non-critical pause gate is elevated,
@@ -1013,6 +1029,28 @@ export function shouldSkipNonCriticalLifecycleTick(
   if (!gate?.shouldSkipTick()) return false;
   gate.recordPause(timerName);
   return true;
+}
+
+/**
+ * One-shot deferred fire used by relay-orphan, host-stale, and the hourly
+ * safety nets. Stamps last-fired when the body actually runs so a startup
+ * reclaim is visible on timer-health (issue #2635).
+ */
+function scheduleNonCriticalStartupTick(args: {
+  delayMs: number;
+  name: LifecycleTimerName;
+  intervalMs: number;
+  gate: TimerDeps['nonCriticalTickPause'] | undefined;
+  timerHealth: TimerHealthRecorder | undefined;
+  run: () => void;
+}): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(() => {
+    if (shouldSkipNonCriticalLifecycleTick(args.gate, args.name)) return;
+    args.timerHealth?.recordFire(args.name, args.intervalMs);
+    args.run();
+  }, args.delayMs);
+  timer.unref?.();
+  return timer;
 }
 
 /**
@@ -2075,11 +2113,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   }
 
   // --- Scheduled data-directory maintenance prune (optional, off by default) ---
-  // Opt-in via KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS. Deliberately does NOT run
-  // at boot (avoids a startup I/O spike); the first sweep fires one interval in.
-  // Each sweep is fully wrapped in runScheduledMaintenancePrune so a failure is
-  // logged and never crashes the server.
+  // Opt-in via KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS. The first sweep is a
+  // deferred startup fire (issue #2635) — not delay 0, so boot I/O stays
+  // light — then the interval continues. Each sweep is fully wrapped in
+  // runScheduledMaintenancePrune so a failure is logged and never crashes
+  // the server.
   let maintenancePruneInterval: ReturnType<typeof setInterval> | null = null;
+  let maintenancePruneStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const maintenancePrune = deps.maintenancePrune;
   if (maintenancePrune && maintenancePrune.intervalHours > 0) {
     const intervalMs = maintenancePrune.intervalHours * 60 * 60 * 1000;
@@ -2088,6 +2128,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         `(dir=${maintenancePrune.dataDir})`,
     );
     timerHealth?.register('maintenancePrune', intervalMs);
+    maintenancePruneStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+      name: 'maintenancePrune',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void runScheduledMaintenancePrune(maintenancePrune); },
+    });
     maintenancePruneInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'maintenancePrune')) return;
       timerHealth?.recordFire('maintenancePrune', intervalMs);
@@ -2145,12 +2193,17 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     // Startup reclaim: a long-lived daemon may already be carrying a night's
     // worth of orphans (#1885 was found at 29 / ~1.5 GB). Run one sweep shortly
     // after boot — deferred off the startup I/O spike — so the accumulated leak
-    // is cleared without waiting a full interval or a restart.
-    relayOrphanSweepStartupTimer = setTimeout(() => {
-      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'relayOrphanSweep')) return;
-      void runScheduledRelayOrphanSweep(relayOrphanSweep);
-    }, RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS);
-    relayOrphanSweepStartupTimer.unref?.();
+    // is cleared without waiting a full interval or a restart. Stamp last-fired
+    // on this path too (issue #2635) so timer-health is not empty until the
+    // first hourly interval.
+    relayOrphanSweepStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS,
+      name: 'relayOrphanSweep',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void runScheduledRelayOrphanSweep(relayOrphanSweep); },
+    });
     relayOrphanSweepInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'relayOrphanSweep')) return;
       timerHealth?.recordFire('relayOrphanSweep', intervalMs);
@@ -2171,11 +2224,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       `[host-stale-dtach-reaper] scheduled sweep enabled every ${hostStaleDtachReaper.intervalMinutes}m`,
     );
     timerHealth?.register('hostStaleDtachReap', intervalMs);
-    hostStaleDtachReapStartupTimer = setTimeout(() => {
-      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'hostStaleDtachReap')) return;
-      void runScheduledHostStaleDtachReap(hostStaleDtachReaper.service);
-    }, HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS);
-    hostStaleDtachReapStartupTimer.unref?.();
+    hostStaleDtachReapStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS,
+      name: 'hostStaleDtachReap',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void runScheduledHostStaleDtachReap(hostStaleDtachReaper.service); },
+    });
     hostStaleDtachReapInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'hostStaleDtachReap')) return;
       timerHealth?.recordFire('hostStaleDtachReap', intervalMs);
@@ -2211,6 +2267,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // maybeRun() guards pile-up and never throws, so the interval callback is a
   // one-liner. Undefined unless bootstrap enabled it (default: prod port 4800).
   let prodSmokeTickInterval: ReturnType<typeof setInterval> | null = null;
+  let prodSmokeTickStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const prodSmokeTick = deps.prodSmokeTick;
   if (prodSmokeTick) {
     const intervalMs = prodSmokeTick.hostIntervalMs;
@@ -2219,6 +2276,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         `artifact=${prodSmokeTick.alertArtifactPath})`,
     );
     timerHealth?.register('prodSmokeTick', intervalMs);
+    prodSmokeTickStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+      name: 'prodSmokeTick',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void prodSmokeTick.maybeRun({ ignoreCadence: true }); },
+    });
     prodSmokeTickInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'prodSmokeTick')) return;
       timerHealth?.recordFire('prodSmokeTick', intervalMs);
@@ -2233,6 +2298,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // deploy. maybeRun() guards pile-up and never throws, so the interval callback
   // is a one-liner. Undefined unless bootstrap enabled it (default: prod 4800).
   let deployLagDetectorInterval: ReturnType<typeof setInterval> | null = null;
+  let deployLagDetectorStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const deployLagDetector = deps.deployLagDetector;
   if (deployLagDetector) {
     const intervalMs = deployLagDetector.hostIntervalMs;
@@ -2241,6 +2307,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         `artifact=${deployLagDetector.alertArtifactPath})`,
     );
     timerHealth?.register('deployLagDetector', intervalMs);
+    deployLagDetectorStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+      name: 'deployLagDetector',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void deployLagDetector.maybeRun({ ignoreCadence: true }); },
+    });
     deployLagDetectorInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'deployLagDetector')) return;
       timerHealth?.recordFire('deployLagDetector', intervalMs);
@@ -2254,6 +2328,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // missing, behindCount≥1, deploying=false, health green). maybeRun() never
   // throws and self-gates pile-up/cadence.
   let deployConvergenceInterval: ReturnType<typeof setInterval> | null = null;
+  let deployConvergenceStartupTimer: ReturnType<typeof setTimeout> | null = null;
   const deployConvergenceController = deps.deployConvergenceController;
   if (deployConvergenceController) {
     const intervalMs = deployConvergenceController.hostIntervalMs;
@@ -2262,6 +2337,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         'act on DIVERGENT past grace + residual page when behind+idle)',
     );
     timerHealth?.register('deployConvergence', intervalMs);
+    deployConvergenceStartupTimer = scheduleNonCriticalStartupTick({
+      delayMs: HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+      name: 'deployConvergence',
+      intervalMs,
+      gate: nonCriticalTickPause,
+      timerHealth,
+      run: () => { void deployConvergenceController.maybeRun({ ignoreCadence: true }); },
+    });
     deployConvergenceInterval = setInterval(() => {
       if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'deployConvergence')) return;
       timerHealth?.recordFire('deployConvergence', intervalMs);
@@ -2277,10 +2360,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveInterval,
     quotaPollTimeout,
     maintenancePruneInterval,
+    maintenancePruneStartupTimer,
     serverLogRotationInterval,
     prodSmokeTickInterval,
+    prodSmokeTickStartupTimer,
     deployLagDetectorInterval,
+    deployLagDetectorStartupTimer,
     deployConvergenceInterval,
+    deployConvergenceStartupTimer,
     relayOrphanSweepInterval,
     relayOrphanSweepStartupTimer,
     hostStaleDtachReapInterval,
@@ -2308,10 +2395,14 @@ export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.saveInterval);
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
   if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
+  if (handles.maintenancePruneStartupTimer) clearTimeout(handles.maintenancePruneStartupTimer);
   if (handles.serverLogRotationInterval) clearInterval(handles.serverLogRotationInterval);
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
+  if (handles.prodSmokeTickStartupTimer) clearTimeout(handles.prodSmokeTickStartupTimer);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
+  if (handles.deployLagDetectorStartupTimer) clearTimeout(handles.deployLagDetectorStartupTimer);
   if (handles.deployConvergenceInterval) clearInterval(handles.deployConvergenceInterval);
+  if (handles.deployConvergenceStartupTimer) clearTimeout(handles.deployConvergenceStartupTimer);
   if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
   if (handles.relayOrphanSweepStartupTimer) clearTimeout(handles.relayOrphanSweepStartupTimer);
   if (handles.hostStaleDtachReapInterval) clearInterval(handles.hostStaleDtachReapInterval);

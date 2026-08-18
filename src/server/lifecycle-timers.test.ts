@@ -20,6 +20,9 @@ import {
   TOKEN_SCAN_INTERVAL_MS,
   WATCHDOG_INTERVAL_MS,
   SNOOZE_EXPIRY_INTERVAL_MS,
+  RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS,
+  HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS,
+  HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
   type TimerDeps,
 } from './lifecycle-timers.js';
 import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
@@ -1726,6 +1729,7 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }) as any);
     try {
       expect(handles.maintenancePruneInterval).toBeNull();
+      expect(handles.maintenancePruneStartupTimer).toBeNull();
       expect(run).not.toHaveBeenCalled();
     } finally {
       clearAllTimers(handles);
@@ -1737,6 +1741,7 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     const handles = startLifecycleTimers(baseTimerDeps({}) as any);
     try {
       expect(handles.maintenancePruneInterval).toBeNull();
+      expect(handles.maintenancePruneStartupTimer).toBeNull();
     } finally {
       clearAllTimers(handles);
     }
@@ -1999,6 +2004,204 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     const handles = startLifecycleTimers(baseTimerDeps({}) as any);
     try {
       expect(handles.prodSmokeTickInterval).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  // --- Hourly safety-net first fire (issue #2635) ---
+  test('fires the four hourly safety nets once within 60s and stamps last-fired', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-18T04:00:00.000Z'));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const timerHealth = new TimerHealthTracker(() => Date.now());
+    const prune = vi.fn(async () => ({
+      dataDir: '/tmp/data', dryRun: false, maxAgeDays: 30,
+      planned: [], removed: [], reclaimedBytes: 0, preserved: [], warnings: [],
+    }));
+    const smoke = {
+      hostIntervalMs: 60 * 60 * 1000,
+      alertArtifactPath: '/tmp/data/prod-smoke-tick-alert.json',
+      maybeRun: vi.fn(async () => null),
+    };
+    const deployLag = {
+      hostIntervalMs: 60 * 60 * 1000,
+      alertArtifactPath: '/tmp/data/deploy-lag-alert.json',
+      maybeRun: vi.fn(async () => undefined),
+    };
+    const deployConvergence = {
+      hostIntervalMs: 5 * 60 * 1000,
+      maybeRun: vi.fn(async () => undefined),
+    };
+    const handles = startLifecycleTimers(baseTimerDeps({
+      timerHealth,
+      maintenancePrune: { dataDir: '/tmp/data', intervalHours: 1, run: prune },
+      prodSmokeTick: smoke,
+      deployLagDetector: deployLag,
+      deployConvergenceController: deployConvergence,
+    }) as any);
+    try {
+      expect(handles.maintenancePruneStartupTimer).not.toBeNull();
+      expect(handles.prodSmokeTickStartupTimer).not.toBeNull();
+      expect(handles.deployLagDetectorStartupTimer).not.toBeNull();
+      expect(handles.deployConvergenceStartupTimer).not.toBeNull();
+      expect(prune).not.toHaveBeenCalled();
+      expect(smoke.maybeRun).not.toHaveBeenCalled();
+      expect(deployLag.maybeRun).not.toHaveBeenCalled();
+      expect(deployConvergence.maybeRun).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(HOURLY_SAFETY_NET_STARTUP_DELAY_MS - 1);
+      expect(prune).not.toHaveBeenCalled();
+      expect(smoke.maybeRun).not.toHaveBeenCalled();
+      expect(deployLag.maybeRun).not.toHaveBeenCalled();
+      expect(deployConvergence.maybeRun).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(prune).toHaveBeenCalledTimes(1);
+      expect(smoke.maybeRun).toHaveBeenCalledTimes(1);
+      expect(deployLag.maybeRun).toHaveBeenCalledTimes(1);
+      expect(deployConvergence.maybeRun).toHaveBeenCalledTimes(1);
+
+      const afterStartup = timerHealth.snapshot();
+      for (const name of [
+        'maintenancePrune',
+        'prodSmokeTick',
+        'deployLagDetector',
+        'deployConvergence',
+      ] as const) {
+        const loop = afterStartup.loops.find((entry) => entry.name === name);
+        expect(loop?.lastFiredAt).toBe('2026-08-18T04:01:00.000Z');
+        expect(loop?.overdue).toBe(false);
+      }
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('clearAllTimers cancels hourly safety-net startup fires before they run', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const prune = vi.fn(async () => ({
+      dataDir: '/tmp/data', dryRun: false, maxAgeDays: 30,
+      planned: [], removed: [], reclaimedBytes: 0, preserved: [], warnings: [],
+    }));
+    const smoke = {
+      hostIntervalMs: 60 * 60 * 1000,
+      alertArtifactPath: '/tmp/data/prod-smoke-tick-alert.json',
+      maybeRun: vi.fn(async () => null),
+    };
+    const deployLag = {
+      hostIntervalMs: 60 * 60 * 1000,
+      alertArtifactPath: '/tmp/data/deploy-lag-alert.json',
+      maybeRun: vi.fn(async () => undefined),
+    };
+    const deployConvergence = {
+      hostIntervalMs: 5 * 60 * 1000,
+      maybeRun: vi.fn(async () => undefined),
+    };
+    const handles = startLifecycleTimers(baseTimerDeps({
+      maintenancePrune: { dataDir: '/tmp/data', intervalHours: 1, run: prune },
+      prodSmokeTick: smoke,
+      deployLagDetector: deployLag,
+      deployConvergenceController: deployConvergence,
+    }) as any);
+    await vi.advanceTimersByTimeAsync(5_000);
+    clearAllTimers(handles);
+    await vi.advanceTimersByTimeAsync(HOURLY_SAFETY_NET_STARTUP_DELAY_MS);
+    expect(prune).not.toHaveBeenCalled();
+    expect(smoke.maybeRun).not.toHaveBeenCalled();
+    expect(deployLag.maybeRun).not.toHaveBeenCalled();
+    expect(deployConvergence.maybeRun).not.toHaveBeenCalled();
+  });
+
+  test('startup fire does not skip the first on-grid hourly tick (cadence)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-18T04:00:00.000Z'));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const intervalMs = 60 * 60 * 1000;
+    let lastRunAtMs = Number.NEGATIVE_INFINITY;
+    const maybeRun = vi.fn(async (opts?: { ignoreCadence?: boolean }) => {
+      const now = Date.now();
+      if (!opts?.ignoreCadence && now - lastRunAtMs < intervalMs - 1_000) return null;
+      if (!opts?.ignoreCadence) lastRunAtMs = now;
+      return 'ran';
+    });
+    const smoke = {
+      hostIntervalMs: intervalMs,
+      alertArtifactPath: '/tmp/data/prod-smoke-tick-alert.json',
+      maybeRun,
+    };
+    const handles = startLifecycleTimers(baseTimerDeps({ prodSmokeTick: smoke }) as any);
+    try {
+      await vi.advanceTimersByTimeAsync(HOURLY_SAFETY_NET_STARTUP_DELAY_MS);
+      expect(maybeRun).toHaveBeenCalledTimes(1);
+      expect(maybeRun).toHaveBeenLastCalledWith({ ignoreCadence: true });
+      await expect(maybeRun.mock.results[0]?.value).resolves.toBe('ran');
+
+      await vi.advanceTimersByTimeAsync(intervalMs - HOURLY_SAFETY_NET_STARTUP_DELAY_MS);
+      expect(maybeRun).toHaveBeenCalledTimes(2);
+      expect(maybeRun.mock.calls[1]?.[0]).toBeUndefined();
+      await expect(maybeRun.mock.results[1]?.value).resolves.toBe('ran');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('skips the hourly startup fire when the event loop is overloaded', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const recordPause = vi.fn();
+    const smoke = {
+      hostIntervalMs: 60 * 60 * 1000,
+      alertArtifactPath: '/tmp/data/prod-smoke-tick-alert.json',
+      maybeRun: vi.fn(async () => null),
+    };
+    const handles = startLifecycleTimers(baseTimerDeps({
+      prodSmokeTick: smoke,
+      nonCriticalTickPause: {
+        shouldSkipTick: () => true,
+        recordPause,
+      },
+    }) as any);
+    try {
+      await vi.advanceTimersByTimeAsync(HOURLY_SAFETY_NET_STARTUP_DELAY_MS);
+      expect(smoke.maybeRun).not.toHaveBeenCalled();
+      expect(recordPause).toHaveBeenCalledWith('prodSmokeTick');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('stamps last-fired on the existing relay-orphan and host-stale startup reclaim', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-18T04:00:00.000Z'));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const timerHealth = new TimerHealthTracker(() => Date.now());
+    const relayRun = vi.fn(async () => undefined);
+    const hostSweep = vi.fn(async () => undefined);
+    const handles = startLifecycleTimers(baseTimerDeps({
+      timerHealth,
+      relayOrphanSweep: { intervalHours: 1, run: relayRun },
+      hostStaleDtachReaper: { intervalMinutes: 5, service: { runSweep: hostSweep } },
+    }) as any);
+    try {
+      expect(handles.relayOrphanSweepStartupTimer).not.toBeNull();
+      expect(handles.hostStaleDtachReapStartupTimer).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS);
+      expect(relayRun).toHaveBeenCalledTimes(1);
+      expect(hostSweep).not.toHaveBeenCalled();
+      expect(
+        timerHealth.snapshot().loops.find((loop) => loop.name === 'relayOrphanSweep')?.lastFiredAt,
+      ).toBe('2026-08-18T04:00:30.000Z');
+
+      await vi.advanceTimersByTimeAsync(
+        HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS - RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS,
+      );
+      expect(hostSweep).toHaveBeenCalledTimes(1);
+      expect(
+        timerHealth.snapshot().loops.find((loop) => loop.name === 'hostStaleDtachReap')?.lastFiredAt,
+      ).toBe('2026-08-18T04:00:45.000Z');
     } finally {
       clearAllTimers(handles);
     }

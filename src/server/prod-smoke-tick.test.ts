@@ -415,6 +415,29 @@ describe('pile-up guard and cadence gate', () => {
     expect(runChecks).toHaveBeenCalledTimes(3);
   });
 
+  it('a cadence-free startup fire does not skip the next on-grid hourly tick (issue #2635)', async () => {
+    const INTERVAL = 3_600_000;
+    let clock = 0;
+    const runChecks = vi.fn(async () => HEALTHY);
+    const tick = new ProdSmokeTick({
+      kookrDir: '/mem',
+      alertPath: '/mem/prod-smoke-tick-alert.json',
+      intervalMs: INTERVAL,
+      resolveConfig: () => stubConfig(),
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      now: () => clock,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      runChecks,
+    });
+
+    clock = 60_000;
+    await expect(tick.maybeRun({ ignoreCadence: true })).resolves.not.toBeNull();
+    clock = INTERVAL;
+    await expect(tick.maybeRun()).resolves.not.toBeNull();
+    expect(runChecks).toHaveBeenCalledTimes(2);
+  });
+
   it('skips a run that fires again before the interval elapses', async () => {
     const runChecks = vi.fn(async () => HEALTHY);
     // Fixed clock + a 1h interval: the second call is inside the window.

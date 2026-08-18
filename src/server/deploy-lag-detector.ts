@@ -247,7 +247,7 @@ export class DeployLagDetector {
    * Returns the artifact written, or null when the run was skipped (pile-up
    * guard or cadence gate).
    */
-  async maybeRun(): Promise<AlertArtifact | null> {
+  async maybeRun(opts?: { ignoreCadence?: boolean }): Promise<AlertArtifact | null> {
     if (this.running) {
       this.logger.warn('[deploy-lag] previous tick still running; skipping this fire');
       return null;
@@ -256,10 +256,19 @@ export class DeployLagDetector {
     // Anchor the cadence to the fire START, not the run's end (same reasoning as
     // the smoke tick): measuring fire-to-fire minus a jitter tolerance keeps
     // every scheduled fire even when a run takes a while.
-    if (startMs - this.lastRunAtMs < this.intervalMs - CADENCE_TOLERANCE_MS) return null;
+    //
+    // The deferred startup fire (issue #2635) passes ignoreCadence and must NOT
+    // move lastRunAtMs: otherwise the first on-grid interval tick is still
+    // inside the window and the real hourly check slips to ~2h.
+    if (
+      !opts?.ignoreCadence
+      && startMs - this.lastRunAtMs < this.intervalMs - CADENCE_TOLERANCE_MS
+    ) {
+      return null;
+    }
 
     this.running = true;
-    this.lastRunAtMs = startMs;
+    if (!opts?.ignoreCadence) this.lastRunAtMs = startMs;
     try {
       return await this.runOnce(startMs);
     } catch (err) {

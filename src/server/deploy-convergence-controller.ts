@@ -161,12 +161,14 @@ export class DeployConvergenceController {
    * Cadence-gated tick. Safe to call faster than {@link hostIntervalMs}; skips
    * when a previous tick is still running. Never throws.
    */
-  async maybeRun(): Promise<DeployConvergenceTickResult | null> {
+  async maybeRun(opts?: { ignoreCadence?: boolean }): Promise<DeployConvergenceTickResult | null> {
     const nowMs = this.deps.now?.() ?? Date.now();
     if (this.running) return null;
-    if (nowMs - this.lastRunAtMs + 1_000 < this.intervalMs) return null;
+    // Startup fire (issue #2635) must not move lastRunAtMs or the first
+    // on-grid interval tick is still inside the window and is skipped.
+    if (!opts?.ignoreCadence && nowMs - this.lastRunAtMs + 1_000 < this.intervalMs) return null;
     this.running = true;
-    this.lastRunAtMs = nowMs;
+    if (!opts?.ignoreCadence) this.lastRunAtMs = nowMs;
     try {
       return await this.runOnce(nowMs);
     } catch (err) {

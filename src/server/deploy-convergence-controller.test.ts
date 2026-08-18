@@ -192,6 +192,30 @@ describe('DeployConvergenceController (issue #2226)', () => {
     expect(triggerRedeploy).toHaveBeenCalledTimes(2);
   });
 
+  it('a cadence-free startup fire does not skip the next on-grid tick (issue #2635)', async () => {
+    const INTERVAL = 5 * 60_000;
+    let clock = T0 + 60_000;
+    const triggerRedeploy = vi.fn(async () => ({ ok: true as const, status: 200 }));
+    const live = new DeployConvergenceController({
+      repoPath: '/tmp/kookr-fake',
+      getRunningSha: () => 'aaaaaaaa',
+      getDeployStatus: async () => ({ behindCount: 0, deploying: false }),
+      triggerRedeploy,
+      broadcast: () => {},
+      holdPath: null,
+      intervalMs: INTERVAL,
+      overallTimeoutMs: 5_000,
+      now: () => clock,
+      fetchBeforeCompare: false,
+      resolveTargetSha: async () => ({ sha: 'aaaaaaaa', committedAtMs: T0 }),
+      isAncestor: async () => true,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+    });
+    await expect(live.maybeRun({ ignoreCadence: true })).resolves.not.toBeNull();
+    clock = T0 + INTERVAL;
+    await expect(live.maybeRun()).resolves.not.toBeNull();
+  });
+
   it('skips trigger when converged', async () => {
     const { controller, triggerRedeploy } = makeController({
       servingSha: 'aaaaaaaa',

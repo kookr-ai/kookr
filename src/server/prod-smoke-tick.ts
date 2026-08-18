@@ -248,7 +248,7 @@ export class ProdSmokeTick {
    * Returns the artifact written, or null when the run was skipped (pile-up
    * guard or cadence gate).
    */
-  async maybeRun(): Promise<AlertArtifact | null> {
+  async maybeRun(opts?: { ignoreCadence?: boolean }): Promise<AlertArtifact | null> {
     if (this.running) {
       this.logger.warn('[prod-smoke-tick] previous tick still running; skipping this fire');
       return null;
@@ -260,10 +260,19 @@ export class ProdSmokeTick {
     // would fall `runDuration` short of the threshold and be dropped, doubling
     // detection latency and breaking AC1's within-one-hour guarantee. Measuring
     // fire-to-fire (minus a jitter tolerance) keeps every scheduled fire.
-    if (startMs - this.lastRunAtMs < this.intervalMs - CADENCE_TOLERANCE_MS) return null;
+    //
+    // The deferred startup fire (issue #2635) passes ignoreCadence and must NOT
+    // move lastRunAtMs: otherwise the first on-grid interval tick is still
+    // inside the window and the real hourly check slips to ~2h.
+    if (
+      !opts?.ignoreCadence
+      && startMs - this.lastRunAtMs < this.intervalMs - CADENCE_TOLERANCE_MS
+    ) {
+      return null;
+    }
 
     this.running = true;
-    this.lastRunAtMs = startMs;
+    if (!opts?.ignoreCadence) this.lastRunAtMs = startMs;
     try {
       return await this.runOnce(startMs);
     } catch (err) {
