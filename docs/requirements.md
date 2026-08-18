@@ -1063,6 +1063,19 @@ The system SHALL publish a four-field lifecycle-timer summary on `GET /api/healt
 
 **Evidence:** `src/core/timer-health.ts` (`summary`, `summarizeTimerHealth`), `src/server/routes/diagnostics-routes.ts` (`timerHealthSummaryForHealth`), `src/server/last-good-health.ts` (`pickGauges`), `src/core/timer-health.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `src/server/last-good-health.test.ts`, `docs/reference/api.md`.
 
+### R6.11: Surface Timer, Hook-Ingestion, and Paused-Schedule Warnings on Ops Digest [#2637] — SHALL — `done`
+
+The system SHALL include overdue lifecycle timers, hook-ingestion p95 lag, and fail-closed paused schedules in `kookr ops digest` so a remote operator paste names those field paths instead of reporting `warnings: none` while they are already on `GET /api/health`.
+
+**Acceptance criteria:**
+- A health fixture with hook-ingestion p95 of 43 seconds produces a digest warning that names `hookIngestion.p95LagMs`
+- A fixture with one paused schedule produces a warning at `schedules.schedulesPausedByFailure`
+- A fixture with `timerHealth.overdue >= 1` produces a warning at `timerHealth.overdue`
+- Existing digest warnings still appear and the human output stays under the 20-line cap
+- When `/api/health` has no `timerHealth` object, digest may fetch `GET /api/diagnostics/timer-health` with a 2-second timeout and must not hang if that path is wedged
+
+**Evidence:** `src/cli/kookr-ops-digest.ts` (`collectOpsDigestWarnings`), `src/cli/kookr-ops-digest.test.ts`, `docs/reference/cli.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1409,6 +1422,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R6.8 | #2429 | SHALL | done | diagnostics-routes health body cache |
 | R6.9 | #2641 | SHALL | done | llm-factory helperLlm health snapshot, diagnostics-routes, ops digest |
 | R6.10 | #2636 | SHALL | done | timer-health summary on GET /api/health, last-good pickGauges |
+| R6.11 | #2637 | SHALL | done | ops digest timerHealth / hookIngestion.p95LagMs / schedulesPausedByFailure |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

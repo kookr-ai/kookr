@@ -761,6 +761,9 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | Phantom active capacity | `capacity.phantomActive` | `> 0` |
 | Hung residual | `capacity.byClass.hungSuspect` | `> 0` |
 | Helper-LLM provider paused / storms suppressed | `helperLlm.paused` or `helperLlm.stormsSuppressed` | a helper-LLM provider is in the auth cool-down, or the process-wide attempt budget has refused attempts (issue #2641) |
+| Overdue or never-fired hourly timer | `timerHealth.overdue` | `timerHealth.overdue >= 1`, or an hourly loop has `lastFiredAt=null` and server uptime already exceeds that loop's own interval (issue #2637). Prefer `GET /api/health.timerHealth` when `overdue >= 1` or `loops[]` is present. A slim `{ overdue, neverFired }` summary is not enough — `neverFired` includes 24h prune — so digest fetches [`GET /api/diagnostics/timer-health`](./api.md) with a 2-second timeout |
+| Hook-ingestion p95 lag | `hookIngestion.p95LagMs` | p95 strictly above 10 seconds (`HOOK_INGESTION_P95_WARN_MS`) |
+| Fail-closed paused schedule | `schedules.schedulesPausedByFailure` | any paused row (`count >= 1`, not only when three are paused) |
 | Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
 | Low data-dir disk | `dataDirectory.diskFreePercent` (or nested host/sampler aliases) | free percent present on health body and ≤15% (often absent today — live free space lives on `ops-status.json`) |
 
