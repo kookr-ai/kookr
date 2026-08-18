@@ -1,5 +1,6 @@
 import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
+import { toolLabel } from '../shared/contracts/activity-summary.js';
 
 /**
  * A small palette of muted background/text color pairs for project badges.
@@ -184,6 +185,19 @@ export function healthyStatusLabel(events: AgentEvent[], startedAt?: string): st
     return 'done';
   }
   return formatDuration(startedAt);
+}
+
+/**
+ * Compact current-tool label for a healthy rail row.
+ *
+ * Only the latest event counts: a live `tool_use` is what the operator
+ * wants at a glance, and a later stop / session-end would otherwise leave
+ * a stale tool name on an idle row.
+ */
+export function healthyCurrentToolLabel(events: AgentEvent[]): string {
+  const last = events[events.length - 1];
+  if (!last || last.type !== 'tool_use') return '';
+  return toolLabel(last.toolName, last.toolInput);
 }
 
 /**

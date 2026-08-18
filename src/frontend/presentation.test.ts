@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatOldestFindingWait, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -196,6 +196,37 @@ describe('healthyStatusLabel', () => {
     vi.setSystemTime(new Date('2026-03-24T10:05:00.000Z'));
     expect(healthyStatusLabel([], '2026-03-24T10:00:00.000Z')).toBe('5m');
     vi.useRealTimers();
+  });
+});
+
+describe('healthyCurrentToolLabel', () => {
+  test('returns a compact toolLabel when the last event is tool_use Read of auth.ts', () => {
+    const events: AgentEvent[] = [
+      { type: 'session_start', sessionId: 's1' },
+      { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/tmp/src/auth.ts' } },
+    ];
+    expect(healthyCurrentToolLabel(events)).toBe('Read auth.ts');
+  });
+
+  test('returns empty when the last event is stop', () => {
+    const events: AgentEvent[] = [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/tmp/src/auth.ts' } },
+      { type: 'stop', sessionId: 's1', lastMessage: 'All done!' },
+    ];
+    expect(healthyCurrentToolLabel(events)).toBe('');
+  });
+
+  test('returns empty when the last event is session_end', () => {
+    const events: AgentEvent[] = [
+      { type: 'tool_use', sessionId: 's1', toolName: 'Bash', toolInput: { command: 'pnpm test' } },
+      { type: 'session_end', sessionId: 's1', reason: 'complete' },
+    ];
+    expect(healthyCurrentToolLabel(events)).toBe('');
+  });
+
+  test('returns empty when there is no tool event', () => {
+    expect(healthyCurrentToolLabel([])).toBe('');
+    expect(healthyCurrentToolLabel([{ type: 'session_start', sessionId: 's1' }])).toBe('');
   });
 });
 

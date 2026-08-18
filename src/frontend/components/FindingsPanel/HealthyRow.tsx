@@ -3,6 +3,7 @@ import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
 import { track, trackClick } from '../../telemetry.js';
 import {
   formatTokenUsage,
+  healthyCurrentToolLabel,
   healthyDotClass,
   healthyStatusLabel,
   worktreeHealthLabel,
@@ -41,9 +42,11 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
-  // Both live-updating values; render each (with its leading separator) only
-  // when it has content, so a row without token usage never trails a stray "·".
+  // Live-updating duration / tool / cost; render each (with its leading
+  // separator) only when it has content, so a row without token usage never
+  // trails a stray "·".
   const durText = healthyStatusLabel(agent.events, agent.startedAt);
+  const toolText = healthyCurrentToolLabel(agent.events);
   const costText = agent.tokenUsage ? formatTokenUsage(agent.tokenUsage) : '';
 
   function handleReply(e: React.MouseEvent) {
@@ -81,7 +84,7 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
         />
         {/* Title Lead: the task name owns its own full-width line; the info row
             below leads with stable-width fields (avatar, project) so the
-            live-updating duration/cost that trail never shove them or the
+            live-updating duration/tool/cost that trail never shove them or the
             right-pinned action rail as their widths change. The click-to-copy id
             sits (icon-only) in that rail; the branch/worktree lives in the detail
             panel, not the card. */}
@@ -108,6 +111,12 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
               <>
                 <span className="healthy-row-sep" aria-hidden="true">·</span>
                 <span className="healthy-row-dur">{durText}</span>
+              </>
+            )}
+            {toolText && (
+              <>
+                <span className="healthy-row-sep" aria-hidden="true">·</span>
+                <span className="healthy-row-tool" title={toolText}>{toolText}</span>
               </>
             )}
             {costText && (
