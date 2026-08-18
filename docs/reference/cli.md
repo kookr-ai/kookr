@@ -759,6 +759,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | Host pressure while watchdog off | `resourceWatchdog.pressureWhileDisabled` | `true` |
 | Phantom active capacity | `capacity.phantomActive` | `> 0` |
 | Hung residual | `capacity.byClass.hungSuspect` | `> 0` |
+| Helper-LLM provider paused / storms suppressed | `helperLlm.paused` or `helperLlm.stormsSuppressed` | a helper-LLM provider is in the auth cool-down, or the process-wide attempt budget has refused attempts (issue #2641) |
 | Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
 | Low data-dir disk | `dataDirectory.diskFreePercent` (or nested host/sampler aliases) | free percent present on health body and ≤15% (often absent today — live free space lives on `ops-status.json`) |
 

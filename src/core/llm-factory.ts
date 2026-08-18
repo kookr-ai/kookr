@@ -8,6 +8,8 @@ import {
   isLlmProviderFailureCategory,
   type HelperLlmDiagnosticsCounters,
   type HelperLlmDiagnosticsSnapshot,
+  type HelperLlmHealthPausedEntry,
+  type HelperLlmHealthSnapshot,
   type HelperLlmPausedProvider,
   type HelperLlmProviderAttemptBudget,
   type LlmClient,
@@ -138,6 +140,34 @@ function listPausedProviders(now: number = Date.now()): HelperLlmPausedProvider[
       lastMessage: entry.lastMessage,
     }))
     .sort((a, b) => `${a.provider}\0${a.model}`.localeCompare(`${b.provider}\0${b.model}`));
+}
+
+/**
+ * Collapse live pauses to one row per provider for the health surface.
+ * When several models of the same provider are paused, keep the row that
+ * stays paused the longest so operators still see the outage without a
+ * per-model dump.
+ */
+function collapsePausedProvidersForHealth(
+  rows: HelperLlmPausedProvider[],
+): HelperLlmPausedProvider[] {
+  const byProvider = new Map<string, HelperLlmPausedProvider>();
+  for (const row of rows) {
+    const existing = byProvider.get(row.provider);
+    if (!existing || row.pausedUntil > existing.pausedUntil) {
+      byProvider.set(row.provider, row);
+    }
+  }
+  return [...byProvider.values()].sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+function toHealthPausedEntry(row: HelperLlmPausedProvider): HelperLlmHealthPausedEntry {
+  return {
+    provider: row.provider,
+    model: row.model,
+    category: row.reason,
+    pausedUntil: new Date(row.pausedUntil).toISOString(),
+  };
 }
 
 /** Ascending timestamps of recent provider network attempts (process-wide). */
@@ -421,6 +451,18 @@ export function getHelperLlmDiagnosticsSnapshot(): HelperLlmDiagnosticsSnapshot 
     pausedProviders: listPausedProviders(generatedAt),
     stormsSuppressed: stormsSuppressedTotal,
     providerAttemptBudget: getProviderAttemptBudgetSnapshot(generatedAt),
+  };
+}
+
+/**
+ * Secret-free helper-LLM pause view for GET `/api/health` (issue #2641).
+ * Projects the in-memory auth-pause map plus the storm-suppression counter.
+ * Does not include `lastMessage`, skip counts, or any raw provider error body.
+ */
+export function getHelperLlmHealthSnapshot(now: number = Date.now()): HelperLlmHealthSnapshot {
+  return {
+    paused: collapsePausedProvidersForHealth(listPausedProviders(now)).map(toHealthPausedEntry),
+    stormsSuppressed: stormsSuppressedTotal,
   };
 }
 

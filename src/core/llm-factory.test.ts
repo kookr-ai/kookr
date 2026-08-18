@@ -7,6 +7,7 @@ import {
   DEFAULT_LLM_PROVIDER_ATTEMPT_WINDOW_MS,
   FallbackLlmClient,
   getHelperLlmDiagnosticsSnapshot,
+  getHelperLlmHealthSnapshot,
   resetHelperLlmDiagnosticsForTest,
   resolveLlmAuthCooldownMs,
   resolveLlmProviderAttemptBudget,
@@ -416,6 +417,19 @@ describe('FallbackLlmClient auth cool-down', () => {
         lastMessage: 'invalid api key',
       }),
     ]);
+
+    const health = getHelperLlmHealthSnapshot();
+    expect(health.paused).toEqual([
+      {
+        provider: 'groq',
+        model: 'groq-model',
+        category: 'auth',
+        pausedUntil: '2026-01-01T00:01:00.000Z',
+      },
+    ]);
+    expect(JSON.stringify(health)).not.toMatch(/invalid api key|sk-|api[_-]?key/i);
+    expect(health).not.toHaveProperty('lastMessage');
+    expect(health.paused[0]).not.toHaveProperty('lastMessage');
     warn.mockRestore();
   });
 
@@ -474,6 +488,65 @@ describe('FallbackLlmClient auth cool-down', () => {
     expect(a.complete).toHaveBeenCalledTimes(2);
     expect(getHelperLlmDiagnosticsSnapshot().pausedProviders).toEqual([]);
     warn.mockRestore();
+  });
+
+  test('health snapshot collapses two models of one provider to one row', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const groqA = {
+      provider: 'groq',
+      model: 'llama-short',
+      complete: vi.fn(async () => {
+        throw Object.assign(new Error('invalid api key'), { status: 401 });
+      }),
+    };
+    const groqB = {
+      provider: 'groq',
+      model: 'llama-long',
+      complete: vi.fn(async () => {
+        throw Object.assign(new Error('invalid api key'), { status: 401 });
+      }),
+    };
+    const gemini = client('gemini', async () => 'ok');
+    const first = new FallbackLlmClient([groqA, gemini]);
+    await first.complete({ maxTokens: 10, userMessage: '1' });
+    vi.advanceTimersByTime(30_000);
+    const second = new FallbackLlmClient([groqB, gemini]);
+    await second.complete({ maxTokens: 10, userMessage: '2' });
+
+    const health = getHelperLlmHealthSnapshot();
+    expect(health.paused).toEqual([
+      {
+        provider: 'groq',
+        model: 'llama-long',
+        category: 'auth',
+        pausedUntil: '2026-01-01T00:01:30.000Z',
+      },
+    ]);
+    warn.mockRestore();
+  });
+
+  test('health snapshot keeps one row per distinct provider', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const groq = client('groq', async () => {
+      throw Object.assign(new Error('invalid api key'), { status: 401 });
+    });
+    const gemini = client('gemini', async () => {
+      throw Object.assign(new Error('invalid api key'), { status: 401 });
+    });
+    const fallback = client('openrouter', async () => 'ok');
+    await new FallbackLlmClient([groq, gemini, fallback]).complete({
+      maxTokens: 10,
+      userMessage: '1',
+    });
+
+    const health = getHelperLlmHealthSnapshot();
+    expect(health.paused.map((row) => row.provider)).toEqual(['gemini', 'groq']);
+    expect(health.paused.every((row) => row.category === 'auth')).toBe(true);
+    warn.mockRestore();
+  });
+
+  test('health snapshot is empty when nothing is paused', () => {
+    expect(getHelperLlmHealthSnapshot()).toEqual({ paused: [], stormsSuppressed: 0 });
   });
 
   test('logs clearly when every provider is paused', async () => {
@@ -571,6 +644,7 @@ describe('FallbackLlmClient provider attempt budget', () => {
     const snapshot = getHelperLlmDiagnosticsSnapshot();
     // Call2 mid-chain deny (1) + fully suppressed calls 3 and 4 (2) = 3.
     expect(snapshot.stormsSuppressed).toBe(3);
+    expect(getHelperLlmHealthSnapshot().stormsSuppressed).toBe(3);
     expect(snapshot.providerAttemptBudget).toEqual({
       limit: 4,
       windowMs: 60_000,

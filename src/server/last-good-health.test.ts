@@ -96,6 +96,49 @@ describe('LastGoodHealthWriter', () => {
     expect(snap.health.build).toEqual({ version: 'abc123' });
   });
 
+  test('keeps helperLlm pause state when the full body is truncated (issue #2641)', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      helperLlm: {
+        paused: [{ provider: 'groq', model: 'llama', category: 'auth', pausedUntil: '2026-08-18T02:22:00.000Z' }],
+        stormsSuppressed: 1,
+      },
+    }));
+    const snap = readFile(dir);
+    expect(snap.truncated).toBe(true);
+    expect(snap.health.helperLlm).toEqual({
+      paused: [{ provider: 'groq', model: 'llama', category: 'auth', pausedUntil: '2026-08-18T02:22:00.000Z' }],
+      stormsSuppressed: 1,
+    });
+  });
+
+  test('forces an out-of-band write when helper-LLM pause state flips', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth({ helperLlm: { paused: [], stormsSuppressed: 0 } }));
+    t = 1_000;
+    writer.record(baseHealth({
+      helperLlm: {
+        paused: [{ provider: 'groq', model: 'llama', category: 'auth', pausedUntil: '2026-08-18T02:22:00.000Z' }],
+        stormsSuppressed: 0,
+      },
+    }));
+    const snap = readFile(dir);
+    expect(snap.capturedAt).toBe(new Date(1_000).toISOString());
+    expect((snap.health.helperLlm as { paused: Array<{ provider: string }> }).paused[0]?.provider).toBe('groq');
+  });
+
+  test('forces an out-of-band write when stormsSuppressed flips', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth({ helperLlm: { paused: [], stormsSuppressed: 0 } }));
+    t = 1_000;
+    writer.record(baseHealth({ helperLlm: { paused: [], stormsSuppressed: 7 } }));
+    expect(readFile(dir).capturedAt).toBe(new Date(1_000).toISOString());
+    expect((readFile(dir).health.helperLlm as { stormsSuppressed: number }).stormsSuppressed).toBe(7);
+  });
+
   test('throttles writes within the interval when gauges are unchanged', () => {
     let t = 0;
     const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });

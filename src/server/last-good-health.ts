@@ -125,7 +125,14 @@ function slimBuild(health: Record<string, unknown>): { version: unknown } | unde
  */
 function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
   const gauges: Record<string, unknown> = {};
-  for (const key of ['status', 'agents', 'serverStartedAt', 'attentionQueue', 'capacity'] as const) {
+  for (const key of [
+    'status',
+    'agents',
+    'serverStartedAt',
+    'attentionQueue',
+    'capacity',
+    'helperLlm',
+  ] as const) {
     if (health[key] !== undefined) gauges[key] = health[key];
   }
   const build = slimBuild(health);
@@ -158,7 +165,20 @@ function gaugeSignature(health: Record<string, unknown>): string {
   const agents = health.agents;
   const queue = health.attentionQueue as { activeFindingDepth?: unknown } | undefined;
   const capacity = health.capacity as { active?: unknown } | undefined;
-  return JSON.stringify([status, agents, queue?.activeFindingDepth, capacity?.active]);
+  const helperLlm = health.helperLlm as
+    | { paused?: Array<{ provider?: unknown }>; stormsSuppressed?: unknown }
+    | undefined;
+  const pausedProviders = (helperLlm?.paused ?? [])
+    .map((row) => (typeof row.provider === 'string' ? row.provider : ''))
+    .join(',');
+  return JSON.stringify([
+    status,
+    agents,
+    queue?.activeFindingDepth,
+    capacity?.active,
+    pausedProviders,
+    helperLlm?.stormsSuppressed ?? 0,
+  ]);
 }
 
 function serialize(snapshot: LastGoodHealthSnapshot): string {

@@ -467,6 +467,12 @@ export interface RouteDeps {
    */
   getPayloadDietStats?: () => import('../maintenance-prune-schedule.js').PayloadDietStats;
   /**
+   * Slim helper-LLM pause / storm snapshot for GET `/api/health` (issue #2641).
+   * Production omits this and reads the process-wide in-memory pause map.
+   * Tests inject a fixture so they do not mutate the global pause table.
+   */
+  getHelperLlmHealthSnapshot?: () => import('../../shared/contracts/diagnostic.js').HelperLlmHealthSnapshot;
+  /**
    * Combined maintenance-prune gauges (issues #2344 emergency + #2345 schedule).
    * `/api/health` reads only the in-memory snapshot (schedule enabled/interval
    * + last-run counters, emergency edge counters) — never starts a prune on
