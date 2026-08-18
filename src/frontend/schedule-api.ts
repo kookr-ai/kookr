@@ -1,4 +1,4 @@
-import type { AgentSelection, Playbook, PlaybookScope, ScheduleListResponse, ScheduleResponse } from '../shared/protocol.js';
+import type { AgentSelection, Playbook, PlaybookScope, ScheduleListResponse, ScheduleResponse, ScheduleRollup } from '../shared/protocol.js';
 
 export interface SchedulePreviewResponse {
   cronDescription: string;
@@ -32,6 +32,12 @@ export interface CreateScheduleRequest {
 
 export async function listSchedules(): Promise<ScheduleListResponse> {
   return requestJson<ScheduleListResponse>('/api/schedules');
+}
+
+/** Fleet rollups from the materialized store — no tasks.json / hook-log scan. */
+export async function listScheduleRollups(): Promise<ScheduleRollup[]> {
+  const body = await requestJson<{ rollups?: ScheduleRollup[] }>('/api/schedules/rollups');
+  return Array.isArray(body.rollups) ? body.rollups : [];
 }
 
 export async function listPlaybooksForCwd(cwd: string): Promise<Playbook[]> {

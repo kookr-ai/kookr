@@ -2,8 +2,10 @@ import { describe, expect, test } from 'vitest';
 import type { ScheduleResponse } from '../shared/protocol.js';
 import {
   formatScheduleRelativeTime,
+  formatScheduleRollupLine,
   pickNextOverviewSchedule,
   scheduleNextRunLabel,
+  scheduleRollupTooltip,
 } from './schedule-format.js';
 
 function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleResponse {
@@ -110,5 +112,47 @@ describe('pickNextOverviewSchedule', () => {
       nextRunAt: '2026-06-20T10:12:00.000Z',
     });
     expect(pickNextOverviewSchedule([paused, exhausted])?.id).toBe('exhausted');
+  });
+});
+
+describe('formatScheduleRollupLine', () => {
+  test('joins fires, measured cost, and artifacts', () => {
+    expect(formatScheduleRollupLine({
+      fires: 5,
+      measuredFires: 3,
+      costUsd: 1.25,
+      artifacts: 2,
+    })).toBe('5 fires · $1.25 measured · 2 artifacts');
+  });
+
+  test('does not render unmeasured cost as $0 even if costUsd is leftover', () => {
+    expect(formatScheduleRollupLine({
+      fires: 4,
+      measuredFires: 0,
+      costUsd: 1.25,
+      artifacts: 1,
+    })).toBe('4 fires · unmeasured · 1 artifact');
+  });
+
+  test('renders a measured $0 as measured, not unmeasured', () => {
+    expect(formatScheduleRollupLine({
+      fires: 2,
+      measuredFires: 2,
+      costUsd: 0,
+      artifacts: 0,
+    })).toBe('2 fires · $0.0000 measured · 0 artifacts');
+  });
+
+  test('returns null for a never-run (zero-fire) row', () => {
+    expect(formatScheduleRollupLine({
+      fires: 0,
+      measuredFires: 0,
+      costUsd: 0,
+      artifacts: 0,
+    })).toBeNull();
+  });
+
+  test('tooltip names the measuredFires denominator', () => {
+    expect(scheduleRollupTooltip({ fires: 5, measuredFires: 3 })).toContain('3 of 5 fires');
   });
 });

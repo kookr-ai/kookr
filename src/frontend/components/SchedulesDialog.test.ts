@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { ScheduleResponse } from '../../shared/protocol.js';
+import type { ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { SchedulesDialog } from './SchedulesDialog.js';
 
@@ -402,5 +402,148 @@ describe('SchedulesDialog prefill', () => {
 
     expect(onCreated).toHaveBeenCalledTimes(1);
     expect(onCreated).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('SchedulesDialog rollup ROI', () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  const scheduleStatus = {
+    timezone: 'UTC',
+    catchUpMode: 'auto' as const,
+    catchUpEnabled: true,
+    schedulerHealthy: true,
+  };
+
+  function makeRollup(overrides: Partial<ScheduleRollup> = {}): ScheduleRollup {
+    return {
+      scheduleId: 'sched-1',
+      fires: 5,
+      outcomes: { completed: 3 },
+      measuredFires: 3,
+      costUsd: 1.25,
+      tokens: 4000,
+      artifacts: 2,
+      updatedAt: '2026-08-18T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function stubFetch(rollups: ScheduleRollup[], schedule = makeSchedule()) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/schedules/rollups') {
+        return { ok: true, json: async () => ({ rollups }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          revision: 1,
+          schedules: [schedule],
+          status: scheduleStatus,
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  async function renderWith(schedule = makeSchedule()) {
+    useKookrStore.setState({
+      schedules: [schedule],
+      scheduleRevision: 1,
+      scheduleStatus,
+      serverCwd: '/repo',
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    if (root) {
+      const r = root;
+      act(() => { r.unmount(); });
+    }
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  test('shows fires, measured cost, and artifact count when a rollup row exists', async () => {
+    const fetchMock = stubFetch([makeRollup()]);
+    await renderWith();
+
+    const line = container.querySelector('.schedule-manager-roi');
+    expect(line?.textContent).toBe('5 fires · $1.25 measured · 2 artifacts');
+    expect(line?.getAttribute('title')).toContain('3 of 5 fires');
+    expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last:');
+    expect(container.querySelector('.schedule-ledger')).not.toBeNull();
+
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls).toContain('/api/schedules/rollups');
+    expect(urls.some((url) => url.includes('tasks.json') || url.includes('/hooks'))).toBe(false);
+  });
+
+  test('omits the rollup line when that schedule has no rollup row', async () => {
+    stubFetch([makeRollup({ scheduleId: 'other-sched' })]);
+    await renderWith();
+
+    expect(container.querySelector('.schedule-manager-roi')).toBeNull();
+    expect(container.textContent).not.toContain('measured');
+    expect(container.textContent).not.toContain('unmeasured');
+    expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last:');
+  });
+
+  test('does not render unmeasured fires as $0', async () => {
+    stubFetch([makeRollup({ fires: 4, measuredFires: 0, costUsd: 1.25, artifacts: 1 })]);
+    await renderWith();
+
+    const line = container.querySelector('.schedule-manager-roi');
+    expect(line?.textContent).toBe('4 fires · unmeasured · 1 artifact');
+    expect(line?.getAttribute('title')).toContain('0 of 4 fires');
+    expect(line?.getAttribute('aria-description')).toContain('0 of 4 fires');
+  });
+
+  test('omits the glance line for a never-run zero-fire rollup row', async () => {
+    stubFetch([makeRollup({ fires: 0, measuredFires: 0, costUsd: 0, artifacts: 0 })]);
+    await renderWith();
+
+    expect(container.querySelector('.schedule-manager-roi')).toBeNull();
+    expect(container.textContent).not.toContain('unmeasured');
+    expect(container.textContent).not.toMatch(/\$0/);
+  });
+
+  test('omits the glance line when the rollup request fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/schedules/rollups') {
+        return { ok: false, json: async () => ({ error: 'Scheduling not configured' }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          revision: 1,
+          schedules: [makeSchedule()],
+          status: scheduleStatus,
+        }),
+      };
+    }));
+    await renderWith();
+
+    expect(container.querySelector('.schedule-manager-roi')).toBeNull();
+    expect(container.textContent).not.toMatch(/\$0/);
+    expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last:');
   });
 });
