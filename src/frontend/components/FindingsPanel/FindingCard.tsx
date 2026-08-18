@@ -69,7 +69,7 @@ function FindingParentChip({
       className="finding-parent-chip"
       data-testid="finding-parent-chip"
       title={`Parent task: ${name}`}
-      aria-label={`Select parent task ${name}`}
+      aria-label={`Select parent: ${name}`}
       onClick={(event) => {
         event.stopPropagation();
         onSelect(parent);

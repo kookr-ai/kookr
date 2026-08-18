@@ -110,6 +110,18 @@ describe('FindingCard parent-task name chip', () => {
     const chip = container.querySelector('[data-testid="finding-parent-chip"]');
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toBe('parent: Playbook batch');
+    expect(chip?.getAttribute('aria-label')).toBe('Select parent: Playbook batch');
+  });
+
+  test('falls back to the parent agentId when taskName is missing', () => {
+    const parent = makeParent({ taskName: undefined });
+    const child = makeAgent({ parentTaskId: parent.taskId });
+    useKookrStore.setState({ agents: [parent, child] });
+    root = renderPanel(container, [child]);
+
+    expect(container.querySelector('[data-testid="finding-parent-chip"]')?.textContent).toBe(
+      'parent: parent-agent',
+    );
   });
 
   test('hides the chip when parentTaskId is unset', () => {
@@ -154,6 +166,33 @@ describe('FindingCard parent-task name chip', () => {
     expect(state.leftPane).toBe('activity');
     expect(state.narrowTab).toBe('activity');
     expect(state.detailPaneMode).toBe('right');
+    vi.useRealTimers();
+  });
+
+  test('chip click after a pending card click still selects the parent', () => {
+    vi.useFakeTimers();
+    const parent = makeParent();
+    const child = makeAgent({ parentTaskId: parent.taskId });
+    useKookrStore.setState({ agents: [parent, child] });
+    root = renderPanel(container, [child]);
+
+    const card = container.querySelector<HTMLElement>('.finding-card');
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="finding-parent-chip"]');
+    expect(card).not.toBeNull();
+    expect(chip).not.toBeNull();
+    act(() => {
+      card!.click();
+    });
+    act(() => {
+      chip!.click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+
+    const state = useKookrStore.getState();
+    expect(state.selectedAgentId).toBe('parent-agent');
+    expect(state.selectedTaskId).toBe('parent-task');
     vi.useRealTimers();
   });
 
