@@ -1472,7 +1472,7 @@ button.section-header.detection-stats-header:focus-visible {
   text-overflow: ellipsis;
   min-width: 0;
 }
-/* Info row: a meta group (stable-width fields lead so the live duration/cost
+/* Info row: a meta group (stable-width fields lead so the live duration/tool/cost
    that trail never shove them) plus the action rail. The row can wrap, so on a
    narrow panel — or a Ralph/schedule-heavy row — the whole rail drops to its own
    right-aligned line instead of the meta and rail colliding mid-line. */
@@ -1522,6 +1522,17 @@ button.section-header.detection-stats-header:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .healthy-row-dur { color: var(--text-secondary); }
+/* Cap the live tool so a long Bash command cannot wrap the rail row.
+   18ch fits "Read auth.ts" / "Edit foo.ts" and ellipsizes the rest. */
+.healthy-row-tool {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 18ch;
+  min-width: 0;
+  flex: 0 1 auto;
+  color: var(--text-secondary);
+}
 /* Action rail: pinned right, de-emphasized until the row is hovered/selected.
    Kept in layout (opacity, not display:none) so every control stays measurable
    for tests/AT; wraps internally when a row also carries Ralph-loop / schedule

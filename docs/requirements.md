@@ -32,7 +32,8 @@ The system SHOULD display each agent's current activity: tool calls, files being
 - Tool use events (from `PreToolUse`/`PostToolUse` hooks) shown in agent detail panel
 - Last assistant message available from `Stop` hook payload
 - Activity updates in real time via WebSocket
-**Evidence:** Hook parser (`src/core/hook-parser.ts`) extracts tool_use events. Real-time hook tailing via `src/server/hook-watcher.ts`. Agent activity is visible through the interactive terminal panel.
+- Healthy rail rows show a compact current-tool label (via `toolLabel`) only when the latest event is `tool_use`; any later event (including `stop` / `session_end`) hides it so idle rows cannot keep a stale tool name
+**Evidence:** Hook parser (`src/core/hook-parser.ts`) extracts tool_use events. Real-time hook tailing via `src/server/hook-watcher.ts`. Agent activity is visible through the interactive terminal panel. Healthy rows render `healthyCurrentToolLabel` next to duration.
 
 ### R1.3: Show Agent Metadata [F1.4] — SHOULD — `partial`
 
@@ -1285,7 +1286,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | Req | Feature | Priority | Status | Module(s) |
 |-----|---------|----------|--------|-----------|
 | R1.1 | F1.2 | SHALL | done | types, monitor, ws, useStore |
-| R1.2 | F1.3 | SHOULD | partial | hook-parser, AgentDetail, hook-watcher |
+| R1.2 | F1.3 | SHOULD | partial | hook-parser, AgentDetail, hook-watcher, presentation, HealthyRow |
 | R1.3 | F1.4 | SHOULD | partial | tasks, frontend components |
 | R1.4 | F1.1 | MAY | deferred | — |
 | R1.5 | F1.5 | MAY | deferred | — |
