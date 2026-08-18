@@ -38,11 +38,12 @@ vi.mock('./telemetry.js', () => ({
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
-  DetailPanel: (props: { onRequestComplete: () => void; onLaunchPlaybooks?: () => void }) => React.createElement(
+  DetailPanel: (props: { onRequestComplete: () => void; onLaunchPlaybooks?: () => void; onOpenSchedules?: () => void }) => React.createElement(
     'div',
     { 'data-testid': 'detail-panel' },
     React.createElement('button', { 'data-testid': 'mock-complete-button', onClick: props.onRequestComplete }, 'Complete'),
     React.createElement('button', { 'data-testid': 'mock-launch-playbooks', onClick: props.onLaunchPlaybooks }, 'Recent playbook'),
+    React.createElement('button', { 'data-testid': 'mock-open-schedules', onClick: props.onOpenSchedules }, 'Next scheduled'),
   ),
 }));
 
@@ -146,6 +147,21 @@ describe('App operations modal shortcuts', () => {
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve({ checks: {}, fires: {}, falsePositives: {} }),
+        } as Response);
+      }
+      if (url.includes('/api/schedules')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            revision: 1,
+            schedules: [],
+            status: {
+              timezone: 'UTC',
+              catchUpMode: 'auto',
+              catchUpEnabled: true,
+              schedulerHealthy: true,
+            },
+          }),
         } as Response);
       }
       return Promise.resolve({
@@ -1163,6 +1179,19 @@ describe('App operations modal shortcuts', () => {
     });
     await waitForElement(container, '#launch-task-dialog-title');
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+  });
+
+  test('overview next-schedule callback opens the existing Schedules dialog', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const nextSchedule = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-open-schedules"]');
+    await act(async () => {
+      nextSchedule.click();
+    });
+    await waitForElement(container, '.schedules-dialog');
+    expect(container.querySelector('.schedules-dialog-header')?.textContent).toContain('Schedules');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

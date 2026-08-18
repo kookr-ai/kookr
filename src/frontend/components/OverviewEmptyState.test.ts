@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { AgentState, Playbook } from '../../shared/protocol.js';
+import type { AgentState, Playbook, ScheduleResponse } from '../../shared/protocol.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { getTask } from '../api/tasks.js';
@@ -82,6 +82,24 @@ function makeCompletedAgent(agentId: string, taskName: string, overrides: Partia
 
 function seedRecentPlaybooks(keys: string[]): void {
   localStorage.setItem('kookr:recentPlaybooks', JSON.stringify(keys));
+}
+
+function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleResponse {
+  return {
+    id: overrides.id ?? 'sched-1',
+    name: overrides.name ?? 'Nightly sweep',
+    enabled: overrides.enabled ?? true,
+    cron: '0 3 * * *',
+    playbook: { path: '/p.md', parameters: {} },
+    cwd: '/repo',
+    agentType: 'claude-code',
+    executionLedger: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    nextRunAt: '2026-06-20T10:12:00.000Z',
+    cronDescription: 'every day at 3:00',
+    ...overrides,
+  };
 }
 
 function samplePlaybook(overrides: Partial<Playbook> = {}): Playbook {
@@ -491,6 +509,80 @@ describe('OverviewEmptyState', () => {
     expect(container.querySelector('[data-testid="overview-recent-playbook"]')?.textContent).toBe('legacy-bare');
     expect(container.querySelector('.overview-tour-reentry')).toBeNull();
     expect(container.textContent).not.toContain('Getting Started');
+  });
+
+  test('shows the soonest enabled schedule name and a relative next-fire time', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T10:00:00.000Z'));
+    useKookrStore.setState({
+      schedules: [makeSchedule({ name: 'Nightly sweep', nextRunAt: '2026-06-20T10:12:00.000Z' })],
+    });
+    render();
+
+    const section = container.querySelector('[data-testid="overview-next-schedule"]');
+    expect(section).not.toBeNull();
+    expect(section?.textContent).toContain('Nightly sweep');
+    expect(section?.textContent).toContain('in 12m');
+    expect(section?.textContent).not.toContain('Next:');
+    expect(container.querySelector('[data-testid="overview-next-schedule-row"]')?.getAttribute('aria-label'))
+      .toBe('Open schedules: Nightly sweep, in 12m');
+  });
+
+  test('hides the next-schedule row when the store has no schedules', () => {
+    useKookrStore.setState({ schedules: [] });
+    render();
+
+    expect(container.querySelector('[data-testid="overview-next-schedule"]')).toBeNull();
+    expect(container.textContent).not.toContain('Next scheduled');
+  });
+
+  test('labels a disabled schedule paused instead of a next-fire time', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T10:00:00.000Z'));
+    useKookrStore.setState({
+      schedules: [makeSchedule({
+        name: 'Paused nightly',
+        enabled: false,
+        nextRunAt: '2026-06-20T10:12:00.000Z',
+      })],
+    });
+    render();
+
+    const row = container.querySelector('[data-testid="overview-next-schedule-row"]');
+    expect(row?.textContent).toContain('Paused nightly');
+    expect(row?.textContent).toContain('paused');
+    expect(row?.textContent).not.toContain('in 12m');
+  });
+
+  test('labels an exhausted schedule exhausted instead of a next-fire time', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T10:00:00.000Z'));
+    useKookrStore.setState({
+      schedules: [makeSchedule({
+        name: 'Weekly review',
+        stopReason: 'trigger_limit_reached',
+        nextRunAt: '2026-06-20T10:12:00.000Z',
+      })],
+    });
+    render();
+
+    const row = container.querySelector('[data-testid="overview-next-schedule-row"]');
+    expect(row?.textContent).toContain('Weekly review');
+    expect(row?.textContent).toContain('exhausted');
+    expect(row?.textContent).not.toContain('in 12m');
+  });
+
+  test('clicking the next-schedule row calls onOpenSchedules', () => {
+    const onOpenSchedules = vi.fn();
+    useKookrStore.setState({
+      schedules: [makeSchedule({ name: 'Nightly sweep' })],
+    });
+    render({ onOpenSchedules });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="overview-next-schedule-row"]')?.click();
+    });
+    expect(onOpenSchedules).toHaveBeenCalledTimes(1);
   });
 
   test('does not list recently completed tasks when the completed bucket is empty', () => {

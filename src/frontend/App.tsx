@@ -1265,6 +1265,7 @@ export function App() {
       send={send}
       onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); openModal('launch'); }}
       onLaunchPlaybooks={() => openLaunchFromPalette('playbooks', 'overview_recent_playbook')}
+      onOpenSchedules={() => openModal('schedules')}
       onCheckSetup={() => setShowOperations(true)}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;

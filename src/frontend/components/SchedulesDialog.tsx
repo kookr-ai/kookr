@@ -18,6 +18,7 @@ import {
   type ScheduleApiErrorBody,
   type SchedulePreviewResponse,
 } from '../schedule-api.js';
+import { formatScheduleRelativeTime, scheduleNextRunLabel } from '../schedule-format.js';
 
 /**
  * Seed data for opening the dialog straight into a pre-filled create form,
@@ -44,34 +45,11 @@ interface Props {
   onCreated?: (fromPrefill: boolean) => void;
 }
 
-function formatRelativeTime(iso: string | null | undefined): string {
-  if (!iso) return 'N/A';
-  const diff = new Date(iso).getTime() - Date.now();
-  const absDiff = Math.abs(diff);
-  const minutes = Math.floor(absDiff / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  let label: string;
-  if (days > 0) label = `${days}d`;
-  else if (hours > 0) label = `${hours}h`;
-  else if (minutes > 0) label = `${minutes}m`;
-  else label = '<1m';
-
-  return diff < 0 ? `${label} ago` : `in ${label}`;
-}
-
 function latestExecutionLabel(schedule: ScheduleResponse): string {
   const latest = schedule.latestExecution;
   if (!latest) return 'never';
   const message = latest.message ? ` · ${latest.message}` : '';
-  return `${outcomeLabel(latest.outcome)} ${formatRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
-}
-
-function nextRunLabel(schedule: ScheduleResponse): string {
-  if (schedule.stopReason === 'trigger_limit_reached') return 'exhausted';
-  if (!schedule.enabled) return 'paused';
-  return formatRelativeTime(schedule.nextRunAt);
+  return `${outcomeLabel(latest.outcome)} ${formatScheduleRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
 }
 
 function quotaLabel(schedule: ScheduleResponse): string {
@@ -97,8 +75,8 @@ function ledgerDecisionLabel(entry: ScheduleResponse['executionLedger'][number])
 
 function ledgerSummary(entry: ScheduleResponse['executionLedger'][number]): string {
   const subject = entry.scheduledFor
-    ? `due ${formatRelativeTime(entry.scheduledFor)}`
-    : `checked ${formatRelativeTime(entry.evaluatedAt)}`;
+    ? `due ${formatScheduleRelativeTime(entry.scheduledFor)}`
+    : `checked ${formatScheduleRelativeTime(entry.evaluatedAt)}`;
   const task = entry.taskId ? ` · task ${entry.taskId.slice(0, 8)}` : '';
   const blocker = entry.blockingTaskId ? ` · blocked by ${entry.blockingTaskId.slice(0, 8)}` : '';
   const reason = entry.reasonCode && entry.reasonCode !== 'none' ? ` · ${reasonLabel(entry.reasonCode)}` : '';
@@ -503,7 +481,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
               <div className="schedule-preview">
                 <div>{preview.cronDescription}</div>
                 <div>Timezone: {preview.timezone}</div>
-                <div>Next runs: {preview.nextRuns.map((item) => formatRelativeTime(item)).join(', ')}</div>
+                <div>Next runs: {preview.nextRuns.map((item) => formatScheduleRelativeTime(item)).join(', ')}</div>
               </div>
             )}
 
@@ -529,7 +507,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                 <div className="schedule-manager-title">{schedule.name}</div>
                 <div className="schedule-manager-meta">
                   <span>{schedule.cronDescription}</span>
-                  <span>Next: {nextRunLabel(schedule)}</span>
+                  <span>Next: {scheduleNextRunLabel(schedule)}</span>
                   <span>{quotaLabel(schedule)}</span>
                   <span>Last: {latestExecutionLabel(schedule)}</span>
                   {schedule.latestExecution?.taskId && (
@@ -540,7 +518,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                   <div className="schedule-ledger">
                     {schedule.executionLedger.slice(-3).reverse().map((entry) => (
                       <div key={entry.id} className="schedule-ledger-entry" title={entry.message}>
-                        <span className="schedule-ledger-time">{formatRelativeTime(entry.completedAt ?? entry.evaluatedAt)}</span>
+                        <span className="schedule-ledger-time">{formatScheduleRelativeTime(entry.completedAt ?? entry.evaluatedAt)}</span>
                         <span>{ledgerSummary(entry)}</span>
                       </div>
                     ))}

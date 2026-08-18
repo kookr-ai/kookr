@@ -15,6 +15,7 @@ import {
 import { compareCompletedAgents } from '../agent-buckets.js';
 import { findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
+import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
@@ -56,6 +57,8 @@ interface Props {
   onLaunch: () => void;
   /** Opens Launch on the Playbooks tab (recent-playbook chips). */
   onLaunchPlaybooks?: () => void;
+  /** Opens the existing Schedules dialog (next-scheduled row). */
+  onOpenSchedules?: () => void;
   /**
    * Opens the Diagnostics / Operations panel (same surface as the command
    * palette). First-run empty state only — returning "All clear" hides it.
@@ -75,6 +78,7 @@ export function OverviewEmptyState({
   completed,
   onLaunch,
   onLaunchPlaybooks,
+  onOpenSchedules,
   onCheckSetup,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
@@ -82,6 +86,8 @@ export function OverviewEmptyState({
   const setRelaunchTask = useKookrStore((s) => s.setRelaunchTask);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const playbooks = useKookrStore((s) => s.playbooks);
+  const nextSchedule = pickNextOverviewSchedule(useKookrStore((s) => s.schedules));
+  const nextRun = nextSchedule ? scheduleNextRunLabel(nextSchedule) : null;
   const runningCount = running.length;
   const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
@@ -256,6 +262,22 @@ export function OverviewEmptyState({
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {nextSchedule && nextRun && (
+          <div className="overview-next-schedule" data-testid="overview-next-schedule">
+            <h3 className="overview-waiting-title">Next scheduled</h3>
+            <button
+              type="button"
+              className="overview-waiting-row"
+              data-testid="overview-next-schedule-row"
+              aria-label={`Open schedules: ${nextSchedule.name}, ${nextRun}`}
+              onClick={() => onOpenSchedules?.()}
+            >
+              <span className="overview-waiting-name">{nextSchedule.name}</span>
+              <span className="overview-waiting-meta">{nextRun}</span>
+            </button>
           </div>
         )}
 
