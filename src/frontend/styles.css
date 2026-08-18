@@ -4210,7 +4210,8 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-bright);
 }
 
-.launch-duplicate-banner {
+.launch-duplicate-banner,
+.launch-busy-directory-banner {
   margin: 8px 0 12px;
   padding: 8px 12px;
   background: rgba(251, 191, 36, 0.12);
@@ -4223,17 +4224,20 @@ a.playbook-empty-docs-link:visited:hover {
   gap: 8px;
 }
 
-.launch-duplicate-banner__copy {
+.launch-duplicate-banner__copy,
+.launch-busy-directory-banner__copy {
   margin: 0;
 }
 
-.launch-duplicate-banner__actions {
+.launch-duplicate-banner__actions,
+.launch-busy-directory-banner__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.launch-duplicate-banner__open {
+.launch-duplicate-banner__open,
+.launch-busy-directory-banner__open {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;

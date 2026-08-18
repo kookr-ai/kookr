@@ -481,6 +481,22 @@ The system SHALL warn in the Launch dialog before submit when the existing Claud
 
 **Evidence:** `src/shared/quota-headroom-admission.ts`, `src/shared/launch-quota-warning.ts`, `src/shared/launch-quota-warning.test.ts`, `src/frontend/components/LaunchQuotaBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.quota.test.ts`.
 
+### R4.1e: Warn When the Launch Directory Already Has Live Agents [F4.1] — SHALL — `done`
+
+The system SHALL warn in the Launch dialog when the chosen working directory already has one or more live tasks (not completed, cancelled, or terminated), even when those tasks use different prompts, without changing `kookr spawn` or REST launch defaults.
+
+**Acceptance criteria:**
+- Given two in-memory in-progress tasks in `/tmp/demo` with different prompts, when the Launch dialog cwd is `/tmp/demo`, then a busy-directory banner is visible with the live count and those task names, plus Open existing and Launch anyway
+- Given a live task in `/tmp/other` only, when the Launch dialog cwd is `/tmp/demo`, then the busy-directory banner is not shown
+- Trailing slashes do not split one directory (`/tmp/demo` ≡ `/tmp/demo/`)
+- Matching uses each task's launch directory, not a session that later moved into a linked worktree
+- Given the operator clicks Launch anyway, when the form is complete, then the launch message is sent
+- Given the operator clicks Open existing, then one live task is selected (oldest when several) and no launch is sent
+- The prompt-duplicate banner from R4.1c still appears when prompt and directory also match
+- Submit is not blocked by the busy-directory warning alone; `kookr spawn` defaults stay unchanged
+
+**Evidence:** `src/shared/launch-duplicate.ts`, `src/frontend/components/LaunchBusyDirectoryBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/shared/launch-duplicate.test.ts`, `src/frontend/components/LaunchTaskDialog.busy-directory.test.ts`.
+
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.
@@ -1323,6 +1339,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
 | R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
+| R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |

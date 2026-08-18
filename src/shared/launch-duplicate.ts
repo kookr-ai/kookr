@@ -36,6 +36,8 @@ export interface LaunchDuplicateCandidate {
   prompt?: string | null;
   description?: string | null;
   taskName?: string | null;
+  /** ISO start time when present; used to pick the oldest live task in a directory. */
+  startedAt?: string | null;
 }
 
 export interface LaunchDuplicateQuery {
@@ -156,4 +158,39 @@ export function findActiveLaunchDuplicate(
   const cwd = query.cwd.trim();
   if (!prompt || !cwd) return undefined;
   return tasks.find((task) => taskMatchesLaunchDuplicate(task, { ...query, prompt, cwd }));
+}
+
+function isLiveLaunchTask(task: LaunchDuplicateCandidate): boolean {
+  if (!task || typeof task !== 'object') return false;
+  const status = typeof (task.taskStatus ?? task.status) === 'string'
+    ? (task.taskStatus ?? task.status)
+    : null;
+  return !(status && isTerminalLaunchStatus(status));
+}
+
+/**
+ * Active tasks whose *launch* directory is this cwd (trailing slashes ignored).
+ *
+ * Prompt is ignored — this is the busy-directory warning, not prompt-duplicate
+ * matching. Prefer compact-list cwd (via {@link withLaunchTaskCwds}) so a
+ * session that later moved into a linked worktree still counts against the
+ * directory the operator launched in.
+ *
+ * Oldest first when `startedAt` is present so "Open existing" has a stable pick.
+ * Empty cwd never matches. Does not change `kookr spawn` defaults.
+ */
+export function findLiveTasksInDirectory(
+  tasks: readonly LaunchDuplicateCandidate[],
+  cwd: string,
+): LaunchDuplicateCandidate[] {
+  const trimmed = cwd.trim();
+  if (!trimmed) return [];
+  return tasks
+    .filter((task) => isLiveLaunchTask(task) && cwdEquivalent(task.cwd, trimmed))
+    .sort((a, b) => {
+      const aTime = typeof a.startedAt === 'string' ? a.startedAt : '';
+      const bTime = typeof b.startedAt === 'string' ? b.startedAt : '';
+      if (aTime && bTime && aTime !== bTime) return aTime < bTime ? -1 : 1;
+      return 0;
+    });
 }

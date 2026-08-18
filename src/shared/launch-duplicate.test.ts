@@ -3,6 +3,7 @@ import {
   cwdEquivalent,
   expandLaunchPromptPaths,
   findActiveLaunchDuplicate,
+  findLiveTasksInDirectory,
   taskMatchesLaunchDuplicate,
   withLaunchTaskCwds,
 } from './launch-duplicate.js';
@@ -108,6 +109,70 @@ describe('expandLaunchPromptPaths', () => {
   it('joins a relative file token to cwd', () => {
     expect(expandLaunchPromptPaths('Fix src/login.ts please', '/repo/x'))
       .toBe('Fix /repo/x/src/login.ts please');
+  });
+});
+
+describe('findLiveTasksInDirectory', () => {
+  const older = {
+    taskId: 'older',
+    agentId: 'sess-older',
+    taskStatus: 'inProgress',
+    cwd: '/tmp/demo',
+    taskName: 'Auth fix',
+    description: 'Fix the auth bug',
+    startedAt: '2026-08-01T10:00:00.000Z',
+  };
+  const newer = {
+    taskId: 'newer',
+    agentId: 'sess-newer',
+    taskStatus: 'inProgress',
+    cwd: '/tmp/demo/',
+    taskName: 'Review tests',
+    description: 'Review the test suite',
+    startedAt: '2026-08-01T11:00:00.000Z',
+  };
+  const otherDir = {
+    taskId: 'other-dir',
+    agentId: 'sess-other',
+    taskStatus: 'inProgress',
+    cwd: '/tmp/other',
+    taskName: 'Elsewhere',
+    description: 'Work in another repo',
+    startedAt: '2026-08-01T09:00:00.000Z',
+  };
+  const done = {
+    taskId: 'done',
+    agentId: 'sess-done',
+    taskStatus: 'completed',
+    cwd: '/tmp/demo',
+    taskName: 'Finished',
+    description: 'Already done',
+  };
+
+  it('returns live tasks in the launch directory, oldest first, ignoring trailing slashes', () => {
+    const found = findLiveTasksInDirectory([newer, otherDir, done, older], '/tmp/demo');
+    expect(found.map((task) => task.taskId)).toEqual(['older', 'newer']);
+  });
+
+  it('does not include a live task from a different directory', () => {
+    expect(findLiveTasksInDirectory([otherDir], '/tmp/demo')).toEqual([]);
+  });
+
+  it('prefers compact launch cwd over a session/worktree snapshot cwd', () => {
+    const sessionRow = {
+      taskId: 'live',
+      taskStatus: 'inProgress',
+      cwd: '/tmp/kookr-live-wt',
+      taskName: 'Auth fix',
+      description: 'Fix the auth bug',
+    };
+    const overlaid = withLaunchTaskCwds([sessionRow], { live: '/tmp/demo' });
+    expect(findLiveTasksInDirectory(overlaid, '/tmp/demo').map((task) => task.taskId)).toEqual(['live']);
+    expect(findLiveTasksInDirectory([sessionRow], '/tmp/demo')).toEqual([]);
+  });
+
+  it('returns an empty list when cwd is blank', () => {
+    expect(findLiveTasksInDirectory([older], '   ')).toEqual([]);
   });
 });
 
