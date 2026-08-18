@@ -23,6 +23,19 @@ export function usageKeyPlaybookId(stored: string): string {
 }
 
 /**
+ * True when two stored pin/recent keys name the same playbook.
+ * Exact match, or one side is a legacy bare id whose playbook id matches.
+ * Two composite keys with the same filename but different source dirs do not collide.
+ */
+export function usageKeysOverlap(a: string, b: string): boolean {
+  if (a === b) return true;
+  const aId = usageKeyPlaybookId(a);
+  const bId = usageKeyPlaybookId(b);
+  if (!aId || aId !== bId) return false;
+  return a === aId || b === bId;
+}
+
+/**
  * Label for a stored recent/pin key: catalog `name` when a playbook matches
  * (composite or legacy bare id), otherwise the file stem of the stored id.
  */

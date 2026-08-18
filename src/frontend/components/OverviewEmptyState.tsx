@@ -11,6 +11,7 @@ import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import {
   PlaybookUsageTracker,
   resolveRecentPlaybookLabel,
+  usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
 import { findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
@@ -103,7 +104,6 @@ export function OverviewEmptyState({
   // playbooks-only memo would keep the pre-launch order.
   const usage = new PlaybookUsageTracker();
   const pinnedKeys = [...usage.getPinned()];
-  const pinnedKeySet = new Set(pinnedKeys);
   const pinnedPlaybooks = pinnedKeys
     .slice(0, OVERVIEW_PINNED_PLAYBOOK_LIMIT)
     .map((key) => ({
@@ -111,7 +111,7 @@ export function OverviewEmptyState({
       label: resolveRecentPlaybookLabel(key, playbooks),
     }));
   const recentPlaybooks = usage.getRecent()
-    .filter((key) => !pinnedKeySet.has(key))
+    .filter((key) => !pinnedKeys.some((pinned) => usageKeysOverlap(key, pinned)))
     .slice(0, OVERVIEW_RECENT_PLAYBOOK_LIMIT)
     .map((key) => ({
       key,

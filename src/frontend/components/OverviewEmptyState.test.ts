@@ -516,6 +516,37 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).not.toContain('Recent playbooks');
   });
 
+  test('does not list a playbook twice when pin is a legacy bare id and recent is composite', () => {
+    seedPinnedPlaybooks(['deploy.md']);
+    seedRecentPlaybooks(['/project::deploy.md', '/project::review.md']);
+    useKookrStore.setState({ playbooks: [samplePlaybook()] });
+    render();
+
+    const pinned = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]'));
+    const recents = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
+    expect(pinned.map((chip) => chip.textContent)).toEqual(['Deploy to prod']);
+    expect(recents.map((chip) => chip.textContent)).toEqual(['review']);
+    expect(recents.map((chip) => chip.dataset.playbookKey)).not.toContain('/project::deploy.md');
+  });
+
+  test('keeps an overflow pin out of recents while still showing a non-pinned recent', () => {
+    seedPinnedPlaybooks([
+      '/project::one.md',
+      '/project::two.md',
+      '/project::three.md',
+      '/project::four.md',
+    ]);
+    seedRecentPlaybooks(['/project::four.md', '/project::review.md']);
+    render();
+
+    const pinned = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]'));
+    const recents = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
+    expect(pinned.map((chip) => chip.textContent)).toEqual(['one', 'two', 'three']);
+    expect(recents.map((chip) => chip.textContent)).toEqual(['review']);
+    expect(recents.map((chip) => chip.dataset.playbookKey)).not.toContain('/project::four.md');
+    expect(container.textContent).not.toContain('four');
+  });
+
   test('re-reads recents after a same-tab launch updates localStorage', () => {
     seedRecentPlaybooks(['/project::old.md']);
     render({ running: [makeRunningAgent('run-1', 'Watch logs')] });
