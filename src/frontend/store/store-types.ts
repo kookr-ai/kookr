@@ -615,6 +615,19 @@ export interface PausedSchedulesStatus {
   schedulesPausedByFailure: PausedScheduleStatusRow[];
 }
 
+/**
+ * Slim projection of `GET /api/health.timerHealth` for the status-bar
+ * overdue-timer pill (issue #2643). `overdue` is the summary count; the
+ * oldest loop name is optional so a four-field health summary (#2636) or a
+ * full `loops[]` snapshot can both feed the chip. Null `oldestName` still
+ * shows the count. The pill hides when this projection is null (block
+ * missing) or `overdue === 0`.
+ */
+export interface TimerHealthStatus {
+  overdue: number;
+  oldestName: string | null;
+}
+
 /** Decision-bucket counts from `GET /api/health.lessonYield` (lesson-yield.v2). */
 export interface LessonYieldBucketCounts {
   wroteLesson: number;
@@ -645,6 +658,7 @@ export interface OpsHealthPayload {
   launchDependencies?: LaunchDependenciesStatus | null;
   pausedSchedules?: PausedSchedulesStatus | null;
   lessonYield?: LessonYieldStatus | null;
+  timerHealth?: TimerHealthStatus | null;
 }
 
 export interface SystemStatusSlice {
@@ -668,9 +682,14 @@ export interface SystemStatusSlice {
   pausedSchedules: PausedSchedulesStatus | null;
   /** Lesson-authoring yield projection from `/api/health.lessonYield` (issue #2395). */
   lessonYield: LessonYieldStatus | null;
+  /**
+   * Lifecycle-timer overdue summary from `/api/health.timerHealth` (issue #2643).
+   * Null when the health block is absent (old server) so the pill stays hidden.
+   */
+  timerHealth: TimerHealthStatus | null;
 
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
-  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield projections. */
+  /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield / timer-health projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }
 

@@ -11,9 +11,10 @@ import type {
   ProdSmokeTickStatus,
   ResourceWatchdogStatus,
   PausedSchedulesStatus,
+  TimerHealthStatus,
 } from '../store/store-types.js';
 
-/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps + paused schedules). */
+/** Default poll interval for `/api/health` ops-health projections (smoke + watchdog + FAA residual + pipeline starvation + launch deps + paused schedules + timer health). */
 export const OPS_HEALTH_POLL_INTERVAL_MS = 30_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -270,14 +271,73 @@ export function parseLessonYield(value: unknown): LessonYieldStatus | null {
   return { windowDays, yieldRate, decided, completedInWindow, buckets };
 }
 
+function parseOptionalNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Parse `GET /api/health.timerHealth` for the overdue-timer pill (issue #2643).
+ * Returns null when the block is missing or `overdue` cannot be read — an old
+ * server without the summary must hide the chip.
+ *
+ * Accepts the four-field summary (#2636: `overdue` + optional
+ * `oldestOverdueName` / `oldestName` / `oldestNeverFiredName`) and the full
+ * `loops[]` snapshot so either health shape can feed the chip.
+ */
+export function parseTimerHealth(value: unknown): TimerHealthStatus | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+
+  let overdue: number | null = null;
+  const overdueRaw = rec.overdue;
+  if (typeof overdueRaw === 'number' && Number.isFinite(overdueRaw) && overdueRaw >= 0) {
+    overdue = Math.floor(overdueRaw);
+  }
+
+  let oldestName =
+    parseOptionalNonEmptyString(rec.oldestOverdueName)
+    ?? parseOptionalNonEmptyString(rec.oldestName);
+
+  if (Array.isArray(rec.loops)) {
+    const overdueLoops: Array<{ name: string; lastFiredAtMs: number }> = [];
+    for (const rowValue of rec.loops) {
+      const row = asRecord(rowValue);
+      if (!row || row.overdue !== true) continue;
+      const name = parseOptionalNonEmptyString(row.name);
+      if (!name) continue;
+      const firedRaw = row.lastFiredAt;
+      const parsed = typeof firedRaw === 'string' ? Date.parse(firedRaw) : Number.NaN;
+      overdueLoops.push({
+        name,
+        lastFiredAtMs: Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY,
+      });
+    }
+    if (overdue === null) overdue = overdueLoops.length;
+    if (oldestName === null && overdueLoops.length > 0) {
+      overdueLoops.sort((a, b) => (
+        a.lastFiredAtMs === b.lastFiredAtMs
+          ? a.name.localeCompare(b.name)
+          : a.lastFiredAtMs - b.lastFiredAtMs
+      ));
+      oldestName = overdueLoops[0].name;
+    }
+  }
+
+  if (overdue === null) return null;
+  if (oldestName === null) {
+    oldestName = parseOptionalNonEmptyString(rec.oldestNeverFiredName);
+  }
+  return { overdue, oldestName };
+}
+
 /**
  * Poll `GET /api/health` for smoke-tick failing streak, resourceWatchdog
  * enablement, capacity FAA residual, pipeline-starvation drought state,
- * launch-dependency degradation, fail-closed paused schedules, and
- * lesson-authoring yield, and push the slim projections into the store for
- * status-bar pills and the Diagnostics panel (issues #2037, #2082, #2259,
- * #2364, #2432, #2395). Soft-fails on network/parse errors so the dashboard
- * stays up.
+ * launch-dependency degradation, fail-closed paused schedules,
+ * lesson-authoring yield, and lifecycle-timer overdue, and push the slim
+ * projections into the store for status-bar pills and the Diagnostics panel
+ * (issues #2037, #2082, #2259, #2364, #2432, #2395, #2643). Soft-fails on
+ * network/parse errors so the dashboard stays up.
  */
 export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_MS): void {
   const handleOpsHealth = useKookrStore((s) => s.handleOpsHealth);
@@ -302,6 +362,7 @@ export function useOpsHealthPoll(intervalMs: number = OPS_HEALTH_POLL_INTERVAL_M
           launchDependencies: parseLaunchDependencies(rec.launchDependencies),
           pausedSchedules: parseSchedules(rec.schedules),
           lessonYield: parseLessonYield(rec.lessonYield),
+          timerHealth: parseTimerHealth(rec.timerHealth),
         });
       } catch {
         // Soft: pills stay at last known state; dashboard remains usable.

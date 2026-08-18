@@ -8144,10 +8144,10 @@ button.live-friction-pill:focus-visible {
   outline-offset: 1px;
 }
 
-/* Issue #2037 / #2082 / #2364 / #2432: smoke-tick failing streak,
+/* Issue #2037 / #2082 / #2364 / #2432 / #2643: smoke-tick failing streak,
    resourceWatchdog disabled, chronic FAA residual, launch-dependency
-   degradation, and fail-closed paused-schedules pills. Hidden entirely
-   when healthy; amber/red so they read as attention, not info. */
+   degradation, fail-closed paused-schedules, and overdue-timer pills.
+   Hidden entirely when healthy; amber/red so they read as attention, not info. */
 .ops-health-pills {
   display: inline-flex;
   align-items: center;
@@ -8198,6 +8198,12 @@ button.live-friction-pill:focus-visible {
   color: var(--amber);
 }
 
+/* Overdue lifecycle timer: red like smoke — a safety net stopped ticking. */
+.ops-health-pill.ops-health-timer-overdue {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--red);
+}
+
 button.ops-health-pill.ops-health-faa {
   cursor: pointer;
 }
@@ -8208,6 +8214,19 @@ button.ops-health-pill.ops-health-faa:hover {
 
 button.ops-health-pill.ops-health-faa:focus-visible {
   outline: 1px solid #fb923c;
+  outline-offset: 1px;
+}
+
+button.ops-health-pill.ops-health-timer-overdue {
+  cursor: pointer;
+}
+
+button.ops-health-pill.ops-health-timer-overdue:hover {
+  background: rgba(248, 113, 113, 0.28);
+}
+
+button.ops-health-pill.ops-health-timer-overdue:focus-visible {
+  outline: 1px solid var(--red);
   outline-offset: 1px;
 }
 

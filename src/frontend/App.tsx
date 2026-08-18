@@ -388,6 +388,9 @@ export function App() {
     setOperationsFocus('live-friction');
     setShowOperations(true);
   }, []);
+  const openDiagnostics = useCallback(() => {
+    setShowOperations(true);
+  }, []);
   const toggleOperations = useCallback(() => {
     setShowOperations((open) => {
       if (open) setOperationsFocus(null);
@@ -1560,6 +1563,7 @@ export function App() {
         onShowShortcuts={() => openModal('shortcuts')}
         onOpenCapacity={openSettingsAtMaxActiveTasks}
         onOpenLiveFriction={openLiveFrictionDiagnostics}
+        onOpenDiagnostics={openDiagnostics}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}

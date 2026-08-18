@@ -10,6 +10,7 @@ import {
   parseLessonYield,
   parsePipelineStarvation,
   parseSchedules,
+  parseTimerHealth,
   useOpsHealthPoll,
 } from './useOpsHealthPoll.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
@@ -126,6 +127,14 @@ describe('useOpsHealthPoll', () => {
           },
           byCompletionPath: { agent: { wroteLesson: 2 } },
         },
+        timerHealth: {
+          schemaVersion: 'timer-health.v1',
+          registered: 8,
+          overdue: 2,
+          neverFired: 1,
+          oldestNeverFiredName: 'maintenancePrune',
+          oldestOverdueName: 'deployLagDetector',
+        },
       }),
     });
 
@@ -198,6 +207,11 @@ describe('useOpsHealthPoll', () => {
     });
     // Slim projection must not carry the heavy byCompletionPath tree.
     expect(JSON.stringify(useKookrStore.getState().lessonYield)).not.toContain('byCompletionPath');
+    expect(useKookrStore.getState().timerHealth).toEqual({
+      overdue: 2,
+      oldestName: 'deployLagDetector',
+    });
+    expect(JSON.stringify(useKookrStore.getState().timerHealth)).not.toContain('schemaVersion');
   });
 
   test('soft-fails on network error without throwing', async () => {
@@ -218,6 +232,7 @@ describe('useOpsHealthPoll', () => {
     expect(useKookrStore.getState().launchDependencies).toBeNull();
     expect(useKookrStore.getState().pausedSchedules).toBeNull();
     expect(useKookrStore.getState().lessonYield).toBeNull();
+    expect(useKookrStore.getState().timerHealth).toBeNull();
   });
 });
 
@@ -484,6 +499,62 @@ describe('parseLaunchDependencies (issue #2364)', () => {
     })).toEqual({
       totalDegradedTasks: 2,
       dependencies: [],
+    });
+  });
+});
+
+describe('parseTimerHealth (issue #2643)', () => {
+  test('returns null for a missing or malformed block', () => {
+    expect(parseTimerHealth(null)).toBeNull();
+    expect(parseTimerHealth(undefined)).toBeNull();
+    expect(parseTimerHealth('x')).toBeNull();
+    expect(parseTimerHealth({})).toBeNull();
+    expect(parseTimerHealth({ overdue: '2' })).toBeNull();
+    expect(parseTimerHealth({ overdue: Number.NaN })).toBeNull();
+    expect(parseTimerHealth({ overdue: -1 })).toBeNull();
+  });
+
+  test('parses the four-field summary, preferring oldestOverdueName', () => {
+    expect(parseTimerHealth({
+      registered: 8,
+      overdue: 2.9,
+      neverFired: 1,
+      oldestNeverFiredName: 'maintenancePrune',
+      oldestOverdueName: 'deployLagDetector',
+    })).toEqual({ overdue: 2, oldestName: 'deployLagDetector' });
+  });
+
+  test('falls back to oldestNeverFiredName when no overdue name is present', () => {
+    expect(parseTimerHealth({
+      overdue: 1,
+      neverFired: 1,
+      oldestNeverFiredName: 'maintenancePrune',
+    })).toEqual({ overdue: 1, oldestName: 'maintenancePrune' });
+  });
+
+  test('accepts the oldestName alias when that is the only name field', () => {
+    expect(parseTimerHealth({
+      overdue: 1,
+      oldestName: 'save',
+    })).toEqual({ overdue: 1, oldestName: 'save' });
+  });
+
+  test('computes overdue count and oldest name from loops[]', () => {
+    expect(parseTimerHealth({
+      schemaVersion: 'timer-health.v1',
+      loops: [
+        { name: 'save', overdue: false, lastFiredAt: '2026-08-18T10:00:00.000Z' },
+        { name: 'maintenancePrune', overdue: true, lastFiredAt: '2026-08-18T08:00:00.000Z' },
+        { name: 'deployLagDetector', overdue: true, lastFiredAt: '2026-08-18T09:00:00.000Z' },
+        { name: 'bad', overdue: true },
+      ],
+    })).toEqual({ overdue: 3, oldestName: 'bad' });
+  });
+
+  test('keeps a zeroed summary so the pill can hide at overdue === 0', () => {
+    expect(parseTimerHealth({ overdue: 0, oldestOverdueName: null })).toEqual({
+      overdue: 0,
+      oldestName: null,
     });
   });
 });

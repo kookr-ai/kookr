@@ -43,6 +43,11 @@ import {
   formatPausedSchedulesTitle,
   shouldShowPausedSchedulesPill,
 } from './paused-schedules-pill.js';
+import {
+  formatTimerOverdueLabel,
+  formatTimerOverdueTitle,
+  shouldShowTimerOverduePill,
+} from './timer-overdue-pill.js';
 import { formatOldestFindingWait } from '../presentation.js';
 import {
   formatCompletedInWindowChipLabel,
@@ -88,6 +93,11 @@ interface Props {
    * isolated StatusBar tests need no App wiring.
    */
   onOpenLiveFriction?: () => void;
+  /**
+   * Open Diagnostics when the overdue-timer pill is clicked (issue #2643).
+   * Optional so isolated StatusBar tests need no App wiring.
+   */
+  onOpenDiagnostics?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -227,16 +237,23 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
 /**
  * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
  * (issue #2037), chronic finishedAwaitingAck residual (issue #2082),
- * launch-dependency degradation (issue #2364), and fail-closed paused
- * schedules (issue #2432). Hidden when healthy / enabled / residual clear /
- * no data yet.
+ * launch-dependency degradation (issue #2364), fail-closed paused
+ * schedules (issue #2432), and overdue lifecycle timers (issue #2643).
+ * Hidden when healthy / enabled / residual clear / no data yet.
  */
-function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
+function OpsHealthPills({
+  onOpenCapacity,
+  onOpenDiagnostics,
+}: {
+  onOpenCapacity?: () => void;
+  onOpenDiagnostics?: () => void;
+}) {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
   const capacityResidual = useKookrStore((s) => s.capacityResidual);
   const launchDependencies = useKookrStore((s) => s.launchDependencies);
   const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
+  const timerHealth = useKookrStore((s) => s.timerHealth);
 
   const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
   const showSmoke = smokeFailures >= 1;
@@ -246,8 +263,16 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
   const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
   const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
   const showPausedSchedules = shouldShowPausedSchedulesPill(pausedSchedules);
+  const showTimerOverdue = shouldShowTimerOverduePill(timerHealth);
 
-  if (!showSmoke && !showWatchdog && !showFaa && !showLaunchDeps && !showPausedSchedules) return null;
+  if (
+    !showSmoke
+    && !showWatchdog
+    && !showFaa
+    && !showLaunchDeps
+    && !showPausedSchedules
+    && !showTimerOverdue
+  ) return null;
 
   const smokeTitle = showSmoke
     ? [
@@ -297,6 +322,13 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
     showPausedSchedules && pausedSchedules ? formatPausedSchedulesLabel(pausedSchedules) : '';
   const pausedSchedulesTitle =
     showPausedSchedules && pausedSchedules ? formatPausedSchedulesTitle(pausedSchedules) : '';
+
+  const timerOverdueLabel =
+    showTimerOverdue && timerHealth ? formatTimerOverdueLabel(timerHealth) : '';
+  const timerOverdueTitle =
+    showTimerOverdue && timerHealth
+      ? formatTimerOverdueTitle(timerHealth, Boolean(onOpenDiagnostics))
+      : '';
 
   return (
     <span className="ops-health-pills" data-testid="ops-health-pills">
@@ -363,6 +395,29 @@ function OpsHealthPills({ onOpenCapacity }: { onOpenCapacity?: () => void }) {
           {pausedSchedulesLabel}
         </span>
       )}
+      {showTimerOverdue && (
+        onOpenDiagnostics ? (
+          <button
+            type="button"
+            className="ops-health-pill ops-health-timer-overdue"
+            data-testid="ops-health-timer-overdue-pill"
+            title={timerOverdueTitle}
+            aria-label={`${timerOverdueLabel}. Open Diagnostics`}
+            onClick={onOpenDiagnostics}
+          >
+            {timerOverdueLabel}
+          </button>
+        ) : (
+          <span
+            className="ops-health-pill ops-health-timer-overdue"
+            data-testid="ops-health-timer-overdue-pill"
+            title={timerOverdueTitle}
+            role="status"
+          >
+            {timerOverdueLabel}
+          </span>
+        )
+      )}
     </span>
   );
 }
@@ -377,6 +432,7 @@ export function StatusBar({
   onShowShortcuts,
   onOpenCapacity,
   onOpenLiveFriction,
+  onOpenDiagnostics,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -542,7 +598,7 @@ export function StatusBar({
         )}
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
-        <OpsHealthPills onOpenCapacity={onOpenCapacity} />
+        <OpsHealthPills onOpenCapacity={onOpenCapacity} onOpenDiagnostics={onOpenDiagnostics} />
         {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
         <button
           className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}
