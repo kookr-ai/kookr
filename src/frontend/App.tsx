@@ -16,6 +16,7 @@ import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets, countCompletedInWindow, countLaunchedInWindow } from './agent-buckets.js';
+import { activeFindingIndex, queueFocusTarget } from './queue-focus.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -1118,6 +1119,13 @@ export function App() {
     () => oldestFindingWaitStartedAt(findings),
     [findings],
   );
+  // Position the top-bar queue indicator names ("Triaging X of N"), reused by
+  // its focus action so the label and the click target stay in lockstep.
+  const currentFindingIndex = activeFindingIndex(
+    findings,
+    selectedAgentId,
+    Boolean(selectedAgent?.anomaly),
+  );
   const [windowNowMs, setWindowNowMs] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setWindowNowMs(Date.now()), 60_000);
@@ -1410,10 +1418,14 @@ export function App() {
       <SweepReport send={send} />
       <TopBar
         findings={findings.length}
-        currentIndex={selectedAgent && selectedAgent.anomaly
-          ? findings.findIndex((f) => f.agentId === selectedAgentId)
-          : -1}
+        currentIndex={currentFindingIndex}
         totalFindings={findings.length}
+        onFocusQueue={() => {
+          // Focus the finding the queue indicator names: the currently selected
+          // finding if one is active, otherwise the first waiting finding.
+          const target = queueFocusTarget(findings, selectedAgentId, Boolean(selectedAgent?.anomaly));
+          if (target) selectAgent(target.agentId, target.taskId);
+        }}
         compact={isMobileViewport}
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); openModal('launch'); }}
         readOnly={isViewer}
