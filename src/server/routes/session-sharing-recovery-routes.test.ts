@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -189,6 +189,81 @@ describe('session sharing recovery routes', () => {
     expect(audit).toContain('"action":"disableTerminalSharing"');
     expect(audit).toContain('"state":"requiresRestart"');
   });
+
+  it.runIf(process.platform === 'linux' || process.platform === 'darwin')(
+    'writes .env and its backup owner-only (mode 0o600) when disabling terminal sharing',
+    async () => {
+      const kookrDir = await mkTestDir('kookr-disable-terminal-mode-');
+      const serverCwd = await mkTestDir('kookr-disable-terminal-mode-cwd-');
+      const envPath = join(serverCwd, '.env');
+      // Seed a group/world-readable .env so a rewrite that only updates
+      // contents (no chmod) leaves 0644 and fails this assertion.
+      await writeFile(envPath, `${SESSION_SHARING_TERMINAL_TRUST_ENV_NAME}=true\nOTHER=1\n`, 'utf8');
+      await chmod(envPath, 0o644);
+      expect((await stat(envPath)).mode & 0o777).toBe(0o644);
+
+      const hono = await app({ kookrDir, serverCwd, relayConnection: manager() });
+      const res = await post(hono, 'disableTerminalSharing', { confirmation: 'disable terminal sharing' });
+      expect(res.status).toBe(200);
+      const body = await res.json() as { result: { backupPath: string } };
+
+      expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+      expect(existsSync(body.result.backupPath)).toBe(true);
+      expect((await stat(body.result.backupPath)).mode & 0o777).toBe(0o600);
+      await expect(readFile(envPath, 'utf8')).resolves.toContain(`${SESSION_SHARING_TERMINAL_TRUST_ENV_NAME}=false`);
+    },
+  );
+
+  it('passes an explicit owner-only mode to the .env write', async () => {
+    // writeFile's mode is ignored on an existing inode; chmod covers that
+    // case. This source pin fails if the write itself drops `mode`.
+    const src = await readFile(new URL('../session-sharing-recovery.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/writeFile\(\s*envPath[\s\S]*mode:\s*SESSION_SHARING_ENV_FILE_MODE/);
+    expect(src).toMatch(/chmod\(envPath,\s*SESSION_SHARING_ENV_FILE_MODE\)/);
+    expect(src).toMatch(/chmod\(backupPath,\s*SESSION_SHARING_ENV_FILE_MODE\)/);
+  });
+
+  it.runIf(process.platform === 'linux' || process.platform === 'darwin')(
+    'rewrites a cwd .env symlink in place and tightens the target to 0o600',
+    async () => {
+      const kookrDir = await mkTestDir('kookr-disable-terminal-symlink-');
+      const serverCwd = await mkTestDir('kookr-disable-terminal-symlink-cwd-');
+      const secretsDir = await mkTestDir('kookr-disable-terminal-secrets-');
+      const targetPath = join(secretsDir, 'shared.env');
+      const envPath = join(serverCwd, '.env');
+      await writeFile(targetPath, `${SESSION_SHARING_TERMINAL_TRUST_ENV_NAME}=true\nOTHER=1\n`, 'utf8');
+      await chmod(targetPath, 0o644);
+      await symlink(targetPath, envPath);
+
+      const hono = await app({ kookrDir, serverCwd, relayConnection: manager() });
+      const res = await post(hono, 'disableTerminalSharing', { confirmation: 'disable terminal sharing' });
+      expect(res.status).toBe(200);
+
+      expect((await lstat(envPath)).isSymbolicLink()).toBe(true);
+      await expect(readFile(targetPath, 'utf8')).resolves.toContain(`${SESSION_SHARING_TERMINAL_TRUST_ENV_NAME}=false`);
+      expect((await stat(targetPath)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.runIf(process.platform === 'linux' || process.platform === 'darwin')(
+    'forces .env 0o600 even when umask would leave the file world-readable',
+    async () => {
+      const previousUmask = process.umask(0o000);
+      try {
+        const kookrDir = await mkTestDir('kookr-disable-terminal-umask-');
+        const serverCwd = await mkTestDir('kookr-disable-terminal-umask-cwd-');
+        const envPath = join(serverCwd, '.env');
+        const hono = await app({ kookrDir, serverCwd, relayConnection: manager() });
+
+        const res = await post(hono, 'disableTerminalSharing', { confirmation: 'disable terminal sharing' });
+        expect(res.status).toBe(200);
+        expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+        await expect(readFile(envPath, 'utf8')).resolves.toContain(`${SESSION_SHARING_TERMINAL_TRUST_ENV_NAME}=false`);
+      } finally {
+        process.umask(previousUmask);
+      }
+    },
+  );
 
   it('returns and audits credential rotation failure without exposing the submitted admin token', async () => {
     const kookrDir = await mkTestDir('kookr-rotate-failure-');
