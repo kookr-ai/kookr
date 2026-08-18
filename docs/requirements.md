@@ -819,8 +819,9 @@ The system SHALL display the selected agent's interactive terminal and response 
 - Anomaly explanation badge shown in detail header when active
 - Input box for responding to the agent
 - Empty state when no agent selected
+- On the no-selection overview, when at least one agent is live (waiting, running, or completed), show a compact runtime-mix line tallying agents by runtime — known runtimes first in canonical order with short labels (`Claude 3 · Codex 2 · Grok 1`), unknown/legacy `agentType` values kept verbatim and sorted after, alphabetically. Agents with no `agentType` are skipped and a zero-count runtime never appears; the line is absent when there are no tasks (issue #2670)
 
-**Evidence:** `src/frontend/components/DetailPanel.tsx` (terminal view, anomaly banner, input box, empty state), `src/frontend/components/TerminalPanel.tsx` (xterm.js terminal).
+**Evidence:** `src/frontend/components/DetailPanel.tsx` (terminal view, anomaly banner, input box, empty state), `src/frontend/components/TerminalPanel.tsx` (xterm.js terminal), `src/frontend/components/OverviewEmptyState.tsx` (no-selection overview, runtime-mix line), `src/frontend/presentation.ts` (`buildRuntimeMix`).
 
 ### R5.3: Status Bar [F5.3] — SHOULD — `done`
 

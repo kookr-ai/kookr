@@ -1937,6 +1937,8 @@ button.section-header.detection-stats-header:focus-visible {
   letter-spacing: 0.05em;
 }
 .overview-runtime-mix {
+  /* Negative top margin tucks the mix line up under the counts row, inside the
+     inner flex column's 20px gap, so it reads as a caption of the counts. */
   margin: -8px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
