@@ -43,7 +43,7 @@ import {
   type LaunchDuplicateCandidate,
 } from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
-import { copyText } from '../clipboard.js';
+import { copyText, readClipboardText } from '../clipboard.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -531,6 +531,26 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     }
   }
 
+  // Pull the operator's clipboard into the task description (issue #2671).
+  // Fails closed: a denied read or an empty clipboard never throws, never logs
+  // the contents, and never overwrites an existing prompt — it only surfaces
+  // the same one-line status the copy-spawn control uses. Never auto-reads on
+  // open; only this explicit click reads.
+  async function handlePasteFromClipboard() {
+    const text = await readClipboardText();
+    const trimmed = text?.trim() ?? '';
+    if (!trimmed) {
+      useKookrStore.getState().handleAlert(
+        '',
+        'Nothing to paste — the clipboard is empty or access was denied.',
+        'info',
+      );
+      return;
+    }
+    setPrompt(trimmed);
+    promptRef.current?.focus();
+  }
+
   useEscapeToClose(() => {
     if (showDropdown) {
       setShowDropdown(false);
@@ -664,21 +684,35 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             )}
             <div className="launch-prompt-field">
               <label htmlFor="launch-task-description">Task description</label>
-              <div className="sample-prompt-chips" role="group" aria-label="Sample prompts">
-                {SAMPLE_LAUNCH_PROMPTS.map((sample) => (
-                  <button
-                    key={sample.id}
-                    type="button"
-                    className="sample-prompt-chip"
-                    title={sample.prompt}
-                    onClick={() => {
-                      setPrompt(sample.prompt);
-                      promptRef.current?.focus();
-                    }}
-                  >
-                    {sample.label}
-                  </button>
-                ))}
+              <div className="launch-prompt-chip-row">
+                <div className="sample-prompt-chips" role="group" aria-label="Sample prompts">
+                  {SAMPLE_LAUNCH_PROMPTS.map((sample) => (
+                    <button
+                      key={sample.id}
+                      type="button"
+                      className="sample-prompt-chip"
+                      title={sample.prompt}
+                      onClick={() => {
+                        setPrompt(sample.prompt);
+                        promptRef.current?.focus();
+                      }}
+                    >
+                      {sample.label}
+                    </button>
+                  ))}
+                </div>
+                {/* Sibling of the sample-prompts group, not a member of it: this
+                    is an action, so it stays outside the group a screen reader
+                    announces as "Sample prompts". */}
+                <button
+                  type="button"
+                  className="paste-prompt-chip"
+                  title="Paste the clipboard into the task description"
+                  aria-label="Paste from clipboard"
+                  onClick={handlePasteFromClipboard}
+                >
+                  📋 Paste from clipboard
+                </button>
               </div>
               <div className="input-with-voice">
                 <textarea
