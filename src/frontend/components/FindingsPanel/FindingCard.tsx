@@ -37,6 +37,49 @@ import { recommendedResponseFor } from './recommendedResponses.js';
 import { CopyExplanationButton } from './CopyExplanationButton.js';
 import { FindingPrChip } from './FindingPrChip.js';
 
+function resolveParentAgent(
+  agents: readonly AgentState[],
+  parentTaskId: string | undefined,
+): AgentState | undefined {
+  if (!parentTaskId) return undefined;
+  return agents.find((candidate) => candidate.taskId === parentTaskId);
+}
+
+function parentDisplayName(parent: AgentState): string {
+  return parent.taskName ?? parent.agentId;
+}
+
+/**
+ * Compact `parent: <name>` chip for child findings. Hidden when the parent id
+ * is missing or the parent is not in the current snapshot.
+ */
+function FindingParentChip({
+  parentTaskId,
+  onSelect,
+}: {
+  parentTaskId: string | undefined;
+  onSelect: (parent: AgentState) => void;
+}): React.ReactElement | null {
+  const parent = useKookrStore((state) => resolveParentAgent(state.agents, parentTaskId));
+  if (!parent) return null;
+  const name = parentDisplayName(parent);
+  return (
+    <button
+      type="button"
+      className="finding-parent-chip"
+      data-testid="finding-parent-chip"
+      title={`Parent task: ${name}`}
+      aria-label={`Select parent: ${name}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect(parent);
+      }}
+    >
+      {`parent: ${name}`}
+    </button>
+  );
+}
+
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -178,6 +221,16 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
               {agentProjectLabel(agent)}
             </span>
           )}
+          <FindingParentChip
+            parentTaskId={agent.parentTaskId}
+            onSelect={(parent) => {
+              if (clickTimer.current) {
+                clearTimeout(clickTimer.current);
+                clickTimer.current = null;
+              }
+              selectAgent(parent.agentId, parent.taskId);
+            }}
+          />
           {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
             <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
@@ -189,7 +242,7 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
           />
           {/* Branch / worktree is intentionally omitted here — it's detail-panel
               context, too granular for the card. See the detail panel's
-              `.detail-branch` row. */}
+              `.detail-branch` row. Do not add gitBranch to this row. */}
         </div>
         {agent.ralphLoop && (
           <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>

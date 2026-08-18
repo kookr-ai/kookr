@@ -965,7 +965,7 @@ kbd {
   line-height: 1;
 }
 
-/* Context line: task id, project, worktree health, PR chip */
+/* Context line: task id, project, parent name, worktree health, PR chip */
 .finding-context {
   display: flex;
   align-items: center;
@@ -976,6 +976,34 @@ kbd {
   overflow: hidden;
 }
 .finding-context .project-badge { font-size: 10px; }
+.finding-parent-chip {
+  display: inline-block;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 14em;
+  overflow: hidden;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.finding-parent-chip:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+.finding-parent-chip:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .finding-pr-chip {
   display: inline-flex;
   align-items: center;
