@@ -578,6 +578,10 @@ kbd {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
+.findings-type-chip-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
 .findings-collapse-all-button {
   border: 1px solid var(--border-dim);
   background: transparent;

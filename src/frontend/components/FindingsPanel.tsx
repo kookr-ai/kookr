@@ -12,6 +12,7 @@ import { track } from '../telemetry.js';
 import { anomalyTypeLabel, formatCompactDateTime } from '../presentation.js';
 import {
   activeFindingTypeFilter,
+  countFindingsByType,
   filterFindingsBySelectedTypes,
   presentFindingTypes,
   useFindingTypeFilter,
@@ -252,6 +253,7 @@ export function FindingsPanel({
   }, [selectedAgentId]);
 
   const presentTypes = useMemo(() => presentFindingTypes(findings), [findings]);
+  const typeCounts = useMemo(() => countFindingsByType(findings), [findings]);
   const activeTypeFilter = useMemo(
     () => activeFindingTypeFilter(selectedFindingTypes, presentTypes),
     [selectedFindingTypes, presentTypes],
@@ -317,6 +319,7 @@ export function FindingsPanel({
           <div className="findings-type-filters" role="group" aria-label="Filter findings by type">
             {presentTypes.map((type) => {
               const pressed = activeTypeFilter.includes(type);
+              const count = typeCounts.get(type) ?? 0;
               return (
                 <button
                   key={type}
@@ -324,9 +327,11 @@ export function FindingsPanel({
                   className={`findings-type-chip${pressed ? ' selected' : ''}`}
                   data-testid={`finding-type-chip-${type}`}
                   aria-pressed={pressed}
+                  aria-label={`${anomalyTypeLabel(type)}, ${count} ${count === 1 ? 'finding' : 'findings'}`}
                   onClick={() => toggleFindingType(type)}
                 >
-                  {anomalyTypeLabel(type)}
+                  {anomalyTypeLabel(type)}{' '}
+                  <span className="findings-type-chip-count">{count}</span>
                 </button>
               );
             })}
