@@ -59,7 +59,9 @@ describe('completed-in-window chip copy (issue #2618)', () => {
     expect(formatCompletedInWindowChipTitle(3)).toBe(
       '3 tasks reached a terminal status in the last 24 hours. Lower bound — may miss tasks that finished and then aged out of the live list.',
     );
-    expect(formatCompletedInWindowChipTitle(1)).toContain('1 task reached a terminal status');
+    expect(formatCompletedInWindowChipTitle(1)).toBe(
+      '1 task reached a terminal status in the last 24 hours. Lower bound — may miss tasks that finished and then aged out of the live list.',
+    );
   });
 });
 
@@ -97,7 +99,7 @@ describe('StatusBar completed-task count (issue #2618)', () => {
     document.body.innerHTML = '';
   });
 
-  test('shows 3 completed / 24h when three agents finished in the window', async () => {
+  test('renders the completed chip from the completedLast24h prop', async () => {
     await act(async () => {
       root.render(
         React.createElement(StatusBar, {
@@ -113,11 +115,13 @@ describe('StatusBar completed-task count (issue #2618)', () => {
     const chip = container.querySelector('[data-testid="completed-24h-chip"]');
     expect(chip).not.toBeNull();
     expect(chip?.textContent).toBe('3 completed / 24h');
-    expect(chip?.getAttribute('title')).toBe(formatCompletedInWindowChipTitle(3));
+    expect(chip?.getAttribute('title')).toBe(
+      '3 tasks reached a terminal status in the last 24 hours. Lower bound — may miss tasks that finished and then aged out of the live list.',
+    );
     expect(container.textContent).toContain('5 tasks · 2 findings');
   });
 
-  test('hides the chip when none finished in the window', async () => {
+  test('hides the chip when completedLast24h is 0', async () => {
     await act(async () => {
       root.render(
         React.createElement(StatusBar, {

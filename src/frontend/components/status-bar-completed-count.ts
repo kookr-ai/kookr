@@ -1,8 +1,9 @@
 /**
- * Status-bar 24-hour completed-task count (issue #2618).
+ * Status-bar copy for the 24-hour completed-task chip (issue #2618).
  *
- * Counts live agents whose `finishedAt` falls in the same rolling window as
- * time-to-unblock. Different unit from the unblocked-finding chip (#2609).
+ * Counting lives in `countCompletedInWindow`. This file only formats the
+ * label/tooltip and decides whether the chip is visible. Different unit from
+ * the unblocked-finding chip (#2609).
  */
 
 import { TIME_TO_UNBLOCK_WINDOW_MS } from '../../shared/contracts/time-to-unblock.js';
@@ -16,7 +17,7 @@ export function shouldShowCompletedInWindowChip(count: number): boolean {
   return Number.isFinite(count) && count > 0;
 }
 
-/** Chip label: "3 completed / 24h". Hidden at zero so an idle day stays quiet. */
+/** Chip label: "3 completed / 24h". Callers hide the chip at zero. */
 export function formatCompletedInWindowChipLabel(
   count: number,
   windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS,

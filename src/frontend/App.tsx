@@ -1115,9 +1115,14 @@ export function App() {
     () => oldestFindingWaitStartedAt(findings),
     [findings],
   );
+  const [completedWindowNowMs, setCompletedWindowNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setCompletedWindowNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   const completedLast24h = useMemo(
-    () => countCompletedInWindow(completed, Date.now()),
-    [completed],
+    () => countCompletedInWindow(completed, completedWindowNowMs),
+    [completed, completedWindowNowMs],
   );
 
   useEffect(() => {

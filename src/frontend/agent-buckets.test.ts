@@ -178,7 +178,23 @@ describe('countCompletedInWindow (issue #2618)', () => {
       agent('c', 'p', { taskStatus: 'terminated', finishedAt: iso(-23 * 60 * 60 * 1000) }),
     ];
     expect(countCompletedInWindow(agents, NOW)).toBe(3);
-    expect(countCompletedInWindow(agents, NOW, TIME_TO_UNBLOCK_WINDOW_MS)).toBe(3);
+  });
+
+  test('includes finishes exactly at now and exactly at the window cutoff', () => {
+    const agents = [
+      agent('now', 'p', { taskStatus: 'completed', finishedAt: iso(0) }),
+      agent('cutoff', 'p', { taskStatus: 'completed', finishedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS) }),
+      agent('just-outside', 'p', { taskStatus: 'completed', finishedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS - 1) }),
+    ];
+    expect(countCompletedInWindow(agents, NOW)).toBe(2);
+  });
+
+  test('returns 0 for a non-finite now or a negative window', () => {
+    const agents = [
+      agent('a', 'p', { taskStatus: 'completed', finishedAt: iso(-60_000) }),
+    ];
+    expect(countCompletedInWindow(agents, Number.NaN)).toBe(0);
+    expect(countCompletedInWindow(agents, NOW, -1)).toBe(0);
   });
 
   test('ignores agents that finished before the window or are still running', () => {
