@@ -42,7 +42,8 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
 | Ready or health slower than the doctor budget, or the probe times out | `kookr doctor` `ops.http-latency` | Treat the WARN as the hung-HTTP signal — ready budget 500ms, health 2s; do not trust sibling probes that skip on timeout — [HTTP latency](#0a-http-latency-doctor-warn) |
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
-| Discord silent after a real edge | `~/.kookr/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
+| Discord silent after a real edge | `$KOOKR_DIR/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
+| After restart, smoke / prune / deploy-lag / deploy-convergence last-fired empty | `GET /api/diagnostics/timer-health` `lastFiredAt` | Expected for one interval (or until [#2635](https://github.com/kookr-ai/kookr/issues/2635) boot-fire lands); do not treat never-fired as dead until age exceeds the interval — [hourly-timer boot window](#7-hourly-timer-boot-window) |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
@@ -427,6 +428,7 @@ python3 -m json.tool "${KOOKR_DIR}/prod-smoke-tick-alert.json" 2>/dev/null | hea
 | `status: "alert"`, short `consecutiveFailures` | Transient wedge | Re-check after the next hour; correlate with deploy |
 | `status: "alert"`, large `consecutiveFailures`, old `firstFailedAt` | Multi-day false positive or real stuck check | Inspect `failingChecks` (e.g. `version-probe`); fix root cause (adapter binary, network, wrong SHA) — **not** by deleting the artifact alone |
 | Block **absent** | Tick disabled (`KOOKR_PROD_SMOKE_TICK` off / non-4800 default) | Expected on dev; on prod port 4800 investigate env |
+| After restart, `GET /api/diagnostics/timer-health` `prodSmokeTick.lastFiredAt` is null | First fire still waiting one interval | Expected — [hourly-timer boot window](#7-hourly-timer-boot-window) |
 
 Env: `KOOKR_PROD_SMOKE_TICK` in [environment-variables.md](./environment-variables.md).
 
@@ -598,6 +600,73 @@ dtach masters under the documented selection policy.
 
 ---
 
+## 7. Hourly-timer boot window
+
+**Symptom.** After a crash or unattended restart, `GET /api/diagnostics/timer-health`
+shows `lastFiredAt: null` on the safety-net loops. That looks like a dead
+safety net. It is usually just the first interval not having fired yet.
+
+Host-stale already documents its own short post-boot delay (about 45 seconds
+— section 6). The hourly gap is longer, and it is the one that pages or
+goes ignored.
+
+**What waits.** Four loops start with `setInterval` only. They do **not**
+fire at boot. The first tick is one full interval after timer start:
+
+| Loop (timer-health `name`) | Default cadence | Enabled when |
+| --- | --- | --- |
+| smoke (`prodSmokeTick`) | 1 hour | Prod port 4800 (or `KOOKR_PROD_SMOKE_TICK` on) |
+| prune (`maintenancePrune`) | 1 hour | `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` > 0 (off by default) |
+| deploy-lag (`deployLagDetector`) | 1 hour | Prod port 4800 (or `KOOKR_DEPLOY_LAG_DETECTOR` on) |
+| deploy-convergence (`deployConvergence`) | 5 minutes | Prod port 4800 (or `KOOKR_DEPLOY_CONVERGENCE` on) |
+
+The grouping name is "hourly" because three of the four default to one hour.
+Deploy-convergence is the same *shape* (interval-only, no boot fire) with a
+shorter default. Sibling loops that **do** fire shortly after boot — relay
+orphan (~30s) and host-stale dtach (~45s) — are a different class.
+
+**Read last-fired, not the durable artifact.** Timer-health is process
+memory. A restart clears every `lastFiredAt`. The on-disk smoke / deploy-lag
+alert files can still show the *previous* process's last result. Use:
+
+```bash
+curl -fsS "$KOOKR_API_BASE_URL/api/diagnostics/timer-health" \
+  | python3 -c '
+import json, sys
+want = {"prodSmokeTick", "maintenancePrune", "deployLagDetector", "deployConvergence"}
+body = json.load(sys.stdin)
+print("generatedAt", body.get("generatedAt"))
+for loop in body.get("loops") or []:
+    if loop.get("name") in want:
+        print(loop.get("name"), "lastFiredAt", loop.get("lastFiredAt"),
+              "expectedIntervalMs", loop.get("expectedIntervalMs"),
+              "overdue", loop.get("overdue"))
+'
+```
+
+**First action.** Do **not** treat never-fired (`lastFiredAt` null) as a dead
+loop until process age exceeds that loop's interval. Then:
+
+| Observation | Meaning | Action |
+| --- | --- | --- |
+| Loop **absent** from `loops` | Not registered (disabled / not wired) | Expected for prune when the env interval is unset; on prod, confirm the matching enable env if smoke / deploy-lag / deploy-convergence should be on |
+| Present, `lastFiredAt` null, `overdue` false | Inside the boot window | Wait; do not page |
+| Present, `lastFiredAt` null, `overdue` true | Never fired past two expected intervals from registration | Dead or skipped under event-loop pressure — page |
+| Present, `lastFiredAt` set, `overdue` true | Fired once, then stopped | Dead after first fire — page |
+| Present, `lastFiredAt` set, `overdue` false | Alive | None |
+
+`overdue` is the dead-loop flag: progress (last fire, or registration time if
+never fired) older than two expected intervals. Empty last-fired *inside* that
+window is the blind spot this section names.
+
+**Follow-up.** [#2635](https://github.com/kookr-ai/kookr/issues/2635) will
+give these four loops a deferred startup fire (about 30–60 seconds), the same
+pattern relay-orphan already uses. Until that lands, the one-interval wait is
+current behavior. When it lands, empty last-fired should last seconds, not an
+hour — update this section then rather than leaving it stale.
+
+---
+
 ## Related
 
 | Doc | Use when |
@@ -614,4 +683,5 @@ tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hungSuspectTtlReclaim`, `prodSmokeTick`, `resourceWatchdog`,
 `hostStaleDtachReaper`, `staleProcesses`, `sessionReaper`,
 `schedules.schedulesPausedByFailure`,
-`data_directory_disk_critical`).
+`data_directory_disk_critical`) and the timer-health last-fired surface
+(`GET /api/diagnostics/timer-health` `lastFiredAt` / `overdue`).

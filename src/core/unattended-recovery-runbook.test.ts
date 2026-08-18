@@ -1,0 +1,41 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, test } from 'vitest';
+
+/**
+ * Drift guard for issue #2642: after a restart the hourly safety-net loops
+ * stay dark for one interval. The unattended recovery runbook must name that
+ * window so a remote operator does not treat empty last-fired stamps as a
+ * dead loop — or ignore a truly dead loop because "it always looks like that."
+ */
+const runbookPath = join(
+  import.meta.dirname,
+  '..',
+  '..',
+  'docs',
+  'reference',
+  'unattended-recovery-runbook.md',
+);
+
+describe('unattended recovery runbook hourly-timer boot window (issue #2642)', () => {
+  const doc = readFileSync(runbookPath, 'utf-8');
+
+  test('names the four interval-only safety-net loops and the timer-health last-fired surface', () => {
+    expect(doc).toMatch(/smoke/i);
+    expect(doc).toMatch(/prune/i);
+    expect(doc).toMatch(/deploy-lag/i);
+    expect(doc).toMatch(/deploy-convergence/i);
+    expect(doc).toContain('GET /api/diagnostics/timer-health');
+    expect(doc).toMatch(/lastFiredAt|last-fired/);
+  });
+
+  test('tells the operator not to treat never-fired as dead until one interval has passed', () => {
+    expect(doc.toLowerCase()).toMatch(/never-fired|never fired/);
+    expect(doc.toLowerCase()).toMatch(/one interval|first interval/);
+  });
+
+  test('published text has no local home-directory paths', () => {
+    expect(doc).not.toMatch(/\/home\/[^\s]+/);
+    expect(doc).not.toMatch(/\/Users\/[^\s]+/);
+  });
+});
