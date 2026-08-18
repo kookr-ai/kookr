@@ -282,12 +282,30 @@ describe('collectOpsDigestWarnings', () => {
     }).warnings).toEqual([]);
   });
 
-  it('warns from a slim neverFired summary without loops', () => {
+  it('warns from a slim neverFired summary without loops after the hourly interval', () => {
     const { warnings } = collectOpsDigestWarnings({
-      timerHealth: { overdue: 0, neverFired: 2, oldestNeverFiredName: 'prodSmokeTick' },
+      serverStartedAt: '2026-08-18T00:00:00.000Z',
+      timerHealth: {
+        overdue: 0,
+        neverFired: 2,
+        oldestNeverFiredName: 'prodSmokeTick',
+        generatedAt: '2026-08-18T02:00:00.000Z',
+      },
     });
     expect(warnings[0]?.path).toBe('timerHealth.overdue');
     expect(warnings[0]?.summary).toContain('prodSmokeTick');
+  });
+
+  it('stays quiet on a slim neverFired count while the server is younger than one hour', () => {
+    expect(collectOpsDigestWarnings({
+      serverStartedAt: '2026-08-18T00:00:00.000Z',
+      timerHealth: {
+        overdue: 0,
+        neverFired: 5,
+        oldestNeverFiredName: 'prodSmokeTick',
+        generatedAt: '2026-08-18T00:13:00.000Z',
+      },
+    }).warnings).toEqual([]);
   });
 
   it('warns when timerHealth.overdue is at least 1 (issue #2637)', () => {

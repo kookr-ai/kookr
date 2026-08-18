@@ -714,14 +714,22 @@ export function collectOpsDigestWarnings(
       oldestOverdueName = overdueFromLoops[0].name;
     }
 
-    // Slim health summary (#2636): neverFired / oldestNeverFiredName without loops.
+    // Slim health summary (#2636): neverFired counts every lastFiredAt=null
+    // loop, including ones still inside their first interval. Only promote
+    // that count after server uptime already exceeds one hourly interval.
     if (neverFiredHourly.length === 0) {
       const neverFiredCount = finiteNumber(timerHealth.neverFired);
       const oldestNever =
         typeof timerHealth.oldestNeverFiredName === 'string' && timerHealth.oldestNeverFiredName
           ? timerHealth.oldestNeverFiredName
           : null;
-      if (neverFiredCount !== null && neverFiredCount >= 1 && oldestNever) {
+      if (
+        neverFiredCount !== null
+        && neverFiredCount >= 1
+        && oldestNever
+        && uptimeMs !== null
+        && uptimeMs >= HOURLY_INTERVAL_MS
+      ) {
         neverFiredHourly.push(oldestNever);
       }
     }
