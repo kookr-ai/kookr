@@ -1,5 +1,6 @@
 import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
+import { AGENT_TYPES } from '../shared/contracts/agent-types.js';
 import { toolLabel } from '../shared/contracts/activity-summary.js';
 
 /**
@@ -53,6 +54,60 @@ const AGENT_PROVIDER_PRESENTATION: Record<AgentType, AgentProviderPresentation> 
 
 export function agentProviderPresentation(agentType: AgentType): AgentProviderPresentation {
   return AGENT_PROVIDER_PRESENTATION[agentType];
+}
+
+/**
+ * Short one-word runtime names for the no-selection overview mix line
+ * (issue #2670). Deliberately terser than {@link AGENT_PROVIDER_PRESENTATION}'s
+ * `label` ("Claude Code", "Codex CLI", "Grok Build") so several fit on one
+ * compact line: `Claude 6 · Codex 2 · Grok 1`.
+ */
+const AGENT_RUNTIME_SHORT_LABEL: Record<AgentType, string> = {
+  'claude-code': 'Claude',
+  'codex-cli': 'Codex',
+  'grok-build': 'Grok',
+};
+
+/** One runtime's tally in the overview mix line. */
+export interface RuntimeMixEntry {
+  /** Raw agentType key — also the React list key. */
+  agentType: string;
+  /** Display name: short label for a known runtime, raw agentType otherwise. */
+  label: string;
+  /** Number of live agents on this runtime (always > 0). */
+  count: number;
+}
+
+/**
+ * Tally the runtime composition of a set of live agents for the no-selection
+ * overview (issue #2670). Known agent types come first in canonical order
+ * (Claude → Codex → Grok) with a short label; unknown or legacy `agentType`
+ * values keep their raw string and sort after, alphabetically — surfaced, not
+ * dropped. Agents with no `agentType` are skipped (there is no runtime to
+ * name), and a runtime with zero agents never appears.
+ */
+export function buildRuntimeMix(agents: AgentState[]): RuntimeMixEntry[] {
+  const counts = new Map<string, number>();
+  for (const agent of agents) {
+    const type = agent.agentType;
+    if (type === undefined) continue;
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+
+  const known: RuntimeMixEntry[] = [];
+  for (const type of AGENT_TYPES) {
+    const count = counts.get(type);
+    if (count) {
+      known.push({ agentType: type, label: AGENT_RUNTIME_SHORT_LABEL[type], count });
+      counts.delete(type);
+    }
+  }
+
+  const unknown: RuntimeMixEntry[] = [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([type, count]) => ({ agentType: type, label: type, count }));
+
+  return [...known, ...unknown];
 }
 
 export function deriveTaskNextStepRecommendations(

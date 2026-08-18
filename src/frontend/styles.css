@@ -1936,6 +1936,18 @@ button.section-header.detection-stats-header:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.overview-runtime-mix {
+  margin: -8px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+.overview-runtime-mix-entry {
+  white-space: nowrap;
+}
+.overview-runtime-mix-sep {
+  color: var(--text-muted);
+}
 .overview-waiting,
 .overview-running {
   width: 100%;
