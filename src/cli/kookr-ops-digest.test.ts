@@ -157,6 +157,40 @@ describe('collectOpsDigestWarnings', () => {
     expect(warnings[0]?.path).toBe('safeMode.engaged');
     expect(warnings[0]?.summary).toMatch(/since=/);
   });
+
+  it('surfaces helper-LLM auth pauses without raw error bodies (issue #2641)', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      helperLlm: {
+        paused: [
+          {
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            category: 'auth',
+            pausedUntil: '2026-08-18T02:22:00.000Z',
+            lastMessage: 'invalid api key',
+            apiKey: 'sk-live-not-a-real-key',
+          },
+        ],
+        stormsSuppressed: 2,
+      },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('helperLlm.paused');
+    expect(warnings[0]?.summary).toContain('groq category=auth');
+    expect(warnings[0]?.summary).toContain('until=2026-08-18T02:22:00.000Z');
+    expect(warnings[0]?.summary).toContain('stormsSuppressed=2');
+    expect(JSON.stringify(warnings[0])).not.toMatch(/sk-live|invalid api key/i);
+    expect(warnings[0]?.value).not.toHaveProperty('lastMessage');
+    expect(warnings[0]?.value).not.toHaveProperty('apiKey');
+  });
+
+  it('surfaces stormsSuppressed alone when no provider is paused', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      helperLlm: { paused: [], stormsSuppressed: 7 },
+    });
+    expect(warnings[0]?.path).toBe('helperLlm.stormsSuppressed');
+    expect(warnings[0]?.summary).toBe('stormsSuppressed=7');
+  });
 });
 
 describe('formatOpsDigestHuman', () => {

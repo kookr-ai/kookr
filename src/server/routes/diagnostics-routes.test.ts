@@ -42,6 +42,7 @@ import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import { MaintenancePruneHealth } from '../maintenance-prune-schedule.js';
 import type { RouteDeps } from './shared.js';
+import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from '../../core/llm-factory.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
@@ -2441,6 +2442,80 @@ describe('diagnostics routes', () => {
         sampleTaskIds: ['task-unknown'],
       });
       expect(byReason?.prompt_cited_only?.count).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — helperLlm pause / storm block (issue #2641)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health helperLlm block (issue #2641)', () => {
+    test('always publishes a slim helperLlm object', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        helperLlm?: { paused?: unknown[]; stormsSuppressed?: number };
+      };
+      expect(body.helperLlm).toEqual({ paused: [], stormsSuppressed: 0 });
+    });
+
+    test('when Groq is auth-paused, publishes provider=groq category=auth and ISO pausedUntil', async () => {
+      const originalCooldown = process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = '60000';
+      resetHelperLlmDiagnosticsForTest();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const groq = {
+          provider: 'groq',
+          model: 'llama-3.3-70b-versatile',
+          complete: vi.fn(async () => {
+            throw Object.assign(new Error('invalid api key'), { status: 401 });
+          }),
+        };
+        const gemini = {
+          provider: 'gemini',
+          model: 'gemini-model',
+          complete: vi.fn(async () => 'ok'),
+        };
+        await new FallbackLlmClient([groq, gemini]).complete({
+          maxTokens: 10,
+          userMessage: 'name this task',
+        });
+
+        const res = await mkApp({
+          taskStore: new TaskStore(),
+          queue: new AttentionQueue(),
+          buildInfo: {} as never,
+        }).request('/api/health');
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+          helperLlm?: {
+            paused?: Array<Record<string, unknown>>;
+            stormsSuppressed?: number;
+          };
+        };
+        expect(body.helperLlm?.paused).toEqual([
+          {
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            category: 'auth',
+            pausedUntil: '2026-01-01T00:01:00.000Z',
+          },
+        ]);
+        expect(JSON.stringify(body.helperLlm)).not.toMatch(/sk-|api[_-]?key|invalid api key/i);
+        expect(body.helperLlm?.paused?.[0]).not.toHaveProperty('lastMessage');
+      } finally {
+        warn.mockRestore();
+        vi.useRealTimers();
+        resetHelperLlmDiagnosticsForTest();
+        if (originalCooldown === undefined) delete process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
+        else process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = originalCooldown;
+      }
     });
   });
 

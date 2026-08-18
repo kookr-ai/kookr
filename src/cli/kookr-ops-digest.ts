@@ -47,7 +47,8 @@ Usage:
 
 Fetches GET /api/ready and GET /api/health, then prints ready status plus the
 top unattended failure signals (pressureWhileDisabled, phantomActive, hung
-residual, pipeline starvation, disk, safeMode) with field paths. ≤20 lines.
+residual, helper-LLM pause, pipeline starvation, disk, safeMode) with field
+paths. ≤20 lines.
 
 When the server is unreachable, the digest auto-degrades to the last-good
 /api/health snapshot on disk (if one exists) and reports how stale it is.
@@ -373,8 +374,8 @@ function parseReadyBody(body: unknown): {
 
 /**
  * Collect the unattended-ops warning set from a health body. Order is
- * severity-ish (safeMode → pressure → phantom → hung → starvation → disk);
- * callers slice to MAX_WARNINGS.
+ * severity-ish (safeMode → pressure → phantom → hung → helper-LLM pause →
+ * starvation → disk); callers slice to MAX_WARNINGS.
  */
 export function collectOpsDigestWarnings(health: unknown): {
   warnings: OpsDigestWarning[];
@@ -467,6 +468,49 @@ export function collectOpsDigestWarnings(health: unknown): {
       path: 'capacity.byClass.hungSuspect',
       summary: `capacity.byClass.hungSuspect=${Math.floor(hungSuspect)} (hung residual)`,
       value: Math.floor(hungSuspect),
+    });
+  }
+
+  // Helper-LLM provider pause / storm (issue #2641). Secret-free: provider,
+  // category, ISO pausedUntil, and the storm-suppression count only.
+  const helperLlm = asRecord(h.helperLlm);
+  const helperPausedRaw = Array.isArray(helperLlm?.paused) ? helperLlm.paused : [];
+  const helperPaused: Array<{ provider: string; model: string; category: string; pausedUntil: string }> = [];
+  for (const row of helperPausedRaw) {
+    const rec = asRecord(row);
+    if (!rec) continue;
+    const provider = typeof rec.provider === 'string' ? rec.provider : '';
+    if (!provider) continue;
+    helperPaused.push({
+      provider,
+      model: typeof rec.model === 'string' ? rec.model : '',
+      // Live pauses are auth-only today; missing category is treated as auth
+      // so a stale last-good snapshot still names the outage.
+      category: typeof rec.category === 'string' ? rec.category : 'auth',
+      pausedUntil: typeof rec.pausedUntil === 'string' ? rec.pausedUntil : '',
+    });
+  }
+  const stormsSuppressed = finiteNumber(helperLlm?.stormsSuppressed);
+  if (helperPaused.length > 0 || (stormsSuppressed !== null && stormsSuppressed > 0)) {
+    const pauseBits = helperPaused.map((row) => {
+      const until = row.pausedUntil ? ` until=${row.pausedUntil}` : '';
+      return `${row.provider} category=${row.category}${until}`;
+    });
+    const stormBit =
+      stormsSuppressed !== null && stormsSuppressed > 0
+        ? `stormsSuppressed=${Math.floor(stormsSuppressed)}`
+        : '';
+    const summaryParts = [
+      pauseBits.length > 0 ? `helperLlm.paused ${pauseBits.join('; ')}` : '',
+      stormBit,
+    ].filter((part) => part.length > 0);
+    warnings.push({
+      path: helperPaused.length > 0 ? 'helperLlm.paused' : 'helperLlm.stormsSuppressed',
+      summary: summaryParts.join(' '),
+      value: {
+        paused: helperPaused,
+        stormsSuppressed: stormsSuppressed !== null ? Math.floor(stormsSuppressed) : 0,
+      },
     });
   }
 

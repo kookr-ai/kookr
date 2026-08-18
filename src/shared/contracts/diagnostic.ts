@@ -68,6 +68,24 @@ export interface HelperLlmPausedProvider {
   lastMessage: string;
 }
 
+/**
+ * Secret-free helper-LLM pause row for GET `/api/health` (issue #2641).
+ * One row per paused provider. `pausedUntil` is ISO-8601. Never includes
+ * API keys or raw provider error bodies.
+ */
+export interface HelperLlmHealthPausedEntry {
+  provider: string;
+  model: string;
+  category: HelperLlmFailureCategory;
+  pausedUntil: string;
+}
+
+/** Slim helper-LLM pause / storm view published on GET `/api/health`. */
+export interface HelperLlmHealthSnapshot {
+  paused: HelperLlmHealthPausedEntry[];
+  stormsSuppressed: number;
+}
+
 /** Process-wide helper-LLM provider-attempt budget (issue #2083). */
 export interface HelperLlmProviderAttemptBudget {
   /** Max network attempts allowed inside the sliding window (`0` = disabled). */

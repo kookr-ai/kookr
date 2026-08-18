@@ -96,6 +96,7 @@ import {
   type StaleProcessSummaryCache,
 } from '../stale-dtach-pressure.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
+import { getHelperLlmHealthSnapshot } from '../../core/llm-factory.js';
 
 /**
  * How many missed schedule-runner tick intervals make GET `/api/ready`
@@ -731,6 +732,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(deps.ossAttemptStore
         ? { ossAttempts: summarizeOssAttemptsForHealth(deps.ossAttemptStore) }
         : {}),
+      // Issue #2641: secret-free helper-LLM pause / storm view from the
+      // in-memory auth-pause map. Always present so last-good health and
+      // `kookr ops digest` can name a paused provider without grepping logs.
+      helperLlm: (deps.getHelperLlmHealthSnapshot ?? getHelperLlmHealthSnapshot)(),
     };
   }
 

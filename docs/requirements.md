@@ -1036,6 +1036,20 @@ The system SHALL reuse one assembled `GET /api/health` JSON body for about one s
 
 **Evidence:** `src/server/routes/diagnostics-routes.ts` (`HEALTH_BODY_CACHE_MS`, `getCachedHealthBody`), `src/server/routes/diagnostics-routes.test.ts` (`GET /api/health body cache`), `docs/reference/api.md`.
 
+### R6.9: Publish Helper-LLM Pause State on GET /api/health [#2641] — SHALL — `done`
+
+The system SHALL publish a slim, secret-free helper-LLM pause view on `GET /api/health` so remote operators can see why helper calls (task naming, summaries) are degraded without grepping the server log.
+
+**Acceptance criteria:**
+- Given a Groq helper-LLM provider is paused after an auth failure, when an operator fetches `GET /api/health`, then `helperLlm.paused` contains a row with `provider=groq` and `category=auth`
+- `pausedUntil` is an ISO-8601 timestamp
+- The health block never includes an API key or raw provider error body
+- The paused array has at most one row per provider
+- `helperLlm.stormsSuppressed` reports how many provider attempts the process-wide attempt budget refused
+- `kookr ops digest` surfaces a paused helper-LLM provider as a warning with field path `helperLlm.paused`
+
+**Evidence:** `src/core/llm-factory.ts` (`getHelperLlmHealthSnapshot`), `src/server/routes/diagnostics-routes.ts`, `src/cli/kookr-ops-digest.ts`, `src/core/llm-factory.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1380,6 +1394,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R6.6 | features | SHALL | partial | tested on Linux only |
 | R6.7 | arch | SHALL | done | server/index |
 | R6.8 | #2429 | SHALL | done | diagnostics-routes health body cache |
+| R6.9 | #2641 | SHALL | done | llm-factory helperLlm health snapshot, diagnostics-routes, ops digest |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
