@@ -282,6 +282,14 @@ describe('collectOpsDigestWarnings', () => {
     }).warnings).toEqual([]);
   });
 
+  it('warns from a slim neverFired summary without loops', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      timerHealth: { overdue: 0, neverFired: 2, oldestNeverFiredName: 'prodSmokeTick' },
+    });
+    expect(warnings[0]?.path).toBe('timerHealth.overdue');
+    expect(warnings[0]?.summary).toContain('prodSmokeTick');
+  });
+
   it('warns when timerHealth.overdue is at least 1 (issue #2637)', () => {
     const { warnings, signals } = collectOpsDigestWarnings({
       timerHealth: { overdue: 2, oldestOverdueName: 'maintenancePrune' },
@@ -409,7 +417,10 @@ describe('timerHealth health overlay (issue #2637)', () => {
   it('treats missing and null timerHealth as no summary', () => {
     expect(healthHasTimerHealthSummary({})).toBe(false);
     expect(healthHasTimerHealthSummary({ timerHealth: null })).toBe(false);
-    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0 } })).toBe(true);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0 } })).toBe(false);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 1 } })).toBe(true);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0, loops: [] } })).toBe(true);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0, neverFired: 0 } })).toBe(true);
   });
 
   it('merges a diagnostics snapshot into the health summary shape', () => {
@@ -612,6 +623,32 @@ describe('runOpsDigestCli', () => {
     ).toBe(true);
   });
 
+  it('still fetches diagnostics when health only has timerHealth.overdue=0', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+      if (url.endsWith('/api/health')) {
+        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0 } }, 200);
+      }
+      if (url.endsWith('/api/diagnostics/timer-health')) {
+        return jsonResponse(TIMER_HEALTH_BODY, 200);
+      }
+      return jsonResponse({ error: 'not found' }, 404);
+    });
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['digest'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(c.logs.join('\n')).toContain('timerHealth.overdue');
+    expect(
+      fetchImpl.mock.calls.some((call) => String(call[0]).endsWith('/api/diagnostics/timer-health')),
+    ).toBe(true);
+  });
+
   it('prints hook-ingestion p95 and one paused schedule from the live health body', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -619,7 +656,7 @@ describe('runOpsDigestCli', () => {
       if (url.endsWith('/api/health')) {
         return jsonResponse({
           status: 'ok',
-          timerHealth: { overdue: 0 },
+          timerHealth: { overdue: 0, neverFired: 0 },
           hookIngestion: { p95LagMs: 43_000 },
           schedules: {
             schedulesPausedByFailure: [
@@ -644,12 +681,12 @@ describe('runOpsDigestCli', () => {
     expect(text.split('\n').length).toBeLessThanOrEqual(20);
   });
 
-  it('does not fetch timer-health when health already has a timerHealth object', async () => {
+  it('does not fetch timer-health when health already answers overdue and never-fired', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
       if (url.endsWith('/api/health')) {
-        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0 } }, 200);
+        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0, neverFired: 0 } }, 200);
       }
       throw new Error(`unexpected fetch ${url}`);
     });

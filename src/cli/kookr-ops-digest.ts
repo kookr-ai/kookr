@@ -420,9 +420,23 @@ function parseIsoMs(value: string | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** True when `/api/health` already carries a `timerHealth` object (issue #2637). */
+/**
+ * True when `/api/health.timerHealth` can answer the digest timer question
+ * without a diagnostics fallback (issue #2637).
+ *
+ * A bare `{ overdue: 0 }` is not enough: prod hourly safety-nets stay
+ * `overdue=false` for two intervals while `lastFiredAt` is still null. That
+ * case needs `loops[]` or an explicit `neverFired` / `oldestNeverFiredName`
+ * field. Missing or `null` blocks always fall back.
+ */
 export function healthHasTimerHealthSummary(health: unknown): boolean {
-  return asRecord(asRecord(health)?.timerHealth) !== null;
+  const timerHealth = asRecord(asRecord(health)?.timerHealth);
+  if (!timerHealth) return false;
+  const overdue = finiteNumber(timerHealth.overdue);
+  if (overdue !== null && overdue >= 1) return true;
+  if (Array.isArray(timerHealth.loops)) return true;
+  if (typeof timerHealth.oldestNeverFiredName === 'string') return true;
+  return finiteNumber(timerHealth.neverFired) !== null;
 }
 
 /**
@@ -435,11 +449,21 @@ export function mergeTimerHealthFallback(
   snap: OpsTimersSnapshot,
 ): Record<string, unknown> {
   const rec = asRecord(health) ?? {};
+  const oldestOverdue = snap.loops
+    .filter((loop) => loop.overdue)
+    .slice()
+    .sort((a, b) => {
+      const aMs = a.lastFiredAt ? Date.parse(a.lastFiredAt) : Number.NEGATIVE_INFINITY;
+      const bMs = b.lastFiredAt ? Date.parse(b.lastFiredAt) : Number.NEGATIVE_INFINITY;
+      const aKey = Number.isFinite(aMs) ? aMs : Number.NEGATIVE_INFINITY;
+      const bKey = Number.isFinite(bMs) ? bMs : Number.NEGATIVE_INFINITY;
+      return aKey === bKey ? a.name.localeCompare(b.name) : aKey - bKey;
+    })[0]?.name ?? null;
   return {
     ...rec,
     timerHealth: {
       overdue: snap.overdue.length,
-      oldestOverdueName: snap.overdue[0] ?? null,
+      oldestOverdueName: oldestOverdue,
       generatedAt: snap.generatedAt,
       loops: snap.loops,
     },
@@ -653,14 +677,20 @@ export function collectOpsDigestWarnings(
     const uptimeMs =
       startedAtMs !== null && nowMs !== null ? nowMs - startedAtMs : null;
 
-    const overdueFromLoops: string[] = [];
+    const overdueFromLoops: Array<{ name: string; lastFiredAtMs: number }> = [];
     const loopsRaw = Array.isArray(timerHealth.loops) ? timerHealth.loops : [];
     for (const raw of loopsRaw) {
       const row = asRecord(raw);
       if (!row) continue;
       const name = typeof row.name === 'string' ? row.name : '';
       if (!name) continue;
-      if (row.overdue === true) overdueFromLoops.push(name);
+      if (row.overdue === true) {
+        const parsed = typeof row.lastFiredAt === 'string' ? Date.parse(row.lastFiredAt) : Number.NaN;
+        overdueFromLoops.push({
+          name,
+          lastFiredAtMs: Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY,
+        });
+      }
       const interval = finiteNumber(row.expectedIntervalMs);
       if (
         row.lastFiredAt == null &&
@@ -672,11 +702,28 @@ export function collectOpsDigestWarnings(
         neverFiredHourly.push(name);
       }
     }
+    overdueFromLoops.sort((a, b) => (
+      a.lastFiredAtMs === b.lastFiredAtMs
+        ? a.name.localeCompare(b.name)
+        : a.lastFiredAtMs - b.lastFiredAtMs
+    ));
     if (timerHealthOverdue === null && overdueFromLoops.length > 0) {
       timerHealthOverdue = overdueFromLoops.length;
     }
     if (!oldestOverdueName && overdueFromLoops[0]) {
-      oldestOverdueName = overdueFromLoops[0];
+      oldestOverdueName = overdueFromLoops[0].name;
+    }
+
+    // Slim health summary (#2636): neverFired / oldestNeverFiredName without loops.
+    if (neverFiredHourly.length === 0) {
+      const neverFiredCount = finiteNumber(timerHealth.neverFired);
+      const oldestNever =
+        typeof timerHealth.oldestNeverFiredName === 'string' && timerHealth.oldestNeverFiredName
+          ? timerHealth.oldestNeverFiredName
+          : null;
+      if (neverFiredCount !== null && neverFiredCount >= 1 && oldestNever) {
+        neverFiredHourly.push(oldestNever);
+      }
     }
   }
 
