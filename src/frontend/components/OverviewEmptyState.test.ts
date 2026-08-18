@@ -631,6 +631,57 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).not.toContain('Next scheduled');
   });
 
+  test('first-run empty state shows Create a schedule and opens the schedules dialog', () => {
+    const onOpenSchedules = vi.fn();
+    useKookrStore.setState({ schedules: [] });
+    render({ onOpenSchedules });
+
+    const cta = container.querySelector<HTMLButtonElement>('[data-testid="overview-create-schedule"]');
+    expect(cta).not.toBeNull();
+    expect(cta?.textContent).toBe('Create a schedule');
+    expect(container.textContent).toContain('No agents running.');
+    expect(container.querySelector('[data-testid="overview-next-schedule"]')).toBeNull();
+
+    act(() => {
+      cta?.click();
+    });
+    expect(onOpenSchedules).toHaveBeenCalledTimes(1);
+  });
+
+  test('hides Create a schedule once any schedule exists', () => {
+    useKookrStore.setState({
+      schedules: [makeSchedule({ name: 'Nightly sweep' })],
+    });
+    render({ onOpenSchedules: vi.fn() });
+
+    expect(container.querySelector('[data-testid="overview-create-schedule"]')).toBeNull();
+    expect(container.textContent).not.toContain('Create a schedule');
+    expect(container.querySelector('[data-testid="overview-next-schedule"]')).not.toBeNull();
+  });
+
+  test('hides Create a schedule once any task exists even with an empty schedule list', () => {
+    useKookrStore.setState({ schedules: [] });
+    render({
+      running: [makeRunningAgent('run-1', 'Watch logs')],
+      onOpenSchedules: vi.fn(),
+    });
+
+    expect(container.querySelector('[data-testid="overview-create-schedule"]')).toBeNull();
+    expect(container.textContent).not.toContain('Create a schedule');
+  });
+
+  test('hides Create a schedule when only completed tasks remain and the schedule list is empty', () => {
+    useKookrStore.setState({ schedules: [] });
+    render({
+      completed: [makeCompletedAgent('done-1', 'Ship the fix')],
+      onOpenSchedules: vi.fn(),
+    });
+
+    expect(container.textContent).toContain('All clear — agents working autonomously.');
+    expect(container.querySelector('[data-testid="overview-create-schedule"]')).toBeNull();
+    expect(container.textContent).not.toContain('Create a schedule');
+  });
+
   test('labels a disabled schedule paused instead of a next-fire time', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-20T10:00:00.000Z'));

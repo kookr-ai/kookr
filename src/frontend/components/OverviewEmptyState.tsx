@@ -61,7 +61,7 @@ interface Props {
   onLaunch: () => void;
   /** Opens Launch on the Playbooks tab (pinned and recent chips). */
   onLaunchPlaybooks?: () => void;
-  /** Opens the existing Schedules dialog (next-scheduled row). */
+  /** Opens the existing Schedules dialog (first-run CTA or next-scheduled row). */
   onOpenSchedules?: () => void;
   /**
    * Opens the Diagnostics / Operations panel (same surface as the command
@@ -90,11 +90,13 @@ export function OverviewEmptyState({
   const setRelaunchTask = useKookrStore((s) => s.setRelaunchTask);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const playbooks = useKookrStore((s) => s.playbooks);
-  const nextSchedule = pickNextOverviewSchedule(useKookrStore((s) => s.schedules));
+  const schedules = useKookrStore((s) => s.schedules);
+  const nextSchedule = pickNextOverviewSchedule(schedules);
   const nextRun = nextSchedule ? scheduleNextRunLabel(nextSchedule) : null;
   const runningCount = running.length;
   const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  const showCreateScheduleCta = !hasAnyTask && schedules.length === 0;
   const recentCompleted = [...completed]
     .sort(compareCompletedAgents)
     .slice(0, OVERVIEW_RECENT_COMPLETED_LIMIT);
@@ -256,7 +258,19 @@ export function OverviewEmptyState({
           </div>
         )}
 
-        <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+        <div className="overview-launch-actions">
+          <button type="button" className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+          {showCreateScheduleCta && (
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid="overview-create-schedule"
+              onClick={() => onOpenSchedules?.()}
+            >
+              Create a schedule
+            </button>
+          )}
+        </div>
 
         {pinnedPlaybooks.length > 0 && (
           <div className="overview-recent-playbooks" data-testid="overview-pinned-playbooks">

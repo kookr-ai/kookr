@@ -1868,6 +1868,17 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 14px;
   padding: 10px 28px;
 }
+.overview-launch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.overview-empty-inner .overview-launch-actions .btn-secondary {
+  font-size: 14px;
+  padding: 10px 20px;
+}
 .overview-counts {
   display: flex;
   gap: 12px;
