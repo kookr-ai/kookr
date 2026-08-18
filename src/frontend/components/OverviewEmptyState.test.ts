@@ -10,6 +10,7 @@ import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { getTask } from '../api/tasks.js';
 import {
   GETTING_STARTED_GUIDE_URL,
+  OVERVIEW_PINNED_PLAYBOOK_LIMIT,
   OVERVIEW_RECENT_COMPLETED_LIMIT,
   OVERVIEW_RECENT_PLAYBOOK_LIMIT,
   OVERVIEW_RUNNING_LIMIT,
@@ -82,6 +83,10 @@ function makeCompletedAgent(agentId: string, taskName: string, overrides: Partia
 
 function seedRecentPlaybooks(keys: string[]): void {
   localStorage.setItem('kookr:recentPlaybooks', JSON.stringify(keys));
+}
+
+function seedPinnedPlaybooks(keys: string[]): void {
+  localStorage.setItem('kookr:pinnedPlaybooks', JSON.stringify(keys));
 }
 
 function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleResponse {
@@ -449,6 +454,65 @@ describe('OverviewEmptyState', () => {
     render();
 
     expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).toBeNull();
+    expect(container.textContent).not.toContain('Recent playbooks');
+    expect(container.querySelector('[data-testid="overview-pinned-playbooks"]')).toBeNull();
+    expect(container.textContent).not.toContain('Pinned playbooks');
+  });
+
+  test('shows pinned playbook chips when only pins exist', () => {
+    seedPinnedPlaybooks(['/project::deploy.md', '/project::review.md']);
+    useKookrStore.setState({ playbooks: [samplePlaybook()] });
+    const onLaunchPlaybooks = vi.fn();
+    render({ onLaunchPlaybooks });
+
+    expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).toBeNull();
+    expect(container.textContent).not.toContain('Recent playbooks');
+    expect(container.textContent).toContain('Pinned playbooks');
+    const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]'));
+    expect(chips.map((chip) => chip.textContent)).toEqual(['Deploy to prod', 'review']);
+
+    act(() => {
+      chips[0].click();
+    });
+    expect(onLaunchPlaybooks).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows up to three pinned playbooks and hides overflow', () => {
+    seedPinnedPlaybooks([
+      '/project::one.md',
+      '/project::two.md',
+      '/project::three.md',
+      '/project::four.md',
+    ]);
+    render();
+
+    const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]'));
+    expect(chips).toHaveLength(OVERVIEW_PINNED_PLAYBOOK_LIMIT);
+    expect(chips.map((chip) => chip.textContent)).toEqual(['one', 'two', 'three']);
+    expect(container.textContent).not.toContain('four');
+  });
+
+  test('lists an overlapping playbook only under Pinned, not Recents', () => {
+    seedPinnedPlaybooks(['/project::deploy.md', '/other::sweep.md']);
+    seedRecentPlaybooks(['/project::deploy.md', '/project::review.md']);
+    useKookrStore.setState({ playbooks: [samplePlaybook()] });
+    render();
+
+    const pinned = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]'));
+    const recents = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-recent-playbook"]'));
+    expect(pinned.map((chip) => chip.textContent)).toEqual(['Deploy to prod', 'sweep']);
+    expect(recents.map((chip) => chip.textContent)).toEqual(['review']);
+    expect(recents.map((chip) => chip.dataset.playbookKey)).not.toContain('/project::deploy.md');
+  });
+
+  test('hides the recents heading when every recent playbook is also pinned', () => {
+    seedPinnedPlaybooks(['/project::deploy.md']);
+    seedRecentPlaybooks(['/project::deploy.md']);
+    render();
+
+    expect(container.querySelector('[data-testid="overview-pinned-playbooks"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="overview-recent-playbooks"]')).toBeNull();
+    expect(container.textContent).toContain('Pinned playbooks');
     expect(container.textContent).not.toContain('Recent playbooks');
   });
 

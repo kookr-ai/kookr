@@ -28,6 +28,9 @@ export const OVERVIEW_RUNNING_LIMIT = 6;
 /** Recent playbooks shown on the overview; the tracker itself keeps up to five. */
 export const OVERVIEW_RECENT_PLAYBOOK_LIMIT = 3;
 
+/** Pinned playbooks shown on the overview; Launch still lists the full pin set. */
+export const OVERVIEW_PINNED_PLAYBOOK_LIMIT = 3;
+
 /** Recently finished tasks shown on the overview; the rail keeps the rest. */
 export const OVERVIEW_RECENT_COMPLETED_LIMIT = 3;
 
@@ -55,7 +58,7 @@ interface Props {
    */
   completed: AgentState[];
   onLaunch: () => void;
-  /** Opens Launch on the Playbooks tab (recent-playbook chips). */
+  /** Opens Launch on the Playbooks tab (pinned and recent chips). */
   onLaunchPlaybooks?: () => void;
   /** Opens the existing Schedules dialog (next-scheduled row). */
   onOpenSchedules?: () => void;
@@ -94,11 +97,21 @@ export function OverviewEmptyState({
   const recentCompleted = [...completed]
     .sort(compareCompletedAgents)
     .slice(0, OVERVIEW_RECENT_COMPLETED_LIMIT);
-  // Read localStorage on every render. Same-tab recordLaunch does not fire
-  // `storage`, and the overview stays mounted after a playbook launch from
-  // this screen (new tasks do not auto-select), so a playbooks-only memo
-  // would keep the pre-launch order.
-  const recentPlaybooks = new PlaybookUsageTracker().getRecent()
+  // Read localStorage on every render. Same-tab recordLaunch / togglePin
+  // do not fire `storage`, and the overview stays mounted after a playbook
+  // launch from this screen (new tasks do not auto-select), so a
+  // playbooks-only memo would keep the pre-launch order.
+  const usage = new PlaybookUsageTracker();
+  const pinnedKeys = [...usage.getPinned()];
+  const pinnedKeySet = new Set(pinnedKeys);
+  const pinnedPlaybooks = pinnedKeys
+    .slice(0, OVERVIEW_PINNED_PLAYBOOK_LIMIT)
+    .map((key) => ({
+      key,
+      label: resolveRecentPlaybookLabel(key, playbooks),
+    }));
+  const recentPlaybooks = usage.getRecent()
+    .filter((key) => !pinnedKeySet.has(key))
     .slice(0, OVERVIEW_RECENT_PLAYBOOK_LIMIT)
     .map((key) => ({
       key,
@@ -244,6 +257,26 @@ export function OverviewEmptyState({
         )}
 
         <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+
+        {pinnedPlaybooks.length > 0 && (
+          <div className="overview-recent-playbooks" data-testid="overview-pinned-playbooks">
+            <h3 className="overview-waiting-title">Pinned playbooks</h3>
+            <div className="overview-recent-playbooks-list">
+              {pinnedPlaybooks.map((playbook) => (
+                <button
+                  type="button"
+                  key={playbook.key}
+                  className="btn-secondary overview-recent-playbook"
+                  data-testid="overview-pinned-playbook"
+                  data-playbook-key={playbook.key}
+                  onClick={() => onLaunchPlaybooks?.()}
+                >
+                  {playbook.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {recentPlaybooks.length > 0 && (
           <div className="overview-recent-playbooks" data-testid="overview-recent-playbooks">
