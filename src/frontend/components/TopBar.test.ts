@@ -298,3 +298,85 @@ describe('TopBar lastRestart blackout display (issue #1979)', () => {
     expect(container.textContent).toContain('Production is up to date');
   });
 });
+
+describe('TopBar triage-queue indicator (#2684)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useKookrStore.setState({
+      connected: true,
+      totalSpendUsd: 0,
+      agents: [],
+      circuitBreakers: [],
+      diagnosticReport: null,
+      coordinator: null,
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  function baseProps(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      findings: 0,
+      currentIndex: -1,
+      totalFindings: 0,
+      onLaunch: vi.fn(),
+      onCommandPalette: vi.fn(),
+      onOperations: vi.fn(),
+      onCoordinatorFindings: vi.fn(),
+      onTerminalFocusToggle: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  test('clicking the queue indicator invokes onFocusQueue', () => {
+    const onFocusQueue = vi.fn();
+    act(() => {
+      root.render(
+        React.createElement(TopBar, baseProps({
+          findings: 3,
+          currentIndex: 2,
+          totalFindings: 3,
+          onFocusQueue,
+        })),
+      );
+    });
+
+    const button = container.querySelector('button.queue-info') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(false);
+    expect(button?.getAttribute('aria-hidden')).toBeNull();
+
+    act(() => {
+      button?.click();
+    });
+    expect(onFocusQueue).toHaveBeenCalledTimes(1);
+  });
+
+  test('empty queue renders a disabled, non-interactive indicator', () => {
+    const onFocusQueue = vi.fn();
+    act(() => {
+      root.render(
+        React.createElement(TopBar, baseProps({ onFocusQueue })),
+      );
+    });
+
+    const button = container.querySelector('button.queue-info') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(true);
+    expect(button?.className).toContain('queue-info-reserved');
+    expect(button?.getAttribute('aria-hidden')).toBe('true');
+
+    act(() => {
+      button?.click();
+    });
+    expect(onFocusQueue).not.toHaveBeenCalled();
+  });
+});

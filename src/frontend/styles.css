@@ -336,6 +336,26 @@ kbd {
   align-items: center;
   gap: 6px;
   min-width: 156px;
+  /* Reset the native <button>: it renders as the inline queue indicator. */
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.queue-info:hover:not(:disabled) .queue-text {
+  color: var(--text-bright);
+}
+.queue-info:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.queue-info:disabled {
+  cursor: default;
 }
 .queue-info-reserved {
   visibility: hidden;

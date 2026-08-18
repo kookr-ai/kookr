@@ -29,6 +29,10 @@ interface Props {
   findings: number;
   currentIndex: number;
   totalFindings: number;
+  /** Focus the finding the queue indicator currently names. Wired to the same
+   *  selection action the findings rail uses; no-op when there are no findings
+   *  (the indicator is inert in that reserved/empty state). */
+  onFocusQueue?: () => void;
   compact?: boolean;
   onLaunch: () => void;
   /** Open the command palette — the single entry point for the actions that
@@ -73,6 +77,7 @@ export function TopBar({
   findings,
   currentIndex,
   totalFindings,
+  onFocusQueue,
   compact = false,
   onLaunch,
   onCommandPalette,
@@ -516,10 +521,14 @@ export function TopBar({
             )}
           </div>
         )}
-        <div
+        <button
+          type="button"
           className={`queue-info${hasQueueInfo ? '' : ' queue-info-reserved'}`}
           title={queueTitle}
+          aria-label={queueTitle}
           aria-hidden={hasQueueInfo ? undefined : true}
+          disabled={!hasQueueInfo}
+          onClick={onFocusQueue}
         >
           <div className="queue-dots">
             {Array.from({ length: queueDotCount }, (_, i) => (
@@ -540,7 +549,7 @@ export function TopBar({
                 : `${totalFindings} finding${totalFindings !== 1 ? 's' : ''} waiting`}
             </span>
           )}
-        </div>
+        </button>
       </div>
       <div className="topbar-right">
         <div className="metric-group topbar-spend-group">
