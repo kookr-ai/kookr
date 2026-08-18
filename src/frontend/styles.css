@@ -4683,7 +4683,10 @@ textarea::-webkit-resizer { background: transparent; }
   gap: 4px;
   margin-bottom: 12px;
 }
-.agent-type-select-label {
+.agent-type-select .agent-type-select-label {
+  display: block;
+  /* Beat .dialog label (class+element) so the caption stays 4px from the select. */
+  margin-bottom: 0;
   font-size: 12px;
   color: var(--text-muted);
 }
@@ -4712,6 +4715,7 @@ textarea::-webkit-resizer { background: transparent; }
   padding: 6px 10px;
   font-size: 12px;
 }
+.agent-type-select-hint,
 .agent-type-select-next {
   font-size: 11px;
   color: var(--text-muted);

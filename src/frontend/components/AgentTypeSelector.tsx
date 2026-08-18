@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useId } from 'react';
 import {
+  agentSelectionHint,
   previewRoundRobinNextLabel,
   ROUND_ROBIN_AGENT_TYPE,
   type AgentSelection,
@@ -44,6 +45,13 @@ export function AgentTypeSelector({
   roundRobinIndex,
   grokAuthUsable,
 }: Props) {
+  const selectId = useId();
+  const hintId = useId();
+  const nextId = useId();
+  // Compact pickers (quick-launch bar, settings rows) have no room for the
+  // identity line; Launch and other full pickers show it. Round-robin Next:
+  // stays in both layouts.
+  const hint = compact ? undefined : agentSelectionHint(value);
   const nextLabel = value === ROUND_ROBIN_AGENT_TYPE
     ? previewRoundRobinNextLabel(options, {
       cursor: roundRobinIndex,
@@ -51,12 +59,17 @@ export function AgentTypeSelector({
       grokAuthUsable,
     })
     : undefined;
+  const describedBy = [hint ? hintId : undefined, nextLabel ? nextId : undefined]
+    .filter((id): id is string => Boolean(id))
+    .join(' ') || undefined;
 
   return (
-    <label className={compact ? 'agent-type-select compact' : 'agent-type-select'}>
-      <span className="agent-type-select-label">{label}</span>
+    <div className={compact ? 'agent-type-select compact' : 'agent-type-select'}>
+      <label className="agent-type-select-label" htmlFor={selectId}>{label}</label>
       <select
+        id={selectId}
         value={value}
+        aria-describedby={describedBy}
         onChange={(e) => onChange(e.target.value as AgentTypeSelectorValue)}
       >
         {defaultOptionLabel !== undefined && (
@@ -68,9 +81,12 @@ export function AgentTypeSelector({
           </option>
         ))}
       </select>
-      {nextLabel && (
-        <span className="agent-type-select-next">Next: {nextLabel}</span>
+      {hint && (
+        <span id={hintId} className="agent-type-select-hint">{hint}</span>
       )}
-    </label>
+      {nextLabel && (
+        <span id={nextId} className="agent-type-select-next">Next: {nextLabel}</span>
+      )}
+    </div>
   );
 }

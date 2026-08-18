@@ -18,10 +18,13 @@ export type {
 
 export {
   AGENT_TYPES,
+  AGENT_SELECTIONS,
   AVAILABLE_AGENT_TYPES,
+  AGENT_SELECTION_HINTS,
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   ROUND_ROBIN_OPTION,
+  agentSelectionHint,
   normalizeAgentType,
   normalizeAgentSelection,
   resolveRoundRobinAgent,

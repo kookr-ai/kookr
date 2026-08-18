@@ -33,8 +33,11 @@ export type {
 } from './contracts/agent-types.js';
 export {
   AGENT_TYPES,
+  AGENT_SELECTIONS,
   AVAILABLE_AGENT_TYPES,
+  AGENT_SELECTION_HINTS,
   ROUND_ROBIN_AGENT_TYPE,
+  agentSelectionHint,
   buildAgentSelectionOptions,
   effortLevelsForAgent,
   isAgentType,
