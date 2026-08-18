@@ -5,6 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ScheduledTasksHint } from './ScheduledTasksHint.js';
+import { commandPaletteHintKeys } from '../../shared/contracts/shortcut-bindings.js';
 import { STORAGE_KEY, reset } from '../store/scheduled-tasks-hint-status.js';
 
 describe('ScheduledTasksHint', () => {
@@ -65,6 +66,29 @@ describe('ScheduledTasksHint', () => {
 
     expect(onHide).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(STORAGE_KEY)).toBe('true');
+  });
+
+  test('renders the platform-correct command-palette chord (Ctrl+K off macOS, ⌘K on macOS)', () => {
+    const originalPlatform = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
+    root = createRoot(container);
+    act(() => { root!.render(React.createElement(ScheduledTasksHint, { onHide: vi.fn() })); });
+
+    const keys = Array.from(container.querySelectorAll('kbd')).map((el) => el.textContent);
+    expect(keys).toEqual([...commandPaletteHintKeys('default')]);
+    expect(keys).toContain('Ctrl');
+    expect(keys).toContain('K');
+    expect(keys).not.toContain('⌘K');
+
+    act(() => root!.render(React.createElement(React.Fragment, null)));
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    act(() => { root!.render(React.createElement(ScheduledTasksHint, { onHide: vi.fn() })); });
+
+    const macKeys = Array.from(container.querySelectorAll('kbd')).map((el) => el.textContent);
+    expect(macKeys).toEqual([...commandPaletteHintKeys('mac')]);
+    expect(macKeys).toEqual(['⌘K']);
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: originalPlatform });
   });
 
   test('Escape hides the hint', () => {

@@ -1,6 +1,8 @@
 import React from 'react';
+import { commandPaletteHintKeys, detectShortcutPlatform } from '../../shared/contracts/shortcut-bindings.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { markPermanentlyDismissed } from '../store/scheduled-tasks-hint-status.js';
+import { ShortcutKeys } from './ShortcutKeys.js';
 
 interface Props {
   /** Hide for now (does not persist — may reappear after the next schedule). */
@@ -40,7 +42,8 @@ export function ScheduledTasksHint({ onHide }: Props) {
       <div className="scheduled-tasks-hint-body">
         <strong>Schedule created.</strong>
         <span>
-          Find your scheduled tasks anytime from <kbd>⌘K</kbd> (the
+          Find your scheduled tasks anytime from{' '}
+          <ShortcutKeys keys={commandPaletteHintKeys(detectShortcutPlatform())} /> (the
           {' '}<strong>Search actions</strong> button up here) — search
           {' '}<em>Schedules</em>.
         </span>
