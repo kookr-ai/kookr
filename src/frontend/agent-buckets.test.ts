@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import type { AgentState } from '../shared/protocol.js';
-import { buildAgentBuckets } from './agent-buckets.js';
+import { TIME_TO_UNBLOCK_WINDOW_MS } from '../shared/contracts/time-to-unblock.js';
+import { buildAgentBuckets, countCompletedInWindow } from './agent-buckets.js';
 
 function agent(id: string, projectId: string, patch: Partial<AgentState> = {}): AgentState {
   return {
@@ -160,5 +161,57 @@ describe('agent buckets', () => {
     const again = buildAgentBuckets(fleet, null);
     expect(again.healthy.map((a) => a.agentId)).toEqual(buckets.healthy.map((a) => a.agentId));
     expect(again.completed.map((a) => a.agentId)).toEqual(buckets.completed.map((a) => a.agentId));
+  });
+});
+
+describe('countCompletedInWindow (issue #2618)', () => {
+  const NOW = Date.parse('2026-08-18T18:00:00.000Z');
+
+  function iso(offsetMs: number): string {
+    return new Date(NOW + offsetMs).toISOString();
+  }
+
+  test('counts three terminal agents finished inside the 24-hour window', () => {
+    const agents = [
+      agent('a', 'p', { taskStatus: 'completed', finishedAt: iso(-1 * 60 * 60 * 1000) }),
+      agent('b', 'p', { taskStatus: 'cancelled', finishedAt: iso(-8 * 60 * 60 * 1000) }),
+      agent('c', 'p', { taskStatus: 'terminated', finishedAt: iso(-23 * 60 * 60 * 1000) }),
+    ];
+    expect(countCompletedInWindow(agents, NOW)).toBe(3);
+  });
+
+  test('includes finishes exactly at now and exactly at the window cutoff', () => {
+    const agents = [
+      agent('now', 'p', { taskStatus: 'completed', finishedAt: iso(0) }),
+      agent('cutoff', 'p', { taskStatus: 'completed', finishedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS) }),
+      agent('just-outside', 'p', { taskStatus: 'completed', finishedAt: iso(-TIME_TO_UNBLOCK_WINDOW_MS - 1) }),
+    ];
+    expect(countCompletedInWindow(agents, NOW)).toBe(2);
+  });
+
+  test('returns 0 for a non-finite now or a negative window', () => {
+    const agents = [
+      agent('a', 'p', { taskStatus: 'completed', finishedAt: iso(-60_000) }),
+    ];
+    expect(countCompletedInWindow(agents, Number.NaN)).toBe(0);
+    expect(countCompletedInWindow(agents, NOW, -1)).toBe(0);
+  });
+
+  test('ignores agents that finished before the window or are still running', () => {
+    const agents = [
+      agent('old', 'p', { taskStatus: 'completed', finishedAt: iso(-25 * 60 * 60 * 1000) }),
+      agent('running', 'p', { taskStatus: 'inProgress', finishedAt: iso(-10 * 60 * 1000) }),
+      agent('fresh', 'p', { taskStatus: 'completed', finishedAt: iso(-10 * 60 * 1000) }),
+    ];
+    expect(countCompletedInWindow(agents, NOW)).toBe(1);
+  });
+
+  test('does not treat startedAt as a finish time', () => {
+    const agents = [
+      agent('no-finish', 'p', { taskStatus: 'completed', startedAt: iso(-10 * 60 * 1000) }),
+      agent('bad-finish', 'p', { taskStatus: 'completed', finishedAt: 'not-a-date' }),
+      agent('future', 'p', { taskStatus: 'completed', finishedAt: iso(60_000) }),
+    ];
+    expect(countCompletedInWindow(agents, NOW)).toBe(0);
   });
 });

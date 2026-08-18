@@ -15,7 +15,7 @@ import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
-import { buildAgentBuckets } from './agent-buckets.js';
+import { buildAgentBuckets, countCompletedInWindow } from './agent-buckets.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -1115,6 +1115,15 @@ export function App() {
     () => oldestFindingWaitStartedAt(findings),
     [findings],
   );
+  const [completedWindowNowMs, setCompletedWindowNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setCompletedWindowNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const completedLast24h = useMemo(
+    () => countCompletedInWindow(completed, completedWindowNowMs),
+    [completed, completedWindowNowMs],
+  );
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -1540,6 +1549,7 @@ export function App() {
         findings={findings.length}
         oldestFindingWaitStartedAt={oldestFindingWait}
         total={filteredAgents.length}
+        completedLast24h={completedLast24h}
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
         onOpenCapacity={openSettingsAtMaxActiveTasks}
