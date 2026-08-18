@@ -149,7 +149,7 @@ Playbooks are reusable task templates stored as Markdown files in project, user,
 | ID | Feature | Description |
 |----|---------|-------------|
 | F6.1 | **Playbook discovery** | Automatically discover playbooks from `.kookr/playbooks/*.md` in any project CWD, `~/.kookr/playbooks/*.md` for user playbooks, and bundled plugin playbooks. Project playbooks take precedence over user playbooks, which take precedence over plugin playbooks. |
-| F6.2 | **Playbook browser** | Browse available playbooks in a tabbed Launch Dialog (Manual \| Playbooks). Shows name, description, and parameter count. The command palette (Ctrl/Cmd+K) exposes **Browse playbooks**, which opens the same dialog on the Playbooks tab. |
+| F6.2 | **Playbook browser** | Browse available playbooks in a tabbed Launch Dialog (Manual \| Playbooks). Shows name, description, and parameter count. The command palette (Ctrl/Cmd+K) exposes **Browse playbooks**, which opens the same dialog on the Playbooks tab. The empty OSS contribution dashboard offers the same control plus a link to OSS tracking setup. |
 | F6.3 | **Parameterized launch** | Fill in playbook parameters before triggering. Parameters use `{{paramName}}` interpolation in the playbook body. Required parameters are validated. |
 | F6.4 | **Checklist as criteria** | Playbook checklist items become the task's completion criteria. |
 | F6.5 | **Playbook badge** | Tasks launched from playbooks show a "Playbook" badge in the detail header. |

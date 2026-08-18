@@ -11242,6 +11242,35 @@ a.project-drawer-stat-row-link:focus-visible {
   line-height: 1.5;
 }
 
+.oss-productivity-empty p {
+  margin: 0;
+}
+
+.oss-productivity-empty-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.oss-productivity-empty-docs-link {
+  color: var(--accent, #61dafb);
+  text-decoration: underline;
+}
+
+.oss-productivity-empty-docs-link:hover {
+  color: var(--text-bright);
+}
+
+a.oss-productivity-empty-docs-link:visited {
+  color: var(--accent, #61dafb);
+}
+
+a.oss-productivity-empty-docs-link:visited:hover {
+  color: var(--text-bright);
+}
+
 .oss-summary {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

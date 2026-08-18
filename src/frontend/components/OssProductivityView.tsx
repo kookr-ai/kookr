@@ -21,7 +21,13 @@ import { OssTrendsErrorBoundary } from './OssTrendsErrorBoundary.js';
 
 interface Props {
   onClose: () => void;
+  /** Close this panel and open Launch on the Playbooks tab. */
+  onBrowsePlaybooks: () => void;
 }
+
+/** OSS-extension / tracking setup in the published hooks guide. */
+export const OSS_HOOKS_SETUP_URL =
+  'https://github.com/kookr-ai/kookr/blob/main/docs/hooks-setup.md#oss-extension-hooks-bundled-with-the-repo';
 
 type TimeWindow = TrendWindow;
 
@@ -194,7 +200,7 @@ function formatDateTime(iso: string): string {
   }
 }
 
-export function OssProductivityView({ onClose }: Props) {
+export function OssProductivityView({ onClose, onBrowsePlaybooks }: Props) {
   useEscapeToClose(onClose);
 
   const {
@@ -311,9 +317,35 @@ export function OssProductivityView({ onClose }: Props) {
 
         {ossAttempts.length === 0 && ossRegistryActiveRepos.length === 0 ? (
           <div className="oss-productivity-empty">
-            No OSS attempts tracked yet. Click <strong>Refresh</strong> to pull your
-            PR history from the repos in <code>~/.kookr/oss-repos.json</code>.
-            Future PRs will be captured automatically by the PostToolUse hook.
+            <p>
+              No OSS attempts tracked yet. Click <strong>Refresh</strong> to pull your
+              PR history from the repos in <code>~/.kookr/oss-repos.json</code>.
+              Future PRs will be captured automatically by the PostToolUse hook.
+            </p>
+            <div className="oss-productivity-empty-cta">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => {
+                  onClose();
+                  onBrowsePlaybooks();
+                }}
+              >
+                Browse playbooks
+              </button>
+              <p>
+                Start the OSS Contribution Pipeline playbook, or read{' '}
+                <a
+                  className="oss-productivity-empty-docs-link"
+                  href={OSS_HOOKS_SETUP_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  how OSS tracking works
+                </a>
+                .
+              </p>
+            </div>
           </div>
         ) : (
           <>
