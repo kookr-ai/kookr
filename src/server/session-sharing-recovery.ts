@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { TaskShareSummary } from '../shared/contracts/remote-share.js';
@@ -21,6 +21,9 @@ import type { RelayShareClient } from './relay-share-client.js';
 import type { TaskShareService } from './task-share-service.js';
 
 export const SESSION_SHARING_RECOVERY_AUDIT_FILE = 'session-sharing-recovery-audit.jsonl';
+
+/** Owner-only bits for rewritten `.env` and its backup (issue #2649). */
+const SESSION_SHARING_ENV_FILE_MODE = 0o600;
 
 export const SESSION_SHARING_RECOVERY_ACTIONS: readonly SessionSharingRecoveryActionDescriptor[] = [
   {
@@ -204,9 +207,22 @@ export async function disableTerminalSharing(deps: SessionSharingRecoveryDeps): 
   const backupPath = existsSync(envPath)
     ? `${envPath}.session-sharing-disable.${(deps.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, '-')}.bak`
     : undefined;
-  if (backupPath) await copyFile(envPath, backupPath);
+  if (backupPath) {
+    await copyFile(envPath, backupPath);
+    // copyFile preserves the source mode; force owner-only so the backup
+    // does not leave secrets group- or world-readable.
+    await chmod(backupPath, SESSION_SHARING_ENV_FILE_MODE);
+  }
   await mkdir(dirname(envPath), { recursive: true });
-  await writeFile(envPath, setEnvValue(previous, SESSION_SHARING_TERMINAL_TRUST_ENV_NAME, 'false'), 'utf8');
+  // writeFile (not rename) so a cwd .env symlink keeps pointing at the
+  // shared secrets file. mode applies on create; chmod forces 0600 even
+  // when umask strips bits or the existing inode was 0644.
+  await writeFile(
+    envPath,
+    setEnvValue(previous, SESSION_SHARING_TERMINAL_TRUST_ENV_NAME, 'false'),
+    { encoding: 'utf8', mode: SESSION_SHARING_ENV_FILE_MODE },
+  );
+  await chmod(envPath, SESSION_SHARING_ENV_FILE_MODE);
   (deps.env ?? process.env)[SESSION_SHARING_TERMINAL_TRUST_ENV_NAME] = 'false';
   await deps.relayConnection?.disconnect().catch(() => undefined);
   return auditedResult(deps, {
