@@ -282,28 +282,33 @@ describe('collectOpsDigestWarnings', () => {
     }).warnings).toEqual([]);
   });
 
-  it('warns from a slim neverFired summary without loops after the hourly interval', () => {
-    const { warnings } = collectOpsDigestWarnings({
-      serverStartedAt: '2026-08-18T00:00:00.000Z',
-      timerHealth: {
-        overdue: 0,
-        neverFired: 2,
-        oldestNeverFiredName: 'prodSmokeTick',
-        generatedAt: '2026-08-18T02:00:00.000Z',
-      },
-    });
-    expect(warnings[0]?.path).toBe('timerHealth.overdue');
-    expect(warnings[0]?.summary).toContain('prodSmokeTick');
-  });
-
-  it('stays quiet on a slim neverFired count while the server is younger than one hour', () => {
+  it('stays quiet for a 24h never-fired loop before its own interval', () => {
     expect(collectOpsDigestWarnings({
       serverStartedAt: '2026-08-18T00:00:00.000Z',
       timerHealth: {
         overdue: 0,
-        neverFired: 5,
-        oldestNeverFiredName: 'prodSmokeTick',
-        generatedAt: '2026-08-18T00:13:00.000Z',
+        generatedAt: '2026-08-18T01:30:00.000Z',
+        loops: [
+          {
+            name: 'maintenancePrune',
+            lastFiredAt: null,
+            expectedIntervalMs: 86_400_000,
+            overdue: false,
+          },
+        ],
+      },
+    }).warnings).toEqual([]);
+  });
+
+  it('does not treat a slim neverFired count as an hourly stall', () => {
+    // 24h maintenance prune is neverFired at T+90m and must stay quiet.
+    expect(collectOpsDigestWarnings({
+      serverStartedAt: '2026-08-18T00:00:00.000Z',
+      timerHealth: {
+        overdue: 0,
+        neverFired: 1,
+        oldestNeverFiredName: 'maintenancePrune',
+        generatedAt: '2026-08-18T01:30:00.000Z',
       },
     }).warnings).toEqual([]);
   });
@@ -438,7 +443,7 @@ describe('timerHealth health overlay (issue #2637)', () => {
     expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0 } })).toBe(false);
     expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 1 } })).toBe(true);
     expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0, loops: [] } })).toBe(true);
-    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0, neverFired: 0 } })).toBe(true);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0, neverFired: 5 } })).toBe(false);
   });
 
   it('merges a diagnostics snapshot into the health summary shape', () => {
@@ -674,7 +679,7 @@ describe('runOpsDigestCli', () => {
       if (url.endsWith('/api/health')) {
         return jsonResponse({
           status: 'ok',
-          timerHealth: { overdue: 0, neverFired: 0 },
+          timerHealth: { overdue: 0, loops: [] },
           hookIngestion: { p95LagMs: 43_000 },
           schedules: {
             schedulesPausedByFailure: [
@@ -704,7 +709,7 @@ describe('runOpsDigestCli', () => {
       const url = String(input);
       if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
       if (url.endsWith('/api/health')) {
-        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0, neverFired: 0 } }, 200);
+        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0, loops: [] } }, 200);
       }
       throw new Error(`unexpected fetch ${url}`);
     });

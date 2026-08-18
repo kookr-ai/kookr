@@ -289,8 +289,17 @@ function formatStaleAge(ms: number): string {
 }
 
 /** JSON `details` for an offline / degraded envelope — the same signal set as live. */
+function offlineSnapshotNowMs(read: LastGoodHealthRead, nowMs?: number): number | undefined {
+  // Age never-fired hourly loops from the snapshot clock, not Lucy's wall
+  // clock — a 10-minute-old last-good body read two hours later is still
+  // a 10-minute-old server.
+  return parseIsoMs(read.snapshot.capturedAt) ?? nowMs;
+}
+
 function offlineDetails(read: LastGoodHealthRead, nowMs?: number): Record<string, unknown> {
-  const collected = collectOpsDigestWarnings(read.snapshot.health ?? {}, { nowMs });
+  const collected = collectOpsDigestWarnings(read.snapshot.health ?? {}, {
+    nowMs: offlineSnapshotNowMs(read, nowMs),
+  });
   return {
     path: read.path,
     mtimeMs: read.mtimeMs,
@@ -314,7 +323,9 @@ export function formatOpsDigestOffline(
   opts?: { nowMs?: number },
 ): string {
   const { snapshot, ageMs, path } = read;
-  const collected = collectOpsDigestWarnings(snapshot.health ?? {}, { nowMs: opts?.nowMs });
+  const collected = collectOpsDigestWarnings(snapshot.health ?? {}, {
+    nowMs: parseIsoMs(snapshot.capturedAt) ?? opts?.nowMs,
+  });
   const lines: string[] = [];
   lines.push('ready: UNKNOWN (offline — HTTP dark, showing last-good /api/health)');
   lines.push(`last-good: ${formatStaleAge(ageMs)} stale  captured=${snapshot.capturedAt}`);
@@ -434,9 +445,9 @@ export function healthHasTimerHealthSummary(health: unknown): boolean {
   if (!timerHealth) return false;
   const overdue = finiteNumber(timerHealth.overdue);
   if (overdue !== null && overdue >= 1) return true;
-  if (Array.isArray(timerHealth.loops)) return true;
-  if (typeof timerHealth.oldestNeverFiredName === 'string') return true;
-  return finiteNumber(timerHealth.neverFired) !== null;
+  // `neverFired` counts every lastFiredAt=null loop, including 24h prune.
+  // Only loops[] let us keep the hourly + "older than its interval" gate.
+  return Array.isArray(timerHealth.loops);
 }
 
 /**
@@ -714,25 +725,8 @@ export function collectOpsDigestWarnings(
       oldestOverdueName = overdueFromLoops[0].name;
     }
 
-    // Slim health summary (#2636): neverFired counts every lastFiredAt=null
-    // loop, including ones still inside their first interval. Only promote
-    // that count after server uptime already exceeds one hourly interval.
-    if (neverFiredHourly.length === 0) {
-      const neverFiredCount = finiteNumber(timerHealth.neverFired);
-      const oldestNever =
-        typeof timerHealth.oldestNeverFiredName === 'string' && timerHealth.oldestNeverFiredName
-          ? timerHealth.oldestNeverFiredName
-          : null;
-      if (
-        neverFiredCount !== null
-        && neverFiredCount >= 1
-        && oldestNever
-        && uptimeMs !== null
-        && uptimeMs >= HOURLY_INTERVAL_MS
-      ) {
-        neverFiredHourly.push(oldestNever);
-      }
-    }
+    // Do not promote slim neverFired / oldestNeverFiredName: that count
+    // includes 24h maintenance prune, which is still correctly idle at T+90m.
   }
 
   if (timerHealthOverdue !== null && timerHealthOverdue >= 1) {
