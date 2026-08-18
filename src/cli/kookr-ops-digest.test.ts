@@ -10,7 +10,10 @@ import {
   EXIT_SERVER_ERROR,
   EXIT_USER_ERROR,
   OPS_TIMERS_TIMEOUT_MS,
+  OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS,
   collectOpsDigestWarnings,
+  healthHasTimerHealthSummary,
+  mergeTimerHealthFallback,
   formatOpsDigestHuman,
   formatOpsDigestOffline,
   formatOpsTimersHuman,
@@ -80,6 +83,25 @@ const READY_FAIL = {
     startup: { critical: true, ready: false, status: 'recovering' },
     persistence: { critical: true, ready: true, status: 'ok' },
   },
+};
+
+const TIMER_HEALTH_BODY = {
+  schemaVersion: 'timer-health.v1',
+  generatedAt: '2026-08-18T12:00:00.000Z',
+  loops: [
+    {
+      name: 'maintenancePrune',
+      lastFiredAt: null,
+      expectedIntervalMs: 3_600_000,
+      overdue: true,
+    },
+    {
+      name: 'save',
+      lastFiredAt: '2026-08-18T11:59:00.000Z',
+      expectedIntervalMs: 30_000,
+      overdue: false,
+    },
+  ],
 };
 
 afterEach(() => {
@@ -214,6 +236,126 @@ describe('collectOpsDigestWarnings', () => {
     });
     expect(warnings[0]?.path).toBe('helperLlm.stormsSuppressed');
     expect(warnings[0]?.summary).toBe('stormsSuppressed=7');
+  });
+
+  it('warns when hook-ingestion p95 is 43 seconds and names the field (issue #2637)', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      hookIngestion: { p95LagMs: 43_000, maxLagMs: 50_000, sessionCount: 10 },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('hookIngestion.p95LagMs');
+    expect(warnings[0]?.summary).toMatch(/hookIngestion\.p95LagMs=43000ms/);
+    expect(signals.hookIngestionP95LagMs).toBe(43_000);
+  });
+
+  it('stays quiet when hook-ingestion p95 is at or below 10 seconds', () => {
+    expect(collectOpsDigestWarnings({
+      hookIngestion: { p95LagMs: 10_000 },
+    }).warnings).toEqual([]);
+    expect(collectOpsDigestWarnings({
+      hookIngestion: { p95LagMs: 2_345 },
+    }).warnings).toEqual([]);
+  });
+
+  it('warns when one schedule is fail-closed paused (issue #2637)', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      schedules: {
+        schedulesPausedByFailure: [
+          {
+            id: '70944248-31a4-4bf2-b33a-0f17f33486b5',
+            name: 'Requirements-Redundancy Research Loop',
+            consecutiveFailures: 3,
+          },
+        ],
+      },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('schedules.schedulesPausedByFailure');
+    expect(warnings[0]?.summary).toMatch(/schedulesPausedByFailure=1/);
+    expect(warnings[0]?.summary).toContain('Requirements-Redundancy Research Loop');
+    expect(signals.schedulesPausedByFailure).toBe(1);
+  });
+
+  it('stays quiet when the paused-schedule list is empty', () => {
+    expect(collectOpsDigestWarnings({
+      schedules: { schedulesPausedByFailure: [] },
+    }).warnings).toEqual([]);
+  });
+
+  it('warns when timerHealth.overdue is at least 1 (issue #2637)', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      timerHealth: { overdue: 2, oldestOverdueName: 'maintenancePrune' },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('timerHealth.overdue');
+    expect(warnings[0]?.summary).toBe('timerHealth.overdue=2 oldest=maintenancePrune');
+    expect(signals.timerHealthOverdue).toBe(2);
+  });
+
+  it('warns when an hourly timer has never fired after its interval', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      serverStartedAt: '2026-08-18T00:00:00.000Z',
+      timerHealth: {
+        overdue: 0,
+        generatedAt: '2026-08-18T02:00:00.000Z',
+        loops: [
+          {
+            name: 'prodSmokeTick',
+            lastFiredAt: null,
+            expectedIntervalMs: 3_600_000,
+            overdue: false,
+          },
+        ],
+      },
+    });
+    expect(warnings[0]?.path).toBe('timerHealth.overdue');
+    expect(warnings[0]?.summary).toMatch(/hourly timer never fired/);
+    expect(warnings[0]?.summary).toContain('prodSmokeTick');
+  });
+
+  it('keeps existing warnings and stays under the line cap when mixed (issue #2637)', () => {
+    const mixed = {
+      ...HEALTH_WITH_WARNINGS,
+      hookIngestion: { p95LagMs: 43_000 },
+      schedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
+        ],
+      },
+      timerHealth: { overdue: 1, oldestOverdueName: 'save' },
+    };
+    const collected = collectOpsDigestWarnings(mixed);
+    expect(collected.warnings.length).toBeLessThanOrEqual(5);
+    const paths = collected.warnings.map((w) => w.path);
+    expect(paths).toContain('resourceWatchdog.pressureWhileDisabled');
+    expect(paths).toContain('timerHealth.overdue');
+    const snap: OpsDigestSnapshot = {
+      baseUrl: 'http://127.0.0.1:4800',
+      ready: true,
+      readyHttpStatus: 200,
+      failingCritical: [],
+      warnings: collected.warnings,
+      signals: collected.signals,
+      serverStartedAt: collected.serverStartedAt,
+      sha: collected.sha,
+    };
+    expect(formatOpsDigestHuman(snap).split('\n').length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe('timerHealth health overlay (issue #2637)', () => {
+  it('treats missing and null timerHealth as no summary', () => {
+    expect(healthHasTimerHealthSummary({})).toBe(false);
+    expect(healthHasTimerHealthSummary({ timerHealth: null })).toBe(false);
+    expect(healthHasTimerHealthSummary({ timerHealth: { overdue: 0 } })).toBe(true);
+  });
+
+  it('merges a diagnostics snapshot into the health summary shape', () => {
+    const snap = parseTimerHealthBody(TIMER_HEALTH_BODY);
+    expect(snap).not.toBeNull();
+    const merged = mergeTimerHealthFallback({ status: 'ok' }, snap!);
+    expect(healthHasTimerHealthSummary(merged)).toBe(true);
+    expect(collectOpsDigestWarnings(merged).warnings[0]?.path).toBe('timerHealth.overdue');
   });
 });
 
@@ -351,6 +493,87 @@ describe('runOpsDigestCli', () => {
         (w: { path: string }) => w.path === 'resourceWatchdog.pressureWhileDisabled',
       ),
     ).toBe(true);
+  });
+
+  it('falls back to diagnostics timer-health when health.timerHealth is missing (issue #2637)', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+      if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok' }, 200);
+      if (url.endsWith('/api/diagnostics/timer-health')) {
+        return jsonResponse(TIMER_HEALTH_BODY, 200);
+      }
+      return jsonResponse({ error: 'not found' }, 404);
+    });
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['digest'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(c.logs.join('\n')).toContain('timerHealth.overdue');
+    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => u.endsWith('/api/diagnostics/timer-health'))).toBe(true);
+    const timerCall = fetchImpl.mock.calls.find((call) =>
+      String(call[0]).endsWith('/api/diagnostics/timer-health'),
+    );
+    expect(timerCall?.[1]).toMatchObject({
+      signal: expect.any(AbortSignal),
+    });
+    expect(OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS).toBe(2_000);
+  });
+
+  it('does not fetch timer-health when health already has a timerHealth object', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+      if (url.endsWith('/api/health')) {
+        return jsonResponse({ status: 'ok', timerHealth: { overdue: 0 } }, 200);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const c = captureConsole();
+    const code = await runOpsDigestCli(['digest'], {
+      env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out: c.out,
+      err: c.err,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(c.logs.join('\n')).toMatch(/warnings: none/);
+    const urls = fetchImpl.mock.calls.map((call) => String(call[0]));
+    expect(urls).toHaveLength(2);
+    expect(urls.some((u) => u.endsWith('/api/ready'))).toBe(true);
+    expect(urls.some((u) => u.endsWith('/api/health'))).toBe(true);
+    expect(urls.some((u) => u.endsWith('/api/diagnostics/timer-health'))).toBe(false);
+  });
+
+  it('keeps digest ok when the timer-health fallback times out', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/ready')) return jsonResponse(READY_OK, 200);
+        if (url.endsWith('/api/health')) return jsonResponse({ status: 'ok' }, 200);
+        throw Object.assign(new Error('The operation was aborted due to timeout'), {
+          name: 'TimeoutError',
+        });
+      });
+      const c = captureConsole();
+      const code = await runOpsDigestCli(['digest'], {
+        env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+        out: c.out,
+        err: c.err,
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(timeoutSpy).toHaveBeenCalledWith(OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS);
+      expect(code).toBe(EXIT_OK);
+      expect(c.logs.join('\n')).toMatch(/warnings: none/);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('returns READY_FAIL code in JSON when ready is false', async () => {
@@ -569,25 +792,6 @@ describe('kookr ops digest offline last-good (issue #2495)', () => {
     expect(loader).not.toHaveBeenCalled();
   });
 });
-
-const TIMER_HEALTH_BODY = {
-  schemaVersion: 'timer-health.v1',
-  generatedAt: '2026-08-18T12:00:00.000Z',
-  loops: [
-    {
-      name: 'maintenancePrune',
-      lastFiredAt: null,
-      expectedIntervalMs: 3_600_000,
-      overdue: true,
-    },
-    {
-      name: 'save',
-      lastFiredAt: '2026-08-18T11:59:00.000Z',
-      expectedIntervalMs: 30_000,
-      overdue: false,
-    },
-  ],
-};
 
 describe('kookr ops timers (issue #2639)', () => {
   it('prints every registered loop with last-fired or never and overdue', () => {

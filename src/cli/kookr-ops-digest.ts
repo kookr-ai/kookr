@@ -6,6 +6,9 @@
  *
  * `digest` fetches GET /api/ready + GET /api/health and prints ≤20 lines:
  * ready status plus the top unattended failure signals (with field paths).
+ * Issue #2637 also warns on overdue/never-fired hourly timers, hook-ingestion
+ * p95 > 10s, and any fail-closed paused schedule. If health has no
+ * `timerHealth` object, digest does a 2s GET of /api/diagnostics/timer-health.
  * Exit: 0 when ready, 1 when ready fails. Does not mutate server state.
  *
  * Offline degrade (issue #2495): when the HTTP surface is dark the server can
@@ -41,6 +44,20 @@ const READY_PATH = '/api/ready';
 const TIMER_HEALTH_PATH = '/api/diagnostics/timer-health';
 const MAX_WARNINGS = 5;
 const MAX_HUMAN_LINES = 20;
+/**
+ * Hook-ingestion p95 above this is a Lucy-visible stall (issue #2637).
+ * Matches the issue's 10s bar — health's own lagWarningThresholdMs is 2s and
+ * would flap on a healthy busy box.
+ */
+export const HOOK_INGESTION_P95_WARN_MS = 10_000;
+/** Hourly safety-net loops (maintenance prune, prod smoke, deploy lag, …). */
+const HOURLY_INTERVAL_MS = 3_600_000;
+/**
+ * When `/api/health` has no `timerHealth` object, digest may fetch the
+ * diagnostics timer document. Two seconds is long enough for a tiny
+ * in-memory snapshot and short enough that a wedged path cannot hang Lucy.
+ */
+export const OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS = 2_000;
 
 export const EXIT_OK = 0;
 /** Ready probe failed (HTTP non-200 or body.ready === false). */
@@ -64,8 +81,9 @@ Usage:
 
 digest: GET /api/ready and GET /api/health, then print ready status plus the
 top unattended failure signals (pressureWhileDisabled, phantomActive, hung
-residual, helper-LLM pause, pipeline starvation, disk, safeMode) with field
-paths. ≤20 lines.
+residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
+p95, fail-closed paused schedules, pipeline starvation, disk, safeMode) with
+field paths. ≤20 lines.
 
 When the server is unreachable, digest auto-degrades to the last-good
 /api/health snapshot on disk (if one exists) and reports how stale it is.
@@ -171,6 +189,9 @@ export interface OpsDigestSnapshot {
     pipelineStarvationElevated: number | null;
     diskFreePercent: number | null;
     safeModeEngaged: boolean | null;
+    hookIngestionP95LagMs: number | null;
+    schedulesPausedByFailure: number | null;
+    timerHealthOverdue: number | null;
   };
   serverStartedAt: string | null;
   sha: string | null;
@@ -390,6 +411,38 @@ function finiteNumber(value: unknown): number | null {
   return value;
 }
 
+function parseIsoMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** True when `/api/health` already carries a `timerHealth` object (issue #2637). */
+export function healthHasTimerHealthSummary(health: unknown): boolean {
+  return asRecord(asRecord(health)?.timerHealth) !== null;
+}
+
+/**
+ * Fold a diagnostics timer-health snapshot onto a health body so
+ * {@link collectOpsDigestWarnings} can read the same `timerHealth` shape
+ * whether the server published the summary or we fetched the fallback.
+ */
+export function mergeTimerHealthFallback(
+  health: unknown,
+  snap: OpsTimersSnapshot,
+): Record<string, unknown> {
+  const rec = asRecord(health) ?? {};
+  return {
+    ...rec,
+    timerHealth: {
+      overdue: snap.overdue.length,
+      oldestOverdueName: snap.overdue[0] ?? null,
+      generatedAt: snap.generatedAt,
+      loops: snap.loops,
+    },
+  };
+}
+
 function parseReadyBody(body: unknown): {
   ready: boolean;
   failingCritical: string[];
@@ -415,9 +468,16 @@ function parseReadyBody(body: unknown): {
 /**
  * Collect the unattended-ops warning set from a health body. Order is
  * severity-ish (safeMode → pressure → phantom → hung → helper-LLM pause →
- * starvation → disk); callers slice to MAX_WARNINGS.
+ * overdue/never-fired hourly timers → hook-ingestion p95 → fail-closed
+ * paused schedules → starvation → disk); callers slice to MAX_WARNINGS.
+ *
+ * `opts.nowMs` is only used when `timerHealth.generatedAt` is missing, to
+ * decide whether a never-fired hourly loop is older than its interval.
  */
-export function collectOpsDigestWarnings(health: unknown): {
+export function collectOpsDigestWarnings(
+  health: unknown,
+  opts?: { nowMs?: number },
+): {
   warnings: OpsDigestWarning[];
   signals: OpsDigestSnapshot['signals'];
   serverStartedAt: string | null;
@@ -430,6 +490,14 @@ export function collectOpsDigestWarnings(health: unknown): {
   const safeMode = asRecord(h.safeMode);
   const pipeline = asRecord(h.pipelineStarvation);
   const pipelineRepos = asRecord(pipeline?.repos);
+  const serverStartedAt =
+    typeof h.serverStartedAt === 'string' ? h.serverStartedAt : null;
+  const sha =
+    typeof h.sha === 'string'
+      ? h.sha
+      : typeof h.gitSha === 'string'
+        ? h.gitSha
+        : null;
 
   const pressureWhileDisabled =
     typeof rw?.pressureWhileDisabled === 'boolean' ? rw.pressureWhileDisabled : null;
@@ -554,6 +622,130 @@ export function collectOpsDigestWarnings(health: unknown): {
     });
   }
 
+  // Timer health (issue #2637): prefer the `/api/health.timerHealth` summary.
+  // `overdue >= 1` is the AC. Hourly loops that have never fired and whose
+  // server uptime already exceeds their interval are the other Lucy-visible
+  // stall (prod hourly safety-nets stay `overdue=false` for two hours).
+  const timerHealth = asRecord(h.timerHealth);
+  let timerHealthOverdue: number | null = null;
+  let oldestOverdueName: string | null = null;
+  const neverFiredHourly: string[] = [];
+  if (timerHealth) {
+    const overdueRaw = finiteNumber(timerHealth.overdue);
+    if (overdueRaw !== null && overdueRaw >= 0) {
+      timerHealthOverdue = Math.floor(overdueRaw);
+    }
+    oldestOverdueName =
+      typeof timerHealth.oldestOverdueName === 'string' && timerHealth.oldestOverdueName
+        ? timerHealth.oldestOverdueName
+        : typeof timerHealth.oldestName === 'string' && timerHealth.oldestName
+          ? timerHealth.oldestName
+          : null;
+
+    const generatedAtMs = parseIsoMs(
+      typeof timerHealth.generatedAt === 'string' ? timerHealth.generatedAt : null,
+    );
+    const startedAtMs = parseIsoMs(serverStartedAt);
+    const nowMs = generatedAtMs ?? opts?.nowMs ?? null;
+    const uptimeMs =
+      startedAtMs !== null && nowMs !== null ? nowMs - startedAtMs : null;
+
+    const overdueFromLoops: string[] = [];
+    const loopsRaw = Array.isArray(timerHealth.loops) ? timerHealth.loops : [];
+    for (const raw of loopsRaw) {
+      const row = asRecord(raw);
+      if (!row) continue;
+      const name = typeof row.name === 'string' ? row.name : '';
+      if (!name) continue;
+      if (row.overdue === true) overdueFromLoops.push(name);
+      const interval = finiteNumber(row.expectedIntervalMs);
+      if (
+        row.lastFiredAt == null &&
+        interval !== null &&
+        interval >= HOURLY_INTERVAL_MS &&
+        uptimeMs !== null &&
+        uptimeMs >= interval
+      ) {
+        neverFiredHourly.push(name);
+      }
+    }
+    if (timerHealthOverdue === null && overdueFromLoops.length > 0) {
+      timerHealthOverdue = overdueFromLoops.length;
+    }
+    if (!oldestOverdueName && overdueFromLoops[0]) {
+      oldestOverdueName = overdueFromLoops[0];
+    }
+  }
+
+  if (timerHealthOverdue !== null && timerHealthOverdue >= 1) {
+    warnings.push({
+      path: 'timerHealth.overdue',
+      summary: oldestOverdueName
+        ? `timerHealth.overdue=${timerHealthOverdue} oldest=${oldestOverdueName}`
+        : `timerHealth.overdue=${timerHealthOverdue}`,
+      value: {
+        overdue: timerHealthOverdue,
+        oldestOverdueName,
+        neverFiredHourly,
+      },
+    });
+  } else if (neverFiredHourly.length > 0) {
+    const shown = neverFiredHourly.slice(0, 3);
+    const extra = neverFiredHourly.length - shown.length;
+    warnings.push({
+      path: 'timerHealth.overdue',
+      summary:
+        `hourly timer never fired after its interval: ${shown.join(', ')}` +
+        (extra > 0 ? ` (+${extra} more)` : ''),
+      value: { overdue: 0, neverFiredHourly },
+    });
+  }
+
+  // Hook-ingestion p95 (issue #2637). Field path matches GET /api/health.
+  const hookIngestion = asRecord(h.hookIngestion);
+  const hookIngestionP95LagMs = finiteNumber(hookIngestion?.p95LagMs);
+  if (hookIngestionP95LagMs !== null && hookIngestionP95LagMs > HOOK_INGESTION_P95_WARN_MS) {
+    warnings.push({
+      path: 'hookIngestion.p95LagMs',
+      summary: `hookIngestion.p95LagMs=${Math.round(hookIngestionP95LagMs)}ms (>10s)`,
+      value: Math.round(hookIngestionP95LagMs),
+    });
+  }
+
+  // Fail-closed paused schedules (issue #2637): any count ≥ 1, not only ≥ 3.
+  const schedules = asRecord(h.schedules);
+  const pausedRaw = schedules?.schedulesPausedByFailure;
+  const pausedSchedules: Array<{ id: string; name: string; consecutiveFailures: number }> = [];
+  if (Array.isArray(pausedRaw)) {
+    for (const raw of pausedRaw) {
+      const rec = asRecord(raw);
+      if (!rec) continue;
+      const id = typeof rec.id === 'string' ? rec.id : '';
+      if (!id) continue;
+      pausedSchedules.push({
+        id,
+        name: typeof rec.name === 'string' && rec.name.length > 0 ? rec.name : id,
+        consecutiveFailures: Math.floor(finiteNumber(rec.consecutiveFailures) ?? 0),
+      });
+    }
+  }
+  if (pausedSchedules.length > 0) {
+    const top = pausedSchedules[0]!;
+    const extra =
+      pausedSchedules.length > 1 ? ` (+${pausedSchedules.length - 1} more)` : '';
+    warnings.push({
+      path: 'schedules.schedulesPausedByFailure',
+      summary:
+        `schedules.schedulesPausedByFailure=${pausedSchedules.length} ` +
+        `(${top.name} consecutiveFailures=${top.consecutiveFailures})` +
+        extra,
+      value: {
+        count: pausedSchedules.length,
+        names: pausedSchedules.map((row) => row.name),
+      },
+    });
+  }
+
   if (starvationRows.length > 0) {
     const top = starvationRows[0]!;
     const extra =
@@ -580,15 +772,6 @@ export function collectOpsDigestWarnings(health: unknown): {
     });
   }
 
-  const serverStartedAt =
-    typeof h.serverStartedAt === 'string' ? h.serverStartedAt : null;
-  const sha =
-    typeof h.sha === 'string'
-      ? h.sha
-      : typeof h.gitSha === 'string'
-        ? h.gitSha
-        : null;
-
   return {
     warnings: warnings.slice(0, MAX_WARNINGS),
     signals: {
@@ -599,6 +782,12 @@ export function collectOpsDigestWarnings(health: unknown): {
       pipelineStarvationElevated,
       diskFreePercent,
       safeModeEngaged,
+      hookIngestionP95LagMs:
+        hookIngestionP95LagMs !== null ? Math.round(hookIngestionP95LagMs) : null,
+      schedulesPausedByFailure: pausedSchedules.length > 0 ? pausedSchedules.length : (
+        Array.isArray(pausedRaw) ? 0 : null
+      ),
+      timerHealthOverdue,
     },
     serverStartedAt,
     sha,
@@ -988,7 +1177,27 @@ export async function runOpsDigestCli(
   const readyHttpStatus = readyResponse.status;
   const ready = readyHttpStatus === 200 && readyParsed.ready === true;
 
-  const collected = collectOpsDigestWarnings(healthResponse.body);
+  let healthBody: unknown = healthResponse.body;
+  if (!healthHasTimerHealthSummary(healthBody)) {
+    // Issue #2637: health summary is preferred; a missing block (or an old
+    // server that still publishes `timerHealth: null`) falls back to the
+    // diagnostics document. Tight timeout so a wedged path cannot hang Lucy.
+    try {
+      const timerResponse = await fetchJson(
+        resolved,
+        `${baseUrl}${TIMER_HEALTH_PATH}`,
+        OPS_DIGEST_TIMER_FALLBACK_TIMEOUT_MS,
+      );
+      if (timerResponse.status === 200) {
+        const timerSnap = parseTimerHealthBody(timerResponse.body);
+        if (timerSnap) healthBody = mergeTimerHealthFallback(healthBody, timerSnap);
+      }
+    } catch {
+      // Keep the digest; timer warnings stay absent.
+    }
+  }
+
+  const collected = collectOpsDigestWarnings(healthBody);
   const snap: OpsDigestSnapshot = {
     baseUrl,
     ready,
