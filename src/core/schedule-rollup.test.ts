@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore, type Schedule, type ScheduleExecutionLedgerEntry, type ScheduleExecutionOutcome } from './schedule.js';
@@ -242,6 +242,52 @@ describe('ScheduleStore rollup invariants', () => {
     const reloaded = new ScheduleStore(tempDir);
     await reloaded.load();
     expect(stripTimestamp(reloaded.getRollup(schedule.id)!)).toEqual(expected);
+  });
+
+  test('writes schedule-rollups.json compactly (no pretty indentation) (#2648)', async () => {
+    const schedule = seedSchedule();
+    store.replace({ ...schedule, executionLedger: [makeEntry(schedule.id, 0, true, 1)] });
+    await store.persist();
+
+    const content = readFileSync(join(tempDir, 'schedule-rollups.json'), 'utf-8');
+    const parsed = JSON.parse(content) as { rollups: Array<{ scheduleId: string; fires: number }> };
+    // Couple compact format to a real persist result (not empty/wrong payload).
+    expect(parsed.rollups).toHaveLength(1);
+    expect(parsed.rollups[0]?.scheduleId).toBe(schedule.id);
+    expect(parsed.rollups[0]?.fires).toBe(1);
+    // Compact form has no 2-space indent after newlines (pretty-print marker).
+    expect(content).not.toMatch(/\n {2}/);
+    // Canonical compact form: re-stringify of parse equals on-disk bytes.
+    expect(content).toBe(JSON.stringify(parsed));
+  });
+
+  test('loads legacy pretty-printed schedule-rollups.json (#2648)', async () => {
+    const schedule = seedSchedule();
+    store.replace({
+      ...schedule,
+      executionLedger: [makeEntry(schedule.id, 0, true, 2), makeEntry(schedule.id, 1, false, 0)],
+    });
+    await store.persist();
+    const expected = stripTimestamp(store.getRollup(schedule.id)!);
+
+    const persisted = JSON.parse(readFileSync(join(tempDir, 'schedule-rollups.json'), 'utf-8')) as {
+      rollups: Array<{ updatedAt?: string }>;
+    };
+    // Sentinel kept only when the pretty file is parsed AND trusted (rollupsEqual
+    // ignores updatedAt). A parse/read failure self-heals from the ledger with a
+    // fresh timestamp, so this distinguishes "pretty load" from I2 rebuild.
+    const trustedUpdatedAt = '1999-01-01T00:00:00.000Z';
+    persisted.rollups[0]!.updatedAt = trustedUpdatedAt;
+    const pretty = JSON.stringify(persisted, null, 2);
+    // Sanity: fixture is actually pretty-printed (multi-space indent).
+    expect(pretty).toMatch(/\n {2}/);
+    writeFileSync(join(tempDir, 'schedule-rollups.json'), pretty);
+
+    const reloaded = new ScheduleStore(tempDir);
+    await reloaded.load();
+    expect(stripTimestamp(reloaded.getRollup(schedule.id)!)).toEqual(expected);
+    expect(reloaded.getRollup(schedule.id)!.fires).toBe(2);
+    expect(reloaded.getRollup(schedule.id)!.updatedAt).toBe(trustedUpdatedAt);
   });
 
   test('I2: reconciles from the ledger when the durable store is deleted', async () => {
