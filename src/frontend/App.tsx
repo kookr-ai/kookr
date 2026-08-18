@@ -1115,18 +1115,18 @@ export function App() {
     () => oldestFindingWaitStartedAt(findings),
     [findings],
   );
-  const [completedWindowNowMs, setCompletedWindowNowMs] = useState(() => Date.now());
+  const [windowNowMs, setWindowNowMs] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setCompletedWindowNowMs(Date.now()), 60_000);
+    const timer = setInterval(() => setWindowNowMs(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
   const completedLast24h = useMemo(
-    () => countCompletedInWindow(completed, completedWindowNowMs),
-    [completed, completedWindowNowMs],
+    () => countCompletedInWindow(completed, windowNowMs),
+    [completed, windowNowMs],
   );
   const launchedLast24h = useMemo(
-    () => countLaunchedInWindow(filteredAgents, completedWindowNowMs),
-    [filteredAgents, completedWindowNowMs],
+    () => countLaunchedInWindow(filteredAgents, windowNowMs),
+    [filteredAgents, windowNowMs],
   );
 
   useEffect(() => {

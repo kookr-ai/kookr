@@ -265,4 +265,16 @@ describe('countLaunchedInWindow (issue #2632)', () => {
     ];
     expect(countLaunchedInWindow(agents, NOW)).toBe(0);
   });
+
+  test('does not count an old start just because the finish is still in the window', () => {
+    const agents = [
+      agent('old-start-fresh-finish', 'p', {
+        taskStatus: 'completed',
+        startedAt: iso(-25 * 60 * 60 * 1000),
+        finishedAt: iso(-1 * 60 * 60 * 1000),
+      }),
+    ];
+    expect(countLaunchedInWindow(agents, NOW)).toBe(0);
+    expect(countCompletedInWindow(agents, NOW)).toBe(1);
+  });
 });

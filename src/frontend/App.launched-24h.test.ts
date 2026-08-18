@@ -193,8 +193,12 @@ describe('App launched-task 24h chip wiring (issue #2632)', () => {
           finishedAt: new Date(now - 30 * 60 * 1000).toISOString(),
         }),
         makeAgent({
-          agentId: 'fresh-start', taskId: 't-fresh',
+          agentId: 'fresh-start-1', taskId: 't-fresh-1',
           startedAt: new Date(now - 20 * 60 * 1000).toISOString(),
+        }),
+        makeAgent({
+          agentId: 'fresh-start-2', taskId: 't-fresh-2',
+          startedAt: new Date(now - 40 * 60 * 1000).toISOString(),
         }),
       ],
       agentsHydrated: true,
@@ -208,7 +212,7 @@ describe('App launched-task 24h chip wiring (issue #2632)', () => {
     await flush();
 
     expect(container.querySelector('[data-testid="launched-24h-chip"]')?.textContent)
-      .toBe('1 launched / 24h');
+      .toBe('2 launched / 24h');
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)
       .toBe('1 completed / 24h');
   });
