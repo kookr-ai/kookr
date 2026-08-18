@@ -61,7 +61,29 @@ function response(overrides: Record<string, unknown> = {}) {
       invalidTimestampTasks: 0,
       noSessionTasks: 0,
     },
-    byAgent: [],
+    byAgent: [{
+      agentType: 'claude-code',
+      taskCount: 8,
+      completedTaskCount: 6,
+      terminalTaskCount: 8,
+      completionRate: 0.75,
+      totalKnownCostUsd: 4.2,
+      costCoverage: 0.5,
+      medianDurationMs: 120_000,
+      p95DurationMs: 600_000,
+      thumbsUpRate: 0.8,
+    }, {
+      agentType: 'codex-cli',
+      taskCount: 2,
+      completedTaskCount: 2,
+      terminalTaskCount: 2,
+      completionRate: 1,
+      totalKnownCostUsd: 0.5,
+      costCoverage: 0.5,
+      medianDurationMs: 30_000,
+      p95DurationMs: 45_000,
+      thumbsUpRate: 1,
+    }],
     findings: [{
       kind: 'data_quality',
       severity: 'review',
@@ -148,6 +170,92 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.textContent).toContain('Cancelled after prompt');
     expect(el.querySelector('.outcome-findings-list')?.tagName).toBe('UL');
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
+  });
+
+  test('renders one per-agent row and guards low-sample completion rates', async () => {
+    const el = mount();
+
+    await flush();
+
+    const table = el.querySelector('.outcome-agent-table');
+    expect(table).toBeTruthy();
+    const dataRows = table!.querySelectorAll('tbody tr');
+    expect(dataRows.length).toBe(2);
+
+    // Well-sampled agent: headline completion rate shown.
+    expect(el.textContent).toContain('Claude Code');
+    expect(el.textContent).toContain('75%');
+    expect(el.textContent).toContain('$4.20');
+
+    // Low-sample agent (2 terminal tasks < threshold): rate withheld, raw count shown.
+    expect(el.textContent).toContain('Codex CLI');
+    const lowSample = el.querySelector('.outcome-agent-lowsample');
+    expect(lowSample).toBeTruthy();
+    expect(lowSample!.textContent).toContain('low sample');
+    // The misleading 100% completion rate must NOT be rendered for the low-sample agent.
+    expect(lowSample!.textContent).not.toContain('%');
+    expect(lowSample!.textContent).toContain('2/2');
+
+    // The thumbs-up rate is guarded too: the low-sample agent's 1-of-1 "100%"
+    // feedback must NOT leak through the last column.
+    const rows = table!.querySelectorAll('tbody tr');
+    const claudeThumbs = rows[0].querySelectorAll('td')[4];
+    const codexThumbs = rows[1].querySelectorAll('td')[4];
+    expect(claudeThumbs.textContent).toContain('80%'); // well-sampled: rate shown
+    expect(codexThumbs.textContent).not.toContain('%'); // low-sample: withheld
+  });
+
+  test('applies the low-sample guard exactly at the MIN_AGENT_SAMPLE boundary', async () => {
+    // terminalTaskCount 5 is the first value that clears the guard (strict <);
+    // 4 must still be guarded. Pins the threshold against an off-by-one flip.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        byAgent: [{
+          agentType: 'claude-code',
+          taskCount: 5,
+          completedTaskCount: 4,
+          terminalTaskCount: 5,
+          completionRate: 0.8,
+          totalKnownCostUsd: 1,
+          costCoverage: 1,
+          medianDurationMs: 1000,
+          p95DurationMs: 2000,
+          thumbsUpRate: null,
+        }, {
+          agentType: 'codex-cli',
+          taskCount: 4,
+          completedTaskCount: 4,
+          terminalTaskCount: 4,
+          completionRate: 1,
+          totalKnownCostUsd: 1,
+          costCoverage: 1,
+          medianDurationMs: 1000,
+          p95DurationMs: 2000,
+          thumbsUpRate: null,
+        }],
+      }))));
+    const el = mount();
+
+    await flush();
+
+    const dataRows = el.querySelectorAll('.outcome-agent-table tbody tr');
+    expect(dataRows.length).toBe(2);
+    // Row 0 (5 terminal tasks) clears the guard: headline rate, no low-sample tag.
+    expect(dataRows[0].querySelector('.outcome-agent-lowsample')).toBeNull();
+    expect(dataRows[0].textContent).toContain('80%');
+    // Row 1 (4 terminal tasks) is still guarded.
+    expect(dataRows[1].querySelector('.outcome-agent-lowsample')).toBeTruthy();
+    expect(dataRows[1].textContent).toContain('4/4');
+  });
+
+  test('omits the per-agent scoreboard when byAgent is empty', async () => {
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({ byAgent: [] }))));
+    const el = mount();
+
+    await flush();
+
+    expect(el.querySelector('.outcome-agent-table')).toBeNull();
   });
 
   test('refetches when the selected window changes', async () => {
