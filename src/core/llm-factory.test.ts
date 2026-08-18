@@ -12,8 +12,10 @@ import {
   resolveLlmAuthCooldownMs,
   resolveLlmProviderAttemptBudget,
   resolveLlmProviderAttemptWindowMs,
+  summarizeLlmFailureForLog,
   withHelperLlmAccounting,
 } from './llm-factory.js';
+import { setLoggerRuntimeLevelGetter } from './logger.js';
 import { classifyLlmProviderHttpStatus, type LlmClient } from './llm-types.js';
 
 const ENV_KEYS = [
@@ -849,6 +851,226 @@ describe('FallbackLlmClient provider attempt budget', () => {
       .resolves.toEqual({ text: null, finishReason: null });
     expect(a.completeDetailed).toHaveBeenCalledOnce();
     expect(b.completeDetailed).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+// #2640: helper-LLM fallback warns must not dump provider HTTP bodies into server.log.
+const GEMINI_429_BODY = [
+  'got status: 429 RESOURCE_EXHAUSTED. ',
+  '{"error":{"code":429,"message":"You exceeded your current quota.",',
+  '"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",',
+  '"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure",',
+  '"violations":[{"subject":"project:kookr-dev-482913",',
+  '"description":"Quota exceeded for consumer project_number:482913."}]}]}}',
+].join('');
+
+const GROQ_401_BODY = '401 {"error":{"message":"Invalid API Key","type":"invalid_request_error","code":"invalid_api_key"}}';
+
+const GEMINI_410_BODY = [
+  '410 Gone {"error":{"message":"model gemini-1.5-pro-002 is not found or retired",',
+  '"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo",',
+  '"metadata":{"model":"gemini-1.5-pro-002","project":"kookr-dev-482913"}}]}}',
+].join('');
+
+const GEMINI_LEAK_MARKERS = [
+  'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+  'project:kookr-dev-482913',
+  'project_number:482913',
+  '"error":{',
+];
+
+const GROQ_LEAK_MARKERS = [
+  'invalid_api_key',
+  '"error":{',
+  'Invalid API Key',
+];
+
+describe('helper LLM failure log redaction', () => {
+  const originalAuthCooldown = process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
+  const originalBudget = process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+
+  function client(provider: string, impl: () => Promise<string | null>) {
+    return { provider, model: `${provider}-model`, complete: vi.fn().mockImplementation(impl) };
+  }
+
+  function loggedWarns(warn: ReturnType<typeof vi.spyOn>): string[] {
+    return warn.mock.calls.map((args) => args.map((arg) => String(arg)).join(' '));
+  }
+
+  afterEach(() => {
+    setLoggerRuntimeLevelGetter(() => 'info');
+    vi.useRealTimers();
+    if (originalAuthCooldown === undefined) delete process.env.KOOKR_LLM_AUTH_COOLDOWN_MS;
+    else process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = originalAuthCooldown;
+    if (originalBudget === undefined) delete process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET;
+    else process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = originalBudget;
+    resetHelperLlmDiagnosticsForTest();
+  });
+
+  test('summarizeLlmFailureForLog keeps status and category without the HTTP body', () => {
+    const gemini = summarizeLlmFailureForLog(
+      { provider: 'google', model: 'gemini-2.0-flash', category: 'other', message: GEMINI_429_BODY },
+      Object.assign(new Error(GEMINI_429_BODY), { status: 429 }),
+    );
+    expect(gemini).toEqual({ status: 429, reason: 'rate limited' });
+    expect(gemini.reason).not.toMatch(/generativelanguage|project_number|kookr-dev/);
+
+    const groq = summarizeLlmFailureForLog(
+      { provider: 'groq', model: 'llama-4-scout', category: 'auth', message: GROQ_401_BODY },
+      Object.assign(new Error(GROQ_401_BODY), { status: 401 }),
+    );
+    expect(groq).toEqual({ status: 401, reason: 'unauthorized' });
+    expect(groq.reason).not.toContain('{');
+    expect(groq.reason).not.toContain('invalid_api_key');
+
+    const gone = summarizeLlmFailureForLog(
+      { provider: 'google', model: 'gemini-1.5-pro-002', category: 'other', message: GEMINI_410_BODY },
+      Object.assign(new Error(GEMINI_410_BODY), { status: 410 }),
+    );
+    expect(gone).toEqual({ status: 410, reason: 'gone' });
+
+    const requesty = summarizeLlmFailureForLog(
+      {
+        provider: 'requesty',
+        model: 'openai/gpt-4o-mini',
+        category: 'other',
+        message: `Requesty request failed: 429 Too Many Requests - ${GEMINI_429_BODY}`,
+      },
+    );
+    expect(requesty).toEqual({ status: 429, reason: 'rate limited' });
+  });
+
+  test('a Gemini 429 fixture logged through the fallback path has no quota-metric or project identifiers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const geminiErr = Object.assign(new Error(GEMINI_429_BODY), { status: 429 });
+    const a = client('google', async () => { throw geminiErr; });
+    const b = client('groq', async () => 'ok');
+    const fb = new FallbackLlmClient([a, b]);
+
+    const result = await fb.completeWithFailureAudit({ maxTokens: 10, userMessage: 'name this' });
+
+    expect(result.text).toBe('ok');
+    expect(result.failures[0]).toEqual({
+      provider: 'google',
+      model: 'google-model',
+      category: 'other',
+      message: GEMINI_429_BODY,
+    });
+
+    const lines = loggedWarns(warn);
+    expect(lines.some((line) => line.includes('category=other') && line.includes('status=429'))).toBe(true);
+    expect(lines.some((line) => line.includes('rate limited'))).toBe(true);
+    for (const line of lines) {
+      for (const marker of GEMINI_LEAK_MARKERS) {
+        expect(line).not.toContain(marker);
+      }
+    }
+    expect(debug).not.toHaveBeenCalled();
+    warn.mockRestore();
+    debug.mockRestore();
+  });
+
+  test('a Groq 401 fixture logged through the fallback path has no raw error JSON', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const groqErr = Object.assign(new Error(GROQ_401_BODY), { status: 401 });
+    const a = client('groq', async () => { throw groqErr; });
+    const b = client('google', async () => 'ok');
+    const fb = new FallbackLlmClient([a, b]);
+
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'name this' })).resolves.toBe('ok');
+
+    const lines = loggedWarns(warn);
+    expect(lines.some((line) => line.includes('category=auth') && line.includes('status=401'))).toBe(true);
+    expect(lines.some((line) => line.includes('unauthorized'))).toBe(true);
+    for (const line of lines) {
+      expect(line).not.toContain(GROQ_401_BODY);
+      for (const marker of GROQ_LEAK_MARKERS) {
+        expect(line).not.toContain(marker);
+      }
+    }
+    warn.mockRestore();
+  });
+
+  test('a 410 fixture logged through completeDetailed keeps status without the body', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const goneErr = Object.assign(new Error(GEMINI_410_BODY), { status: 410 });
+    const a: LlmClient = {
+      provider: 'google',
+      model: 'google-model',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(goneErr),
+    };
+    const b: LlmClient = {
+      provider: 'groq',
+      model: 'groq-model',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockResolvedValue({ text: 'ok', finishReason: 'stop' }),
+    };
+    const fb = new FallbackLlmClient([a, b]);
+
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: 'ok', finishReason: 'stop' });
+
+    const lines = loggedWarns(warn);
+    expect(lines.some((line) => line.includes('status=410') && line.includes('gone'))).toBe(true);
+    for (const line of lines) {
+      expect(line).not.toContain('kookr-dev-482913');
+      expect(line).not.toContain('"error"');
+    }
+    warn.mockRestore();
+  });
+
+  test('debug log level still records the raw provider body on console.debug', async () => {
+    setLoggerRuntimeLevelGetter(() => 'debug');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const groqErr = Object.assign(new Error(GROQ_401_BODY), { status: 401 });
+    const a = client('groq', async () => { throw groqErr; });
+    const b = client('google', async () => 'ok');
+    const fb = new FallbackLlmClient([a, b]);
+
+    await fb.complete({ maxTokens: 10, userMessage: 'hi' });
+
+    expect(loggedWarns(warn).join('\n')).not.toContain(GROQ_401_BODY);
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining(GROQ_401_BODY));
+    warn.mockRestore();
+    debug.mockRestore();
+    setLoggerRuntimeLevelGetter(() => 'info');
+  });
+
+  test('auth-pause and attempt-budget still fire after a leaking HTTP body', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_AUTH_COOLDOWN_MS = '60000';
+    process.env.KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET = '2';
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+    const groqErr = Object.assign(new Error(GROQ_401_BODY), { status: 401 });
+    const rateLimit = Object.assign(new Error(GEMINI_429_BODY), { status: 429 });
+    const a = client('groq', async () => { throw groqErr; });
+    const b = client('google', async () => { throw rateLimit; });
+    const fb = new FallbackLlmClient([a, b]);
+
+    await fb.complete({ maxTokens: 10, userMessage: '1' });
+    await fb.complete({ maxTokens: 10, userMessage: '2' });
+
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledOnce();
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.pausedProviders).toEqual([
+      expect.objectContaining({ provider: 'groq', reason: 'auth', skipCount: 1 }),
+    ]);
+    expect(snapshot.stormsSuppressed).toBe(1);
+    const lines = loggedWarns(warn);
+    expect(lines.some((line) => line.includes('skipped category=auth'))).toBe(true);
+    expect(lines.some((line) => line.includes('attempt budget exhausted'))).toBe(true);
+    for (const line of lines) {
+      for (const marker of [...GEMINI_LEAK_MARKERS, ...GROQ_LEAK_MARKERS]) {
+        expect(line).not.toContain(marker);
+      }
+    }
     warn.mockRestore();
   });
 });

@@ -20,6 +20,7 @@ import {
   type LlmProviderFailureRecord,
   type LlmUseCase,
 } from './llm-types.js';
+import { isLoggerLevelEnabled } from './logger.js';
 
 /**
  * Default cool-down after an auth / expired_api_key / HTTP 410 Gone failure
@@ -294,6 +295,73 @@ function caughtFailure(client: LlmClient, err: unknown): LlmProviderFailureRecor
     category: classifyLlmProviderFailure(err),
     message: err instanceof Error ? err.message : String(err),
   };
+}
+
+/**
+ * Operator-facing fields for the `[llm]` warn line (issue #2640).
+ * Provider, model, status, and category stay; the HTTP body stays off the
+ * default log so quota-metric / project identifiers and raw JSON cannot fill
+ * server.log on a dead-model retry loop.
+ */
+export function summarizeLlmFailureForLog(
+  failure: LlmProviderFailureRecord,
+  err?: unknown,
+): { status: number | null; reason: string } {
+  const status = extractHttpStatus(err, failure.message);
+  return { status, reason: shortLlmFailureReason(failure, status) };
+}
+
+function extractHttpStatus(err: unknown, message: string): number | null {
+  const shaped = err as { status?: unknown; statusCode?: unknown } | null;
+  const fromErr = numberFromUnknown(shaped?.status) ?? numberFromUnknown(shaped?.statusCode);
+  if (fromErr !== null && fromErr >= 100 && fromErr <= 599) return fromErr;
+  const match = message.match(/(?:^|status:\s*|failed:\s*)([1-5]\d{2})\b/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function shortLlmFailureReason(failure: LlmProviderFailureRecord, status: number | null): string {
+  if (failure.message.startsWith('provider returned empty response')) return 'empty response';
+  if (failure.message.includes('attempt budget exhausted')) return 'attempt budget exhausted';
+  if (status === 429) return 'rate limited';
+  if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 410) return 'gone';
+  if (status === 408) return 'request timeout';
+  switch (failure.category) {
+    case 'auth':
+      return 'auth failure';
+    case 'network_timeout':
+      return 'network timeout';
+    case 'server_5xx':
+      return 'server error';
+    case 'malformed_response':
+      return 'malformed response';
+    case 'other':
+      return status !== null ? 'http error' : 'provider error';
+  }
+}
+
+function warnProviderFailure(
+  client: LlmClient,
+  failure: LlmProviderFailureRecord,
+  err?: unknown,
+  extra?: { pausedUntil?: number; cooldownMs?: number },
+): void {
+  const { status, reason } = summarizeLlmFailureForLog(failure, err);
+  const statusPart = status !== null ? ` status=${status}` : '';
+  if (extra?.pausedUntil !== undefined && extra.cooldownMs !== undefined) {
+    console.warn(
+      `[llm] ${client.provider} (${client.model}) failed category=${failure.category}${statusPart}: ${reason}; pausing until ${new Date(extra.pausedUntil).toISOString()} (cooldown ${extra.cooldownMs}ms), trying next provider`,
+    );
+  } else {
+    console.warn(
+      `[llm] ${client.provider} (${client.model}) failed category=${failure.category}${statusPart}: ${reason}, trying next provider`,
+    );
+  }
+  if (isLoggerLevelEnabled('debug')) {
+    console.debug(`[llm] ${client.provider} (${client.model}) raw error: ${failure.message}`);
+  }
 }
 
 type HelperLlmOutcome =
@@ -682,9 +750,7 @@ export class FallbackLlmClient implements LlmClient {
         // null means the provider returned empty — try next
         const failure = emptyResponseFailure(client);
         failures.push(failure);
-        console.warn(
-          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-        );
+        warnProviderFailure(client, failure);
       } catch (err) {
         if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
         const failure = caughtFailure(client, err);
@@ -692,18 +758,15 @@ export class FallbackLlmClient implements LlmClient {
         if (failure.category === 'auth') {
           const entry = pauseProviderAfterAuthFailure(client, failure.message);
           if (entry) {
-            console.warn(
-              `[llm] ${client.provider} (${client.model}) failed category=auth: ${failure.message}; pausing until ${new Date(entry.pausedUntil).toISOString()} (cooldown ${entry.pausedUntil - entry.pausedAt}ms), trying next provider`,
-            );
+            warnProviderFailure(client, failure, err, {
+              pausedUntil: entry.pausedUntil,
+              cooldownMs: entry.pausedUntil - entry.pausedAt,
+            });
           } else {
-            console.warn(
-              `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-            );
+            warnProviderFailure(client, failure, err);
           }
         } else {
-          console.warn(
-            `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-          );
+          warnProviderFailure(client, failure, err);
         }
       }
     }
@@ -782,18 +845,15 @@ export class FallbackLlmClient implements LlmClient {
         if (failure.category === 'auth') {
           const entry = pauseProviderAfterAuthFailure(client, failure.message);
           if (entry) {
-            console.warn(
-              `[llm] ${client.provider} (${client.model}) failed category=auth: ${failure.message}; pausing until ${new Date(entry.pausedUntil).toISOString()} (cooldown ${entry.pausedUntil - entry.pausedAt}ms), trying next provider`,
-            );
+            warnProviderFailure(client, failure, err, {
+              pausedUntil: entry.pausedUntil,
+              cooldownMs: entry.pausedUntil - entry.pausedAt,
+            });
           } else {
-            console.warn(
-              `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-            );
+            warnProviderFailure(client, failure, err);
           }
         } else {
-          console.warn(
-            `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
-          );
+          warnProviderFailure(client, failure, err);
         }
       }
     }
