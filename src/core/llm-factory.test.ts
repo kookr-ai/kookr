@@ -13,7 +13,7 @@ import {
   resolveLlmProviderAttemptWindowMs,
   withHelperLlmAccounting,
 } from './llm-factory.js';
-import type { LlmClient } from './llm-types.js';
+import { classifyLlmProviderHttpStatus, type LlmClient } from './llm-types.js';
 
 const ENV_KEYS = [
   'GROQ_API_KEY',
@@ -333,11 +333,26 @@ describe('classifyLlmProviderFailure', () => {
 
   test('classifies common SDK error shapes', () => {
     expect(classifyLlmProviderFailure({ status: 401, message: 'bad key' })).toBe('auth');
+    expect(classifyLlmProviderFailure({ status: 403, message: 'forbidden' })).toBe('auth');
+    expect(classifyLlmProviderFailure({ status: 410, message: 'model gone' })).toBe('auth');
+    expect(classifyLlmProviderFailure({ statusCode: 410, message: 'Gone' })).toBe('auth');
     expect(classifyLlmProviderFailure({ statusCode: 502, message: 'bad gateway' })).toBe('server_5xx');
     expect(classifyLlmProviderFailure(new Error('504 Gateway Timeout'))).toBe('server_5xx');
     expect(classifyLlmProviderFailure(Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }))).toBe('network_timeout');
     expect(classifyLlmProviderFailure(new SyntaxError('Unexpected end of JSON input'))).toBe('malformed_response');
     expect(classifyLlmProviderFailure(new Error('unclassified provider error'))).toBe('other');
+  });
+});
+
+describe('classifyLlmProviderHttpStatus', () => {
+  test('maps 401/403/410 to the auth cooldown class and leaves 404/429 as other', () => {
+    expect(classifyLlmProviderHttpStatus(401)).toBe('auth');
+    expect(classifyLlmProviderHttpStatus(403)).toBe('auth');
+    expect(classifyLlmProviderHttpStatus(410)).toBe('auth');
+    expect(classifyLlmProviderHttpStatus(404)).toBe('other');
+    expect(classifyLlmProviderHttpStatus(429)).toBe('other');
+    expect(classifyLlmProviderHttpStatus(400)).toBe('other');
+    expect(classifyLlmProviderHttpStatus(500)).toBe('server_5xx');
   });
 });
 
@@ -371,6 +386,34 @@ describe('FallbackLlmClient auth cool-down', () => {
     expect(resolveLlmAuthCooldownMs({ KOOKR_LLM_AUTH_COOLDOWN_MS: '0' })).toBe(0);
     expect(resolveLlmAuthCooldownMs({ KOOKR_LLM_AUTH_COOLDOWN_MS: '-5' })).toBe(DEFAULT_LLM_AUTH_COOLDOWN_MS);
     expect(resolveLlmAuthCooldownMs({ KOOKR_LLM_AUTH_COOLDOWN_MS: 'nope' })).toBe(DEFAULT_LLM_AUTH_COOLDOWN_MS);
+  });
+
+  test('after one HTTP 410 Gone subsequent complete() calls skip that provider for the cool-down', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const goneErr = Object.assign(new Error('Baseten request failed: 410 Gone - model removed'), { status: 410 });
+    const a = client('baseten', async () => { throw goneErr; });
+    const b = client('gemini', async () => 'from-gemini');
+    const fb = new FallbackLlmClient([a, b]);
+
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('from-gemini');
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pausing until'));
+
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'again' })).resolves.toBe('from-gemini');
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped category=auth'));
+    expect(getHelperLlmDiagnosticsSnapshot().pausedProviders).toEqual([
+      expect.objectContaining({
+        provider: 'baseten',
+        model: 'baseten-model',
+        reason: 'auth',
+        skipCount: 1,
+        lastMessage: 'Baseten request failed: 410 Gone - model removed',
+      }),
+    ]);
+    warn.mockRestore();
   });
 
   test('after one auth failure subsequent complete() calls skip that provider for the cool-down', async () => {
