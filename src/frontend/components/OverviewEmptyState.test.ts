@@ -825,4 +825,93 @@ describe('OverviewEmptyState', () => {
       agentType: 'claude-code',
     });
   });
+
+  describe('runtime mix (#2670)', () => {
+    test('tallies runtimes across every live bucket, omitting zero runtimes', () => {
+      render({
+        waiting: [
+          makeWaitingAgent('w-1', 'Fix the build', { agentType: 'claude-code' }),
+          makeWaitingAgent('w-2', 'Review the diff', { agentType: 'codex-cli' }),
+        ],
+        running: [
+          makeRunningAgent('r-1', 'Watch logs', { agentType: 'claude-code' }),
+          makeRunningAgent('r-2', 'Ship it', { agentType: 'claude-code' }),
+          makeRunningAgent('r-3', 'Explore', { agentType: 'grok-build' }),
+        ],
+        completed: [makeCompletedAgent('c-1', 'Ship the fix', { agentType: 'codex-cli' })],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      // Canonical order Claude → Codex → Grok; counts span waiting + running + completed.
+      expect(mix?.textContent).toBe('Claude 3 · Codex 2 · Grok 1');
+    });
+
+    test('shows a single entry when every live agent is one runtime', () => {
+      render({
+        waiting: [makeWaitingAgent('w-1', 'Fix the build', { agentType: 'claude-code' })],
+        running: [makeRunningAgent('r-1', 'Watch logs', { agentType: 'claude-code' })],
+        completed: [makeCompletedAgent('c-1', 'Ship the fix', { agentType: 'claude-code' })],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      expect(mix?.textContent).toBe('Claude 3');
+    });
+
+    test('surfaces an unknown/legacy agentType by its raw value, after known runtimes', () => {
+      render({
+        running: [
+          makeRunningAgent('r-1', 'Watch logs', { agentType: 'claude-code' }),
+          // Legacy value not in the known set — labelled verbatim, not dropped.
+          makeRunningAgent('r-2', 'Old run', { agentType: 'gemini-cli' as AgentState['agentType'] }),
+        ],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      expect(mix?.textContent).toBe('Claude 1 · gemini-cli 1');
+    });
+
+    test('sorts multiple unknown/legacy runtimes alphabetically after known runtimes', () => {
+      render({
+        running: [
+          makeRunningAgent('r-1', 'Watch logs', { agentType: 'zeta-cli' as AgentState['agentType'] }),
+          makeRunningAgent('r-2', 'Ship it', { agentType: 'claude-code' }),
+          makeRunningAgent('r-3', 'Explore', { agentType: 'alpha-cli' as AgentState['agentType'] }),
+        ],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      // Known runtime first; unknowns follow in alphabetical order (alpha before zeta).
+      expect(mix?.textContent).toBe('Claude 1 · alpha-cli 1 · zeta-cli 1');
+    });
+
+    test('skips agents with no agentType so untyped agents never appear in the mix', () => {
+      render({
+        // makeWaitingAgent / makeRunningAgent leave agentType undefined by default.
+        waiting: [makeWaitingAgent('w-1', 'Untyped waiting')],
+        running: [
+          makeRunningAgent('r-1', 'Untyped running'),
+          makeRunningAgent('r-2', 'Typed running', { agentType: 'claude-code' }),
+        ],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      // Two untyped agents are skipped; only the one typed Claude agent is tallied.
+      expect(mix?.textContent).toBe('Claude 1');
+    });
+
+    test('renders no runtime mix line when every live agent lacks an agentType', () => {
+      render({
+        waiting: [makeWaitingAgent('w-1', 'Untyped waiting')],
+        running: [makeRunningAgent('r-1', 'Untyped running')],
+      });
+
+      // Tasks exist (counts show), but no runtime is nameable → no mix line.
+      expect(container.querySelector('[data-testid="overview-runtime-mix"]')).toBeNull();
+    });
+
+    test('renders no runtime mix line when there are no tasks', () => {
+      render();
+      expect(container.querySelector('[data-testid="overview-runtime-mix"]')).toBeNull();
+    });
+  });
 });

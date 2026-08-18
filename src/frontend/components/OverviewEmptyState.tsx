@@ -14,7 +14,7 @@ import {
   usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
-import { findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
+import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
@@ -96,6 +96,9 @@ export function OverviewEmptyState({
   const runningCount = running.length;
   const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  // Composition across every live bucket, not just what needs input — answers
+  // "what am I running?" at a glance (issue #2670).
+  const runtimeMix = buildRuntimeMix([...waiting, ...running, ...completed]);
   const showCreateScheduleCta = !hasAnyTask && schedules.length === 0;
   const recentCompleted = [...completed]
     .sort(compareCompletedAgents)
@@ -137,6 +140,19 @@ export function OverviewEmptyState({
             <span className="overview-count-label">completed</span>
           </div>
         </div>
+
+        {runtimeMix.length > 0 && (
+          <p className="overview-runtime-mix" data-testid="overview-runtime-mix">
+            {runtimeMix.map((entry, index) => (
+              <React.Fragment key={entry.agentType}>
+                {index > 0 && <span className="overview-runtime-mix-sep"> · </span>}
+                <span className="overview-runtime-mix-entry">
+                  {entry.label} {entry.count}
+                </span>
+              </React.Fragment>
+            ))}
+          </p>
+        )}
 
         {waiting.length > 0 ? (
           <div className="overview-waiting">
