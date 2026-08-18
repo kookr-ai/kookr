@@ -51,8 +51,24 @@ const FOCUSABLE_SELECTOR = [
 ].join(',');
 
 type ShareModalStatus = 'idle' | 'loading' | 'ready' | 'disabled' | 'error';
-type CopiedShareSecret = 'share-link' | 'share-id' | 'password';
+type CopiedShareSecret = 'share-link' | 'share-id' | 'password' | 'invite';
 type SharePath = 'contact' | 'guest';
+
+/**
+ * Build a single share-ready invite message from the public share context.
+ *
+ * Intentionally takes no password argument: the guest-link secret must never be
+ * embedded in a message that gets pasted into an arbitrary channel. Copying the
+ * password stays a separate, explicit action in the dialog. The result bundles
+ * the task label, the join URL, and the human-readable expiry so an inviter can
+ * paste one message instead of hand-stitching the three copy fields together.
+ */
+export function buildShareInvite(taskLabel: string, url: string, expiry: string): string {
+  // Collapse any embedded whitespace (task titles are not guaranteed
+  // single-line) so the invite stays one pasteable line.
+  const label = taskLabel.replace(/\s+/g, ' ').trim() || 'a task';
+  return `Live read-only view of my agent working on ${label} — open: ${url} (expires ${expiry})`;
+}
 
 interface Props {
   taskId: string;
@@ -923,15 +939,33 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
             <div className="task-share-actions">
               {joinUrl ? (
-                <button
-                  type="button"
-                  className="btn-primary"
-                  aria-label="Copy guest link"
-                  onClick={() => void copyShareSecret('share-link', joinUrl)}
-                  disabled={busy}
-                >
-                  {copiedSecret === 'share-link' ? 'Copied' : 'Copy guest link'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    aria-label="Copy invite"
+                    onClick={() => void copyShareSecret(
+                      'invite',
+                      buildShareInvite(
+                        taskLabel,
+                        joinUrl,
+                        displayedShare ? formatExpiry(displayedShare.expiresAt) : 'soon',
+                      ),
+                    )}
+                    disabled={busy}
+                  >
+                    {copiedSecret === 'invite' ? 'Copied' : 'Copy invite'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    aria-label="Copy guest link"
+                    onClick={() => void copyShareSecret('share-link', joinUrl)}
+                    disabled={busy}
+                  >
+                    {copiedSecret === 'share-link' ? 'Copied' : 'Copy guest link'}
+                  </button>
+                </>
               ) : (
                 <button type="button" className="btn-primary" onClick={handleCreateAction} disabled={busy || Boolean(activeShare)}>
                   {terminalShare ? 'Create new guest link' : activeShare ? 'Guest link active' : 'Create guest link'}
@@ -950,7 +984,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
             </div>
 
             {hasCopyableCredentials && (
-              <div className="task-share-copy-status" aria-live="polite">
+              <div className="task-share-copy-status" role="status" aria-live="polite">
+                {copiedSecret === 'invite' && 'Invite message copied. The password is not included — copy it separately if the viewer needs it.'}
                 {copiedSecret === 'share-link' && 'Guest Link copied. Guest Link is lower assurance: it is anonymous, view-only, and does not verify a Kookr identity.'}
                 {copiedSecret === 'share-id' && 'Share ID copied.'}
                 {copiedSecret === 'password' && 'Password copied.'}
