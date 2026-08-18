@@ -9,6 +9,7 @@ import {
   TIMER_HEALTH_PERSIST_SIZE_CAP_BYTES,
   TIMER_HEALTH_SCHEMA_VERSION,
   TIMER_HEALTH_STATE_FILE,
+  summarizeTimerHealth,
   timerHealthStatePath,
   TimerHealthTracker,
 } from './timer-health.js';
@@ -82,6 +83,171 @@ describe('TimerHealthTracker (issue #1771)', () => {
       'save',
       'watchdog',
     ]);
+  });
+});
+
+describe('TimerHealthTracker.summary (issue #2636)', () => {
+  test('counts registered / overdue / neverFired without treating a fresh boot as overdue', () => {
+    let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+    const tracker = new TimerHealthTracker(() => nowMs);
+    tracker.register('save', 60_000);
+    tracker.register('maintenancePrune', 3_600_000);
+    tracker.register('watchdog', 5_000);
+    tracker.recordFire('watchdog');
+
+    // Still inside the first save interval and well under 2× watchdog cadence.
+    nowMs += 4_000;
+    expect(tracker.summary()).toEqual({
+      registered: 3,
+      overdue: 0,
+      neverFired: 2,
+      oldestNeverFiredName: 'maintenancePrune',
+      oldestOverdueName: null,
+    });
+    expect(tracker.summary()).not.toHaveProperty('loops');
+  });
+
+  test('names the oldest never-fired loop by register time, not name order', () => {
+    let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+    const tracker = new TimerHealthTracker(() => nowMs);
+    tracker.register('watchdog', 3_600_000);
+    nowMs += 1_000;
+    tracker.register('maintenancePrune', 3_600_000);
+
+    const summary = tracker.summary();
+    expect(summary.neverFired).toBe(2);
+    expect(summary.oldestNeverFiredName).toBe('watchdog');
+  });
+
+  test('counts a never-fired loop overdue only after 2× its expected interval', () => {
+    let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+    const tracker = new TimerHealthTracker(() => nowMs);
+    tracker.register('maintenancePrune', 3_600_000);
+
+    nowMs += 3_600_000;
+    expect(tracker.summary()).toMatchObject({ overdue: 0, neverFired: 1 });
+
+    nowMs += 3_600_000 + 1;
+    expect(tracker.summary()).toEqual({
+      registered: 1,
+      overdue: 1,
+      neverFired: 1,
+      oldestNeverFiredName: 'maintenancePrune',
+      oldestOverdueName: 'maintenancePrune',
+    });
+  });
+
+  test('names the oldest overdue loop that has already fired', () => {
+    let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+    const tracker = new TimerHealthTracker(() => nowMs);
+    tracker.register('save', 60_000);
+    tracker.register('tokenScan', 5_000);
+    tracker.recordFire('save');
+    tracker.recordFire('tokenScan');
+
+    nowMs += 5_000 * TIMER_HEALTH_OVERDUE_INTERVALS + 1;
+    // tokenScan is overdue; save (60s cadence) is not yet.
+    expect(tracker.summary()).toMatchObject({
+      overdue: 1,
+      neverFired: 0,
+      oldestNeverFiredName: null,
+      oldestOverdueName: 'tokenScan',
+    });
+  });
+
+  test('picks the older progress stamp when two loops are overdue', () => {
+    let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+    const tracker = new TimerHealthTracker(() => nowMs);
+    tracker.register('save', 10_000);
+    tracker.register('tokenScan', 10_000);
+    tracker.recordFire('save');
+    nowMs += 1_000;
+    tracker.recordFire('tokenScan');
+
+    nowMs += 10_000 * TIMER_HEALTH_OVERDUE_INTERVALS + 1;
+    expect(tracker.summary()).toMatchObject({
+      overdue: 2,
+      neverFired: 0,
+      oldestOverdueName: 'save',
+    });
+  });
+
+  test('summary walks memory only and does not queue a persist write', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'timer-health-summary-'));
+    try {
+      const pendingWrites: Array<() => void> = [];
+      let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+      const tracker = new TimerHealthTracker(() => nowMs, {
+        persistPath: timerHealthStatePath(dir),
+        scheduleWrite: (work) => { pendingWrites.push(work); },
+      });
+      tracker.register('save', 60_000);
+      tracker.recordFire('save');
+      pendingWrites.splice(0);
+      nowMs += 1_000;
+      expect(tracker.summary().registered).toBe(1);
+      expect(pendingWrites).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('summarizeTimerHealth from a snapshot (issue #2636)', () => {
+  test('falls back to name order when register time is not on the snapshot', () => {
+    expect(summarizeTimerHealth({
+      loops: [
+        {
+          name: 'watchdog',
+          lastFiredAt: null,
+          expectedIntervalMs: 5_000,
+          overdue: false,
+        },
+        {
+          name: 'maintenancePrune',
+          lastFiredAt: null,
+          expectedIntervalMs: 3_600_000,
+          overdue: false,
+        },
+      ],
+    })).toEqual({
+      registered: 2,
+      overdue: 0,
+      neverFired: 2,
+      oldestNeverFiredName: 'maintenancePrune',
+      oldestOverdueName: null,
+    });
+  });
+
+  test('counts overdue loops and names the one with the oldest lastFiredAt', () => {
+    expect(summarizeTimerHealth({
+      loops: [
+        {
+          name: 'save',
+          lastFiredAt: '2026-08-18T08:00:00.000Z',
+          expectedIntervalMs: 60_000,
+          overdue: true,
+        },
+        {
+          name: 'tokenScan',
+          lastFiredAt: '2026-08-18T09:00:00.000Z',
+          expectedIntervalMs: 5_000,
+          overdue: true,
+        },
+        {
+          name: 'watchdog',
+          lastFiredAt: '2026-08-18T10:00:00.000Z',
+          expectedIntervalMs: 5_000,
+          overdue: false,
+        },
+      ],
+    })).toEqual({
+      registered: 3,
+      overdue: 2,
+      neverFired: 0,
+      oldestNeverFiredName: null,
+      oldestOverdueName: 'save',
+    });
   });
 });
 

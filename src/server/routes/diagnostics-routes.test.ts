@@ -41,6 +41,7 @@ import { OpenPrFailsafeReasonMetrics } from '../../core/open-pr-hold.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import { MaintenancePruneHealth } from '../maintenance-prune-schedule.js';
+import { TimerHealthTracker } from '../../core/timer-health.js';
 import type { RouteDeps } from './shared.js';
 import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from '../../core/llm-factory.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
@@ -608,6 +609,131 @@ describe('diagnostics routes', () => {
       }).request('/api/diagnostics/timer-health');
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual(snapshot);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — timerHealth summary (issue #2636)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health timerHealth block (issue #2636)', () => {
+    test('always publishes the four-field summary, zeros when no tracker is wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { timerHealth?: Record<string, unknown> };
+      expect(body.timerHealth).toEqual({
+        registered: 0,
+        overdue: 0,
+        neverFired: 0,
+        oldestNeverFiredName: null,
+        oldestOverdueName: null,
+      });
+      expect(body.timerHealth).not.toHaveProperty('loops');
+    });
+
+    test('summarizes a stubbed snapshot without copying the loop list', async () => {
+      const snapshot = {
+        schemaVersion: 'timer-health.v1' as const,
+        generatedAt: '2026-08-18T04:00:00.000Z',
+        loops: [
+          {
+            name: 'tokenScan' as const,
+            lastFiredAt: '2026-08-18T03:59:55.000Z',
+            expectedIntervalMs: 5_000,
+            overdue: false,
+          },
+          {
+            name: 'save' as const,
+            lastFiredAt: null,
+            expectedIntervalMs: 60_000,
+            overdue: true,
+          },
+          {
+            name: 'maintenancePrune' as const,
+            lastFiredAt: null,
+            expectedIntervalMs: 3_600_000,
+            overdue: false,
+          },
+        ],
+      };
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        timerHealth: { snapshot: () => snapshot },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { timerHealth?: Record<string, unknown> };
+      expect(body.timerHealth).toEqual({
+        registered: 3,
+        overdue: 1,
+        neverFired: 2,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: 'save',
+      });
+      expect(JSON.stringify(body.timerHealth)).not.toContain('loops');
+      expect(JSON.stringify(body.timerHealth)).not.toContain('lastFiredAt');
+    });
+
+    test('prefers tracker.summary() over the full snapshot when both exist', async () => {
+      let nowMs = Date.parse('2026-08-18T04:00:00.000Z');
+      const tracker = new TimerHealthTracker(() => nowMs);
+      tracker.register('save', 60_000);
+      tracker.register('maintenancePrune', 3_600_000);
+      tracker.recordFire('save');
+      nowMs += 1_000;
+
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        timerHealth: tracker,
+      });
+      const health = await (await app.request('/api/health')).json() as {
+        timerHealth?: Record<string, unknown>;
+      };
+      const diag = await (await app.request('/api/diagnostics/timer-health')).json() as {
+        loops?: unknown[];
+      };
+      expect(health.timerHealth).toEqual({
+        registered: 2,
+        overdue: 0,
+        neverFired: 1,
+        oldestNeverFiredName: 'maintenancePrune',
+        oldestOverdueName: null,
+      });
+      expect(health.timerHealth).not.toHaveProperty('loops');
+      expect(diag.loops).toHaveLength(2);
+    });
+
+    test('GET /api/diagnostics/timer-health still returns the full per-loop list', async () => {
+      const snapshot = {
+        schemaVersion: 'timer-health.v1' as const,
+        generatedAt: '2026-08-18T04:00:00.000Z',
+        loops: [
+          {
+            name: 'save' as const,
+            lastFiredAt: null,
+            expectedIntervalMs: 60_000,
+            overdue: true,
+          },
+        ],
+      };
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        timerHealth: { snapshot: () => snapshot },
+      });
+      const health = await (await app.request('/api/health')).json() as {
+        timerHealth?: { registered?: number };
+      };
+      const diag = await (await app.request('/api/diagnostics/timer-health')).json();
+      expect(health.timerHealth?.registered).toBe(1);
+      expect(diag).toEqual(snapshot);
     });
   });
 
