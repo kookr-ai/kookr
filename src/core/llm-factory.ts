@@ -20,10 +20,11 @@ import {
 } from './llm-types.js';
 
 /**
- * Default cool-down after an auth / expired_api_key failure before the provider
- * is tried again. Long enough that unattended helper calls stop hammering a
- * dead key every request; short enough that fixing the key recovers without a
- * process restart. Override with `KOOKR_LLM_AUTH_COOLDOWN_MS` (`0` disables).
+ * Default cool-down after an auth / expired_api_key / HTTP 410 Gone failure
+ * before the provider is tried again. Long enough that unattended helper calls
+ * stop hammering a dead key or removed model every request; short enough that
+ * fixing the key or swapping the model recovers without a process restart.
+ * Override with `KOOKR_LLM_AUTH_COOLDOWN_MS` (`0` disables).
  */
 export const DEFAULT_LLM_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
 

@@ -302,6 +302,24 @@ describe('OpenAiCompatibleLlmClient', () => {
     expect((caught as Error).message).not.toContain('secret prompt text');
   });
 
+  test('classifies HTTP 410 Gone as a cooldown-class (auth) failure', async () => {
+    stubFetch(jsonResponse(
+      { error: { message: 'model has been removed' } },
+      { ok: false, status: 410, statusText: 'Gone' },
+    ));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'deprecated-namer',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      providerFailureCategory: 'auth',
+      message: expect.stringContaining('410 Gone'),
+    });
+  });
+
   test('classifies auth HTTP failures', async () => {
     stubFetch(jsonResponse(
       { error: { message: 'invalid api key', api_key: API_KEY } },

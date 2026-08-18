@@ -94,7 +94,9 @@ export function isLlmProviderFailureCategory(value: unknown): value is LlmProvid
 }
 
 export function classifyLlmProviderHttpStatus(status: number): LlmProviderFailureCategory {
-  if (status === 401 || status === 403) return 'auth';
+  // 410 Gone: the provider removed the model. Same cooldown class as auth so a
+  // dead namer is not re-hit on every spawn (issue #2634).
+  if (status === 401 || status === 403 || status === 410) return 'auth';
   if (status >= 500 && status <= 599) return 'server_5xx';
   return 'other';
 }
