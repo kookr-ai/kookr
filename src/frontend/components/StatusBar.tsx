@@ -49,6 +49,11 @@ import {
   formatCompletedInWindowChipTitle,
   shouldShowCompletedInWindowChip,
 } from './status-bar-completed-count.js';
+import {
+  formatLaunchedInWindowChipLabel,
+  formatLaunchedInWindowChipTitle,
+  shouldShowLaunchedInWindowChip,
+} from './status-bar-launched-count.js';
 
 interface Props {
   findings: number;
@@ -65,6 +70,12 @@ interface Props {
    * out of the snapshot.
    */
   completedLast24h?: number;
+  /**
+   * Live-list count of agents whose `startedAt` falls in the last 24 hours
+   * (issue #2632). Hidden at 0. A lower bound when old rows have aged out
+   * of the snapshot. Does not invent a start from `finishedAt`.
+   */
+  launchedLast24h?: number;
   compact?: boolean;
   onShowShortcuts: () => void;
   /**
@@ -361,6 +372,7 @@ export function StatusBar({
   oldestFindingWaitStartedAt,
   total,
   completedLast24h = 0,
+  launchedLast24h = 0,
   compact = false,
   onShowShortcuts,
   onOpenCapacity,
@@ -439,6 +451,7 @@ export function StatusBar({
   const frictionCounts = liveFriction ? liveFrictionChipCounts(liveFriction) : null;
   const frictionLabel = frictionCounts ? formatLiveFrictionChipLabel(frictionCounts) : '';
   const showCompletedChip = shouldShowCompletedInWindowChip(completedLast24h);
+  const showLaunchedChip = shouldShowLaunchedInWindowChip(launchedLast24h);
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -464,6 +477,16 @@ export function StatusBar({
             title={formatCompletedInWindowChipTitle(completedLast24h)}
           >
             {formatCompletedInWindowChipLabel(completedLast24h)}
+          </span>
+        )}
+        {showLaunchedChip && (
+          <span
+            className="launched-24h-pill"
+            data-testid="launched-24h-chip"
+            role="status"
+            title={formatLaunchedInWindowChipTitle(launchedLast24h)}
+          >
+            {formatLaunchedInWindowChipLabel(launchedLast24h)}
           </span>
         )}
         {oldestWaitLabel && (

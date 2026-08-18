@@ -8115,6 +8115,7 @@ label.task-share-row {
 .time-to-unblock-pill,
 .oldest-finding-wait-pill,
 .completed-24h-pill,
+.launched-24h-pill,
 .live-friction-pill {
   display: inline-block;
   font-size: 10px;
