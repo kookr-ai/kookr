@@ -507,8 +507,12 @@ function formatThumbsRatio(c: AggregateMetrics | undefined, x: AggregateMetrics 
 }
 
 function formatThumbsRate(m: AggregateMetrics): string {
-  if (m.thumbsUpRate == null) return '—';
-  return `${Math.round(m.thumbsUpRate * 100)}%`;
+  // Append the sample size so a 100% rate from 1 vote can't be mistaken for a
+  // strong signal. Percentage and count share the same up+down denominator so
+  // they can never disagree. No feedback → no rate is implied.
+  const n = m.thumbsCount.up + m.thumbsCount.down;
+  if (m.thumbsUpRate == null || n === 0) return '—';
+  return `${Math.round(m.thumbsUpRate * 100)}% (n=${n})`;
 }
 
 function dataQualityLabel(row: PerTaskRow): string {

@@ -155,6 +155,46 @@ describe('CostComparisonPanel', () => {
     ]);
   });
 
+  test('the 👍 rate card shows the vote count (n) behind the percentage', async () => {
+    const aggregate = {
+      // Healthy sample: 7 up / 2 down → 78% (n=9).
+      'claude-code': emptyAgg('claude-code', {
+        taskCount: 9, pricedTaskCount: 9, totalCostUsd: 1,
+        thumbsUpRate: 7 / 9, thumbsCount: { up: 7, down: 2, none: 0 },
+      }),
+      // Low sample: 1 up / 0 down → 100% but n=1, so the sample size is visible.
+      'codex-cli': emptyAgg('codex-cli', {
+        taskCount: 1, pricedTaskCount: 1, totalCostUsd: 1,
+        thumbsUpRate: 1, thumbsCount: { up: 1, down: 0, none: 0 },
+      }),
+    };
+    mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
+    const el = mount();
+    await flush();
+    const thumbStats = Array.from(el.querySelectorAll('.cost-aggregate-card'))
+      .map((card) => Array.from(card.querySelectorAll('.cost-stat'))
+        .map((s) => s.textContent?.replace(/\s+/g, ' ').trim())
+        .find((t) => t?.startsWith('👍 rate')));
+    expect(thumbStats).toEqual(['👍 rate 78% (n=9)', '👍 rate 100% (n=1)']);
+  });
+
+  test('the 👍 rate card implies no rate when there are zero feedback votes', async () => {
+    const aggregate = {
+      // thumbsUpRate null and n=0 → render "—", never a misleading percentage.
+      'claude-code': emptyAgg('claude-code', {
+        taskCount: 4, pricedTaskCount: 4, totalCostUsd: 1,
+        thumbsUpRate: null, thumbsCount: { up: 0, down: 0, none: 4 },
+      }),
+    };
+    mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
+    const el = mount();
+    await flush();
+    const thumbStat = Array.from(el.querySelector('.cost-aggregate-card')!.querySelectorAll('.cost-stat'))
+      .map((s) => s.textContent?.replace(/\s+/g, ' ').trim())
+      .find((t) => t?.startsWith('👍 rate'));
+    expect(thumbStat).toBe('👍 rate —');
+  });
+
   test('renders the "—" cost cell with a dataQuality tooltip when cost is null', async () => {
     const response = makeResponse({
       perTask: [{
