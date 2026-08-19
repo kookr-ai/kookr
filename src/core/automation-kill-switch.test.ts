@@ -3,8 +3,44 @@ import {
   applyKillSwitchTransition,
   formatSafeModeDigestLine,
   isAutonomousLaunchSource,
+  isSafeModeExemptSchedule,
   resolveSafeModeStatus,
 } from './automation-kill-switch.js';
+
+describe('isSafeModeExemptSchedule (issue #2672)', () => {
+  it('exempts the cross-repo orchestrator by its playbook path', () => {
+    expect(
+      isSafeModeExemptSchedule({ playbookPath: 'cross-repo-orchestrator.md' }),
+    ).toBe(true);
+    expect(
+      isSafeModeExemptSchedule({ playbookPath: '/srv/kookr-data/playbooks/cross-repo-orchestrator.md' }),
+    ).toBe(true);
+  });
+
+  it('does NOT exempt look-alike playbook basenames (exact match only)', () => {
+    expect(isSafeModeExemptSchedule({ playbookPath: 'cross-repo-orchestrator-backup.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'my-cross-repo-orchestrator-fork.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'cross-repo-orchestrator.md.bak' })).toBe(false);
+  });
+
+  it('does NOT exempt the orchestration-supervisor schedules', () => {
+    expect(isSafeModeExemptSchedule({ playbookPath: 'lucy-orchestration-supervisor.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'kb-scout-orchestration-supervisor.md' })).toBe(false);
+  });
+
+  it('does NOT exempt the other autonomous schedules', () => {
+    expect(isSafeModeExemptSchedule({ playbookPath: 'kookr-queue-feeder.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'parallel-issue-batch.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'repository-idea-scout.md' })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: 'pr-merge-rebase-watchdog.md' })).toBe(false);
+  });
+
+  it('is false with no playbook path', () => {
+    expect(isSafeModeExemptSchedule({ playbookPath: null })).toBe(false);
+    expect(isSafeModeExemptSchedule({ playbookPath: undefined })).toBe(false);
+    expect(isSafeModeExemptSchedule({})).toBe(false);
+  });
+});
 
 describe('isAutonomousLaunchSource', () => {
   it('treats schedule as autonomous', () => {

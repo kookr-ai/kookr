@@ -61,6 +61,14 @@ export type LaunchResult = SharedLaunchResult<Task>;
 export interface LaunchTaskServerOptions {
   /** Server-internal policy resolved from trusted launch context, never from shared LaunchOpts. */
   deliveryPolicy?: DeliveryPolicy;
+  /**
+   * Bypass the SAFE-MODE autonomous-launch gate for this launch (issue #2672).
+   * Set ONLY by the schedule runner for the cross-repo orchestrator fire, so
+   * that schedule keeps ticking during SAFE MODE (it snapshots, honors the
+   * pause, and spawns nothing). Never derived from a client-supplied
+   * `LaunchOpts` — this is a trusted, server-internal channel.
+   */
+  safeModeExempt?: boolean;
 }
 
 export interface LaunchServiceDeps {
@@ -1184,11 +1192,14 @@ async function launchTaskCore(
   }
   // Automation kill-switch (issue #1710): refuse autonomous launches only.
   // Manual sources (api/ui/cli/websocket/remote) stay accepted so an operator
-  // can still intervene while SAFE MODE is engaged.
+  // can still intervene while SAFE MODE is engaged. The cross-repo orchestrator
+  // fire carries `serverOpts.safeModeExempt` (issue #2672) so its own agent
+  // launch is allowed through — it must keep ticking to auto-resume the fleet.
   if (
     deps.isAutomationEnabled
     && !deps.isAutomationEnabled()
     && isAutonomousLaunchSource(opts.launchSource)
+    && !serverOpts.safeModeExempt
   ) {
     throw new AutomationKillSwitchError();
   }

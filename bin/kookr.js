@@ -23,6 +23,7 @@ Usage:
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
+  kookr orchestration pause|resume|status [OPTIONS]  Pause/resume the autonomous fleet (SAFE MODE wrapper).
   kookr migrate --to <agent> [OPTIONS]  Continue interrupted tasks under a different agent.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
@@ -164,6 +165,14 @@ async function main({
   if (command === 'drain' || command === 'resume') {
     const { runDrainCli } = await import('./kookr-drain.js');
     return exit(await runDrainCli(argv));
+  }
+
+  // Orchestration pause/resume/status (issue #2672). Thin HTTP client against
+  // /api/orchestration/* — a named surface over SAFE MODE, dispatched here
+  // rather than booting a server.
+  if (command === 'orchestration') {
+    await runOrchestrationCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   // Cross-agent task migration (RFC: docs/rfc/rfc-cross-agent-task-migration.md).
@@ -444,6 +453,21 @@ async function runGithubCommand(argv, { env = process.env, out = console, err = 
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runGithubCli(argv, { env, out, err });
+}
+
+async function runOrchestrationCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-orchestration.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-orchestration.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] orchestration module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runOrchestrationCli(argv, { env, out, err });
 }
 
 async function runContextPackCommand(argv, { env = process.env, out = console, err = console } = {}) {

@@ -200,7 +200,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     store: scheduleStore,
     service: scheduleService,
     validator: scheduleValidator,
-    launcher: (opts) => launchTask(deps.launchServiceDeps, opts),
+    launcher: (opts, serverOpts) => launchTask(deps.launchServiceDeps, opts, serverOpts),
     getActiveCount: () => deps.taskStore.getActiveCount(),
     getMaxActiveTasks: deps.getMaxActiveTasks,
     ...(deps.isAccepting ? { isAccepting: deps.isAccepting } : {}),

@@ -80,6 +80,12 @@ import {
   resolveSafeModeStatus,
 } from '../../core/automation-kill-switch.js';
 import {
+  evaluateSoftQuotaPause,
+  resolveDefaultAgentQuotaSample,
+  type OrchestrationQuotaSample,
+} from '../../core/orchestration-pause.js';
+import { readPauseRecordSync } from '../orchestration-pause-service.js';
+import {
   defaultRetroVerifyQueueDir,
   readPendingRetroVerify,
 } from '../../core/retro-verify-queue.js';
@@ -427,6 +433,49 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       };
     }
 
+    // Orchestration pause + default-agent quota utilization (issue #2672).
+    // The pause record annotates SAFE MODE (who/why/since/source); the quota
+    // sample drives the soft-quota rule. Both reads are cheap (one small JSON
+    // file + an in-memory snapshot) so they stay on the health hot path.
+    let orchestrationPauseBlock:
+      | {
+          paused: boolean;
+          source?: string;
+          since?: string;
+          reason?: string;
+          by?: string;
+          defaultAgentQuota?: OrchestrationQuotaSample;
+          recommendation?: string;
+        }
+      | undefined;
+    if (reservationSettings && deps.kookrDir) {
+      const record = readPauseRecordSync(deps.kookrDir);
+      const engaged =
+        (deps.settings?.getLoadError?.() ?? undefined) !== undefined
+        || reservationSettings.automationKillSwitch;
+      const agentType = deps.getDefaultAgentType?.() ?? reservationSettings.defaultAgentType;
+      const quotaSample = resolveDefaultAgentQuotaSample(
+        agentType,
+        deps.getQuotaStatus?.() ?? null,
+      );
+      const recommendation = evaluateSoftQuotaPause({
+        utilization: quotaSample.utilization ?? null,
+        resetsAt: quotaSample.resetsAt ?? null,
+        nowMs: Date.now(),
+        record,
+        safeModeEngaged: engaged,
+      });
+      orchestrationPauseBlock = {
+        paused: engaged || record?.paused === true,
+        ...(record?.source ? { source: record.source } : {}),
+        ...(record?.pausedAt ? { since: record.pausedAt } : {}),
+        ...(record?.reason ? { reason: record.reason } : {}),
+        ...(record?.pausedBy ? { by: record.pausedBy } : {}),
+        defaultAgentQuota: quotaSample,
+        recommendation: recommendation.action,
+      };
+    }
+
     // Lesson yield (issue #1538) — last-24h flywheel health. Served
     // stale-while-revalidate (issue #1553): the response uses whatever
     // snapshot the last background scan produced (staleness is visible via
@@ -668,6 +717,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       capacity,
       capacityThroughputVerdict,
       ...(safeModeBlock ? { safeMode: safeModeBlock } : {}),
+      ...(orchestrationPauseBlock ? { orchestrationPause: orchestrationPauseBlock } : {}),
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       // camelCase + snake_case: dashboard/status CLI use camelCase; daily
       // reports and the issue acceptance criterion name the metric

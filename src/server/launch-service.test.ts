@@ -472,6 +472,20 @@ describe('launchTask', () => {
       });
       expect(result.task.prompt).toBe('unblocked');
     });
+
+    it('lets a safeModeExempt schedule launch through while SAFE MODE is engaged (issue #2672)', async () => {
+      // The cross-repo orchestrator fire carries serverOpts.safeModeExempt so it
+      // keeps ticking during SAFE MODE (it snapshots, honors the pause, spawns
+      // nothing). Trusted server-internal channel — never from LaunchOpts.
+      const gated = { ...deps, isAutomationEnabled: () => false };
+      const result = await launchTask(
+        gated,
+        { prompt: 'orchestrator tick', cwd: '/tmp', launchSource: 'schedule' },
+        { safeModeExempt: true },
+      );
+      expect(result.task.prompt).toBe('orchestrator tick');
+      expect(store.listTasks()).toHaveLength(1);
+    });
   });
 
   it('records declared KB dependency preflight failures as advisory launch health', async () => {

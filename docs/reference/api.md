@@ -830,6 +830,9 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/admin/drain` | Current drain/resume state and running-task count |
 | `POST /api/admin/drain` | Enter drain mode, refusing new task launches while running agents continue |
 | `POST /api/admin/resume` | Leave drain mode and accept new task launches |
+| `GET /api/orchestration/status` | Orchestration pause state (SAFE MODE) + pause record + default-agent quota sample |
+| `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
+| `POST /api/orchestration/resume` | Disengage SAFE MODE and clear the pause record |
 | `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
@@ -1046,6 +1049,59 @@ launches again. Both POST routes return the drain state plus `changed`, which is
   "changed": true
 }
 ```
+
+#### `GET /api/orchestration/status`, `POST /api/orchestration/pause`, and `POST /api/orchestration/resume`
+
+Orchestration pause/resume (issue #2672) is a first-class, named surface over
+SAFE MODE (the `automationKillSwitch` setting): it lets a human — or the
+orchestrator itself on a soft-quota trigger — pause the autonomous fleet without
+hand-editing the whole settings document. Pausing engages SAFE MODE (running
+implementers keep working; no new autonomous launches) and writes a durable
+pause record at `~/.kookr/playbook-state/orchestrator/quota-pause.json`
+(who / why / since / source). Resuming disengages SAFE MODE and clears the
+record. This is distinct from drain (which refuses *all* launches, including the
+merge-review children an in-flight implementer may still need) and from the
+`quotaHeadroomThreshold` Claude-launch admission gate.
+
+A **human** pause is sticky — only an explicit resume clears it. A **soft-quota**
+pause (the orchestrator's standing-order response to near-exhausted default-agent
+quota) auto-resumes once utilization falls to/below 80% or the window resets. The
+`resume` route's `auto: true` (the orchestrator's auto-resume) declines to lift a
+human pause.
+
+`GET /api/orchestration/status` returns:
+
+```json
+{
+  "safeMode": { "engaged": true, "since": "2026-08-18T08:05:04.931Z" },
+  "paused": true,
+  "pause": {
+    "schemaVersion": 2,
+    "paused": true,
+    "source": "human",
+    "reason": "operator pause until provider weekly quotas reset",
+    "pausedAt": "2026-08-18T08:05:04.931Z",
+    "pausedBy": "jean",
+    "mechanism": "automationKillSwitch"
+  },
+  "quota": {
+    "agentType": "grok-build",
+    "supported": false,
+    "reason": "no supported non-key Grok weekly-quota signal (session/OIDC only; XAI_API_KEY is disallowed) — Phase B follow-up, issue #2672"
+  },
+  "recommendation": { "action": "none", "reason": "human pause is sticky; only `kookr orchestration resume` clears it" }
+}
+```
+
+`POST /api/orchestration/pause` accepts an optional JSON body
+`{ "reason"?: string, "by"?: string, "source"?: "human" | "soft-quota", "notes"?: string[] }`
+(a bare pause defaults to a human pause). `POST /api/orchestration/resume`
+accepts `{ "by"?: string, "auto"?: boolean }`. Both return the same status shape;
+`resume` adds `resumed` (and `resumeDeclinedReason` when a soft `auto` resume
+declined to lift a human pause).
+
+The same operations are available from the CLI: `kookr orchestration pause`,
+`kookr orchestration resume`, and `kookr orchestration status`.
 
 ## WebSocket
 
