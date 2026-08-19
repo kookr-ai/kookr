@@ -41,10 +41,16 @@ describe('renderMarkdown — allowlist', () => {
     const el = mount(
       '# Title\n\nSome **bold** and `code` and *italic*.\n\n- one\n- two\n\n```\nfence\n```',
     );
+    // `div` is the caller-supplied wrapper; `div`/`button` also make up the
+    // fixed, input-independent copy-button chrome that CopyableCodeBlock draws
+    // around fenced blocks. Neither is derived from parsed input, so they are
+    // exempt from the input-element allowlist without weakening the XSS guard
+    // (which still forbids `a`, `img`, `script`, etc. from any parsed text).
+    const trustedChrome = new Set(['div', 'button']);
     const walk = (node: Node) => {
       if (node.nodeType === Node.ELEMENT_NODE) {
         const tag = (node as Element).tagName.toLowerCase();
-        if (tag !== 'div') {
+        if (!trustedChrome.has(tag)) {
           expect(ALLOWED_ELEMENTS).toContain(tag as typeof ALLOWED_ELEMENTS[number]);
         }
       }
@@ -88,6 +94,28 @@ describe('renderMarkdown — supported constructs', () => {
     const pre = el.querySelector('pre');
     expect(pre).not.toBeNull();
     expect(pre?.querySelector('code')?.textContent).toBe('line1\nline2');
+  });
+
+  test('fenced code block renders a copy button wired to the exact code', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+
+    // Leading whitespace + markdown-looking chars: proves the wiring copies
+    // block.code verbatim (no trim / inline transforms) end-to-end through
+    // renderMarkdown, not just in the isolated component.
+    const el = mount('```\n  keep **leading** space\n```');
+    const button = el.querySelector('button.md-copy-btn') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    // The button sits alongside the pre>code within the wrapper.
+    expect(el.querySelector('.md-pre-wrap > pre.md-pre > code.md-code-block')).not.toBeNull();
+
+    await act(async () => {
+      button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith('  keep **leading** space');
+    vi.unstubAllGlobals();
   });
 
   test('fenced code block does NOT apply inline transforms inside', () => {

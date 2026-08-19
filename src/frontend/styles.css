@@ -12214,6 +12214,46 @@ a.oss-productivity-empty-docs-link:visited:hover {
   padding: 0;
   white-space: pre;
 }
+/* Copy-button chrome for fenced code blocks. The wrapper is the positioning
+   context so the button floats over the corner while the <pre> scrolls
+   independently underneath it. */
+.act-msg-text .md-pre-wrap {
+  position: relative;
+}
+.act-msg-text .md-copy-btn {
+  position: absolute;
+  top: 10px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s, background 0.12s;
+}
+.act-msg-text .md-pre-wrap:hover .md-copy-btn,
+.act-msg-text .md-copy-btn:focus-visible {
+  opacity: 1;
+}
+.act-msg-text .md-copy-btn:hover {
+  color: var(--teal);
+  border-color: var(--teal);
+}
+.act-msg-text .md-copy-btn:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.act-msg-text .md-copy-btn.copied {
+  opacity: 1;
+  color: var(--green);
+  border-color: var(--green);
+}
 .act-msg-text .md-ul {
   margin: 4px 0 6px 0;
   padding-left: 22px;
