@@ -93,6 +93,41 @@ describe('ShortcutsHelp', () => {
     expect(getSnapshot()).toBe(true);
   });
 
+  test('opens the read-only share view from the overlay CTA when wired', () => {
+    let shareCount = 0;
+    act(() => {
+      root.render(React.createElement(ShortcutsHelp, {
+        bindings,
+        onClose: () => root.render(React.createElement(React.Fragment)),
+        onShareView: () => { shareCount += 1; },
+      }));
+    });
+
+    const shareCta = Array.from(container.querySelectorAll<HTMLButtonElement>('.shortcuts-tour-cta'))
+      .find((btn) => btn.textContent?.includes('Share read-only view'));
+    expect(shareCta).toBeTruthy();
+
+    act(() => {
+      shareCta?.click();
+    });
+
+    expect(shareCount).toBe(1);
+    // The tour CTA must not share the share handler.
+    expect(getSnapshot()).toBe(false);
+  });
+
+  test('hides the share CTA when onShareView is not supplied', () => {
+    act(() => {
+      root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
+    });
+
+    const shareCta = Array.from(container.querySelectorAll<HTMLButtonElement>('.shortcuts-tour-cta'))
+      .find((btn) => btn.textContent?.includes('Share read-only view'));
+    expect(shareCta).toBeUndefined();
+    // The overlay stays usable — the tour CTA still renders.
+    expect(container.querySelector('.shortcuts-tour-cta')).not.toBeNull();
+  });
+
   test('renders active custom bindings from the resolved shortcut map', () => {
     act(() => {
       root.render(React.createElement(ShortcutsHelp, {

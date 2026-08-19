@@ -13587,7 +13587,15 @@ button.act-tool-entry:focus-visible {
   filter: brightness(1.1);
 }
 
-/* "Take the product tour" CTA inside HelpDialog (a.k.a. ShortcutsHelp) */
+/* CTA row inside HelpDialog (a.k.a. ShortcutsHelp) — wraps to a new line
+   when the dialog is narrow so the buttons never overlap. */
+.shortcuts-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* "Take the product tour" / "Share read-only view" CTAs inside HelpDialog */
 .shortcuts-tour-cta {
   display: inline-flex;
   align-items: center;

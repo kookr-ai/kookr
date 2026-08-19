@@ -141,7 +141,8 @@ owner-only share routes are active whenever the auth gate is on — i.e. a
 non-loopback bind).
 
 1. Open the command palette and run **"Share read-only view"** (search
-   `share`, `viewer`, or `read-only`).
+   `share`, `viewer`, or `read-only`), or click **Share read-only view** in the
+   Help & Shortcuts dialog (`?`).
 2. **Pick a scope:**
    - **Whole dashboard** — the viewer sees every project and task.
    - **A single project** — the viewer sees only that project; everything else is

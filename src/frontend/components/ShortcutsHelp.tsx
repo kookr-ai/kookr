@@ -11,6 +11,8 @@ import { ShortcutKeys } from './ShortcutKeys.js';
 interface Props {
   bindings: ShortcutBindingMap;
   onClose: () => void;
+  /** Opens the read-only Share view. When omitted, the Share CTA is hidden. */
+  onShareView?: () => void;
 }
 
 const CONTEXTUAL_SHORTCUTS = [
@@ -30,7 +32,7 @@ const CONTEXTUAL_SHORTCUTS = [
   },
 ];
 
-export function ShortcutsHelp({ bindings, onClose }: Props) {
+export function ShortcutsHelp({ bindings, onClose, onShareView }: Props) {
   useEscapeToClose(onClose);
   const shortcutGroups = getShortcutHelpGroups(bindings);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -84,7 +86,7 @@ export function ShortcutsHelp({ bindings, onClose }: Props) {
           </button>
         </div>
         <div className="shortcuts-body">
-          <div className="shortcuts-group">
+          <div className="shortcuts-group shortcuts-cta-row">
             <button
               type="button"
               className="shortcuts-tour-cta"
@@ -92,6 +94,15 @@ export function ShortcutsHelp({ bindings, onClose }: Props) {
             >
               Take the product tour <span aria-hidden="true">{'->'}</span>
             </button>
+            {onShareView && (
+              <button
+                type="button"
+                className="shortcuts-tour-cta"
+                onClick={onShareView}
+              >
+                Share read-only view <span aria-hidden="true">{'->'}</span>
+              </button>
+            )}
           </div>
           {shortcutGroups.map((group) => (
             <div key={group.title} className="shortcuts-group">
