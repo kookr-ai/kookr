@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useState } from 'react';
 import type { AgentSelection, AgentState, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
+import { isTerminalTaskStatus } from '../agent-buckets.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookSelector } from './PlaybookSelector.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
@@ -195,9 +196,10 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
 /**
  * The task a schedule's latest run produced (issue #2721). Clickable — a button
  * that opens the task — only while that task is still live in the current
- * snapshot; otherwise an inert span. A terminal/absent task has no agent to
- * select, so the reference stays non-actionable rather than gating navigation
- * on a readiness signal.
+ * snapshot: present AND non-terminal. Terminal tasks (completed / terminated /
+ * cancelled) are retained in the snapshot as synthetic entries, so presence
+ * alone is not enough — a terminal or absent task stays a non-actionable span
+ * rather than gating navigation on a readiness signal.
  */
 function ScheduleTaskRef({
   taskId,
@@ -209,7 +211,9 @@ function ScheduleTaskRef({
   onOpen: (agent: AgentState) => void;
 }) {
   const label = `Task ${taskId.slice(0, 8)}`;
-  const liveAgent = agents.find((agent) => agent.taskId === taskId);
+  const liveAgent = agents.find(
+    (agent) => agent.taskId === taskId && !isTerminalTaskStatus(agent.taskStatus),
+  );
   if (!liveAgent) {
     return <span className="schedule-task-ref">{label}</span>;
   }

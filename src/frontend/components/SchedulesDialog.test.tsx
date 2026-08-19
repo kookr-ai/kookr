@@ -46,8 +46,12 @@ function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleRespon
 
 const EXPECTED_LABEL = `Task ${TASK_ID.slice(0, 8)}`;
 
-function makeAgent(taskId: string, agentId = 'agent-1'): AgentState {
-  return { agentId, events: [], anomaly: null, taskId };
+function makeAgent(
+  taskId: string,
+  agentId = 'agent-1',
+  taskStatus: AgentState['taskStatus'] = 'inProgress',
+): AgentState {
+  return { agentId, events: [], anomaly: null, taskId, taskStatus };
 }
 
 describe('SchedulesDialog task reference', () => {
@@ -120,6 +124,33 @@ describe('SchedulesDialog task reference', () => {
     expect(ref).not.toBeNull();
     expect(ref?.tagName).toBe('SPAN');
     expect(ref?.textContent).toBe(EXPECTED_LABEL);
+
+    act(() => {
+      ref?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(selectAgent).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('a matching but terminal task keeps the reference non-actionable', () => {
+    const selectAgent = vi.fn();
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule()],
+        // The produced task matches by id but has already completed. Terminal
+        // agents are retained in the snapshot as synthetic entries, so presence
+        // alone must not make the reference clickable (issue #2721 AC).
+        agents: [makeAgent(TASK_ID, 'agent-1', 'completed')],
+        selectAgent,
+      });
+    });
+    const onClose = vi.fn();
+    render(onClose);
+
+    const ref = taskRef();
+    expect(ref).not.toBeNull();
+    expect(ref?.tagName).toBe('SPAN');
 
     act(() => {
       ref?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
