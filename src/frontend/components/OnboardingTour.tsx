@@ -156,24 +156,42 @@ function ShortcutCheatsheetRow({ shortcut }: { shortcut: ShortcutDisplay }) {
   );
 }
 
+export interface OnboardingTourProps {
+  /**
+   * Invoked from the final card's primary "Launch your first agent" action.
+   * The tour closes itself before calling this so the Launch dialog it opens
+   * owns focus / aria-modal cleanly (the tour dialog is unmounted in the same
+   * commit). When omitted, the final card keeps its plain "Done" dismissal and
+   * shows no launch affordance.
+   */
+  onLaunchFirstTask?: () => void;
+}
+
 /**
  * Shell that only mounts the dialog while the tour is open so useDialogFocus
  * can install the Tab trap, initial focus, and focus-restore lifecycle against
  * a real dialog DOM (matches ConfirmDialog / SnoozeDialog pattern).
  */
-export function OnboardingTour() {
+export function OnboardingTour({ onLaunchFirstTask }: OnboardingTourProps = {}) {
   const open = useSyncExternalStore(subscribe, getSnapshot, () => false);
   if (!open) return null;
-  return <OnboardingTourDialog />;
+  return <OnboardingTourDialog onLaunchFirstTask={onLaunchFirstTask} />;
 }
 
-function OnboardingTourDialog() {
+function OnboardingTourDialog({ onLaunchFirstTask }: OnboardingTourProps) {
   // Fresh mount on each open resets to card 0 (replays start at the welcome step).
   const [index, setIndex] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const primaryButtonRef = useRef<HTMLButtonElement>(null);
 
   const handleClose = useCallback(() => { close(); }, []);
+
+  const handleLaunchFirstTask = useCallback(() => {
+    // Close the tour first so its dialog is torn down in the same commit that
+    // the Launch dialog mounts — no focus-trap / aria-modal collision.
+    close();
+    onLaunchFirstTask?.();
+  }, [onLaunchFirstTask]);
 
   useDialogFocus({ dialogRef, initialFocusRef: primaryButtonRef });
 
@@ -229,6 +247,9 @@ function OnboardingTourDialog() {
   const card = ONBOARDING_CARDS[index];
   const isLast = index === ONBOARDING_CARDS.length - 1;
   const isFirst = index === 0;
+  // On the final card, when a launch callback is wired, convert the terminal
+  // "Done" into a primary launch action with a secondary dismiss beside it.
+  const showLaunchCta = isLast && Boolean(onLaunchFirstTask);
 
   return (
     <div
@@ -282,17 +303,39 @@ function OnboardingTourDialog() {
             >
               Back
             </button>
-            <button
-              ref={primaryButtonRef}
-              type="button"
-              className="onboarding-btn primary"
-              onClick={() => {
-                if (isLast) handleClose();
-                else setIndex((i) => Math.min(ONBOARDING_CARDS.length - 1, i + 1));
-              }}
-            >
-              {isLast ? 'Done' : 'Next'}
-            </button>
+            {showLaunchCta && (
+              <button
+                type="button"
+                className="onboarding-btn"
+                data-testid="onboarding-done"
+                onClick={handleClose}
+              >
+                Done
+              </button>
+            )}
+            {showLaunchCta ? (
+              <button
+                ref={primaryButtonRef}
+                type="button"
+                className="onboarding-btn primary"
+                data-testid="onboarding-launch-first-task"
+                onClick={handleLaunchFirstTask}
+              >
+                Launch your first agent
+              </button>
+            ) : (
+              <button
+                ref={primaryButtonRef}
+                type="button"
+                className="onboarding-btn primary"
+                onClick={() => {
+                  if (isLast) handleClose();
+                  else setIndex((i) => Math.min(ONBOARDING_CARDS.length - 1, i + 1));
+                }}
+              >
+                {isLast ? 'Done' : 'Next'}
+              </button>
+            )}
           </div>
         </div>
       </div>

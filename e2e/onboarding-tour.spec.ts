@@ -125,6 +125,24 @@ test.describe('Onboarding tour', () => {
     await expect(page.locator('.dialog')).not.toBeVisible();
   });
 
+  test('final card launch action closes the tour and opens the Launch dialog', async ({ page }) => {
+    await seedFresh(page);
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
+
+    // Advance to the final card (Welcome -> ... -> Findings and routing).
+    for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('Findings and routing');
+
+    // The terminal card offers a launch conversion alongside a Done dismiss.
+    const launch = page.locator('[data-testid="onboarding-launch-first-task"]');
+    await expect(launch).toHaveText('Launch your first agent');
+    await launch.click();
+
+    // Tour tears down; the existing Launch dialog opens (no aria-modal collision).
+    await expect(page.locator('.onboarding-tour')).not.toBeVisible();
+    await expect(page.locator('#launch-task-dialog-title')).toHaveText('Launch New Task');
+  });
+
   test('body class swaps to match the active card targetClass', async ({ page }) => {
     await seedFresh(page);
     await expect(page.locator('.onboarding-tour')).toBeVisible();
