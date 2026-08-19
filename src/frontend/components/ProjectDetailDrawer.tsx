@@ -89,6 +89,11 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const repoHealthAgo = repoHealthFetchedAt ? relativeAgo(repoHealthFetchedAt) : undefined;
   const updatedHint = repoHealthAgo ? <span className="project-drawer-stat-hint"> · {repoHealthAgo}</span> : null;
 
+  const lastShippedAgo = project.lastContribution ? relativeAgo(project.lastContribution) : undefined;
+  const lastShippedTooltip = project.lastContribution
+    ? new Date(project.lastContribution).toLocaleString()
+    : undefined;
+
   const tiedIssues = project.openIssuesTiedToActiveTasks ?? 0;
   const tiedPrs = project.openPrsTiedToActiveTasks ?? 0;
   const links = project.activeTaskGithubLinks ?? [];
@@ -200,6 +205,16 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
           <StatRow label="This week" value={project.weekPrCount} />
           <StatRow label="Open contribution attempts" value={project.openContributionAttempts} />
           <StatRow label="Active agents" value={project.activeAgents} />
+          {lastShippedAgo && (
+            <StatRow
+              label="Last shipped"
+              value={
+                <span data-testid="last-shipped-value" title={lastShippedTooltip}>
+                  {lastShippedAgo}
+                </span>
+              }
+            />
+          )}
           {showSpend && (
             <div
               className={`project-drawer-stat-row${overBudget ? ' at-limit' : ''}`}
