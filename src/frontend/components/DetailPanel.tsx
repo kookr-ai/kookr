@@ -1256,7 +1256,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
                   </div>
                 )}
                 <CriteriaVerdictBlock digest={agent.completionDigest} />
-                {agent.taskId && <VerificationCommandsBlock taskId={agent.taskId} />}
+                {/* key by taskId so switching tasks remounts with empty state —
+                    never paints task A's commands for a frame on task B's pane. */}
+                {agent.taskId && <VerificationCommandsBlock key={agent.taskId} taskId={agent.taskId} />}
               </div>
             </div>
           );

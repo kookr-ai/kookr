@@ -222,6 +222,9 @@ describe('DetailPanel verification commands', () => {
     await flush();
     expect(container.querySelector('.detail-verify-commands-code')?.textContent).toBe('pnpm one');
 
+    // Re-render with task-2 but do NOT flush the new fetch yet. The keyed
+    // remount must drop task-1's commands on the very first frame — no stale
+    // flash of 'pnpm one' on task-2's pane.
     act(() => {
       root!.render(
         React.createElement(DetailPanel, {
@@ -232,6 +235,9 @@ describe('DetailPanel verification commands', () => {
         }),
       );
     });
+    expect(container.querySelector('[data-testid="verify-commands"]')).toBeNull();
+    expect(container.textContent).not.toContain('pnpm one');
+
     await flush();
 
     const codes = container.querySelectorAll('.detail-verify-commands-code');
