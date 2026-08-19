@@ -153,12 +153,12 @@ function soundToggleTitle(soundOn: boolean, lastDecision: LocalAudioAlertDecisio
   return `${action}. Last alert: ${lastDecision.source} -> ${lastDecision.outcome}, ${lastDecision.reason}, ${formatRelativeAge(lastDecision.timestamp)}`;
 }
 
-function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
+export function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   const staleSec = Math.floor((Date.now() - quota.updatedAt) / 1000);
   const stale = staleSec > 300; // >5 min = stale
-  // The raw "5h: 31% (1h 56m) · 7d: 8%" pills are cryptic — spell out that
+  // The raw "5h: 31% (1h 56m) · 7d: 8% (4d)" pills are cryptic — spell out that
   // these are the Claude plan's rolling rate-limit windows.
-  const explainer = 'Claude plan rate-limit usage — 5h: rolling 5-hour window (resets in the time shown) · 7d: rolling 7-day window';
+  const explainer = 'Claude plan rate-limit usage — 5h: rolling 5-hour window (resets in the time shown) · 7d: rolling 7-day window (resets in the time shown)';
   return (
     <span className={`quota-display ${stale ? 'quota-stale' : ''}`} title={stale ? `${explainer}. Quota data is ${Math.floor(staleSec / 60)}m old` : explainer}>
       {quota.fiveHour && (
@@ -170,6 +170,7 @@ function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
       {quota.sevenDay && (
         <span className={`quota-pill ${quotaColorClass(quota.sevenDay.utilization)}`}>
           7d: {Math.round(quota.sevenDay.utilization)}%
+          <span className="quota-reset">({formatResetTime(quota.sevenDay.resetsAt)})</span>
         </span>
       )}
     </span>
