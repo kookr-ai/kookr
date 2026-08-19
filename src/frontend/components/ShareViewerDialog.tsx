@@ -68,6 +68,17 @@ function connectionSince(roster: ViewerLinksResponse['roster'], grantId: string)
   return new Date(Math.min(...times)).toISOString();
 }
 
+/** How many viewers are connected to a grant right now (0 when none). */
+export function watchingCount(roster: ViewerLinksResponse['roster'], grantId: string): number {
+  return roster.reduce((n, r) => (r.grantId === grantId ? n + 1 : n), 0);
+}
+
+/** Live "N watching" label for a grant, or null when nobody is connected. */
+export function watchingLabel(roster: ViewerLinksResponse['roster'], grantId: string): string | null {
+  const n = watchingCount(roster, grantId);
+  return n < 1 ? null : `${n} watching`;
+}
+
 export function ShareViewerDialog({ onClose }: Props) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -298,6 +309,7 @@ export function ShareViewerDialog({ onClose }: Props) {
             {data.grants.map((grant) => {
               const status = grantStatus(grant);
               const since = status === 'active' ? connectionSince(data.roster, grant.id) : null;
+              const watching = status === 'active' ? watchingLabel(data.roster, grant.id) : null;
               return (
                 <li key={grant.id} className={`share-viewer-dialog__item is-${status}`}>
                   <span className="share-viewer-dialog__item-main">
@@ -307,6 +319,7 @@ export function ShareViewerDialog({ onClose }: Props) {
                   <span className="share-viewer-dialog__item-status">
                     {status}
                     {since ? ` · connected ${timeAgo(since)}` : ''}
+                    {watching ? ` · ${watching}` : ''}
                     {status === 'active' && grant.expiresAt ? ` · expires ${timeAgo(grant.expiresAt) === 'just now' ? 'soon' : new Date(grant.expiresAt).toLocaleDateString()}` : ''}
                   </span>
                   {status === 'active' && (
