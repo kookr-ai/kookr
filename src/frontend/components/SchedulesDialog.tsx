@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
-import type { AgentSelection, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
+import type { AgentSelection, AgentState, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
@@ -192,6 +192,39 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
   }
 }
 
+/**
+ * The task a schedule's latest run produced (issue #2721). Clickable — a button
+ * that opens the task — only while that task is still live in the current
+ * snapshot; otherwise an inert span. A terminal/absent task has no agent to
+ * select, so the reference stays non-actionable rather than gating navigation
+ * on a readiness signal.
+ */
+function ScheduleTaskRef({
+  taskId,
+  agents,
+  onOpen,
+}: {
+  taskId: string;
+  agents: AgentState[];
+  onOpen: (agent: AgentState) => void;
+}) {
+  const label = `Task ${taskId.slice(0, 8)}`;
+  const liveAgent = agents.find((agent) => agent.taskId === taskId);
+  if (!liveAgent) {
+    return <span className="schedule-task-ref">{label}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="schedule-task-ref schedule-task-ref-link"
+      title="Open this task"
+      onClick={() => onOpen(liveAgent)}
+    >
+      {label}
+    </button>
+  );
+}
+
 export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   useEscapeToClose(onClose);
   const {
@@ -202,6 +235,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     defaultAgentType,
     roundRobinIndex,
     handleSchedules,
+    agents,
+    selectAgent,
   } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [showCreate, setShowCreate] = useState(schedules.length === 0 || Boolean(prefill));
@@ -567,7 +602,14 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                     <span>{quotaLabel(schedule)}</span>
                     <span>Last: {latestExecutionLabel(schedule)}</span>
                     {schedule.latestExecution?.taskId && (
-                      <span className="schedule-task-ref">Task {schedule.latestExecution.taskId.slice(0, 8)}</span>
+                      <ScheduleTaskRef
+                        taskId={schedule.latestExecution.taskId}
+                        agents={agents}
+                        onOpen={(agent) => {
+                          selectAgent(agent.agentId, agent.taskId);
+                          onClose();
+                        }}
+                      />
                     )}
                   </div>
                   {rollup && rollupLine && (
