@@ -7427,6 +7427,63 @@ label.task-share-row {
   font-size: 11px;
 }
 
+/* --- Completed pane: "How to verify" commands (read-only, copy only) --- */
+.detail-verify-commands {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-dim);
+}
+.detail-verify-commands-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+}
+.detail-verify-commands-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.detail-verify-commands-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.detail-verify-commands-code {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-bright);
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.verify-command-copy {
+  flex-shrink: 0;
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.verify-command-copy:hover {
+  color: var(--text-bright);
+  border-color: var(--border);
+}
+.verify-command-copy.copied {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+}
+
 /* --- Activity Panel --- */
 .activity-panel-wrap {
   flex: 1;
