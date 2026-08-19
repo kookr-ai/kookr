@@ -180,6 +180,33 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
   });
 
+  test('renders the cancelled/terminated/active disposition split from the summary', async () => {
+    // Distinct counts uniquely pin each field so a wrong-field render can't pass.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              cancelledTaskCount: 4,
+              terminatedTaskCount: 5,
+              activeTaskCount: 6,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const strip = el.querySelector('.outcome-disposition-strip');
+    expect(strip).toBeTruthy();
+    expect(strip?.textContent).toContain('4 cancelled');
+    expect(strip?.textContent).toContain('5 terminated');
+    expect(strip?.textContent).toContain('6 active');
+  });
+
   test('renders one per-agent row and guards low-sample completion rates', async () => {
     const el = mount();
 
