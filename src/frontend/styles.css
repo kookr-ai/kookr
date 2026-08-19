@@ -7156,6 +7156,29 @@ label.task-share-row {
   color: var(--teal);
 }
 
+/* When the produced task is still live, the reference is a button that opens
+   it. Strip native button chrome so it reads as the same inline mono text as
+   the non-actionable span, only clickable (issue #2721). */
+.schedule-task-ref-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.schedule-task-ref-link:hover,
+.schedule-task-ref-link:focus-visible {
+  filter: brightness(1.2);
+}
+
+.schedule-task-ref-link:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
 .schedule-manager-actions {
   display: flex;
   flex-shrink: 0;
