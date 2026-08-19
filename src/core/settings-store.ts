@@ -192,6 +192,14 @@ export interface KookrSettings {
    */
   deadManScheduleMinutes: number;
   /**
+   * Per-schedule liveness stale-alarm floor (minutes) — issue #2694. An enabled
+   * schedule is flagged "dark" when it has left NO execution-ledger activity for
+   * longer than max(its cron cadence × 2, this floor). Complements the
+   * fleet-wide dead-man switch, which misses a single silent schedule when
+   * healthy siblings keep firing. Alert-only. Set to 0 to disable the alarm.
+   */
+  staleScheduleAlarmMinutes: number;
+  /**
    * Per-schedule consecutive-failure alert threshold (issue #1665). When a
    * schedule's `consecutiveFailures` counter crosses this value (only a
    * genuine launch / timeout / task failure increments it; a `completed` run
@@ -404,6 +412,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   hungTaskReapGraceSeconds: DEFAULT_REAP_GRACE_SECONDS,
   launchTimeoutSeconds: 180,
   deadManScheduleMinutes: 120,
+  staleScheduleAlarmMinutes: 360,
   scheduleFailureAlertThreshold: 3,
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
@@ -459,6 +468,13 @@ const MAX_LAUNCH_TIMEOUT_SEC = 900;
 // can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
 const MIN_DEAD_MAN_SCHEDULE_MIN = 30;
 const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
+// Per-schedule liveness stale-alarm floor bounds (minutes) — issue #2694. 0 is
+// a distinct disable sentinel handled before clamping; a non-zero floor is held
+// at or above 30 (above the 60s tick + one cadence so a single slow fire can't
+// trip it) and at or below 10080 (7 days), keeping the alarm meaningful for even
+// weekly schedules.
+const MIN_STALE_SCHEDULE_ALARM_MIN = 30;
+const MAX_STALE_SCHEDULE_ALARM_MIN = 7 * 24 * 60;
 // Per-schedule consecutive-failure alert threshold (issue #1665). Floor of 1
 // lets an operator alert on the very first failure; ceiling of 100 stops a
 // fat-fingered value from silencing the alert entirely.
@@ -613,6 +629,21 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       MIN_DEAD_MAN_SCHEDULE_MIN,
       Math.min(MAX_DEAD_MAN_SCHEDULE_MIN, Math.round(raw.deadManScheduleMinutes)),
     );
+  }
+
+  let staleScheduleAlarmMinutes = DEFAULT_SETTINGS.staleScheduleAlarmMinutes;
+  if (typeof raw.staleScheduleAlarmMinutes === 'number' && Number.isFinite(raw.staleScheduleAlarmMinutes)) {
+    // Test the RAW value for the disable sentinel BEFORE rounding: only a
+    // genuinely non-positive value (0, negative) disables. A small positive
+    // value (e.g. 0.3) is an aggressive-but-valid intent and must clamp UP to
+    // the floor, not round to 0 and silently disable the alarm.
+    staleScheduleAlarmMinutes =
+      raw.staleScheduleAlarmMinutes <= 0
+        ? 0
+        : Math.max(
+            MIN_STALE_SCHEDULE_ALARM_MIN,
+            Math.min(MAX_STALE_SCHEDULE_ALARM_MIN, Math.round(raw.staleScheduleAlarmMinutes)),
+          );
   }
 
   let scheduleFailureAlertThreshold = DEFAULT_SETTINGS.scheduleFailureAlertThreshold;
@@ -868,6 +899,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       hungTaskReapGraceSeconds,
       launchTimeoutSeconds,
       deadManScheduleMinutes,
+      staleScheduleAlarmMinutes,
       scheduleFailureAlertThreshold,
       maxPendingTasks,
       pendingTaskTtlMinutes,

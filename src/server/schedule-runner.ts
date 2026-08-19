@@ -183,6 +183,17 @@ export interface ScheduleRunnerDeps {
    */
   deadMan?: { check(schedules: Schedule[]): void; stats?(): ScheduleDeadManStats };
   /**
+   * Per-schedule liveness / stale-alarm (issue #2694). When provided, evaluated
+   * once per tick right after {@link ScheduleRunnerDeps.deadMan}, on the same
+   * 60s interval (no timer of its own). Catches a single enabled schedule that
+   * has gone dark — left no ledger activity for far longer than its cadence
+   * warrants — which the fleet-wide dead-man switch misses when healthy sibling
+   * schedules mask it. `check` must never throw; it is still called inside the
+   * tick's tracked-work error envelope. Absent means no liveness alarm
+   * (back-compat for older wiring/tests).
+   */
+  staleAlarm?: { check(schedules: Schedule[]): void };
+  /**
    * Unresolvable-playbook operational alerter (issue #1661). When provided,
    * fed the current set of unresolvable schedules on every validation cycle
    * (the runner's existing tick + the pre-broadcast seed) so an already-broken
@@ -452,6 +463,17 @@ export class ScheduleRunner {
         }
       } catch (err) {
         console.error('[schedule] dead-man check failed:', err);
+      }
+
+      // Per-schedule liveness / stale-alarm (issue #2694). Runs alongside the
+      // dead-man on accumulated ledger state — same decoupling from the fire
+      // loop, same defensive wrapper. Catches a single enabled schedule that
+      // has gone dark (no ledger activity for far longer than its cadence),
+      // which the fleet-wide dead-man misses when healthy siblings mask it.
+      try {
+        this.deps.staleAlarm?.check(this.deps.store.list());
+      } catch (err) {
+        console.error('[schedule] stale-alarm check failed:', err);
       }
 
       // Issue #2459: leftover consecutive_failures holds from a transient

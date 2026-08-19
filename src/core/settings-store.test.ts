@@ -298,6 +298,21 @@ describe('validateSettings', () => {
     expect(validateSettings({ deadManScheduleMinutes: 'never' }).deadManScheduleMinutes).toBe(120);
   });
 
+  it('defaults staleScheduleAlarmMinutes to 360, clamps to 30–10080, and preserves 0 as disable (issue #2694)', () => {
+    expect(validateSettings({}).staleScheduleAlarmMinutes).toBe(360);
+    expect(DEFAULT_SETTINGS.staleScheduleAlarmMinutes).toBe(360);
+    expect(validateSettings({ staleScheduleAlarmMinutes: 720 }).staleScheduleAlarmMinutes).toBe(720);
+    expect(validateSettings({ staleScheduleAlarmMinutes: 5 }).staleScheduleAlarmMinutes).toBe(30);
+    expect(validateSettings({ staleScheduleAlarmMinutes: 999_999 }).staleScheduleAlarmMinutes).toBe(10_080);
+    // 0 (and any non-positive) is the explicit disable sentinel, not clamped up.
+    expect(validateSettings({ staleScheduleAlarmMinutes: 0 }).staleScheduleAlarmMinutes).toBe(0);
+    expect(validateSettings({ staleScheduleAlarmMinutes: -10 }).staleScheduleAlarmMinutes).toBe(0);
+    // A small POSITIVE value is aggressive-but-valid intent — clamp up to the
+    // floor, do NOT round-to-0 and silently disable the alarm.
+    expect(validateSettings({ staleScheduleAlarmMinutes: 0.3 }).staleScheduleAlarmMinutes).toBe(30);
+    expect(validateSettings({ staleScheduleAlarmMinutes: 'off' }).staleScheduleAlarmMinutes).toBe(360);
+  });
+
   it('defaults scheduleFailureAlertThreshold to 3 and clamps to the 1–100 range (issue #1665)', () => {
     expect(validateSettings({}).scheduleFailureAlertThreshold).toBe(3);
     expect(DEFAULT_SETTINGS.scheduleFailureAlertThreshold).toBe(3);
@@ -735,6 +750,7 @@ describe('loadSettings / saveSettings', () => {
       hungTaskReapGraceSeconds: 120,
       launchTimeoutSeconds: 300,
       deadManScheduleMinutes: 240,
+      staleScheduleAlarmMinutes: 720,
       scheduleFailureAlertThreshold: 5,
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,
