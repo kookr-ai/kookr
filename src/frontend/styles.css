@@ -3816,6 +3816,17 @@ a.playbook-empty-docs-link:visited:hover {
   font-weight: 600;
   font-size: 12px;
 }
+.pricing-fallback-badge {
+  font-size: 0.7em;
+  padding: 1px 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  background: rgba(163,163,163,0.12);
+  color: var(--text-muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: help;
+}
 .detail-tokens {
   color: var(--text-secondary);
   font-size: 11px;

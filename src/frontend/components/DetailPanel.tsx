@@ -380,6 +380,14 @@ function DetailMetadataMenu({
             <span className="detail-cost" title={`In: ${formatTokens(agent.tokenUsage!.inputTokens)} / Out: ${formatTokens(agent.tokenUsage!.outputTokens)}`}>
               {formatCost(agent.tokenUsage!.costUsd)}{costRate ? ` · ${costRate}` : ''}
             </span>
+            {agent.tokenUsage!.pricingQuality === 'fallback' && (
+              <span
+                className="pricing-fallback-badge"
+                title="Estimated: priced with fallback (Sonnet) rates because exact pricing for this model was unavailable."
+              >
+                ~ estimated
+              </span>
+            )}
           </div>
         )}
         {hasTokenCount && (
