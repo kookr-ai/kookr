@@ -180,6 +180,50 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-cost')?.textContent).toBe('$4.00');
   });
 
+  test('shows an estimated badge on the Cost row when pricingQuality is fallback', () => {
+    root = renderDetailPanel(container, makeAgent({
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0.42,
+        pricingQuality: 'fallback',
+      },
+    }));
+    const badge = container.querySelector('.pricing-fallback-badge');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toContain('estimated');
+    expect(badge?.getAttribute('title')?.toLowerCase()).toContain('fallback');
+  });
+
+  test('omits the estimated badge when pricingQuality is exact', () => {
+    root = renderDetailPanel(container, makeAgent({
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0.42,
+        pricingQuality: 'exact',
+      },
+    }));
+    expect(container.querySelector('.pricing-fallback-badge')).toBeNull();
+  });
+
+  test('omits the estimated badge when pricingQuality is absent (legacy records)', () => {
+    root = renderDetailPanel(container, makeAgent({
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0.42,
+      },
+    }));
+    expect(container.querySelector('.pricing-fallback-badge')).toBeNull();
+  });
+
   test('terminal focus mode removes secondary detail chrome while keeping terminal active', () => {
     root = renderFocusedDetailPanel(container, makeAgent());
 
