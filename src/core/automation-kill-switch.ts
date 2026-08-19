@@ -35,6 +35,38 @@ export function isAutonomousLaunchSource(
   return launchSource === 'schedule' || launchSource === 'idle-refinery';
 }
 
+/**
+ * Playbook-file basename identifying the cross-repo orchestrator schedule
+ * (issue #2672). This one schedule must keep ticking during SAFE MODE so the
+ * fleet can auto-resume after a quota window resets: it snapshots, honors the
+ * pause, and spawns nothing. Deliberately narrow — the
+ * `*-orchestration-supervisor` schedules and every other autonomous schedule
+ * (queue-feeder, Parallel Issue Batch, idea-scout, merge-watchdog) stay gated.
+ */
+const CROSS_REPO_ORCHESTRATOR_PLAYBOOK_BASENAME = 'cross-repo-orchestrator.md';
+
+/**
+ * Is this schedule exempt from the SAFE-MODE pre-fire gate? Only the cross-repo
+ * orchestrator schedule is, matched by an EXACT playbook-file basename (the
+ * operator-chosen schedule name is deliberately not consulted — it is not
+ * authoritative). An exact basename keeps the match narrow: a look-alike path
+ * like `cross-repo-orchestrator-backup.md` does NOT get exempted. See
+ * {@link CROSS_REPO_ORCHESTRATOR_PLAYBOOK_BASENAME}.
+ *
+ * Exemption is scoped to *letting the schedule fire and the orchestrator agent
+ * launch*; the orchestrator playbook itself still refuses to spawn children
+ * while paused.
+ */
+export function isSafeModeExemptSchedule(input: {
+  playbookPath?: string | null;
+}): boolean {
+  const path = input.playbookPath?.toLowerCase() ?? '';
+  // Basename without a node:path import (this module is layer-shared): take the
+  // segment after the last '/' or '\'.
+  const basename = path.split(/[/\\]/).pop() ?? '';
+  return basename === CROSS_REPO_ORCHESTRATOR_PLAYBOOK_BASENAME;
+}
+
 /** Build the live SAFE MODE status from settings (or equivalent booleans). */
 export function resolveSafeModeStatus(input: {
   automationKillSwitch: boolean;

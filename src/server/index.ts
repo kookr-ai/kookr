@@ -2605,6 +2605,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     getAutoCloseCompletionReadyDelayMs,
     getCompletionReadyTtlMs,
+    // Issue #2672 Phase B: project the default agent's quota utilization onto
+    // `/api/health` and the orchestration status surface.
+    getQuotaStatus: () => quotaAdapter.getLatest(),
+    getDefaultAgentType,
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     settings: {
       get: () => currentSettings,

@@ -10,6 +10,7 @@ import { registerProjectRoutes } from './routes/project-routes.js';
 import { registerDeployRoutes } from './routes/deploy-routes.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
+import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
@@ -126,6 +127,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerMetricsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);
   registerSettingsRoutes(app, sharedDeps);
+  registerOrchestrationRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
   registerTaskRoutes(app, sharedDeps);
   registerSessionTransportRoutes(app, sharedDeps);

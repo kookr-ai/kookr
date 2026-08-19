@@ -424,6 +424,14 @@ export interface RouteDeps {
   auditLogPath?: string;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
+  /**
+   * Latest Anthropic quota snapshot (issue #2672 Phase B). Used to project the
+   * default agent's quota utilization onto `/api/health` and the orchestration
+   * status surface. Absent in lightweight test harnesses.
+   */
+  getQuotaStatus?: () => import('../../core/quota-types.js').QuotaStatus | null;
+  /** Live getter for the configured default agent selection (issue #2672). */
+  getDefaultAgentType?: () => import('../../shared/contracts/agent-types.js').AgentSelection;
   /** Live default for task completion worktree cleanup. */
   getCleanupWorktreeOnComplete?: () => boolean;
   /** Live getter for the completion-ready auto-close delay, in milliseconds. */

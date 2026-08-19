@@ -134,6 +134,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     name: 'resume',
   },
   {
+    // Orchestration pause/resume (issue #2672). Keep in sync with
+    // src/cli/kookr-orchestration.ts and the root help.
+    name: 'orchestration',
+    subcommands: ['pause', 'resume', 'status'],
+    flags: ['--reason', '--by', '--source', '--auto', '--json', '-h', '--help'],
+  },
+  {
     // Cross-agent task migration. Keep in sync with bin/kookr-migrate.js help.
     name: 'migrate',
     flags: [
@@ -405,6 +412,8 @@ function renderBashCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
+  const orchestrationSubcommands = subcommandsFor('orchestration');
+  const orchestrationFlags = flagsFor('orchestration');
   const migrateFlags = flagsFor('migrate');
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
@@ -561,6 +570,13 @@ _kookr()
     resume)
       COMPREPLY=()
       ;;
+    orchestration)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${orchestrationSubcommands} ${orchestrationFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${orchestrationFlags}" -- "\${cur}") )
+      fi
+      ;;
     migrate)
       COMPREPLY=( $(compgen -W "${migrateFlags}" -- "\${cur}") )
       ;;
@@ -708,6 +724,8 @@ function renderZshCompletion(): string {
   const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
+  const orchestrationSubcommands = subcommandsFor('orchestration');
+  const orchestrationFlags = flagsFor('orchestration');
   const migrateFlags = flagsFor('migrate');
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
@@ -830,6 +848,13 @@ _kookr()
       compadd -- ${drainSubcommands} ${drainFlags}
       ;;
     resume)
+      ;;
+    orchestration)
+      if (( CURRENT == 3 )); then
+        compadd -- ${orchestrationSubcommands} ${orchestrationFlags}
+      else
+        compadd -- ${orchestrationFlags}
+      fi
       ;;
     migrate)
       compadd -- ${migrateFlags}

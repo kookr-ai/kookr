@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
+import { DEFAULT_SETTINGS } from '../../core/settings-store.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
@@ -899,6 +900,94 @@ describe('diagnostics routes', () => {
         ingestion: ingestionSnapshot,
         watcher: watcherSnapshot,
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — orchestration pause + default-agent quota (issue #2672)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health orchestrationPause block (issue #2672)', () => {
+    function mkSettingsDep(overrides: Partial<typeof DEFAULT_SETTINGS> = {}) {
+      const committed = { ...DEFAULT_SETTINGS, ...overrides };
+      return {
+        get: () => committed,
+        getLoadedFromDefaults: () => false,
+        getLoadWarnings: () => [],
+        update: async () => [],
+      };
+    }
+
+    test('exposes default-agent utilization + pause=false when running (claude-code)', async () => {
+      const kookrDir = join(tempDir, 'orch-running');
+      mkdirSync(kookrDir, { recursive: true });
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+        settings: mkSettingsDep({ defaultAgentType: 'claude-code' }) as unknown as RouteDeps['settings'],
+        getDefaultAgentType: () => 'claude-code',
+        getQuotaStatus: () => ({
+          fiveHour: { utilization: 30, resetsAt: '2026-08-19T05:00:00.000Z' },
+          sevenDay: { utilization: 55, resetsAt: '2026-08-25T00:00:00.000Z' },
+          updatedAt: 0,
+        }),
+      });
+      const body = (await (await app.request('/api/health')).json()) as {
+        orchestrationPause?: { paused: boolean; defaultAgentQuota?: { utilization?: number; window?: string }; recommendation?: string };
+      };
+      expect(body.orchestrationPause).toBeDefined();
+      expect(body.orchestrationPause!.paused).toBe(false);
+      expect(body.orchestrationPause!.defaultAgentQuota).toMatchObject({ utilization: 55, window: 'seven-day' });
+      expect(body.orchestrationPause!.recommendation).toBe('none');
+    });
+
+    test('reports paused + projects the pause record (source/since/reason/by) when a record is on disk', async () => {
+      const kookrDir = join(tempDir, 'orch-paused');
+      // A durable pause record on disk drives the who/why/since/source projection.
+      const recordPath = join(kookrDir, 'playbook-state', 'orchestrator', 'quota-pause.json');
+      mkdirSync(join(kookrDir, 'playbook-state', 'orchestrator'), { recursive: true });
+      writeFileSync(
+        recordPath,
+        JSON.stringify({
+          schemaVersion: 2,
+          paused: true,
+          source: 'human',
+          reason: 'operator hold until quotas reset',
+          pausedAt: '2026-08-18T08:05:04.931Z',
+          pausedBy: 'jean',
+          mechanism: 'automationKillSwitch',
+        }),
+        'utf8',
+      );
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+        settings: mkSettingsDep({ automationKillSwitch: true, defaultAgentType: 'grok-build' }) as unknown as RouteDeps['settings'],
+        getDefaultAgentType: () => 'grok-build',
+      });
+      const body = (await (await app.request('/api/health')).json()) as {
+        orchestrationPause?: {
+          paused: boolean;
+          source?: string;
+          since?: string;
+          reason?: string;
+          by?: string;
+          defaultAgentQuota?: { supported: boolean };
+        };
+      };
+      expect(body.orchestrationPause!.paused).toBe(true);
+      // The record's who/why/since/source project onto the health block.
+      expect(body.orchestrationPause).toMatchObject({
+        source: 'human',
+        since: '2026-08-18T08:05:04.931Z',
+        reason: 'operator hold until quotas reset',
+        by: 'jean',
+      });
+      // Grok default ⇒ quota unsupported (no non-key signal).
+      expect(body.orchestrationPause!.defaultAgentQuota).toMatchObject({ supported: false });
     });
   });
 

@@ -1059,6 +1059,46 @@ Do the test thing (${marker}).
     expect(launched).toHaveLength(1);
   });
 
+  it('still fires the cross-repo orchestrator schedule during SAFE MODE, with safeModeExempt (issue #2672)', async () => {
+    // The orchestrator schedule must keep ticking while paused so the fleet can
+    // auto-resume after a quota window resets. Its own agent launch is let
+    // through the launch-service gate via serverOpts.safeModeExempt.
+    await writeFile(join(dir, '.kookr', 'playbooks', 'cross-repo-orchestrator.md'), `---
+name: Cross-Repo Autonomous Orchestrator
+description: orchestrator
+parameters: []
+checklist:
+  - Snapshot and honor the pause
+---
+
+Snapshot the fleet.
+`);
+    const schedule = store.create({
+      name: 'Cross-Repo Autonomous Orchestrator',
+      cron: '* * * * *',
+      playbook: { path: 'cross-repo-orchestrator.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const seen: Array<{ prompt: string; safeModeExempt?: boolean }> = [];
+    const runner = createRunner({
+      isAutomationEnabled: () => false,
+      launcher: async (opts, serverOpts) => {
+        seen.push({ prompt: opts.prompt, safeModeExempt: serverOpts?.safeModeExempt });
+        return { task: { id: 'orch-1' } as any, queued: false };
+      },
+    });
+    await runner.tick();
+
+    // Fired despite SAFE MODE (not skipped_safe_mode), and carried the exempt flag.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.safeModeExempt).toBe(true);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_safe_mode');
+  });
+
   it('fails when playbook file is missing', async () => {
     const schedule = store.create({
       name: 'Missing Playbook',

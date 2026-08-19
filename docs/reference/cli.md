@@ -1145,6 +1145,44 @@ successful restart does **not** require `kookr resume`. See
 [Redeploy resilience](#redeploy-resilience) and the
 [low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md).
 
+## `kookr orchestration`
+
+Pause or resume the autonomous fleet on a running local Kookr instance. This is
+a named surface over SAFE MODE (the `automationKillSwitch` setting): pausing
+stops new autonomous launches (implementers, scouts, queue-feeder) while letting
+already-running agents finish, and records the pause under
+`~/.kookr/playbook-state/orchestrator/quota-pause.json`. Unlike `kookr drain`, it
+does **not** refuse the merge-review children an in-flight implementer still
+needs. Use it when a provider's weekly quota is nearly exhausted and you want the
+fleet to coast to a stop until the window resets.
+
+```bash
+kookr orchestration status
+kookr orchestration pause  [--reason "quota reset window"] [--by jean]
+kookr orchestration resume [--by jean]
+```
+
+- `status` (read-only) prints whether orchestration is paused, and — when a
+  record exists — the source, since, reason, and who; plus the default agent's
+  quota sample and the soft-quota recommendation when a signal is available.
+- `pause` engages SAFE MODE and writes the pause record. Defaults to a **human**
+  pause, which is sticky — only `kookr orchestration resume` clears it.
+- `resume` disengages SAFE MODE and clears the record.
+
+A **soft-quota** pause (the orchestrator's own response to near-exhausted quota)
+is distinct: `--source soft-quota` on `pause`, and `--auto` on `resume`. A
+soft-quota `--auto` resume auto-lifts only a soft-quota pause (with hysteresis:
+at or below 80% utilization, or after the window resets); it declines to lift a
+human pause or a SAFE MODE engaged outside this wrapper.
+
+Target selection mirrors `kookr status`: `KOOKR_API_BASE_URL` or `KOOKR_PORT`
+overrides auto-detect; otherwise Kookr probes ports `4800` then `4801`.
+`KOOKR_API_TOKEN` is forwarded as a bearer token for non-loopback servers. Pass
+`--json` to any verb for one machine-readable envelope.
+
+Exit codes: `0` success, `2` usage error (bad flags / unknown verb), `3` no
+server reachable, `4` server rejected the request.
+
 ## `kookr migrate`
 
 Continue **interrupted** tasks under a **different** agent — e.g. move stalled

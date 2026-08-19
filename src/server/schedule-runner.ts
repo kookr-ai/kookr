@@ -23,7 +23,8 @@ import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
-import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
+import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
+import { isSafeModeExemptSchedule } from '../core/automation-kill-switch.js';
 import { withTimeout } from '../core/with-timeout.js';
 import {
   crossTierResolutionHint,
@@ -131,7 +132,7 @@ export interface ScheduleRunnerDeps {
   store: ScheduleStore;
   service: ScheduleService;
   validator: ScheduleValidator;
-  launcher: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launcher: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   getActiveCount: () => number;
   getMaxActiveTasks: () => number;
   isTaskBlockingSchedule: (taskId: string) => boolean;
@@ -764,7 +765,17 @@ export class ScheduleRunner {
       return { error: 'Server draining' };
     }
 
-    if (this.deps.isAutomationEnabled && !this.deps.isAutomationEnabled()) {
+    // SAFE MODE pre-fire gate (issue #1710). The cross-repo orchestrator
+    // schedule is exempt (issue #2672): it must keep ticking while paused so
+    // the fleet can auto-resume after a quota window resets — it snapshots,
+    // honors the pause, and spawns nothing. Its own agent launch is let through
+    // the launch-service gate via `serverOpts.safeModeExempt` below. Every
+    // other autonomous schedule (queue-feeder, Parallel Issue Batch,
+    // idea-scout, merge-watchdog) stays halted.
+    const safeModeExempt = isSafeModeExemptSchedule({
+      playbookPath: schedule.playbook?.path,
+    });
+    if (this.deps.isAutomationEnabled && !this.deps.isAutomationEnabled() && !safeModeExempt) {
       console.warn(`[schedule] Skipping "${schedule.name}" — automation kill-switch engaged (issue #1710)`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
@@ -882,7 +893,7 @@ export class ScheduleRunner {
         // issue #1583: carry the scheduleId so the created task's immutable
         // `schedule` provenance points back to this schedule for rollups.
         scheduleId: schedule.id,
-      });
+      }, safeModeExempt ? { safeModeExempt: true } : undefined);
 
       const acceptDetails = buildSubstitutionAcceptDetails(
         agentResolution,
