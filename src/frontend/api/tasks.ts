@@ -54,6 +54,27 @@ export function getRalphLoopIterations<T>(taskId: string, signal: AbortSignal): 
   return getLatestOrThrow<T>(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/iterations`, signal);
 }
 
+/**
+ * GET a task's suggested verification commands (the agent's "here's how to check
+ * my work" steps). The terminal snapshot sheds `completionDigest.verificationCommands`
+ * for payload size, so the Completed pane hydrates them from `GET /api/tasks/:id`.
+ *
+ * Returns the cleaned, non-empty command strings, or `[]` on a non-2xx, an
+ * `{ error }` body, a missing field, or a malformed payload — so the caller can
+ * render read-only with no error branch. Aborting the signal rejects the fetch.
+ */
+export async function getTaskVerificationCommands(taskId: string, signal: AbortSignal): Promise<string[]> {
+  const res = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`, { signal });
+  if (!res.ok) return [];
+  const task = (await res.json().catch(() => null)) as
+    | { error?: string; completionDigest?: { verificationCommands?: unknown } }
+    | null;
+  if (!task || task.error) return [];
+  const raw = task.completionDigest?.verificationCommands;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
+}
+
 // --- Cross-agent task migration (RFC: rfc-cross-agent-task-migration) -----
 
 /** One eligible migration candidate, as returned by `GET /api/tasks/migratable`. */

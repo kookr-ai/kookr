@@ -5,7 +5,7 @@ import {
   formatBlackoutSeconds,
   getDeployStatus,
 } from './deploy.js';
-import { getMigratableTasks, migrateTasks, patchTaskEdges } from './tasks.js';
+import { getMigratableTasks, getTaskVerificationCommands, migrateTasks, patchTaskEdges } from './tasks.js';
 import { createTaskShare, getTaskShares, SHARE_CSRF_HEADER } from './sharing.js';
 
 function stubFetch() {
@@ -79,6 +79,35 @@ describe('patchTaskEdges', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ blocks: ['a'] }),
     });
+  });
+});
+
+describe('getTaskVerificationCommands', () => {
+  function stubTaskDetail(body: unknown, ok = true) {
+    const spy = vi.fn((_path: string, _init?: RequestInit) =>
+      Promise.resolve({ ok, status: ok ? 200 : 404, json: () => Promise.resolve(body) } as Response),
+    );
+    vi.stubGlobal('fetch', spy);
+    return spy;
+  }
+
+  test('fetches the task detail with the abort signal and returns cleaned commands', async () => {
+    const spy = stubTaskDetail({ completionDigest: { verificationCommands: ['pnpm test', '  ', 'pnpm tsc', 3] } });
+    const signal = new AbortController().signal;
+    await expect(getTaskVerificationCommands('task 1', signal)).resolves.toEqual(['pnpm test', 'pnpm tsc']);
+    expect(spy).toHaveBeenCalledWith('/api/tasks/task%201', { signal });
+  });
+
+  test('returns [] on a non-ok response', async () => {
+    stubTaskDetail({ completionDigest: { verificationCommands: ['pnpm test'] } }, false);
+    await expect(getTaskVerificationCommands('t', new AbortController().signal)).resolves.toEqual([]);
+  });
+
+  test('returns [] on an error body or a missing/blank field', async () => {
+    stubTaskDetail({ error: 'not found' });
+    await expect(getTaskVerificationCommands('t', new AbortController().signal)).resolves.toEqual([]);
+    stubTaskDetail({ completionDigest: {} });
+    await expect(getTaskVerificationCommands('t', new AbortController().signal)).resolves.toEqual([]);
   });
 });
 

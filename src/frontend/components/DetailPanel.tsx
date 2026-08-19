@@ -12,6 +12,8 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
+import { copyText } from '../clipboard.js';
+import { getTaskVerificationCommands } from '../api/tasks.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { getSettingsSnapshot, getTaskShares } from '../api/index.js';
@@ -121,6 +123,82 @@ function CriteriaVerdictBlock({ digest }: { digest: NonNullable<AgentState['comp
               <span className="criteria-verdict-criterion">{item.criterion}</span>
               <span className="criteria-verdict-reason">{item.reason}</span>
             </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Copy control for a single verification command. Display + copy only. */
+function VerifyCommandCopyButton({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1200);
+    return () => clearTimeout(id);
+  }, [copied]);
+
+  async function handleCopy() {
+    try {
+      await copyText(command);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`verify-command-copy${copied ? ' copied' : ''}`}
+      aria-label={copied ? `Copied command: ${command}` : `Copy command: ${command}`}
+      title={copied ? 'Copied' : 'Copy command'}
+      onClick={handleCopy}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+/**
+ * "How to verify" list for a completed task. The terminal snapshot sheds
+ * `verificationCommands` for payload size (see event-projection.ts), so this
+ * hydrates the full digest from `GET /api/tasks/:id` on open and renders the
+ * commands read-only (display + copy — never executed). Renders nothing while
+ * the fetch is in flight, on failure, or when there are no commands, so a
+ * slow/failed fetch never breaks the already-rendered digest.
+ */
+function VerificationCommandsBlock({ taskId }: { taskId: string }) {
+  const [commands, setCommands] = useState<string[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setCommands([]);
+    getTaskVerificationCommands(taskId, controller.signal)
+      .then((cmds) => {
+        // A prior task's response can still resolve after taskId changed and the
+        // effect was cleaned up; drop it so task A's commands never land on B.
+        if (controller.signal.aborted) return;
+        if (cmds.length > 0) setCommands(cmds);
+      })
+      .catch(() => {
+        /* slow/failed detail fetch must not break the pane — leave the list empty */
+      });
+    return () => controller.abort();
+  }, [taskId]);
+
+  if (commands.length === 0) return null;
+
+  return (
+    <div className="detail-verify-commands" data-testid="verify-commands">
+      <div className="detail-verify-commands-title">How to verify</div>
+      <ul className="detail-verify-commands-list">
+        {commands.map((command, i) => (
+          <li key={`${command}-${i}`} className="detail-verify-commands-item">
+            <code className="detail-verify-commands-code">{command}</code>
+            <VerifyCommandCopyButton command={command} />
           </li>
         ))}
       </ul>
@@ -1178,6 +1256,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
                   </div>
                 )}
                 <CriteriaVerdictBlock digest={agent.completionDigest} />
+                {agent.taskId && <VerificationCommandsBlock taskId={agent.taskId} />}
               </div>
             </div>
           );
