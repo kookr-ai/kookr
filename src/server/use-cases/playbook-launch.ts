@@ -51,6 +51,17 @@ export interface PreparedPlaybookLaunch {
   deliveryPolicy: DeliveryPolicy;
 }
 
+/**
+ * Derive the delivery policy for a playbook launch. `deliveryMode:
+ * self-advancing` opts a dependent-phase chain into the self-advancing contract
+ * (umbrella #2711); otherwise the existing `deliveryPreAuthorized` shape applies
+ * unchanged (pre-authorized by default, `ask-first` when explicitly `false`).
+ */
+function resolveDeliveryPolicy(playbook: Pick<Playbook, 'deliveryMode' | 'deliveryPreAuthorized'>): DeliveryPolicy {
+  if (playbook.deliveryMode === 'self-advancing') return 'self-advancing';
+  return playbook.deliveryPreAuthorized === false ? 'ask-first' : 'pre-authorized';
+}
+
 export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): Promise<LaunchOpts> {
   return (await preparePlaybookLaunchWithMetadata(input)).launchOpts;
 }
@@ -134,7 +145,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
 
   return {
     playbook,
-    deliveryPolicy: playbook.deliveryPreAuthorized === false ? 'ask-first' : 'pre-authorized',
+    deliveryPolicy: resolveDeliveryPolicy(playbook),
     launchOpts: {
       prompt,
       cwd: effectiveCwd,

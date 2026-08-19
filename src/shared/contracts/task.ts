@@ -53,7 +53,9 @@ export interface TaskProvenance {
    */
   sourceId?: string;
 }
-export type DeliveryAuthorization = 'pre-authorized' | 'ask-first';
+// Kept in lockstep with `DeliveryPolicy` in server/worktree-guardrails.ts —
+// launch-service assigns one to the other directly. Add any new value to both.
+export type DeliveryAuthorization = 'pre-authorized' | 'ask-first' | 'self-advancing';
 
 export interface TaskLaunchPermissionPosture {
   bypassAllPermissions: true;

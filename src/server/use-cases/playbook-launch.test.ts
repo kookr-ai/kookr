@@ -320,6 +320,55 @@ Malformed opt-out.
     }
   });
 
+  it('resolves deliveryMode: self-advancing to the self-advancing delivery policy', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'chain.md'), `---
+name: Chain
+deliveryMode: self-advancing
+---
+
+Advance the chain.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'chain.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('self-advancing');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('gives deliveryMode: self-advancing precedence over deliveryPreAuthorized: false', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'chain.md'), `---
+name: Chain
+deliveryMode: self-advancing
+deliveryPreAuthorized: false
+---
+
+Advance the chain.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'chain.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('self-advancing');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('derives projectId from tracked-projects parameter', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {

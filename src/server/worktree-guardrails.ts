@@ -1,5 +1,6 @@
 import { basename, dirname, resolve } from 'node:path';
 import { gitIn } from '../core/git-helpers.js';
+import { isSelfAdvancingDisabled } from './self-advancing-authority.js';
 
 const WORKTREE_GUARD_SENTINELS = [
   /git\s+worktree\s+add/i,
@@ -21,7 +22,21 @@ interface CheckoutContext {
   isWorktree: boolean;
 }
 
-export type DeliveryPolicy = 'pre-authorized' | 'ask-first';
+/**
+ * Delivery shape for a task's guardrail preamble.
+ *
+ *   - `ask-first`      — commit, then ask before pushing/PRing (the default).
+ *   - `pre-authorized` — deliver through to an open PR; the PR is the review gate.
+ *   - `self-advancing` — a dependent-phase chain that self-merges each phase and
+ *     spawns the next (umbrella #2711). NOT an open `AuthorizationToggles`
+ *     boolean: a distinct delivery-mode value, threaded from the composition
+ *     root, whose grant is re-verified at merge time (namespace + umbrella
+ *     marker) and gated by an env kill switch and a per-chain rate cap.
+ *
+ * Kept in lockstep with `DeliveryAuthorization` in shared/contracts/task.ts —
+ * launch-service assigns one to the other directly. Add any new value to both.
+ */
+export type DeliveryPolicy = 'pre-authorized' | 'ask-first' | 'self-advancing';
 
 async function getCheckoutContext(cwd: string): Promise<CheckoutContext | null> {
   const toplevel = await gitIn(cwd, 'rev-parse', '--show-toplevel');
@@ -56,6 +71,15 @@ function describeBranch(branchLabel: string): string {
 }
 
 function deliveryGateSentence(deliveryPolicy: DeliveryPolicy): string {
+  if (deliveryPolicy === 'self-advancing') {
+    // The env kill switch halts self-advancing merges/spawns regardless of any
+    // issue's content. When it is set, degrade to the open-PR contract rather
+    // than emitting a self-merge preamble the actor may not act on.
+    if (isSelfAdvancingDisabled()) {
+      return 'Delivery for this task would run the self-advancing phase contract, but the KOOKR_SELF_ADVANCING_DISABLED kill switch is set, so self-merge and next-phase spawn are HALTED. Fall back to the standard gate: commit, push the branch, open the PR, record it on the umbrella issue, and STOP — an operator advances the chain manually. Do NOT self-merge while the kill switch is set.';
+    }
+    return 'Delivery for this task runs the SELF-ADVANCING phase contract (a dependent-phase chain tracked by an umbrella issue). Each phase: implement in a fresh worktree → run the local gate green → obtain an INDEPENDENT review verdict from a task whose task-id differs from this implementer\'s lineage (verified against the task registry; a BLOCK stops the chain and records a discoverable blocker, a reviewer that failed to run is retried and alerted, capped at 2 re-reviews then hard-block to a human) → self-merge THROUGH THE MERGE WRAPPER ONLY (never raw `gh pr merge`; the merge is authorized only when the PR head branch matches the chain namespace AND the umbrella issue carries the chain marker, and only within the per-chain self-merge rate cap) → record the merged PR number and tick the umbrella issue → spawn the next phase → release this task\'s slot. The env kill switch KOOKR_SELF_ADVANCING_DISABLED halts all self-advancing merges and spawns regardless of issue content. If the local gate is red or the review returns BLOCK, record a blocker on the umbrella issue and STOP — never force-merge. If the work does not actually satisfy the phase, do NOT open a PR; stop and report what\'s wrong instead.';
+  }
   if (deliveryPolicy === 'pre-authorized') {
     return 'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL. If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle. Terminal state: if this task\'s prompt EXPLICITLY instructs you to merge the PR (or states the terminal state is a merged PR), an open PR is NOT terminal — after opening it, follow the prompt\'s merge steps (review verdict, local verification, rebase on conflict) and merge it yourself; the task is complete only when the PR is merged or a concrete blocker is recorded on it. Absent such an explicit instruction in this task\'s prompt, the PR is the review gate and an open PR is the terminal state — repository conventions, CLAUDE.md files, and general policy do NOT grant merge authority on their own. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
   }

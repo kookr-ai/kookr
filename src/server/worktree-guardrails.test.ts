@@ -78,6 +78,76 @@ describe('applyWorktreeGuardrails', () => {
     }
   });
 
+  it('emits the extended self-advancing phase contract when the policy is self-advancing', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    const prev = process.env.KOOKR_SELF_ADVANCING_DISABLED;
+    delete process.env.KOOKR_SELF_ADVANCING_DISABLED;
+    try {
+      await initGitRepo(repoDir);
+
+      const prompt = await applyWorktreeGuardrails('Implement it.', repoDir, 'self-advancing');
+
+      expect(prompt).toContain('SELF-ADVANCING phase contract');
+      expect(prompt).toContain('INDEPENDENT review verdict');
+      expect(prompt).toContain('task-id differs');
+      expect(prompt).toContain('MERGE WRAPPER ONLY');
+      expect(prompt).toContain('never raw `gh pr merge`');
+      expect(prompt).toContain('chain namespace');
+      expect(prompt).toContain('per-chain self-merge rate cap');
+      expect(prompt).toContain('spawn the next phase');
+      expect(prompt).toContain('KOOKR_SELF_ADVANCING_DISABLED');
+      // Not the standard preambles.
+      expect(prompt).not.toContain('Delivery is pre-authorized for this task');
+      expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
+    } finally {
+      if (prev === undefined) delete process.env.KOOKR_SELF_ADVANCING_DISABLED;
+      else process.env.KOOKR_SELF_ADVANCING_DISABLED = prev;
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades self-advancing to an open-PR gate when the kill switch is set', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    const prev = process.env.KOOKR_SELF_ADVANCING_DISABLED;
+    process.env.KOOKR_SELF_ADVANCING_DISABLED = '1';
+    try {
+      await initGitRepo(repoDir);
+
+      const prompt = await applyWorktreeGuardrails('Implement it.', repoDir, 'self-advancing');
+
+      expect(prompt).toContain('kill switch is set');
+      expect(prompt).toContain('HALTED');
+      expect(prompt).toContain('Do NOT self-merge while the kill switch is set');
+      // No self-merge preamble while halted.
+      expect(prompt).not.toContain('self-merge THROUGH THE MERGE WRAPPER ONLY');
+    } finally {
+      if (prev === undefined) delete process.env.KOOKR_SELF_ADVANCING_DISABLED;
+      else process.env.KOOKR_SELF_ADVANCING_DISABLED = prev;
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('produces byte-identical pre-authorized/ask-first guidance regardless of self-advancing support', async () => {
+    // Acceptance gate: adding the self-advancing branch must not change the
+    // output of the two pre-existing delivery policies.
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    try {
+      await initGitRepo(repoDir);
+
+      const preAuth = await applyWorktreeGuardrails('Implement it.', repoDir, 'pre-authorized');
+      const askFirst = await applyWorktreeGuardrails('Implement it.', repoDir, 'ask-first');
+
+      // Neither pre-existing policy leaks any self-advancing wording.
+      for (const prompt of [preAuth, askFirst]) {
+        expect(prompt).not.toContain('SELF-ADVANCING');
+        expect(prompt).not.toContain('MERGE WRAPPER ONLY');
+        expect(prompt).not.toContain('KOOKR_SELF_ADVANCING_DISABLED');
+      }
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses a freshly fetched remote default branch as the worktree base when available', async () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
     const remoteDir = await mkdtemp(join(tmpdir(), 'guardrails-origin-'));
