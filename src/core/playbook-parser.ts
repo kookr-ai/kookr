@@ -33,6 +33,7 @@ export const KNOWN_PLAYBOOK_FRONTMATTER_KEYS = [
   'repo-tags',
   'dependencies',
   'deliveryPreAuthorized',
+  'deliveryMode',
   'autoCloseOnSignal',
   'parameters',
   'checklist',
@@ -84,6 +85,7 @@ export function parsePlaybook(
   const deliveryPreAuthorized = meta.deliveryPreAuthorized === undefined
     ? undefined
     : parseOptionalBoolean(meta.deliveryPreAuthorized) ?? false;
+  const deliveryMode = parseDeliveryMode(meta.deliveryMode);
   const autoCloseOnSignal = parseOptionalBoolean(meta.autoCloseOnSignal);
 
   return {
@@ -97,6 +99,7 @@ export function parsePlaybook(
     ...(loop.value ? { loop: loop.value } : {}),
     ...(probe ? { probe } : {}),
     ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
+    ...(deliveryMode === undefined ? {} : { deliveryMode }),
     ...(autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
     ...(loop.error ? { loopValidationError: loop.error } : {}),
@@ -528,6 +531,18 @@ function parseOptionalBoolean(raw: unknown): boolean | undefined {
   if (raw === true || raw === 'true') return true;
   if (raw === false || raw === 'false') return false;
   return undefined;
+}
+
+/**
+ * Parse the optional `deliveryMode` frontmatter field. Only `self-advancing` is
+ * recognised; any other value (or absence) leaves delivery mode unset so the
+ * existing `deliveryPreAuthorized` shape applies. An explicit unsupported value
+ * throws so a typo cannot silently grant or drop the self-advancing contract.
+ */
+function parseDeliveryMode(raw: unknown): 'self-advancing' | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'self-advancing') return 'self-advancing';
+  throw new PlaybookParseError(`Unsupported deliveryMode: ${String(raw)} (expected "self-advancing")`);
 }
 
 function parseLaunchDependencies(raw: unknown): LaunchDependency[] {

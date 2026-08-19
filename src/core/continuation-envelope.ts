@@ -115,10 +115,38 @@ export type StateResolver = (
   envelope: ContinuationEnvelope,
 ) => DurableStateSnapshot | Promise<DurableStateSnapshot>;
 
+/**
+ * Terminal-vs-waiting classification of a resolution.
+ *
+ *   - `eligible`  — a unit was selected; the successor works it.
+ *   - `blocked`   — no unit is eligible **but** at least one candidate is
+ *                   `blocked` (e.g. a dependent phase whose prerequisite has not
+ *                   merged). The chain is **waiting**, not finished — a caller
+ *                   must not treat this as the end of the chain.
+ *   - `complete`  — no unit is eligible and none is blocked; the chain is done.
+ *
+ * This is the distinction the dependent-phase deadlock needed: a `selectedUnit`
+ * of `null` used to collapse "blocked, dependency unmerged" and "chain complete"
+ * into one terminal signal. The git/PR specifics of *why* a unit is blocked stay
+ * behind the injected {@link StateResolver} (which sets a unit's status to
+ * `blocked`); this module only reads the resulting unit statuses, so the generic
+ * cursor never grows PR/path-shaped fields.
+ */
+export type ContinuationOutcome = 'eligible' | 'blocked' | 'complete';
+
 /** Outcome of resolving an envelope against current durable state. */
 export interface ResolvedContinuation {
   /** The unit the successor should actually work, or `null` if none remain. */
   selectedUnit: string | null;
+  /**
+   * Terminal-vs-waiting classification. Callers that previously treated
+   * `selectedUnit === null` as "chain complete" MUST branch on this instead: a
+   * `blocked` outcome means wait/retry (or record a discoverable blocker), only
+   * `complete` means stop for good.
+   */
+  outcome: ContinuationOutcome;
+  /** Ids of candidate units that are `blocked` in durable state, in resolver order. */
+  blockedUnits: string[];
   /** Eligible unit ids after revalidation, in resolver order. */
   remainingUnits: string[];
   /**
@@ -217,7 +245,9 @@ export function parseContinuationEnvelope(raw: unknown): ContinuationEnvelope {
  *      blocked, or vanished) → recover: work the first eligible unit and flag
  *      the cursor stale.
  *   3. If no `nextUnit` was set → work the first eligible unit.
- *   4. If nothing is eligible → `selectedUnit` is `null` (chain end).
+ *   4. If nothing is eligible → `selectedUnit` is `null`, and `outcome`
+ *      distinguishes `blocked` (a candidate is blocked on an unmerged
+ *      dependency — the chain is *waiting*) from `complete` (nothing left at all).
  */
 export async function resolveContinuationState(
   envelope: ContinuationEnvelope,
@@ -227,10 +257,20 @@ export async function resolveContinuationState(
   const notes: string[] = [];
 
   const eligible = snapshot.units.filter((u) => u.status === 'eligible').map((u) => u.id);
+  const blockedUnits = snapshot.units.filter((u) => u.status === 'blocked').map((u) => u.id);
   const pointer = envelope.cursor.nextUnit;
 
   let selectedUnit: string | null;
   let cursorWasStale = false;
+
+  // "No eligible unit" is only "chain complete" when nothing is blocked. When a
+  // candidate is blocked (e.g. a dependent phase whose prerequisite has not
+  // merged) the chain is *waiting*, not finished — see {@link ContinuationOutcome}.
+  // The complete-case wording is kept byte-identical to the pre-outcome behaviour
+  // so non-blocked chains produce unchanged diagnostics.
+  const terminalSuffix = blockedUnits.length > 0
+    ? `no eligible unit remains but ${blockedUnits.length} unit(s) blocked (${blockedUnits.join(', ')}) — chain waiting on a dependency`
+    : 'no eligible unit remains — chain complete';
 
   if (pointer && eligible.includes(pointer)) {
     selectedUnit = pointer;
@@ -240,13 +280,19 @@ export async function resolveContinuationState(
     const priorStatus = snapshot.units.find((u) => u.id === pointer)?.status ?? 'absent';
     notes.push(
       selectedUnit === null
-        ? `cursor unit ${pointer} is ${priorStatus} and no eligible unit remains — chain complete`
+        ? `cursor unit ${pointer} is ${priorStatus} and ${terminalSuffix}`
         : `cursor unit ${pointer} is ${priorStatus}; recovered to ${selectedUnit} from fresh source of truth`,
     );
   } else {
     selectedUnit = eligible[0] ?? null;
-    if (selectedUnit === null) notes.push('no eligible unit remains — chain complete');
+    if (selectedUnit === null) notes.push(terminalSuffix);
   }
+
+  const outcome: ContinuationOutcome = selectedUnit !== null
+    ? 'eligible'
+    : blockedUnits.length > 0
+      ? 'blocked'
+      : 'complete';
 
   const parentMissing = hasParentRef(envelope.parent) && snapshot.parentResolved === false;
   if (parentMissing) {
@@ -255,6 +301,8 @@ export async function resolveContinuationState(
 
   const resolved: ResolvedContinuation = {
     selectedUnit,
+    outcome,
+    blockedUnits,
     remainingUnits: eligible,
     cursorWasStale,
     parentMissing,
@@ -272,6 +320,14 @@ export async function resolveContinuationState(
  * Authorization toggles are copied **verbatim** — never re-derived — so delivery
  * and safety toggles survive continuation exactly. `parent` may be overridden to
  * point at the task doing the spawning; otherwise the current parent is carried.
+ *
+ * Only call this on an `eligible` resolution. This helper keys purely on
+ * `resolved.selectedUnit`, so a `blocked` resolution (selectedUnit `null`,
+ * `blockedUnits` non-empty) would build a terminal envelope with `nextUnit`
+ * unset — the very deadlock the outcome distinction guards against. The
+ * blocked-branch consumer (wait/record-a-blocker instead of advancing) is the
+ * caller's responsibility; wiring it into the running chain arrives with the
+ * later phases of umbrella #2711. Branch on `resolved.outcome` before advancing.
  */
 export function advanceEnvelope(
   current: ContinuationEnvelope,

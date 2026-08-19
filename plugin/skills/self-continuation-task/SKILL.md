@@ -294,7 +294,84 @@ from the previous task's memory:
 
 Avoid dependent issues in one chain unless the completion check verifies that
 the dependency has actually merged. Open PRs on separate branches do not make
-their changes visible to later worktrees based on `main`.
+their changes visible to later worktrees based on `main`. For **dependent-phase
+chains** (each phase's prerequisite is the previous phase merged to `main`), do
+not rely on this prose warning alone — it did not prevent the reproduced
+deadlock. Use the mechanism that now enforces it: the **self-advancing phase
+contract** below.
+
+## Self-Advancing Phase Chains (dependent-phase decomposition)
+
+A plain self-continuation chain deadlocks the moment one unit depends on a
+previous unit having **merged**: phase P1 opens its PR and completes, releasing
+its slot; the PR merges later; nothing is watching to spawn P2. The chain freezes
+at the first merge boundary even though every remaining phase is fully specified
+(reproduced live on a `lucy#3272` decomposition). A prose "avoid dependent chains" warning
+does not prevent this — the deadlock happened anyway.
+
+The **self-advancing** delivery mode closes the gap mechanically by making the
+merge and the next-phase spawn two steps of **one synchronous task run**, so
+there is no "PR merges later, nothing watching" gap. A phase launched under this
+mode (playbook frontmatter `deliveryMode: self-advancing`, threaded to the
+`worktree-guardrails` delivery preamble as the `self-advancing` `DeliveryPolicy`
+value) runs the extended contract:
+
+```
+implement in a fresh worktree
+  → local gate green
+  → INDEPENDENT review verdict (distinct task-id, verified against the registry)
+  → self-merge (wrapper-only)
+  → record PR# + tick the umbrella issue
+  → spawn the next phase
+  → release this task's slot
+```
+
+Eligibility and satisfaction are decided by the single pure function
+`src/core/phase-ledger.ts::nextEligiblePhase(...)`:
+
+- **Strict-sequential:** selection stops at the first phase that is not
+  merge-reachable, regardless of any later phase's dependency. The chain is a
+  simple ordered list, not a DAG.
+- **Satisfaction = PR-merge reachability against a freshly-fetched base**, keyed
+  to the phase's **recorded PR number** — never bare file existence. A
+  move-and-reexport facade leaves the moved file present after a revert, and an
+  unrelated PR can create the same path; either would falsely satisfy a phase.
+  Recording the PR number at branch-open lets a task that crashed between merge
+  and ledger-tick recover by re-querying that exact PR.
+- A previously-merged phase that becomes unreachable (its merge was **reverted**)
+  flips back to blocked and halts everything downstream.
+
+`resolveContinuationState` distinguishes **blocked — dependency unmerged** from
+**chain complete** via its `outcome` field (`eligible` / `blocked` / `complete`).
+A blocked outcome means *wait*, not *stop*: do not treat "no eligible unit" as
+the end of the chain when a unit is blocked on an unmerged dependency.
+
+### Merge safety (why this is not "grant every task merge authority")
+
+Self-merge is opt-in, namespace-bound, and rate-capped — never a blanket grant.
+The gates (pure predicates in `src/server/self-advancing-authority.ts`, verified
+**at merge time**, not merely carried):
+
+- **Grant verification:** the PR head branch must match the chain namespace AND
+  the umbrella issue must carry the chain marker. A stray `self-advancing` policy
+  value on an unrelated child authorizes nothing.
+- **Independent review is unforgeable and unskippable:** the verdict must come
+  from a task whose task-id differs from the implementer's lineage (verified
+  against the task registry). The **merge wrapper is the only merge path** (any
+  non-lucy fallback routes through it, never raw `gh pr merge`). Re-review
+  attempts are capped (2) then hard-block to a human. "Reviewer failed to run"
+  (retry/alert) is distinguished from "reviewer returned BLOCK" (stop).
+- **Circuit breaker:** a per-chain cap of N self-merges per hour.
+- **Global kill switch:** the env flag `KOOKR_SELF_ADVANCING_DISABLED` halts all
+  self-advancing merges and spawns regardless of any issue's content. When set,
+  the delivery preamble degrades to an open-PR gate and an operator advances the
+  chain manually.
+
+If the local gate is red or the review returns BLOCK, record a discoverable
+blocker on the umbrella issue and STOP — never force-merge.
+
+This variant is **additive and opt-in**: a chain without `deliveryMode:
+self-advancing` behaves exactly as before.
 
 ## End-of-Chain Sweep
 

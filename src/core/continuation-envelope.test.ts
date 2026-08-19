@@ -181,11 +181,80 @@ describe('resolveContinuationState — missing parent state', () => {
   });
 });
 
+describe('resolveContinuationState — outcome (blocked vs complete distinction)', () => {
+  test('eligible: a workable unit yields outcome "eligible"', async () => {
+    const resolved = await resolveContinuationState(
+      envelope(),
+      resolverFor({ units: [{ id: '#109', status: 'eligible' }] }),
+    );
+    expect(resolved.outcome).toBe('eligible');
+    expect(resolved.selectedUnit).toBe('#109');
+    expect(resolved.blockedUnits).toEqual([]);
+  });
+
+  test('blocked-unsatisfied: no eligible unit but a blocked one → "blocked", not "complete"', async () => {
+    // The dependent-phase deadlock: the next phase is blocked on an unmerged
+    // dependency. This must be reported as waiting, never as chain-complete.
+    const resolved = await resolveContinuationState(
+      envelope({ cursor: { repo: 'r', selector: 's' } }),
+      resolverFor({ units: [{ id: '#110', status: 'blocked' }] }),
+    );
+    expect(resolved.outcome).toBe('blocked');
+    expect(resolved.selectedUnit).toBeNull();
+    expect(resolved.blockedUnits).toEqual(['#110']);
+    expect(resolved.notes.join(' ')).toContain('waiting on a dependency');
+    expect(resolved.notes.join(' ')).not.toContain('chain complete');
+  });
+
+  test('blocked-now-satisfied: the same unit becomes eligible once its dependency merges', async () => {
+    const before = await resolveContinuationState(
+      envelope({ cursor: { repo: 'r', selector: 's' } }),
+      resolverFor({ units: [{ id: '#110', status: 'blocked' }] }),
+    );
+    expect(before.outcome).toBe('blocked');
+
+    const after = await resolveContinuationState(
+      envelope({ cursor: { repo: 'r', selector: 's' } }),
+      resolverFor({ units: [{ id: '#110', status: 'eligible' }] }),
+    );
+    expect(after.outcome).toBe('eligible');
+    expect(after.selectedUnit).toBe('#110');
+  });
+
+  test('complete: no eligible and no blocked units → "complete"', async () => {
+    const resolved = await resolveContinuationState(
+      envelope({ cursor: { repo: 'r', selector: 's' } }),
+      resolverFor({ units: [{ id: '#109', status: 'done' }] }),
+    );
+    expect(resolved.outcome).toBe('complete');
+    expect(resolved.selectedUnit).toBeNull();
+    expect(resolved.blockedUnits).toEqual([]);
+    expect(resolved.notes.join(' ')).toContain('chain complete');
+  });
+
+  test('stale cursor + only a blocked unit remains → "blocked" (not complete)', async () => {
+    const resolved = await resolveContinuationState(
+      envelope(), // pointer '#109'
+      resolverFor({
+        units: [
+          { id: '#109', status: 'done' },
+          { id: '#110', status: 'blocked' },
+        ],
+      }),
+    );
+    expect(resolved.cursorWasStale).toBe(true);
+    expect(resolved.outcome).toBe('blocked');
+    expect(resolved.blockedUnits).toEqual(['#110']);
+  });
+});
+
 describe('advanceEnvelope — authorization toggles survive continuation exactly', () => {
   test('copies authorization verbatim (deep equal, no re-derivation)', () => {
     const current = envelope();
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110', '#111'],
       cursorWasStale: false,
       parentMissing: false,
@@ -202,6 +271,8 @@ describe('advanceEnvelope — authorization toggles survive continuation exactly
     const current = envelope({ authorization: { customDeployToggle: true } });
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110'],
       cursorWasStale: false,
       parentMissing: false,
@@ -214,6 +285,8 @@ describe('advanceEnvelope — authorization toggles survive continuation exactly
     const current = envelope();
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110'],
       cursorWasStale: false,
       parentMissing: false,
@@ -227,6 +300,8 @@ describe('advanceEnvelope — authorization toggles survive continuation exactly
     const current = envelope();
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110', '#111'],
       cursorWasStale: false,
       parentMissing: false,
@@ -243,7 +318,7 @@ describe('advanceEnvelope — authorization toggles survive continuation exactly
   test('accepts a parent override for the spawning task', () => {
     const next = advanceEnvelope(
       envelope(),
-      { selectedUnit: '#110', remainingUnits: ['#110'], cursorWasStale: false, parentMissing: false, notes: [] },
+      { selectedUnit: '#110', outcome: 'eligible', blockedUnits: [], remainingUnits: ['#110'], cursorWasStale: false, parentMissing: false, notes: [] },
       { taskId: 'task-43', issue: '#109' },
     );
     expect(next.parent).toEqual({ taskId: 'task-43', issue: '#109' });
@@ -252,6 +327,8 @@ describe('advanceEnvelope — authorization toggles survive continuation exactly
   test('leaves nextUnit unset at the end of the chain', () => {
     const next = advanceEnvelope(envelope(), {
       selectedUnit: null,
+      outcome: 'complete',
+      blockedUnits: [],
       remainingUnits: [],
       cursorWasStale: false,
       parentMissing: false,
@@ -267,6 +344,8 @@ describe('content-distinct successor spawn', () => {
     const current = envelope();
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110', '#111'],
       cursorWasStale: false,
       sourceRevision: 'sha-def',
@@ -282,6 +361,8 @@ describe('content-distinct successor spawn', () => {
     // Same source of truth, cursor did not move.
     const stalled = advanceEnvelope(current, {
       selectedUnit: '#109',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#109', '#110', '#111'],
       cursorWasStale: false,
       sourceRevision: 'sha-abc',
@@ -302,6 +383,8 @@ describe('content-distinct successor spawn', () => {
     const current = envelope();
     const next = advanceEnvelope(current, {
       selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
       remainingUnits: ['#110', '#111'],
       cursorWasStale: false,
       sourceRevision: 'sha-def',
@@ -328,6 +411,39 @@ describe('renderContinuationPrompt — compact and bounded', () => {
     );
     expect(prompt).toContain('+30 more');
     expect(prompt).not.toContain('#50');
+  });
+
+  test('renders byte-identical output (locked snapshot — additive changes must not alter the prompt)', () => {
+    // The blocked-vs-complete contract change is resolver-side only; the rendered
+    // continuation prompt for a normal (non-self-advancing) chain must not move.
+    const prompt = renderContinuationPrompt(envelope());
+    expect(prompt).toBe(
+      'You are continuing a sequential Kookr task chain (continuation envelope v1).\n'
+      + '\n'
+      + 'Goal: Implement the open issue batch one at a time\n'
+      + '\n'
+      + 'Follow the self-continuation-task skill for all invariant rules\n'
+      + '(fresh worktree, one unit only, durable-state selection, record-before-spawn,\n'
+      + 'immediate parent close after spawn, end-of-chain sweep). Do not re-derive them here.\n'
+      + '\n'
+      + 'Cursor:\n'
+      + '- repo: kookr-ai/kookr\n'
+      + '- selector: gh issue list --label batch --state open\n'
+      + '- next unit: #109\n'
+      + '- remaining eligible: #109, #110, #111\n'
+      + '- source revision: sha-abc\n'
+      + '- attempt cap: 3\n'
+      + '\n'
+      + 'Parent: task task-42, PR https://example/pr/9, issue #108\n'
+      + '\n'
+      + 'Authorization (preserve exactly in any successor):\n'
+      + '- autoCloseOnSignal: true\n'
+      + '- deliveryAuthorized: false\n'
+      + '- mergeAfterImplementation: true\n'
+      + '\n'
+      + 'Revalidate the cursor against durable state before acting; if the next unit is\n'
+      + 'no longer eligible, recover the next eligible unit from the selector.\n',
+    );
   });
 
   test('omits optional sections cleanly when absent', () => {

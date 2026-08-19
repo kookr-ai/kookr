@@ -94,6 +94,36 @@ Ask first.
     expect(pb.deliveryPreAuthorized).toBe(false);
   });
 
+  test('parses deliveryMode: self-advancing', () => {
+    const content = `---
+name: Self-advancing chain
+deliveryMode: self-advancing
+---
+Advance the chain.
+`;
+
+    const pb = parsePlaybook(content, 'chain.md', '/project');
+
+    expect(pb.deliveryMode).toBe('self-advancing');
+  });
+
+  test('omits deliveryMode when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+
+    expect(pb.deliveryMode).toBeUndefined();
+  });
+
+  test('throws on an unsupported deliveryMode rather than silently dropping it', () => {
+    const content = `---
+name: Bad mode
+deliveryMode: turbo
+---
+Body.
+`;
+
+    expect(() => parsePlaybook(content, 'bad.md', '/project')).toThrow(/deliveryMode/);
+  });
+
   test('fails safe to false when deliveryPreAuthorized has an unrecognized value', () => {
     const content = `---
 name: Malformed opt-out

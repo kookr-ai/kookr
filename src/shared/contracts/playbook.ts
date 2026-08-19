@@ -105,6 +105,16 @@ export interface Playbook {
    */
   deliveryPreAuthorized?: boolean;
   /**
+   * Server-consumed delivery mode. When set to `'self-advancing'` the playbook
+   * launches a dependent-phase chain that self-merges each phase and spawns the
+   * next (umbrella #2711). This is a distinct delivery-mode value threaded to
+   * `worktree-guardrails`, not an authorization boolean; its self-merge grant is
+   * re-verified at merge time and gated by the `KOOKR_SELF_ADVANCING_DISABLED`
+   * kill switch and a per-chain rate cap. Absent (the default) preserves the
+   * existing `deliveryPreAuthorized`-driven `pre-authorized`/`ask-first` shape.
+   */
+  deliveryMode?: 'self-advancing';
+  /**
    * Server-consumed policy flag: when true, tasks launched from this playbook
    * auto-complete after a `completion_ready` signal has been pending for the
    * grace period instead of waiting indefinitely for manual review. Successors
