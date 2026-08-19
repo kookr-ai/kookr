@@ -19,11 +19,16 @@ export async function copyText(text: string): Promise<void> {
   document.body.appendChild(textarea);
   textarea.select();
 
+  let ok = false;
   try {
-    document.execCommand('copy');
+    ok = document.execCommand('copy');
   } finally {
     document.body.removeChild(textarea);
   }
+  // `execCommand('copy')` returns false when the copy was blocked (e.g. the
+  // command is disabled in the context). Surface that as a rejection so callers
+  // don't report a false "Copied" success for a copy that never happened.
+  if (!ok) throw new Error('copy command was rejected');
 }
 
 /**

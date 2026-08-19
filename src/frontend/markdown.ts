@@ -1,4 +1,5 @@
 import React from 'react';
+import { CopyableCodeBlock } from './components/CopyableCodeBlock.js';
 
 /**
  * Minimal, XSS-safe markdown renderer for agent / user messages in the
@@ -13,7 +14,10 @@ import React from 'react';
  * Safety invariants:
  *   1. Linear-time parse.
  *   2. No `dangerouslySetInnerHTML` anywhere in this file.
- *   3. Every emitted element type is in ALLOWED_ELEMENTS.
+ *   3. Every element type emitted *from parsed input* is in ALLOWED_ELEMENTS.
+ *      (Fenced blocks additionally render fixed, input-independent copy-button
+ *      chrome — a `div`/`button` — via CopyableCodeBlock; these are static and
+ *      carry no attacker-controlled prop values.)
  *   4. All attacker-controlled strings become text children, never element
  *      types, prop names, or HTML-bearing prop values.
  */
@@ -147,11 +151,11 @@ function renderBlock(block: Block, idx: number): React.ReactNode {
       return React.createElement(tag, { key: idx, className: 'md-h' }, block.text);
     }
     case 'fence': {
-      return React.createElement(
-        'pre',
-        { key: idx, className: 'md-pre' },
-        React.createElement('code', { className: 'md-code-block' }, block.code),
-      );
+      // The fenced block is rendered by CopyableCodeBlock, which draws the same
+      // `pre.md-pre > code.md-code-block` structure plus a corner copy button.
+      // `block.code` is passed as a text prop (never an element type), so the
+      // module's XSS invariants are preserved.
+      return React.createElement(CopyableCodeBlock, { key: idx, code: block.code });
     }
     case 'list': {
       return React.createElement(
