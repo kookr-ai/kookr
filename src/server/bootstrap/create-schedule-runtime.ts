@@ -5,6 +5,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
+import { ScheduleStaleAlarm } from '../schedule-liveness.js';
 import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
@@ -43,6 +44,13 @@ export interface ScheduleRuntimeDeps {
    * back to the module default (120m).
    */
   getDeadManScheduleMs?: () => number;
+  /**
+   * Live getter for the per-schedule liveness stale-alarm floor, in ms (issue
+   * #2694). A schedule is flagged dark when it has left no ledger activity for
+   * longer than max(cadence × multiplier, this floor). Absent falls back to the
+   * module default (6h); a value <= 0 disables the alarm.
+   */
+  getStaleScheduleFloorMs?: () => number;
   /**
    * Live getter for the per-schedule consecutive-failure alert threshold
    * (issue #1665, `scheduleFailureAlertThreshold` setting). Absent falls back
@@ -275,6 +283,15 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
       // ScheduleDeadManSwitch).
       selfHeal: (scheduleIds) => scheduleRunnerRef?.selfHealRefire(scheduleIds),
       ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
+    }),
+    // issue #2694: per-schedule liveness / stale-alarm. Catches a single
+    // enabled schedule that has gone dark (no ledger activity for far longer
+    // than its cadence warrants) — the blind spot the fleet-wide dead-man
+    // misses when healthy sibling schedules mask it. Alert-only, durable sink.
+    staleAlarm: new ScheduleStaleAlarm({
+      broadcast: deps.broadcastToAll,
+      recordTransition: recordOperationalAlert,
+      ...(deps.getStaleScheduleFloorMs ? { getStaleFloorMs: deps.getStaleScheduleFloorMs } : {}),
     }),
     // issue #1661: operational alert when a schedule's playbook stops resolving
     // in its (defaulted) tier — including one silently broken by the scope

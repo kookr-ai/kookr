@@ -600,6 +600,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the scheduled-task starvation dead-man window (issue
   // #1526 Phase C). Read on every scheduler tick.
   const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
+  // Live getter for the per-schedule liveness stale-alarm floor (issue #2694).
+  // Read on every scheduler tick; 0 disables the alarm.
+  const getStaleScheduleFloorMs = () => currentSettings.staleScheduleAlarmMinutes * 60_000;
   // Live getter for the per-schedule consecutive-failure alert threshold (issue
   // #1665). Read on every recorded terminal run so a settings PUT applies next.
   const getScheduleFailureAlertThreshold = () => currentSettings.scheduleFailureAlertThreshold;
@@ -2168,6 +2171,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Issue #2085: same fail-closed gate as launch-service (loadError blocks autonomous).
     isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
     getDeadManScheduleMs,
+    getStaleScheduleFloorMs,
     getScheduleFailureAlertThreshold,
     getDefaultAgentType,
     // Issue #2459: leftover launch_error / overlap holds re-arm once boot
