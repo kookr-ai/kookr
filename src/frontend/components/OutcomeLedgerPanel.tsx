@@ -103,6 +103,11 @@ export function OutcomeLedgerPanel(): React.ReactElement {
                 <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} />
                 <Metric label="review flags" value={String(data.findings.length)} />
               </div>
+              <div className="outcome-quality-strip outcome-disposition-strip" role="group" aria-label="Task disposition split">
+                <span>{data.summary.cancelledTaskCount} cancelled</span>
+                <span>{data.summary.terminatedTaskCount} terminated</span>
+                <span>{data.summary.activeTaskCount} active</span>
+              </div>
               <div className="outcome-quality-strip">
                 <span>{data.quality.missingCostTasks} missing cost</span>
                 <span>{data.quality.zeroCostTasks} zero-cost</span>
