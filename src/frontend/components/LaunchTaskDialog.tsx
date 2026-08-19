@@ -490,6 +490,17 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     submitLaunch(false);
   }
 
+  function handlePromptKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Cmd+Enter (macOS) / Ctrl+Enter submits the dialog, matching the
+    // DetailPanel reply composer. Plain Enter still inserts a newline, and
+    // IME composition (isComposing) is left to confirm the composition rather
+    // than submit. submitLaunch's guards (empty prompt/cwd, already submitting)
+    // still apply.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.nativeEvent.isComposing) {
+      handleSubmit(e);
+    }
+  }
+
   function openExistingTask(task: LaunchDuplicateCandidate | undefined) {
     if (!task) return;
     const agentId = task.agentId;
@@ -720,6 +731,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   ref={promptRef}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
+                  onKeyDown={handlePromptKeyDown}
                   placeholder="e.g. Fix the auth bug in login.ts"
                   rows={3}
                   required
