@@ -149,4 +149,27 @@ describe('CopyableCodeBlock', () => {
     // The temporary textarea is cleaned up.
     expect(document.querySelector('textarea')).toBeNull();
   });
+
+  test('does not show "Copied" when the execCommand fallback is rejected', async () => {
+    vi.stubGlobal('navigator', {});
+    // A blocked copy returns false; the button must not claim success.
+    const execCommand = vi.fn().mockReturnValue(false);
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand,
+      configurable: true,
+    });
+    root = render(container);
+
+    const button = container.querySelector('button.md-copy-btn') as HTMLButtonElement;
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(button.textContent).toBe('Copy');
+    expect(button.className).not.toContain('copied');
+    // The temporary textarea is still cleaned up on the failure path.
+    expect(document.querySelector('textarea')).toBeNull();
+  });
 });
