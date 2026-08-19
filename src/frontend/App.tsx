@@ -1624,6 +1624,9 @@ export function App() {
           <ShortcutsHelp
             bindings={shortcutBindings}
             onClose={closeModal}
+            // Hidden from read-only viewers, matching the palette's
+            // READ_ONLY_HIDDEN_COMMANDS gate for 'share-viewer'.
+            onShareView={isViewer ? undefined : () => openModal('shareViewer')}
           />
         </Suspense>
       )}
