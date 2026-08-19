@@ -104,7 +104,10 @@ import {
   capacityAllowsProviderPausedEarlyReclaim,
   summarizeProviderPausedOccupancy,
 } from '../core/provider-paused-ttl.js';
-import { DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS } from '../core/finished-awaiting-ack-ttl.js';
+import {
+  DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+  DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS,
+} from '../core/finished-awaiting-ack-ttl.js';
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import {
@@ -241,6 +244,18 @@ export interface TimerDeps {
    * Falls back to 5m when absent.
    */
   getFinishedAwaitingAckSoftTtlMs?: () => number;
+  /**
+   * Live getter for the actionable-FAA relaxed-fail-safe reclaim threshold, in
+   * milliseconds (issue #2695). Under capacity pressure, a non-ask-first FAA
+   * past this age reclaims even when its open-PR state is unconfirmed. Falls
+   * back to the module default (30m) when absent.
+   *
+   * Intentionally an unwired seam for now: `index.ts` supplies no getter, so the
+   * 30m default applies in production. It mirrors `getFinishedAwaitingAckSoftTtlMs`
+   * so a future operator setting can be threaded here without touching the sweep.
+   * Tests drive the threshold directly via the sweep's `actionableReclaimTtlMs`.
+   */
+  getFinishedAwaitingAckActionableReclaimTtlMs?: () => number;
   /**
    * Capacity gate for soft `awaiting_poll` FAA reclaim (issue #2355). When
    * true, the sweep uses soft TTL for awaiting_poll only. When absent, early
@@ -1680,6 +1695,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           softTtlMs:
             deps.getFinishedAwaitingAckSoftTtlMs?.()
             ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+          actionableReclaimTtlMs:
+            deps.getFinishedAwaitingAckActionableReclaimTtlMs?.()
+            ?? DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS,
           capacityAllowsEarlyReclaim: faaCapacityEarly,
         },
       );

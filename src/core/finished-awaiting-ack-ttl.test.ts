@@ -9,11 +9,14 @@ import {
   emptyFinishedAwaitingAckReclaimSkipCounts,
   capacityAllowsFinishedAwaitingAckEarlyReclaim,
   effectiveFinishedAwaitingAckSoftTtlMs,
+  effectiveFinishedAwaitingAckActionableReclaimTtlMs,
   DEFAULT_FINISHED_AWAITING_ACK_TTL_MS,
   DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+  DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   MAX_FINISHED_AWAITING_ACK_TTL_MS,
   MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
+  MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS,
 } from './finished-awaiting-ack-ttl.js';
 import type { Task } from './task-read-model.js';
 import type { SessionInfo } from './session-read-model.js';
@@ -904,6 +907,168 @@ describe('capacity-pressure soft TTL for awaiting_poll FAA (issue #2355)', () =>
       });
       expect(sel.outcomes[0]?.outcome, row.id).toBe(row.expectOutcome);
     }
+  });
+});
+
+describe('actionable FAA relaxed-fail-safe reclaim (issue #2695)', () => {
+  const hardTtlMs = 15 * 60_000;
+  const softTtlMs = DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS; // 5m
+  const actionableTtlMs = DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS; // 30m
+  // Short stale threshold so a mid-age task classifies as a stall cause
+  // (auto_close_disabled), not awaiting_poll — the exact regression population.
+  const shortStale = 10 * 60_000;
+
+  /** A finished, non-ask-first, not-opted-in FAA task aged `ageMs` — the
+   * actionable squatter from the #2695 incident. The /api/health ledger
+   * classifies this population `auto_close_disabled` (it uses the 120m/40m
+   * completion-ready TTL); inside the selector the same task labels as
+   * `ack_sweep_backlog` (the local 15m hard TTL escalates first). The relaxed
+   * path is cause-independent — keyed on `deliveryAuthorization` + age — so
+   * either label reaches it; these tests exercise it through the selector. */
+  function actionableFaa(id: string, ageMs: number): Task {
+    return faaTask({
+      id,
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - ageMs).toISOString(),
+      },
+    });
+  }
+
+  it('threshold clamps to a floor of the hard TTL (never fires before strict reclaim)', () => {
+    expect(
+      effectiveFinishedAwaitingAckActionableReclaimTtlMs({ ttlMs: hardTtlMs }),
+    ).toBe(actionableTtlMs);
+    // A caller override below the hard TTL is floored up so the relaxed path can
+    // never pre-empt the strict hard-TTL reclaim window.
+    expect(
+      effectiveFinishedAwaitingAckActionableReclaimTtlMs({
+        ttlMs: hardTtlMs,
+        actionableReclaimTtlMs: 3 * 60_000,
+      }),
+    ).toBe(MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS);
+    // MIN is itself the hard-TTL floor.
+    expect(MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS).toBe(hardTtlMs);
+  });
+
+  // DURABLE REGRESSION GUARD (issue #2695 AC3): this is the assertion that must
+  // fail if actionable FAA can once again accumulate past the threshold while
+  // reclaim stays disabled for their unconfirmed-PR state. If a future change
+  // re-narrows reclaim to `awaiting_poll` or re-applies the strict fail-safe to
+  // this population, this test goes red.
+  it('GUARD: actionable auto_close_disabled FAA past threshold with UNKNOWN PR reclaims under pressure', () => {
+    const squatter = actionableFaa('squatter', actionableTtlMs + 60_000);
+    const sel = selectExpiredFinishedAwaitingAckTasks([squatter], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      // delivery_state_unknown — the fetch-lag residual that the strict
+      // fail-safe would exempt until the 120m completion-ready TTL escalation.
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['squatter']);
+    expect(sel.outcomes[0]?.outcome).toBe('selected');
+    expect(sel.skips.skipped_open_pr_unknown).toBe(0);
+    // The relaxed fail-safe is what cleared it (would be skipped_open_pr_unknown
+    // under the strict path) — flagged so the sweep can audit it distinctly.
+    expect(sel.expired[0]?.actionableRelaxedReclaim).toBe(true);
+  });
+
+  it('a CONFIRMED open delivery PR is never relaxed — stays exempt (no stranding)', () => {
+    const delivering = actionableFaa('delivering', actionableTtlMs + 60_000);
+    const sel = selectExpiredFinishedAwaitingAckTasks([delivering], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => true,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_open_pr_confirmed).toBe(1);
+    expect(sel.outcomes[0]?.outcome).toBe('skipped_open_pr_confirmed');
+  });
+
+  it('ask-first is NEVER relaxed even past the threshold — human review is protected', () => {
+    const askFirst = faaTask({
+      id: 'ask-first-aged',
+      deliveryAuthorization: 'ask-first',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - (actionableTtlMs + 60_000)).toISOString(),
+      },
+    });
+    const sel = selectExpiredFinishedAwaitingAckTasks([askFirst], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => undefined,
+    });
+    // Strict fail-safe still applies to ask-first: unknown PR exempts it.
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(1);
+    expect(sel.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
+  });
+
+  it('the relaxed path only fires under capacity pressure', () => {
+    const squatter = actionableFaa('squatter-nopressure', actionableTtlMs + 60_000);
+    const sel = selectExpiredFinishedAwaitingAckTasks([squatter], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: false,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => undefined,
+    });
+    // No pressure → strict fail-safe → unknown PR exempts it (drains later via
+    // the completion-ready TTL escalation, unchanged).
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(1);
+  });
+
+  it('under the threshold, an actionable FAA is NOT reclaimed (conservative — never races an ack)', () => {
+    // AC4: mid-age (past hard TTL, under the 30m actionable threshold) with an
+    // unknown PR stays exempt — the strict fail-safe holds until 30m.
+    const midAge = actionableFaa('mid-age', hardTtlMs + 60_000); // ~16m < 30m
+    const sel = selectExpiredFinishedAwaitingAckTasks([midAge], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => undefined,
+    });
+    expect(sel.expired).toEqual([]);
+    expect(sel.skips.skipped_open_pr_unknown).toBe(1);
+    expect(sel.outcomes[0]?.outcome).toBe('skipped_open_pr_unknown');
+  });
+
+  it('a cleared PR (isHolding=false) still reclaims past the threshold via the strict path', () => {
+    const cleared = actionableFaa('cleared', actionableTtlMs + 60_000);
+    const sel = selectExpiredFinishedAwaitingAckTasks([cleared], {
+      now: NOW,
+      ttlMs: hardTtlMs,
+      softTtlMs,
+      actionableReclaimTtlMs: actionableTtlMs,
+      capacityAllowsEarlyReclaim: true,
+      staleThresholdMs: shortStale,
+      isHoldingOpenPr: () => false,
+    });
+    expect(sel.expired.map((e) => e.task.id)).toEqual(['cleared']);
+    expect(sel.outcomes[0]?.outcome).toBe('selected');
+    // A cleared PR would select under the strict path too → not a relaxed reclaim.
+    expect(sel.expired[0]?.actionableRelaxedReclaim).toBeFalsy();
   });
 });
 

@@ -284,6 +284,10 @@ export interface ReclaimFinishedAwaitingAckTasksResult {
  * Strict path (#1884 / #2355): force-complete when `isHoldingOpenPr === false`
  * only. Soft path under capacity pressure uses a shorter TTL for
  * `awaiting_poll` only — never for `manual_review_gate` / `auto_close_disabled`.
+ * Actionable relaxed path (#2695): under capacity pressure, a non-ask-first FAA
+ * past `actionableReclaimTtlMs` reclaims even when its open-PR state is
+ * unconfirmed — only a *confirmed* open PR still blocks it; ask-first holds are
+ * never relaxed.
  *
  * Meta path (#2070): allowlisted meta/playbook (or http-source) tasks past
  * the meta age gate, with relaxed PR fail-safe (only confirmed-open blocks)
@@ -299,6 +303,12 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     ttlMs?: number;
     /** Soft TTL for capacity-pressure early reclaim (issue #2355). */
     softTtlMs?: number;
+    /**
+     * Conservative age past which an actionable (non-ask-first) FAA reclaims
+     * under the relaxed open-PR fail-safe (issue #2695). Only active together
+     * with `capacityAllowsEarlyReclaim`.
+     */
+    actionableReclaimTtlMs?: number;
     /** When true, `awaiting_poll` may reclaim at soft TTL (issue #2355). */
     capacityAllowsEarlyReclaim?: boolean;
     /** Meta auto-complete age gate; defaults to {@link DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS}. */
@@ -328,6 +338,9 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     now,
     ttlMs: opts.ttlMs,
     softTtlMs,
+    // `undefined` falls back to the module default inside the selector, matching
+    // the adjacent `softTtlMs` pass-through (no eager normalization needed here).
+    actionableReclaimTtlMs: opts.actionableReclaimTtlMs,
     capacityAllowsEarlyReclaim,
     isHoldingOpenPr: deps.isHoldingOpenPr,
   });
@@ -337,7 +350,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   const reclaimedTaskIds: string[] = [];
   const capacityPressureEarlyReclaimedTaskIds: string[] = [];
   const capacityPressureAges: number[] = [];
-  for (const { task, ageMs, capacityPressureEarlyReclaim } of selection.expired) {
+  for (const { task, ageMs, capacityPressureEarlyReclaim, actionableRelaxedReclaim } of selection.expired) {
     const reason = capacityPressureEarlyReclaim
       ? 'finished_awaiting_ack_capacity_pressure'
       : 'finished_awaiting_ack_ttl';
@@ -363,7 +376,8 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     }
     console.warn(
       `[finished-awaiting-ack-ttl] reclaimed task ${task.id} — finishedAwaitingAck ${Math.round(ageMs / 60_000)}m unacknowledged` +
-        (capacityPressureEarlyReclaim ? ' (capacity-pressure soft TTL)' : ''),
+        (capacityPressureEarlyReclaim ? ' (capacity-pressure soft TTL)' : '') +
+        (actionableRelaxedReclaim ? ' (actionable relaxed open-PR fail-safe, #2695)' : ''),
     );
 
     await appendAuditRow(deps.auditLogPath, {
@@ -375,6 +389,10 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
       taskId: task.id,
       reason,
       ageMs,
+      // Issue #2695: mark reclaims that only cleared because the actionable
+      // relaxed fail-safe overrode an unknown open-PR state, so an operator can
+      // tell them apart from an ordinary hard-TTL reclaim of a no-PR task.
+      ...(actionableRelaxedReclaim ? { relaxedOpenPrFailsafe: true } : {}),
       ...(opts.ttlMs !== undefined ? { ttlMs: opts.ttlMs } : {}),
       ...(capacityPressureEarlyReclaim ? { softTtlMs } : {}),
     });

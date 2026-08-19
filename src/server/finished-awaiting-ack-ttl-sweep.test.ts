@@ -197,6 +197,83 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
     expect(Object.values(snap.autoCompleteAgeHistogram).reduce((a, b) => a + b, 0)).toBe(1);
   });
 
+  // End-to-end proof that the #2695 threshold is plumbed through the sweep: an
+  // actionable (non-ask-first) FAA past the actionable threshold with UNKNOWN
+  // open-PR state force-completes under capacity pressure, and is audited with
+  // the relaxedOpenPrFailsafe marker.
+  it('actionable relaxed fail-safe reclaims an unknown-PR squatter under pressure (issue #2695)', async () => {
+    const actionableTtlMs = 30 * 60_000;
+    const task = makeFaaTask({
+      id: 'squatter-1',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - actionableTtlMs - 60_000).toISOString(),
+      },
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        // Unknown open-PR state — the strict fail-safe would exempt this forever.
+        isHoldingOpenPr: () => undefined,
+        metrics,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        actionableReclaimTtlMs: actionableTtlMs,
+        capacityAllowsEarlyReclaim: true,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual(['squatter-1']);
+    expect(taskStore.completeTask).toHaveBeenCalledWith('squatter-1');
+    const rows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows[0]).toMatchObject({
+      type: 'task.finishedAwaitingAckTtlReclaimed',
+      taskId: 'squatter-1',
+      relaxedOpenPrFailsafe: true,
+    });
+  });
+
+  it('without capacity pressure, the same unknown-PR squatter is NOT reclaimed (issue #2695)', async () => {
+    const actionableTtlMs = 30 * 60_000;
+    const task = makeFaaTask({
+      id: 'squatter-2',
+      autoCloseOnSignal: false,
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - actionableTtlMs - 60_000).toISOString(),
+      },
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => undefined,
+      },
+      {
+        now: NOW,
+        ttlMs: TTL_MS,
+        actionableReclaimTtlMs: actionableTtlMs,
+        capacityAllowsEarlyReclaim: false,
+      },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+  });
+
   it('records open-PR failsafe skip metrics without reclaiming (issue #2084)', async () => {
     const task = makeFaaTask({ id: 'stranded' });
     const taskStore = makeMockTaskStore([task]);
