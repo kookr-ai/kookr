@@ -72,6 +72,8 @@ Terminal users can launch a task from any project:
 kookr spawn "review the diff since origin/main and summarize risks"
 ```
 
+The dashboard **Launch** button needs no extra setup. For terminal launches, put `kookr` on your PATH once with a one-time `pnpm build && pnpm link --global` (see [CLI Reference](docs/reference/cli.md)); otherwise the first `kookr spawn` reports `command not found`.
+
 See [CLI Reference](docs/reference/cli.md) for `kookr spawn`, `kookr status`, and related commands.
 
 ## Where To Go Next

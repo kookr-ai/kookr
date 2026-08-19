@@ -145,7 +145,7 @@ Copy `.env.example` to `.env` and uncomment only what you need. See [Configurati
 ## Next Steps
 
 - [User Guide](user-guide.md) explains the dashboard workflow.
-- [CLI Reference](reference/cli.md) covers `kookr spawn` and `kookr status`.
+- [CLI Reference](reference/cli.md) covers `kookr spawn` and `kookr status`. Terminal launches need a one-time `pnpm build && pnpm link --global` to put `kookr` on your PATH; the dashboard **Launch** button works without it.
 - [Low-downtime redeploy](runbooks/low-downtime-redeploy.md) covers planned `prod:update` / `prod:restart` without treating them as outages.
 - [Production Server Service](reference/production-server-service.md) covers the systemd user unit and `/api/ready` probe.
 - [Troubleshooting](troubleshooting.md) covers common install and runtime problems.
