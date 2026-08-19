@@ -52,6 +52,13 @@ import { capacityHasResidualPhantomPressure } from './capacity-ledger.js';
  * {@link capacityHasResidualPhantomPressure} matches idle_capacity + multi-slot
  * phantom hold (e.g. util=75%, phantom=3) that the #2355 util/phantom bounds
  * alone still skipped.
+ *
+ * Issue #2695: the #2355 soft path never covered actionable `auto_close_disabled`
+ * FAA, so a finished non-ask-first task holding an *unconfirmed* PR ref squatted
+ * a slot until the 120m completion-ready TTL escalation. Under capacity pressure,
+ * such a task past {@link DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS}
+ * now reclaims under a *relaxed* open-PR fail-safe (only a confirmed delivery-open
+ * PR blocks). Ask-first and confirmed delivery-open holds are never relaxed.
  */
 
 /** Default hard TTL (issue #1884): 15 minutes. */
@@ -69,6 +76,39 @@ export const DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS = 5 * 60_000;
  * completion_ready that is still within one poll cadence.
  */
 export const MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS = 2 * 60_000;
+
+/**
+ * Conservative age threshold for capacity-pressure reclaim of *actionable*
+ * (non-ask-first) FAA whose open-PR state cannot be positively cleared
+ * (issue #2695): 30 minutes.
+ *
+ * Root cause this re-enables: an `auto_close_disabled` FAA (finished, not
+ * opted-in, not ask-first) that holds an agent-authored PR ref whose GitHub
+ * state is unconfirmed (`delivery_state_unknown`, fetch lag) is skipped by
+ * every fast reclaim path — the #2355 soft path is `awaiting_poll`-only, and
+ * the #2170 ack-reaper / #1884 strict TTL both require the *strict* open-PR
+ * fail-safe (`isHoldingOpenPr === false`). Its only drain is the completion-
+ * ready TTL escalation at `completionReadyTtlMinutes` (120m default), so under
+ * exactly the idle-capacity pressure the accelerated reclaim exists to relieve
+ * it squats a live slot for tens of minutes (regression of #2355).
+ *
+ * Past this threshold, under capacity pressure, such a task reclaims under the
+ * *relaxed* fail-safe: only a **confirmed** delivery-open PR (`=== true`)
+ * blocks; an unconfirmed / unfetched ref no longer exempts it on fetch lag
+ * alone. Ask-first (`manual_review_gate`) and confirmed delivery-open holds are
+ * NEVER relaxed. Deliberately generous (well above the 5m soft TTL, at or under
+ * the 30–60m the issue asks for) so it never races a genuine ack.
+ */
+export const DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS = 30 * 60_000;
+
+/**
+ * Floor for the actionable-FAA reclaim threshold (issue #2695): the hard TTL
+ * (15m). The relaxed-fail-safe path must never fire *before* the strict hard
+ * TTL reclaim has had its window — that keeps the strict open-PR fail-safe the
+ * sole gate for the first 15m and guarantees the relaxed path only ever acts on
+ * a genuinely long-lived squat, never on a task one poll away from an ack.
+ */
+export const MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS = 15 * 60_000;
 
 /**
  * Default age gate for meta/playbook FAA auto-complete (issue #2070): 12
@@ -130,6 +170,14 @@ export interface ExpiredFinishedAwaitingAckEntry {
    * leaves this false/undefined.
    */
   capacityPressureEarlyReclaim?: boolean;
+  /**
+   * True when the *relaxed* actionable fail-safe (issue #2695) is what cleared
+   * this task — i.e. `isHoldingOpenPr` was `undefined` and the candidate would
+   * have been `skipped_open_pr_unknown` under the strict path. Lets the sweep
+   * audit a relaxed reclaim distinctly from an ordinary hard-TTL reclaim.
+   * Hard/soft/strict selections leave this false/undefined.
+   */
+  actionableRelaxedReclaim?: boolean;
 }
 
 /**
@@ -237,6 +285,16 @@ export interface ListExpiredFinishedAwaitingAckTasksOpts {
    */
   capacityAllowsEarlyReclaim?: boolean;
   /**
+   * Conservative age threshold for the actionable relaxed-fail-safe reclaim
+   * (issue #2695). Used only when {@link capacityAllowsEarlyReclaim} is true and
+   * the candidate is NOT ask-first: past this age, a candidate reclaims even when
+   * its open-PR state is unconfirmed (`isHoldingOpenPr === undefined`) — only a
+   * *confirmed* open PR still blocks. Clamped to a floor of the hard TTL by
+   * {@link effectiveFinishedAwaitingAckActionableReclaimTtlMs}. Defaults to
+   * {@link DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS}.
+   */
+  actionableReclaimTtlMs?: number;
+  /**
    * Stale-completion threshold for FAA root-cause classification (soft-path
    * cause filter). Defaults match {@link classifyFaaRootCause}.
    */
@@ -272,6 +330,22 @@ export function effectiveFinishedAwaitingAckSoftTtlMs(opts: {
   const hard = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
   const soft = opts.softTtlMs ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
   return Math.min(hard, Math.max(MIN_FINISHED_AWAITING_ACK_SOFT_TTL_MS, soft));
+}
+
+/**
+ * Actionable relaxed-fail-safe reclaim threshold for one FAA selection pass
+ * (issue #2695). Floored at the hard TTL (and at
+ * {@link MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS}) so the relaxed
+ * path can never fire before the strict hard-TTL reclaim has had its window.
+ */
+export function effectiveFinishedAwaitingAckActionableReclaimTtlMs(opts: {
+  ttlMs?: number;
+  actionableReclaimTtlMs?: number;
+}): number {
+  const hard = opts.ttlMs ?? DEFAULT_FINISHED_AWAITING_ACK_TTL_MS;
+  const actionable =
+    opts.actionableReclaimTtlMs ?? DEFAULT_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS;
+  return Math.max(hard, MIN_FINISHED_AWAITING_ACK_ACTIONABLE_RECLAIM_TTL_MS, actionable);
 }
 
 /**
@@ -348,16 +422,24 @@ export function capacityAllowsFinishedAwaitingAckEarlyReclaim(input: {
  *   `awaiting_poll` (never soft-reclaim `manual_review_gate` /
  *   `auto_close_disabled` / `ack_sweep_backlog`).
  *
+ * Fail-safe strictness per candidate (issue #2695):
+ * - strict by default and for the soft path — only `isHoldingOpenPr === false`
+ *   clears; `true`/`undefined` both exempt;
+ * - relaxed for an actionable (non-ask-first) candidate past
+ *   `actionableReclaimTtlMs` under `capacityAllowsEarlyReclaim` — only a
+ *   *confirmed* open PR (`=== true`) blocks, so an unconfirmed ref no longer
+ *   exempts a long-lived squat on fetch lag alone.
+ *
  * Guards (evaluation order for a finishedAwaitingAck candidate):
  *
  * - only `status === 'inProgress'` with `pendingSignal?.kind === 'completion_ready'`
  *   counts as a candidate — matches `classifyTaskCapacity` exactly;
  * - missing / unparseable `raisedAt` → `skipped_bad_raised_at`;
  * - age under effective TTL → `skipped_under_ttl`;
- * - open-PR fail-safe true → `skipped_open_pr_confirmed`; unknown/unwired →
- *   `skipped_open_pr_unknown` (issue #2228; reclaim still blocked either way);
+ * - open-PR fail-safe blocks → `skipped_open_pr_confirmed` (confirmed-open) or
+ *   `skipped_open_pr_unknown` (unknown/unwired, strict path only — issue #2228);
  * - otherwise selected (`capacity_pressure_early_reclaim` when soft path and
- *   age still under hard TTL; `selected` for hard-path reclaim).
+ *   age still under hard TTL; `selected` for hard-path / actionable reclaim).
  *
  * Invariant: `candidatesConsidered === expired.length + sum(skips.*)`.
  */
@@ -370,6 +452,10 @@ export function selectExpiredFinishedAwaitingAckTasks(
   const softTtlMs = effectiveFinishedAwaitingAckSoftTtlMs({
     ttlMs: hardTtlMs,
     softTtlMs: opts.softTtlMs,
+  });
+  const actionableReclaimTtlMs = effectiveFinishedAwaitingAckActionableReclaimTtlMs({
+    ttlMs: hardTtlMs,
+    actionableReclaimTtlMs: opts.actionableReclaimTtlMs,
   });
   const capacityEarly = opts.capacityAllowsEarlyReclaim === true;
   const out: ExpiredFinishedAwaitingAckEntry[] = [];
@@ -400,6 +486,18 @@ export function selectExpiredFinishedAwaitingAckTasks(
     // as awaiting_poll for the entire soft window — accelerating it would collapse
     // the human review hold before hard TTL / manual_review_gate classification.
     let useSoftPath = false;
+    // Actionable relaxed-fail-safe reclaim (issue #2695): a non-ask-first FAA
+    // squatting past the conservative actionable threshold under capacity
+    // pressure. Keyed on `deliveryAuthorization` directly (not the cause label)
+    // so the path is cause-independent — the exemption is precisely the
+    // human-review population (ask-first / manual_review_gate) and nothing else.
+    // This is the `auto_close_disabled` squatter as the /api/health ledger
+    // classifies it (faaTtlMs = completionReadyTtl); note that inside THIS
+    // selector the same task labels as `ack_sweep_backlog` because the local
+    // classification passes the 15m hard TTL, which is why the gate is keyed on
+    // authorization + age, not the cause. Covers the squat whose unconfirmed PR
+    // ref the strict fail-safe would exempt until the 120m TTL escalation.
+    let useActionableRelaxed = false;
     if (capacityEarly && task.deliveryAuthorization !== 'ask-first') {
       const cause = classifyFaaRootCause(task, {
         now: nowMs,
@@ -407,6 +505,7 @@ export function selectExpiredFinishedAwaitingAckTasks(
         ttlMs: hardTtlMs,
       });
       useSoftPath = cause === 'awaiting_poll';
+      useActionableRelaxed = ageMs >= actionableReclaimTtlMs;
     }
     const effectiveTtlMs = useSoftPath ? softTtlMs : hardTtlMs;
 
@@ -416,11 +515,18 @@ export function selectExpiredFinishedAwaitingAckTasks(
       continue;
     }
 
-    // Fail-safe: only a definite `false` clears the task for reclaim. `true`
-    // and `undefined` (including "no predicate wired") both exempt it.
-    // Issue #2228: split confirmed-open vs unknown (state-fetch lag / unwired).
+    // Fail-safe. Strict path (default): only a definite `false` clears — `true`
+    // and `undefined` (state-fetch lag / no predicate wired) both exempt it
+    // (issue #2228 splits confirmed-open vs unknown). Relaxed path (issue #2695,
+    // actionable non-ask-first past the conservative threshold under capacity
+    // pressure): only a *confirmed* open PR (`=== true`) blocks — an unconfirmed
+    // ref no longer exempts a long-lived squat on fetch lag alone. A confirmed
+    // delivery-open PR is never clobbered under either path.
     const openPrHold = opts.isHoldingOpenPr?.(task);
-    if (openPrHold !== false) {
+    const blockedByOpenPr = useActionableRelaxed
+      ? openPrHold === true
+      : openPrHold !== false;
+    if (blockedByOpenPr) {
       if (openPrHold === true) {
         skips.skipped_open_pr_confirmed += 1;
         outcomes.push({
@@ -442,7 +548,17 @@ export function selectExpiredFinishedAwaitingAckTasks(
     // Soft-path selection under hard TTL → capacity_pressure_early_reclaim;
     // at or past hard TTL the reclaim is normal hard-path (even if soft applied).
     const capacityPressureEarlyReclaim = useSoftPath && ageMs < hardTtlMs;
-    out.push({ task, ageMs, capacityPressureEarlyReclaim });
+    // The relaxed fail-safe *materially* cleared this task only when the strict
+    // path would have blocked it — i.e. the open-PR state was unknown. A cleared
+    // (`false`) PR would have selected under the strict path too, so it is not a
+    // relaxed reclaim (issue #2695).
+    const actionableRelaxedReclaim = useActionableRelaxed && openPrHold === undefined;
+    out.push({
+      task,
+      ageMs,
+      capacityPressureEarlyReclaim,
+      ...(actionableRelaxedReclaim ? { actionableRelaxedReclaim: true } : {}),
+    });
     outcomes.push({
       taskId: task.id,
       outcome: capacityPressureEarlyReclaim
