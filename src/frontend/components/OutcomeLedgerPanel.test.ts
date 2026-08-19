@@ -28,14 +28,14 @@ function response(overrides: Record<string, unknown> = {}) {
     },
     readiness: 'blocked',
     summary: {
-      taskCount: 4,
+      taskCount: 7,
       terminalTaskCount: 4,
       completedTaskCount: 2,
       cancelledTaskCount: 1,
       terminatedTaskCount: 1,
       activeTaskCount: 0,
       completionRate: 0.5,
-      prTaskCount: 1,
+      prTaskCount: 3,
       verifiedTaskCount: 1,
       thumbsUp: 1,
       thumbsDown: 1,
@@ -166,6 +166,14 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.textContent).toContain('blocked');
     expect(el.textContent).toContain('3 missing cost');
     expect(el.textContent).toContain('1 zero-cost');
+    // Distinct fixture values (prTaskCount=3, taskCount=7) uniquely pin the
+    // value and both detail operands so a wrong-field render can't pass.
+    const prMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'PRs',
+    );
+    expect(prMetric).toBeTruthy();
+    expect(prMetric?.querySelector('strong')?.textContent).toBe('3');
+    expect(prMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('3/7');
     expect(el.textContent).toContain('Cost is unknown, not zero.');
     expect(el.textContent).toContain('Cancelled after prompt');
     expect(el.querySelector('.outcome-findings-list')?.tagName).toBe('UL');
