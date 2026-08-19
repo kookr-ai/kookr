@@ -178,6 +178,25 @@ describe('CostComparisonPanel', () => {
     expect(thumbStats).toEqual(['👍 rate 78% (n=9)', '👍 rate 100% (n=1)']);
   });
 
+  test('the 👍 rate percentage is derived from the vote count, not a drifted thumbsUpRate', async () => {
+    const aggregate = {
+      // thumbsUpRate is deliberately inconsistent with thumbsCount (0.5 vs 7/9).
+      // The card must render the percentage derived from up+down (78%), so the
+      // percentage and the count can never disagree — issue #2712's invariant.
+      'claude-code': emptyAgg('claude-code', {
+        taskCount: 9, pricedTaskCount: 9, totalCostUsd: 1,
+        thumbsUpRate: 0.5, thumbsCount: { up: 7, down: 2, none: 0 },
+      }),
+    };
+    mockFetchSequential([{ body: makeResponse({ aggregate }) }]);
+    const el = mount();
+    await flush();
+    const thumbStat = Array.from(el.querySelector('.cost-aggregate-card')!.querySelectorAll('.cost-stat'))
+      .map((s) => s.textContent?.replace(/\s+/g, ' ').trim())
+      .find((t) => t?.startsWith('👍 rate'));
+    expect(thumbStat).toBe('👍 rate 78% (n=9)');
+  });
+
   test('the 👍 rate card implies no rate when there are zero feedback votes', async () => {
     const aggregate = {
       // thumbsUpRate null and n=0 → render "—", never a misleading percentage.
