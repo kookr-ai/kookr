@@ -4,7 +4,7 @@ import React from 'react';
 import { describe, expect, test, afterEach, beforeEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { DiffPane } from './DiffPane.js';
+import { DiffPane, countLineChanges } from './DiffPane.js';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -149,6 +149,63 @@ describe('DiffPane rendering', () => {
     await flush();
 
     expect(el.querySelector('.diff-pane-empty')?.textContent).toMatch(/no changes/i);
+  });
+});
+
+describe('countLineChanges', () => {
+  test('counts + and - marker lines, excluding context and no-newline markers', () => {
+    const hunks = [
+      {
+        oldStart: 1, oldLines: 3, newStart: 1, newLines: 4,
+        lines: [' context', '-removed', '+added one', '+added two', '\\ No newline at end of file'],
+      },
+      {
+        oldStart: 10, oldLines: 1, newStart: 11, newLines: 0,
+        lines: ['-only removed'],
+      },
+    ];
+    expect(countLineChanges(hunks)).toEqual({ added: 2, removed: 2 });
+  });
+
+  test('returns zeros for an empty patch', () => {
+    expect(countLineChanges([])).toEqual({ added: 0, removed: 0 });
+  });
+
+  test('new-file patch counts additions cleanly', () => {
+    const hunks = [
+      { oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ['+line one', '+line two'] },
+    ];
+    expect(countLineChanges(hunks)).toEqual({ added: 2, removed: 0 });
+  });
+});
+
+describe('DiffPane — header stat badge', () => {
+  test('renders +N −M reflecting the shown patch', async () => {
+    mockFetchOnce({
+      kind: 'edit',
+      filePath: '/src/foo.ts',
+      oldString: 'a', newString: 'b',
+      structuredPatch: [
+        {
+          oldStart: 1, oldLines: 3, newStart: 1, newLines: 4,
+          lines: [' context', '-removed', '+added one', '+added two', '\\ No newline at end of file'],
+        },
+      ],
+      serverStartedAt: '2026-04-21T00:00:00.000Z',
+    });
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector('.diff-pane-stat-add')?.textContent).toBe('+2');
+    expect(el.querySelector('.diff-pane-stat-del')?.textContent).toBe('−1');
+  });
+
+  test('no stat badge for unsupported responses', async () => {
+    mockFetchOnce({ kind: 'unsupported', serverStartedAt: '2026-04-21T00:00:00.000Z' });
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector('.diff-pane-stat')).toBeNull();
   });
 });
 
