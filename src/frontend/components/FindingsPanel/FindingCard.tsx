@@ -285,7 +285,7 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
             {[
               formatTokenUsage(agent.tokenUsage),
               formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt),
-              formatDuration(agent.startedAt),
+              formatDuration(agent.startedAt, agent.finishedAt),
             ].filter(Boolean).join(' · ')}
           </div>
         )}

@@ -93,7 +93,7 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
           <span className="completed-row-meta">
             {formatTokenUsage(agent.tokenUsage)}
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
-            {formatDuration(agent.startedAt)}
+            {formatDuration(agent.startedAt, agent.finishedAt)}
           </span>
           <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>
             <span className="completed-row-status-label">{terminalLabel}</span>

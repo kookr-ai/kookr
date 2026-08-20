@@ -1125,7 +1125,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
-          {agent.startedAt && <span>{formatDuration(agent.startedAt)}</span>}
+          {agent.startedAt && <span>{formatDuration(agent.startedAt, agent.finishedAt)}</span>}
           <DetailMetadataMenu
             agent={agent}
             provider={agentProvider}
