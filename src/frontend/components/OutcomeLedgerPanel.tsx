@@ -8,7 +8,7 @@ import type {
 import type { TimeWindow } from '../../shared/contracts/cost-comparison.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/contracts/agent-types.js';
 import { getOutcomeLedger } from '../api/index.js';
-import { formatTokens } from '../presentation.js';
+import { formatCost, formatTokens } from '../presentation.js';
 
 /**
  * Below this many terminal tasks, a per-agent completion rate is drawn from too
@@ -210,10 +210,16 @@ function AgentScoreboardRow({ row }: { row: OutcomeLedgerByAgentRow }): React.Re
 }
 
 function FindingRow({ finding }: { finding: OutcomeLedgerFinding }): React.ReactElement {
+  const measure = finding.value == null ? null : formatFindingMeasure(finding.metric, finding.value);
   return (
     <li className={`outcome-finding ${finding.severity}`}>
       <span className="outcome-finding-severity">{finding.severity}</span>
-      <span className="outcome-finding-text">{finding.message}</span>
+      <span className="outcome-finding-text">
+        {finding.message}
+        {/* The leading space is a real text node so screen readers don't run the
+            message straight into the chip (e.g. "$0 cost.cost: $0.0000"). */}
+        {measure && <>{' '}<span className="outcome-finding-measure">{measure}</span></>}
+      </span>
       <span className="outcome-finding-task">{finding.label}</span>
     </li>
   );
@@ -244,6 +250,48 @@ function pct(value: number | null): string {
 
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`;
+}
+
+// Lowercase chip labels for each finding metric slug emitted by the backend
+// (`extremeFindings` + the data_quality builders in src/core/outcome-ledger.ts).
+// Kept separate from core's Title-Case `humanMetric` (which serves prose
+// messages); a new metric added there must gain an entry here or it falls back
+// to the raw slug via humanFindingMetric.
+const FINDING_METRIC_LABELS: Record<string, string> = {
+  durationMs: 'duration',
+  duration: 'duration',
+  knownCostUsd: 'cost',
+  cost: 'cost',
+  interventionCount: 'interventions',
+  totalTokens: 'tokens',
+  sessions: 'sessions',
+  digest: 'digest',
+  verification: 'verification',
+};
+
+function humanFindingMetric(metric: string): string {
+  return FINDING_METRIC_LABELS[metric] ?? metric;
+}
+
+function formatFindingValue(metric: string, value: number | string): string {
+  if (typeof value === 'string') return value;
+  switch (metric) {
+    case 'durationMs':
+    case 'duration':
+      return formatMs(value);
+    case 'knownCostUsd':
+    case 'cost':
+      return formatCost(value);
+    case 'totalTokens':
+      return formatTokens(value);
+    default:
+      return value.toLocaleString();
+  }
+}
+
+/** Render a per-finding quantitative payload as `metric: value` for the row. */
+function formatFindingMeasure(metric: string, value: number | string): string {
+  return `${humanFindingMetric(metric)}: ${formatFindingValue(metric, value)}`;
 }
 
 function formatMs(ms: number | null): string {

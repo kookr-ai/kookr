@@ -180,6 +180,104 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
   });
 
+  test('renders the per-finding metric:value only when value is non-null', async () => {
+    // Distinct metrics/values pin each formatting branch: a known numeric metric
+    // (cost → $) with value 0, a known token metric (compact k-formatting), a
+    // string value rendered verbatim, and a null value that must render no chip.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        findings: [{
+          kind: 'data_quality',
+          severity: 'review',
+          taskId: 'task-cost0',
+          label: 'Zero cost row',
+          metric: 'cost',
+          value: 0,
+          message: 'A task with at least one session reports exactly $0 cost.',
+        }, {
+          kind: 'token_extreme',
+          severity: 'review',
+          taskId: 'task-tokens',
+          label: 'Token outlier',
+          metric: 'totalTokens',
+          value: 42_000,
+          message: 'Token count is far outside the observed distribution.',
+        }, {
+          kind: 'duration_extreme',
+          severity: 'review',
+          taskId: 'task-duration',
+          label: 'Duration outlier',
+          metric: 'durationMs',
+          value: 3_600_000,
+          message: 'Duration is far outside the observed distribution.',
+        }, {
+          kind: 'data_quality',
+          severity: 'review',
+          taskId: 'task-digest',
+          label: 'Missing digest row',
+          metric: 'digest',
+          value: 'missing',
+          message: 'Completed task has no completion digest.',
+        }, {
+          kind: 'data_quality',
+          severity: 'review',
+          taskId: 'task-null',
+          label: 'Unknown cost row',
+          metric: 'cost',
+          value: null,
+          message: 'Cost is unknown, not zero.',
+        }],
+      }))));
+    const el = mount();
+
+    await flush();
+
+    // visibleFindings caps the list at 5, so the fixture stays at 5 to keep
+    // every row (including the null-value row) rendered.
+    const rows = Array.from(el.querySelectorAll('.outcome-finding'));
+    expect(rows.length).toBe(5);
+    const measureOf = (row: Element) => row.querySelector('.outcome-finding-measure')?.textContent;
+    // Known numeric metric formatted with units, value 0 still shows (0 != null).
+    // formatCost renders sub-cent values with 4 decimals, so $0 → $0.0000.
+    expect(measureOf(rows[0])).toBe('cost: $0.0000');
+    // Token count uses the compact k-formatter, not a raw locale integer.
+    expect(measureOf(rows[1])).toBe('tokens: 42k');
+    // Duration routes through formatMs (h/m/s), not a raw millisecond integer.
+    expect(measureOf(rows[2])).toBe('duration: 1h 0m');
+    // String value rendered verbatim under a humanized metric label.
+    expect(measureOf(rows[3])).toBe('digest: missing');
+    // Null value renders no chip at all — the row is otherwise unchanged.
+    expect(rows[4].querySelector('.outcome-finding-measure')).toBeNull();
+    expect(rows[4].textContent).toContain('Cost is unknown, not zero.');
+    // A separating space keeps screen readers from concatenating the message
+    // into the chip (e.g. "…$0 cost.cost: $0.0000").
+    expect(rows[0].querySelector('.outcome-finding-text')?.textContent)
+      .toContain('cost. cost: $0.0000');
+  });
+
+  test('formats a finding metric with no unit formatter as a locale integer', async () => {
+    // The `default` branch of formatFindingValue: interventionCount has no unit
+    // formatter, so it renders via toLocaleString under its humanized label.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        findings: [{
+          kind: 'intervention_extreme',
+          severity: 'review',
+          taskId: 'task-interventions',
+          label: 'Intervention outlier',
+          metric: 'interventionCount',
+          value: 1234,
+          message: 'Intervention count is far outside the observed distribution.',
+        }],
+      }))));
+    const el = mount();
+
+    await flush();
+
+    const measure = el.querySelector('.outcome-finding-measure')?.textContent;
+    expect(measure).toBe(`interventions: ${(1234).toLocaleString()}`);
+  });
+
   test('renders a token-volume tile from the summary input/output totals', async () => {
     // Distinct values pin the combined value and both detail operands so a
     // wrong-field render (or swapped in/out) can't pass.
