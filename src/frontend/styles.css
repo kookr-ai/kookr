@@ -7382,6 +7382,23 @@ label.task-share-row {
   font-size: 12px;
   color: var(--text-muted);
 }
+.detail-digest-prs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.detail-digest-pr-link {
+  color: var(--accent, #61dafb);
+  text-decoration: none;
+  font-weight: 600;
+}
+.detail-digest-pr-link:hover {
+  text-decoration: underline;
+}
 .criteria-verdict {
   margin-top: 16px;
   padding-top: 14px;

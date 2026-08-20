@@ -95,6 +95,39 @@ function criterionVerdictLabel(verdict: 'pass' | 'fail' | 'unknown'): string {
   }
 }
 
+/**
+ * Short label for a PR link. Prefers `#<number>` parsed from a GitHub-style
+ * `/pull/<n>` (or `/pulls/<n>`) path; falls back to a generic "View PR" when
+ * the URL doesn't carry a recognizable number.
+ */
+function prLinkLabel(url: string): string {
+  const match = /\/pulls?\/(\d+)/.exec(url);
+  return match ? `PR #${match[1]}` : 'View PR';
+}
+
+function PrLinksBlock({ digest }: { digest: NonNullable<AgentState['completionDigest']> }) {
+  const prUrls = digest.prUrls;
+  if (!prUrls || prUrls.length === 0) return null;
+  return (
+    <div className="detail-digest-prs" data-testid="detail-digest-prs">
+      <strong>Pull request{prUrls.length > 1 ? 's' : ''}:</strong>
+      {prUrls.map((url, i) => (
+        <a
+          key={`${url}-${i}`}
+          className="detail-digest-pr-link"
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {prLinkLabel(url)}
+          <span className="sr-only"> (opens in new tab)</span>
+          <span aria-hidden="true"> ↗</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function CriteriaVerdictBlock({ digest }: { digest: NonNullable<AgentState['completionDigest']> }) {
   const verdict = digest.criteriaVerdict;
   if (!verdict || verdict.items.length === 0) return null;
@@ -1255,6 +1288,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
                     <strong>Files changed:</strong> {agent.completionDigest.filesChanged.join(', ')}
                   </div>
                 )}
+                <PrLinksBlock digest={agent.completionDigest} />
                 <CriteriaVerdictBlock digest={agent.completionDigest} />
                 {/* key by taskId so switching tasks remounts with empty state —
                     never paints task A's commands for a frame on task B's pane. */}
