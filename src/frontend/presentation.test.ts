@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -618,5 +618,70 @@ describe('formatCostRate', () => {
     for (const sample of samples) {
       expect(sample).not.toMatch(/NaN|Infinity/i);
     }
+  });
+});
+
+describe('formatDuration (issue #2737)', () => {
+  test('freezes at finishedAt - startedAt for a completed task, unchanged across re-renders', () => {
+    const startedAt = '2026-08-19T10:00:00.000Z';
+    const finishedAt = '2026-08-19T12:41:00.000Z'; // 2h 41m later
+
+    // Set "now" far past finishedAt to prove the live counter is not used.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-20T06:00:00.000Z'));
+      const first = formatDuration(startedAt, finishedAt);
+      expect(first).toBe('2h 41m');
+
+      // Advance the clock; a frozen duration must not change.
+      vi.setSystemTime(new Date('2026-08-21T06:00:00.000Z'));
+      const second = formatDuration(startedAt, finishedAt);
+      expect(second).toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps ticking against now when no end time is given (live task)', () => {
+    const startedAt = '2026-08-20T10:00:00.000Z';
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-20T10:30:00.000Z'));
+      expect(formatDuration(startedAt)).toBe('30m');
+
+      vi.setSystemTime(new Date('2026-08-20T11:15:00.000Z'));
+      expect(formatDuration(startedAt)).toBe('1h 15m');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('returns empty string when startedAt is absent', () => {
+    expect(formatDuration(undefined, '2026-08-20T12:00:00.000Z')).toBe('');
+    expect(formatDuration()).toBe('');
+  });
+
+  test('returns empty string for an unparseable startedAt instead of "NaNh NaNm"', () => {
+    expect(formatDuration('not-a-date')).toBe('');
+    expect(formatDuration('not-a-date', '2026-08-20T12:00:00.000Z')).toBe('');
+  });
+
+  test('falls back to the live clock when endedAt is unparseable', () => {
+    const startedAt = '2026-08-20T10:00:00.000Z';
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-20T10:45:00.000Z'));
+      // A present-but-invalid finishedAt must not render "NaNh NaNm"; it ticks live.
+      expect(formatDuration(startedAt, 'not-a-date')).toBe('45m');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('renders "<1m" for a zero or clock-skewed (finishedAt before startedAt) duration', () => {
+    const startedAt = '2026-08-20T10:00:00.000Z';
+    expect(formatDuration(startedAt, startedAt)).toBe('<1m');
+    expect(formatDuration(startedAt, '2026-08-20T09:59:00.000Z')).toBe('<1m');
   });
 });

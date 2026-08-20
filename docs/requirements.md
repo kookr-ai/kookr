@@ -43,7 +43,7 @@ The system SHOULD display agent metadata: display name, agent type, working dire
 - Display name derived from task prompt (collapsed to a single line and sent in full up to a 200-char payload cap; the finding card / healthy row truncates it to the available width via CSS ellipsis) shown in finding cards, healthy rows, detail header, and response placeholder — falling back to `agentId` when no task is linked
 - Working directory shown in detail header (provided at launch)
 - Agent type shown in detail header (Claude Code for V1)
-- Session duration shown in finding card header (`Xm`), detail header, healthy rows, and status bar — computed from session `createdAt` relative to now
+- Session duration shown in finding card header (`Xm`), detail header, healthy rows, and status bar — computed from session `startedAt` relative to now, except the detail header freezes at `finishedAt` for terminal (completed/cancelled/terminated) tasks (#2737)
 - `AgentState` carries `taskName`, `cwd`, `agentType`, and `startedAt` fields populated from the task store via `Monitor.getSnapshot()`
 - Healthy agent rows show a status dot: green for running agents, grey for completed agents (last event is `stop` with no anomaly)
 

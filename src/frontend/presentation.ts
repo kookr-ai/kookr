@@ -353,10 +353,19 @@ export function turnStateClass(turnState: TurnState | undefined): string {
 
 /**
  * Format a duration from an ISO 8601 startedAt timestamp.
+ *
+ * When `endedAt` is provided (e.g. a task's `finishedAt`), it is used as the
+ * upper bound so terminal tasks show a frozen, correct run time. When omitted
+ * — or unparseable — the duration is measured against `Date.now()` and keeps
+ * ticking for live tasks. An absent or unparseable `startedAt` yields `''`.
+ * See issue #2737.
  */
-export function formatDuration(startedAt?: string): string {
-  if (!startedAt) return '';
-  const ms = Date.now() - new Date(startedAt).getTime();
+export function formatDuration(startedAt?: string, endedAt?: string): string {
+  const start = parseValidDate(startedAt);
+  if (!start) return '';
+  const ended = endedAt ? parseValidDate(endedAt) : null;
+  const end = ended ? ended.getTime() : Date.now();
+  const ms = end - start.getTime();
   const mins = Math.floor(ms / 60000);
   if (mins < 1) return '<1m';
   if (mins < 60) return `${mins}m`;
