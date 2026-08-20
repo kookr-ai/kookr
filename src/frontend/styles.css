@@ -4681,6 +4681,16 @@ a.playbook-empty-docs-link:visited:hover {
 .outcome-finding-task {
   color: var(--text-muted);
 }
+.outcome-finding-measure {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-bright);
+  background: rgba(148, 163, 184, 0.12);
+}
 .outcome-task-audit-title {
   font-size: 10px;
   font-weight: 700;
