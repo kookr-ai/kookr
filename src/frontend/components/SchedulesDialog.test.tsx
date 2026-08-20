@@ -187,3 +187,96 @@ describe('SchedulesDialog task reference', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe('SchedulesDialog agent label', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    document.body.innerHTML = '';
+  });
+
+  function render() {
+    act(() => {
+      root.render(React.createElement(SchedulesDialog, { onClose: vi.fn() }));
+    });
+  }
+
+  function agentLabel(): HTMLElement | null {
+    return container.querySelector<HTMLElement>('.schedule-manager-agent');
+  }
+
+  test('shows the pinned agent, effort, and model on the row', () => {
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule({ agentType: 'codex-cli', effort: 'high', model: 'gpt-5' })],
+        agents: [],
+      });
+    });
+    render();
+
+    const label = agentLabel();
+    expect(label).not.toBeNull();
+    expect(label?.textContent).toBe('codex-cli · high · gpt-5');
+  });
+
+  test('appends only the effort when the model is unset', () => {
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule({ agentType: 'codex-cli', effort: 'high' })],
+        agents: [],
+      });
+    });
+    render();
+
+    expect(agentLabel()?.textContent).toBe('codex-cli · high');
+  });
+
+  test('appends only the model when the effort is unset', () => {
+    // Independent-conditional guard: a regression that nested the model append
+    // inside the effort branch would silently drop the model here.
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule({ agentType: 'codex-cli', model: 'gpt-5' })],
+        agents: [],
+      });
+    });
+    render();
+
+    expect(agentLabel()?.textContent).toBe('codex-cli · gpt-5');
+  });
+
+  test('shows the bare agent when effort and model are unset', () => {
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule({ agentType: 'round-robin' })],
+        agents: [],
+      });
+    });
+    render();
+
+    expect(agentLabel()?.textContent).toBe('round-robin');
+  });
+
+  test('falls back to "default" when the schedule pins no agent', () => {
+    act(() => {
+      useKookrStore.setState({
+        schedules: [makeSchedule({ agentType: undefined })],
+        agents: [],
+      });
+    });
+    render();
+
+    expect(agentLabel()?.textContent).toBe('default');
+  });
+});

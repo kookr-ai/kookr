@@ -71,6 +71,15 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
   return `${outcomeLabel(latest.outcome)} ${formatScheduleRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
 }
 
+function scheduleAgentLabel(schedule: ScheduleResponse): string {
+  // `agentType` is an optional per-schedule pin; when omitted each fire uses the
+  // live `settings.defaultAgentType`, so surface that as `default` on the row.
+  let label: string = schedule.agentType ?? 'default';
+  if (schedule.effort) label += ` · ${schedule.effort}`;
+  if (schedule.model) label += ` · ${schedule.model}`;
+  return label;
+}
+
 function quotaLabel(schedule: ScheduleResponse): string {
   if (schedule.maxTriggers === undefined) return 'Scheduled runs: unlimited';
   if (schedule.stopReason === 'trigger_limit_reached') return `Scheduled runs: exhausted (${schedule.maxTriggers}/${schedule.maxTriggers})`;
@@ -601,6 +610,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                 <div className="schedule-manager-main">
                   <div className="schedule-manager-title">{schedule.name}</div>
                   <div className="schedule-manager-meta">
+                    <span className="schedule-manager-agent">{scheduleAgentLabel(schedule)}</span>
                     <span>{schedule.cronDescription}</span>
                     <span>Next: {scheduleNextRunLabel(schedule)}</span>
                     <span>{quotaLabel(schedule)}</span>

@@ -7155,6 +7155,16 @@ label.task-share-row {
   color: var(--text-secondary);
 }
 
+.schedule-manager-agent {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary, var(--text-bright));
+  background: var(--surface-raised, rgba(127, 127, 127, 0.12));
+  border-radius: 4px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
 .schedule-ledger {
   display: grid;
   gap: 4px;
