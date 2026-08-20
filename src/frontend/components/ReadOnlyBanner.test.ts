@@ -97,4 +97,30 @@ describe('ReadOnlyBanner', () => {
     expect(banner?.textContent).toContain('Alpha');
     expect(banner?.textContent?.toLowerCase()).toContain('read-only');
   });
+
+  test('renders a learn-more link to the public getting-started guide for a viewer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ actor: 'viewer', scope: { kind: 'all' } }), { status: 200 })),
+    );
+    window.sessionStorage.setItem(
+      'kookr.viewer.session',
+      JSON.stringify({ isViewer: true, scope: { kind: 'all' } }),
+    );
+    await act(async () => {
+      root.render(React.createElement(ReadOnlyBanner));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>('.read-only-banner__learn-more');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe(
+      'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md',
+    );
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noopener');
+    expect(link?.textContent).toContain('New to Kookr?');
+  });
 });
