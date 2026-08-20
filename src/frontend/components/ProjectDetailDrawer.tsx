@@ -205,6 +205,21 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
           <StatRow label="This week" value={project.weekPrCount} />
           <StatRow label="Open contribution attempts" value={project.openContributionAttempts} />
           <StatRow label="Active agents" value={project.activeAgents} />
+          {/*
+            Show the stalled count only when there is one, so healthy projects
+            stay noise-free. Unlike the sidebar (which falls back to findingCount
+            when stalledAgents is absent), the drawer hides the row entirely for
+            an undefined value — the live producer always sets stalledAgents, so
+            undefined means an older/partial payload we'd rather omit than guess.
+          */}
+          {(project.stalledAgents ?? 0) > 0 && (
+            <StatRow
+              label="Stalled agents"
+              value={
+                <span data-testid="stalled-agents-value">{project.stalledAgents}</span>
+              }
+            />
+          )}
           {lastShippedAgo && (
             <StatRow
               label="Last shipped"
