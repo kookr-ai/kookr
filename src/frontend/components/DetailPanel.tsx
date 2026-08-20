@@ -1288,6 +1288,11 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
                     <strong>Files changed:</strong> {agent.completionDigest.filesChanged.join(', ')}
                   </div>
                 )}
+                {agent.completionDigest.testSummary && (
+                  <div className="detail-digest-tests" data-testid="digest-test-summary">
+                    <strong>Tests:</strong> {agent.completionDigest.testSummary}
+                  </div>
+                )}
                 <PrLinksBlock digest={agent.completionDigest} />
                 <CriteriaVerdictBlock digest={agent.completionDigest} />
                 {/* key by taskId so switching tasks remounts with empty state —
