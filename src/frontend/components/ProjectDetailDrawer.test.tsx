@@ -87,3 +87,28 @@ describe('ProjectDetailDrawer — last shipped recency', () => {
     expect(container.textContent).not.toContain('Invalid Date');
   });
 });
+
+describe('ProjectDetailDrawer — stalled agents', () => {
+  test('shows the stalled count when stalledAgents > 0', () => {
+    renderDrawer(baseProject({ activeAgents: 5, stalledAgents: 2 }));
+
+    expect(container.textContent).toContain('Stalled agents');
+    const value = container.querySelector('[data-testid="stalled-agents-value"]');
+    expect(value).not.toBeNull();
+    expect(value?.textContent).toBe('2');
+  });
+
+  test('omits the stalled row when stalledAgents is 0', () => {
+    renderDrawer(baseProject({ activeAgents: 5, stalledAgents: 0 }));
+
+    expect(container.querySelector('[data-testid="stalled-agents-value"]')).toBeNull();
+    expect(container.textContent).not.toContain('Stalled agents');
+  });
+
+  test('omits the stalled row when stalledAgents is undefined', () => {
+    renderDrawer(baseProject({ activeAgents: 5, stalledAgents: undefined }));
+
+    expect(container.querySelector('[data-testid="stalled-agents-value"]')).toBeNull();
+    expect(container.textContent).not.toContain('Stalled agents');
+  });
+});
