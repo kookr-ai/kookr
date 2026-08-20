@@ -180,6 +180,62 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
   });
 
+  test('renders a token-volume tile from the summary input/output totals', async () => {
+    // Distinct values pin the combined value and both detail operands so a
+    // wrong-field render (or swapped in/out) can't pass.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              totalInputTokens: 8200,
+              totalOutputTokens: 1300,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const tokenMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'tokens',
+    );
+    expect(tokenMetric).toBeTruthy();
+    expect(tokenMetric?.querySelector('strong')?.textContent).toBe('9.5k');
+    expect(tokenMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('8.2k in / 1.3k out');
+  });
+
+  test('compacts large token totals with the M / k formatter branches', async () => {
+    // Exercises formatTokens's >=1M and >=10k rounding branches — the realistic
+    // scoreboard case for aggregate token volume, distinct from the small-value
+    // toFixed branch above.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              totalInputTokens: 1_200_000,
+              totalOutputTokens: 350_000,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const tokenMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'tokens',
+    );
+    expect(tokenMetric?.querySelector('strong')?.textContent).toBe('1.6M');
+    expect(tokenMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('1.2M in / 350k out');
+  });
+
   test('renders the cancelled/terminated/active disposition split from the summary', async () => {
     // Distinct counts uniquely pin each field so a wrong-field render can't pass.
     vi.mocked(fetch).mockImplementation(() =>
