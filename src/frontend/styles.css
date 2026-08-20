@@ -12440,6 +12440,19 @@ button.act-tool-entry:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.diff-pane-stat {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.diff-pane-stat-add {
+  color: var(--green);
+}
+.diff-pane-stat-del {
+  color: var(--red);
+}
 .diff-pane-close {
   background: none;
   border: none;

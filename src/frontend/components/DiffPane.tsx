@@ -34,6 +34,25 @@ type FetchState =
   | { kind: 'ok'; body: EditEventResponse }
   | { kind: 'err'; message: string; restarted: boolean };
 
+/**
+ * Count added/removed lines across a structured patch. Only lines whose leading
+ * marker is `+` or `-` count — hunk headers (rendered separately, never present
+ * in `hunk.lines`) and the `\ No newline at end of file` marker are excluded by
+ * construction. Exported for unit testing.
+ */
+export function countLineChanges(hunks: PatchHunk[]): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      const marker = line[0];
+      if (marker === '+') added++;
+      else if (marker === '-') removed++;
+    }
+  }
+  return { added, removed };
+}
+
 export function DiffPane({ agentId, toolUseId, filePath, openedAt, onClose }: Props) {
   const [state, setState] = useState<FetchState>({ kind: 'loading' });
   const rootRef = useRef<HTMLDivElement>(null);
@@ -98,6 +117,9 @@ export function DiffPane({ agentId, toolUseId, filePath, openedAt, onClose }: Pr
     >
       <div className="diff-pane-header">
         <span className="diff-pane-path" title={filePath}>{filePath}</span>
+        {state.kind === 'ok' && state.body.kind !== 'unsupported' && (
+          <DiffStat hunks={state.body.structuredPatch} />
+        )}
         <button
           type="button"
           className="diff-pane-close"
@@ -129,6 +151,23 @@ export function DiffPane({ agentId, toolUseId, filePath, openedAt, onClose }: Pr
         )}
       </div>
     </div>
+  );
+}
+
+/** `+N −M` line-change summary shown in the header, colored like the diff body. */
+function DiffStat({ hunks }: { hunks: PatchHunk[] }) {
+  const { added, removed } = countLineChanges(Array.isArray(hunks) ? hunks : []);
+  const plural = (n: number) => (n === 1 ? '' : 's');
+  return (
+    <span
+      className="diff-pane-stat"
+      role="img"
+      aria-label={`${added} line${plural(added)} added, ${removed} line${plural(removed)} removed`}
+    >
+      <span className="diff-pane-stat-add">+{added}</span>
+      {' '}
+      <span className="diff-pane-stat-del">{'−'}{removed}</span>
+    </span>
   );
 }
 
