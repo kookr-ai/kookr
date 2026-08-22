@@ -2647,6 +2647,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           githubScanner,
           watchdog,
           monitor,
+          kookrDir,
         });
         currentSettings = merged;
         settingsLoadedFromDefaults = false;

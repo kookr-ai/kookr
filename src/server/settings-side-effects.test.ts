@@ -1,8 +1,12 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DEFAULT_SETTINGS, type KookrSettings } from '../core/settings-store.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { Monitor } from '../core/monitor.js';
+import { resolveOrchestrationPausePath } from '../core/orchestration-pause.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 
 const { mockSaveSettings } = vi.hoisted(() => ({
@@ -21,7 +25,11 @@ function settings(overrides: Partial<KookrSettings> = {}): KookrSettings {
   return { ...DEFAULT_SETTINGS, ...overrides };
 }
 
-function createDeps(prev: Partial<KookrSettings> = {}, next: Partial<KookrSettings> = {}) {
+function createDeps(
+  prev: Partial<KookrSettings> = {},
+  next: Partial<KookrSettings> = {},
+  extra: { kookrDir?: string } = {},
+) {
   const githubScanner = {
     stop: vi.fn(),
     start: vi.fn(async () => true),
@@ -42,7 +50,27 @@ function createDeps(prev: Partial<KookrSettings> = {}, next: Partial<KookrSettin
     watchdog: watchdog as unknown as Watchdog,
     monitor: monitor as unknown as Monitor,
     spies: { githubScanner, watchdog, monitor },
+    ...(extra.kookrDir ? { kookrDir: extra.kookrDir } : {}),
   };
+}
+
+function writePauseRecord(kookrDir: string, mechanism: string): string {
+  const path = resolveOrchestrationPausePath(kookrDir);
+  mkdirSync(join(kookrDir, 'playbook-state', 'orchestrator'), { recursive: true });
+  writeFileSync(
+    path,
+    `${JSON.stringify({
+      schemaVersion: 2,
+      paused: true,
+      source: 'human',
+      reason: 'weekly quota window',
+      pausedAt: '2026-08-22T00:00:00.000Z',
+      pausedBy: 'jean',
+      mechanism,
+    }, null, 2)}\n`,
+    'utf8',
+  );
+  return path;
 }
 
 describe('applySettingsSideEffects', () => {
@@ -51,6 +79,7 @@ describe('applySettingsSideEffects', () => {
     mockSaveSettings.mockResolvedValue(undefined);
     vi.spyOn(console, 'log').mockReset().mockImplementation(() => {});
     vi.spyOn(console, 'error').mockReset().mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockReset().mockImplementation(() => {});
   });
 
   test('persists new settings via saveSettings before applying side effects', async () => {
@@ -244,6 +273,75 @@ describe('applySettingsSideEffects', () => {
       expect(warnings).toEqual([]);
     },
   );
+
+  describe('kill-switch-off clears kill-switch-created pause (issue #2743)', () => {
+    let kookrDir: string;
+
+    beforeEach(() => {
+      kookrDir = mkdtempSync(join(tmpdir(), 'kookr-killswitch-pause-'));
+    });
+    afterEach(() => {
+      rmSync(kookrDir, { recursive: true, force: true });
+    });
+
+    test('human kill-switch pause is cleared when the switch turns off', async () => {
+      const path = writePauseRecord(kookrDir, 'automationKillSwitch');
+      const deps = createDeps(
+        { automationKillSwitch: true, safeModeSince: '2026-08-22T00:00:00.000Z' },
+        { automationKillSwitch: false, safeModeSince: null },
+        { kookrDir },
+      );
+
+      await applySettingsSideEffects(deps);
+
+      expect(existsSync(path)).toBe(false);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('cleared kill-switch-created orchestration pause record'),
+      );
+    });
+
+    test('a pause whose mechanism is not the kill switch is left in place', async () => {
+      const path = writePauseRecord(kookrDir, 'external-hold');
+      const deps = createDeps(
+        { automationKillSwitch: true, safeModeSince: '2026-08-22T00:00:00.000Z' },
+        { automationKillSwitch: false, safeModeSince: null },
+        { kookrDir },
+      );
+
+      await applySettingsSideEffects(deps);
+
+      expect(existsSync(path)).toBe(true);
+      expect(console.warn).toHaveBeenCalledWith(
+        '[settings] automation kill-switch DISENGAGED — autonomous actuation restored',
+      );
+    });
+
+    test('engaging the kill switch does not clear a pause record', async () => {
+      const path = writePauseRecord(kookrDir, 'automationKillSwitch');
+      const deps = createDeps(
+        { automationKillSwitch: false, safeModeSince: null },
+        { automationKillSwitch: true, safeModeSince: '2026-08-22T00:00:00.000Z' },
+        { kookrDir },
+      );
+
+      await applySettingsSideEffects(deps);
+
+      expect(existsSync(path)).toBe(true);
+    });
+
+    test('unrelated settings change does not clear a pause record', async () => {
+      const path = writePauseRecord(kookrDir, 'automationKillSwitch');
+      const deps = createDeps(
+        { automationKillSwitch: true, maxActiveTasks: 4 },
+        { automationKillSwitch: true, maxActiveTasks: 8 },
+        { kookrDir },
+      );
+
+      await applySettingsSideEffects(deps);
+
+      expect(existsSync(path)).toBe(true);
+    });
+  });
 
   test('unchanged Phase-C capacity knobs do not log (#1862)', async () => {
     const deps = createDeps(

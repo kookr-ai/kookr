@@ -1063,11 +1063,14 @@ record. This is distinct from drain (which refuses *all* launches, including the
 merge-review children an in-flight implementer may still need) and from the
 `quotaHeadroomThreshold` Claude-launch admission gate.
 
-A **human** pause is sticky — only an explicit resume clears it. A **soft-quota**
-pause (the orchestrator's standing-order response to near-exhausted default-agent
-quota) auto-resumes once utilization falls to/below 80% or the window resets. The
-`resume` route's `auto: true` (the orchestrator's auto-resume) declines to lift a
-human pause.
+A **human** pause is sticky against auto-resume — `auto: true` will not lift it.
+An explicit resume (CLI or `POST /api/orchestration/resume` without `auto`)
+clears it, and so does a human turning the automation kill switch off
+(`automationKillSwitch=false` on the settings write) when the on-disk record was
+created by that switch. A **soft-quota** pause (the orchestrator's standing-order
+response to near-exhausted default-agent quota) auto-resumes once utilization
+falls to/below 80% or the window resets. The `resume` route's `auto: true` (the
+orchestrator's auto-resume) still declines to lift a human pause.
 
 `GET /api/orchestration/status` returns:
 
@@ -1089,7 +1092,7 @@ human pause.
     "supported": false,
     "reason": "no supported non-key Grok weekly-quota signal (session/OIDC only; XAI_API_KEY is disallowed) — Phase B follow-up, issue #2672"
   },
-  "recommendation": { "action": "none", "reason": "human pause is sticky; only `kookr orchestration resume` clears it" }
+  "recommendation": { "action": "none", "reason": "human pause is sticky; auto-resume will not lift it (explicit human resume or kill-switch-off will)" }
 }
 ```
 

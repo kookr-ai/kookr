@@ -19,8 +19,11 @@
  * (`orchestration-pause-service.ts`) supplies those.
  *
  * Two pause kinds are deliberately distinct:
- *   - a **human pause** (`source: 'human'`) is sticky — only an explicit
- *     `kookr orchestration resume` clears it;
+ *   - a **human pause** (`source: 'human'`) is sticky against auto-resume —
+ *     `kookr orchestration resume --auto` will not lift it. An explicit
+ *     `kookr orchestration resume` clears it, and so does a human turning the
+ *     automation kill switch off when this record was created by that switch
+ *     (issue #2743);
  *   - a **soft-quota pause** (`source: 'soft-quota'`) is the orchestrator's own
  *     standing-order response to near-exhausted quota — it auto-resumes once
  *     utilization falls back under the resume line or the window resets.
@@ -73,8 +76,12 @@ export interface OrchestrationPauseRecord {
   pausedAt: string;
   /** Who engaged it (the "who") — an operator name or `orchestrator`. */
   pausedBy: string;
-  /** The lever this pause rides on. Always SAFE MODE for now (the "what"). */
-  mechanism: 'automationKillSwitch';
+  /**
+   * The lever this pause rides on (the "what"). Kill-switch / SAFE MODE pauses
+   * use `automationKillSwitch` (v1 files used `automationKillSwitch / SAFE MODE`).
+   * A human turning that switch off clears only records created by it (#2743).
+   */
+  mechanism: string;
   /** Soft-quota context captured when the orchestrator auto-paused. */
   quota?: OrchestrationQuotaSample;
   /** Free-form operator notes (preserved across reads). */
@@ -131,7 +138,10 @@ export function parsePauseRecord(raw: unknown): OrchestrationPauseRecord | null 
     reason: typeof r.reason === 'string' ? r.reason : '',
     pausedAt: typeof r.pausedAt === 'string' ? r.pausedAt : '',
     pausedBy: typeof r.pausedBy === 'string' ? r.pausedBy : 'unknown',
-    mechanism: 'automationKillSwitch',
+    mechanism:
+      typeof r.mechanism === 'string' && r.mechanism.trim().length > 0
+        ? r.mechanism.trim()
+        : 'automationKillSwitch',
     ...(quota ? { quota } : {}),
     ...(notes ? { notes } : {}),
   };
@@ -160,10 +170,23 @@ export function buildPauseRecord(input: {
 }
 
 /**
- * Is orchestration paused? SAFE MODE is the truth (it is what actually halts
- * autonomous fires); the record is the annotation. Either being engaged counts
- * as paused, so a record left behind after a manual SAFE-MODE flip still reads
- * as paused, and SAFE MODE engaged with no record still reads as paused.
+ * True when this pause record was created by the automation kill switch
+ * (SAFE MODE). A human turning that switch off is a resume of this record
+ * (issue #2743). v1 files used `automationKillSwitch / SAFE MODE`.
+ */
+export function pauseRecordCreatedByKillSwitch(
+  record: OrchestrationPauseRecord | null,
+): boolean {
+  if (record?.paused !== true) return false;
+  const mechanism = record.mechanism;
+  return mechanism === 'automationKillSwitch' || mechanism.startsWith('automationKillSwitch');
+}
+
+/**
+ * Is orchestration paused? Either live SAFE MODE or a still-paused on-disk
+ * record counts — the record is a real spawn gate, not a mere annotation.
+ * Turning the kill switch off must therefore *clear* a kill-switch-created
+ * record (issue #2743); an uncleared leftover file still reads as paused.
  */
 export function isOrchestrationPaused(input: {
   safeModeEngaged: boolean;
@@ -242,7 +265,8 @@ export type SoftQuotaAction =
  * time, and current pause state.
  *
  * Rules:
- *   - A **human pause** is sticky — never auto-resumed, never soft-repaused.
+ *   - A **human pause** is sticky against auto-resume — never auto-resumed,
+ *     never soft-repaused. An explicit human resume still lifts it.
  *   - With **no sample** (utilization null — e.g. the default agent is Grok,
  *     which has no supported non-key signal), no decision is possible.
  *   - While **soft-paused**, resume when utilization ≤ {@link SOFT_QUOTA_RESUME_AT}
@@ -264,7 +288,7 @@ export function evaluateSoftQuotaPause(input: {
   if (paused && record?.source === 'human') {
     return {
       action: 'none',
-      reason: 'human pause is sticky; only `kookr orchestration resume` clears it',
+      reason: 'human pause is sticky; auto-resume will not lift it (explicit human resume or kill-switch-off will)',
     };
   }
 

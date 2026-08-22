@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { DEFAULT_SETTINGS, type KookrSettings } from '../core/settings-store.js';
 import { applyKillSwitchTransition } from '../core/automation-kill-switch.js';
-import { resolveOrchestrationPausePath, type OrchestrationQuotaSample } from '../core/orchestration-pause.js';
-import { OrchestrationPauseService, readPauseRecordSync } from './orchestration-pause-service.js';
+import {
+  orchestratorShouldSpawn,
+  resolveOrchestrationPausePath,
+  type OrchestrationQuotaSample,
+} from '../core/orchestration-pause.js';
+import {
+  OrchestrationPauseService,
+  clearKillSwitchCreatedPauseRecord,
+  readPauseRecordSync,
+} from './orchestration-pause-service.js';
 
 /**
  * A settings double that applies the same kill-switch transition the real
@@ -197,5 +205,54 @@ describe('OrchestrationPauseService', () => {
     expect(status.quota).toEqual(sample);
     // Not paused + 96% ≥ 95% stop line ⇒ recommend pause.
     expect(status.recommendation?.action).toBe('pause');
+  });
+
+  it('turning the kill switch off clears a kill-switch-created pause so spawn is allowed (issue #2743)', async () => {
+    const settings = makeSettings(() => fixedNow);
+    const svc = new OrchestrationPauseService({
+      kookrDir: dir,
+      getSettings: settings.get,
+      updateSettings: settings.update,
+      now: () => fixedNow,
+    });
+
+    await svc.pause({ source: 'human', reason: 'weekly quota window', by: 'jean' });
+    // Dashboard / PUT /api/settings path: only flip the kill switch. Historically
+    // that left quota-pause.json behind (split-brain: levers off, spawn blocked).
+    await settings.update({ ...settings.peek(), automationKillSwitch: false });
+    expect(settings.peek().automationKillSwitch).toBe(false);
+
+    const cleared = clearKillSwitchCreatedPauseRecord(dir);
+    expect(cleared).toBe(true);
+    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(false);
+    expect(readPauseRecordSync(dir)).toBeNull();
+    expect(svc.status().paused).toBe(false);
+    expect(orchestratorShouldSpawn({
+      safeModeEngaged: false,
+      record: readPauseRecordSync(dir),
+    })).toBe(true);
+  });
+
+  it('turning the kill switch off leaves a non-kill-switch pause record in place (issue #2743)', async () => {
+    const path = resolveOrchestrationPausePath(dir);
+    mkdirSync(join(dir, 'playbook-state', 'orchestrator'), { recursive: true });
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 2,
+        paused: true,
+        source: 'human',
+        reason: 'external hold',
+        pausedAt: fixedNow.toISOString(),
+        pausedBy: 'jean',
+        mechanism: 'external-hold',
+      }, null, 2)}\n`,
+      'utf8',
+    );
+
+    expect(clearKillSwitchCreatedPauseRecord(dir)).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(readPauseRecordSync(dir)?.mechanism).toBe('external-hold');
+    expect(readPauseRecordSync(dir)?.paused).toBe(true);
   });
 });
