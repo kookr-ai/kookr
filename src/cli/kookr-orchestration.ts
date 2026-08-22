@@ -33,7 +33,8 @@ Usage:
 pause   Engage SAFE MODE and record the pause (who/why/since/source). Running
         implementers keep working; no new autonomous launches.
 resume  Disengage SAFE MODE and clear the pause record. A soft-quota --auto
-        resume will NOT lift a human pause.
+        resume will NOT lift a human pause. Turning the automation kill switch
+        off also clears a pause that same switch created.
 status  Show engaged / since / reason / source and any default-agent quota sample.
 
 Options:

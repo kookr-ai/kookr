@@ -2,6 +2,7 @@ import type { Monitor } from '../core/monitor.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import type { Watchdog } from '../core/watchdog.js';
+import { clearKillSwitchCreatedPauseRecord } from './orchestration-pause-service.js';
 
 interface ApplySettingsSideEffectsDeps {
   prevSettings: KookrSettings;
@@ -10,6 +11,8 @@ interface ApplySettingsSideEffectsDeps {
   githubScanner: GitHubScannerService;
   watchdog: Watchdog;
   monitor: Monitor;
+  /** Resolved kookr home dir; used to clear a kill-switch-created pause record. */
+  kookrDir?: string;
 }
 
 export async function applySettingsSideEffects({
@@ -19,6 +22,7 @@ export async function applySettingsSideEffects({
   githubScanner,
   watchdog,
   monitor,
+  kookrDir,
 }: ApplySettingsSideEffectsDeps): Promise<string[]> {
   await saveSettings(settingsFile, newSettings);
 
@@ -79,7 +83,7 @@ export async function applySettingsSideEffects({
     console.log(`[settings] maxActiveTasks → ${newSettings.maxActiveTasks} (was ${prevSettings.maxActiveTasks})`);
   }
 
-  // --- Automation kill-switch / SAFE MODE (issue #1710) ---
+  // --- Automation kill-switch / SAFE MODE (issue #1710 / #2743) ---
   if (prevSettings.automationKillSwitch !== newSettings.automationKillSwitch) {
     if (newSettings.automationKillSwitch) {
       console.warn(
@@ -87,7 +91,17 @@ export async function applySettingsSideEffects({
         + `(schedule fires + autonomous launches halted; manual launches remain accepted)`,
       );
     } else {
-      console.warn('[settings] automation kill-switch DISENGAGED — autonomous actuation restored');
+      // Turning the switch off is a human resume of a pause that same switch
+      // created. Leave a record whose mechanism is not the kill switch.
+      // `kookrDir` is optional so unit tests that only cover other settings
+      // knobs can omit it; production always passes it. Without a dir the
+      // on-disk pause record is left in place.
+      const cleared = kookrDir ? clearKillSwitchCreatedPauseRecord(kookrDir) : false;
+      console.warn(
+        cleared
+          ? '[settings] automation kill-switch DISENGAGED — autonomous actuation restored; cleared kill-switch-created orchestration pause record'
+          : '[settings] automation kill-switch DISENGAGED — autonomous actuation restored',
+      );
     }
   }
 

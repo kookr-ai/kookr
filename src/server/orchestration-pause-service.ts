@@ -7,8 +7,11 @@
  * `~/.kookr/playbook-state/orchestrator/quota-pause.json`. Resuming disengages
  * SAFE MODE and clears the record.
  *
- * A human pause is sticky; a soft-quota pause auto-resumes. The distinction is
- * enforced here: `resume({ auto: true })` refuses to lift a human pause.
+ * A human pause is sticky against auto-resume; a soft-quota pause auto-resumes.
+ * The distinction is enforced here: `resume({ auto: true })` refuses to lift a
+ * human pause. A human turning the automation kill switch off still clears a
+ * kill-switch-created record (issue #2743) via
+ * {@link clearKillSwitchCreatedPauseRecord}.
  */
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,6 +22,7 @@ import { resolveSafeModeStatus, type SafeModeStatus } from '../core/automation-k
 import {
   buildPauseRecord,
   parsePauseRecord,
+  pauseRecordCreatedByKillSwitch,
   resolveOrchestrationPausePath,
   type OrchestrationPauseRecord,
   type OrchestrationPauseSource,
@@ -39,7 +43,25 @@ export function readPauseRecordSync(kookrDir: string): OrchestrationPauseRecord 
   try {
     return parsePauseRecord(JSON.parse(raw));
   } catch {
-    return null; // corrupt → treat as no annotation (SAFE MODE is still the truth)
+    return null; // corrupt → treat as no pause record (SAFE MODE is still the live gate)
+  }
+}
+
+/**
+ * Delete the on-disk pause record when it was created by the automation kill
+ * switch. A human turning that switch off is a resume of that record
+ * (issue #2743). Leaves a pause whose mechanism is not the kill switch in
+ * place. Returns whether a file was removed.
+ */
+export function clearKillSwitchCreatedPauseRecord(kookrDir: string): boolean {
+  const record = readPauseRecordSync(kookrDir);
+  if (!pauseRecordCreatedByKillSwitch(record)) return false;
+  const path = resolveOrchestrationPausePath(kookrDir);
+  try {
+    rmSync(path, { force: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -10,6 +10,7 @@ import {
   isOrchestrationPaused,
   orchestratorShouldSpawn,
   parsePauseRecord,
+  pauseRecordCreatedByKillSwitch,
   resolveDefaultAgentQuotaSample,
   resolveOrchestrationPausePath,
   type OrchestrationPauseRecord,
@@ -48,6 +49,18 @@ describe('parsePauseRecord', () => {
     expect(rec!.schemaVersion).toBe(2);
     expect(rec!.pausedBy).toBe('jean');
     expect(rec!.notes).toEqual(['aborted unused PIB']);
+    expect(rec!.mechanism).toBe('automationKillSwitch / SAFE MODE');
+    expect(pauseRecordCreatedByKillSwitch(rec)).toBe(true);
+  });
+
+  it('preserves a non-kill-switch mechanism from disk', () => {
+    const rec = parsePauseRecord({
+      paused: true,
+      source: 'human',
+      mechanism: 'external-hold',
+    });
+    expect(rec!.mechanism).toBe('external-hold');
+    expect(pauseRecordCreatedByKillSwitch(rec)).toBe(false);
   });
 
   it('reads a soft-quota record', () => {
@@ -58,6 +71,38 @@ describe('parsePauseRecord', () => {
   it('preserves paused:false records', () => {
     const rec = parsePauseRecord({ paused: false, source: 'soft-quota' });
     expect(rec!.paused).toBe(false);
+  });
+});
+
+describe('pauseRecordCreatedByKillSwitch', () => {
+  it('is true for a v2 kill-switch record', () => {
+    const rec = buildPauseRecord({
+      source: 'human',
+      reason: 'r',
+      by: 'jean',
+      atIso: '2026-08-19T00:00:00.000Z',
+    });
+    expect(rec.mechanism).toBe('automationKillSwitch');
+    expect(pauseRecordCreatedByKillSwitch(rec)).toBe(true);
+  });
+
+  it('is true for a soft-quota record (same kill-switch lever)', () => {
+    const rec = buildPauseRecord({
+      source: 'soft-quota',
+      reason: 'r',
+      by: 'orchestrator',
+      atIso: '2026-08-19T00:00:00.000Z',
+    });
+    expect(pauseRecordCreatedByKillSwitch(rec)).toBe(true);
+  });
+
+  it('is false when paused is false, even on the kill-switch lever', () => {
+    const rec = parsePauseRecord({ paused: false, mechanism: 'automationKillSwitch' });
+    expect(pauseRecordCreatedByKillSwitch(rec)).toBe(false);
+  });
+
+  it('is false for null', () => {
+    expect(pauseRecordCreatedByKillSwitch(null)).toBe(false);
   });
 });
 
@@ -95,6 +140,10 @@ describe('isOrchestrationPaused / orchestratorShouldSpawn', () => {
   });
 
   it('is paused when the record says paused even without SAFE MODE', () => {
+    // Leftover paused records still gate spawn until they are cleared. The
+    // settings path that turns the kill switch off must therefore delete
+    // kill-switch-created records (issue #2743); this predicate stays OR-based
+    // so an uncleared file cannot be ignored.
     expect(isOrchestrationPaused({ safeModeEngaged: false, record: softRecord })).toBe(true);
     expect(orchestratorShouldSpawn({ safeModeEngaged: false, record: softRecord })).toBe(false);
   });
