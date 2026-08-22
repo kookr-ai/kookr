@@ -807,8 +807,9 @@ The system SHALL display a scrollable agent list panel with status indicators.
 - Clicking an agent selects it
 - When a finding's task has at least one PR in `githubState`, the card shows a compact `#<number>` + status chip; failed checks or `changes_requested` add a visible cue; clicking the chip selects the task and activates the GitHub pane (issue #2601)
 - When a finding has a `parentTaskId` that resolves to another agent in the live snapshot, the card's context row shows a compact `parent: <name>` chip; clicking it selects that parent without opening a new pane. The chip is absent when `parentTaskId` is unset or the parent is not in the snapshot. Git branch is not shown on the card (issue #2664)
+- When `suggestions[agentId].quickActions` is non-empty, the card shows up to five live chips. Permission chips send `permissionChoice` with the live `permissionRequest` binding; other chips send `respond` with the chip value. Permission chips that lack a binding are not rendered. Skip / Snooze / Not a real issue remain. Cards with no suggestion chips look unchanged (issue #2747)
 
-**Evidence:** `src/frontend/components/FindingsPanel.tsx` (scrollable list, status indicators, click selection, sorting), `src/frontend/components/FindingsPanel/FindingPrChip.tsx`, `src/frontend/components/FindingsPanel/FindingCard.tsx` (`FindingParentChip`).
+**Evidence:** `src/frontend/components/FindingsPanel.tsx` (scrollable list, status indicators, click selection, sorting), `src/frontend/components/FindingsPanel/FindingPrChip.tsx`, `src/frontend/components/FindingsPanel/FindingCard.tsx` (`FindingParentChip`, live quick-action chips), `src/frontend/components/FindingsPanel/finding-card-quick-actions.ts`.
 
 ### R5.2: Agent Detail / Terminal Panel [F5.2] — SHALL — `done`
 

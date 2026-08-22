@@ -391,6 +391,12 @@ code, kbd { font-family: var(--font-mono); }
   display: flex;
   align-items: center;
 }
+.finding-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
 
 .finding-header { justify-content: space-between; margin-bottom: 4px; }
 .finding-header-left { display: flex; align-items: center; gap: 6px; min-width: 0; }

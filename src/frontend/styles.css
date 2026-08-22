@@ -1230,6 +1230,19 @@ kbd {
 }
 
 .finding-actions { display: flex; gap: 4px; margin-top: 6px; }
+.finding-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.finding-quick-actions .btn-quick-action {
+  width: auto;
+  max-width: 100%;
+  padding: 3px 8px;
+  font-size: 11px;
+  gap: 4px;
+}
 .task-priority-badge {
   display: inline-flex;
   align-items: center;

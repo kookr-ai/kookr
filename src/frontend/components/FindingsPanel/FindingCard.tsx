@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
+import type { AgentState, ClientMessage, QuickAction } from '../../../shared/protocol.js';
 import { track, trackClick } from '../../telemetry.js';
 import {
   formatDuration,
@@ -36,6 +36,10 @@ import { FindingTranscriptContext } from './FindingTranscriptContext.js';
 import { recommendedResponseFor } from './recommendedResponses.js';
 import { CopyExplanationButton } from './CopyExplanationButton.js';
 import { FindingPrChip } from './FindingPrChip.js';
+import {
+  isPermissionQuickAction,
+  visibleFindingCardQuickActions,
+} from './finding-card-quick-actions.js';
 
 function resolveParentAgent(
   agents: readonly AgentState[],
@@ -83,12 +87,19 @@ function FindingParentChip({
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
-  send: (msg: ClientMessage) => void;
+  send: (msg: ClientMessage) => boolean | void;
 }): React.ReactElement {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagFP, setShowFlagFP] = useState(false);
+  const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const selectAgent = useKookrStore((s) => s.selectAgent);
   const nextBottleneck = useKookrStore((s) => s.nextBottleneck);
+  const clearSuggestion = useKookrStore((s) => s.clearSuggestion);
+  const handleAlert = useKookrStore((s) => s.handleAlert);
+  const suggestion = useKookrStore((s) => s.suggestions[agent.agentId]);
+  const cardQuickActions = suggestion
+    ? visibleFindingCardQuickActions(suggestion.quickActions)
+    : [];
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
@@ -106,6 +117,12 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
   useEffect(() => {
     return () => { if (clickTimer.current) clearTimeout(clickTimer.current); };
   }, []);
+
+  // A new live prompt must re-enable chips; the card stays mounted across
+  // successive permission_blocked suggestions for the same agent.
+  useEffect(() => {
+    setPermissionButtonsDisabled(false);
+  }, [suggestion]);
 
   function handleSkip() {
     track({ type: 'finding_skipped', agentId: agent.agentId, anomalyType: agent.anomaly?.type ?? null, method: 'button' });
@@ -132,6 +149,39 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
   function handleSnooze(durationMs: number) {
     trackClick('snooze');
     send({ type: 'snooze', agentId: agent.agentId, taskId: agent.taskId, durationMs });
+  }
+
+  function handleCardQuickAction(action: QuickAction) {
+    if (isPermissionQuickAction(action)) {
+      const { keystroke, permissionRequest } = action;
+      if (!keystroke || !permissionRequest || permissionButtonsDisabled) return;
+      setPermissionButtonsDisabled(true);
+      track({ type: 'quick_action_clicked', agentId: agent.agentId, actionLabel: `permission:${keystroke}` });
+      const sent = send({ type: 'permissionChoice', agentId: agent.agentId, keystroke, permissionRequest });
+      if (sent === false) {
+        setPermissionButtonsDisabled(false);
+        handleAlert('', 'Message not sent — connection lost. Please try again.', 'error');
+        return;
+      }
+      clearSuggestion(agent.agentId);
+      nextBottleneck();
+      return;
+    }
+    track({
+      type: 'response_sent',
+      agentId: agent.agentId,
+      method: 'quick_action',
+      charCount: action.value.length,
+      anomalyType: agent.anomaly?.type ?? null,
+    });
+    track({ type: 'quick_action_clicked', agentId: agent.agentId, actionLabel: action.value.slice(0, 50) });
+    const sent = send({ type: 'respond', agentId: agent.agentId, input: action.value });
+    if (sent === false) {
+      handleAlert('', 'Message not sent — connection lost. Please try again.', 'error');
+      return;
+    }
+    clearSuggestion(agent.agentId);
+    nextBottleneck();
   }
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
@@ -287,6 +337,33 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
               formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt),
               formatDuration(agent.startedAt, agent.finishedAt),
             ].filter(Boolean).join(' · ')}
+          </div>
+        )}
+        {cardQuickActions.length > 0 && (
+          <div
+            className="finding-quick-actions"
+            data-testid="finding-quick-actions"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {cardQuickActions.map((action) => {
+              const permissionChip = isPermissionQuickAction(action);
+              return (
+                <button
+                  key={`${action.keystroke ?? ''}:${action.value}`}
+                  type="button"
+                  data-testid="finding-quick-action"
+                  className={`btn-quick-action${permissionChip ? ' permission-action' : ''}`}
+                  title={action.label}
+                  disabled={permissionChip && permissionButtonsDisabled}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCardQuickAction(action);
+                  }}
+                >
+                  <span>{action.label}</span>
+                </button>
+              );
+            })}
           </div>
         )}
         <div className="finding-actions">
