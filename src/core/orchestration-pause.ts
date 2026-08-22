@@ -178,8 +178,8 @@ export function pauseRecordCreatedByKillSwitch(
   record: OrchestrationPauseRecord | null,
 ): boolean {
   if (record?.paused !== true) return false;
-  const mechanism = record.mechanism;
-  return mechanism === 'automationKillSwitch' || mechanism.startsWith('automationKillSwitch');
+  // v1 files used "automationKillSwitch / SAFE MODE"; v2 uses the literal.
+  return record.mechanism.startsWith('automationKillSwitch');
 }
 
 /**

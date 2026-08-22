@@ -207,7 +207,7 @@ describe('OrchestrationPauseService', () => {
     expect(status.recommendation?.action).toBe('pause');
   });
 
-  it('turning the kill switch off clears a kill-switch-created pause so spawn is allowed (issue #2743)', async () => {
+  it('clearKillSwitchCreatedPauseRecord deletes a leftover kill-switch record so spawn is allowed (issue #2743)', async () => {
     const settings = makeSettings(() => fixedNow);
     const svc = new OrchestrationPauseService({
       kookrDir: dir,
@@ -217,8 +217,7 @@ describe('OrchestrationPauseService', () => {
     });
 
     await svc.pause({ source: 'human', reason: 'weekly quota window', by: 'jean' });
-    // Dashboard / PUT /api/settings path: only flip the kill switch. Historically
-    // that left quota-pause.json behind (split-brain: levers off, spawn blocked).
+    // Split-brain leftover: kill switch already off, on-disk record still paused.
     await settings.update({ ...settings.peek(), automationKillSwitch: false });
     expect(settings.peek().automationKillSwitch).toBe(false);
 
@@ -233,7 +232,7 @@ describe('OrchestrationPauseService', () => {
     })).toBe(true);
   });
 
-  it('turning the kill switch off leaves a non-kill-switch pause record in place (issue #2743)', async () => {
+  it('clearKillSwitchCreatedPauseRecord leaves a non-kill-switch pause record in place (issue #2743)', async () => {
     const path = resolveOrchestrationPausePath(dir);
     mkdirSync(join(dir, 'playbook-state', 'orchestrator'), { recursive: true });
     writeFileSync(

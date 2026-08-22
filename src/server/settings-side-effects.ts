@@ -93,6 +93,9 @@ export async function applySettingsSideEffects({
     } else {
       // Turning the switch off is a human resume of a pause that same switch
       // created. Leave a record whose mechanism is not the kill switch.
+      // `kookrDir` is optional so unit tests that only cover other settings
+      // knobs can omit it; production always passes it. Without a dir the
+      // on-disk pause record is left in place.
       const cleared = kookrDir ? clearKillSwitchCreatedPauseRecord(kookrDir) : false;
       console.warn(
         cleared

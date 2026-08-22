@@ -6,8 +6,9 @@ import { DEFAULT_SETTINGS, type KookrSettings } from '../core/settings-store.js'
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { Monitor } from '../core/monitor.js';
-import { resolveOrchestrationPausePath } from '../core/orchestration-pause.js';
+import { orchestratorShouldSpawn, resolveOrchestrationPausePath } from '../core/orchestration-pause.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
+import { readPauseRecordSync } from './orchestration-pause-service.js';
 
 const { mockSaveSettings } = vi.hoisted(() => ({
   mockSaveSettings: vi.fn(async () => undefined),
@@ -295,6 +296,11 @@ describe('applySettingsSideEffects', () => {
       await applySettingsSideEffects(deps);
 
       expect(existsSync(path)).toBe(false);
+      expect(readPauseRecordSync(kookrDir)).toBeNull();
+      expect(orchestratorShouldSpawn({
+        safeModeEngaged: false,
+        record: readPauseRecordSync(kookrDir),
+      })).toBe(true);
       expect(console.warn).toHaveBeenCalledWith(
         expect.stringContaining('cleared kill-switch-created orchestration pause record'),
       );
@@ -311,6 +317,8 @@ describe('applySettingsSideEffects', () => {
       await applySettingsSideEffects(deps);
 
       expect(existsSync(path)).toBe(true);
+      expect(readPauseRecordSync(kookrDir)?.mechanism).toBe('external-hold');
+      expect(readPauseRecordSync(kookrDir)?.paused).toBe(true);
       expect(console.warn).toHaveBeenCalledWith(
         '[settings] automation kill-switch DISENGAGED — autonomous actuation restored',
       );
