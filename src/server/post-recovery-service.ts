@@ -9,7 +9,10 @@
  * This service:
  *   A. Re-enables allowlisted critical schedules that lack an operator hold
  *   B. When free≥N + empty queue + healthy dispatch: at most one scout+batch
- *      kick per product repo per UTC day (skips when scout/batch already active)
+ *      kick per product repo per UTC day (skips when scout/batch already active).
+ *      A create-then-`launch_error` (expired Grok session login) does not
+ *      persist the UTC-day key or stamp `lastStarvationScoutAt`, so the next
+ *      tick can retry (issue #2744). No pay-per-token API-key auth path.
  *
  * Pure decisions live in `core/critical-schedule-rearm` and
  * `core/post-recovery-queue-fill`. This module owns timer, durable day keys,
@@ -37,8 +40,13 @@ import {
   isParallelIssueBatchPlaybookId,
   isValidRepoFullName,
   repoToPlaybookSlug,
+  STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP,
 } from '../core/pipeline-starvation.js';
-import { isIdeaScoutInFlightForRepo } from '../core/pipeline-starvation-ideation.js';
+import {
+  countTerminatedAtLaunchIdeaScoutsForRepo,
+  isIdeaScoutInFlightForRepo,
+} from '../core/pipeline-starvation-ideation.js';
+import { isTerminatedAtLaunch } from '../shared/contracts/task.js';
 import {
   loadPipelineStarvationState,
   savePipelineStarvationState,
@@ -291,9 +299,69 @@ export class PostRecoveryService {
         continue;
       }
 
+      const utcDayStartMs = Date.parse(`${decision.utcDay}T00:00:00.000Z`);
+      const launchErrorRetries = Number.isFinite(utcDayStartMs)
+        ? countTerminatedAtLaunchIdeaScoutsForRepo(candidate.repo, tasks, utcDayStartMs)
+        : 0;
+      if (launchErrorRetries >= STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP) {
+        const message =
+          `scout launch_error retry budget exhausted (${launchErrorRetries} today)`;
+        this.deps.log?.(
+          `[post-recovery] queue-fill kick skipped for ${candidate.repo}: ${message}`,
+        );
+        await appendAuditRow(this.auditPath(), {
+          action: 'post_recovery_queue_fill_kick_failed',
+          provenance: POST_RECOVERY_PROVENANCE,
+          repo: candidate.repo,
+          utcDay: decision.utcDay,
+          error: message,
+          at: new Date(nowMs).toISOString(),
+        });
+        results.push({
+          repo: candidate.repo,
+          kicked: false,
+          reason: `error:${message}`,
+          utcDay: decision.utcDay,
+        });
+        continue;
+      }
+
       try {
-        const launch = await this.spawnRecoveryScout(candidate, decision.utcDay, nowMs);
-        const scoutTaskId = launch.task.id;
+        const launch = await this.spawnRecoveryScout(
+          candidate,
+          decision.utcDay,
+          nowMs,
+          launchErrorRetries,
+        );
+        const launched = this.deps.taskStore.getTask(launch.task.id) ?? launch.task;
+        if (isTerminatedAtLaunch(launched)) {
+          const detail = launched.disposition?.detail?.trim()
+            || launched.disposition?.reason
+            || 'launch_error';
+          const message = `scout died at launch (${detail})`;
+          this.deps.log?.(
+            `[post-recovery] queue-fill kick failed for ${candidate.repo}: ${message}`
+            + ' — not stamping lastStarvationScoutAt',
+          );
+          await appendAuditRow(this.auditPath(), {
+            action: 'post_recovery_queue_fill_kick_failed',
+            provenance: POST_RECOVERY_PROVENANCE,
+            repo: candidate.repo,
+            utcDay: decision.utcDay,
+            scoutTaskId: launched.id,
+            error: message,
+            disposition: launched.disposition?.reason ?? 'launch_error',
+            at: new Date(nowMs).toISOString(),
+          });
+          results.push({
+            repo: candidate.repo,
+            kicked: false,
+            reason: `error:${message}`,
+            utcDay: decision.utcDay,
+          });
+          continue;
+        }
+        const scoutTaskId = launched.id;
 
         // Arm starvation scout-complete batch kick so implement re-enters when
         // the scout finishes (reuses #1715 R5 path when KOOKR_PIPELINE_BATCH_KICK
@@ -365,6 +433,7 @@ export class PostRecoveryService {
     candidate: ProductBatchRepoCandidate,
     utcDay: string,
     nowMs: number,
+    launchErrorRetries = 0,
   ): Promise<LaunchResult> {
     const localPath = candidate.localPath?.trim() || '';
     const projectId = projectIdFromRepoSpecifier(candidate.repo) ?? undefined;
@@ -398,7 +467,11 @@ export class PostRecoveryService {
       launchSource: 'api',
       disableDedup: true,
       autoCloseOnSignal: true,
-      idempotencyKey: postRecoveryKickIdempotencyKey(candidate.repo, utcDay),
+      idempotencyKey: postRecoveryKickIdempotencyKey(
+        candidate.repo,
+        utcDay,
+        launchErrorRetries,
+      ),
       name: `Idea scout (post-recovery fill): ${candidate.repo}`,
     };
 

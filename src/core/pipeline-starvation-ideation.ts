@@ -11,6 +11,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isTerminalStatus } from './task-status.js';
 import type { Task } from './tasks.js';
+import { isTerminatedAtLaunch } from '../shared/contracts/task.js';
 import {
   defaultIdeaScoutRepoStateDir,
   isIdeaScoutPlaybookId,
@@ -157,33 +158,62 @@ export async function findRecentSuccessfulIdeationAtMs(
 }
 
 /**
+ * True when `task` looks like a repository-idea-scout for `repo` (by playbookId
+ * + projectId, with prompt fallback only when playbookId is missing — batch
+ * playbook bodies mention idea-scout and must not false-positive).
+ */
+export function isIdeaScoutTaskForRepo(repo: string, task: Task): boolean {
+  const projectId = projectIdFromRepoSpecifier(repo)?.toLowerCase() ?? null;
+  const slug = repoToPlaybookSlug(repo);
+  const repoLower = repo.trim().toLowerCase();
+
+  // Explicit non-scout playbooks (e.g. parallel-issue-batch) never count —
+  // their rendered prompts reference idea-scout / pipeline-starvation.
+  if (isParallelIssueBatchPlaybookId(task.playbookId)) return false;
+
+  const isScoutPlaybook = isIdeaScoutPlaybookId(task.playbookId);
+  if (!isScoutPlaybook) {
+    // Prompt fallback only when playbookId is unset (CLI-spawned scouts).
+    if (task.playbookId) return false;
+    const prompt = (task.prompt ?? '').toLowerCase();
+    if (!prompt.includes('repository idea scout') && !prompt.includes('idea-scout')) return false;
+  }
+  if (projectId && task.projectId?.toLowerCase() === projectId) return true;
+  const hay = `${task.projectId ?? ''} ${task.name ?? ''} ${task.prompt ?? ''}`.toLowerCase();
+  return hay.includes(repoLower) || hay.includes(slug);
+}
+
+/**
  * True when any non-terminal task looks like a repository-idea-scout for the
  * given repo (by playbookId + projectId, with prompt fallback only when
  * playbookId is missing — batch playbook bodies mention idea-scout and must
  * not false-positive as an in-flight scout).
  */
 export function isIdeaScoutInFlightForRepo(repo: string, tasks: readonly Task[]): boolean {
-  const projectId = projectIdFromRepoSpecifier(repo)?.toLowerCase() ?? null;
-  const slug = repoToPlaybookSlug(repo);
-  const repoLower = repo.trim().toLowerCase();
-
   for (const task of tasks) {
     if (isTerminalStatus(task.status)) continue;
-    // Explicit non-scout playbooks (e.g. parallel-issue-batch) never count —
-    // their rendered prompts reference idea-scout / pipeline-starvation.
-    if (isParallelIssueBatchPlaybookId(task.playbookId)) continue;
-
-    const isScoutPlaybook = isIdeaScoutPlaybookId(task.playbookId);
-    if (!isScoutPlaybook) {
-      // Prompt fallback only when playbookId is unset (CLI-spawned scouts).
-      if (task.playbookId) continue;
-      const prompt = (task.prompt ?? '').toLowerCase();
-      if (!prompt.includes('repository idea scout') && !prompt.includes('idea-scout')) continue;
-    }
-    if (projectId && task.projectId?.toLowerCase() === projectId) return true;
-    // Fall back to repo string in prompt / name when projectId is unset.
-    const hay = `${task.projectId ?? ''} ${task.name ?? ''} ${task.prompt ?? ''}`.toLowerCase();
-    if (hay.includes(repoLower) || hay.includes(slug)) return true;
+    if (isIdeaScoutTaskForRepo(repo, task)) return true;
   }
   return false;
+}
+
+/**
+ * How many idea-scouts for `repo` died at launch (`launch_error` family)
+ * at or after `sinceMs` (issue #2744). Used to salt the next spawn's
+ * idempotency key and to bound retries inside the anti-thrash / UTC-day window.
+ */
+export function countTerminatedAtLaunchIdeaScoutsForRepo(
+  repo: string,
+  tasks: readonly Task[],
+  sinceMs: number,
+): number {
+  let count = 0;
+  for (const task of tasks) {
+    if (!isIdeaScoutTaskForRepo(repo, task)) continue;
+    if (!isTerminatedAtLaunch(task)) continue;
+    const createdMs = task.createdAt instanceof Date ? task.createdAt.getTime() : Number.NaN;
+    if (!Number.isFinite(createdMs) || createdMs < sinceMs) continue;
+    count += 1;
+  }
+  return count;
 }

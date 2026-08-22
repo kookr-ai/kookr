@@ -26,6 +26,12 @@
  * anti-thrash floor elapses (scout-spawned ≠ belt-refilled). Audit fields:
  * `scoutDedupBypassedForBeltEmpty`, `starvationRefillPostcondition`,
  * durable `scoutCooldownSkipsWhileBeltEmpty` on the per-repo ledger.
+ *
+ * Issue #2744: only stamp `lastStarvationScoutAt` when the scout actually
+ * started (launcher returned a task that did not die at launch). A
+ * create-then-`launch_error` (expired Grok session login) must not consume
+ * the cooldown, and the next refill tick may retry with a salted
+ * idempotency key. No pay-per-token API-key auth path is introduced.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -46,9 +52,11 @@ import {
   nextPipelineStarvationState,
   parseBatchOutcomeRecord,
   resolveBatchEmptyClass,
+  SCOUT_ANTI_THRASH_MS,
   STARVATION_ALERT_WINDOW_MS,
   starvationBatchKickIdempotencyKey,
   starvationScoutIdempotencyKey,
+  STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP,
   summarizeDisqualifiers,
   type BatchOutcomeRecord,
   type PipelineBatchKickResult,
@@ -57,6 +65,7 @@ import {
   type PipelineStarvationRepoState,
 } from '../core/pipeline-starvation.js';
 import {
+  countTerminatedAtLaunchIdeaScoutsForRepo,
   findRecentSuccessfulIdeationDetails,
   isIdeaScoutInFlightForRepo,
 } from '../core/pipeline-starvation-ideation.js';
@@ -67,6 +76,7 @@ import {
 import { starvationInventExtraInstruction } from '../core/starvation-invent-policy.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { isTerminatedAtLaunch } from '../shared/contracts/task.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
@@ -300,36 +310,18 @@ export class PipelineStarvationService {
     let batchKickTaskId: string | undefined;
 
     if (decision.spawnScout) {
-      try {
-        const launch = await this.spawnIdeaScout(
-          input,
-          nowMs,
-          decision.consecutiveBlockedEmpty,
-        );
-        spawnedScoutTaskId = launch.task.id;
-        scoutQueued = launch.queued === true;
+      const bucketStartMs = Math.floor(nowMs / SCOUT_ANTI_THRASH_MS) * SCOUT_ANTI_THRASH_MS;
+      const launchErrorRetries = countTerminatedAtLaunchIdeaScoutsForRepo(
+        outcome.repo,
+        this.deps.taskStore.listTasks(),
+        bucketStartMs,
+      );
+      if (launchErrorRetries >= STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP) {
+        spawnError =
+          `scout launch_error retry budget exhausted (${launchErrorRetries} in window)`;
         this.deps.log?.(
-          `[pipeline-starvation] spawned idea-scout for ${outcome.repo} → task ${spawnedScoutTaskId}`
-          + `${scoutQueued ? ' (queued)' : ''}`,
+          `[pipeline-starvation] ${spawnError} for ${outcome.repo} — not stamping lastStarvationScoutAt`,
         );
-        await appendAuditRow(this.auditPath(), {
-          action: 'pipeline_starvation_scout_spawn',
-          provenance: source === RECONCILE_TERMINAL_SOURCE
-            ? RECONCILE_TERMINAL_SOURCE
-            : STARVATION_TRIGGER_PROVENANCE,
-          repo: outcome.repo,
-          runKey: outcome.runKey,
-          taskId: spawnedScoutTaskId,
-          queued: scoutQueued === true,
-          openIssueCount: outcome.openIssueCount ?? null,
-          disqualifierSummary: decisionInputs.disqualifierSummary,
-          source,
-          at: new Date(nowMs).toISOString(),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        spawnError = message;
-        this.deps.log?.(`[pipeline-starvation] scout spawn failed for ${outcome.repo}: ${message}`);
         await appendAuditRow(this.auditPath(), {
           action: 'pipeline_starvation_scout_spawn_failed',
           provenance: source === RECONCILE_TERMINAL_SOURCE
@@ -337,11 +329,82 @@ export class PipelineStarvationService {
             : STARVATION_TRIGGER_PROVENANCE,
           repo: outcome.repo,
           runKey: outcome.runKey,
-          error: message,
+          error: spawnError,
           source,
           at: new Date(nowMs).toISOString(),
         });
-        // Fall through — still record the blocked-empty and maybe alert.
+      } else {
+        try {
+          const launch = await this.spawnIdeaScout(
+            input,
+            nowMs,
+            decision.consecutiveBlockedEmpty,
+            launchErrorRetries,
+          );
+          const launched = this.deps.taskStore.getTask(launch.task.id) ?? launch.task;
+          if (isTerminatedAtLaunch(launched)) {
+            // Create succeeded, session never attached (Grok auth expired, etc.).
+            // Do not stamp lastStarvationScoutAt — the next refill tick may retry.
+            const detail = launched.disposition?.detail?.trim()
+              || launched.disposition?.reason
+              || 'launch_error';
+            spawnError = `scout died at launch (${detail})`;
+            this.deps.log?.(
+              `[pipeline-starvation] ${spawnError} for ${outcome.repo} task ${launched.id}`
+              + ' — not stamping lastStarvationScoutAt',
+            );
+            await appendAuditRow(this.auditPath(), {
+              action: 'pipeline_starvation_scout_spawn_failed',
+              provenance: source === RECONCILE_TERMINAL_SOURCE
+                ? RECONCILE_TERMINAL_SOURCE
+                : STARVATION_TRIGGER_PROVENANCE,
+              repo: outcome.repo,
+              runKey: outcome.runKey,
+              taskId: launched.id,
+              error: spawnError,
+              disposition: launched.disposition?.reason ?? 'launch_error',
+              source,
+              at: new Date(nowMs).toISOString(),
+            });
+          } else {
+            spawnedScoutTaskId = launched.id;
+            scoutQueued = launch.queued === true;
+            this.deps.log?.(
+              `[pipeline-starvation] spawned idea-scout for ${outcome.repo} → task ${spawnedScoutTaskId}`
+              + `${scoutQueued ? ' (queued)' : ''}`,
+            );
+            await appendAuditRow(this.auditPath(), {
+              action: 'pipeline_starvation_scout_spawn',
+              provenance: source === RECONCILE_TERMINAL_SOURCE
+                ? RECONCILE_TERMINAL_SOURCE
+                : STARVATION_TRIGGER_PROVENANCE,
+              repo: outcome.repo,
+              runKey: outcome.runKey,
+              taskId: spawnedScoutTaskId,
+              queued: scoutQueued === true,
+              openIssueCount: outcome.openIssueCount ?? null,
+              disqualifierSummary: decisionInputs.disqualifierSummary,
+              source,
+              at: new Date(nowMs).toISOString(),
+            });
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          spawnError = message;
+          this.deps.log?.(`[pipeline-starvation] scout spawn failed for ${outcome.repo}: ${message}`);
+          await appendAuditRow(this.auditPath(), {
+            action: 'pipeline_starvation_scout_spawn_failed',
+            provenance: source === RECONCILE_TERMINAL_SOURCE
+              ? RECONCILE_TERMINAL_SOURCE
+              : STARVATION_TRIGGER_PROVENANCE,
+            repo: outcome.repo,
+            runKey: outcome.runKey,
+            error: message,
+            source,
+            at: new Date(nowMs).toISOString(),
+          });
+          // Fall through — still record the blocked-empty and maybe alert.
+        }
       }
     }
 
@@ -835,6 +898,7 @@ export class PipelineStarvationService {
     input: HandleBatchOutcomeInput,
     nowMs: number,
     consecutiveBlockedEmpty = 0,
+    launchErrorRetries = 0,
   ): Promise<LaunchResult<Task>> {
     const { outcome } = input;
     const localPath = input.localPath?.trim() || outcome.localPath?.trim() || '';
@@ -891,7 +955,7 @@ export class PipelineStarvationService {
       launchSource: 'api',
       disableDedup: true,
       autoCloseOnSignal: true,
-      idempotencyKey: starvationScoutIdempotencyKey(outcome.repo, nowMs),
+      idempotencyKey: starvationScoutIdempotencyKey(outcome.repo, nowMs, launchErrorRetries),
       name:
         `Idea scout (starvation refill): ${outcome.repo}`,
     };

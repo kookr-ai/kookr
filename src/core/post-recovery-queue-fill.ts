@@ -99,10 +99,21 @@ export function decidePostRecoveryQueueFill(input: PostRecoveryKickInput): PostR
  * Idempotency key for a post-recovery kick launch (one per repo per UTC day).
  * Distinct from the starvation anti-thrash scout key so a deliberate recovery
  * kick does not collide with in-window starvation thrash protection.
+ * `launchErrorRetries` salts the key after a create-then-`launch_error` so the
+ * next tick launches a new scout instead of replaying the dead task (#2744).
  */
-export function postRecoveryKickIdempotencyKey(repo: string, utcDay: string): string {
+export function postRecoveryKickIdempotencyKey(
+  repo: string,
+  utcDay: string,
+  launchErrorRetries = 0,
+): string {
   const slug = repo.trim().toLowerCase().replace(/[/.]/g, '-');
-  return `post-recovery-queue-fill:${slug}:${utcDay}`;
+  const base = `post-recovery-queue-fill:${slug}:${utcDay}`;
+  const retries =
+    Number.isFinite(launchErrorRetries) && launchErrorRetries > 0
+      ? Math.floor(launchErrorRetries)
+      : 0;
+  return retries > 0 ? `${base}:r${retries}` : base;
 }
 
 /** Durable state schema for per-repo post-recovery kick bookkeeping. */

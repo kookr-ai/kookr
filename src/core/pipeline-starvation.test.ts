@@ -636,6 +636,15 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(a).not.toBe(d);
     expect(a).toMatch(/^starvation-scout:jeanibarz-lucy:\d+$/);
   });
+
+  test('idempotency key salts after launch_error so the next tick is not a replay (#2744)', () => {
+    const base = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW);
+    const retry = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW, 1);
+    const retry2 = starvationScoutIdempotencyKey('jeanibarz/lucy', NOW, 2);
+    expect(retry).toBe(`${base}:r1`);
+    expect(retry2).toBe(`${base}:r2`);
+    expect(starvationScoutIdempotencyKey('jeanibarz/lucy', NOW, 0)).toBe(base);
+  });
 });
 
 describe('parseBatchOutcomeRecord', () => {
