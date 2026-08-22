@@ -4367,6 +4367,31 @@ a.playbook-empty-docs-link:visited:hover {
   gap: 8px;
 }
 
+.cwd-label-actions {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.cwd-clipboard-button {
+  background: none;
+  border: none;
+  color: var(--teal);
+  font-size: 11px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.cwd-clipboard-button:hover {
+  color: var(--text-bright);
+}
+
 .cwd-server-button {
   background: none;
   border: none;

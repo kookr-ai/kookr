@@ -76,6 +76,16 @@ export const SAMPLE_LAUNCH_PROMPTS = [
   },
 ] as const;
 
+/**
+ * True when clipboard text looks like an absolute path we can drop into
+ * Working directory: after trim, it starts with `/` or `~/`. Shape check
+ * only — does not touch the filesystem (issue #2748).
+ */
+export function looksLikeAbsoluteClipboardPath(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith('/') || trimmed.startsWith('~/');
+}
+
 type Tab = 'manual' | 'playbooks';
 
 /** A cwd dropdown entry: an MRU path, optionally labeled as a tracked project. */
@@ -345,11 +355,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // Blocks the save effect from resurrecting the draft after a successful
   // submit sets the flag and synchronously clears the stored draft.
   const submittedRef = useRef(false);
-  // Tracks the last cwd value committed by a non-typing action (MRU pick or
-  // server-cwd button). At submit time, if the current cwd matches this, the
-  // user didn't mutate after picking, so we don't fire a redundant 'typed'
-  // event. If they typed *over* the picked value, the values diverge and we
-  // fire 'typed' to record the override.
+  // Tracks the last cwd value committed by a non-typing action (MRU pick,
+  // server-cwd button, or clipboard-path fill). At submit time, if the
+  // current cwd matches this, the user didn't mutate after picking, so we
+  // don't fire a redundant 'typed' event. If they typed *over* the picked
+  // value, the values diverge and we fire 'typed' to record the override.
   const lastNonTypedCwdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -562,6 +572,37 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     promptRef.current?.focus();
   }
 
+  // Fill Working directory from a copied absolute path (issue #2748). Same
+  // fail-closed clipboard read as the prompt paste chip: denied/empty never
+  // throws and never logs contents. Never auto-reads on dialog open.
+  async function handlePasteCwdFromClipboard() {
+    const text = await readClipboardText();
+    const trimmed = text?.trim() ?? '';
+    if (!trimmed) {
+      useKookrStore.getState().handleAlert(
+        '',
+        'Nothing to paste — the clipboard is empty or access was denied.',
+        'info',
+      );
+      return;
+    }
+    // First non-empty line only: a copied `pwd` often has a following prompt
+    // or selection. Putting a newline into cwd would fail launch.
+    const candidate = trimmed.split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (!looksLikeAbsoluteClipboardPath(candidate)) {
+      useKookrStore.getState().handleAlert(
+        '',
+        'Clipboard is not a path — copy an absolute path (starts with / or ~/) and try again.',
+        'info',
+      );
+      return;
+    }
+    setCwd(candidate);
+    cwdRef.current?.focus();
+    lastNonTypedCwdRef.current = candidate;
+    track({ type: 'launch_dialog_cwd_field_used', method: 'paste' });
+  }
+
   useEscapeToClose(() => {
     if (showDropdown) {
       setShowDropdown(false);
@@ -746,22 +787,33 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
             <label>
               <div className="cwd-label-row">
                 <span>Working directory</span>
-                {cwd.trim() !== serverCwdTarget && (
+                <div className="cwd-label-actions">
                   <button
                     type="button"
-                    className="link-button cwd-server-button"
-                    onClick={useServerCwd}
-                    title={
-                      serverCwdProtected
-                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use main checkout: ${serverCwdTarget}`
-                        : `Use server cwd: ${serverCwdTarget}`
-                    }
+                    className="link-button cwd-clipboard-button"
+                    onClick={handlePasteCwdFromClipboard}
+                    title="Fill working directory from a copied absolute path"
+                    aria-label="Use clipboard path"
                   >
-                    {serverCwdProtected
-                      ? `↩ Use main checkout (${serverCwdTarget})`
-                      : `↩ Use server cwd (${serverCwdTarget})`}
+                    Use clipboard path
                   </button>
-                )}
+                  {cwd.trim() !== serverCwdTarget && (
+                    <button
+                      type="button"
+                      className="link-button cwd-server-button"
+                      onClick={useServerCwd}
+                      title={
+                        serverCwdProtected
+                          ? `Server cwd is a protected worktree (${serverCwd}). Click to use main checkout: ${serverCwdTarget}`
+                          : `Use server cwd: ${serverCwdTarget}`
+                      }
+                    >
+                      {serverCwdProtected
+                        ? `↩ Use main checkout (${serverCwdTarget})`
+                        : `↩ Use server cwd (${serverCwdTarget})`}
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="combo-input">
                 <input
