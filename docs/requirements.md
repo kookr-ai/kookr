@@ -764,6 +764,20 @@ The system SHALL remember the last effort and model pins sent from dashboard Lau
 
 **Evidence:** `src/frontend/store/last-launch-pins.ts`, `src/frontend/components/launch-effort-model.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`. Tests: `src/frontend/store/last-launch-pins.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`.
 
+### R4b.11: Fill Launch Working Directory from Clipboard Path [F4.1] — SHOULD — `done`
+
+The system SHOULD let the operator fill the Launch dialog's working directory from a copied path that starts with `/` or `~/`, without reading the clipboard until they click.
+
+**Acceptance criteria:**
+- Clicking "Use clipboard path" with clipboard `/tmp/demo-repo` or `~/git/demo` (leading/trailing whitespace allowed) sets Working directory to that trimmed path
+- A multi-line clipboard uses the first line when that line is a path
+- Clicking with a paragraph of prose does not change cwd and explains that the clipboard is not a path
+- Empty or denied clipboard does not throw; cwd is unchanged (same fail-closed behavior as the prompt paste chip)
+- Opening the dialog does not read the clipboard
+- Shape check only (`/` or `~/` after trim); no filesystem access
+
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (`looksLikeAbsoluteClipboardPath`, `handlePasteCwdFromClipboard`), `src/frontend/components/LaunchTaskDialog.paste.test.ts`.
+
 ---
 
 ## R4c: Contribution Workspace
@@ -1415,6 +1429,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
 | R4b.9 | F4.1 | SHALL | done | LaunchTaskDialog, QuickLaunch, LaunchEffortModelPickers, messages, lifecycle-handler |
 | R4b.10 | F4.1 | SHALL | done | last-launch-pins, LaunchTaskDialog, QuickLaunch, launch-effort-model |
+| R4b.11 | F4.1 | SHOULD | done | LaunchTaskDialog (`looksLikeAbsoluteClipboardPath`), LaunchTaskDialog.paste.test.ts |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

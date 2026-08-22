@@ -598,6 +598,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       return;
     }
     setCwd(candidate);
+    setShowDropdown(false);
+    setHighlightIdx(-1);
     cwdRef.current?.focus();
     lastNonTypedCwdRef.current = candidate;
     track({ type: 'launch_dialog_cwd_field_used', method: 'paste' });
@@ -784,9 +786,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 )}
               </div>
             </div>
-            <label>
+            <div className="launch-cwd-field">
               <div className="cwd-label-row">
-                <span>Working directory</span>
+                <label htmlFor="launch-task-cwd">Working directory</label>
                 <div className="cwd-label-actions">
                   <button
                     type="button"
@@ -817,6 +819,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               </div>
               <div className="combo-input">
                 <input
+                  id="launch-task-cwd"
                   ref={cwdRef}
                   type="text"
                   value={cwd}
@@ -864,7 +867,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   This is Kookr&apos;s own runtime checkout — agents launched here work on Kookr itself.
                 </span>
               )}
-            </label>
+            </div>
             <AgentTypeSelector
               value={agentType}
               onChange={(next) => {

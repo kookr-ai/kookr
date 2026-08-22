@@ -49,7 +49,7 @@ A future RFC will retrofit Origin+Host validation onto pre-existing endpoints. T
 - The dialog SHOULD offer a one-click way to fall back to the server cwd, with a guard against the production-worktree footgun.
 - The dialog SHOULD let the user open a server-side directory browser when they don't know the exact path.
 - When a typed path is a git repository, the dialog SHOULD surface its existing worktrees as suggestions, with branch name visible.
-- A clipboard-paste auto-detect SHOULD recognize an absolute path on the clipboard and offer to populate the field, with the input sanitized and the user shown the final value before commit.
+- The dialog SHOULD offer an explicit click to fill Working directory from a clipboard path that starts with `/` or `~/`. Empty or denied clipboard fails closed (same status as the prompt paste chip) and does not throw. Non-path text does not change cwd. The dialog MUST NOT read the clipboard on open. Native `paste` on the cwd input (ANSI / BOM / bidi / `file://` sanitization) remains with PR 3 and MUST reuse the shipped shape check and `method: 'paste'` telemetry — do not add a second auto-read-on-open path.
 - All filesystem access from the frontend SHALL go through new server endpoints that:
   - validate `Origin` (presence + match) and `Host` headers,
   - constrain the resolved path to a hardcoded `$HOME` root (no config knob),
@@ -170,9 +170,11 @@ The "unavailable" state covers all unactionable cases — the user has nothing t
 - `AbortController` on outbound fetch.
 - Server honors `Request.signal` for `readdir`/`stat`/`execFile`. `fs.promises.realpath` does not (Node ≤21); the timeout still bounds the worst case.
 
-### Layer 1.5 — Clipboard-paste auto-detect (replaces drag-and-drop)
+### Layer 1.5 — Clipboard path fill (click control shipped in #2748; native paste sanitization still PR 3)
 
-When the cwd input fires a `paste` event, run sanitization in this order (round-3 finding — v3 had a step-ordering bug where the control-byte rejection ran before the multi-line first-line extraction, making multi-line handling dead code):
+**Shipped (issue #2748):** "Use clipboard path" next to Working directory. Click reads the clipboard; dialog open does not. Fail-closed: empty/denied clipboard never throws and never logs contents. After trim, the first line is kept; if it starts with `/` or `~/`, it fills the field, focuses the input, records `lastNonTypedCwdRef`, and emits `launch_dialog_cwd_field_used` with `method: 'paste'`. Otherwise cwd is unchanged and the operator is told the clipboard is not a path. Shape check only (`looksLikeAbsoluteClipboardPath` in `LaunchTaskDialog.tsx`) — no filesystem access.
+
+**Still PR 3:** native `paste` on the cwd input, sanitization in this order (round-3 finding — v3 had a step-ordering bug where the control-byte rejection ran before the multi-line first-line extraction, making multi-line handling dead code). `~/` is already accepted by the shipped click path; the paste-event path should use the same helper:
 
 1. **Take first non-empty line.** Multi-line pastes (markdown bullets, terminal output) keep only line 1.
 2. **Trim** leading/trailing whitespace.
@@ -268,7 +270,7 @@ The four layers don't honestly decompose: Layer 1's allowlist is reused by 3 and
 
 **Wait — instrumentation runs for at least 21 days.** After that, the team reviews the `nonMruRate` metric in the existing telemetry-report and decides whether to ship PR 3. (round-3 design-minimalist finding — v3's "≥15% over 21 days OR 200 events" was false precision on an admittedly guessed threshold. With n=200 events the 95% CI is ±5%, so the gate is a coin flip in a wide band. Single-parameter rule: 21 days minimum, team judgment for the call.)
 
-**PR 3 — Layers 1 + 1.5 + 3 + 4 bundled.** Conditional on the threshold above. ~10 files, ~500 lines.
+**PR 3 — Layers 1 + remaining 1.5 (native paste sanitization) + 3 + 4 bundled.** The click-to-read control shipped separately as issue #2748. Conditional on the threshold above. ~10 files, ~500 lines.
 
 ## Files to change
 

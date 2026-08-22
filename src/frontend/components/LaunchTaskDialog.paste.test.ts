@@ -258,6 +258,22 @@ describe('LaunchTaskDialog clipboard-path cwd action', () => {
     root.unmount();
   });
 
+  test('a multi-line clipboard does not hunt later lines for a path', async () => {
+    stubReadText(() => Promise.resolve('Please fix the login bug.\n/tmp/demo-repo'));
+    const alert = vi.fn();
+    useKookrStore.setState({ handleAlert: alert });
+
+    const root = renderDialog(container);
+    await flush();
+
+    await act(async () => { getClipboardCwdButton(container).click(); });
+    await flush();
+
+    expect(getCwdEl(container).value).toBe('/tmp/work');
+    expect(alert).toHaveBeenCalledWith('', expect.stringContaining('not a path'), 'info');
+    root.unmount();
+  });
+
   test('prose on the clipboard does not change cwd and explains it is not a path', async () => {
     stubReadText(() => Promise.resolve('Please fix the login bug in src/auth.ts'));
     const alert = vi.fn();

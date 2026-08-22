@@ -4367,6 +4367,13 @@ a.playbook-empty-docs-link:visited:hover {
   gap: 8px;
 }
 
+/* Beat `.dialog label` (flex column + margin) so the cwd caption stays
+   inline next to the row actions instead of wrapping the field. */
+.cwd-label-row > label {
+  display: inline;
+  margin-bottom: 0;
+}
+
 .cwd-label-actions {
   display: flex;
   gap: 10px;
@@ -4376,22 +4383,7 @@ a.playbook-empty-docs-link:visited:hover {
   justify-content: flex-end;
 }
 
-.cwd-clipboard-button {
-  background: none;
-  border: none;
-  color: var(--teal);
-  font-size: 11px;
-  padding: 0;
-  cursor: pointer;
-  text-decoration: underline;
-  font-family: inherit;
-  white-space: nowrap;
-}
-
-.cwd-clipboard-button:hover {
-  color: var(--text-bright);
-}
-
+.cwd-clipboard-button,
 .cwd-server-button {
   background: none;
   border: none;
@@ -4402,13 +4394,23 @@ a.playbook-empty-docs-link:visited:hover {
   text-decoration: underline;
   font-family: inherit;
   white-space: nowrap;
+}
+
+.cwd-clipboard-button:hover,
+.cwd-server-button:hover {
+  color: var(--text-bright);
+}
+
+.cwd-clipboard-button:focus-visible,
+.cwd-server-button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+.cwd-server-button {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 60%;
-}
-
-.cwd-server-button:hover {
-  color: var(--text-bright);
 }
 
 .dialog h3 { margin-bottom: 16px; font-size: 16px; color: var(--text-bright); }
@@ -4832,7 +4834,8 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-secondary);
 }
 
-.launch-prompt-field {
+.launch-prompt-field,
+.launch-cwd-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
