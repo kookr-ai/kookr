@@ -579,6 +579,37 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(launches[1]!.idempotencyKey).toMatch(/:r1$/);
   });
 
+  test('launch_error retry budget exhaustion does not stamp or launch (#2744)', async () => {
+    for (let i = 0; i < 3; i += 1) {
+      const t = store.createTask({
+        prompt: 'repository idea scout for jeanibarz/lucy',
+        cwd: checkout,
+        playbookId: 'repository-idea-scout.md',
+        projectId: 'github.com/jeanibarz/lucy',
+      });
+      store.setDisposition(t.id, {
+        reason: 'launch_error',
+        at: new Date(clock).toISOString(),
+        source: 'launch-service',
+        detail: 'Grok authentication expired',
+      });
+      store.terminateTask(t.id);
+    }
+
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'retry-cap' }),
+      localPath: checkout,
+    });
+    expect(result.spawnedScoutTaskId).toBeUndefined();
+    expect(result.state.lastStarvationScoutAt).toBeUndefined();
+    expect(result.summary).toMatch(/retry budget exhausted/i);
+    expect(launches).toHaveLength(0);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_scout_spawn_failed');
+    expect(audit).toContain('retry budget exhausted');
+  });
+
   test('emptyClass=concurrent does not spawn or inflate consecutive product empties', async () => {
     const product = await service.handleBatchOutcome({
       outcome: outcome({ runKey: 'product-1', emptyClass: 'product' }),

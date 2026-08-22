@@ -105,10 +105,11 @@ export const EMPTY_IDEATION_FREE_SLOTS_THRESHOLD = 3;
 export const SCOUT_ANTI_THRASH_MS = 25 * 60 * 1000; // 25m
 
 /**
- * Max starvation-scout launch attempts per anti-thrash window after earlier
- * attempts died at launch (`disposition=launch_error`). The first try plus
- * this many salted retries, then hold until the window rolls so a persistent
- * Grok-auth outage cannot spawn unbounded doomed scouts (issue #2744).
+ * Max create-then-pre-session-death outcomes per anti-thrash window before
+ * refusing another spawn (issue #2744). Count of in-window `launch_error`
+ * family scouts; at this many the handle audits failure and does not launch
+ * again until the window rolls. Total attempts = this cap (first plus salts
+ * `:r1`…`:r{cap-1}`).
  */
 export const STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP = 3;
 

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isTerminatedAtLaunch } from './task.js';
+import { isTerminatedAtLaunch, PRE_SESSION_DISPOSITION_REASONS } from './task.js';
 
 describe('isTerminatedAtLaunch (#2744)', () => {
-  it('is true for pre-session launch_error / launch_timeout / stale_open_launch', () => {
-    expect(isTerminatedAtLaunch({ disposition: { reason: 'launch_error' } })).toBe(true);
-    expect(isTerminatedAtLaunch({ disposition: { reason: 'launch_timeout' } })).toBe(true);
-    expect(isTerminatedAtLaunch({ disposition: { reason: 'stale_open_launch' } })).toBe(true);
+  it('is true for every pre-session disposition reason', () => {
+    for (const reason of PRE_SESSION_DISPOSITION_REASONS) {
+      expect(isTerminatedAtLaunch({ disposition: { reason } })).toBe(true);
+    }
   });
 
   it('is false when a session attached or the task never launched', () => {
