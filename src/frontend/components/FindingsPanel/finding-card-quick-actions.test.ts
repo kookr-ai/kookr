@@ -25,7 +25,7 @@ function permissionChip(overrides: Partial<QuickAction> = {}): QuickAction {
 }
 
 describe('visibleFindingCardQuickActions', () => {
-  test('keeps Yes/No chips from extractQuickActions', () => {
+  test('keeps non-permission Yes/No chips', () => {
     const actions: QuickAction[] = [
       { label: 'Yes', value: 'yes', shortcut: 'y' },
       { label: 'No', value: 'no', shortcut: 'n' },
@@ -63,6 +63,16 @@ describe('visibleFindingCardQuickActions', () => {
     const visible = visibleFindingCardQuickActions(actions);
     expect(visible).toHaveLength(FINDING_CARD_QUICK_ACTION_CAP);
     expect(visible.map((action) => action.value)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  test('filters unbound permission chips before applying the cap', () => {
+    const unbound = Array.from({ length: FINDING_CARD_QUICK_ACTION_CAP + 1 }, (_, i) => ({
+      label: `Unbound ${i + 1}`,
+      value: `unbound-${i + 1}`,
+      keystroke: String(i + 1),
+    }));
+    const bound = permissionChip({ label: 'Deny', value: 'No', keystroke: '9' });
+    expect(visibleFindingCardQuickActions([...unbound, bound])).toEqual([bound]);
   });
 
   test('returns an empty list when there are no suggestions', () => {

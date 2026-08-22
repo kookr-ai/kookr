@@ -23,7 +23,7 @@ export function isPermissionQuickAction(action: QuickAction): boolean {
 export function visibleFindingCardQuickActions(actions: readonly QuickAction[]): QuickAction[] {
   const usable = actions.filter((action) => {
     if (!isPermissionQuickAction(action)) return true;
-    return Boolean(action.keystroke && action.permissionRequest);
+    return Boolean(action.permissionRequest);
   });
   return usable.slice(0, FINDING_CARD_QUICK_ACTION_CAP);
 }

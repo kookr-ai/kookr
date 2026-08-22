@@ -53,7 +53,7 @@ const permissionRequest: PermissionRequestBinding = {
 function renderPanel(
   container: HTMLElement,
   findings: AgentState[],
-  send: (msg: ClientMessage) => void,
+  send: (msg: ClientMessage) => boolean | void,
   selectedAgentId: string | null = null,
   selectedTaskId: string | null = null,
 ): Root {
@@ -90,7 +90,7 @@ function queryActionButton(container: HTMLElement, text: string): HTMLButtonElem
 describe('FindingCard live quick-action chips (issue #2747)', () => {
   let container: HTMLDivElement;
   let root: Root | null;
-  let send: ReturnType<typeof vi.fn<(msg: ClientMessage) => void>>;
+  let send: ReturnType<typeof vi.fn<(msg: ClientMessage) => boolean | void>>;
 
   beforeEach(() => {
     document.body.innerHTML = '';
@@ -173,6 +173,31 @@ describe('FindingCard live quick-action chips (issue #2747)', () => {
     });
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
     expect(useKookrStore.getState().suggestions[agent.agentId]).toBeUndefined();
+
+    const followUpRequest: PermissionRequestBinding = {
+      ...permissionRequest,
+      requestId: 'request-2',
+      toolInputHash: 'hash-2',
+    };
+    act(() => {
+      useKookrStore.getState().handleSuggestion(agent.agentId, [], [
+        {
+          label: 'Allow: Bash: `git diff`',
+          value: 'Yes',
+          keystroke: '1',
+          permissionRequest: followUpRequest,
+        },
+      ]);
+    });
+    const followUpChips = chipButtons(container);
+    expect(followUpChips[0]?.disabled).toBe(false);
+    act(() => followUpChips[0]!.click());
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'permissionChoice',
+      agentId: 'agent-1',
+      keystroke: '1',
+      permissionRequest: followUpRequest,
+    });
   });
 
   test('needs_input card shows Yes/No chips and sends respond with the chip value', () => {
@@ -185,12 +210,29 @@ describe('FindingCard live quick-action chips (issue #2747)', () => {
         detectedAt: new Date('2026-06-11T08:00:00Z'),
       },
     });
+    const nextAgent = makeAgent({
+      agentId: 'agent-2',
+      taskId: 'task-2',
+      taskName: 'Task 2',
+      anomaly: {
+        agentId: 'agent-2',
+        type: 'needs_input',
+        severity: 'info',
+        explanation: 'Waiting for a reply',
+        detectedAt: new Date('2026-06-11T08:01:00Z'),
+      },
+    });
+    useKookrStore.setState({
+      agents: [agent, nextAgent],
+      selectedAgentId: agent.agentId,
+      selectedTaskId: agent.taskId,
+    });
     useKookrStore.getState().handleSuggestion(agent.agentId, [], [
       { label: 'Yes', value: 'yes', shortcut: 'y' },
       { label: 'No', value: 'no', shortcut: 'n' },
     ]);
 
-    root = renderPanel(container, [agent], send);
+    root = renderPanel(container, [agent, nextAgent], send, agent.agentId, agent.taskId);
 
     const chips = chipButtons(container);
     expect(chips.map((chip) => chip.textContent?.trim())).toEqual(['Yes', 'No']);
@@ -202,6 +244,8 @@ describe('FindingCard live quick-action chips (issue #2747)', () => {
       agentId: 'agent-1',
       input: 'yes',
     });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+    expect(useKookrStore.getState().suggestions[agent.agentId]).toBeUndefined();
   });
 
   test('cards with no suggestion chips look unchanged', () => {
@@ -213,6 +257,38 @@ describe('FindingCard live quick-action chips (issue #2747)', () => {
     expect(queryActionButton(container, 'Skip')).toBeInstanceOf(HTMLButtonElement);
     expect(queryActionButton(container, 'Snooze')).toBeInstanceOf(HTMLButtonElement);
     expect(queryActionButton(container, 'Not a real issue')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('keeps chips and selection when send reports failure', () => {
+    const agent = makeAgent();
+    send.mockReturnValue(false);
+    useKookrStore.setState({
+      agents: [agent],
+      selectedAgentId: agent.agentId,
+      selectedTaskId: agent.taskId,
+    });
+    useKookrStore.getState().handleSuggestion(agent.agentId, [], [
+      {
+        label: 'Allow: Bash: `git status`',
+        value: 'Yes',
+        keystroke: '1',
+        permissionRequest,
+      },
+    ]);
+
+    root = renderPanel(container, [agent], send, agent.agentId, agent.taskId);
+    act(() => chipButtons(container)[0]!.click());
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'permissionChoice',
+      agentId: 'agent-1',
+      keystroke: '1',
+      permissionRequest,
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
+    expect(useKookrStore.getState().suggestions[agent.agentId]?.quickActions).toHaveLength(1);
+    expect(chipButtons(container)).toHaveLength(1);
+    expect(chipButtons(container)[0]?.disabled).toBe(false);
   });
 
   test('does not render a permission chip that lacks permissionRequest', () => {

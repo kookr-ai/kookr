@@ -87,7 +87,7 @@ function FindingParentChip({
 export const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
-  send: (msg: ClientMessage) => void;
+  send: (msg: ClientMessage) => boolean | void;
 }): React.ReactElement {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagFP, setShowFlagFP] = useState(false);
@@ -95,6 +95,7 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
   const selectAgent = useKookrStore((s) => s.selectAgent);
   const nextBottleneck = useKookrStore((s) => s.nextBottleneck);
   const clearSuggestion = useKookrStore((s) => s.clearSuggestion);
+  const handleAlert = useKookrStore((s) => s.handleAlert);
   const suggestion = useKookrStore((s) => s.suggestions[agent.agentId]);
   const cardQuickActions = suggestion
     ? visibleFindingCardQuickActions(suggestion.quickActions)
@@ -156,7 +157,12 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
       if (!keystroke || !permissionRequest || permissionButtonsDisabled) return;
       setPermissionButtonsDisabled(true);
       track({ type: 'quick_action_clicked', agentId: agent.agentId, actionLabel: `permission:${keystroke}` });
-      send({ type: 'permissionChoice', agentId: agent.agentId, keystroke, permissionRequest });
+      const sent = send({ type: 'permissionChoice', agentId: agent.agentId, keystroke, permissionRequest });
+      if (sent === false) {
+        setPermissionButtonsDisabled(false);
+        handleAlert('', 'Message not sent — connection lost. Please try again.', 'error');
+        return;
+      }
       clearSuggestion(agent.agentId);
       nextBottleneck();
       return;
@@ -169,7 +175,11 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
       anomalyType: agent.anomaly?.type ?? null,
     });
     track({ type: 'quick_action_clicked', agentId: agent.agentId, actionLabel: action.value.slice(0, 50) });
-    send({ type: 'respond', agentId: agent.agentId, input: action.value });
+    const sent = send({ type: 'respond', agentId: agent.agentId, input: action.value });
+    if (sent === false) {
+      handleAlert('', 'Message not sent — connection lost. Please try again.', 'error');
+      return;
+    }
     clearSuggestion(agent.agentId);
     nextBottleneck();
   }
@@ -343,7 +353,7 @@ export const FindingCard = React.memo(function FindingCard({ agent, selected, se
                   type="button"
                   data-testid="finding-quick-action"
                   className={`btn-quick-action${permissionChip ? ' permission-action' : ''}`}
-                  title={action.value}
+                  title={action.label}
                   disabled={permissionChip && permissionButtonsDisabled}
                   onClick={(e) => {
                     e.stopPropagation();
