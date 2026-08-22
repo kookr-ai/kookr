@@ -745,6 +745,11 @@ Called by `parallel-issue-batch` after it writes a machine-readable
    no starvation-triggered scout was spawned inside the **adaptive** scout
    cooldown **unless** a belt-empty residual bypass applies (below). Spawns are
    stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+   A scout that dies at launch (`disposition=launch_error`, typically expired
+   Grok session login) does **not** write `lastStarvationScoutAt`, so the next
+   refill tick can retry instead of treating the dead task as a successful
+   scout (issue #2744). A spawn that throws still does not stamp. No
+   pay-per-token API-key auth path is introduced.
    **Adaptive scout cooldown (issue #2171):** the starvation-scout cooldown is
    no longer a fixed 4h. It halves once per two consecutive product
    `blocked-empty` events and is floored at 30m — `4h` at

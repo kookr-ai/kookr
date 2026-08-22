@@ -441,6 +441,89 @@ describe('PostRecoveryService', () => {
     expect(launcher).toHaveBeenCalledOnce(); // still one
   });
 
+  it('create-then-launch_error does not persist the UTC-day kick or stamp lastStarvationScoutAt (#2744)', async () => {
+    const { TaskStore } = await import('../core/tasks.js');
+    const store = new TaskStore();
+    const launcher = vi.fn(async (opts) => {
+      const task = store.createTask({
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        name: opts.name,
+        playbookId: opts.playbookId,
+        projectId: opts.projectId,
+      });
+      store.setDisposition(task.id, {
+        reason: 'launch_error',
+        at: '2026-08-10T09:20:37.000Z',
+        source: 'launch-service',
+        detail: 'Grok authentication expired',
+      });
+      store.terminateTask(task.id);
+      return { task: store.getTask(task.id)!, queued: false };
+    });
+    const kickDir = join(tempDir, 'kick-launch-error');
+    const starvationDir = join(tempDir, 'starvation-launch-error');
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'batch',
+          name: 'Lucy batch',
+          enabled: true,
+          playbook: {
+            path: 'parallel-issue-batch.md',
+            parameters: {
+              repoFullName: 'jeanibarz/lucy',
+              localPath: '/tmp/lucy',
+            },
+          },
+        }),
+      ],
+      setEnabled: vi.fn(),
+      taskStore: store,
+      getCapacityLedger: () => makeLedger({ free: 7, freeForGeneralSources: 7, pendingQueueDepth: 0 }),
+      launcher,
+      isDispatchHealthy: () => true,
+      kookrDir: tempDir,
+      kickStateDir: kickDir,
+      starvationStateDir: starvationDir,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    const first = await service.runQueueFillKicks();
+    expect(first[0]).toMatchObject({
+      repo: 'jeanibarz/lucy',
+      kicked: false,
+      utcDay: '2026-08-10',
+    });
+    expect(first[0]?.reason).toMatch(/died at launch/i);
+    expect(launcher).toHaveBeenCalledOnce();
+    expect(launcher.mock.calls[0]?.[0]?.idempotencyKey).toBe(
+      'post-recovery-queue-fill:jeanibarz-lucy:2026-08-10',
+    );
+
+    const { readdir } = await import('node:fs/promises');
+    await expect(readdir(kickDir)).rejects.toThrow();
+
+    const { loadPipelineStarvationState } = await import('../core/pipeline-starvation-state.js');
+    const starvation = await loadPipelineStarvationState('jeanibarz/lucy', {
+      stateDir: starvationDir,
+      nowMs,
+    });
+    expect(starvation.lastStarvationScoutAt).toBeUndefined();
+
+    const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('post_recovery_queue_fill_kick_failed');
+    expect(audit).not.toContain('"action":"post_recovery_queue_fill_kick"');
+
+    const second = await service.runQueueFillKicks();
+    expect(second[0]?.kicked).toBe(false);
+    expect(launcher).toHaveBeenCalledTimes(2);
+    expect(launcher.mock.calls[1]?.[0]?.idempotencyKey).toBe(
+      'post-recovery-queue-fill:jeanibarz-lucy:2026-08-10:r1',
+    );
+  });
+
   it('skips when parallel-issue-batch is already in flight for the repo', async () => {
     const launcher = vi.fn();
     const batchInFlight = {

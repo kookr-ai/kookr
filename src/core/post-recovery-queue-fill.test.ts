@@ -110,4 +110,10 @@ describe('postRecoveryKickIdempotencyKey', () => {
       'post-recovery-queue-fill:jeanibarz-lucy:2026-08-10',
     );
   });
+
+  it('salts after launch_error so the next tick is not a replay (#2744)', () => {
+    expect(postRecoveryKickIdempotencyKey('jeanibarz/lucy', '2026-08-10', 1)).toBe(
+      'post-recovery-queue-fill:jeanibarz-lucy:2026-08-10:r1',
+    );
+  });
 });

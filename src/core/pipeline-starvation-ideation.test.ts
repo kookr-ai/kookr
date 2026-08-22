@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { TaskStore } from './tasks.js';
 import {
   countEligibleIssueCreatedInRunDir,
+  countTerminatedAtLaunchIdeaScoutsForRepo,
   findRecentSuccessfulIdeationAtMs,
   findRecentSuccessfulIdeationDetails,
   isIdeaScoutInFlightForRepo,
@@ -86,5 +87,45 @@ describe('pipeline-starvation ideation discovery (#1715 / overnight-throughput P
     });
     expect(isIdeaScoutInFlightForRepo('jeanibarz/lucy', store.listTasks())).toBe(true);
     expect(isIdeaScoutInFlightForRepo('kookr-ai/kookr', store.listTasks())).toBe(false);
+  });
+
+  test('counts idea-scouts that died at launch inside the window (#2744)', () => {
+    const store = new TaskStore();
+    const live = store.createTask({
+      prompt: 'scout',
+      cwd: '/tmp',
+      playbookId: 'repository-idea-scout.md',
+      projectId: 'github.com/jeanibarz/lucy',
+    });
+    const dead = store.createTask({
+      prompt: 'scout',
+      cwd: '/tmp',
+      playbookId: 'repository-idea-scout.md',
+      projectId: 'github.com/jeanibarz/lucy',
+    });
+    store.setDisposition(dead.id, {
+      reason: 'launch_error',
+      at: new Date().toISOString(),
+      source: 'launch-service',
+      detail: 'Grok authentication expired',
+    });
+    store.terminateTask(dead.id);
+    const otherRepo = store.createTask({
+      prompt: 'scout',
+      cwd: '/tmp',
+      playbookId: 'repository-idea-scout.md',
+      projectId: 'github.com/kookr-ai/kookr',
+    });
+    store.setDisposition(otherRepo.id, {
+      reason: 'launch_error',
+      at: new Date().toISOString(),
+      source: 'launch-service',
+    });
+    store.terminateTask(otherRepo.id);
+
+    const sinceMs = live.createdAt.getTime() - 1;
+    expect(countTerminatedAtLaunchIdeaScoutsForRepo('jeanibarz/lucy', store.listTasks(), sinceMs)).toBe(1);
+    expect(countTerminatedAtLaunchIdeaScoutsForRepo('jeanibarz/lucy', store.listTasks(), Date.now() + 60_000)).toBe(0);
+    expect(isIdeaScoutInFlightForRepo('jeanibarz/lucy', store.listTasks())).toBe(true);
   });
 });

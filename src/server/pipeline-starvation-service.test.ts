@@ -107,6 +107,7 @@ describe('PipelineStarvationService (#1715)', () => {
 
     expect(result.decision.spawnScout).toBe(true);
     expect(result.spawnedScoutTaskId).toBeTruthy();
+    expect(result.state.lastStarvationScoutAt).toBe(new Date(NOW).toISOString());
     expect(result.alertEmitted).toBe(false);
     expect(launches).toHaveLength(1);
     expect(launches[0]!.playbookId).toMatch(/repository-idea-scout/);
@@ -467,6 +468,115 @@ describe('PipelineStarvationService (#1715)', () => {
     const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('pipeline_starvation_scout_spawn_failed');
     expect(audit).toContain(STARVATION_TRIGGER_PROVENANCE);
+  });
+
+  test('create-then-launch_error does not stamp lastStarvationScoutAt (#2744)', async () => {
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        const t = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+        });
+        store.setDisposition(t.id, {
+          reason: 'launch_error',
+          at: new Date(clock).toISOString(),
+          source: 'launch-service',
+          detail: 'Grok authentication expired or is too close to expiry at 2026-08-19T01:31:15Z. Run `grok login --device-code`.',
+        });
+        store.terminateTask(t.id);
+        const result: LaunchResult<Task> = {
+          task: store.getTask(t.id)!,
+          queued: false,
+          idempotentReplay: false,
+        };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      now: () => clock,
+    });
+
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'launch-error-run' }),
+      localPath: checkout,
+    });
+    expect(result.spawnedScoutTaskId).toBeUndefined();
+    expect(result.state.lastStarvationScoutAt).toBeUndefined();
+    expect(result.summary).toMatch(/died at launch/i);
+    expect(result.state.blockedEmptyAt).toHaveLength(1);
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_scout_spawn_failed');
+    expect(audit).toContain('Grok authentication expired');
+    expect(audit).not.toContain('"action":"pipeline_starvation_scout_spawn"');
+  });
+
+  test('after launch_error the next refill tick retries with a salted key and can stamp (#2744)', async () => {
+    let attempts = 0;
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async (opts) => {
+        launches.push(opts);
+        attempts += 1;
+        const t = store.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          name: opts.name,
+          playbookId: opts.playbookId,
+          projectId: opts.projectId,
+          parentTaskId: opts.parentTaskId,
+        });
+        if (attempts === 1) {
+          store.setDisposition(t.id, {
+            reason: 'launch_error',
+            at: new Date(clock).toISOString(),
+            source: 'launch-service',
+            detail: 'Grok authentication expired',
+          });
+          store.terminateTask(t.id);
+        }
+        const result: LaunchResult<Task> = {
+          task: store.getTask(t.id)!,
+          queued: false,
+          idempotentReplay: false,
+        };
+        return result;
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      now: () => clock,
+    });
+
+    const first = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'auth-fail-1' }),
+      localPath: checkout,
+    });
+    expect(first.state.lastStarvationScoutAt).toBeUndefined();
+    expect(launches[0]!.idempotencyKey).toMatch(/^starvation-scout:jeanibarz-lucy:\d+$/);
+
+    clock = NOW + 60_000;
+    const second = await service.handleBatchOutcome({
+      outcome: outcome({
+        runKey: 'auth-recovered-2',
+        generatedAt: new Date(clock).toISOString(),
+      }),
+      localPath: checkout,
+    });
+    expect(second.decision.spawnScout).toBe(true);
+    expect(second.spawnedScoutTaskId).toBeTruthy();
+    expect(second.state.lastStarvationScoutAt).toBe(new Date(clock).toISOString());
+    expect(launches).toHaveLength(2);
+    expect(launches[1]!.idempotencyKey).toMatch(/:r1$/);
   });
 
   test('emptyClass=concurrent does not spawn or inflate consecutive product empties', async () => {

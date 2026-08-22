@@ -105,6 +105,14 @@ export const EMPTY_IDEATION_FREE_SLOTS_THRESHOLD = 3;
 export const SCOUT_ANTI_THRASH_MS = 25 * 60 * 1000; // 25m
 
 /**
+ * Max starvation-scout launch attempts per anti-thrash window after earlier
+ * attempts died at launch (`disposition=launch_error`). The first try plus
+ * this many salted retries, then hold until the window rolls so a persistent
+ * Grok-auth outage cannot spawn unbounded doomed scouts (issue #2744).
+ */
+export const STARVATION_SCOUT_LAUNCH_ERROR_RETRY_CAP = 3;
+
+/**
  * Minimum consecutive product blocked-empty events (including current) required
  * for the refill postcondition bypass of the 4h scout-spawn gate (#2071).
  * Second empty after a recent scout is enough signal that leaves burned / belt
@@ -1037,8 +1045,21 @@ export function defaultCheckoutGuess(repo: string, home = homedir()): string {
  *
  * Must stay aligned with the decision thrash floor: a 4h-stable key would
  * defeat the in-window bypass via launch-path idempotentReplay.
+ *
+ * `launchErrorRetries` salts the key after a create-then-`launch_error` so the
+ * next refill tick is a new launch, not an idempotent replay of the dead task
+ * (issue #2744). Zero (the default) keeps the historical bucket-only form.
  */
-export function starvationScoutIdempotencyKey(repo: string, nowMs: number): string {
+export function starvationScoutIdempotencyKey(
+  repo: string,
+  nowMs: number,
+  launchErrorRetries = 0,
+): string {
   const bucket = Math.floor(nowMs / SCOUT_ANTI_THRASH_MS);
-  return `starvation-scout:${repoToPlaybookSlug(repo)}:${bucket}`;
+  const base = `starvation-scout:${repoToPlaybookSlug(repo)}:${bucket}`;
+  const retries =
+    Number.isFinite(launchErrorRetries) && launchErrorRetries > 0
+      ? Math.floor(launchErrorRetries)
+      : 0;
+  return retries > 0 ? `${base}:r${retries}` : base;
 }

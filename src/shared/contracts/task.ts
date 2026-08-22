@@ -207,6 +207,29 @@ export interface TaskDisposition {
   };
 }
 
+/**
+ * Pre-session dispositions: the task record exists but no agent session ever
+ * attached. A starvation/post-recovery scout with one of these reasons must
+ * not count as "a scout already ran" (issue #2744).
+ */
+export const PRE_SESSION_DISPOSITION_REASONS = [
+  'launch_timeout',
+  'launch_error',
+  'stale_open_launch',
+] as const satisfies readonly TaskDispositionReason[];
+
+/**
+ * True when the task died before a live session attached (`launch_error`,
+ * `launch_timeout`, or `stale_open_launch`).
+ */
+export function isTerminatedAtLaunch(task: {
+  disposition?: Pick<TaskDisposition, 'reason'> | null;
+}): boolean {
+  const reason = task.disposition?.reason;
+  if (reason === undefined) return false;
+  return (PRE_SESSION_DISPOSITION_REASONS as readonly TaskDispositionReason[]).includes(reason);
+}
+
 export interface TaskLaunchHealthSummary {
   degradedDependencies: string[];
   findings: TaskLaunchHealthFinding[];
