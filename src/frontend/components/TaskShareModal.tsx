@@ -70,6 +70,43 @@ export function buildShareInvite(taskLabel: string, url: string, expiry: string)
   return `Live read-only view of my agent working on ${label} — open: ${url} (expires ${expiry})`;
 }
 
+/**
+ * Owner-local recency pin for Contact Share. Stores only the contact id — never
+ * a display name — so re-sharing the same verified contact is one click without
+ * changing the contact-share protocol.
+ */
+export const LAST_SHARED_CONTACT_STORAGE_KEY = 'kookr:share.lastContactId';
+
+export function readLastSharedContactId(): string | null {
+  try {
+    const raw = localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY);
+    return typeof raw === 'string' && raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastSharedContactId(contactId: string): void {
+  try {
+    localStorage.setItem(LAST_SHARED_CONTACT_STORAGE_KEY, contactId);
+  } catch {
+    // Recency is best-effort; private mode / quota must not block sending.
+  }
+}
+
+export function rankVerifiedContacts(
+  contacts: readonly KookrContact[],
+  lastSharedContactId: string | null,
+): KookrContact[] {
+  const verified = contacts.filter((contact) => contact.trustState === 'verified');
+  if (!lastSharedContactId) return verified;
+  const pinnedIndex = verified.findIndex((contact) => contact.contactId === lastSharedContactId);
+  // Missing (blocked/removed) or already first: keep the verified order as-is.
+  if (pinnedIndex <= 0) return verified;
+  const pinned = verified[pinnedIndex]!;
+  return [pinned, ...verified.filter((_, index) => index !== pinnedIndex)];
+}
+
 interface Props {
   taskId: string;
   taskLabel: string;
@@ -225,6 +262,7 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const [passwordRevealed, setPasswordRevealed] = useState(false);
   const [sharePath, setSharePath] = useState<SharePath>('contact');
   const [contacts, setContacts] = useState<KookrContact[]>([]);
+  const [lastSharedContactId, setLastSharedContactId] = useState<string | null>(() => readLastSharedContactId());
   const [inbox, setInbox] = useState<ContactShareInboxItem[]>([]);
   const [sharedTasks, setSharedTasks] = useState<SharedTask[]>([]);
   const sharesRef = useRef<TaskShareSummary[]>([]);
@@ -260,7 +298,10 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   const longLivedShare = ttlMs > ONE_DAY_MS;
   const longLivedWarningId = 'task-share-long-lived-warning';
   const guestPathSelected = sharePath === 'guest';
-  const verifiedContacts = contacts.filter((contact) => contact.trustState === 'verified');
+  const verifiedContacts = useMemo(
+    () => rankVerifiedContacts(contacts, lastSharedContactId),
+    [contacts, lastSharedContactId],
+  );
   const pendingInbox = inbox.filter((item) => item.lifecycle === 'pending');
   const pendingGrantRequests = displayedShare?.grantRequests.filter((request) => request.status === 'pending') ?? [];
   const terminalViewGrantRequests = pendingGrantRequests.filter((request) => (
@@ -476,6 +517,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
         recipientDeviceId: device.deviceId,
       });
       if (!ok) throw new Error(`contact-share-${status}`);
+      writeLastSharedContactId(contact.contactId);
+      setLastSharedContactId(contact.contactId);
       await loadContactShare().catch(() => undefined);
     } catch {
       setError('Contact Share invitation was not sent.');
@@ -654,6 +697,14 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
                 <div key={contact.contactId} className="task-share-contact-row">
                   <div>
                     <strong>{contact.displayName}</strong>
+                    {contact.contactId === lastSharedContactId && (
+                      <small
+                        className="task-share-marker"
+                        style={{ justifySelf: 'start', whiteSpace: 'nowrap' }}
+                      >
+                        Last shared
+                      </small>
+                    )}
                     <span>{contact.devices.length} device{contact.devices.length === 1 ? '' : 's'}</span>
                   </div>
                   <button

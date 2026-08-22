@@ -5,8 +5,14 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { RELAY_TRUSTED_ENV_NAME } from '../../remote/handshake.js';
-import type { ContactShareInboxItem, SharedTask } from '../../shared/contracts/contact-share.js';
-import { TaskShareModal } from './TaskShareModal.js';
+import type { ContactShareInboxItem, KookrContact, SharedTask } from '../../shared/contracts/contact-share.js';
+import {
+  LAST_SHARED_CONTACT_STORAGE_KEY,
+  rankVerifiedContacts,
+  readLastSharedContactId,
+  TaskShareModal,
+  writeLastSharedContactId,
+} from './TaskShareModal.js';
 
 const TASK_ID = 'task-1';
 const SHARE_CSRF_HEADER = 'x-kookr-csrf';
@@ -132,6 +138,41 @@ function getInputForLabel(container: HTMLElement, labelText: string): HTMLInputE
   return input as HTMLInputElement;
 }
 
+function makeContact(
+  contactId: string,
+  displayName: string,
+  trustState: KookrContact['trustState'] = 'verified',
+): KookrContact {
+  return {
+    contactId,
+    displayName,
+    verifiedFingerprint: `fp-${contactId}`,
+    devices: [{ deviceId: `${contactId}-device`, publicKey: `pub-${contactId}` }],
+    trustState,
+  };
+}
+
+function stubContactShareFetch(contacts: KookrContact[], sendStatus = 201) {
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (url === '/api/share/csrf-token') return jsonResponse({ csrfToken: 'csrf-share' });
+    if (url === '/api/share/task' && !init) return jsonResponse({ shares: [] });
+    if (url === '/api/contact-share/contacts') return jsonResponse({ contacts });
+    if (url === '/api/contact-share/inbox') return jsonResponse({ inbox: [] });
+    if (url === '/api/contact-share/shared-tasks') return jsonResponse({ sharedTasks: [] });
+    if (url === '/api/contact-share/shares' && init?.method === 'POST') {
+      return jsonResponse({ ok: true }, { status: sendStatus });
+    }
+    throw new Error(`unexpected fetch ${String(url)}`);
+  });
+  vi.stubGlobal('fetch', fetch);
+  return fetch;
+}
+
+function contactRowNames(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('.task-share-contact-row strong'))
+    .map((element) => element.textContent ?? '');
+}
+
 function expectSingleJsonPost(
   fetchMock: { mock: { calls: Array<[RequestInfo | URL, RequestInit?]> } },
   url: string,
@@ -154,6 +195,7 @@ describe('TaskShareModal', () => {
 
   beforeEach(() => {
     document.body.innerHTML = '';
+    localStorage.clear();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -164,6 +206,7 @@ describe('TaskShareModal', () => {
     act(() => root?.unmount());
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    localStorage.clear();
     document.body.innerHTML = '';
   });
 
@@ -1110,5 +1153,126 @@ describe('TaskShareModal', () => {
 
     expect(container.textContent).toContain('Copy did not complete.');
     expect(container.textContent).not.toContain('Share ID copied.');
+  });
+
+  test('after a successful Send, reopening the modal pins that contact as Last shared', async () => {
+    stubContactShareFetch([
+      makeContact('contact-alice', 'Alice'),
+      makeContact('contact-bob', 'Bob'),
+    ]);
+    root = renderModal(container);
+    await flush();
+    expect(contactRowNames(container)).toEqual(['Alice', 'Bob']);
+    expect(container.textContent).not.toContain('Last shared');
+
+    await act(async () => {
+      getButton(container, 'Send Contact Share to Bob').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).toBe('contact-bob');
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).not.toContain('Bob');
+
+    act(() => root?.unmount());
+    root = renderModal(container);
+    await flush();
+
+    expect(contactRowNames(container)).toEqual(['Bob', 'Alice']);
+    const rows = Array.from(container.querySelectorAll('.task-share-contact-row'));
+    expect(rows[0]?.textContent).toContain('Last shared');
+    expect(rows[1]?.textContent).not.toContain('Last shared');
+  });
+
+  test('ignores a stored last-shared id that is later blocked', async () => {
+    localStorage.setItem(LAST_SHARED_CONTACT_STORAGE_KEY, 'contact-bob');
+    stubContactShareFetch([
+      makeContact('contact-alice', 'Alice'),
+      makeContact('contact-bob', 'Bob', 'blocked'),
+    ]);
+    root = renderModal(container);
+    await flush();
+
+    expect(contactRowNames(container)).toEqual(['Alice']);
+    expect(container.textContent).not.toContain('Last shared');
+    expect(container.textContent).not.toContain('Bob');
+  });
+
+  test('ignores a stored last-shared id that is later removed', async () => {
+    localStorage.setItem(LAST_SHARED_CONTACT_STORAGE_KEY, 'contact-bob');
+    stubContactShareFetch([makeContact('contact-alice', 'Alice')]);
+    root = renderModal(container);
+    await flush();
+
+    expect(contactRowNames(container)).toEqual(['Alice']);
+    expect(container.textContent).not.toContain('Last shared');
+  });
+
+  test('does not persist a last-shared id when Contact Share send fails', async () => {
+    stubContactShareFetch([makeContact('contact-alice', 'Alice')], 500);
+    root = renderModal(container);
+    await flush();
+
+    await act(async () => {
+      getButton(container, 'Send Contact Share to Alice').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).toBeNull();
+    expect(container.textContent).not.toContain('Last shared');
+  });
+
+  test('guest-link creation does not remember a Contact Share recipient', async () => {
+    stubCopyShareFetch();
+    root = renderModal(container);
+    await flush();
+    await selectGuestLink(container);
+    await act(async () => {
+      getButtonByText(container, 'Create guest link').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain('Copy guest link');
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('last-shared contact ranking', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test('persists only the contact id', () => {
+    writeLastSharedContactId('contact-bob');
+    expect(readLastSharedContactId()).toBe('contact-bob');
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).toBe('contact-bob');
+    expect(localStorage.getItem(LAST_SHARED_CONTACT_STORAGE_KEY)).not.toContain('Bob');
+  });
+
+  test('sorts the remembered verified contact first and leaves the rest in place', () => {
+    const alice = makeContact('contact-alice', 'Alice');
+    const bob = makeContact('contact-bob', 'Bob');
+    const cara = makeContact('contact-cara', 'Cara');
+    expect(rankVerifiedContacts([alice, bob, cara], 'contact-bob').map((contact) => contact.contactId))
+      .toEqual(['contact-bob', 'contact-alice', 'contact-cara']);
+  });
+
+  test('leaves order unchanged when the remembered contact is already first', () => {
+    const alice = makeContact('contact-alice', 'Alice');
+    const bob = makeContact('contact-bob', 'Bob');
+    expect(rankVerifiedContacts([alice, bob], 'contact-alice').map((contact) => contact.contactId))
+      .toEqual(['contact-alice', 'contact-bob']);
+  });
+
+  test('drops a stored id that is blocked or missing from the verified list', () => {
+    const alice = makeContact('contact-alice', 'Alice');
+    const bob = makeContact('contact-bob', 'Bob', 'blocked');
+    expect(rankVerifiedContacts([alice, bob], 'contact-bob').map((contact) => contact.contactId))
+      .toEqual(['contact-alice']);
+    expect(rankVerifiedContacts([alice], 'contact-gone').map((contact) => contact.contactId))
+      .toEqual(['contact-alice']);
   });
 });
