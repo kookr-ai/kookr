@@ -307,6 +307,7 @@ kookr() {
   esac
 }
 ${binding}
+printf 'bound=%s unit=%s|' "$UNIT_ISSUES" "$UNIT_ID"
 ${helper}
 : > "$STATE_FILE"
 spawn_count=0
@@ -318,7 +319,47 @@ tr '\\n' ';' < "$STATE_FILE"
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('bound=2757 2758 unit=u-2757-2758|');
       expect(output).toContain('0|SKIP issue #2758: live issue claim owned by task sibling-task');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed for malformed or duplicate selection issue sets', () => {
+    const binding = content.match(/   if \[ -z "\$\{PRIMARY_N:-\}" \][\s\S]*?\n   fi\n/)?.[0];
+    expect(binding).toBeDefined();
+    const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-invalid-selection-test-'));
+    const stateFile = join(tempDir, 'state.log');
+    const script = `
+set -u
+PRIMARY_N=2757
+UNIT_ID=stale-unit
+UNIT_ISSUES=stale-issues
+SELECTION_FILE=${join(tempDir, 'selection.json')}
+STATE_FILE=${stateFile}
+run_case() {
+  printf '%s' "$2" > "$SELECTION_FILE"
+  : > "$STATE_FILE"
+  bound=0
+  for _ in 1; do
+    ${binding}
+    bound=1
+  done
+  printf '%s:%s|' "$1" "$bound"
+  tr '\\n' ';' < "$STATE_FILE"
+}
+run_case duplicate '[{"unit_id":"u-2757","issues":[2757,2757]}]'
+run_case null '[{"unit_id":"u-2757","issues":[null]}]'
+run_case fractional '[{"unit_id":"u-2757","issues":[2757.5]}]'
+run_case missing '[{"unit_id":"u-2757"}]'
+`;
+    try {
+      const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('duplicate:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('null:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('fractional:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('missing:0|BLOCKER primary #2757: could not bind every issue');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
