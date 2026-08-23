@@ -94,8 +94,8 @@ checklist:
   - Existing prior batch state inspected before selecting work
   - Candidate issues filtered for author trust, duplicates, active PRs, and blocked labels
   - Selected work units have a documented non-overlapping write-scope matrix
-  - Related small issues bundled into multi-issue work units when a single PR is more efficient
-  - One child Kookr task spawned per work unit (not blindly one per issue), up to the concurrency cap
+  - Related small issues bundled into multi-issue work units only when atomic multi-issue claim transfer is available
+  - One child Kookr task spawned per eligible work unit (currently one issue per unit), up to the concurrency cap
   - Child agent type may be Claude Code, Codex CLI, Grok Build, or server default
   - Each child prompt prepended with a context pack (issue(s), non-exhaustive candidate files, base ref, cached skill digests) framed as a floor, not a ceiling
   - Child prompts require fresh git worktrees and no edits in the main checkout
@@ -118,6 +118,9 @@ A **work unit** is either:
 - a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle.
 
 Default to one issue per work unit. Bundle only when it is clearly more efficient (see Phase 3).
+Until the issue-claim API supports atomic transfer for every member, the current
+selection must use single-issue work units; the bundle shape remains documented
+for future claim-transfer support and is guarded fail-closed at spawn time.
 
 `{{mergeAfterImplementation}}` controls the terminal policy:
 
@@ -461,6 +464,9 @@ When bundling, record `reason_bundled` so a human can audit the grouping decisio
 ### 3.3 Selection matrix shape
 
 Each matrix entry is one **work unit** (one future child task / one PR):
+
+The multi-issue example below is a future-capability example. It is not eligible
+for selection while atomic multi-issue claim transfer is unavailable.
 
 ```json
 [
