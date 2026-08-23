@@ -118,6 +118,7 @@ describe('CodexCliAdapter', () => {
     // live in spec.env and flags live in spec.args.
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.env?.KOOKR_TASK_ID).toBe(task.id);
+    expect(spec.env?.TERM).toBe('xterm-256color');
     // The binary is argv[0] on its own — no `env VAR=x codex …` shell prefix.
     expect(spec.command).toMatch(/(^|\/)codex$/);
     expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));

@@ -40,7 +40,8 @@ export interface SessionSpec {
    *     unrelated provider/GitHub/deploy secrets in the server environment never
    *     reach the Grok child (RFC "allowlisted child environment"). The caller
    *     is responsible for including everything the child needs (PATH, HOME,
-   *     TERM, locale, …).
+   *     locale, …); the backend normalizes a missing, blank, or `dumb` TERM to
+   *     the interactive default before spawning the PTY.
    */
   envMode?: 'inherit' | 'replace';
   cwd?: string;

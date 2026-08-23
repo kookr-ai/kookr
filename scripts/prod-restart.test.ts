@@ -19,12 +19,13 @@ describe('production server systemd unit', () => {
     expect(unit).toContain('WatchdogSec=30');
     expect(unit).toContain('WorkingDirectory=%h/git/kookr-prod');
     expect(unit).toContain('EnvironmentFile=-%h/.config/kookr/kookr.env');
-    expect(unit).toContain('ExecStart=/usr/bin/env node dist/server/start.js');
+    expect(unit).toContain('ExecStart=/usr/bin/env TERM=xterm-256color node dist/server/start.js');
     // glibc allocator tuning for the RSS sawtooth / arena fragmentation (#1753).
     expect(unit).toContain('Environment=MALLOC_ARENA_MAX=2');
     expect(unit).toContain('Environment=MALLOC_TRIM_THRESHOLD_=131072');
     // Env knobs must precede EnvironmentFile so ~/.config/kookr/kookr.env can
-    // still override them per-host.
+    // still override them per-host; TERM is fixed on ExecStart because the
+    // environment file may override unit-level Environment= assignments.
     expect(unit.indexOf('Environment=MALLOC_ARENA_MAX=2')).toBeLessThan(
       unit.indexOf('EnvironmentFile=-%h/.config/kookr/kookr.env'),
     );
@@ -35,17 +36,18 @@ describe('production server systemd unit', () => {
   });
 });
 
-describe('prod-restart script-managed fallback launch (issue #1753)', () => {
-  // The pid-file fallback path exports the glibc allocator knobs before
-  // `exec node`, mirroring the systemd unit's Environment= lines. The unit-file
-  // assertions above cannot cover this second delivery mechanism, and the launch
-  // string has fragile nested quoting (`export VAR="${VAR:-default}"` embedded in
-  // a double-quoted `local launch=...` handed to `sh -c "$launch"`). These tests
-  // execute `start_server` for real with stubbed `setsid`/`node` and assert the
-  // node process actually observes the intended MALLOC_* values.
+describe('prod-restart script-managed fallback launch (issues #1753, #2756)', () => {
+  // The pid-file fallback path exports the glibc allocator knobs and fixed TERM
+  // before `exec node`, mirroring the systemd unit's launch environment. The
+  // unit-file assertions above cannot cover this second delivery mechanism, and
+  // the launch string has fragile nested quoting (`export VAR="${VAR:-default}"`
+  // embedded in a double-quoted `local launch=...` handed to `sh -c "$launch"`).
+  // These tests execute `start_server` for real with stubbed `setsid`/`node` and
+  // assert the node process observes all intended environment values.
   function runStartServer(overrideEnv: Record<string, string>): {
     arena: string;
     trim: string;
+    term: string;
   } {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-fallback-'));
     try {
@@ -72,7 +74,7 @@ exec "$@"
       writeFileSync(
         join(binDir, 'node'),
         `#!/usr/bin/env bash
-printf 'ARENA=%s\\nTRIM=%s\\n' "\${MALLOC_ARENA_MAX-}" "\${MALLOC_TRIM_THRESHOLD_-}" > ${JSON.stringify(recordFile)}
+printf 'ARENA=%s\\nTRIM=%s\\nTERM=%s\\n' "\${MALLOC_ARENA_MAX-}" "\${MALLOC_TRIM_THRESHOLD_-}" "\${TERM-}" > ${JSON.stringify(recordFile)}
 exit 0
 `,
       );
@@ -101,16 +103,22 @@ exit 0
       const recorded = readFileSync(recordFile, 'utf8');
       const arena = /ARENA=(.*)/.exec(recorded)?.[1] ?? '';
       const trim = /TRIM=(.*)/.exec(recorded)?.[1] ?? '';
-      return { arena, trim };
+      const term = /TERM=(.*)/.exec(recorded)?.[1] ?? '';
+      return { arena, trim, term };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
 
   it('exports the default MALLOC_ARENA_MAX/TRIM_THRESHOLD to the server', () => {
-    const { arena, trim } = runStartServer({});
+    const { arena, trim, term } = runStartServer({});
     expect(arena).toBe('2');
     expect(trim).toBe('131072');
+    expect(term).toBe('xterm-256color');
+  });
+
+  it('forces a usable TERM when the restarting shell has TERM=dumb', () => {
+    expect(runStartServer({ TERM: 'dumb' }).term).toBe('xterm-256color');
   });
 
   it('honors a pre-set MALLOC_ARENA_MAX from the launching shell', () => {
@@ -1021,4 +1029,3 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
     }
   });
 });
-

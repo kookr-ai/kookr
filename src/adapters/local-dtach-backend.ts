@@ -76,6 +76,7 @@ import {
   totalRingFleetBytes,
 } from './dtach-ring-store.js';
 import { killProcessTree } from './process-tree.js';
+import { ensureInteractiveTermEnv } from './session-term-env.js';
 import {
   findAgentPidSync as findAgentPidSyncImpl,
   findDtachMasterPid,
@@ -324,10 +325,14 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // the default 'inherit' preserves the historical `{...process.env, ...}`
     // merge for Claude Code / Codex CLI. dtach itself is exec'd with the same
     // env, so a 'replace' caller must include PATH so the multiplexer resolves.
-    const env =
+    // Normalize after both env modes and caller overrides are applied. This is
+    // the final spawn choke point, so an inherited or explicit TERM=dumb cannot
+    // reach a PTY-backed Codex session.
+    const env = ensureInteractiveTermEnv(
       spec.envMode === 'replace'
         ? { ...(spec.env ?? {}) }
-        : { ...process.env, ...spec.env };
+        : { ...process.env, ...spec.env },
+    );
     try {
       this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
       if (command !== this.dtachBinary) this.assertExecutableAvailable(spec.id, command, env);

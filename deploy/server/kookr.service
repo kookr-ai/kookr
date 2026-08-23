@@ -38,7 +38,9 @@ Environment=NODE_ENV=production
 Environment=MALLOC_ARENA_MAX=2
 Environment=MALLOC_TRIM_THRESHOLD_=131072
 EnvironmentFile=-%h/.config/kookr/kookr.env
-ExecStart=/usr/bin/env node dist/server/start.js
+# Managed agent sessions use a PTY; set TERM on the final exec because an
+# EnvironmentFile may override unit-level Environment= assignments.
+ExecStart=/usr/bin/env TERM=xterm-256color node dist/server/start.js
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
