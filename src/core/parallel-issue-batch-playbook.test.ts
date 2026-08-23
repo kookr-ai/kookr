@@ -283,8 +283,10 @@ done
   test('checks every issue in a bundled unit before spawning', () => {
     const binding = content.match(/   if \[ -z "\$\{PRIMARY_N:-\}" \][\s\S]*?\n   fi\n/)?.[0];
     const helper = content.match(/   check_spawn_issue_claim\(\) \{[\s\S]*?\n   \}\n/)?.[0];
+    const atomicBundleGuard = content.match(/   if \[ "\$UNIT_COUNT" -gt 1 \][\s\S]*?\n   fi\n/)?.[0];
     expect(binding).toBeDefined();
     expect(helper).toBeDefined();
+    expect(atomicBundleGuard).toBeDefined();
     const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-bundle-claim-test-'));
     const stateFile = join(tempDir, 'state.log');
     const script = `
@@ -298,11 +300,17 @@ REPO=kookr-ai/kookr
 STATE_FILE=${stateFile}
 KOOKR_TASK_ID=local-task
 kookr() {
-  case "$1" in
+    case "$1" in
     issue)
       case "$3" in
         2757) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}' ;;
-        2758) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[{"taskId":"sibling-task"}]}}' ;;
+        2758)
+          if [ "$SECONDARY_CLAIM" = foreign ]; then
+            printf '%s' '{"ok":true,"code":"OK","details":{"claims":[{"taskId":"sibling-task"}]}}'
+          else
+            printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}'
+          fi
+          ;;
       esac
       ;;
   esac
@@ -310,18 +318,27 @@ kookr() {
 ${binding}
 printf 'bound=%s unit=%s|' "$UNIT_ISSUES" "$UNIT_ID"
 ${helper}
-: > "$STATE_FILE"
-spawn_count=0
-if check_spawn_issue_claim; then
-  spawn_count=$((spawn_count + 1))
-fi
-printf '%s|' "$spawn_count"
-tr '\\n' ';' < "$STATE_FILE"
+run_case() {
+  SECONDARY_CLAIM="$1"
+  : > "$STATE_FILE"
+  spawn_count=0
+  for _ in 1; do
+    if check_spawn_issue_claim; then
+      ${atomicBundleGuard}
+      spawn_count=$((spawn_count + 1))
+    fi
+  done
+  printf '%s|%s|' "$SECONDARY_CLAIM" "$spawn_count"
+  tr '\\n' ';' < "$STATE_FILE"
+}
+run_case foreign
+run_case unowned
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
       expect(output).toContain('bound=2757 2758 unit=u-2757-2758|');
-      expect(output).toContain('0|SKIP issue #2758: live issue claim owned by task sibling-task');
+      expect(output).toContain('foreign|0|SKIP issue #2758: live issue claim owned by task sibling-task');
+      expect(output).toContain('unowned|0|BLOCKER unit u-2757-2758: multi-issue unit requires atomic claims for every issue before spawn');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

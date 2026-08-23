@@ -434,6 +434,12 @@ For each filtered issue:
 
 Default is **one issue per work unit**. Bundle two or more issues into a single work unit only when **all** of the following hold:
 
+The current issue-claim admission API atomically claims one issue per child. Until
+multi-issue claim transfer is available, multi-issue bundles are **temporarily
+ineligible for selection**: keep each selected work unit single-issue. Phase 4
+also retains a fail-closed guard so a stale or legacy matrix cannot hand an
+unsafe bundle to the single-issue spawn path.
+
 1. **Size**: each issue is small enough that the combined change still fits a reviewable single PR (rough guide: one coherent feature/fix surface, not a mega-diff across unrelated subsystems). Prefer bundling only when the combined expected files stay focused (typically a handful of modules / one area).
 2. **Affinity** — at least one strong reason:
    - Shared write scope (same files or the same tight module).
