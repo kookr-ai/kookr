@@ -372,6 +372,7 @@ kookr/
 │   │   │   └── shared.ts                  #   common helpers
 │   │   ├── use-cases/                     # Server business logic (agent-input, delete-task,
 │   │   │                                  #   get-snapshot, playbook-launch,
+│   │   │                                  #   umbrella-chain-advancer (D2, default-off),
 │   │   │                                  #   workspace-cleanup-*, workspace-context, ...)
 │   │   ├── ws.ts                          # Thin WS dispatcher (delegates to ws-handlers/*)
 │   │   ├── ws-connection-handler.ts       # Per-connection lifecycle

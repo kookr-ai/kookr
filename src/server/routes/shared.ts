@@ -701,6 +701,11 @@ export interface RouteDeps {
   findingEvidenceReviewHmacKey?: Buffer;
   /** Disabled-by-default M2 finding-evidence background sampler. */
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'getStatus'>;
+  /** Phase-2 umbrella-chain backstop health; spawning is independently mode-gated. */
+  umbrellaChainAdvancer?: Pick<
+    import('../use-cases/umbrella-chain-advancer.js').UmbrellaChainAdvancer,
+    'getHealthSnapshot'
+  >;
   /** Shared coordinator recommendation suppressions; routes may write it and snapshots read it. */
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**

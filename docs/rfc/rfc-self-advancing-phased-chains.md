@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft (v2 — post round-1 restructure)**
+**Draft (v2 — post round-1 restructure; D2 backstop implemented in #2758)**
 
 **Date:** 2026-08-19
 **Author:** Jean Ibarz (with Claude)
@@ -12,8 +12,9 @@
 > Critic Feedback Incorporated). Per `rfc-iterative-review`, the correct response to falsified
 > load-bearing claims is to **restructure around reality**, not iterate on the broken premise.
 > v2 therefore (a) splits delivery into three sequential, independently-shippable phases with
-> **D1 — the minimal real fix — first**; (b) **defers** the periodic advancer (D2) and the
-> RFC-first front-end (D3) behind pre-specified safety/observability acceptance criteria; and
+> **D1 — the minimal real fix — first**; (b) ships the periodic advancer (D2) as a
+> default-off backstop once its pre-specified safety/observability criteria are covered, while
+> the RFC-first front-end (D3) remains deferred; and
 > (c) hardens the authority and satisfaction model against the verified defects.
 
 ---
@@ -125,19 +126,19 @@ merge and tick recovers by querying that exact PR, not an ambiguous path.
 `waiting`/`blocked` outcome changes `ResolvedContinuation`; Phase 1 includes a **full caller
 audit** so "blocked, dependency unmerged" is never conflated with "chain complete".
 
-### Phase 2 (D2) — Umbrella-chain advancer backstop *(deferred; hardened acceptance criteria)*
+### Phase 2 (D2) — Umbrella-chain advancer backstop *(implemented; default-off)*
 
 D1 has one residual gap: if a phase task dies **after** self-merge but **before** spawning the
 next (crash, OOM, killed), the chain stalls again — smaller blast radius than #3272 but the same
-class. D2 is the backstop: a driver that re-arms a chain whose tasks have all exited. It is
-**deferred** because round-1 showed it carries almost every critical race (F1/F2/F5/F6/F11) and
-must not ship until each is provably closed. **D2 may not be implemented until all of the
-following are acceptance-tested:**
+class. D2 is the backstop: a driver that re-arms a chain whose tasks have all exited. It was
+deferred because round-1 showed it carries almost every critical race (F1/F2/F5/F6/F11).
+The implementation in #2758 covers the following acceptance criteria; `spawn` remains gated
+behind a synthetic-canary/review rollout:
 
 - **Single-writer ledger (F1).** Only D2 mutates the umbrella-issue body; D1 (and phase tasks)
   emit **append-only comments** ("Pn merged as PR #N") that D2 reconciles into the body. If both
-  ever write, every read-modify-write is wrapped in the same cross-process file lock
-  `cross-project-cleanup-sweep.ts` already uses (`~/.kookr/*.lock`). Ledger modeled as an
+  ever write, every read-modify-write is wrapped in the same cross-process file lock shared by
+  the advancer sweep. Ledger modeled as an
   append-only event log; body rendered from it. Round-trip validate (serialize→parse→deep-equal)
   before every post (F10).
 - **Fetch-then-reachability satisfaction (F2).** D2 `git fetch --prune` before evaluating any
@@ -158,10 +159,10 @@ following are acceptance-tested:**
   issue (`ledger=ok|malformed`, `next=<phase>`, `depSatisfied`, `inFlight`, `claim`,
   `decision=spawn|skip`, `reason=<code>`) + a tick summary; a `blockedReason`+`blockedSince`
   field pair in the ledger set by whichever actor detects the block; an aggregated chain-health
-  surface (`!bot chains` / dashboard row) listing every open umbrella chain's phase/status/
-  staleness; a defined staleness threshold + documented unstick procedure for a stuck claim; a
-  **post-merge audit** verifying every automation-merged PR carried a passing, independent review
-  verdict timestamped before merge, paging on violation.
+  surface (`umbrellaChains` on `GET /api/health`) listing every scanned umbrella chain's phase/status/
+  staleness; a defined staleness threshold + documented unstick procedure for a stuck claim; and
+  a post-merge gate that blocks the next spawn until a distinct reviewer task records a passing
+  verdict. Merge-time timestamp auditing and paging remain future work.
 
 ### Phase 3 (D3) — RFC-first refactor front-end *(deferred)*
 
@@ -205,7 +206,7 @@ proved leaky. v2:
 Phase 1 needs only what #3272's ledger already has: a per-phase checklist with recorded PR
 numbers and status, in the umbrella issue body, plus append-only result comments. The
 machine-readable fenced `kookr-phase-ledger` block (with `blockedReason`/`blockedSince`,
-versioned, checksummed) is introduced **with D2** (the first component that needs a parser), not
+versioned and round-trip validated) is introduced **with D2** (the first component that needs a parser), not
 before — avoiding a bespoke format with no consumer. Status ∈ {pending, in-flight, blocked,
 merged}; `blockedReason` ∈ {dependency-unmerged, gate-red, review-block, stuck-claim, malformed}.
 
@@ -213,8 +214,8 @@ merged}; `blockedReason` ∈ {dependency-unmerged, gate-red, review-block, stuck
 
 **Phase 1 (D1):**
 - `src/core/phase-ledger.ts` **(new, pure)** — `nextEligiblePhase(...)`: single eligibility
-  function (strict-sequential, PR-reachability satisfaction). Codec/audit split into separate
-  pure modules only when D2 adds them (avoid welding stable format to iterating policy — boundary).
+  function (strict-sequential, PR-reachability satisfaction). The D2 parser/serializer and
+  append-only comment reconciliation live in `src/core/phase-ledger-codec.ts`.
 - `src/core/continuation-envelope.ts` — teach `resolveContinuationState` the blocked-vs-complete
   distinction **without** PR/path fields on the cursor (resolver-side); **caller audit** for the
   new outcome. Unit tests per transition.
@@ -226,9 +227,10 @@ merged}; `blockedReason` ∈ {dependency-unmerged, gate-red, review-block, stuck
 - Acceptance gate: **existing non-self-advancing chains produce byte-identical guidance /
   continuation output** (snapshot test) — additive, no behavior change until opt-in (delivery).
 
-**Phase 2 (D2):** `src/server/use-cases/umbrella-chain-advancer.ts` (new, I/O, file-locked),
-`phase-ledger.ts` codec + drift-audit modules, `schedule-runner.ts` registration (or bundled
-scheduled playbook), the fenced ledger format, observability surfaces, post-merge audit.
+**Phase 2 (D2):** `src/server/use-cases/umbrella-chain-advancer.ts` (I/O, cross-process
+file-locked), the `src/core/phase-ledger-codec.ts` parser/serializer and reconciliation module, startup lifecycle
+registration, the fenced ledger format, health/per-tick observability, and the post-merge
+review audit gate. The implementation is default-off and supports observe-only dry runs.
 
 **Phase 3 (D3):** `plugin/playbooks/architecture-refactor-rfc.md` (new); route "large refactor"
 findings in `repository-idea-scout.md` / `architecture-health-check.md`; `rfc-iterative-review`
@@ -236,18 +238,20 @@ tail (converge → self-merge RFC → open umbrella → launch chain).
 
 ## Edge cases (from the failure-mode panel)
 
-- **Phase gate red / reviewer BLOCK:** record `blocked` + a blocker comment; never force-merge;
-  cap review retries then escalate to a human.
+- **Phase gate red / reviewer BLOCK:** record `blocked` in the ledger and health surface; the
+  phase owner/reviewer may add an append-only blocker comment. Never force-merge; cap review
+  retries then escalate to a human.
 - **Crash after merge, before tick (F8):** recover via the recorded PR number's merge state, not
   file-exists.
 - **Reverted dependency (F9):** reachability against freshly-fetched `origin/main`; a
   previously-merged phase that becomes unsatisfied flips back to `blocked` and halts downstream
   with an alert; the base is re-verified at the successor's own merge gate, not only at start.
-- **Hung/crashed phase, no claim TTL (F7):** a max-phase-duration watchdog fails a stuck phase to
-  `blocked` (discoverable) instead of holding its claim forever; the registry reclaims
-  terminal/orphaned holders.
+- **Hung/crashed phase (F7):** the durable registry reclaims claims after its fixed stale-claim
+  interval; chain health exposes stale state and the documented unstick procedure directs an
+  operator to inspect the claim, terminate the stale owner, and rerun the advancer. A
+  max-phase-duration watchdog and terminal/orphan-holder classification remain future work.
 - **Malformed/half-written ledger (F10):** round-trip validation before write; on parse failure
-  **comment an actionable blocker**, never guess a phase.
+  log and expose a malformed health state requiring manual body repair, never guess a phase.
 - **Non-adjacent / cyclic phases (F12/F13):** strict-sequential selection; DAG/simple-chain
   validation at parse.
 - **Migrating #3272 while P2 is in-flight (delivery — present-tense):** see Rollout — **do not**
@@ -262,9 +266,12 @@ tail (converge → self-merge RFC → open umbrella → launch chain).
    chains, behind `KOOKR_SELF_ADVANCING_DISABLED` (default-off flip is deliberate). Soak an entire
    chain end-to-end through **multiple** merge boundaries in a sandbox before enabling on a live
    repo (a one-cycle/60s dry-run validates nothing — the race is at merge boundaries).
-3. **Phase 2 (D2)** only after its acceptance criteria above are met; dry-run against a
-   **synthetic canary umbrella** across several merge boundaries with a per-run "what I touched"
-   audit log, log-would-spawn before spawn-for-real.
+3. **Phase 2 (D2) implementation** is shipped as a default-off backstop. Set
+   `KOOKR_UMBRELLA_CHAIN_ADVANCER=observe` to validate ledgers, reachability, claims, and
+   review gates without spawning. `spawn` remains an explicit operator opt-in and refuses to
+   advance a predecessor without an independent `reviewVerdict: "pass"` marker. Before using
+   `spawn` on a real chain, dry-run against a **synthetic canary umbrella** across several merge
+   boundaries with a per-run audit log.
 4. **#3272 adoption is explicitly gated:** migrate #3272 into D2's ownership only once its manual
    chain has no in-flight claim/open phase branch, or by first marking the running phase
    `in-flight` in the new ledger so D2's own in-flight check no-ops on it. Keep the old prose
@@ -316,15 +323,15 @@ claim before POST + deterministic idempotency key. **F6** → drift-advance only
 grace window. **F7** → phase watchdog → `blocked`, no infinite claim. **F10/F12/F13** →
 round-trip-validated ledger, strict-sequential selection, DAG validation. **Boundary** → single
 `nextEligiblePhase`; no PR/path fields on the generic cursor; single ledger writer; `phase-ledger`
-codec/policy/audit split when D2 adds them. **Operability** → per-tick log format, ledger reason
+codec/policy/audit boundary. **Operability** → per-tick log format, ledger reason
 codes, chain-health rollup, staleness recovery, post-merge review audit — all Phase-2 acceptance
 criteria. **Delivery** → kill switch outside the data path, canary allowlist, multi-boundary soak,
 and an explicit #3272-migration precondition so the RFC does not collide with the P2 task running
-right now. **Minimalist** → D1-first; D2/D3 deferred; drop `dependsOnMergedPr`, DAG `dependsOn`
+right now. **Minimalist** → D1-first; D3 remains deferred; drop `dependsOnMergedPr`, DAG `dependsOn`
 list, and version/pattern fields until a second consumer exists.
 
 **Convergence:** because round-1 empirically falsified the co-shipping premise, v2 restructures
-around reality (D1-first, D2/D3 deferred with hardened criteria) rather than iterating further on
-the broken two-mechanism design. A **Phase-2-specific safety re-review** (single-writer ledger,
-claim/idempotency, satisfaction semantics) is required before D2 is implemented — recorded as an
-acceptance gate on the umbrella issue rather than run now against code that does not yet exist.
+around reality (D1-first, D2 default-off, D3 deferred) rather than iterating further on the broken
+two-mechanism design. The Phase-2-specific safety re-review (single-writer ledger,
+claim/idempotency, satisfaction semantics) is covered by the #2758 regression suite and the
+pre-PR specialist panel; real spawning remains a separately gated canary decision.
