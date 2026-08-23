@@ -723,6 +723,15 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
    # UNIT_ISSUES is the whitespace-separated issue-number list for this unit;
    # PRIMARY_N is its lowest issue number (the CAS key for the batch claim).
+   # The selection matrix is the source of truth. When the caller has not
+   # already bound UNIT_ISSUES from its `issues` array, derive the same list
+   # from ISSUES_LABEL (for example, "#200+#201"). A missing list falls back
+   # to the primary issue for legacy single-issue callers only.
+   UNIT_ISSUES="${UNIT_ISSUES:-}"
+   if [ -z "$UNIT_ISSUES" ] && [ -n "${ISSUES_LABEL:-}" ]; then
+     UNIT_ISSUES=$(printf '%s' "$ISSUES_LABEL" | tr '#+' '  ')
+   fi
+   [ -n "$UNIT_ISSUES" ] || UNIT_ISSUES="$PRIMARY_N"
    # Queue-feeder secondary candidates were consulted before reaching this
    # phase, but another task can claim one during prompt/context preparation.
    # Re-read the durable owner immediately before Phase 4 spawn (#2757). Any

@@ -216,6 +216,7 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
     expect(content).toContain('check_spawn_issue_claim');
     expect(content).toMatch(/Re-read the durable owner immediately before Phase 4 spawn/);
     expect(content).toContain('kookr issue owner "$issue_number" --repo "$REPO" --json');
+    expect(content).toContain('UNIT_ISSUES=$(printf \'%s\' "$ISSUES_LABEL" | tr \'#+\' \'  \')');
     expect(content).toContain('--claim-issue $PRIMARY_N --claim-repo $REPO');
   });
 
@@ -277,14 +278,17 @@ done
   });
 
   test('checks every issue in a bundled unit before spawning', () => {
+    const binding = content.match(/   UNIT_ISSUES="\$\{UNIT_ISSUES:-\}"[\s\S]*?\n   \[ -n "\$UNIT_ISSUES" \] \|\| UNIT_ISSUES="\$PRIMARY_N"\n/)?.[0];
     const helper = content.match(/   check_spawn_issue_claim\(\) \{[\s\S]*?\n   \}\n/)?.[0];
+    expect(binding).toBeDefined();
     expect(helper).toBeDefined();
     const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-bundle-claim-test-'));
     const stateFile = join(tempDir, 'state.log');
     const script = `
 set -u
 PRIMARY_N=2757
-UNIT_ISSUES="2757 2758"
+UNIT_ISSUES=""
+ISSUES_LABEL="#2757+#2758"
 REPO=kookr-ai/kookr
 STATE_FILE=${stateFile}
 KOOKR_TASK_ID=local-task
@@ -298,6 +302,7 @@ kookr() {
       ;;
   esac
 }
+${binding}
 ${helper}
 : > "$STATE_FILE"
 spawn_count=0
