@@ -33,6 +33,7 @@ import {
   formatQueueFeederLine,
   normalizeLeafPlan,
   queueFeederLedgerPath,
+  readyIssueRef,
   umbrellaRef,
   type CapacitySignal,
   type LeafSpec,
@@ -102,6 +103,8 @@ export interface QueueFeederCliIo {
   err?: { error: (...args: unknown[]) => void };
   now?: () => Date;
   runGh?: (args: string[]) => string;
+  /** Override claim-ownership HTTP (tests). Defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
   readInput?: (path: string | null) => string;
   appendLine?: (path: string, line: string) => void;
 }
@@ -210,6 +213,173 @@ function defaultRunGh(args: string[], env: NodeJS.ProcessEnv): string {
 function defaultReadInput(path: string | null): string {
   // '-' or null → stdin (fd 0); otherwise a file path.
   return readFileSync(path && path !== '-' ? path : 0, 'utf8');
+}
+
+interface QueueFeederClaimOwner {
+  taskId: string;
+  ownerName?: string;
+}
+
+type QueueFeederClaimLookup =
+  | { kind: 'unowned' }
+  | { kind: 'owned'; owner: QueueFeederClaimOwner }
+  | { kind: 'error'; reason: string };
+
+function queueFeederApiBase(env: NodeJS.ProcessEnv): string | null {
+  const explicit = env.KOOKR_API_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  const portRaw = env.KOOKR_PORT?.trim();
+  if (!portRaw) return null;
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
+  return `http://127.0.0.1:${port}`;
+}
+
+function queueFeederApiHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
+  const token = env.KOOKR_API_TOKEN?.trim();
+  return {
+    'X-Kookr-Launch-Source': 'cli',
+    'User-Agent': `kookr-queue-feeder/node-${process.versions.node}`,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function lookupQueueFeederClaim(
+  issue: Pick<ReadyIssue, 'repo' | 'number'>,
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch,
+): Promise<QueueFeederClaimLookup> {
+  const baseUrl = queueFeederApiBase(env);
+  if (!baseUrl) {
+    return {
+      kind: 'error',
+      reason: 'issue-claim lookup unavailable: KOOKR_API_BASE_URL or KOOKR_PORT is not configured',
+    };
+  }
+
+  let response: Response;
+  let raw: string;
+  try {
+    const url = new URL('/api/issue-claims', `${baseUrl}/`);
+    url.searchParams.set('repo', issue.repo);
+    url.searchParams.set('number', String(issue.number));
+    response = await fetchImpl(url, {
+      method: 'GET',
+      headers: queueFeederApiHeaders(env),
+      signal: AbortSignal.timeout(5_000),
+    });
+    raw = await response.text();
+  } catch (error) {
+    return {
+      kind: 'error',
+      reason: `issue-claim lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (!response.ok) {
+    return { kind: 'error', reason: `issue-claim lookup returned HTTP ${response.status}` };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      kind: 'error',
+      reason: `issue-claim lookup returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!Array.isArray(parsed)) {
+    return { kind: 'error', reason: 'issue-claim lookup returned a non-array response' };
+  }
+  if (parsed.length === 0) return { kind: 'unowned' };
+  if (parsed.length !== 1) {
+    return { kind: 'error', reason: `issue-claim lookup returned ${parsed.length} owners` };
+  }
+
+  const row = parsed[0];
+  if (!row || typeof row !== 'object') {
+    return { kind: 'error', reason: 'issue-claim lookup returned an invalid owner record' };
+  }
+  const owner = row as Record<string, unknown>;
+  if (typeof owner.taskId !== 'string' || owner.taskId.trim() === '') {
+    return { kind: 'error', reason: 'issue-claim lookup returned an owner without task identity' };
+  }
+  return {
+    kind: 'owned',
+    owner: {
+      taskId: owner.taskId,
+      ...(typeof owner.ownerName === 'string' && owner.ownerName.trim()
+        ? { ownerName: owner.ownerName }
+        : {}),
+    },
+  };
+}
+
+function claimSkipReason(lookup: Extract<QueueFeederClaimLookup, { kind: 'owned' | 'error' }>): string {
+  if (lookup.kind === 'owned') {
+    const name = lookup.owner.ownerName ? ` (${lookup.owner.ownerName})` : '';
+    return `active issue claim owned by task ${lookup.owner.taskId}${name}`;
+  }
+  return lookup.reason;
+}
+
+async function consultReadyIssueClaims(
+  issues: readonly ReadyIssue[],
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch,
+): Promise<{ readyIssues: ReadyIssue[]; skipped: SkippedUmbrella[] }> {
+  const currentTaskId = env.KOOKR_TASK_ID?.trim() || null;
+  const readyIssues: ReadyIssue[] = [];
+  const skipped: SkippedUmbrella[] = [];
+
+  // Keep this per-candidate and sequential: the lookup is a safety gate, and
+  // every candidate must leave an auditable decision even when a sibling wins
+  // the claim between two candidates.
+  for (const issue of issues) {
+    const lookup = await lookupQueueFeederClaim(issue, env, fetchImpl);
+    if (lookup.kind === 'unowned') {
+      readyIssues.push(issue);
+      continue;
+    }
+    if (lookup.kind === 'owned' && lookup.owner.taskId === currentTaskId) {
+      readyIssues.push(issue);
+      continue;
+    }
+    skipped.push({ ref: readyIssueRef(issue), reason: claimSkipReason(lookup) });
+  }
+
+  return { readyIssues, skipped };
+}
+
+async function recheckSecondaryClaims(
+  decision: QueueFeederDecision,
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch,
+): Promise<QueueFeederDecision> {
+  if (decision.action !== 'emit-secondary' || decision.actionSource !== 'idea-scout') {
+    return decision;
+  }
+
+  const currentTaskId = env.KOOKR_TASK_ID?.trim() || null;
+  const secondaryEmitted = [] as typeof decision.secondaryEmitted;
+  const skipped: SkippedUmbrella[] = [];
+  for (const item of decision.secondaryEmitted) {
+    const lookup = await lookupQueueFeederClaim(item, env, fetchImpl);
+    if (lookup.kind === 'unowned' || (lookup.kind === 'owned' && lookup.owner.taskId === currentTaskId)) {
+      secondaryEmitted.push(item);
+      continue;
+    }
+    skipped.push({ ref: item.ref, reason: claimSkipReason(lookup) });
+  }
+
+  return {
+    ...decision,
+    secondaryEmitted,
+    leafCount: secondaryEmitted.length,
+    skipped: [...decision.skipped, ...skipped],
+  };
 }
 
 interface QueueFeederSnapshot {
@@ -508,15 +678,18 @@ function emit(
   }
 }
 
-function runPlan(
+async function runPlan(
   args: ParsedArgs,
   io: Required<Pick<QueueFeederCliIo, 'out' | 'err' | 'now'>> & {
     runGh: (args: string[]) => string;
+    fetchImpl: typeof fetch;
+    env: NodeJS.ProcessEnv;
     readInput: (path: string | null) => string;
     appendLine: (path: string, line: string) => void;
   },
-): number {
+): Promise<number> {
   const snapshot = parseSnapshot(io.readInput(args.input));
+  const claimConsultation = await consultReadyIssueClaims(snapshot.readyIssues, io.env, io.fetchImpl);
   const capacity: CapacitySignal = {
     free: args.free ?? snapshot.capacity.free,
     pendingQueueDepth: args.pending ?? snapshot.capacity.pendingQueueDepth,
@@ -531,7 +704,7 @@ function runPlan(
   const baseInput: QueueFeederInput = {
     capacity,
     candidates: snapshot.candidates,
-    readyIssues: snapshot.readyIssues,
+    readyIssues: claimConsultation.readyIssues,
     openProductMetricIssues: snapshot.openProductMetricIssues,
     consecutiveBlockedEmpty: snapshot.consecutiveBlockedEmpty,
     config: { freeSlotsThreshold: args.freeThreshold },
@@ -542,7 +715,15 @@ function runPlan(
   // guard keeps prior exclusions and returns the current shred with no reuse
   // map, so the emit gate fails closed (exit 4) and dry-run degrades to the
   // un-verified plan (see planWithTitleExhaustion).
-  const { decision, existingByTitle } = planWithTitleExhaustion(baseInput, io.runGh);
+  const planned = planWithTitleExhaustion(baseInput, io.runGh);
+  let decision: QueueFeederDecision = {
+    ...planned.decision,
+    skipped: [...claimConsultation.skipped, ...planned.decision.skipped],
+  };
+  // The first consultation prevents obvious duplicates. This second read is
+  // the race recheck immediately before secondary emission (#2757).
+  decision = await recheckSecondaryClaims(decision, io.env, io.fetchImpl);
+  const { existingByTitle } = planned;
 
   const emitted: string[] = [];
   // Leaves whose title already existed (open or closed) → skipped create,
@@ -649,6 +830,7 @@ export async function runQueueFeederCli(argv: string[], io: QueueFeederCliIo = {
   const err = io.err ?? console;
   const now = io.now ?? (() => new Date());
   const runGh = io.runGh ?? ((a: string[]) => defaultRunGh(a, env));
+  const fetchImpl = io.fetchImpl ?? fetch;
   const readInput = io.readInput ?? defaultReadInput;
   const appendLine =
     io.appendLine ??
@@ -673,7 +855,7 @@ export async function runQueueFeederCli(argv: string[], io: QueueFeederCliIo = {
 
   try {
     if (args.verb === 'plan') {
-      return runPlan(args, { out, err, now, runGh, readInput, appendLine });
+      return await runPlan(args, { out, err, now, runGh, fetchImpl, env, readInput, appendLine });
     }
     if (args.verb === 'leaves') {
       return runLeafBodies(args, { out });

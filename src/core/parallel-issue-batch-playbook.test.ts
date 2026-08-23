@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePlaybook } from './playbook-parser.js';
 
@@ -196,5 +198,80 @@ describe('parallel-issue-batch playbook: merge follow-through hardening (2026-08
     expect(content).toMatch(/verifiably DEAD/);
     expect(content).toMatch(/never merely idle or slow/);
     expect(content).toMatch(/when in doubt, treat it as alive/);
+  });
+});
+
+describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', () => {
+  const playbookPath = join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'plugin',
+    'playbooks',
+    'parallel-issue-batch.md',
+  );
+  const content = readFileSync(playbookPath, 'utf-8');
+
+  test('rechecks the durable owner immediately before Phase 4 spawn', () => {
+    expect(content).toContain('check_spawn_issue_claim');
+    expect(content).toMatch(/Re-read the durable owner immediately before Phase 4 spawn/);
+    expect(content).toContain('kookr issue owner "$PRIMARY_N" --repo "$REPO" --json');
+    expect(content).toContain('--claim-issue $PRIMARY_N --claim-repo $REPO');
+  });
+
+  test('fails closed for non-authoritative lookups and foreign live owners', () => {
+    expect(content).toContain('issue-claim lookup failed');
+    expect(content).toContain('non-authoritative issue-claim response');
+    expect(content).toContain('claims[0].taskId | type == "string"');
+    expect(content).toContain('live issue claim owned by task');
+    expect(content).toContain('no child spawned');
+    expect(content).toContain('.details.claims[0].taskId');
+  });
+
+  test('prevents the modeled spawn call for foreign, failed, and malformed lookups', () => {
+    const helper = content.match(/   check_spawn_issue_claim\(\) \{[\s\S]*?\n   \}\n/)?.[0];
+    expect(helper).toBeDefined();
+    const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-claim-test-'));
+    const stateFile = join(tempDir, 'state.log');
+    const script = `
+set -u
+PRIMARY_N=2757
+REPO=kookr-ai/kookr
+STATE_FILE=${stateFile}
+KOOKR_TASK_ID=local-task
+kookr() {
+  case "$CLAIM_RESULT" in
+    foreign) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[{"taskId":"sibling-task"}]}}' ;;
+    failed) return 1 ;;
+    malformed) printf '%s' '{"ok":true,"code":"OK","details":{"claims":{}}}' ;;
+    unowned) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}' ;;
+  esac
+}
+${helper}
+run_case() {
+  : > "$STATE_FILE"
+  spawn_count=0
+  for _ in 1; do
+    if ! check_spawn_issue_claim; then
+      continue
+    fi
+    spawn_count=$((spawn_count + 1))
+  done
+  printf '%s|%s|' "$CLAIM_RESULT" "$spawn_count"
+  tr '\\n' ';' < "$STATE_FILE"
+}
+for CLAIM_RESULT in foreign failed malformed unowned; do
+  run_case
+done
+`;
+    try {
+      const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('foreign|0|SKIP primary #2757: live issue claim owned by task sibling-task');
+      expect(output).toContain('failed|0|BLOCKER primary #2757: issue-claim lookup failed');
+      expect(output).toContain('malformed|0|BLOCKER primary #2757: non-authoritative issue-claim response');
+      expect(output).toContain('unowned|1|');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

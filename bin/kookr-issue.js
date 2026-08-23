@@ -459,7 +459,18 @@ async function handleOwner({ args, env, out, err, exit, sleep }) {
   if (status === 404) return unsupported({ args, out, err, exit });
 
   if (status === 200) {
-    const claims = Array.isArray(json) ? json : [];
+    if (!Array.isArray(json)) {
+      return unexpectedStatus({
+        args,
+        out,
+        err,
+        exit,
+        status,
+        json,
+        text: 'invalid issue-claim response: expected an array',
+      });
+    }
+    const claims = json;
     if (args.json) {
       return exitJson({
         out,

@@ -492,6 +492,29 @@ describe('kookr issue main — owner / list outcomes', () => {
     expect(logs.join('\n')).toMatch(/no active claim/);
   });
 
+  it('owner: fails closed when the server returns a non-array response', async () => {
+    const { out, err, logs } = mkIO();
+    const exit = mkExit();
+    const fetchMock = vi.fn(async () => jsonResponse({ unexpected: true }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await main({
+        argv: ['owner', '779', '--json'],
+        env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+        out,
+        err,
+        exit,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(exit.calls).toEqual([EXIT_SERVER_ERROR]);
+    const envelope = JSON.parse(logs[0]!);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe('SERVER_ERROR');
+    expect(envelope.message).toContain('expected an array');
+  });
+
   it('owner: passes number and repo as query params when --repo given', async () => {
     const { out, err } = mkIO();
     const exit = mkExit();
