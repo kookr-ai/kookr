@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { isValidIsoTimestamp } from '../../core/iso-timestamp.js';
 import {
   parsePhaseLedgerFromIssueBody,
   reconcilePhaseResultComments,
@@ -93,13 +94,6 @@ function messageOf(error: unknown): string {
 
 function phaseClaimKey(issueNumber: number, phaseId: string): string {
   return `chain:${issueNumber}:phase:${phaseId}`;
-}
-
-function isValidIsoTimestamp(value: string): boolean {
-  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/);
-  if (!match) return false;
-  const normalizedFraction = (match[2] ?? '').padEnd(3, '0');
-  return new Date(value).toISOString() === `${match[1]}.${normalizedFraction}Z`;
 }
 
 function reviewAuditBlocker(phases: readonly PhaseLedgerPhase[]): PhaseLedgerPhase | undefined {

@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isValidIsoTimestamp } from '../core/iso-timestamp.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -42,13 +43,6 @@ interface GhPullRequestView {
 
 function json<T>(stdout: string): T {
   return JSON.parse(stdout) as T;
-}
-
-function isValidIsoTimestamp(value: string): boolean {
-  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/);
-  if (!match) return false;
-  const normalizedFraction = (match[2] ?? '').padEnd(3, '0');
-  return new Date(value).toISOString() === `${match[1]}.${normalizedFraction}Z`;
 }
 
 /** Small `gh`/`git` boundary used by the advancer; all policy remains testable above it. */

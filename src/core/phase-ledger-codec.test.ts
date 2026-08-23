@@ -86,5 +86,23 @@ describe('phase ledger codec', () => {
       phaseId: 'P2',
       taskId: '',
     })} -->`)).toBeNull();
+    expect(parsePhaseResultComment(`<!-- kookr-phase-result ${JSON.stringify({
+      version: 1,
+      chainId: ledger.chainId,
+      issueNumber: ledger.issueNumber,
+      phaseId: 'P2',
+      reviewVerdict: 'pass',
+      reviewedAt: '2026-02-30T00:00:00.000Z',
+      reviewerTaskId: 'review-2',
+    })} -->`)).toBeNull();
+  });
+
+  test('rejects impossible ledger timestamps', () => {
+    expect(() => parsePhaseLedgerFromIssueBody(
+      `\`\`\`kookr-phase-ledger\n${JSON.stringify({
+        ...ledger,
+        phases: [{ ...ledger.phases[0], mergedAt: '2026-02-30T00:00:00.000Z' }, ledger.phases[1]],
+      })}\n\`\`\``,
+    )).toThrow(/invalid mergedAt timestamp/);
   });
 });

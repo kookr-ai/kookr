@@ -1,4 +1,5 @@
 import type { Phase, PhaseStatus } from './phase-ledger.js';
+import { isValidIsoTimestamp } from './iso-timestamp.js';
 
 /** The first version of the machine-readable umbrella ledger. */
 export const PHASE_LEDGER_SCHEMA_VERSION = 1 as const;
@@ -84,7 +85,7 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 function isIsoDate(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && Number.isFinite(Date.parse(value));
+  return isValidIsoTimestamp(value);
 }
 
 function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], context: string): void {
