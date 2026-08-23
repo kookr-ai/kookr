@@ -126,7 +126,11 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
         'pr', 'view', String(prNumber), '--repo', repo, '--json', 'mergedAt',
       ], { timeout: 20_000 });
       const pr = json<GhPullRequestView>(stdout);
-      return typeof pr.mergedAt === 'string' && pr.mergedAt.length > 0 ? pr.mergedAt : null;
+      return typeof pr.mergedAt === 'string'
+        && pr.mergedAt.length > 0
+        && Number.isFinite(Date.parse(pr.mergedAt))
+        ? pr.mergedAt
+        : null;
     } catch {
       return null;
     }

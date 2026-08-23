@@ -26,7 +26,7 @@ function makeLedger(overrides: Partial<PhaseLedger> = {}): PhaseLedger {
 function makeHarness(ledger: PhaseLedger, options: {
   mode?: 'off' | 'observe' | 'spawn';
   reachable?: Set<number>;
-  mergedAt?: string;
+  mergedAt?: string | null;
   terminalTasks?: Set<string>;
   issueNumber?: number;
   now?: () => Date;
@@ -65,7 +65,7 @@ function makeHarness(ledger: PhaseLedger, options: {
     },
     async getPullRequestMergedAt(repo, prNumber) {
       calls.push(`merged:${repo}#${prNumber}`);
-      return options.mergedAt ?? '2026-08-22T00:00:00.000Z';
+      return options.mergedAt === undefined ? '2026-08-22T00:00:00.000Z' : options.mergedAt;
     },
   };
   const logger: UmbrellaChainAdvancerLogger = {
@@ -241,6 +241,22 @@ describe('UmbrellaChainAdvancer', () => {
     await harness.advancer.sweep();
     expect(harness.issue.body).toContain('"mergedAt": "2026-08-23T09:00:00.000Z"');
     expect(harness.calls).toContain('launch:chain:2711:phase:P2');
+  });
+
+  test('holds the chain when the remote cannot provide a merge time', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight', taskId: 'owner-1', ownerTerminal: true },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set([10]), mergedAt: null });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.issue.body).toContain('"blockedReason": "dependency-unmerged"');
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
+      reason: expect.stringContaining('waiting on PR #10'),
+    });
   });
 
   test('rejects a review verdict recorded before the merge point', async () => {
