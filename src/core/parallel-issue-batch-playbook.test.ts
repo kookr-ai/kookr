@@ -218,6 +218,7 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
     expect(content).toContain('kookr issue owner "$issue_number" --repo "$REPO" --json');
     expect(content).toContain('UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N"');
     expect(content).toContain('selection contains duplicate issue');
+    expect(content).toContain('multi-issue unit requires atomic claims for every issue before spawn');
     expect(content).toContain('selection matrix issue list was not authoritative');
     expect(content).toContain('--claim-issue $PRIMARY_N --claim-repo $REPO');
   });
@@ -353,6 +354,8 @@ run_case duplicate '[{"unit_id":"u-2757","issues":[2757,2757]}]'
 run_case null '[{"unit_id":"u-2757","issues":[null]}]'
 run_case fractional '[{"unit_id":"u-2757","issues":[2757.5]}]'
 run_case missing '[{"unit_id":"u-2757"}]'
+run_case object-root '{"nested":{"unit_id":"u-2757","issues":[2757]}}'
+run_case false-issues '[{"unit_id":"u-2757","issues":false,"issue":2757}]'
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
@@ -360,6 +363,8 @@ run_case missing '[{"unit_id":"u-2757"}]'
       expect(output).toContain('null:0|BLOCKER primary #2757: could not bind every issue');
       expect(output).toContain('fractional:0|BLOCKER primary #2757: could not bind every issue');
       expect(output).toContain('missing:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('object-root:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('false-issues:0|BLOCKER primary #2757: could not bind every issue');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

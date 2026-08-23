@@ -729,20 +729,29 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    # rejects malformed or duplicate issue ownership before any claim lookup.
    if [ -z "${PRIMARY_N:-}" ] || [ -z "${SELECTION_FILE:-}" ] || \
      ! UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N" '
-       def unit_issues: (.issues // [ .issue ]);
+       def unit_issues:
+         if has("issues") then
+           if (.issues | type) != "array" then error("issues must be an array") else .issues end
+         elif has("issue") then [.issue]
+         else error("selection unit has no issue list")
+         end;
        . as $selection
-       | [ $selection[] | unit_issues[] ] as $all_issues
-       | if any($all_issues[]; type != "number") then error("selection has a non-numeric issue")
-         elif any($all_issues[]; . <= 0 or floor != .) then error("selection has a non-positive or non-integer issue")
-         elif ($all_issues | length) != ($all_issues | unique | length) then error("selection contains duplicate issue")
-         else [ $selection[] | select((unit_issues | map(tostring) | index($primary)) != null)]
-           | if length != 1 then error("selection unit missing or duplicated")
-             else .[0] | {unit_id, issues: unit_issues}
-             end
+       | if ($selection | type) != "array" then error("selection root must be an array")
+         else [ $selection[] | if type != "object" then error("selection unit must be an object") else . end ] as $units
+         | [ $units[] | unit_issues[] ] as $all_issues
+         | if any($all_issues[]; type != "number") then error("selection has a non-numeric issue")
+           elif any($all_issues[]; . <= 0 or floor != .) then error("selection has a non-positive or non-integer issue")
+           elif ($all_issues | length) != ($all_issues | unique | length) then error("selection contains duplicate issue")
+           else [ $units[] | select((unit_issues | map(tostring) | index($primary)) != null)]
+             | if length != 1 then error("selection unit missing or duplicated")
+               else .[0] | {unit_id, issues: unit_issues}
+               end
+           end
          end
      ' "$SELECTION_FILE") || \
      ! UNIT_ID=$(printf '%s' "$UNIT_JSON" | jq -er '.unit_id | strings | select(length > 0)') || \
-     ! UNIT_ISSUES=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | map(tostring) | join(" ")'); then
+     ! UNIT_ISSUES=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | map(tostring) | join(" ")') || \
+     ! UNIT_COUNT=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | length'); then
      echo "SPAWN SKIPPED for primary #${PRIMARY_N:-unknown}: selection matrix issue list was not authoritative" >&2
      printf 'BLOCKER primary #%s: could not bind every issue from selection matrix before Phase 4 spawn\n' "${PRIMARY_N:-unknown}" >> "$STATE_FILE"
      continue
@@ -781,6 +790,16 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      return 0
    }
    if ! check_spawn_issue_claim; then
+     continue
+   fi
+   # --claim-issue is currently a single-issue atomic admission gate. A
+   # bundled unit has been fully rechecked above, but cannot be safely handed
+   # to a child until the spawn API supports transferring atomic claims for
+   # every member. Keep the unit recorded as a blocker instead of opening a
+   # race window for its secondary issues.
+   if [ "$UNIT_COUNT" -gt 1 ]; then
+     echo "SPAWN SKIPPED for unit $UNIT_ID: multi-issue atomic claim support is required" >&2
+     printf 'BLOCKER unit %s: multi-issue unit requires atomic claims for every issue before spawn\n' "$UNIT_ID" >> "$STATE_FILE"
      continue
    fi
    # --claim-issue interleaves an atomic ownership claim with createTask (RFC
