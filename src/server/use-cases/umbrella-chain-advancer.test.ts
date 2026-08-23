@@ -259,6 +259,30 @@ describe('UmbrellaChainAdvancer', () => {
     });
   });
 
+  test('holds the chain when the remote returns an invalid merge timestamp', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight', taskId: 'owner-1', ownerTerminal: true },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set([10]), mergedAt: '2026-02-30T00:00:00.000Z' });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.advancer.getHealthSnapshot().chains[0]?.reason).toContain('waiting on PR #10');
+  });
+
+  test('does not reclaim a stale finalized claim while its task is still active', async () => {
+    const harness = makeHarness(makeLedger(), { mode: 'spawn', terminalTasks: new Set() });
+    harness.claims.set('chain:2711:phase:P1', {
+      key: 'chain:2711:phase:P1',
+      ownerToken: 'owner:chain:2711:phase:P1',
+      claimedAt: '2026-08-22T00:00:00.000Z',
+      taskId: 'task-live',
+    });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+  });
+
   test('rejects a review verdict recorded before the merge point', async () => {
     const harness = makeHarness(makeLedger({
       phases: [

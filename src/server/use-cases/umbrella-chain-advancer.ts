@@ -95,6 +95,13 @@ function phaseClaimKey(issueNumber: number, phaseId: string): string {
   return `chain:${issueNumber}:phase:${phaseId}`;
 }
 
+function isValidIsoTimestamp(value: string): boolean {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/);
+  if (!match) return false;
+  const normalizedFraction = (match[2] ?? '').padEnd(3, '0');
+  return new Date(value).toISOString() === `${match[1]}.${normalizedFraction}Z`;
+}
+
 function reviewAuditBlocker(phases: readonly PhaseLedgerPhase[]): PhaseLedgerPhase | undefined {
   return phases.find((candidate) => {
     if (candidate.prNumber === undefined) return false;
@@ -278,7 +285,7 @@ export class UmbrellaChainAdvancer {
       );
       if (isReachable) {
         const mergedAt = await this.deps.remote.getPullRequestMergedAt(this.deps.repo, phase.prNumber);
-        if (mergedAt === null) {
+        if (mergedAt === null || !isValidIsoTimestamp(mergedAt)) {
           reachable.set(phase.prNumber, false);
           this.logger.warn?.(`[umbrella-chain-advancer] could not verify merge time for PR #${phase.prNumber}; holding the chain`);
         } else {
@@ -377,10 +384,14 @@ export class UmbrellaChainAdvancer {
       && !phase.ownerTerminal
       && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(phase.taskId))),
     );
+    const claimOwnerActive = Boolean(
+      existingClaim?.taskId
+      && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(existingClaim.taskId))),
+    );
     // Do not gate on an existing claim here: claim() is the durable CAS and
     // owns stale-claim reclamation. Calling it is what lets a crashed owner's
     // expired claim be reclaimed without ever allowing two live spawns.
-    const safeToAdvance = !withinGrace && predecessorTerminal && !ownerActive;
+    const safeToAdvance = !withinGrace && predecessorTerminal && !ownerActive && !claimOwnerActive;
 
     if (!safeToAdvance || this.mode !== 'spawn' || !this.deps.launch || isSelfAdvancingDisabled()) {
       const reason = existingInFlight
@@ -391,6 +402,8 @@ export class UmbrellaChainAdvancer {
             ? 'predecessor-owner-active'
             : ownerActive
               ? 'owner-active'
+              : claimOwnerActive
+                ? 'claim-owner-active'
               : this.mode === 'observe'
               ? 'observe-only'
                 : isSelfAdvancingDisabled()

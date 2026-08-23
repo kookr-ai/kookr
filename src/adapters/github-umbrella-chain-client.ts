@@ -44,6 +44,13 @@ function json<T>(stdout: string): T {
   return JSON.parse(stdout) as T;
 }
 
+function isValidIsoTimestamp(value: string): boolean {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/);
+  if (!match) return false;
+  const normalizedFraction = (match[2] ?? '').padEnd(3, '0');
+  return new Date(value).toISOString() === `${match[1]}.${normalizedFraction}Z`;
+}
+
 /** Small `gh`/`git` boundary used by the advancer; all policy remains testable above it. */
 export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   private readonly run: typeof execFile;
@@ -128,7 +135,7 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
       const pr = json<GhPullRequestView>(stdout);
       return typeof pr.mergedAt === 'string'
         && pr.mergedAt.length > 0
-        && Number.isFinite(Date.parse(pr.mergedAt))
+        && isValidIsoTimestamp(pr.mergedAt)
         ? pr.mergedAt
         : null;
     } catch {
