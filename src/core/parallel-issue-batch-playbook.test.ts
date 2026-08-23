@@ -373,6 +373,7 @@ run_case fractional '[{"unit_id":"u-2757","issues":[2757.5]}]'
 run_case missing '[{"unit_id":"u-2757"}]'
 run_case object-root '{"nested":{"unit_id":"u-2757","issues":[2757]}}'
 run_case false-issues '[{"unit_id":"u-2757","issues":false,"issue":2757}]'
+run_case conflict '[{"unit_id":"u-2757","issues":[2757],"issue":2758}]'
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
@@ -382,6 +383,7 @@ run_case false-issues '[{"unit_id":"u-2757","issues":false,"issue":2757}]'
       expect(output).toContain('missing:0|BLOCKER primary #2757: could not bind every issue');
       expect(output).toContain('object-root:0|BLOCKER primary #2757: could not bind every issue');
       expect(output).toContain('false-issues:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('conflict:0|BLOCKER primary #2757: could not bind every issue');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

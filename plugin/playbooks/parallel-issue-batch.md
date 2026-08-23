@@ -674,13 +674,12 @@ Implementation target:
 
   # The guard MUST pass before the PR is created. For cross-fork PRs, edit the
   # two gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
-  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> [<N2> ...] || exit 1
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> || exit 1
   ```
   If the guard aborts, do **not** create the PR: record the abort reason as the
   unit's blocker and report it instead.
-- Push the branch and open **one** PR that closes every issue in the unit
-  (`Closes #<N1>`, `Closes #<N2>`, … in the body). The PR title/body must list
-  every issue covered.
+- Push the branch and open **one** PR that closes the issue in the unit
+  (`Closes #<N1>` in the body). The PR title/body must list that issue.
 - Monitor CI and fix failures. **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Re-run a failing check at most twice per PR; after the second failed rerun, **report the CI state** (failing check names and run links) and stop — **never loop** on reruns. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed the code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. (An unbounded rerun/merge loop once stranded a delivery task for ~3h — PR #1542 / task faf7902b.)
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - Before an autonomous self-merge, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs — never degrade to zero review. Fix or explicitly rebut each confirmed correctness/safety finding before merging. On `kookr-ai/kookr`, `pnpm merge` enforces this deterministically (it refuses to merge without a `pass` verdict for the current head, or the `review-skipped-timeout` label applied after a 10-minute reviewer timeout). Do not set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge.
@@ -690,14 +689,14 @@ Implementation target:
   - **`executed-green` / `none-required`**: proceed to merge.
 
   Use the repo's allowed merge method, and **always delete the head branch as part of the merge** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` immediately after the merge when the branch is checked out in a linked worktree so `--delete-branch` would fail locally). A surviving squash-merged branch is a non-ancestor of the base and is PR-able a second time, producing net-no-op duplicate PRs (issue #1572).
-- Report the PR URL and final state for every issue in the unit.
-- Release your slot when done: once every issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR urls / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
+- Report the PR URL and final state for the issue in the unit.
+- Release your slot when the issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR url / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
 
 Concurrent-task note:
 Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
 
 Supervisor note:
-If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Do not silently drop an issue from a multi-issue unit — report a blocker instead.
+If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Historical/future multi-issue records are not newly spawned until atomic claim transfer exists.
 ```
 
 3b. **Spawn-time contract check (mandatory, mechanical).** Before spawning each child, verify the written prompt file actually carries the load-bearing sections — this is what makes template-paraphrase drift a hard error instead of a silent stranded-PR factory:
@@ -750,7 +749,10 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      ! UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N" '
        def unit_issues:
          if has("issues") then
-           if (.issues | type) != "array" then error("issues must be an array") else .issues end
+           if (.issues | type) != "array" then error("issues must be an array")
+           elif has("issue") and ((.issues | length) != 1 or .issues[0] != .issue) then error("issues and issue disagree")
+           else .issues
+           end
          elif has("issue") then [.issue]
          else error("selection unit has no issue list")
          end;
