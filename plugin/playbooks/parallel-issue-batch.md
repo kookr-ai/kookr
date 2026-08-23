@@ -1,6 +1,6 @@
 ---
 name: Parallel Issue Batch
-description: Select non-conflicting GitHub issues, group tightly related ones when efficient, spawn child Kookr tasks (Claude/Codex/Grok), and supervise until PRs are merged
+description: Select non-conflicting single-issue work units, spawn child Kookr tasks (Claude/Codex/Grok), and supervise until PRs are merged; multi-issue bundles are future-only until atomic claim transfer exists
 repo-tags: [github]
 tags: [workflow, loopable]
 deliveryPreAuthorized: true
@@ -26,11 +26,11 @@ parameters:
     type: textarea
     default: ""
   - name: targetIssueCount
-    description: "How many issues to cover in this batch (bundled issues still count toward this total)"
+    description: "How many single-issue work units to cover in this batch (future bundles will count by covered issue)"
     required: true
     default: "4"
   - name: maxConcurrentTasks
-    description: "Maximum child tasks to keep running at once (one task per work unit, not necessarily per issue)"
+    description: "Maximum child tasks to keep running at once (currently one task per single-issue work unit)"
     required: true
     default: "4"
   - name: mergeAfterImplementation
@@ -94,8 +94,8 @@ checklist:
   - Existing prior batch state inspected before selecting work
   - Candidate issues filtered for author trust, duplicates, active PRs, and blocked labels
   - Selected work units have a documented non-overlapping write-scope matrix
-  - Related small issues bundled into multi-issue work units when a single PR is more efficient
-  - One child Kookr task spawned per work unit (not blindly one per issue), up to the concurrency cap
+  - Related small issues bundled into multi-issue work units only when atomic multi-issue claim transfer is available
+  - One child Kookr task spawned per eligible work unit (currently one issue per unit), up to the concurrency cap
   - Child agent type may be Claude Code, Codex CLI, Grok Build, or server default
   - Each child prompt prepended with a context pack (issue(s), non-exhaustive candidate files, base ref, cached skill digests) framed as a floor, not a ceiling
   - Child prompts require fresh git worktrees and no edits in the main checkout
@@ -112,19 +112,25 @@ checklist:
 
 Run a parallel implementation batch for `{{repoFullName}}`: select several issues that can be implemented concurrently (as work units), spawn one Kookr child task per work unit, and supervise the children until every covered issue reaches the requested PR state.
 
-A **work unit** is either:
+A **work unit** is currently a single issue:
 
 - a single issue → one child task → one PR that closes that issue, or
-- a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle.
+- a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle (future capability; not currently selectable).
 
-Default to one issue per work unit. Bundle only when it is clearly more efficient (see Phase 3).
+Default to one issue per work unit. Current runs select only single-issue units;
+bundling becomes available when multi-issue claim transfer is implemented.
+Until the issue-claim API supports atomic transfer for every member, the current
+selection must use single-issue work units; the bundle shape remains documented
+for future claim-transfer support and is guarded fail-closed at spawn time.
 
 `{{mergeAfterImplementation}}` controls the terminal policy:
 
 - `true`: every selected issue must have a merged PR, or an explicitly recorded non-code blocker.
 - `false`: every selected issue must have an open PR with local verification and green or pending CI, or an explicitly recorded blocker.
 
-This playbook is a parent/orchestrator. The parent selects, groups, and supervises. Child tasks implement one work unit each (one or more issues, one PR).
+This playbook is a parent/orchestrator. The parent selects and supervises
+single-issue work units. Child tasks implement one issue per PR; the documented
+multi-issue shape is future/legacy compatibility until atomic claim transfer exists.
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
@@ -388,11 +394,14 @@ For each candidate, apply these filters before reading the issue body:
 
 Write the filtered list to `$CANDIDATES_FILE`.
 
-## Phase 3: Prove Concurrent Implementability and Optional Bundling
+## Phase 3: Prove Concurrent Implementability (future bundling design)
 
-Select up to `targetIssueCount` **issues** and group them into **work units** that can safely run at the same time. Do not spawn children until this write-scope matrix is written.
+Select up to `targetIssueCount` **single-issue work units** that can safely run at
+the same time. Do not spawn children until this write-scope matrix is written.
 
-`targetIssueCount` counts issues covered, not children spawned. A bundle of three small issues counts as three toward the total but becomes one concurrent task.
+`targetIssueCount` currently counts single-issue work units and therefore equals
+the number of child tasks spawned. When atomic multi-issue claim transfer exists,
+the future bundle behavior will count covered issues rather than children.
 
 ### 3.0 Apply the backlog drain order (issue #1568)
 
@@ -432,7 +441,15 @@ For each filtered issue:
 
 ### 3.2 Bundle related issues into multi-issue work units (when efficient)
 
-Default is **one issue per work unit**. Bundle two or more issues into a single work unit only when **all** of the following hold:
+Default is **one issue per work unit**. In a future claim-transfer-enabled
+version, bundle two or more issues into a single work unit only when **all** of
+the following hold:
+
+The current issue-claim admission API atomically claims one issue per child. Until
+multi-issue claim transfer is available, multi-issue bundles are **temporarily
+ineligible for selection**: keep each selected work unit single-issue. Phase 4
+also retains a fail-closed guard so a stale or legacy matrix cannot hand an
+unsafe bundle to the single-issue spawn path.
 
 1. **Size**: each issue is small enough that the combined change still fits a reviewable single PR (rough guide: one coherent feature/fix surface, not a mega-diff across unrelated subsystems). Prefer bundling only when the combined expected files stay focused (typically a handful of modules / one area).
 2. **Affinity** — at least one strong reason:
@@ -455,6 +472,9 @@ When bundling, record `reason_bundled` so a human can audit the grouping decisio
 ### 3.3 Selection matrix shape
 
 Each matrix entry is one **work unit** (one future child task / one PR):
+
+The multi-issue example below is a future-capability example. It is not eligible
+for selection while atomic multi-issue claim transfer is unavailable.
 
 ```json
 [
@@ -485,7 +505,8 @@ Each matrix entry is one **work unit** (one future child task / one PR):
 
 Legacy single-issue shape with `"issue": 123` (no `issues` array) may appear in prior-run state; treat it as `issues: [123]`.
 
-Hard concurrency rules (apply **between work units**, not inside a bundle):
+Hard concurrency rules apply **between current single-issue work units**. The
+following bundled-unit rules are retained for future claim-transfer support:
 
 - No two selected **work units** may have overlapping expected files.
 - Issues inside one multi-issue unit **may** share files — that is often why they were bundled.
@@ -498,9 +519,10 @@ Write the final matrix to `$SELECTION_FILE`. If fewer than one work unit is safe
 
 ## Phase 4: Spawn Child Tasks
 
-Read `$CHILDREN_FILE` first. Do not spawn a second child for any issue that already has a child task ID (including as a member of a multi-issue unit), open PR, merged PR, or recorded blocker.
+Read `$CHILDREN_FILE` first. Do not spawn a second child for any issue that already has a child task ID, open PR, merged PR, or recorded blocker. Historical multi-issue records are reconciled but new units are single-issue.
 
-Spawn at most `maxConcurrentTasks` children at a time. For each selected **work unit** without a child:
+Spawn at most `maxConcurrentTasks` children at a time. For each selected
+single-issue work unit without a child:
 
 1. **Build a context pack** so the child warm-starts instead of cold-reading the issue(s) and the same static skills every run (issue #1306). Write a JSON spec from data you already gathered — never interpolate untrusted issue text into shell — then generate the pack with the hook-safe CLI.
 
@@ -520,8 +542,7 @@ Spawn at most `maxConcurrentTasks` children at a time. For each selected **work 
    #     "repoFullName": "<owner/repo>"
    #   }
    # Note: kookr-context-pack currently packs a single issueNumber/body only.
-   # Extra multi-issue keys are ignored. List every issue URL in the child
-   # prompt so the model loads non-primary issue bodies itself.
+   # Extra multi-issue keys are future/legacy compatibility and are ignored.
    # Prefer the `kookr context-pack` verb (works from an npm/npx install); fall
    # back to the by-path binary for source checkouts where $KOOKR_REPO is set.
    if command -v kookr >/dev/null 2>&1; then
@@ -535,15 +556,15 @@ Spawn at most `maxConcurrentTasks` children at a time. For each selected **work 
    fi
    ```
 
-   The pack bundles the **primary** (lowest-numbered) issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). For multi-issue units the pack is a partial warm-start — non-primary issue bodies are not packed; the child prompt must still list every issue URL. Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
+   The pack bundles the issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). Future/legacy multi-issue units would be a partial warm-start because non-primary issue bodies are not packed. Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
 
 2. Create a prompt file under `$PROMPTS_DIR/<unit-slug>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `<unit-slug>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
 3. Include this child prompt content, customized for the work unit. **Copy the template below VERBATIM** — customize only the `<placeholders>`; never paraphrase, summarize, or drop sections. The 2026-08-01 stranded-PR incident (PRs #1830–#1833 opened and abandoned) happened because a coordinator rewrote this template in its own words and dropped every merge instruction, so children treated "PR created" as done. After writing each prompt file, run the **spawn-time contract check** (below, after the template) before spawning — a prompt file that fails it is a spawn error to fix, not a warning.
 
 ```markdown
-Implement the following GitHub issue(s) in <owner/repo> end-to-end in **one** PR:
-- Issues: #<N1>[, #<N2>, …]
-- Bundle reason (if multi-issue): <reason_bundled or "single-issue unit">
+Implement the following GitHub issue in <owner/repo> end-to-end in **one** PR:
+- Issue: #<N1>
+- Bundle reason: single-issue unit (multi-issue placeholders are future/legacy only)
 
 **TERMINAL-STATE CONTRACT (mergeAfterImplementation=<true|false>):** when `true`,
 an open PR is NOT a terminal state and "The PR is the review gate" does NOT apply
@@ -567,22 +588,20 @@ Hard constraints:
   from it:
   `git fetch origin <defaultBranchRef.name from Phase 1>`
   `git worktree add ../<repo-name>-issue-<primary-N>-<short-slug> -b <type>/issue-<primary-N>-<short-slug> origin/<defaultBranchRef.name from Phase 1>`
-  For multi-issue units, primary-N is the lowest issue number; the branch may include
-  additional issue markers if helpful (e.g. `fix/issue-200-201-auth`).
+  Future/legacy multi-issue units would use the lowest issue number as primary-N;
+  current branches contain one issue marker.
 - Do not edit, commit, or push from the main checkout.
 - Keep write scope narrow. Expected files: <expected_files from selection matrix>.
 - Avoid these files unless absolutely required and explicitly justified: <forbidden_files>.
 - Do not add a changelog/release-note entry unless this unit cannot be accepted without it. If the repo has no changelog or the parent forbids it, do not create one.
 
-Issues (implement every issue in this unit; do not drop any):
+Issue (implement it completely; do not drop it):
 - #<N1>: <URL> — <title>
-- [#<N2>: <URL> — <title>]
 - …
 
 Implementation target:
 - Read every issue in the unit and the relevant code.
-- Implement the unit as one coherent change set. If multi-issue, keep commits
-  readable (per-issue commits when natural) but open **one** PR.
+- Implement the issue as one coherent change set.
 - Add or update focused tests covering each issue's acceptance criteria.
 - Run the repo-appropriate build/test checks.
 - Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then regenerate the pack with a review output (prefer the `kookr context-pack` verb; fall back to `node "$KOOKR_REPO/bin/kookr-context-pack.js"` for source checkouts):
@@ -655,13 +674,12 @@ Implementation target:
 
   # The guard MUST pass before the PR is created. For cross-fork PRs, edit the
   # two gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
-  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> [<N2> ...] || exit 1
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> || exit 1
   ```
   If the guard aborts, do **not** create the PR: record the abort reason as the
   unit's blocker and report it instead.
-- Push the branch and open **one** PR that closes every issue in the unit
-  (`Closes #<N1>`, `Closes #<N2>`, … in the body). The PR title/body must list
-  every issue covered.
+- Push the branch and open **one** PR that closes the issue in the unit
+  (`Closes #<N1>` in the body). The PR title/body must list that issue.
 - Monitor CI and fix failures. **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Re-run a failing check at most twice per PR; after the second failed rerun, **report the CI state** (failing check names and run links) and stop — **never loop** on reruns. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed the code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. (An unbounded rerun/merge loop once stranded a delivery task for ~3h — PR #1542 / task faf7902b.)
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - Before an autonomous self-merge, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs — never degrade to zero review. Fix or explicitly rebut each confirmed correctness/safety finding before merging. On `kookr-ai/kookr`, `pnpm merge` enforces this deterministically (it refuses to merge without a `pass` verdict for the current head, or the `review-skipped-timeout` label applied after a 10-minute reviewer timeout). Do not set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge.
@@ -671,14 +689,14 @@ Implementation target:
   - **`executed-green` / `none-required`**: proceed to merge.
 
   Use the repo's allowed merge method, and **always delete the head branch as part of the merge** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` immediately after the merge when the branch is checked out in a linked worktree so `--delete-branch` would fail locally). A surviving squash-merged branch is a non-ancestor of the base and is PR-able a second time, producing net-no-op duplicate PRs (issue #1572).
-- Report the PR URL and final state for every issue in the unit.
-- Release your slot when done: once every issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR urls / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
+- Report the PR URL and final state for the issue in the unit.
+- Release your slot when the issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR url / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
 
 Concurrent-task note:
 Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
 
 Supervisor note:
-If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Do not silently drop an issue from a multi-issue unit — report a blocker instead.
+If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Historical/future multi-issue records are not newly spawned until atomic claim transfer exists.
 ```
 
 3b. **Spawn-time contract check (mandatory, mechanical).** Before spawning each child, verify the written prompt file actually carries the load-bearing sections — this is what makes template-paraphrase drift a hard error instead of a silent stranded-PR factory:
@@ -721,34 +739,88 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    AGENT_FLAG=""
    if [ "$CHILD_AGENT" != "default" ]; then AGENT_FLAG="--agent $CHILD_AGENT"; fi
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
-   # PRIMARY_N = lowest issue number in the unit (CAS key for the batch claim).
+   # UNIT_ISSUES is the whitespace-separated issue-number list for this unit;
+   # PRIMARY_N is its lowest issue number (the CAS key for the batch claim).
+   # Bind from the current selection matrix entry using PRIMARY_N, which the
+   # caller already derives as the lowest issue in this work unit. This resets
+   # stale per-unit variables, normalizes legacy single-issue records, and
+   # rejects malformed or duplicate issue ownership before any claim lookup.
+   if [ -z "${PRIMARY_N:-}" ] || [ -z "${SELECTION_FILE:-}" ] || \
+     ! UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N" '
+       def unit_issues:
+         if has("issues") then
+           if (.issues | type) != "array" then error("issues must be an array")
+           elif has("issue") and ((.issues | length) != 1 or .issues[0] != .issue) then error("issues and issue disagree")
+           else .issues
+           end
+         elif has("issue") then [.issue]
+         else error("selection unit has no issue list")
+         end;
+       . as $selection
+       | if ($selection | type) != "array" then error("selection root must be an array")
+         else [ $selection[] | if type != "object" then error("selection unit must be an object") else . end ] as $units
+         | [ $units[] | unit_issues[] ] as $all_issues
+         | if any($all_issues[]; type != "number") then error("selection has a non-numeric issue")
+           elif any($all_issues[]; . <= 0 or floor != .) then error("selection has a non-positive or non-integer issue")
+           elif ($all_issues | length) != ($all_issues | unique | length) then error("selection contains duplicate issue")
+           else [ $units[] | select((unit_issues | map(tostring) | index($primary)) != null)]
+             | if length != 1 then error("selection unit missing or duplicated")
+               else .[0] | {unit_id, issues: unit_issues}
+               end
+           end
+         end
+     ' "$SELECTION_FILE") || \
+     ! UNIT_ID=$(printf '%s' "$UNIT_JSON" | jq -er '.unit_id | strings | select(length > 0)') || \
+     ! UNIT_ISSUES=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | map(tostring) | join(" ")') || \
+     ! UNIT_COUNT=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | length'); then
+     echo "SPAWN SKIPPED for primary #${PRIMARY_N:-unknown}: selection matrix issue list was not authoritative" >&2
+     printf 'BLOCKER primary #%s: could not bind every issue from selection matrix before Phase 4 spawn\n' "${PRIMARY_N:-unknown}" >> "$STATE_FILE"
+     continue
+   fi
    # Queue-feeder secondary candidates were consulted before reaching this
    # phase, but another task can claim one during prompt/context preparation.
    # Re-read the durable owner immediately before Phase 4 spawn (#2757). Any
    # lookup failure, unsupported claim surface, or foreign live owner fails
    # closed; --claim-issue below remains the atomic admission backstop.
    check_spawn_issue_claim() {
-     local claim_json owner_id
-     if ! claim_json=$(kookr issue owner "$PRIMARY_N" --repo "$REPO" --json 2>/dev/null); then
-       echo "SPAWN SKIPPED for primary #$PRIMARY_N: issue-claim lookup failed — refusing to spawn unverified" >&2
-       printf 'BLOCKER primary #%s: issue-claim lookup failed before Phase 4 spawn\n' "$PRIMARY_N" >> "$STATE_FILE"
+     local issue_number claim_json owner_id
+     if [ -z "${UNIT_ISSUES:-}" ]; then
+       echo "SPAWN SKIPPED for unit ${UNIT_ID:-unknown}: no bound issue list" >&2
+       printf 'BLOCKER unit %s: no bound issue list before Phase 4 spawn\n' "${UNIT_ID:-unknown}" >> "$STATE_FILE"
        return 1
      fi
-     if ! printf '%s' "$claim_json" | jq -e \
-       '.ok == true and .code == "OK" and (.details.claims | type == "array") and ((.details.claims | length) == 0 or ((.details.claims | length) == 1 and (.details.claims[0].taskId | type == "string") and (.details.claims[0].taskId | length > 0)))' >/dev/null; then
-       echo "SPAWN SKIPPED for primary #$PRIMARY_N: issue-claim response was not authoritative" >&2
-       printf 'BLOCKER primary #%s: non-authoritative issue-claim response before Phase 4 spawn\n' "$PRIMARY_N" >> "$STATE_FILE"
-       return 1
-     fi
-     owner_id=$(printf '%s' "$claim_json" | jq -r '.details.claims[0].taskId // ""')
-     if [ -n "$owner_id" ] && [ "$owner_id" != "${KOOKR_TASK_ID:-}" ]; then
-       echo "SPAWN SKIPPED for primary #$PRIMARY_N: live claim is owned by task $owner_id" >&2
-       printf 'SKIP primary #%s: live issue claim owned by task %s; no child spawned\n' "$PRIMARY_N" "$owner_id" >> "$STATE_FILE"
-       return 1
-     fi
+     for issue_number in $UNIT_ISSUES; do
+       if ! claim_json=$(kookr issue owner "$issue_number" --repo "$REPO" --json 2>/dev/null); then
+         echo "SPAWN SKIPPED for issue #$issue_number: issue-claim lookup failed — refusing to spawn unverified" >&2
+         printf 'BLOCKER issue #%s: issue-claim lookup failed before Phase 4 spawn\n' "$issue_number" >> "$STATE_FILE"
+         return 1
+       fi
+       if ! printf '%s' "$claim_json" | jq -e \
+         '.ok == true and .code == "OK" and (.details.claims | type == "array") and ((.details.claims | length) == 0 or ((.details.claims | length) == 1 and (.details.claims[0].taskId | type == "string") and (.details.claims[0].taskId | length > 0)))' >/dev/null; then
+         echo "SPAWN SKIPPED for issue #$issue_number: issue-claim response was not authoritative" >&2
+         printf 'BLOCKER issue #%s: non-authoritative issue-claim response before Phase 4 spawn\n' "$issue_number" >> "$STATE_FILE"
+         return 1
+       fi
+       owner_id=$(printf '%s' "$claim_json" | jq -r '.details.claims[0].taskId // ""')
+       if [ -n "$owner_id" ] && [ "$owner_id" != "${KOOKR_TASK_ID:-}" ]; then
+         echo "SPAWN SKIPPED for issue #$issue_number: live claim is owned by task $owner_id" >&2
+         printf 'SKIP issue #%s: live issue claim owned by task %s; no child spawned\n' "$issue_number" "$owner_id" >> "$STATE_FILE"
+         return 1
+       fi
+     done
      return 0
    }
    if ! check_spawn_issue_claim; then
+     continue
+   fi
+   # --claim-issue is currently a single-issue atomic admission gate. A
+   # bundled unit has been fully rechecked above, but cannot be safely handed
+   # to a child until the spawn API supports transferring atomic claims for
+   # every member. Keep the unit recorded as a blocker instead of opening a
+   # race window for its secondary issues.
+   if [ "$UNIT_COUNT" -gt 1 ]; then
+     echo "SPAWN SKIPPED for unit $UNIT_ID: multi-issue atomic claim support is required" >&2
+     printf 'BLOCKER unit %s: multi-issue unit requires atomic claims for every issue before spawn\n' "$UNIT_ID" >> "$STATE_FILE"
      continue
    fi
    # --claim-issue interleaves an atomic ownership claim with createTask (RFC
@@ -785,13 +857,18 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
-5. Parse the returned task ID and append it to `$CHILDREN_FILE`. Prefer the multi-issue shape; keep `issue` as the **primary** number — always the **lowest** issue number in the unit (same rule as unit slug / branch primary-N) — for older tooling:
+5. Parse the returned task ID and append it to `$CHILDREN_FILE`. For current
+single-issue units, write the single-issue shape below. Accept the future/legacy
+multi-issue shape when reconciling historical state, but do not create new
+multi-issue records until atomic claim transfer is available. Keep `issue` as
+the **primary** number — always the **lowest** issue number in the unit (same
+rule as unit slug / branch primary-N) — for older tooling:
 
 ```json
 {
-  "unit_id": "u-200-201",
+  "unit_id": "u-200",
   "issue": 200,
-  "issues": [200, 201],
+  "issues": [200],
   "task_id": "...",
   "agent_id": "kookr-...",
   "status": "spawned",
@@ -967,7 +1044,7 @@ For each child:
    - Idle after reporting a PR URL: verify PR state with `gh`.
    - Idle with a blocker: record it in `$CHILDREN_FILE` and decide whether another work unit can replace it.
    - Expanding write scope into another selected **work unit's** files: send corrective instruction and record risk.
-   - Multi-issue unit that dropped an issue from the PR: treat as incomplete; instruct the child to cover every issue or record a blocker.
+   - Historical/future multi-issue unit that dropped an issue from the PR: treat as incomplete; current units contain one issue.
 
 3. Verify PR state:
 
@@ -976,7 +1053,7 @@ For each child:
      --json number,title,state,headRefName,url,mergeable,statusCheckRollup,body
    ```
 
-   Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
+   Match current PRs by `Closes #N` for the child's single `issue` (or one-element `issues` array), issue number in title/body, or branch name. Historical/future multi-issue records require one PR covering all listed issues.
 
 4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker — with exactly ONE exception: **stale-owner reclaim**. When the owning child task is verifiably DEAD (its task status via `GET /api/tasks/<child-id>` is `terminated`/`cancelled`/`failed`, or `completed` with the unit's PR still open-unmerged — never merely idle or slow), the lease holder can never finish, so the parent may reclaim: re-claim the now-auto-released issue-claim lease (`kookr issue claim <primary-N> --repo "$REPO"`; exit 0 = granted, exit 6 = still held by a live task → the child is not actually dead, so stand down and record a blocker), record `"delivery": { "owner": "parent", "reclaimedFrom": "<child-id>", "reason": "owner terminal", "at": "<ISO ts>" }` in `children.json`, append the same fact to `state.md`, and re-read to confirm — then deliver. A child that is alive in ANY state is never reclaimed from; when in doubt, treat it as alive and record a blocker instead. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green, legitimately pending, or never-executed for budget/billing reasons (non-blocking per the CI policy — local verification is the authoritative gate).
@@ -998,13 +1075,13 @@ If multiple children create the same shared-file conflict:
 
 ## Phase 7: Completion
 
-The batch is DONE when every selected **issue** (expand multi-issue work units) has one of:
+The batch is DONE when every selected single-issue work unit has one of:
 
 - `merged=true` and a merged PR URL covering that issue, when `mergeAfterImplementation=true`.
 - an open PR URL covering that issue with green checks or accepted pending checks, when `mergeAfterImplementation=false`.
 - a recorded blocker with enough detail for a human to act.
 
-A multi-issue child that merged a PR missing one of its issues is **not** complete for the missing issue — either instruct a fixup or record a blocker for the gap.
+For historical/future multi-issue records, a PR missing one listed issue is **not** complete for that issue — either instruct a fixup or record a blocker for the gap.
 
 Before writing DONE:
 
@@ -1013,7 +1090,7 @@ gh issue list -R "$REPO" --state open --limit 100 --json number,title,url
 gh pr list -R "$REPO" --state open --limit 100 --json number,title,url,headRefName
 ```
 
-Confirm there are no accidental duplicate PRs for selected issues (including partial overlaps where one PR closed only a subset of a multi-issue unit). Also record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
+Confirm there are no accidental duplicate PRs for selected issues. When reconciling historical/future multi-issue records, also check for partial overlaps where one PR closed only a subset. Record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
 
 **Open-PR completion gate (hard rule).** When `mergeAfterImplementation=true`, the parent MUST NOT write `DONE`, signal `completion-ready`, or otherwise end its run while ANY **selected-issue** PR is open-unmerged without a recorded blocker. The check is the open-PR listing above **intersected with this batch's selection**: a PR counts only if its head branch or `Closes #N` references match a selected issue/unit in `children.json` — other batches' PRs are NOT yours to gate on or touch (concurrent coordinators are the normal case; the 2026-08-01 incident itself had two). "A child opened it, so it's the child's problem" is not an exit condition. If a child DIED with its PR open, follow Phase 5's delivery-ownership rule — including its stale-owner reclaim path — to take over and finish the merge steps from the child template (independent merge review → check classification → local-verified path → rebase on conflict → merge → delete head branch); if the child is alive but slow, instruct it and wait, per the same rule. Otherwise record a concrete blocker on the PR and in `state.md`. Coordinator death is the residual risk this gate cannot cover — that is what the `pr-merge-rebase-watchdog` schedule is for; the gate covers every case where the parent is alive to enforce it.
 
@@ -1174,7 +1251,7 @@ Ralph loop mode, ignore this — the loop owns the task lifecycle and the
 - Stopping at a completed prior run when the launch request asks for another batch and open eligible issues remain.
 - Asking the user to find new issues after a terminal prior run instead of carrying completed issues forward as exclusions.
 - Spawning work units first and checking file overlap later.
-- Forcing one child per issue when two tiny tied issues clearly share one PR-sized change set.
+- Forcing one child per issue when two tiny tied issues clearly share one PR-sized change set (future-only, after atomic multi-issue claim transfer exists).
 - Bundling large independent features into a mega-PR just to reduce task count.
 - Letting every child touch `CHANGELOG.md`, release notes, README, or lockfiles in a concurrent batch.
 - Treating a child task's final message as complete without checking PR state (and multi-issue coverage).

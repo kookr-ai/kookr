@@ -44,7 +44,7 @@ to `project`, where the file does not exist, so the create call is rejected with
 | `repoFullName` | `kookr-ai/kookr` | Target repository. |
 | `localPath` | `/home/<user>/git/kookr` | Registered checkout. Blank would also resolve to `~/git/kookr`; set explicitly for reproducibility. |
 | `issueSelector` | `` (blank) | Blank scans open issues through the playbook's eligibility filters. |
-| `targetIssueCount` | `4` | Issues to cover per run (bundled issues still count toward this total). |
+| `targetIssueCount` | `4` | Issues to cover per run (bundles are temporarily ineligible until atomic multi-issue claim transfer is available). |
 | `maxConcurrentTasks` | `2` | Cap on concurrent child tasks. Kept low so the batch never contends with the Lucy batch or the host's own server for spawn slots. |
 | `mergeAfterImplementation` | `true` | Child tasks merge PRs once checks pass. Merges land on `main` only (see prod safety). |
 | `allowOtherAuthors` | `false` | Issue bodies are untrusted prompt input; only issues opened by the operator are eligible. |

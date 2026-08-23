@@ -215,7 +215,11 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
   test('rechecks the durable owner immediately before Phase 4 spawn', () => {
     expect(content).toContain('check_spawn_issue_claim');
     expect(content).toMatch(/Re-read the durable owner immediately before Phase 4 spawn/);
-    expect(content).toContain('kookr issue owner "$PRIMARY_N" --repo "$REPO" --json');
+    expect(content).toContain('kookr issue owner "$issue_number" --repo "$REPO" --json');
+    expect(content).toContain('UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N"');
+    expect(content).toContain('selection contains duplicate issue');
+    expect(content).toContain('multi-issue unit requires atomic claims for every issue before spawn');
+    expect(content).toContain('selection matrix issue list was not authoritative');
     expect(content).toContain('--claim-issue $PRIMARY_N --claim-repo $REPO');
   });
 
@@ -236,6 +240,7 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
     const script = `
 set -u
 PRIMARY_N=2757
+UNIT_ISSUES="2757"
 REPO=kookr-ai/kookr
 STATE_FILE=${stateFile}
 KOOKR_TASK_ID=local-task
@@ -266,10 +271,119 @@ done
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
-      expect(output).toContain('foreign|0|SKIP primary #2757: live issue claim owned by task sibling-task');
-      expect(output).toContain('failed|0|BLOCKER primary #2757: issue-claim lookup failed');
-      expect(output).toContain('malformed|0|BLOCKER primary #2757: non-authoritative issue-claim response');
+      expect(output).toContain('foreign|0|SKIP issue #2757: live issue claim owned by task sibling-task');
+      expect(output).toContain('failed|0|BLOCKER issue #2757: issue-claim lookup failed');
+      expect(output).toContain('malformed|0|BLOCKER issue #2757: non-authoritative issue-claim response');
       expect(output).toContain('unowned|1|');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks every issue in a bundled unit before spawning', () => {
+    const binding = content.match(/   if \[ -z "\$\{PRIMARY_N:-\}" \][\s\S]*?\n   fi\n/)?.[0];
+    const helper = content.match(/   check_spawn_issue_claim\(\) \{[\s\S]*?\n   \}\n/)?.[0];
+    const atomicBundleGuard = content.match(/   if \[ "\$UNIT_COUNT" -gt 1 \][\s\S]*?\n   fi\n/)?.[0];
+    expect(binding).toBeDefined();
+    expect(helper).toBeDefined();
+    expect(atomicBundleGuard).toBeDefined();
+    const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-bundle-claim-test-'));
+    const stateFile = join(tempDir, 'state.log');
+    const script = `
+set -u
+PRIMARY_N=2757
+UNIT_ID=stale-unit
+UNIT_ISSUES="2757"
+SELECTION_FILE=${join(tempDir, 'selection.json')}
+printf '%s' '[{"unit_id":"u-2757-2758","issues":[2757,2758]}]' > "$SELECTION_FILE"
+REPO=kookr-ai/kookr
+STATE_FILE=${stateFile}
+KOOKR_TASK_ID=local-task
+kookr() {
+    case "$1" in
+    issue)
+      case "$3" in
+        2757) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}' ;;
+        2758)
+          if [ "$SECONDARY_CLAIM" = foreign ]; then
+            printf '%s' '{"ok":true,"code":"OK","details":{"claims":[{"taskId":"sibling-task"}]}}'
+          else
+            printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}'
+          fi
+          ;;
+      esac
+      ;;
+  esac
+}
+${binding}
+printf 'bound=%s unit=%s|' "$UNIT_ISSUES" "$UNIT_ID"
+${helper}
+run_case() {
+  SECONDARY_CLAIM="$1"
+  : > "$STATE_FILE"
+  spawn_count=0
+  for _ in 1; do
+    if check_spawn_issue_claim; then
+      ${atomicBundleGuard}
+      spawn_count=$((spawn_count + 1))
+    fi
+  done
+  printf '%s|%s|' "$SECONDARY_CLAIM" "$spawn_count"
+  tr '\\n' ';' < "$STATE_FILE"
+}
+run_case foreign
+run_case unowned
+`;
+    try {
+      const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('bound=2757 2758 unit=u-2757-2758|');
+      expect(output).toContain('foreign|0|SKIP issue #2758: live issue claim owned by task sibling-task');
+      expect(output).toContain('unowned|0|BLOCKER unit u-2757-2758: multi-issue unit requires atomic claims for every issue before spawn');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed for malformed or duplicate selection issue sets', () => {
+    const binding = content.match(/   if \[ -z "\$\{PRIMARY_N:-\}" \][\s\S]*?\n   fi\n/)?.[0];
+    expect(binding).toBeDefined();
+    const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-invalid-selection-test-'));
+    const stateFile = join(tempDir, 'state.log');
+    const script = `
+set -u
+PRIMARY_N=2757
+UNIT_ID=stale-unit
+UNIT_ISSUES=stale-issues
+SELECTION_FILE=${join(tempDir, 'selection.json')}
+STATE_FILE=${stateFile}
+run_case() {
+  printf '%s' "$2" > "$SELECTION_FILE"
+  : > "$STATE_FILE"
+  bound=0
+  for _ in 1; do
+    ${binding}
+    bound=1
+  done
+  printf '%s:%s|' "$1" "$bound"
+  tr '\\n' ';' < "$STATE_FILE"
+}
+run_case duplicate '[{"unit_id":"u-2757","issues":[2757,2757]}]'
+run_case null '[{"unit_id":"u-2757","issues":[null]}]'
+run_case fractional '[{"unit_id":"u-2757","issues":[2757.5]}]'
+run_case missing '[{"unit_id":"u-2757"}]'
+run_case object-root '{"nested":{"unit_id":"u-2757","issues":[2757]}}'
+run_case false-issues '[{"unit_id":"u-2757","issues":false,"issue":2757}]'
+run_case conflict '[{"unit_id":"u-2757","issues":[2757],"issue":2758}]'
+`;
+    try {
+      const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('duplicate:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('null:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('fractional:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('missing:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('object-root:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('false-issues:0|BLOCKER primary #2757: could not bind every issue');
+      expect(output).toContain('conflict:0|BLOCKER primary #2757: could not bind every issue');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
