@@ -117,7 +117,8 @@ A **work unit** is currently a single issue:
 - a single issue → one child task → one PR that closes that issue, or
 - a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle (future capability; not currently selectable).
 
-Default to one issue per work unit. Bundle only when it is clearly more efficient (see Phase 3).
+Default to one issue per work unit. Current runs select only single-issue units;
+bundling becomes available when multi-issue claim transfer is implemented.
 Until the issue-claim API supports atomic transfer for every member, the current
 selection must use single-issue work units; the bundle shape remains documented
 for future claim-transfer support and is guarded fail-closed at spawn time.
@@ -437,7 +438,9 @@ For each filtered issue:
 
 ### 3.2 Bundle related issues into multi-issue work units (when efficient)
 
-Default is **one issue per work unit**. Bundle two or more issues into a single work unit only when **all** of the following hold:
+Default is **one issue per work unit**. In a future claim-transfer-enabled
+version, bundle two or more issues into a single work unit only when **all** of
+the following hold:
 
 The current issue-claim admission API atomically claims one issue per child. Until
 multi-issue claim transfer is available, multi-issue bundles are **temporarily
@@ -850,7 +853,12 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
-5. Parse the returned task ID and append it to `$CHILDREN_FILE`. Prefer the multi-issue shape; keep `issue` as the **primary** number — always the **lowest** issue number in the unit (same rule as unit slug / branch primary-N) — for older tooling:
+5. Parse the returned task ID and append it to `$CHILDREN_FILE`. For current
+single-issue units, write the single-issue shape below. Accept the future/legacy
+multi-issue shape when reconciling historical state, but do not create new
+multi-issue records until atomic claim transfer is available. Keep `issue` as
+the **primary** number — always the **lowest** issue number in the unit (same
+rule as unit slug / branch primary-N) — for older tooling:
 
 ```json
 {
@@ -1239,7 +1247,7 @@ Ralph loop mode, ignore this — the loop owns the task lifecycle and the
 - Stopping at a completed prior run when the launch request asks for another batch and open eligible issues remain.
 - Asking the user to find new issues after a terminal prior run instead of carrying completed issues forward as exclusions.
 - Spawning work units first and checking file overlap later.
-- Forcing one child per issue when two tiny tied issues clearly share one PR-sized change set.
+- Forcing one child per issue when two tiny tied issues clearly share one PR-sized change set (future-only, after atomic multi-issue claim transfer exists).
 - Bundling large independent features into a mega-PR just to reduce task count.
 - Letting every child touch `CHANGELOG.md`, release notes, README, or lockfiles in a concurrent batch.
 - Treating a child task's final message as complete without checking PR state (and multi-issue coverage).
