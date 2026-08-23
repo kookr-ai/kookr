@@ -732,6 +732,8 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
        [.[] | select(.unit_id == $unit_id) | (.issues // [ .issue ])]
        | if length != 1 then error("selection unit missing or duplicated")
          elif (.[0] | type) != "array" or (.[0] | length) == 0 then error("selection unit has no issues")
+         elif (.[0] | map(type) | any(.[]; . != "number")) then error("selection unit has a non-numeric issue")
+         elif (.[0] | map(select(. <= 0 or floor != .)) | length) > 0 then error("selection unit has a non-positive or non-integer issue")
          else .[0] | map(tostring) | join(" ")
          end
      ' "$SELECTION_FILE"); then

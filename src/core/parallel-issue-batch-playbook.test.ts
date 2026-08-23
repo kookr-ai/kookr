@@ -289,6 +289,7 @@ done
 set -u
 PRIMARY_N=2757
 UNIT_ID=u-2757-2758
+UNIT_ISSUES="2757"
 SELECTION_FILE=${join(tempDir, 'selection.json')}
 printf '%s' '[{"unit_id":"u-2757-2758","issues":[2757,2758]}]' > "$SELECTION_FILE"
 REPO=kookr-ai/kookr
