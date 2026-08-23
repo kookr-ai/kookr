@@ -149,6 +149,12 @@ import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
 import { isTerminalStatus } from '../core/task-status.js';
+import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
+import {
+  UmbrellaChainAdvancer,
+  UMBRELLA_CHAIN_ADVANCER_STALE_MS,
+  umbrellaChainAdvancerModeFromEnv,
+} from './use-cases/umbrella-chain-advancer.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 import { RalphLoopService } from './ralph-loop-service.js';
@@ -2428,6 +2434,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // service (created later) feeds it on every sample tick.
   const diskAdmissionConfig = readDiskAdmissionConfigFromEnv();
   const diskAdmissionTracker = new DataDirectoryDiskAdmissionTracker();
+  const umbrellaChainAdvancerMode = umbrellaChainAdvancerModeFromEnv();
+  let umbrellaChainAdvancer: UmbrellaChainAdvancer | undefined;
+  // Route construction precedes async project-identity resolution. Keep a
+  // stable read-only health adapter so the diagnostics route sees the live
+  // service once bootstrap has finished wiring it below.
+  const umbrellaChainHealth = {
+    getHealthSnapshot: () => umbrellaChainAdvancer?.getHealthSnapshot() ?? {
+      schemaVersion: 'umbrella-chain-advancer.v1' as const,
+      mode: umbrellaChainAdvancerMode,
+      running: false,
+      lastTickAt: null,
+      lastTickError: null,
+      tickCount: 0,
+      staleThresholdMs: UMBRELLA_CHAIN_ADVANCER_STALE_MS,
+      unstickProcedure: 'Inspect the umbrella ledger and claim file, terminate the stale owner, then rerun the advancer; malformed ledgers require a manual body repair.',
+      chains: [],
+    },
+  };
   // Emergency + schedule maintenance prune health (issues #2344 / #2345):
   // holders filled after takePredelete is defined; /api/health reads via the
   // getter so createRoutes can close over the live instances without delaying
@@ -2491,6 +2515,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     timerHealth,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
+    umbrellaChainAdvancer: umbrellaChainHealth,
     remoteShare: remoteRelayRuntime.remoteShare,
     getCleanupWorktreeOnComplete,
     relayConnection: remoteRelayRuntime.relayConnection,
@@ -2695,6 +2720,44 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     policyResolver,
     attemptRepository,
   } = await createContributionWorkspaceServices({ kookrDir, serverCwd, taskStore });
+
+  const umbrellaRepo = serverProjectId?.match(/^github\.com\/([^/]+\/[^/]+)$/i)?.[1];
+  if (umbrellaRepo) {
+    umbrellaChainAdvancer = new UmbrellaChainAdvancer({
+      kookrDir,
+      repo: umbrellaRepo,
+      repoPath: serverCwd,
+      remote: new GhUmbrellaChainClient(),
+      mode: umbrellaChainAdvancerMode,
+      launch: async (options) => {
+        const result = await launchTask(launchServiceDeps, {
+          ...options,
+          launchSource: 'schedule',
+          unattended: true,
+          autoCloseOnSignal: true,
+          projectId: serverProjectId,
+        }, { deliveryPolicy: 'self-advancing' });
+        return { taskId: result.task.id };
+      },
+      isTaskTerminal: (taskId) => {
+        const task = taskStore.getTask(taskId);
+        return task !== undefined && isTerminalStatus(task.status);
+      },
+      isReviewTaskIndependent: (implementerTaskId, reviewerTaskId) => {
+        const reviewer = taskStore.getTask(reviewerTaskId);
+        if (!reviewer || !isTerminalStatus(reviewer.status)) return false;
+        const lineage = new Set<string>();
+        let current = taskStore.getTask(implementerTaskId);
+        while (current && !lineage.has(current.id)) {
+          lineage.add(current.id);
+          current = current.parentTaskId ? taskStore.getTask(current.parentTaskId) : undefined;
+        }
+        return !lineage.has(reviewerTaskId);
+      },
+      logger: console,
+    });
+    console.log(`[umbrella-chain-advancer] mode=${umbrellaChainAdvancerMode} repo=${umbrellaRepo}`);
+  }
 
   const takePredeleteSnapshot = async (): Promise<void> => {
     // Fail loud, not silent. rfc-task-loss-prevention D3 keeps the snapshot
@@ -3087,6 +3150,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceWatchdogService,
     findingEvidenceReviewSampler,
     scheduledWorktreeReclaimRunner,
+    umbrellaChainAdvancer,
     timerDeps: {
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,

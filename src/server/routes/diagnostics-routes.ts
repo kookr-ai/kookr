@@ -736,6 +736,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
+      ...(deps.umbrellaChainAdvancer
+        ? { umbrellaChains: deps.umbrellaChainAdvancer.getHealthSnapshot() }
+        : {}),
       ...(staleProcesses ? { staleProcesses } : {}),
       // Payload-diet gauges (issue #2220): tracked/terminal task pressure + last
       // snapshot bytes. Same numbers already logged at boot/prune; health makes

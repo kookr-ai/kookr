@@ -12,6 +12,7 @@ import type { ResourceStatusService } from '../resource-status-service.js';
 import type { ResourceWatchdogService } from '../resource-watchdog-service.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 import type { ScheduledWorktreeReclaimRunner } from '../scheduled-worktree-reclaim-runner.js';
+import type { UmbrellaChainAdvancer } from '../use-cases/umbrella-chain-advancer.js';
 
 export interface BackgroundServicesDeps {
   ossAttemptStore: OssAttemptStore;
@@ -42,6 +43,8 @@ export interface BackgroundServicesDeps {
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'start' | 'stop'>;
   /** Unattended worktree-reclaim scheduler (issue #1578). No-op unless configured. */
   scheduledWorktreeReclaimRunner?: Pick<ScheduledWorktreeReclaimRunner, 'start' | 'stop'>;
+  /** Phase-2 umbrella-chain continuation backstop; disabled unless explicitly configured. */
+  umbrellaChainAdvancer?: Pick<UmbrellaChainAdvancer, 'start' | 'stop'>;
 }
 
 export interface BackgroundServices {
@@ -79,6 +82,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       deps.postRecoveryService?.start();
       deps.findingEvidenceReviewSampler?.start();
       deps.scheduledWorktreeReclaimRunner?.start();
+      deps.umbrellaChainAdvancer?.start();
     },
     async stop(): Promise<void> {
       clearAllTimers(timerHandles);
@@ -90,6 +94,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       deps.resourceWatchdogService?.stop();
       deps.findingEvidenceReviewSampler?.stop();
       await deps.scheduledWorktreeReclaimRunner?.stop();
+      await deps.umbrellaChainAdvancer?.stop();
       ledgerWatcher.close();
     },
   };
