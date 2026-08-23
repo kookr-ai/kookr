@@ -91,6 +91,15 @@ async function waitForPidFile(pidFile: string, timeoutMs = 3_000): Promise<numbe
   return -1;
 }
 
+async function waitForFileContents(filePath: string, expected: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(filePath) && readFileSync(filePath, 'utf8') === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`file did not contain expected contents within ${timeoutMs}ms: ${filePath}`);
+}
+
 /**
  * Poll until a freshly created dtach master is identity-verifiable.
  *
@@ -190,6 +199,55 @@ describe('LocalDtachBackend', () => {
       console.warn(
         '[local-dtach-backend.test] dtach not found at vendor/dtach/dtach and not on PATH; integration tests will be skipped. Run scripts/build-dtach.sh to enable them.',
       );
+    }
+  });
+
+  skipIfNoDtach('normalizes TERM=dumb before spawning the PTY child', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-term-env-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+    const termFile = join(tmpDir, 'term.txt');
+
+    try {
+      await backend.createSession({
+        id: 'term-env',
+        command: '/bin/sh',
+        args: ['-c', `printf '%s' "$TERM" > ${JSON.stringify(termFile)}; sleep 1`],
+        env: { TERM: 'dumb' },
+      });
+
+      await waitForFileContents(termFile, 'xterm-256color');
+    } finally {
+      await backend.killSession('term-env').catch(() => undefined);
+      backend.close();
+    }
+  });
+
+  skipIfNoDtach('normalizes TERM=dumb in a replace-mode PTY environment', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-term-env-replace-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+    const termFile = join(tmpDir, 'term.txt');
+
+    try {
+      await backend.createSession({
+        id: 'term-env-replace',
+        command: '/bin/sh',
+        args: ['-c', `printf '%s' "$TERM" > ${JSON.stringify(termFile)}; sleep 1`],
+        envMode: 'replace',
+        env: { PATH: process.env.PATH ?? '', TERM: 'dumb' },
+      });
+
+      await waitForFileContents(termFile, 'xterm-256color');
+    } finally {
+      await backend.killSession('term-env-replace').catch(() => undefined);
+      backend.close();
     }
   });
 

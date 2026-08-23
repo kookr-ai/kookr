@@ -532,8 +532,9 @@ start_server() {
   # Environment= lines so the pid-file fallback path gets the same mitigation
   # for the RSS sawtooth / arena fragmentation. glibc reads these at init, so
   # they must be exported before node starts. No-op on macOS/musl.
-  # Pre-existing values in the launching shell win, keeping them overridable.
-  local launch="export MALLOC_ARENA_MAX=\"\${MALLOC_ARENA_MAX:-2}\" MALLOC_TRIM_THRESHOLD_=\"\${MALLOC_TRIM_THRESHOLD_:-131072}\"; echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
+  # Pre-existing allocator values in the launching shell win, keeping them
+  # overridable; TERM is intentionally fixed for PTY-backed agent sessions.
+  local launch="export TERM=xterm-256color MALLOC_ARENA_MAX=\"\${MALLOC_ARENA_MAX:-2}\" MALLOC_TRIM_THRESHOLD_=\"\${MALLOC_TRIM_THRESHOLD_:-131072}\"; echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
   if command -v setsid >/dev/null 2>&1; then
     # Linux: setsid -f gives the server a brand-new session, fully detached.
     setsid -f sh -c "$launch"
@@ -1169,4 +1170,3 @@ write_last_restart_metrics \
   "${PHASE_SMOKE_S:-${PHASE_M2_S:-0}}" \
   "$((SECONDS - RESTART_T0))" \
   "script"
-

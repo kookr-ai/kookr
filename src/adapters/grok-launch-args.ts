@@ -114,8 +114,9 @@ export interface BuildGrokEnvOptions {
 /**
  * Construct the fully-resolved, allowlisted child environment for a Grok launch.
  * The terminal backend is invoked with `envMode: 'replace'` so THIS object — not
- * the inherited `process.env` — becomes the child environment. `HOME` is
- * preserved (the coding task still needs git/ssh), while `GROK_HOME` redirects
+ * the inherited `process.env` — is the baseline child environment. The backend
+ * may normalize a missing, blank, or `dumb` TERM before spawning the PTY. `HOME`
+ * is preserved (the coding task still needs git/ssh), while `GROK_HOME` redirects
  * Grok's hooks/plugins/state to the isolated session home and `GROK_AUTH_PATH`
  * keeps credentials on the operator's real shared file.
  */

@@ -9,6 +9,7 @@ import {
   asTerminalInputWriterPort,
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
+import { DEFAULT_AGENT_TERM } from './session-term-env.js';
 
 const promptEncoder = new TextEncoder();
 const promptDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -240,6 +241,9 @@ export async function buildAgentLaunchContext(
   const task = opts.taskStore.getTask(opts.taskId);
   const env: Record<string, string> = {
     KOOKR_TASK_ID: opts.taskId,
+    // Managed agents always run inside a PTY. A server restarted with
+    // TERM=dumb would otherwise strand Codex on its interactive confirmation.
+    TERM: DEFAULT_AGENT_TERM,
   };
   const permissionAllowlist = ['Bash(git *)'];
 
