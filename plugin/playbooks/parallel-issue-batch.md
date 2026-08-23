@@ -723,15 +723,22 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
    # UNIT_ISSUES is the whitespace-separated issue-number list for this unit;
    # PRIMARY_N is its lowest issue number (the CAS key for the batch claim).
-   # The selection matrix is the source of truth. When the caller has not
-   # already bound UNIT_ISSUES from its `issues` array, derive the same list
-   # from ISSUES_LABEL (for example, "#200+#201"). A missing list falls back
-   # to the primary issue for legacy single-issue callers only.
-   UNIT_ISSUES="${UNIT_ISSUES:-}"
-   if [ -z "$UNIT_ISSUES" ] && [ -n "${ISSUES_LABEL:-}" ]; then
-     UNIT_ISSUES=$(printf '%s' "$ISSUES_LABEL" | tr '#+' '  ')
+   # The surrounding per-unit loop MUST set UNIT_ID to the current selection
+   # matrix entry's unit_id. Bind directly from that entry; labels and the
+   # primary issue are not authoritative for a bundled unit. Legacy records
+   # with only `issue` are normalized to a one-element issues array.
+   if [ -z "${UNIT_ID:-}" ] || [ -z "${SELECTION_FILE:-}" ] || \
+     ! UNIT_ISSUES=$(jq -er --arg unit_id "$UNIT_ID" '
+       [.[] | select(.unit_id == $unit_id) | (.issues // [ .issue ])]
+       | if length != 1 then error("selection unit missing or duplicated")
+         elif (.[0] | type) != "array" or (.[0] | length) == 0 then error("selection unit has no issues")
+         else .[0] | map(tostring) | join(" ")
+         end
+     ' "$SELECTION_FILE"); then
+     echo "SPAWN SKIPPED for unit ${UNIT_ID:-unknown}: selection matrix issue list was not authoritative" >&2
+     printf 'BLOCKER unit %s: could not bind every issue from selection matrix before Phase 4 spawn\n' "${UNIT_ID:-unknown}" >> "$STATE_FILE"
+     continue
    fi
-   [ -n "$UNIT_ISSUES" ] || UNIT_ISSUES="$PRIMARY_N"
    # Queue-feeder secondary candidates were consulted before reaching this
    # phase, but another task can claim one during prompt/context preparation.
    # Re-read the durable owner immediately before Phase 4 spawn (#2757). Any
@@ -739,7 +746,12 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    # closed; --claim-issue below remains the atomic admission backstop.
    check_spawn_issue_claim() {
      local issue_number claim_json owner_id
-     for issue_number in ${UNIT_ISSUES:-$PRIMARY_N}; do
+     if [ -z "${UNIT_ISSUES:-}" ]; then
+       echo "SPAWN SKIPPED for unit ${UNIT_ID:-unknown}: no bound issue list" >&2
+       printf 'BLOCKER unit %s: no bound issue list before Phase 4 spawn\n' "${UNIT_ID:-unknown}" >> "$STATE_FILE"
+       return 1
+     fi
+     for issue_number in $UNIT_ISSUES; do
        if ! claim_json=$(kookr issue owner "$issue_number" --repo "$REPO" --json 2>/dev/null); then
          echo "SPAWN SKIPPED for issue #$issue_number: issue-claim lookup failed — refusing to spawn unverified" >&2
          printf 'BLOCKER issue #%s: issue-claim lookup failed before Phase 4 spawn\n' "$issue_number" >> "$STATE_FILE"
