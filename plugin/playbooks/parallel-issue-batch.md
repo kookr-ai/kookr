@@ -723,22 +723,28 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
    # UNIT_ISSUES is the whitespace-separated issue-number list for this unit;
    # PRIMARY_N is its lowest issue number (the CAS key for the batch claim).
-   # The surrounding per-unit loop MUST set UNIT_ID to the current selection
-   # matrix entry's unit_id. Bind directly from that entry; labels and the
-   # primary issue are not authoritative for a bundled unit. Legacy records
-   # with only `issue` are normalized to a one-element issues array.
-   if [ -z "${UNIT_ID:-}" ] || [ -z "${SELECTION_FILE:-}" ] || \
-     ! UNIT_ISSUES=$(jq -er --arg unit_id "$UNIT_ID" '
-       [.[] | select(.unit_id == $unit_id) | (.issues // [ .issue ])]
-       | if length != 1 then error("selection unit missing or duplicated")
-         elif (.[0] | type) != "array" or (.[0] | length) == 0 then error("selection unit has no issues")
-         elif (.[0] | map(type) | any(.[]; . != "number")) then error("selection unit has a non-numeric issue")
-         elif (.[0] | map(select(. <= 0 or floor != .)) | length) > 0 then error("selection unit has a non-positive or non-integer issue")
-         else .[0] | map(tostring) | join(" ")
+   # Bind from the current selection matrix entry using PRIMARY_N, which the
+   # caller already derives as the lowest issue in this work unit. This resets
+   # stale per-unit variables, normalizes legacy single-issue records, and
+   # rejects malformed or duplicate issue ownership before any claim lookup.
+   if [ -z "${PRIMARY_N:-}" ] || [ -z "${SELECTION_FILE:-}" ] || \
+     ! UNIT_JSON=$(jq -er --arg primary "$PRIMARY_N" '
+       def unit_issues: (.issues // [ .issue ]);
+       . as $selection
+       | [ $selection[] | unit_issues[] ] as $all_issues
+       | if any($all_issues[]; type != "number") then error("selection has a non-numeric issue")
+         elif any($all_issues[]; . <= 0 or floor != .) then error("selection has a non-positive or non-integer issue")
+         elif ($all_issues | length) != ($all_issues | unique | length) then error("selection contains duplicate issue")
+         else [ $selection[] | select((unit_issues | map(tostring) | index($primary)) != null)]
+           | if length != 1 then error("selection unit missing or duplicated")
+             else .[0] | {unit_id, issues: unit_issues}
+             end
          end
-     ' "$SELECTION_FILE"); then
-     echo "SPAWN SKIPPED for unit ${UNIT_ID:-unknown}: selection matrix issue list was not authoritative" >&2
-     printf 'BLOCKER unit %s: could not bind every issue from selection matrix before Phase 4 spawn\n' "${UNIT_ID:-unknown}" >> "$STATE_FILE"
+     ' "$SELECTION_FILE") || \
+     ! UNIT_ID=$(printf '%s' "$UNIT_JSON" | jq -er '.unit_id | strings | select(length > 0)') || \
+     ! UNIT_ISSUES=$(printf '%s' "$UNIT_JSON" | jq -er '.issues | map(tostring) | join(" ")'); then
+     echo "SPAWN SKIPPED for primary #${PRIMARY_N:-unknown}: selection matrix issue list was not authoritative" >&2
+     printf 'BLOCKER primary #%s: could not bind every issue from selection matrix before Phase 4 spawn\n' "${PRIMARY_N:-unknown}" >> "$STATE_FILE"
      continue
    fi
    # Queue-feeder secondary candidates were consulted before reaching this
