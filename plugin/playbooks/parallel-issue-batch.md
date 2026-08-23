@@ -722,6 +722,35 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    if [ "$CHILD_AGENT" != "default" ]; then AGENT_FLAG="--agent $CHILD_AGENT"; fi
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
    # PRIMARY_N = lowest issue number in the unit (CAS key for the batch claim).
+   # Queue-feeder secondary candidates were consulted before reaching this
+   # phase, but another task can claim one during prompt/context preparation.
+   # Re-read the durable owner immediately before Phase 4 spawn (#2757). Any
+   # lookup failure, unsupported claim surface, or foreign live owner fails
+   # closed; --claim-issue below remains the atomic admission backstop.
+   check_spawn_issue_claim() {
+     local claim_json owner_id
+     if ! claim_json=$(kookr issue owner "$PRIMARY_N" --repo "$REPO" --json 2>/dev/null); then
+       echo "SPAWN SKIPPED for primary #$PRIMARY_N: issue-claim lookup failed — refusing to spawn unverified" >&2
+       printf 'BLOCKER primary #%s: issue-claim lookup failed before Phase 4 spawn\n' "$PRIMARY_N" >> "$STATE_FILE"
+       return 1
+     fi
+     if ! printf '%s' "$claim_json" | jq -e \
+       '.ok == true and .code == "OK" and (.details.claims | type == "array") and ((.details.claims | length) == 0 or ((.details.claims | length) == 1 and (.details.claims[0].taskId | type == "string") and (.details.claims[0].taskId | length > 0)))' >/dev/null; then
+       echo "SPAWN SKIPPED for primary #$PRIMARY_N: issue-claim response was not authoritative" >&2
+       printf 'BLOCKER primary #%s: non-authoritative issue-claim response before Phase 4 spawn\n' "$PRIMARY_N" >> "$STATE_FILE"
+       return 1
+     fi
+     owner_id=$(printf '%s' "$claim_json" | jq -r '.details.claims[0].taskId // ""')
+     if [ -n "$owner_id" ] && [ "$owner_id" != "${KOOKR_TASK_ID:-}" ]; then
+       echo "SPAWN SKIPPED for primary #$PRIMARY_N: live claim is owned by task $owner_id" >&2
+       printf 'SKIP primary #%s: live issue claim owned by task %s; no child spawned\n' "$PRIMARY_N" "$owner_id" >> "$STATE_FILE"
+       return 1
+     fi
+     return 0
+   }
+   if ! check_spawn_issue_claim; then
+     continue
+   fi
    # --claim-issue interleaves an atomic ownership claim with createTask (RFC
    # rfc-issue-ownership-lock PR 1b). Exit 6 → re-select another unit (R16);
    # flag-off / old server → no-op (R7/R26). Always pass --claim-repo from the

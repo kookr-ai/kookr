@@ -460,6 +460,7 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
   it('secondary-emits unassigned idea-scout issues when product leaves are empty (#2044)', async () => {
     const c = capture();
     const ghCalls: string[][] = [];
+    const claimCalls: string[] = [];
     const snap = JSON.stringify({
       capacity: { free: 7, pendingQueueDepth: 0 },
       openProductMetricIssues: 0,
@@ -502,10 +503,21 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
         ghCalls.push(a);
         return '';
       },
+      env: { KOOKR_API_BASE_URL: 'http://claims.test' },
+      fetchImpl: async (input) => {
+        claimCalls.push(String(input));
+        return new Response('[]', { status: 200 });
+      },
     });
     expect(code).toBe(0);
     // Secondary path never creates issues (they already exist).
     expect(ghCalls).toHaveLength(0);
+    // Both candidates are consulted, then the selected issue is rechecked
+    // immediately before secondary emission (#2757).
+    expect(claimCalls).toHaveLength(3);
+    expect(claimCalls[0]).toContain('/api/issue-claims?repo=kookr-ai%2Fkookr&number=2032');
+    expect(claimCalls[1]).toContain('/api/issue-claims?repo=kookr-ai%2Fkookr&number=2033');
+    expect(claimCalls[2]).toContain('/api/issue-claims?repo=kookr-ai%2Fkookr&number=2032');
     const payload = JSON.parse(c.lines[0]!);
     expect(payload.decision.action).toBe('emit-secondary');
     expect(payload.decision.actionSource).toBe('idea-scout');
@@ -519,6 +531,161 @@ describe('runQueueFeederCli plan (dry-run default)', () => {
     const ledgerRow = JSON.parse(c.ledger[0]!.line);
     expect(ledgerRow.action).toBe('emit-secondary');
     expect(ledgerRow.secondaryEmitted).toEqual(['kookr-ai/kookr#2032']);
+  });
+
+  it('skips a ready issue owned by another task and records the owner in the ledger (#2757)', async () => {
+    const c = capture();
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [{ repo: 'kookr-ai/kookr', number: 2047, title: 'residual', openChildrenCount: 0 }],
+      readyIssues: [{ repo: 'kookr-ai/kookr', number: 2032, title: 'claimed', labels: ['idea-scout'] }],
+    });
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      env: { KOOKR_API_BASE_URL: 'http://claims.test' },
+      readInput: () => snap,
+      fetchImpl: async () =>
+        new Response(JSON.stringify([{ taskId: 'sibling-task', ownerName: 'sibling' }]), { status: 200 }),
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.secondaryEmitted).toEqual([]);
+    expect(payload.emitted).toEqual([]);
+    expect(payload.record.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'kookr-ai/kookr#2032',
+          reason: 'active issue claim owned by task sibling-task (sibling)',
+        }),
+      ]),
+    );
+  });
+
+  it('fails closed for a claim lookup failure and records the reason (#2757)', async () => {
+    const c = capture();
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [{ repo: 'kookr-ai/kookr', number: 2047, title: 'residual', openChildrenCount: 0 }],
+      readyIssues: [{ repo: 'kookr-ai/kookr', number: 2032, title: 'unverifiable', labels: ['idea-scout'] }],
+    });
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      env: { KOOKR_API_BASE_URL: 'http://claims.test' },
+      readInput: () => snap,
+      fetchImpl: async () => {
+        throw new Error('control plane unavailable');
+      },
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.secondaryEmitted).toEqual([]);
+    expect(payload.emitted).toEqual([]);
+    expect(payload.record.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'kookr-ai/kookr#2032',
+          reason: 'issue-claim lookup failed: control plane unavailable',
+        }),
+      ]),
+    );
+  });
+
+  it('records malformed claim API configuration as a lookup failure (#2757)', async () => {
+    const c = capture();
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [{ repo: 'kookr-ai/kookr', number: 2047, title: 'residual', openChildrenCount: 0 }],
+      readyIssues: [{ repo: 'kookr-ai/kookr', number: 2032, title: 'malformed base', labels: ['idea-scout'] }],
+    });
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      env: { KOOKR_API_BASE_URL: 'not-a-url' },
+      readInput: () => snap,
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.emitted).toEqual([]);
+    expect(payload.record.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'kookr-ai/kookr#2032',
+          reason: expect.stringContaining('issue-claim lookup failed'),
+        }),
+      ]),
+    );
+  });
+
+  it('fails closed when the claim API returns a non-array response (#2757)', async () => {
+    const c = capture();
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [{ repo: 'kookr-ai/kookr', number: 2047, title: 'residual', openChildrenCount: 0 }],
+      readyIssues: [{ repo: 'kookr-ai/kookr', number: 2032, title: 'malformed response', labels: ['idea-scout'] }],
+    });
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      env: { KOOKR_API_BASE_URL: 'http://claims.test' },
+      readInput: () => snap,
+      fetchImpl: async () => new Response(JSON.stringify({ claims: [] }), { status: 200 }),
+    });
+
+    expect(code).toBe(0);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.emitted).toEqual([]);
+    expect(payload.record.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'kookr-ai/kookr#2032',
+          reason: 'issue-claim lookup returned a non-array response',
+        }),
+      ]),
+    );
+  });
+
+  it('rechecks a selected issue and skips it when a sibling claims it in the race window (#2757)', async () => {
+    const c = capture();
+    const claimResponses = [
+      '[]',
+      JSON.stringify([{ taskId: 'racing-task' }]),
+    ];
+    const snap = JSON.stringify({
+      capacity: { free: 7, pendingQueueDepth: 0 },
+      openProductMetricIssues: 0,
+      candidates: [{ repo: 'kookr-ai/kookr', number: 2047, title: 'residual', openChildrenCount: 0 }],
+      readyIssues: [{ repo: 'kookr-ai/kookr', number: 2032, title: 'race', labels: ['idea-scout'] }],
+    });
+    const claimCalls: string[] = [];
+    const code = await runQueueFeederCli(['plan', '--input', '-', '--emit', '--json'], {
+      ...c,
+      env: { KOOKR_API_BASE_URL: 'http://claims.test' },
+      readInput: () => snap,
+      fetchImpl: async (input) => {
+        claimCalls.push(String(input));
+        return new Response(claimResponses.shift() ?? '[]', { status: 200 });
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(claimCalls).toHaveLength(2);
+    const payload = JSON.parse(c.lines[0]!);
+    expect(payload.decision.secondaryEmitted).toEqual([]);
+    expect(payload.emitted).toEqual([]);
+    expect(payload.record.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'kookr-ai/kookr#2032',
+          reason: 'active issue claim owned by task racing-task',
+        }),
+      ]),
+    );
   });
 
   it('honours --free-threshold when overriding the idle-capacity gate', async () => {
