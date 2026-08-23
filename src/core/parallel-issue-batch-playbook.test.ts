@@ -215,7 +215,7 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
   test('rechecks the durable owner immediately before Phase 4 spawn', () => {
     expect(content).toContain('check_spawn_issue_claim');
     expect(content).toMatch(/Re-read the durable owner immediately before Phase 4 spawn/);
-    expect(content).toContain('kookr issue owner "$PRIMARY_N" --repo "$REPO" --json');
+    expect(content).toContain('kookr issue owner "$issue_number" --repo "$REPO" --json');
     expect(content).toContain('--claim-issue $PRIMARY_N --claim-repo $REPO');
   });
 
@@ -236,6 +236,7 @@ describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', ()
     const script = `
 set -u
 PRIMARY_N=2757
+UNIT_ISSUES="2757"
 REPO=kookr-ai/kookr
 STATE_FILE=${stateFile}
 KOOKR_TASK_ID=local-task
@@ -266,10 +267,49 @@ done
 `;
     try {
       const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
-      expect(output).toContain('foreign|0|SKIP primary #2757: live issue claim owned by task sibling-task');
-      expect(output).toContain('failed|0|BLOCKER primary #2757: issue-claim lookup failed');
-      expect(output).toContain('malformed|0|BLOCKER primary #2757: non-authoritative issue-claim response');
+      expect(output).toContain('foreign|0|SKIP issue #2757: live issue claim owned by task sibling-task');
+      expect(output).toContain('failed|0|BLOCKER issue #2757: issue-claim lookup failed');
+      expect(output).toContain('malformed|0|BLOCKER issue #2757: non-authoritative issue-claim response');
       expect(output).toContain('unowned|1|');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('checks every issue in a bundled unit before spawning', () => {
+    const helper = content.match(/   check_spawn_issue_claim\(\) \{[\s\S]*?\n   \}\n/)?.[0];
+    expect(helper).toBeDefined();
+    const tempDir = mkdtempSync(join(tmpdir(), 'queue-feeder-bundle-claim-test-'));
+    const stateFile = join(tempDir, 'state.log');
+    const script = `
+set -u
+PRIMARY_N=2757
+UNIT_ISSUES="2757 2758"
+REPO=kookr-ai/kookr
+STATE_FILE=${stateFile}
+KOOKR_TASK_ID=local-task
+kookr() {
+  case "$1" in
+    issue)
+      case "$3" in
+        2757) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[]}}' ;;
+        2758) printf '%s' '{"ok":true,"code":"OK","details":{"claims":[{"taskId":"sibling-task"}]}}' ;;
+      esac
+      ;;
+  esac
+}
+${helper}
+: > "$STATE_FILE"
+spawn_count=0
+if check_spawn_issue_claim; then
+  spawn_count=$((spawn_count + 1))
+fi
+printf '%s|' "$spawn_count"
+tr '\\n' ';' < "$STATE_FILE"
+`;
+    try {
+      const output = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(output).toContain('0|SKIP issue #2758: live issue claim owned by task sibling-task');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
