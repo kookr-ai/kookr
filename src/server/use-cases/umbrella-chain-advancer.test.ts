@@ -26,8 +26,10 @@ function makeLedger(overrides: Partial<PhaseLedger> = {}): PhaseLedger {
 function makeHarness(ledger: PhaseLedger, options: {
   mode?: 'off' | 'observe' | 'spawn';
   reachable?: Set<number>;
+  mergedAt?: string;
   terminalTasks?: Set<string>;
   issueNumber?: number;
+  now?: () => Date;
   launchFails?: boolean;
   finalizeFails?: boolean;
 } = {}) {
@@ -61,8 +63,15 @@ function makeHarness(ledger: PhaseLedger, options: {
       calls.push(`reach:${repoPath}:${baseBranch}:${repo}#${prNumber}`);
       return options.reachable?.has(prNumber) ?? false;
     },
+    async getPullRequestMergedAt(repo, prNumber) {
+      calls.push(`merged:${repo}#${prNumber}`);
+      return options.mergedAt ?? '2026-08-22T00:00:00.000Z';
+    },
   };
-  const logger: UmbrellaChainAdvancerLogger = { info: (line) => events.push(line) };
+  const logger: UmbrellaChainAdvancerLogger = {
+    info: (line) => events.push(line),
+    warn: (line) => events.push(`WARN ${line}`),
+  };
   const advancer = new UmbrellaChainAdvancer({
     kookrDir: '/tmp/kookr-chain-test',
     repo: 'kookr-ai/kookr',
@@ -93,6 +102,7 @@ function makeHarness(ledger: PhaseLedger, options: {
       },
     },
     ...(options.terminalTasks ? { isTaskTerminal: (taskId: string) => options.terminalTasks!.has(taskId) } : {}),
+    ...(options.now ? { now: options.now } : {}),
     isReviewTaskIndependent: () => true,
     launch: async (launchOptions) => {
       launchSawClaim = claims.has(launchOptions.idempotencyKey);
@@ -205,6 +215,34 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.calls).toContain('launch:chain:2711:phase:P2');
   });
 
+  test('uses the remote merge time when a valid review arrives before the first sweep', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight', taskId: 'owner-1', ownerTerminal: true },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), {
+      mode: 'spawn',
+      reachable: new Set([10]),
+      mergedAt: '2026-08-23T09:00:00.000Z',
+      now: () => new Date('2026-08-23T10:00:00.000Z'),
+    });
+    harness.comments.push({
+      body: `<!-- kookr-phase-result ${JSON.stringify({
+        version: 1,
+        chainId: 'chain:kookr-ai/kookr:2711',
+        issueNumber: 2711,
+        phaseId: 'P1',
+        reviewVerdict: 'pass',
+        reviewedAt: '2026-08-23T09:30:00.000Z',
+        reviewerTaskId: 'review-1',
+      })} -->`,
+    });
+    await harness.advancer.sweep();
+    expect(harness.issue.body).toContain('"mergedAt": "2026-08-23T09:00:00.000Z"');
+    expect(harness.calls).toContain('launch:chain:2711:phase:P2');
+  });
+
   test('rejects a review verdict recorded before the merge point', async () => {
     const harness = makeHarness(makeLedger({
       phases: [
@@ -222,7 +260,7 @@ describe('UmbrellaChainAdvancer', () => {
         },
         { id: 'P2', dependsOn: ['P1'], status: 'pending' },
       ],
-    }), { mode: 'spawn', reachable: new Set([10]) });
+    }), { mode: 'spawn', reachable: new Set([10]), mergedAt: '2026-08-23T10:00:00.000Z' });
     await harness.advancer.sweep();
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
     expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({

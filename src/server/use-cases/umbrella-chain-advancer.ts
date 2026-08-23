@@ -3,6 +3,7 @@ import {
   parsePhaseLedgerFromIssueBody,
   reconcilePhaseResultComments,
   replacePhaseLedgerInIssueBody,
+  serializePhaseLedgerBlock,
   type PhaseLedger,
   type PhaseLedgerPhase,
 } from '../../core/phase-ledger-codec.js';
@@ -275,14 +276,24 @@ export class UmbrellaChainAdvancer {
         phase.prNumber,
         this.deps.repo,
       );
-      reachable.set(phase.prNumber, isReachable);
-      if (isReachable && phase.status !== 'merged') {
-        phase.status = 'merged';
-        changed = true;
-      }
-      if (isReachable && phase.mergedAt === undefined) {
-        phase.mergedAt = this.now().toISOString();
-        changed = true;
+      if (isReachable) {
+        const mergedAt = await this.deps.remote.getPullRequestMergedAt(this.deps.repo, phase.prNumber);
+        if (mergedAt === null) {
+          reachable.set(phase.prNumber, false);
+          this.logger.warn?.(`[umbrella-chain-advancer] could not verify merge time for PR #${phase.prNumber}; holding the chain`);
+        } else {
+          reachable.set(phase.prNumber, true);
+          if (phase.status !== 'merged') {
+            phase.status = 'merged';
+            changed = true;
+          }
+          if (phase.mergedAt !== mergedAt) {
+            phase.mergedAt = mergedAt;
+            changed = true;
+          }
+        }
+      } else {
+        reachable.set(phase.prNumber, false);
       }
       if (phase.taskId && !phase.ownerTerminal && this.deps.isTaskTerminal) {
         if (await this.deps.isTaskTerminal(phase.taskId)) {
@@ -456,7 +467,7 @@ export class UmbrellaChainAdvancer {
         return;
       }
       const body = replacePhaseLedgerInIssueBody(latest.body, ledger);
-      if (JSON.stringify(parsePhaseLedgerFromIssueBody(body)) !== JSON.stringify(ledger)) {
+      if (serializePhaseLedgerBlock(parsePhaseLedgerFromIssueBody(body)) !== serializePhaseLedgerBlock(ledger)) {
         this.logger.warn?.(`[umbrella-chain-advancer] skipped non-round-tripping issue #${issue.number} ledger update`);
         return;
       }

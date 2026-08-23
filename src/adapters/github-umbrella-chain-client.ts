@@ -22,6 +22,7 @@ export interface UmbrellaChainRemote {
   updateIssueBody(repo: string, issueNumber: number, body: string): Promise<void>;
   refreshBase(repoPath: string, baseBranch: string): Promise<void>;
   isPullRequestReachable(repoPath: string, baseBranch: string, prNumber: number, repo: string): Promise<boolean>;
+  getPullRequestMergedAt(repo: string, prNumber: number): Promise<string | null>;
 }
 
 export interface GhUmbrellaChainClientOptions {
@@ -36,6 +37,7 @@ interface GhIssueView {
 interface GhPullRequestView {
   state?: unknown;
   mergeCommit?: { oid?: unknown } | null;
+  mergedAt?: unknown;
 }
 
 function json<T>(stdout: string): T {
@@ -115,6 +117,18 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async getPullRequestMergedAt(repo: string, prNumber: number): Promise<string | null> {
+    try {
+      const { stdout } = await this.run('gh', [
+        'pr', 'view', String(prNumber), '--repo', repo, '--json', 'mergedAt',
+      ], { timeout: 20_000 });
+      const pr = json<GhPullRequestView>(stdout);
+      return typeof pr.mergedAt === 'string' && pr.mergedAt.length > 0 ? pr.mergedAt : null;
+    } catch {
+      return null;
     }
   }
 }
