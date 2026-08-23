@@ -26,7 +26,7 @@ parameters:
     type: textarea
     default: ""
   - name: targetIssueCount
-    description: "How many issues to cover in this batch (bundled issues still count toward this total)"
+    description: "How many single-issue work units to cover in this batch (future bundles will count by covered issue)"
     required: true
     default: "4"
   - name: maxConcurrentTasks
@@ -112,10 +112,10 @@ checklist:
 
 Run a parallel implementation batch for `{{repoFullName}}`: select several issues that can be implemented concurrently (as work units), spawn one Kookr child task per work unit, and supervise the children until every covered issue reaches the requested PR state.
 
-A **work unit** is either:
+A **work unit** is currently a single issue:
 
 - a single issue → one child task → one PR that closes that issue, or
-- a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle.
+- a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle (future capability; not currently selectable).
 
 Default to one issue per work unit. Bundle only when it is clearly more efficient (see Phase 3).
 Until the issue-claim API supports atomic transfer for every member, the current
@@ -395,7 +395,9 @@ Write the filtered list to `$CANDIDATES_FILE`.
 
 Select up to `targetIssueCount` **issues** and group them into **work units** that can safely run at the same time. Do not spawn children until this write-scope matrix is written.
 
-`targetIssueCount` counts issues covered, not children spawned. A bundle of three small issues counts as three toward the total but becomes one concurrent task.
+`targetIssueCount` currently counts single-issue work units and therefore equals
+the number of child tasks spawned. When atomic multi-issue claim transfer exists,
+the future bundle behavior will count covered issues rather than children.
 
 ### 3.0 Apply the backlog drain order (issue #1568)
 
