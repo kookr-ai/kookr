@@ -30,6 +30,11 @@ export interface ProjectConfig {
   weeklyPrLimit?: number;
   /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
   budgetWarnUsd?: number;
+  /**
+   * Number of new issues permitted when the target repo has drained zero
+   * issues in the coupling window. Omitted/0 keeps the strict refusal.
+   */
+  zeroDrainIssueLimit?: number;
   notes?: string;
   localPath?: string;
   webhook?: ProjectWebhookRoutingSettings;
@@ -37,7 +42,7 @@ export interface ProjectConfig {
 
 /** Finite non-negative integer — used for PR rate-limit fields. */
 function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 export function isAnomalySeverity(value: unknown): value is AnomalySeverity {
@@ -66,6 +71,7 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
   // override rate-limits.json. budgetWarnUsd below clamps negatives to 0 instead.
   if (isNonNegativeInteger(input.dailyPrLimit)) config.dailyPrLimit = input.dailyPrLimit;
   if (isNonNegativeInteger(input.weeklyPrLimit)) config.weeklyPrLimit = input.weeklyPrLimit;
+  if (isNonNegativeInteger(input.zeroDrainIssueLimit)) config.zeroDrainIssueLimit = input.zeroDrainIssueLimit;
   if (typeof input.budgetWarnUsd === 'number' && Number.isFinite(input.budgetWarnUsd)) {
     config.budgetWarnUsd = Math.max(0, input.budgetWarnUsd);
   }

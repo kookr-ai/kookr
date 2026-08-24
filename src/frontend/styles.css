@@ -9542,6 +9542,21 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 .project-drawer-setting label {
   white-space: nowrap;
 }
+
+.project-drawer-setting-hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+.project-drawer-setting-error {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--danger, #e57373);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
 .project-drawer-save {
   align-self: flex-end;
   padding: 4px 12px;

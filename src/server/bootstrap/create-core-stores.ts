@@ -10,7 +10,7 @@ import { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import { createLlmClient } from '../../adapters/llm/factory.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import { Monitor } from '../../core/monitor.js';
-import { ProjectConfigStore } from '../../core/project-config-store.js';
+import { ProjectConfigStore, readMaxZeroDrainIssueLimitFromEnv } from '../../core/project-config-store.js';
 import { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import { RalphCycler } from '../../core/ralph-cycler.js';
 import { loadSettings, type KookrSettings } from '../../core/settings-store.js';
@@ -176,7 +176,9 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     console.log('[budget] Budget alerts disabled (KOOKR_BUDGET_WARN_USD=0)');
   }
 
-  const projectConfigStore = new ProjectConfigStore(deps.kookrDir);
+  const projectConfigStore = new ProjectConfigStore(deps.kookrDir, {
+    maxZeroDrainIssueLimit: readMaxZeroDrainIssueLimitFromEnv(),
+  });
   await projectConfigStore.load();
   await projectConfigStore.loadRateLimits();
   const projectSidebarStore = new ProjectSidebarStore(deps.kookrDir);

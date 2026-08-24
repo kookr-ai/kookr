@@ -83,4 +83,21 @@ describe('ConfigHandler', () => {
 
     expect(projectConfigStore.getConfig('github.com/kookr-ai/kookr')?.budgetWarnUsd).toBeUndefined();
   });
+
+  test('setProjectConfig persists and clears the zero-drain issue limit', async () => {
+    const handler = new ConfigHandler({ send: vi.fn(), projectConfigStore });
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/kookr-ai/kookr',
+      config: { zeroDrainIssueLimit: 1000 },
+    });
+    expect(projectConfigStore.getConfig('github.com/kookr-ai/kookr')?.zeroDrainIssueLimit).toBe(1000);
+
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/kookr-ai/kookr',
+      config: { zeroDrainIssueLimit: null },
+    });
+    expect(projectConfigStore.getConfig('github.com/kookr-ai/kookr')?.zeroDrainIssueLimit).toBeUndefined();
+  });
 });

@@ -78,6 +78,21 @@ describe('summarizeZodIssues', () => {
 });
 
 describe('ClientMessageSchema — happy path sanity', () => {
+  test('rejects invalid zero-drain issue limits at the WebSocket boundary', () => {
+    for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(ClientMessageSchema.safeParse({
+        type: 'setProjectConfig',
+        project: 'github.com/acme/project',
+        config: { zeroDrainIssueLimit: value },
+      }).success).toBe(false);
+    }
+    expect(ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/acme/project',
+      config: { zeroDrainIssueLimit: 1000 },
+    }).success).toBe(true);
+  });
+
   test('accepts a minimal well-formed launch message', () => {
     const result = ClientMessageSchema.safeParse({ type: 'launch', prompt: 'hi', cwd: '/tmp' });
     expect(result.success).toBe(true);

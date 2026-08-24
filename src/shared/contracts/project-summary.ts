@@ -37,6 +37,9 @@ export interface ProjectSummary {
   weekPrCount: number;
   dailyLimit?: number;
   budgetWarnUsd?: number;
+  zeroDrainIssueLimit?: number;
+  /** Deployment-provided ceiling; omitted when the installation is unrestricted. */
+  zeroDrainIssueLimitMax?: number;
   /**
    * Accumulated agent spend for this project in USD, summed from each of the
    * project's agents' `tokenUsage.costUsd`. Surfaced next to `budgetWarnUsd` for

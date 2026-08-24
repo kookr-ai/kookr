@@ -47,6 +47,9 @@ const anomalyType = z.preprocess(
   anomalyTypeCanonical,
 );
 const anomalySeverity = z.enum(['info', 'warning', 'critical']);
+const nonNegativeSafeInteger = z.number()
+  .refine(Number.isSafeInteger, 'must be a safe integer')
+  .refine((value) => value >= 0, 'must be non-negative');
 
 const telemetryEventType = z.enum(TELEMETRY_EVENT_TYPES);
 
@@ -63,6 +66,7 @@ const projectConfigPartial = z.object({
   dailyPrLimit: z.number().optional(),
   weeklyPrLimit: z.number().optional(),
   budgetWarnUsd: z.number().nullable().optional(),
+  zeroDrainIssueLimit: nonNegativeSafeInteger.nullable().optional(),
   notes: z.string().optional(),
   webhook: z.object({
     enabled: z.boolean().optional(),

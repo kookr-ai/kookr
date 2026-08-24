@@ -28,9 +28,9 @@ export const DEFAULT_DEDUPE_SIMILARITY_THRESHOLD = 0.72;
 export const DEFAULT_DRAIN_COUPLING_RATIO = 1;
 
 /**
- * Minimum new-issue budget granted regardless of drain (issue #1657). Default
- * 0: a repo that drained nothing in the window earns no new-issue budget. Raise
- * via `--drain-floor` when a genuinely fresh repo should still admit a few.
+ * Minimum new-issue budget granted when the target drained nothing (issue
+ * #1657). The default remains strict zero-drain refusal; a repository setting
+ * may supply a deployment-governed nonzero floor.
  */
 export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
 
@@ -49,7 +49,9 @@ export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
 // escalated to a human, not tolerated harder. Reuses the drain-couple layering
 // (#1657/#1674): a strict tightening stacked on the backlog/drain/retro-verify
 // gates.
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v4' as const;
+// v5: operator bootstrap floors are applied only for zero-drain targets; the
+// default remains strict zero-drain refusal.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v5' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
 
 /**
@@ -283,7 +285,7 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
         ? Math.max(0, input.drainCouplingRatio)
         : DEFAULT_DRAIN_COUPLING_RATIO;
     const floor = clampNonNegInt(input.drainFloorBudget ?? DEFAULT_DRAIN_FLOOR_BUDGET);
-    drainCap = floor + Math.ceil(drainCount * ratio);
+    drainCap = Math.ceil(drainCount * ratio) + (drainCount === 0 ? floor : 0);
     if (drainCap < allowedBudget) {
       const priorAllowed = allowedBudget;
       allowedBudget = drainCap;

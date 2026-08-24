@@ -47,6 +47,8 @@ export interface ProjectSummary {
   dailyLimit?: number;
   /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
   budgetWarnUsd?: number;
+  zeroDrainIssueLimit?: number;
+  zeroDrainIssueLimitMax?: number;
   /**
    * Accumulated agent spend for this project in USD, summed from each of the
    * project's agents' `tokenUsage.costUsd`. Surfaced next to `budgetWarnUsd` for
@@ -197,6 +199,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
   if (config.dailyPrLimit !== undefined) return true;
   if (config.weeklyPrLimit !== undefined) return true;
   if (config.budgetWarnUsd !== undefined) return true;
+  if (config.zeroDrainIssueLimit !== undefined) return true;
   if (config.notes !== undefined && config.notes.trim() !== '') return true;
   if (config.webhook?.enabled !== undefined || config.webhook?.minSeverity !== undefined) return true;
   return false;
@@ -346,6 +349,8 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       weekPrCount: weekCount,
       dailyLimit: effectiveLimit ?? config?.dailyPrLimit,
       budgetWarnUsd: config?.budgetWarnUsd,
+      zeroDrainIssueLimit: config?.zeroDrainIssueLimit,
+      zeroDrainIssueLimitMax: configStore.getMaxZeroDrainIssueLimit?.(),
       costUsd: costUsd > 0 ? costUsd : undefined,
       openContributionAttempts,
       lastContribution: lastContrib,

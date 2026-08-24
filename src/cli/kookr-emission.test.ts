@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EMISSION_BUDGET_SCHEMA_VERSION } from '../core/emission-budget.js';
@@ -268,10 +268,106 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(payload.plan.action).toBe('constrain');
   });
 
-  it('skips drain coupling (keeps full budget) when the drain search throws', async () => {
+  it('refuses an empty target repo when no repository allowance is configured', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json'],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.openBacklogCount).toBe(0);
+    expect(payload.plan.drainCount).toBe(0);
+    expect(payload.plan.drainCap).toBe(0);
+    expect(payload.plan.allowedBudget).toBe(0);
+    expect(payload.plan.deferredCount).toBe(10);
+    expect(payload.plan.action).toBe('refuse');
+  });
+
+  it('uses the repository zero-drain issue limit without an operator justification', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-'));
+    writeFileSync(join(configDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '1000', '--json',
+        '--kookr-dir', configDir,
+      ],
+      {
+        ...io,
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.zeroDrainIssueLimit).toBe(1000);
+    expect(payload.plan.drainCap).toBe(1000);
+    expect(payload.plan.allowedBudget).toBe(1000);
+  });
+
+  it('rejects a repository setting above the deployment-provided ceiling', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-cap-'));
+    writeFileSync(join(configDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '1000', '--kookr-dir', configDir],
+      { ...io, env: { KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT: '500' } },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(/exceeds 500/);
+  });
+
+  it('uses the active non-default port namespace when no state root is supplied', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'emission-home-'));
+    const portDir = join(home, '.kookr-4801');
+    mkdirSync(portDir, { recursive: true });
+    writeFileSync(join(portDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '1000', '--json'],
+      {
+        ...io,
+        env: { HOME: home, KOOKR_PORT: '4801' },
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.logs[0]!).plan.allowedBudget).toBe(1000);
+  });
+
+  it('honors an explicitly supplied state root even on a non-default port', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'emission-explicit-home-'));
+    const explicitDir = mkdtempSync(join(tmpdir(), 'emission-explicit-dir-'));
+    writeFileSync(join(explicitDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '1000', '--json', '--kookr-dir', explicitDir],
+      {
+        ...io,
+        env: { HOME: home, KOOKR_PORT: '4801' },
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.logs[0]!).plan.allowedBudget).toBe(1000);
+  });
+
+  it('refuses the plan when the drain search throws', async () => {
     const io = mkIo();
     // The open-backlog query succeeds but the is:closed drain query throws; the
-    // plan must degrade gracefully to backlog-only budget, not fail the run.
+    // plan must fail closed rather than fall back to an uncoupled budget.
     const runGh = (args: string[]): string => {
       if (args[0] === 'api') {
         const q = args.find((a) => a.startsWith('q=')) ?? '';
@@ -286,23 +382,8 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
       ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
       { ...io, runGh },
     );
-    expect(code).toBe(0);
-    const payload = JSON.parse(io.logs[0]!);
-    expect(payload.plan.drainCoupled).toBe(false);
-    expect(payload.plan.drainCount).toBeUndefined();
-    expect(payload.plan.allowedBudget).toBe(10); // backlog under threshold → full budget
-  });
-
-  it('disables drain coupling with --no-drain-coupling', async () => {
-    const io = mkIo();
-    const code = await runEmissionCli(
-      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--no-drain-coupling', '--json'],
-      { ...io, runGh: planGh(52, 1) },
-    );
-    expect(code).toBe(0);
-    const payload = JSON.parse(io.logs[0]!);
-    expect(payload.plan.drainCoupled).toBe(false);
-    expect(payload.plan.allowedBudget).toBe(10); // full budget restored
+    expect(code).toBe(4);
+    expect(io.errs.join('\n')).toMatch(/drain count unavailable.*refusing/i);
   });
 });
 
