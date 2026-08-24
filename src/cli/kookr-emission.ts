@@ -49,7 +49,7 @@ import {
   readPendingRetroVerify,
 } from '../core/retro-verify-queue.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
-import { resolveKookrDataDir } from './kookr-maintenance.js';
+import { autoPortAmbiguous, resolveKookrDataDir } from './kookr-maintenance.js';
 import {
   PROJECT_ISSUE_EMISSION_LIMIT_ENV,
   readMaxZeroDrainIssueLimitFromEnv,
@@ -505,6 +505,11 @@ export async function runEmissionCli(
   if (args.help || args.verb === null) {
     out.log(USAGE);
     return 0;
+  }
+
+  if (!args.kookrDirExplicit && autoPortAmbiguous(env)) {
+    err.error('[kookr emission] KOOKR_PORT=auto requires --kookr-dir because the active port namespace is unknown.');
+    return 2;
   }
 
   // Keep the implicit state root aligned with the server's per-port namespace.

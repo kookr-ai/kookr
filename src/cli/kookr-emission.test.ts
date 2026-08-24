@@ -364,6 +364,20 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(JSON.parse(io.logs[0]!).plan.allowedBudget).toBe(1000);
   });
 
+  it('refuses the ambiguous auto-port namespace without an explicit state root', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '1', '--json'],
+      {
+        ...io,
+        env: { HOME: mkdtempSync(join(tmpdir(), 'emission-auto-port-home-')), KOOKR_PORT: 'auto' },
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(/KOOKR_PORT=auto requires --kookr-dir/);
+  });
+
   it('refuses the plan when the drain search throws', async () => {
     const io = mkIo();
     // The open-backlog query succeeds but the is:closed drain query throws; the

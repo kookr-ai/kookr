@@ -344,6 +344,13 @@ async function runReflectCommand(argv, { env = process.env, out = console, err =
 }
 
 async function runEmissionCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  // Keep standalone emission commands aligned with the server's deployment
+  // configuration. Shell variables still win because Node does not overwrite
+  // existing environment entries when loading `.env`.
+  if (env === process.env && existsSync(join(process.cwd(), '.env'))) {
+    process.loadEnvFile();
+    env = process.env;
+  }
   const here = dirname(fileURLToPath(import.meta.url));
   const entry = join(here, '..', 'dist', 'cli', 'kookr-emission.js');
   if (!existsSync(entry)) {
