@@ -51,6 +51,10 @@ function TaskRow({ task }: { task: TaskSummary }) {
 }
 
 export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, compact = false }: Props) {
+  const zeroDrainHintId = `zero-drain-issue-limit-hint-${project.project}`;
+  const inheritedZeroDrainIssueLimit = project.zeroDrainIssueLimit === undefined
+    ? (project.effectiveZeroDrainIssueLimit ?? project.zeroDrainIssueLimitMax ?? -1)
+    : (project.zeroDrainIssueLimitMax ?? -1);
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
   const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
   const [zeroDrainIssueLimit, setZeroDrainIssueLimit] = useState<string>(project.zeroDrainIssueLimit?.toString() ?? '');
@@ -72,11 +76,14 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
     const budget = Number(budgetWarnUsd);
     const zeroDrainLimit = Number(zeroDrainIssueLimit);
     if (zeroDrainIssueLimit.trim() !== '') {
-      if (!Number.isSafeInteger(zeroDrainLimit) || zeroDrainLimit < 0) {
-        setSaveError('Zero-drain issue limit must be a non-negative whole number.');
+      if (!Number.isSafeInteger(zeroDrainLimit) || zeroDrainLimit < -1) {
+        setSaveError('Zero-drain issue limit must be -1 or a non-negative whole number.');
         return;
       }
-      if (project.zeroDrainIssueLimitMax !== undefined && zeroDrainLimit > project.zeroDrainIssueLimitMax) {
+      if (
+        project.zeroDrainIssueLimitMax !== undefined
+        && (zeroDrainLimit === -1 || zeroDrainLimit > project.zeroDrainIssueLimitMax)
+      ) {
         setSaveError(`This Kookr installation allows at most ${project.zeroDrainIssueLimitMax}.`);
         return;
       }
@@ -393,19 +400,24 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             <input
               id={`zero-drain-issue-limit-${project.project}`}
               type="number"
-              min="0"
+              min={project.zeroDrainIssueLimitMax === undefined ? -1 : 0}
               step="1"
               max={project.zeroDrainIssueLimitMax}
               value={zeroDrainIssueLimit}
-              placeholder="0 (disabled)"
+              placeholder={inheritedZeroDrainIssueLimit === -1
+                ? '-1 (unlimited)'
+                : `${inheritedZeroDrainIssueLimit}`}
               onChange={(e) => { setZeroDrainIssueLimit(e.target.value); setSaveError(null); setDirty(true); }}
               aria-invalid={saveError !== null}
+              aria-describedby={zeroDrainHintId}
               className="project-drawer-input"
               data-testid="zero-drain-issue-limit-input"
             />
-            <span className="project-drawer-setting-hint">
+            <span id={zeroDrainHintId} className="project-drawer-setting-hint">
               Issues allowed when the repository closed none in the drain window.
-              {project.zeroDrainIssueLimitMax !== undefined && ` Installation maximum: ${project.zeroDrainIssueLimitMax}.`}
+              {project.zeroDrainIssueLimitMax === undefined
+                ? ` Leave blank to inherit ${inheritedZeroDrainIssueLimit === -1 ? '-1 (unlimited)' : inheritedZeroDrainIssueLimit}.`
+                : ` Leave blank to inherit the installation maximum of ${inheritedZeroDrainIssueLimit}; unlimited is unavailable.`}
             </span>
             {saveError && <span className="project-drawer-setting-error" role="alert">{saveError}</span>}
           </div>

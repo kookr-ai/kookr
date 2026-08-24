@@ -37,7 +37,10 @@ export interface ProjectSummary {
   weekPrCount: number;
   dailyLimit?: number;
   budgetWarnUsd?: number;
+  /** Project-specific zero-drain issue allowance; -1 means unlimited. */
   zeroDrainIssueLimit?: number;
+  /** Resolved allowance after applying the project override and deployment default. */
+  effectiveZeroDrainIssueLimit?: number;
   /** Deployment-provided ceiling; omitted when the installation is unrestricted. */
   zeroDrainIssueLimitMax?: number;
   /**

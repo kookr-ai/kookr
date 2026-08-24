@@ -268,20 +268,47 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(payload.plan.action).toBe('constrain');
   });
 
-  it('refuses an empty target repo when no repository allowance is configured', async () => {
+  it('TS-EMISSION-003: leaves an empty target repo unlimited when no ceiling is configured', async () => {
     const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-unlimited-default-'));
     const code = await runEmissionCli(
-      ['plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json'],
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
       { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
     );
     expect(code).toBe(0);
     const payload = JSON.parse(io.logs[0]!);
+    expect(payload.zeroDrainIssueLimit).toBe(-1);
     expect(payload.plan.openBacklogCount).toBe(0);
     expect(payload.plan.drainCount).toBe(0);
-    expect(payload.plan.drainCap).toBe(0);
-    expect(payload.plan.allowedBudget).toBe(0);
-    expect(payload.plan.deferredCount).toBe(10);
-    expect(payload.plan.action).toBe('refuse');
+    expect(payload.plan.drainCap).toBeUndefined();
+    expect(payload.plan.allowedBudget).toBe(10);
+    expect(payload.plan.deferredCount).toBe(0);
+    expect(payload.plan.action).toBe('allow');
+  });
+
+  it('TS-EMISSION-003: defaults an unset repository allowance to the deployment ceiling', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-default-cap-'));
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      {
+        ...io,
+        env: { KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT: '3' },
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.zeroDrainIssueLimit).toBe(3);
+    expect(payload.plan.drainCap).toBe(3);
+    expect(payload.plan.allowedBudget).toBe(3);
+    expect(payload.plan.deferredCount).toBe(7);
   });
 
   it('uses the repository zero-drain issue limit without an operator justification', async () => {
@@ -306,6 +333,97 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(payload.zeroDrainIssueLimit).toBe(1000);
     expect(payload.plan.drainCap).toBe(1000);
     expect(payload.plan.allowedBudget).toBe(1000);
+  });
+
+  it('TS-EMISSION-003: honors an explicit zero as refusal', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-zero-'));
+    writeFileSync(join(configDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 0,
+    }]));
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.zeroDrainIssueLimit).toBe(0);
+    expect(payload.plan.allowedBudget).toBe(0);
+    expect(payload.plan.action).toBe('refuse');
+  });
+
+  it('TS-EMISSION-003: matches mixed-case stored project IDs before applying the default', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-case-'));
+    writeFileSync(join(configDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/JeanIbarz/Maison',
+      zeroDrainIssueLimit: 0,
+    }]));
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.logs[0]!).plan.action).toBe('refuse');
+  });
+
+  it('TS-EMISSION-003: refuses to plan from corrupt project settings', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-corrupt-'));
+    writeFileSync(join(configDir, 'project-configs.json'), '{not-json');
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(/invalid JSON in project settings/);
+  });
+
+  it.each([
+    ['a non-array document', '{}', /must contain an array/],
+    [
+      'an invalid matching allowance',
+      JSON.stringify([{ project: 'github.com/jeanibarz/maison', zeroDrainIssueLimit: -2 }]),
+      /invalid project zeroDrainIssueLimit/,
+    ],
+  ])('TS-EMISSION-003: refuses to plan from %s', async (_label, contents, errorPattern) => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-invalid-policy-'));
+    writeFileSync(join(configDir, 'project-configs.json'), contents);
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(errorPattern);
+  });
+
+  it('TS-EMISSION-003: rejects a persisted unlimited override under a deployment ceiling', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-unlimited-cap-'));
+    writeFileSync(join(configDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: -1,
+    }]));
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--kookr-dir', configDir],
+      { ...io, env: { KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT: '3' } },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(/exceeds 3/);
   });
 
   it('rejects a repository setting above the deployment-provided ceiling', async () => {

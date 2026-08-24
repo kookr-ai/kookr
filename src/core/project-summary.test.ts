@@ -70,6 +70,27 @@ describe('computeProjectSummaries', () => {
     expect(repoA.displayName).toBe('org/repo-a');
   });
 
+  test('TS-EMISSION-001: keeps inherited zero-drain defaults separate from project overrides', async () => {
+    const agents: AgentState[] = [
+      makeAgent({ agentId: 'a1', projectId: 'github.com/org/new-repo', taskStatus: 'inProgress', taskId: 'task-1' }),
+    ];
+    const unrestricted = computeProjectSummaries({ agents, ledgerAnalytics, configStore })[0];
+    expect(unrestricted.zeroDrainIssueLimit).toBeUndefined();
+    expect(unrestricted.effectiveZeroDrainIssueLimit).toBe(-1);
+
+    configStore.setConfig('github.com/org/new-repo', { zeroDrainIssueLimit: 0 });
+    const refused = computeProjectSummaries({ agents, ledgerAnalytics, configStore })[0];
+    expect(refused.zeroDrainIssueLimit).toBe(0);
+    expect(refused.effectiveZeroDrainIssueLimit).toBe(0);
+
+    const cappedStore = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 4 });
+    await cappedStore.load();
+    const capped = computeProjectSummaries({ agents, ledgerAnalytics, configStore: cappedStore })[0];
+    expect(capped.zeroDrainIssueLimit).toBeUndefined();
+    expect(capped.effectiveZeroDrainIssueLimit).toBe(4);
+    expect(capped.zeroDrainIssueLimitMax).toBe(4);
+  });
+
   test('counts findings correctly', () => {
     const agents: AgentState[] = [
       makeAgent({

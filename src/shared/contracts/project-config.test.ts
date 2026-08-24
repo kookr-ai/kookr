@@ -25,6 +25,17 @@ describe('sanitizeProjectConfig', () => {
     });
   });
 
+  test('TS-EMISSION-001: accepts -1 only for the zero-drain issue limit', () => {
+    expect(sanitizeProjectConfig({
+      project: 'github.com/org/repo',
+      zeroDrainIssueLimit: -1,
+    })?.zeroDrainIssueLimit).toBe(-1);
+    expect(sanitizeProjectConfig({
+      project: 'github.com/org/repo',
+      zeroDrainIssueLimit: -2,
+    })?.zeroDrainIssueLimit).toBeUndefined();
+  });
+
   test('drops Infinity, NaN, negative, and fractional PR limits', () => {
     const invalid = [Infinity, -Infinity, NaN, -1, -0.5, 1.5, 3.7];
     for (const value of invalid) {

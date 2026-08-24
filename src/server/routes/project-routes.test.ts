@@ -159,6 +159,17 @@ describe('POST /api/projects/configs webhook routing', () => {
   });
 
   test('persists a zero-drain issue limit and rejects only the configured deployment ceiling', async () => {
+    const unlimited = await mkApp({
+      projectConfigStore,
+      broadcastProjectSummaries: () => {},
+    }).request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/unlimited', zeroDrainIssueLimit: -1 }),
+    });
+    expect(unlimited.status).toBe(200);
+    expect((await unlimited.json()).zeroDrainIssueLimit).toBe(-1);
+
     const cappedStore = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 1000 });
     await cappedStore.load();
     const app = mkApp({ projectConfigStore: cappedStore, broadcastProjectSummaries: () => {} });
@@ -179,6 +190,14 @@ describe('POST /api/projects/configs webhook routing', () => {
     expect(rejected.status).toBe(400);
     expect(await rejected.json()).toMatchObject({ field: 'zeroDrainIssueLimit', maximum: 1000 });
 
+    const unlimitedRejected = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/maison', zeroDrainIssueLimit: -1 }),
+    });
+    expect(unlimitedRejected.status).toBe(400);
+    expect(await unlimitedRejected.json()).toMatchObject({ field: 'zeroDrainIssueLimit', maximum: 1000 });
+
     const invalid = await app.request('/api/projects/configs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -186,6 +205,14 @@ describe('POST /api/projects/configs webhook routing', () => {
     });
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: expect.stringContaining('safe integer') });
+
+    const belowSentinel = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/maison', zeroDrainIssueLimit: -2 }),
+    });
+    expect(belowSentinel.status).toBe(400);
+    expect(await belowSentinel.json()).toMatchObject({ error: expect.stringContaining('-1') });
   });
 });
 

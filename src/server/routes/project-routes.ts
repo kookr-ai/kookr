@@ -98,9 +98,9 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
     if (body.zeroDrainIssueLimit !== undefined) {
       if (
         body.zeroDrainIssueLimit !== null
-        && (!Number.isSafeInteger(body.zeroDrainIssueLimit) || body.zeroDrainIssueLimit < 0)
+        && (!Number.isSafeInteger(body.zeroDrainIssueLimit) || body.zeroDrainIssueLimit < -1)
       ) {
-        return c.json({ error: 'zeroDrainIssueLimit must be a non-negative safe integer' }, 400);
+        return c.json({ error: 'zeroDrainIssueLimit must be -1 or a non-negative safe integer' }, 400);
       }
       patch.zeroDrainIssueLimit = body.zeroDrainIssueLimit ?? undefined;
     }

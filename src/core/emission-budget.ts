@@ -11,6 +11,8 @@
  * All pure functions — unit-testable without GitHub or filesystem.
  */
 
+import { UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT } from '../shared/contracts/project-config.js';
+
 /** Open-issue count at/above which new-issue budget is constrained. */
 export const DEFAULT_OPEN_BACKLOG_THRESHOLD = 60;
 
@@ -29,10 +31,10 @@ export const DEFAULT_DRAIN_COUPLING_RATIO = 1;
 
 /**
  * Minimum new-issue budget granted when the target drained nothing (issue
- * #1657). The default remains strict zero-drain refusal; a repository setting
- * may supply a deployment-governed nonzero floor.
+ * #1657). -1 means unlimited so a newly discovered repository can bootstrap;
+ * a repository or deployment may supply a non-negative cap instead.
  */
-export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
+export const DEFAULT_DRAIN_FLOOR_BUDGET = UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
 
 // v2 (issue #1657): allowedBudget is additionally capped by the target repo's
 // drain rate (closed-in-window), fixing low-backlog / low-drain repos (e.g.
@@ -49,9 +51,10 @@ export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
 // escalated to a human, not tolerated harder. Reuses the drain-couple layering
 // (#1657/#1674): a strict tightening stacked on the backlog/drain/retro-verify
 // gates.
-// v5: operator bootstrap floors are applied only for zero-drain targets; the
-// default remains strict zero-drain refusal.
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v5' as const;
+// v5: operator bootstrap floors are applied only for zero-drain targets.
+// v6: an unset zero-drain floor defaults to -1 (unlimited); configured
+// non-negative values still cap only repositories that drained zero issues.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v6' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
 
 /**
@@ -89,7 +92,7 @@ export interface EmissionBudgetInput {
   drainCount?: number;
   /** New issues earned per drained issue. Default {@link DEFAULT_DRAIN_COUPLING_RATIO}. */
   drainCouplingRatio?: number;
-  /** Minimum budget regardless of drain. Default {@link DEFAULT_DRAIN_FLOOR_BUDGET}. */
+  /** Zero-drain cap; -1 means unlimited. Default {@link DEFAULT_DRAIN_FLOOR_BUDGET}. */
   drainFloorBudget?: number;
   /**
    * Retro-verify / ci_blind_debt coupling (issue #1703): current depth of the
@@ -284,15 +287,20 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
       input.drainCouplingRatio !== undefined && Number.isFinite(input.drainCouplingRatio)
         ? Math.max(0, input.drainCouplingRatio)
         : DEFAULT_DRAIN_COUPLING_RATIO;
-    const floor = clampNonNegInt(input.drainFloorBudget ?? DEFAULT_DRAIN_FLOOR_BUDGET);
-    drainCap = Math.ceil(drainCount * ratio) + (drainCount === 0 ? floor : 0);
-    if (drainCap < allowedBudget) {
+    const rawFloor = input.drainFloorBudget ?? DEFAULT_DRAIN_FLOOR_BUDGET;
+    const zeroDrainUnlimited = rawFloor === UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
+    const floor = zeroDrainUnlimited ? UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT : clampNonNegInt(rawFloor);
+    const appliedFloor = drainCount === 0 ? floor : 0;
+    if (drainCount > 0 || !zeroDrainUnlimited) {
+      drainCap = Math.ceil(drainCount * ratio) + appliedFloor;
+    }
+    if (drainCap !== undefined && drainCap < allowedBudget) {
       const priorAllowed = allowedBudget;
       allowedBudget = drainCap;
       action = allowedBudget === 0 ? 'refuse' : 'constrain';
       reason =
         `Drain-coupled: target repo drained ${drainCount} issue(s) in window → ` +
-        `drain cap ${drainCap} (ratio ${ratio}, floor ${floor}); ` +
+        `drain cap ${drainCap} (ratio ${ratio}, floor ${appliedFloor}); ` +
         `tightened allowedBudget from ${priorAllowed} to ${allowedBudget}. ` +
         (allowedBudget === 0
           ? 'Emission refused — the repo is not draining; defer all candidates.'
