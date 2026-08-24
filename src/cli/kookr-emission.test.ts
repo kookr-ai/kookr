@@ -344,6 +344,26 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(JSON.parse(io.logs[0]!).plan.allowedBudget).toBe(1000);
   });
 
+  it('honors an explicitly supplied state root even on a non-default port', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'emission-explicit-home-'));
+    const explicitDir = mkdtempSync(join(tmpdir(), 'emission-explicit-dir-'));
+    writeFileSync(join(explicitDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/jeanibarz/maison',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/maison', '--requested', '1000', '--json', '--kookr-dir', explicitDir],
+      {
+        ...io,
+        env: { HOME: home, KOOKR_PORT: '4801' },
+        runGh: planGh(0, 0, [], 'jeanibarz/maison'),
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.logs[0]!).plan.allowedBudget).toBe(1000);
+  });
+
   it('refuses the plan when the drain search throws', async () => {
     const io = mkIo();
     // The open-backlog query succeeds but the is:closed drain query throws; the

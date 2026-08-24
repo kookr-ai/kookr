@@ -157,6 +157,7 @@ interface ParsedArgs {
   toleranceBlocker: string | null;
   repoDir: string | null;
   kookrDir: string;
+  kookrDirExplicit: boolean;
   json: boolean;
   help: boolean;
 }
@@ -183,6 +184,7 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     toleranceBlocker: null,
     repoDir: null,
     kookrDir: `${homedir()}/.kookr`,
+    kookrDirExplicit: false,
     json: false,
     help: false,
   };
@@ -274,6 +276,7 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
       out.repoDir = tok.includes('=') ? tok.slice('--repo-dir='.length) : eat();
     } else if (tok === '--kookr-dir' || tok.startsWith('--kookr-dir=')) {
       out.kookrDir = tok.includes('=') ? tok.slice('--kookr-dir='.length) : eat();
+      out.kookrDirExplicit = true;
     } else if (tok.startsWith('-')) {
       throw new EmissionUsageError(`unknown option: ${tok}`);
     } else if (out.verb === null) {
@@ -507,7 +510,7 @@ export async function runEmissionCli(
   // Keep the implicit state root aligned with the server's per-port namespace.
   // An explicit --kookr-dir remains authoritative; this only replaces the
   // parser's default ~/.kookr when the caller did not choose a path.
-  if (args.kookrDir === join(homedir(), '.kookr')) {
+  if (!args.kookrDirExplicit) {
     args.kookrDir = resolveKookrDataDir(env);
   }
 
