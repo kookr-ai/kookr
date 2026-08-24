@@ -80,11 +80,13 @@ import {
   resolveSafeModeStatus,
 } from '../../core/automation-kill-switch.js';
 import {
+  buildPauseProvenance,
   evaluateSoftQuotaPause,
+  getCurrentPauseRecord,
   resolveDefaultAgentQuotaSample,
   type OrchestrationQuotaSample,
 } from '../../core/orchestration-pause.js';
-import { readPauseRecordSync } from '../orchestration-pause-service.js';
+import { readPauseStateSync } from '../orchestration-pause-service.js';
 import {
   defaultRetroVerifyQueueDir,
   readPendingRetroVerify,
@@ -444,12 +446,24 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           since?: string;
           reason?: string;
           by?: string;
+          currentPause?: {
+            active: boolean;
+            source?: string;
+            since?: string;
+            reason?: string;
+            by?: string;
+          };
+          pauseProvenance?: {
+            historicalOverlap: ReturnType<typeof buildPauseProvenance>['historicalOverlap'];
+            incompleteRecords: ReturnType<typeof buildPauseProvenance>['incompleteRecords'];
+          };
           defaultAgentQuota?: OrchestrationQuotaSample;
           recommendation?: string;
         }
       | undefined;
     if (reservationSettings && deps.kookrDir) {
-      const record = readPauseRecordSync(deps.kookrDir);
+      const state = readPauseStateSync(deps.kookrDir);
+      const currentPause = getCurrentPauseRecord(state.records);
       const engaged =
         (deps.settings?.getLoadError?.() ?? undefined) !== undefined
         || reservationSettings.automationKillSwitch;
@@ -458,19 +472,38 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         agentType,
         deps.getQuotaStatus?.() ?? null,
       );
+      const nowMs = Date.now();
+      const pauseProvenance = buildPauseProvenance(state.records, {
+        windowStartMs: nowMs - 24 * 60 * 60 * 1000,
+        windowEndMs: nowMs,
+      });
+      const decisionRecord = currentPause
+        ?? state.records.filter((record) => record.lifecycle === 'unresolved').at(-1)
+        ?? null;
       const recommendation = evaluateSoftQuotaPause({
         utilization: quotaSample.utilization ?? null,
         resetsAt: quotaSample.resetsAt ?? null,
         nowMs: Date.now(),
-        record,
+        record: decisionRecord,
         safeModeEngaged: engaged,
       });
       orchestrationPauseBlock = {
-        paused: engaged || record?.paused === true,
-        ...(record?.source ? { source: record.source } : {}),
-        ...(record?.pausedAt ? { since: record.pausedAt } : {}),
-        ...(record?.reason ? { reason: record.reason } : {}),
-        ...(record?.pausedBy ? { by: record.pausedBy } : {}),
+        paused: engaged || currentPause !== null,
+        ...(currentPause?.source ? { source: currentPause.source } : {}),
+        ...(currentPause?.pausedAt ? { since: currentPause.pausedAt } : {}),
+        ...(currentPause?.reason ? { reason: currentPause.reason } : {}),
+        ...(currentPause?.pausedBy ? { by: currentPause.pausedBy } : {}),
+        currentPause: {
+          active: engaged || currentPause !== null,
+          ...(currentPause?.source ? { source: currentPause.source } : {}),
+          ...(currentPause?.pausedAt ? { since: currentPause.pausedAt } : {}),
+          ...(currentPause?.reason ? { reason: currentPause.reason } : {}),
+          ...(currentPause?.pausedBy ? { by: currentPause.pausedBy } : {}),
+        },
+        pauseProvenance: {
+          historicalOverlap: pauseProvenance.historicalOverlap,
+          incompleteRecords: pauseProvenance.incompleteRecords,
+        },
         defaultAgentQuota: quotaSample,
         recommendation: recommendation.action,
       };

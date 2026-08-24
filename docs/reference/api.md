@@ -845,7 +845,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `POST /api/admin/resume` | Leave drain mode and accept new task launches |
 | `GET /api/orchestration/status` | Orchestration pause state (SAFE MODE) + pause record + default-agent quota sample |
 | `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
-| `POST /api/orchestration/resume` | Disengage SAFE MODE and clear the pause record |
+| `POST /api/orchestration/resume` | Disengage SAFE MODE and close the current pause record |
 | `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
@@ -1072,9 +1072,15 @@ hand-editing the whole settings document. Pausing engages SAFE MODE (running
 implementers keep working; no new autonomous launches) and writes a durable
 pause record at `~/.kookr/playbook-state/orchestrator/quota-pause.json`
 (who / why / since / source). Resuming disengages SAFE MODE and clears the
-record. This is distinct from drain (which refuses *all* launches, including the
+current pause while retaining its lifecycle history. This is distinct from drain (which refuses *all* launches, including the
 merge-review children an in-flight implementer may still need) and from the
 `quotaHeadroomThreshold` Claude-launch admission gate.
+
+The file is a version-3 lifecycle ledger. Each record is `active`, `ended`,
+`cancelled`, or `unresolved`, and keeps its start timestamp plus any terminal
+timestamp and source. Older single-record files are read as `unresolved`: they
+remain visible in audit history, but their duration is not guessed into the
+known overlap.
 
 A **human** pause is sticky against auto-resume — `auto: true` will not lift it.
 An explicit resume (CLI or `POST /api/orchestration/resume` without `auto`)
@@ -1092,13 +1098,27 @@ orchestrator's auto-resume) still declines to lift a human pause.
   "safeMode": { "engaged": true, "since": "2026-08-18T08:05:04.931Z" },
   "paused": true,
   "pause": {
-    "schemaVersion": 2,
+    "schemaVersion": 3,
+    "id": "pause-2026-08-18T08:05:04.931Z",
     "paused": true,
+    "lifecycle": "active",
     "source": "human",
     "reason": "operator pause until provider weekly quotas reset",
     "pausedAt": "2026-08-18T08:05:04.931Z",
     "pausedBy": "jean",
     "mechanism": "automationKillSwitch"
+  },
+  "currentPause": { "active": true, "record": { "lifecycle": "active" } },
+  "pauseProvenance": {
+    "historicalOverlap": {
+      "windowStart": "2026-08-17T08:05:04.931Z",
+      "windowEnd": "2026-08-18T08:05:04.931Z",
+      "overlapMs": 0,
+      "overlapFraction": 0,
+      "completeRecordCount": 0,
+      "incompleteRecordCount": 0
+    },
+    "incompleteRecords": []
   },
   "quota": {
     "agentType": "grok-build",
@@ -1114,7 +1134,10 @@ orchestrator's auto-resume) still declines to lift a human pause.
 (a bare pause defaults to a human pause). `POST /api/orchestration/resume`
 accepts `{ "by"?: string, "auto"?: boolean }`. Both return the same status shape;
 `resume` adds `resumed` (and `resumeDeclinedReason` when a soft `auto` resume
-declined to lift a human pause).
+declined to lift a human pause). `currentPause` reports only the explicit
+current lifecycle; `pauseProvenance.historicalOverlap` reports known overlap in
+the trailing 24-hour window, and `pauseProvenance.incompleteRecords` reports
+unresolved spans that must not be counted as active.
 
 The same operations are available from the CLI: `kookr orchestration pause`,
 `kookr orchestration resume`, and `kookr orchestration status`.

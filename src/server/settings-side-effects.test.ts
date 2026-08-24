@@ -295,7 +295,7 @@ describe('applySettingsSideEffects', () => {
 
       await applySettingsSideEffects(deps);
 
-      expect(existsSync(path)).toBe(false);
+      expect(existsSync(path)).toBe(true);
       expect(readPauseRecordSync(kookrDir)).toBeNull();
       expect(orchestratorShouldSpawn({
         safeModeEngaged: false,

@@ -1165,13 +1165,15 @@ kookr orchestration resume [--by jean]
 - `status` (read-only) prints whether orchestration is paused, and — when a
   record exists — the source, since, reason, and who; plus the default agent's
   quota sample and the soft-quota recommendation when a signal is available.
+  The JSON form also separates the current lifecycle from the trailing
+  24-hour known overlap and lists unresolved records whose duration is unknown.
 - `pause` engages SAFE MODE and writes the pause record. Defaults to a **human**
   pause, which is sticky against auto-resume — `kookr orchestration resume --auto`
   will not lift it. An explicit `kookr orchestration resume` (without `--auto`)
   clears it, and so does turning the automation kill switch off when the pause
   record was created by that switch.
-- `resume` disengages SAFE MODE and clears the record. `--auto` still refuses to
-  lift a human pause.
+- `resume` disengages SAFE MODE and closes the current record while retaining it
+  in the provenance ledger. `--auto` still refuses to lift a human pause.
 
 A **soft-quota** pause (the orchestrator's own response to near-exhausted quota)
 is distinct: `--source soft-quota` on `pause`, and `--auto` on `resume`. A

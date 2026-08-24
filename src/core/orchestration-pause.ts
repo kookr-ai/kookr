@@ -59,15 +59,21 @@ export interface OrchestrationQuotaSample {
 }
 
 /**
- * Durable pause record, persisted at
- * `~/.kookr/playbook-state/orchestrator/quota-pause.json`. Schema v2 adds the
- * explicit `source` field over the operator's hand-written v1 file; v1 records
- * (no `source`) are read as a human pause.
+ * Durable pause records, persisted at
+ * `~/.kookr/playbook-state/orchestrator/quota-pause.json`. Schema v3 adds
+ * explicit lifecycle fields over the operator's hand-written v1/v2 file;
+ * legacy records without an end are retained as unresolved history.
  */
+export type PauseLifecycle = 'active' | 'ended' | 'cancelled' | 'unresolved';
+
 export interface OrchestrationPauseRecord {
-  schemaVersion: 2;
-  /** True while orchestration is paused. */
+  schemaVersion: 3;
+  /** Stable identifier used to correlate lifecycle updates and warnings. */
+  id: string;
+  /** Kept for compatibility; only `lifecycle: 'active'` is current. */
   paused: boolean;
+  /** Explicit lifecycle. Legacy records without this field become unresolved. */
+  lifecycle: PauseLifecycle;
   /** Human vs soft-quota — governs auto-resume eligibility. */
   source: OrchestrationPauseSource;
   /** Why the pause was engaged (the "why"). */
@@ -79,13 +85,51 @@ export interface OrchestrationPauseRecord {
   /**
    * The lever this pause rides on (the "what"). Kill-switch / SAFE MODE pauses
    * use `automationKillSwitch` (v1 files used `automationKillSwitch / SAFE MODE`).
-   * A human turning that switch off clears only records created by it (#2743).
+   * A human turning that switch off closes only records created by it (#2743).
    */
   mechanism: string;
+  /** ISO 8601 timestamp at which the pause was explicitly closed. */
+  endedAt?: string;
+  /** Who or what closed the pause. */
+  endedBy?: string;
+  /** Provenance for the close operation. */
+  endSource?: string;
+  /** Timestamp at which the system classified an incomplete record as unknown. */
+  unresolvedAt?: string;
+  /** Why the record was classified as unresolved. */
+  unresolvedSource?: string;
   /** Soft-quota context captured when the orchestrator auto-paused. */
   quota?: OrchestrationQuotaSample;
   /** Free-form operator notes (preserved across reads). */
   notes?: string[];
+}
+
+export interface OrchestrationPauseState {
+  schemaVersion: 3;
+  records: OrchestrationPauseRecord[];
+}
+
+export interface PauseProvenance {
+  /** The one explicitly active record, if any. */
+  currentPause: OrchestrationPauseRecord | null;
+  /** All retained records, including terminal and unresolved records. */
+  history: OrchestrationPauseRecord[];
+  /** Known overlap in the requested window; unresolved spans are excluded. */
+  historicalOverlap: {
+    windowStart: string;
+    windowEnd: string;
+    overlapMs: number;
+    overlapFraction: number;
+    completeRecordCount: number;
+    incompleteRecordCount: number;
+  };
+  /** Records whose duration cannot be known from persisted evidence. */
+  incompleteRecords: Array<{
+    id: string;
+    source: OrchestrationPauseSource;
+    pausedAt: string;
+    reason: string;
+  }>;
 }
 
 /** Repo-relative-to-`~/.kookr` path of the pause record. */
@@ -113,17 +157,26 @@ export const SOFT_QUOTA_PAUSE_AT = 95;
 export const SOFT_QUOTA_RESUME_AT = 80;
 
 /**
- * Tolerantly parse a raw pause record (from JSON on disk). Returns null only
- * when the value is not an object. Accepts the operator's v1 file (no
- * `source`) as a human pause. A record with `paused: false` is returned intact
- * (callers read `.paused`); absence of the file is represented by the reader
- * returning null, not this function.
+ * Tolerantly parse a raw pause record (from JSON on disk). Legacy v1/v2
+ * records have no trustworthy terminal lifecycle and are therefore retained as
+ * `unresolved`; they must not be mistaken for a currently active pause.
  */
 export function parsePauseRecord(raw: unknown): OrchestrationPauseRecord | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const source: OrchestrationPauseSource =
     r.source === 'soft-quota' ? 'soft-quota' : 'human';
+  const paused = r.paused === true;
+  const endedAt = typeof r.endedAt === 'string' && r.endedAt ? r.endedAt : undefined;
+  const rawLifecycle = r.lifecycle;
+  const lifecycle: PauseLifecycle =
+    rawLifecycle === 'active' || rawLifecycle === 'ended' || rawLifecycle === 'cancelled'
+      ? rawLifecycle
+      : paused && !endedAt
+        ? 'unresolved'
+        : endedAt
+          ? 'ended'
+          : 'unresolved';
   const quota =
     r.quota && typeof r.quota === 'object'
       ? (r.quota as OrchestrationQuotaSample)
@@ -132,8 +185,13 @@ export function parsePauseRecord(raw: unknown): OrchestrationPauseRecord | null 
     ? r.notes.filter((n): n is string => typeof n === 'string')
     : undefined;
   return {
-    schemaVersion: 2,
-    paused: r.paused === true,
+    schemaVersion: 3,
+    id:
+      typeof r.id === 'string' && r.id.trim()
+        ? r.id.trim()
+        : `pause-${typeof r.pausedAt === 'string' ? r.pausedAt : 'unknown'}`,
+    paused,
+    lifecycle,
     source,
     reason: typeof r.reason === 'string' ? r.reason : '',
     pausedAt: typeof r.pausedAt === 'string' ? r.pausedAt : '',
@@ -142,23 +200,52 @@ export function parsePauseRecord(raw: unknown): OrchestrationPauseRecord | null 
       typeof r.mechanism === 'string' && r.mechanism.trim().length > 0
         ? r.mechanism.trim()
         : 'automationKillSwitch',
+    ...(endedAt ? { endedAt } : {}),
+    ...(typeof r.endedBy === 'string' && r.endedBy ? { endedBy: r.endedBy } : {}),
+    ...(typeof r.endSource === 'string' && r.endSource ? { endSource: r.endSource } : {}),
+    ...(typeof r.unresolvedAt === 'string' && r.unresolvedAt
+      ? { unresolvedAt: r.unresolvedAt }
+      : {}),
+    ...(typeof r.unresolvedSource === 'string' && r.unresolvedSource
+      ? { unresolvedSource: r.unresolvedSource }
+      : {}),
     ...(quota ? { quota } : {}),
     ...(notes ? { notes } : {}),
   };
 }
 
-/** Build a fresh v2 pause record. */
+/** Parse the current v3 ledger, or migrate a legacy single-record file. */
+export function parsePauseState(raw: unknown): OrchestrationPauseState {
+  if (raw && typeof raw === 'object') {
+    const value = raw as Record<string, unknown>;
+    if (Array.isArray(value.records)) {
+      return {
+        schemaVersion: 3,
+        records: value.records
+          .map((record) => parsePauseRecord(record))
+          .filter((record): record is OrchestrationPauseRecord => record !== null),
+      };
+    }
+  }
+  const legacy = parsePauseRecord(raw);
+  return { schemaVersion: 3, records: legacy ? [legacy] : [] };
+}
+
+/** Build a fresh active v3 pause record. */
 export function buildPauseRecord(input: {
   source: OrchestrationPauseSource;
   reason: string;
   by: string;
   atIso: string;
+  id?: string;
   quota?: OrchestrationQuotaSample;
   notes?: string[];
 }): OrchestrationPauseRecord {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    id: input.id ?? `pause-${input.atIso}`,
     paused: true,
+    lifecycle: 'active',
     source: input.source,
     reason: input.reason,
     pausedAt: input.atIso,
@@ -166,6 +253,105 @@ export function buildPauseRecord(input: {
     mechanism: 'automationKillSwitch',
     ...(input.quota ? { quota: input.quota } : {}),
     ...(input.notes && input.notes.length > 0 ? { notes: input.notes } : {}),
+  };
+}
+
+/** Close an active pause while retaining its original start provenance. */
+export function closePauseRecord(
+  record: OrchestrationPauseRecord,
+  input: {
+    lifecycle: 'ended' | 'cancelled';
+    atIso: string;
+    by: string;
+    source: string;
+  },
+): OrchestrationPauseRecord {
+  return {
+    ...record,
+    paused: false,
+    lifecycle: input.lifecycle,
+    endedAt: input.atIso,
+    endedBy: input.by,
+    endSource: input.source,
+  };
+}
+
+/** Return true only for a lifecycle record that is explicitly active. */
+export function isActivePauseRecord(record: OrchestrationPauseRecord | null): boolean {
+  return record?.lifecycle === 'active';
+}
+
+/** Pick the newest explicit active record from a retained ledger. */
+export function getCurrentPauseRecord(
+  records: OrchestrationPauseRecord[],
+): OrchestrationPauseRecord | null {
+  return records
+    .filter((record) => isActivePauseRecord(record))
+    .sort((left, right) => Date.parse(right.pausedAt) - Date.parse(left.pausedAt))[0] ?? null;
+}
+
+/**
+ * Build the audit payload consumed by status/health and future velocity probes.
+ * Explicitly active records are measured through the window end; unresolved
+ * records are never guessed into the known overlap and are surfaced as a
+ * warning instead.
+ */
+export function buildPauseProvenance(
+  records: OrchestrationPauseRecord[],
+  input: { windowStartMs: number; windowEndMs: number },
+): PauseProvenance {
+  const windowStartMs = Math.min(input.windowStartMs, input.windowEndMs);
+  const windowEndMs = Math.max(input.windowStartMs, input.windowEndMs);
+  const incompleteRecords: PauseProvenance['incompleteRecords'] = [];
+  const intervals: Array<[number, number]> = [];
+  let completeRecordCount = 0;
+
+  for (const record of records) {
+    const startMs = Date.parse(record.pausedAt);
+    const endMs = record.lifecycle === 'active'
+      ? windowEndMs
+      : record.endedAt ? Date.parse(record.endedAt) : Number.NaN;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      incompleteRecords.push({
+        id: record.id,
+        source: record.source,
+        pausedAt: record.pausedAt,
+        reason: record.unresolvedSource ?? 'missing pause end timestamp',
+      });
+      continue;
+    }
+    const clippedStart = Math.max(startMs, windowStartMs);
+    const clippedEnd = Math.min(endMs, windowEndMs);
+    if (clippedEnd > clippedStart) intervals.push([clippedStart, clippedEnd]);
+    completeRecordCount += 1;
+  }
+
+  intervals.sort(([left], [right]) => left - right);
+  let overlapMs = 0;
+  let mergedEndMs = Number.NEGATIVE_INFINITY;
+  for (const [startMs, endMs] of intervals) {
+    if (startMs > mergedEndMs) {
+      overlapMs += endMs - startMs;
+      mergedEndMs = endMs;
+    } else if (endMs > mergedEndMs) {
+      overlapMs += endMs - mergedEndMs;
+      mergedEndMs = endMs;
+    }
+  }
+
+  const windowMs = Math.max(1, windowEndMs - windowStartMs);
+  return {
+    currentPause: getCurrentPauseRecord(records),
+    history: records,
+    historicalOverlap: {
+      windowStart: new Date(windowStartMs).toISOString(),
+      windowEnd: new Date(windowEndMs).toISOString(),
+      overlapMs,
+      overlapFraction: overlapMs / windowMs,
+      completeRecordCount,
+      incompleteRecordCount: incompleteRecords.length,
+    },
+    incompleteRecords,
   };
 }
 
@@ -177,22 +363,25 @@ export function buildPauseRecord(input: {
 export function pauseRecordCreatedByKillSwitch(
   record: OrchestrationPauseRecord | null,
 ): boolean {
-  if (record?.paused !== true) return false;
+  if (
+    !record
+    || record.paused !== true
+    || (record.lifecycle !== 'active' && record.lifecycle !== 'unresolved')
+  ) return false;
   // v1 files used "automationKillSwitch / SAFE MODE"; v2 uses the literal.
   return record.mechanism.startsWith('automationKillSwitch');
 }
 
 /**
- * Is orchestration paused? Either live SAFE MODE or a still-paused on-disk
- * record counts — the record is a real spawn gate, not a mere annotation.
- * Turning the kill switch off must therefore *clear* a kill-switch-created
- * record (issue #2743); an uncleared leftover file still reads as paused.
+ * Is orchestration paused? Live SAFE MODE or an explicitly active on-disk
+ * record counts. An unresolved legacy record is audit evidence only; treating
+ * it as current would silently turn an unknown historical span into a gate.
  */
 export function isOrchestrationPaused(input: {
   safeModeEngaged: boolean;
   record: OrchestrationPauseRecord | null;
 }): boolean {
-  return input.safeModeEngaged || input.record?.paused === true;
+  return input.safeModeEngaged || isActivePauseRecord(input.record);
 }
 
 /**
@@ -284,6 +473,13 @@ export function evaluateSoftQuotaPause(input: {
 }): SoftQuotaAction {
   const { utilization, resetsAt, nowMs, record, safeModeEngaged } = input;
   const paused = isOrchestrationPaused({ safeModeEngaged, record });
+
+  if (record?.lifecycle === 'unresolved') {
+    return {
+      action: 'none',
+      reason: 'pause provenance is unresolved; do not infer a second quota pause',
+    };
+  }
 
   if (paused && record?.source === 'human') {
     return {
