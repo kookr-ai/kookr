@@ -461,9 +461,9 @@ logical *request*, independent of its prompt content.
   exact session; runtime reconciliation settles the marker after absence is
   proven.
 - **Durability is best-effort, not absolute.** Reservations live in a ledger
-  (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
-  its TTL is treated as never seen) that is written to disk once launch
-  handling has resolved to a task. Three caveats:
+  (`idempotency-ledger.json` under the Kookr data dir, with a configured TTL
+  and a 24h default — a key past its TTL is treated as never seen) that is
+  written to disk once launch handling has resolved to a task. Three caveats:
   1. A crash strictly inside the create→persist window (memory-only pending
      reservation, never yet written) loses that one in-flight reservation —
      a retry issued after that specific crash can create a duplicate.
@@ -1008,6 +1008,24 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/deploy/status` | Production-update job status, toolkit/plugin freshness, and optional `lastRestart` phase timings from the last successful `prod:restart` |
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job. On success, broadcasts WebSocket `deployLifecycle` with `phase: "starting"` before the child process starts (issue #1980). |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
+
+#### Idempotency ledger retention
+
+The `GET`/`PUT /api/settings` surface accepts these retention settings. They
+apply live after a successful update and are also used when the server starts:
+
+| Setting | Default | Bounds | Effect |
+| --- | --- | --- | --- |
+| `idempotencyLedgerTtlMinutes` | `1440` (24h) | `1`–`10080` (7 days) | Rolling age after which a finalized key may be processed again. At exactly the TTL boundary the key is still replayable; expiry occurs only after it. |
+| `idempotencyLedgerMaxEntries` | `10000` | `1`–`100000` | Maximum finalized entries retained. When exceeded, the oldest entries are evicted by `createdAt`, with the key as a stable tie-breaker. Evicted keys may be processed again. |
+
+The ledger persists each row's original `createdAt` timestamp, not a derived
+expiry time, so changing the TTL or restarting the server cannot make
+compaction unsafe. Compaction rewrites the complete bounded file through the
+same atomic fsync-and-rename path used for normal ledger updates. Current
+entries and cumulative expiry/eviction counters are available in
+the `idempotencyLedger` field of `GET /api/health` and the `/metrics` Prometheus families
+`kookr_idempotency_ledger_*`.
 
 #### `GET /api/deploy/status` — `lastRestart` (optional)
 

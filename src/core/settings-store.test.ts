@@ -17,6 +17,20 @@ describe('validateSettings', () => {
     expect(validateSettings({})).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('defaults and clamps idempotency ledger retention settings (issue #2763)', () => {
+    expect(DEFAULT_SETTINGS.idempotencyLedgerTtlMinutes).toBe(1440);
+    expect(DEFAULT_SETTINGS.idempotencyLedgerMaxEntries).toBe(10_000);
+    expect(validateSettings({}).idempotencyLedgerTtlMinutes).toBe(1440);
+    expect(validateSettings({ idempotencyLedgerTtlMinutes: 0 }).idempotencyLedgerTtlMinutes).toBe(1);
+    expect(validateSettings({ idempotencyLedgerTtlMinutes: 99_999 }).idempotencyLedgerTtlMinutes).toBe(10_080);
+    expect(validateSettings({ idempotencyLedgerTtlMinutes: 12.6 }).idempotencyLedgerTtlMinutes).toBe(13);
+    expect(validateSettings({ idempotencyLedgerTtlMinutes: 'forever' }).idempotencyLedgerTtlMinutes).toBe(1440);
+    expect(validateSettings({ idempotencyLedgerMaxEntries: 0 }).idempotencyLedgerMaxEntries).toBe(1);
+    expect(validateSettings({ idempotencyLedgerMaxEntries: 999_999 }).idempotencyLedgerMaxEntries).toBe(100_000);
+    expect(validateSettings({ idempotencyLedgerMaxEntries: 12.6 }).idempotencyLedgerMaxEntries).toBe(13);
+    expect(validateSettings({ idempotencyLedgerMaxEntries: 'unbounded' }).idempotencyLedgerMaxEntries).toBe(10_000);
+  });
+
   it('accepts valid boolean for githubPollingEnabled', () => {
     expect(validateSettings({ githubPollingEnabled: false })).toEqual({
       ...DEFAULT_SETTINGS,
@@ -762,6 +776,8 @@ describe('loadSettings / saveSettings', () => {
       firstHookDeadlineSeconds: 240,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
+      idempotencyLedgerTtlMinutes: 720,
+      idempotencyLedgerMaxEntries: 500,
       reservedActiveSlots: 3,
       reservedSlotSources: ['kookr', 'ops'],
       postMergeCleanupBudgetMinutes: 15,

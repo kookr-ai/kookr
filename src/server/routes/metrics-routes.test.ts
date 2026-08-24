@@ -84,6 +84,28 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
   });
 
+  test('serves live idempotency ledger metrics', async () => {
+    const res = await mkApp({
+      idempotencyLedger: {
+        getMetrics: () => ({
+          schemaVersion: 'idempotency-ledger-metrics.v1' as const,
+          entryCount: 7,
+          pendingCount: 1,
+          maxEntries: 100,
+          ttlMs: 86_400_000,
+          expiredTotal: 3,
+          evictedTotal: 2,
+        }),
+      },
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_idempotency_ledger_entries 7');
+    expect(body).toContain('kookr_idempotency_ledger_expired_total 3');
+    expect(body).toContain('kookr_idempotency_ledger_evicted_total 2');
+  });
+
   test('serves live audit sink health metrics', async () => {
     const res = await mkApp({
       auditSinks: {

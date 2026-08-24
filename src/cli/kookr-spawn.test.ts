@@ -294,7 +294,7 @@ describe('deriveAutoIdempotencyKey', () => {
     const a = deriveAutoIdempotencyKey({ ...base });
     const b = deriveAutoIdempotencyKey({ ...base });
     expect(a).toBe(b);
-    // No calendar component — the server's rolling 24h TTL bounds replay.
+    // No calendar component — the server's configured rolling TTL bounds replay.
     expect(a).toMatch(/^auto-[0-9a-f]{16}$/);
   });
 

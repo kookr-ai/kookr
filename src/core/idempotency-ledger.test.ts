@@ -201,11 +201,180 @@ describe('IdempotencyLedger', () => {
     // Still within TTL — replays.
     expect(ttlLedger.reserveOrWait('k1')).toEqual({ kind: 'replay', taskId: 'task-1' });
 
+    // At exactly the TTL boundary the original result is still replayed.
+    nowMs += 1000;
+    expect(ttlLedger.reserveOrWait('k1')).toEqual({ kind: 'replay', taskId: 'task-1' });
+
     // Advance past the TTL — the entry is compacted on the next reserveOrWait
     // call and the key is claimable again (not a permanent replay lock).
     nowMs += 1001;
     const afterExpiry = ttlLedger.reserveOrWait('k1');
     expect(afterExpiry.kind).toBe('own');
+    // The inline (reserveOrWait) expiry path also feeds the expiry counter.
+    expect(ttlLedger.getMetrics().expiredTotal).toBe(1);
+    // The inline compaction persists asynchronously because reserveOrWait is
+    // intentionally synchronous; let that best-effort write finish before the
+    // test's temporary directory is removed.
+    await vi.waitFor(() => {
+      expect(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries).toEqual({});
+    });
+  });
+
+  test('size bound evicts the oldest finalized entry deterministically and survives restart', async () => {
+    let nowMs = 1_000;
+    const bounded = new IdempotencyLedger(tempDir, { maxEntries: 2, now: () => nowMs });
+    await bounded.load();
+
+    for (const [key, taskId] of [['a-tie', 'task-1'], ['z-tie', 'task-2']] as const) {
+      const owner = bounded.reserveOrWait(key);
+      if (owner.kind !== 'own') throw new Error('expected own');
+      await owner.finalize(taskId);
+    }
+    nowMs++;
+    const newest = bounded.reserveOrWait('newest');
+    if (newest.kind !== 'own') throw new Error('expected own');
+    await newest.finalize('task-3');
+
+    expect(bounded.reserveOrWait('a-tie').kind).toBe('own');
+    expect(bounded.reserveOrWait('z-tie')).toEqual({ kind: 'replay', taskId: 'task-2' });
+    expect(bounded.reserveOrWait('newest')).toEqual({ kind: 'replay', taskId: 'task-3' });
+    expect(bounded.getMetrics()).toMatchObject({ entryCount: 2, maxEntries: 2, evictedTotal: 1 });
+    expect(Object.keys(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries)).toEqual([
+      'z-tie',
+      'newest',
+    ]);
+
+    const restarted = new IdempotencyLedger(tempDir, { maxEntries: 2, now: () => nowMs });
+    await restarted.load();
+    expect(restarted.reserveOrWait('a-tie').kind).toBe('own');
+    expect(restarted.reserveOrWait('z-tie')).toEqual({ kind: 'replay', taskId: 'task-2' });
+    expect(restarted.reserveOrWait('newest')).toEqual({ kind: 'replay', taskId: 'task-3' });
+  });
+
+  test('load compacts an oversized file and persists the deterministic eviction', async () => {
+    const createdAt = new Date('2026-01-01T00:00:00.000Z').toISOString();
+    writeFileSync(
+      join(tempDir, IDEMPOTENCY_LEDGER_FILE),
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: {
+          oldest: { taskId: 'task-old', createdAt },
+          middle: { taskId: 'task-middle', createdAt: new Date('2026-01-01T00:00:01.000Z').toISOString() },
+          newest: { taskId: 'task-new', createdAt: new Date('2026-01-01T00:00:02.000Z').toISOString() },
+        },
+      }),
+    );
+    const loaded = new IdempotencyLedger(tempDir, {
+      maxEntries: 2,
+      now: () => Date.parse('2026-01-01T00:00:03.000Z'),
+    });
+
+    await loaded.load();
+    expect(loaded.getMetrics()).toMatchObject({ entryCount: 2, evictedTotal: 1 });
+    expect(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries).toEqual({
+      middle: { taskId: 'task-middle', createdAt: '2026-01-01T00:00:01.000Z' },
+      newest: { taskId: 'task-new', createdAt: '2026-01-01T00:00:02.000Z' },
+    });
+
+    const restarted = new IdempotencyLedger(tempDir, { maxEntries: 2, now: () => Date.parse('2026-01-01T00:00:03.000Z') });
+    await restarted.load();
+    expect(restarted.reserveOrWait('oldest').kind).toBe('own');
+    expect(restarted.reserveOrWait('middle')).toEqual({ kind: 'replay', taskId: 'task-middle' });
+    expect(restarted.reserveOrWait('newest')).toEqual({ kind: 'replay', taskId: 'task-new' });
+  });
+
+  test('configure applies a tighter bound and persists compaction', async () => {
+    let nowMs = 10_000;
+    const configurable = new IdempotencyLedger(tempDir, { maxEntries: 3, now: () => nowMs });
+    await configurable.load();
+    for (const [key, taskId] of [['one', 'task-1'], ['two', 'task-2'], ['three', 'task-3']] as const) {
+      const owner = configurable.reserveOrWait(key);
+      if (owner.kind !== 'own') throw new Error('expected own');
+      await owner.finalize(taskId);
+      nowMs++;
+    }
+
+    await configurable.configure({ maxEntries: 2 });
+    expect(configurable.getMetrics()).toMatchObject({ entryCount: 2, maxEntries: 2, evictedTotal: 1 });
+    expect(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries).toEqual({
+      two: { taskId: 'task-2', createdAt: new Date(10_001).toISOString() },
+      three: { taskId: 'task-3', createdAt: new Date(10_002).toISOString() },
+    });
+    expect(configurable.reserveOrWait('one').kind).toBe('own');
+    expect(configurable.reserveOrWait('two')).toEqual({ kind: 'replay', taskId: 'task-2' });
+    expect(configurable.reserveOrWait('three')).toEqual({ kind: 'replay', taskId: 'task-3' });
+  });
+
+  test('configure applies a tighter TTL and compacts newly-expired entries', async () => {
+    let nowMs = 100_000;
+    const configurable = new IdempotencyLedger(tempDir, { ttlMs: 60_000, now: () => nowMs });
+    await configurable.load();
+
+    const owner = configurable.reserveOrWait('k1');
+    if (owner.kind !== 'own') throw new Error('expected own');
+    await owner.finalize('task-1');
+    // Still well within the 60s TTL.
+    expect(configurable.reserveOrWait('k1')).toEqual({ kind: 'replay', taskId: 'task-1' });
+
+    // Advance 2s of wall clock, then tighten the TTL to 1s so the entry is now
+    // retroactively expired. configure() must run the expiry compaction, count
+    // it, and persist the empty ledger.
+    nowMs += 2_000;
+    await configurable.configure({ ttlMs: 1_000 });
+
+    expect(configurable.getMetrics()).toMatchObject({ entryCount: 0, ttlMs: 1_000, expiredTotal: 1 });
+    expect(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries).toEqual({});
+    expect(configurable.reserveOrWait('k1').kind).toBe('own');
+  });
+
+  test('size eviction never drops a live pending reservation', async () => {
+    let nowMs = 1_000;
+    const bounded = new IdempotencyLedger(tempDir, { maxEntries: 1, now: () => nowMs });
+    await bounded.load();
+
+    const first = bounded.reserveOrWait('finalized-1');
+    if (first.kind !== 'own') throw new Error('expected own');
+    await first.finalize('task-1');
+
+    // A live pending reservation is in flight when the next finalize triggers
+    // size compaction. Pending state is coordination-only: it must never count
+    // toward the bound or be evicted while a waiter may still depend on it.
+    nowMs++;
+    const pending = bounded.reserveOrWait('pending-1');
+    if (pending.kind !== 'own') throw new Error('expected own');
+    const waiter = bounded.reserveOrWait('pending-1');
+    if (waiter.kind !== 'wait') throw new Error('expected wait');
+
+    nowMs++;
+    const second = bounded.reserveOrWait('finalized-2');
+    if (second.kind !== 'own') throw new Error('expected own');
+    // finalizedCount (2) > maxEntries (1) → evict the oldest FINALIZED entry
+    // (finalized-1), never the pending reservation.
+    await second.finalize('task-2');
+
+    expect(bounded.getMetrics()).toMatchObject({ entryCount: 1, pendingCount: 1, evictedTotal: 1 });
+    expect(bounded.reserveOrWait('finalized-1').kind).toBe('own'); // evicted → reclaimable
+    expect(bounded.reserveOrWait('finalized-2')).toEqual({ kind: 'replay', taskId: 'task-2' });
+
+    // The still-live pending reservation resolves normally to its real task.
+    await pending.finalize('task-pending');
+    expect(await waiter.wait()).toEqual({ ok: true, taskId: 'task-pending' });
+  });
+
+  test('load persists TTL compaction so restart does not repeatedly scan expired rows', async () => {
+    const createdAt = new Date('2026-01-01T00:00:00.000Z').toISOString();
+    writeFileSync(
+      join(tempDir, IDEMPOTENCY_LEDGER_FILE),
+      JSON.stringify({ schemaVersion: 1, entries: { expired: { taskId: 'task-old', createdAt } } }),
+    );
+    const loaded = new IdempotencyLedger(tempDir, {
+      ttlMs: 1000,
+      now: () => Date.parse('2026-01-01T00:00:02.000Z'),
+    });
+
+    await loaded.load();
+    expect(JSON.parse(readFileSync(join(tempDir, IDEMPOTENCY_LEDGER_FILE), 'utf-8')).entries).toEqual({});
+    expect(loaded.getMetrics()).toMatchObject({ entryCount: 0, expiredTotal: 1 });
   });
 
   test('TTL expiry: load() drops entries already past the TTL from a stale file on disk', async () => {

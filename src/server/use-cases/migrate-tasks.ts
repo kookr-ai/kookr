@@ -292,7 +292,7 @@ async function migrateOne(
     // No deterministic idempotency key (correctness review #2): the migrate path
     // deliberately allows RE-continuing a source once its prior continuation has
     // died (`alreadyMigrated` = live-successor only). A fixed
-    // `migrate:<src>:<agent>` key would let the 24h idempotency ledger replay the
+    // `migrate:<src>:<agent>` key would let the configured idempotency ledger replay the
     // dead successor and report a false `migrated`. Concurrency is covered by the
     // in-process `inFlight` set; a live successor is covered by `alreadyMigrated`.
     const opts: LaunchOpts = {

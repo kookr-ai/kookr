@@ -1592,7 +1592,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // server that had already created the task) from creating a duplicate.
   // Loaded before the launch service deps are built so the first launch
   // served can already see replay state from a prior process.
-  const idempotencyLedger = new IdempotencyLedger(kookrDir);
+  const idempotencyLedger = new IdempotencyLedger(kookrDir, {
+    ttlMs: currentSettings.idempotencyLedgerTtlMinutes * 60_000,
+    maxEntries: currentSettings.idempotencyLedgerMaxEntries,
+  });
   await idempotencyLedger.load();
 
   // CPU-aware admission threshold (issue #1630). Read once at boot — this is an
@@ -2623,7 +2626,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // endpoint so GET /api/grok-auth-status can never disagree with a concurrent
     // launch within the cache TTL.
     grokAuthAvailability,
-    shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
+    shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, idempotencyLedger, sttUrl,
     ttsUrl, ttsVoice: config.ttsVoice, speakFindingEnabled: config.speakFindingEnabled,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
@@ -2733,6 +2736,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           kookrDir,
         });
         currentSettings = merged;
+        // Only reconfigure (and re-run compaction) when a retention bound
+        // actually changed — an unrelated settings save must not re-sort the
+        // finalized ledger or trigger a disk rewrite. Mirrors the change-gated
+        // reconfigure of the other live-tunable side effects.
+        if (
+          merged.idempotencyLedgerTtlMinutes !== prev.idempotencyLedgerTtlMinutes ||
+          merged.idempotencyLedgerMaxEntries !== prev.idempotencyLedgerMaxEntries
+        ) {
+          await idempotencyLedger.configure({
+            ttlMs: merged.idempotencyLedgerTtlMinutes * 60_000,
+            maxEntries: merged.idempotencyLedgerMaxEntries,
+          });
+        }
         settingsLoadedFromDefaults = false;
         settingsLoadWarnings = [];
         // Successful write recovers fail-closed loadError (issue #2085).

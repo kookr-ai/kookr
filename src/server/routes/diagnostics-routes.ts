@@ -390,6 +390,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // the durable alert artifact only — never re-run smoke checks here. Absent
     // when the tick is disabled (dep not wired).
     const prodSmokeTickBlock = deps.prodSmokeTick?.getHealthSnapshot();
+    const idempotencyLedgerBlock = deps.idempotencyLedger?.getMetrics();
 
     // #808 / R10: surface the revocation sweep liveness + viewer count + grant
     // store writability so a dead sweep or a read-only store is visible to the
@@ -868,6 +869,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         : {}),
       dataDirectory: dataDirectoryBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
+      ...(idempotencyLedgerBlock ? { idempotencyLedger: idempotencyLedgerBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(deps.umbrellaChainAdvancer
