@@ -4,6 +4,7 @@ import type {
   ProviderTransientRetryRequest,
   ProviderTransientAlertRequest,
 } from '../core/silent-failure-classifier.js';
+import { isValidLaunchPin } from '../shared/contracts/agent-types.js';
 
 /**
  * Bounded auto-retry + operator-alert handlers for `provider_transient` silent
@@ -55,6 +56,15 @@ export function createProviderTransientRetryHandler(
     // Only schedule-provenance work is auto-retried (the classifier already
     // enforces this, but the launch shape depends on it, so re-check here).
     const scheduleId = original.provenance?.kind === 'schedule' ? original.provenance.sourceId : undefined;
+    const launchPins = original.metadata?.launchPins;
+    if (launchPins?.state === 'unknown' || launchPins?.state === 'malformed'
+      || (launchPins?.state === 'known-pinned'
+        && ((launchPins.effort !== undefined && !isValidLaunchPin(launchPins.effort))
+          || (launchPins.model !== undefined && !isValidLaunchPin(launchPins.model))))) {
+      logger.warn(`[provider-transient-retry] task ${req.originalTaskId} has unsafe launch pins; skipping automatic retry`);
+      return;
+    }
+    const knownLaunchPins = launchPins?.state === 'known-pinned' ? launchPins : undefined;
 
     const launchOpts: LaunchOpts = {
       prompt: original.prompt,
@@ -65,6 +75,8 @@ export function createProviderTransientRetryHandler(
       ...(original.playbookParameterValues ? { playbookParameterValues: original.playbookParameterValues } : {}),
       ...(original.projectId ? { projectId: original.projectId } : {}),
       agentType: original.agentType,
+      ...(knownLaunchPins?.effort !== undefined ? { effort: knownLaunchPins.effort } : {}),
+      ...(knownLaunchPins?.model !== undefined ? { model: knownLaunchPins.model } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.
       disableDedup: true,
       launchSource: 'schedule',

@@ -19,6 +19,7 @@ describe('createProviderTransientRetryHandler', () => {
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
+      metadata: { launchPins: { state: 'known-pinned', effort: 'high', model: 'claude-opus-4-8' } },
       provenance: { kind: 'schedule', sourceId: 'sched-lucy' },
     });
     const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
@@ -39,6 +40,8 @@ describe('createProviderTransientRetryHandler', () => {
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
+      effort: 'high',
+      model: 'claude-opus-4-8',
       disableDedup: true,
       launchSource: 'schedule',
       scheduleId: 'sched-lucy',
@@ -59,6 +62,26 @@ describe('createProviderTransientRetryHandler', () => {
     });
 
     handler({ originalTaskId: 'gone', failedTaskId: 'gone', attempt: 1, delayMs: 1000 });
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  it('does not automatically retry unsafe legacy launch pins', () => {
+    const original = aTask({
+      id: 'orig',
+      metadata: { launchPins: { version: 1, state: 'unknown' } },
+      provenance: { kind: 'schedule', sourceId: 's1' },
+    });
+    const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
+    const launchTask = vi.fn();
+    const handler = createProviderTransientRetryHandler({
+      taskStore: taskStore as any,
+      launchTask,
+      setTimeoutFn: immediateTimer,
+      logger: silentLogger,
+    });
+
+    handler({ originalTaskId: 'orig', failedTaskId: 'orig', attempt: 1, delayMs: 0 });
+
     expect(launchTask).not.toHaveBeenCalled();
   });
 

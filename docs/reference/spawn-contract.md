@@ -54,7 +54,7 @@ the load-bearing primitive for safe reconciliation:
   `"idempotentReplay": true`, referencing the **same** task — no duplicate, no
   confirmation UX. This holds even for a request racing concurrently with the
   first.
-- The key is a *different* mechanism from prompt+cwd+agentType dedup, which is
+- The key is a *different* mechanism from prompt+cwd+agentType+model+effort dedup, which is
   defeated whenever the prompt text varies between attempts (e.g. a fresh random
   branch suffix). The key identifies the logical *request*, independent of
   prompt content.
@@ -93,12 +93,12 @@ task — so the client must **not** blind-retry the create. It can still reconci
 it can never duplicate. The probe resolves the ambiguity to one of three
 outcomes:
 
-- **matched** — an active task matches this spawn's prompt + cwd (+ agent, when
-  pinned). The prompt is compared after applying the server's file-reference
+- **matched** — an active task matches this spawn's prompt + cwd + model + effort
+  (+ agent, when pinned). The prompt is compared after applying the server's file-reference
   normalization (existing relative paths → absolute), so a prompt naming a real
   file still matches the task the server stored. This is reported as an
   already-existing task recovered via the probe,
-  **not** a fresh "created": a prompt+cwd match is *not* proof this spawn created
+  **not** a fresh "created": a prompt+cwd+pins match is *not* proof this spawn created
   it — a concurrent spawn with the same prompt+cwd matches identically. Honor
   `--dedupe=block` here; otherwise exit success with the recovered id.
 - **absent** — the probe succeeded and found no match: the task was **not**
@@ -142,7 +142,7 @@ Guidance:
 
 - **Idempotency key.** `--idempotency-key <key>` sets it explicitly;
   `--auto-idempotency` (or `KOOKR_SPAWN_AUTO_IDEMPOTENCY`) derives a stable key
-  from the spawn's identity (prompt + cwd + criteria + agent) so a retry
+  from the spawn's identity (prompt + cwd + criteria + agent + effort + model) so a retry
   replays. The CLI POST aborts at 10s while the server may take longer, so a key
   is what turns that timeout from a duplicate risk into a safe replay.
 - **Ambiguous-outcome reconciliation.** On a client timeout, a network error, or

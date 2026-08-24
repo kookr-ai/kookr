@@ -111,6 +111,8 @@ export interface ProviderResumeSource {
   playbookParameterValues?: Record<string, string>;
   projectId?: string;
   agentType?: AgentType;
+  effort?: string;
+  model?: string;
   autoCloseOnSignal?: boolean;
   /** The issue claim the resume dedups on — required (no claim ⇒ no resume). */
   issueClaim: { repo: string; number: number };
@@ -142,6 +144,8 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
       : {}),
     ...(task.projectId ? { projectId: task.projectId } : {}),
     ...(task.agentType ? { agentType: task.agentType } : {}),
+    ...(task.effort !== undefined ? { effort: task.effort } : {}),
+    ...(task.model !== undefined ? { model: task.model } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },
     disableDedup: true,
     launchSource: 'schedule',

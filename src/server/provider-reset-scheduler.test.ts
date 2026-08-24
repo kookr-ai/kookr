@@ -466,6 +466,8 @@ describe('ProviderResetScheduler', () => {
       playbookParameterValues: { issue: '42' },
       projectId: 'github.com/kookr-ai/kookr',
       agentType: 'claude-code' as const,
+      effort: 'high',
+      model: 'claude-fable-5',
       autoCloseOnSignal: true,
       issueClaim: { repo: REPO, number: 42 },
       provenance: { kind: 'schedule', sourceId: 'sched-9' },
@@ -486,6 +488,8 @@ describe('ProviderResetScheduler', () => {
       expect(opts.playbookParameterValues).toEqual({ issue: '42' });
       expect(opts.projectId).toBe('github.com/kookr-ai/kookr');
       expect(opts.agentType).toBe('claude-code');
+      expect(opts.effort).toBe('high');
+      expect(opts.model).toBe('claude-fable-5');
       expect(opts.autoCloseOnSignal).toBe(true);
       // scheduleId is carried only from schedule provenance:
       expect(opts.scheduleId).toBe('sched-9');
@@ -503,6 +507,8 @@ describe('ProviderResetScheduler', () => {
       expect(opts.criteria).toBeUndefined();
       expect(opts.playbookId).toBeUndefined();
       expect(opts.agentType).toBeUndefined();
+      expect(opts.effort).toBeUndefined();
+      expect(opts.model).toBeUndefined();
       expect(opts.autoCloseOnSignal).toBeUndefined();
       expect(opts.claimIssue).toEqual({ number: 7, repo: REPO });
       expect(opts.disableDedup).toBe(true);

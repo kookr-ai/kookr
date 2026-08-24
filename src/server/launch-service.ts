@@ -6,11 +6,13 @@ import {
   type AgentType,
   type AgentSelection,
   type AgentFallbackPolicy,
+  AGENT_TYPES,
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
   isValidLaunchPin,
+  isValidModelForAgent,
   effortLevelsForAgent,
   modelSuggestionsForAgent,
 } from '../core/agent-types.js';
@@ -501,11 +503,11 @@ export function isIssueClaimLeaseRequiredError(
 }
 
 /**
- * Thrown by {@link launchTask} when a per-task `effort` override is not valid
- * for the resolved agent type (#681). Validation happens here — not at the
- * route — because a `round-robin` selection only resolves to a concrete agent
- * inside this service, and `minimal`/`none`/`ultra` (codex-only) are
- * agent-specific. The API maps this to HTTP 400.
+ * Thrown by {@link launchTask} when a malformed or known cross-harness
+ * per-task `effort` override is not valid for the resolved agent type (#681).
+ * Unknown provider values remain harness-authoritative. Validation happens
+ * here — not at the route — because a `round-robin` selection only resolves
+ * to a concrete agent inside this service. The API maps this to HTTP 400.
  */
 export class EffortValidationError extends Error {
   readonly code = 'invalid_effort';
@@ -1272,10 +1274,13 @@ async function launchTaskCore(
   // provider has no stable catalog (Grok effort today), it is not filtered.
   let roundRobinCandidates = launchableTypes;
   if (isRoundRobin && opts.effort !== undefined) {
-    const knownEffortAgents = launchableTypes.filter((candidate) =>
+    const knownEffortAgents = AGENT_TYPES.filter((candidate) =>
       effortLevelsForAgent(candidate).length > 0,
     );
-    if (knownEffortAgents.length > 0) {
+    const isKnownEffort = knownEffortAgents.some((candidate) =>
+      effortLevelsForAgent(candidate).includes(opts.effort!),
+    );
+    if (isKnownEffort) {
       const compatible = knownEffortAgents.filter((candidate) =>
         effortLevelsForAgent(candidate).includes(opts.effort!),
       );
@@ -1291,12 +1296,18 @@ async function launchTaskCore(
     }
   }
   if (isRoundRobin && opts.model !== undefined) {
-    const knownModelAgents = launchableTypes.filter((candidate) =>
-      modelSuggestionsForAgent(candidate).length > 0,
+    const knownModelAgents = AGENT_TYPES.filter((candidate) =>
+      modelSuggestionsForAgent(candidate).length > 0
+      || isValidModelForAgent(candidate, opts.model!),
     );
-    if (knownModelAgents.length > 0) {
+    const isKnownModel = knownModelAgents.some((candidate) =>
+      modelSuggestionsForAgent(candidate).includes(opts.model!)
+      || isValidModelForAgent(candidate, opts.model!),
+    );
+    if (isKnownModel) {
       const compatible = knownModelAgents.filter((candidate) =>
-        modelSuggestionsForAgent(candidate).includes(opts.model!),
+        modelSuggestionsForAgent(candidate).includes(opts.model!)
+        || isValidModelForAgent(candidate, opts.model!),
       );
       if (compatible.length === 0) {
         throw new ModelValidationError(
@@ -1356,6 +1367,32 @@ async function launchTaskCore(
     throw new ModelValidationError(
       `Invalid model "${effectiveModel}" for agent ${agentType}; use a non-empty printable token up to 200 characters`,
     );
+  }
+
+  // Reject only values that are known to belong to another catalog. Unknown
+  // values remain valid custom pins so newly released harness values do not
+  // require a Kookr release; a provider with no stable catalog remains
+  // harness-authoritative.
+  if (effectiveEffort !== undefined && effortLevelsForAgent(agentType).length > 0) {
+    const knownEffortAgents = AGENT_TYPES.filter((candidate) =>
+      effortLevelsForAgent(candidate).includes(effectiveEffort!),
+    );
+    if (knownEffortAgents.length > 0 && !knownEffortAgents.includes(agentType)) {
+      throw new EffortValidationError(
+        `Effort "${effectiveEffort}" is not supported by agent ${agentType}`,
+      );
+    }
+  }
+  if (effectiveModel !== undefined && modelSuggestionsForAgent(agentType).length > 0) {
+    const knownModelAgents = AGENT_TYPES.filter((candidate) =>
+      modelSuggestionsForAgent(candidate).includes(effectiveModel!)
+      || isValidModelForAgent(candidate, effectiveModel!),
+    );
+    if (knownModelAgents.length > 0 && !knownModelAgents.includes(agentType)) {
+      throw new ModelValidationError(
+        `Model "${effectiveModel}" is not supported by agent ${agentType}`,
+      );
+    }
   }
 
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned

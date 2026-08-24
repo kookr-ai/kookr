@@ -9,7 +9,7 @@ interface Props {
 }
 
 /**
- * Pre-submit warning when prompt + cwd + agent already have an active task.
+ * Pre-submit warning when prompt + cwd + agent + pins already have an active task.
  * Same interrupt the CLI documents for `kookr spawn --dedupe=warn`.
  */
 export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway }: Props) {
@@ -26,7 +26,7 @@ export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway
         role="status"
         aria-live="polite"
       >
-        An active task already uses this prompt, working directory, and agent.
+        An active task already uses this prompt, working directory, agent, model, and effort.
         Open it, or launch anyway as an intentional duplicate.
       </p>
       <div className="launch-duplicate-banner__actions" role="group" aria-label="Duplicate launch warning">

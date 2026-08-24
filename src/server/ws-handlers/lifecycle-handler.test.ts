@@ -94,6 +94,29 @@ describe('LifecycleHandler lifecycle commands', () => {
     expect(opts).not.toHaveProperty('model');
   });
 
+  test('inherits persisted pins when a relaunch message omits overrides', async () => {
+    const taskStore = new TaskStore();
+    const original = taskStore.createTask('original', '/repo');
+    taskStore.getTaskForMutation(original.id)!.metadata = {
+      launchPins: { version: 1, state: 'known-pinned', effort: 'high', model: 'claude-opus-4-8' },
+    };
+    const launchTask = vi.fn().mockResolvedValue({ task: { id: 'retry-1' }, queued: false });
+    const { deps } = makeDeps(taskStore, { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({
+      type: 'relaunch',
+      taskId: original.id,
+      prompt: 'relaunch original',
+      agentType: 'claude-code',
+    });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      effort: 'high',
+      model: 'claude-opus-4-8',
+    }));
+  });
+
   test('forwards the per-task cleanup override to the shared lifecycle', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Keep worktree', '/repo');

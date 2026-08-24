@@ -76,7 +76,7 @@ Options:
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
 | `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key returns the task an earlier attempt with that key already created, instead of launching a second one. |
-| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt+cwd+criteria+agent so a client-timeout retry of the **identical** spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL — no calendar component). Only helps retries whose prompt is stable; if your retry regenerates the prompt (embedded random suffix, timestamp), pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
+| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt+cwd+criteria+agent+effort+model so a client-timeout retry of the **identical** spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL — no calendar component). Only helps retries whose prompt is stable; if your retry regenerates the prompt (embedded random suffix, timestamp), pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
@@ -121,7 +121,7 @@ Idempotent retries (issue #1526):
 kookr spawn --idempotency-key "kookr-ai/kookr#1526@batch-1" "implement the issue"
 ```
 
-`--dedupe` compares prompt **content** (prompt + cwd + agent); it is defeated
+`--dedupe` compares prompt **content** (prompt + cwd + agent + model + effort); it is defeated
 when the prompt varies between attempts — for example a spawn helper that
 embeds a fresh random branch suffix on every call. `--idempotency-key`
 instead identifies the logical **request**: re-running the exact same

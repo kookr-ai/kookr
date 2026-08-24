@@ -99,7 +99,7 @@ function isTruthyEnv(value) {
  * cwd would collide. This is an opt-in convenience for stable-prompt spawns, not
  * a general orphan cure for entropy-prompt orchestrators.
  *
- * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null }} input
+ * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
 function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null }) {
@@ -139,11 +139,11 @@ Options:
                            that key already created instead of launching a
                            second one — protects against retrying after a
                            client-side timeout against an overloaded server.
-                           Distinct from --dedupe, which compares prompt+cwd;
+                           Distinct from --dedupe, which compares prompt+cwd+pins;
                            an idempotency key survives prompt text that varies
                            between attempts (e.g. an embedded random suffix).
       --auto-idempotency   When no --idempotency-key is given, derive one
-                           (auto-<hash>) from prompt+cwd+criteria+agent so a
+                           (auto-<hash>) from prompt+cwd+criteria+agent+effort+model so a
                            client-timeout retry of the IDENTICAL spawn replays
                            instead of stranding a duplicate (bounded by the
                            server's 24h idempotency TTL). Only helps retries with
@@ -900,14 +900,14 @@ function buildTaskPostBody({
  *   { kind: 'none' }
  *   { kind: 'error', message }
  */
-async function findActiveDuplicate({ baseUrl, prompt, cwd, agentType = null, fetchTasksImpl = fetchTasks }) {
+async function findActiveDuplicate({ baseUrl, prompt, cwd, agentType = null, effort = undefined, model = undefined, fetchTasksImpl = fetchTasks }) {
   const res = await fetchTasksImpl(baseUrl);
   if (res.kind !== 'ok') {
     return { kind: 'error', message: res.message };
   }
   const normalizedPrompt = normalizePromptFileReferences(prompt, cwd);
   const match = res.tasks.find((task) =>
-    taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType }),
+    taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType, effort, model }),
   );
   return match ? { kind: 'match', task: match } : { kind: 'none' };
 }
@@ -952,6 +952,8 @@ async function renderDryRun({
     prompt,
     cwd: cwdAbs,
     agentType: args.agent,
+    effort: args.effort,
+    model: args.model,
     fetchTasksImpl,
   });
 
@@ -1288,17 +1290,21 @@ function normalizePromptFileReferences(prompt, cwd) {
  * `normalizedPrompt` must be precomputed by the caller. We keep raw-prompt
  * fallbacks for a server that did not populate `userPrompt`.
  *
- * IMPORTANT (#1573): a prompt+cwd match is NOT proof this spawn created the
- * task — a concurrent spawn with the same prompt+cwd matches identically. The
+ * IMPORTANT (#1573): a prompt+cwd+pins match is NOT proof this spawn created
+ * the task — a concurrent spawn with the same launch identity matches identically. The
  * caller must therefore treat a match as an ambiguous "already exists", never
  * as a fresh "created".
  */
-function taskMatchesSpawn(task, { prompt, normalizedPrompt = prompt, cwd, agentType = null }) {
+function taskMatchesSpawn(task, { prompt, normalizedPrompt = prompt, cwd, agentType = null, effort = undefined, model = undefined }) {
   if (!task || typeof task !== 'object') return false;
   const status = typeof task.status === 'string' ? task.status : null;
   if (status && TERMINAL_TASK_STATUSES.has(status)) return false;
   if (!cwdEquivalent(task.cwd, cwd)) return false;
   if (agentType && typeof task.agentType === 'string' && task.agentType !== agentType) return false;
+  const launchPins = task.metadata?.launchPins;
+  const taskEffort = launchPins?.state === 'known-pinned' ? launchPins.effort : undefined;
+  const taskModel = launchPins?.state === 'known-pinned' ? launchPins.model : undefined;
+  if (taskEffort !== (effort ?? undefined) || taskModel !== (model ?? undefined)) return false;
   const authored = typeof task.userPrompt === 'string' ? task.userPrompt : null;
   if (authored !== null && (authored === normalizedPrompt || authored === prompt)) return true;
   // Fallback for servers that don't populate `userPrompt`: `task.prompt` may
@@ -1331,6 +1337,8 @@ async function reconcileViaTaskProbe({
   prompt,
   cwd,
   agentType = null,
+  effort = undefined,
+  model = undefined,
   fetchTasksImpl = fetchTasks,
   sleep = defaultSleep,
   retries = RECONCILE_MAX_RETRIES,
@@ -1343,7 +1351,7 @@ async function reconcileViaTaskProbe({
   for (let attempt = 0; ; attempt++) {
     const res = await fetchTasksImpl(baseUrl);
     if (res.kind === 'ok') {
-      const match = res.tasks.find((task) => taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType }));
+      const match = res.tasks.find((task) => taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType, effort, model }));
       return match ? { kind: 'matched', task: match } : { kind: 'absent' };
     }
     lastError = res.message;
@@ -1650,6 +1658,8 @@ async function renderNoKeyReconcile({
   prompt,
   cwd,
   agentType,
+  effort,
+  model,
   ambiguityReason,
   out,
   err,
@@ -1685,6 +1695,8 @@ async function renderNoKeyReconcile({
     prompt,
     cwd,
     agentType,
+    effort,
+    model,
     sleep,
     onRetry: args.json
       ? undefined
@@ -2127,6 +2139,8 @@ async function main({
         prompt,
         cwd: cwdAbs,
         agentType: args.agent,
+        effort: args.effort,
+        model: args.model,
         ambiguityReason: msg,
         out,
         err,
@@ -2186,6 +2200,8 @@ async function main({
         prompt,
         cwd: cwdAbs,
         agentType: args.agent,
+        effort: args.effort,
+        model: args.model,
         ambiguityReason: `HTTP ${result.status}`,
         out,
         err,

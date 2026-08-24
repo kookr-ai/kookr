@@ -27,8 +27,6 @@ export function LaunchEffortModelPickers({
 }: Props) {
   const effortLevels = effortOptionsForSelection(agentType);
   const modelIds = modelOptionsForSelection(agentType);
-  if (agentType === 'round-robin') return null;
-
   const selectClass = compact ? 'agent-type-select compact' : 'agent-type-select';
 
   return (

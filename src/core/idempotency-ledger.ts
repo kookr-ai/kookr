@@ -6,7 +6,7 @@
  * client timeout fired against an overloaded server. The server had already
  * created the task; the retry created an exact duplicate because each spawn
  * embeds a fresh random branch suffix in the prompt, defeating the existing
- * prompt+cwd+agentType dedup in `checkSubmission` (`launch-service.ts`).
+ * prompt+cwd+agentType+model+effort dedup in `checkSubmission` (`launch-service.ts`).
  *
  * This ledger lets a caller attach an opaque `idempotencyKey` to a launch
  * request. The FIRST request for a key creates the task as normal; ANY LATER

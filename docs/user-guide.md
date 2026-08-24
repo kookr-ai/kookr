@@ -211,7 +211,7 @@ Task edges are stored as `task:<task-id>`. Milestone edges are stored as `milest
 
 ### Duplicate Launch Interrupts
 
-`kookr spawn` checks for active duplicate prompts before launching. A duplicate means the same effective prompt, working directory, and agent type already has an active task.
+`kookr spawn` checks for active duplicate prompts before launching. A duplicate means the same effective prompt, working directory, agent type, model, and effort pins already has an active task.
 
 - `--dedupe=warn` is the default. In an interactive terminal it warns, lets you view a prompt diff, and asks whether to continue. In non-interactive mode and JSON mode it blocks with exit code `5`.
 - `--dedupe=block` always blocks a duplicate active prompt with exit code `5`.

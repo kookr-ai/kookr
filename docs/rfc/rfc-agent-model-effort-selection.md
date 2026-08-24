@@ -112,10 +112,12 @@ suggestions come from their CLI behavior; Grok has no stable enumeration and
 therefore exposes an empty suggestion list with a custom effort field. Every
 provider keeps custom model and effort input available.
 
-The server validates only a bounded printable-token shape before side effects.
-The adapter passes explicit values to the selected harness, which is the final
-semantic authority. This keeps newly released provider values usable without a
-Kookr release and avoids claiming that one provider's catalog is universal.
+The server validates only a bounded printable-token shape before side effects,
+plus rejects values that are already known to belong to another selected
+harness. Unknown values pass through to the selected harness, which remains
+the final semantic authority. This keeps newly released provider values usable
+without a Kookr release and avoids claiming that one provider's catalog is
+universal.
 
 ### 2. Verification and fallback maintenance
 
@@ -129,7 +131,10 @@ If a future harness exposes a stable structured catalog, the provider-specific
 suggestion helper MAY be refreshed from it. If a command is unavailable or a
 catalog cannot be trusted, Kookr retains tested built-in suggestions (or an
 empty list where no effort vocabulary is verified) and keeps custom input
-enabled. No suggestion is used to authorize substitution or reject a launch.
+enabled. Known values may be used as compatibility hints for round-robin
+selection (including dated variants of a known provider family), but
+suggestions are never exhaustive and unknown custom values remain
+harness-authoritative.
 
 ### 3. Launch propagation
 
@@ -273,8 +278,9 @@ attempt to duplicate provider authorization.
   retained as a custom value and is not cleared just because a later refresh
   omits it.
 - A round-robin selection cannot choose agent-specific dropdown values until
-  it resolves. The UI presents custom fields with an explanatory default; the
-  server validates after resolution.
+  it resolves. The UI presents custom model and effort fields; the server
+  applies known compatibility hints after resolution and leaves custom values
+  to the selected harness.
 - A missing binary is not shown as a selectable agent, preserving current
   preflight behavior. Provider suggestion maintenance is non-critical and
   custom controls remain available if a provider catalog changes.

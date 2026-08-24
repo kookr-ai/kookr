@@ -195,6 +195,8 @@ export class LifecycleHandler {
       case 'relaunch': {
         const originalTask = this.deps.taskStore.getTask(msg.taskId);
         if (!originalTask) return { duplicate: false };
+        const launchPins = originalTask.metadata?.launchPins;
+        const knownLaunchPins = launchPins?.state === 'known-pinned' ? launchPins : undefined;
         const excerpt = msg.prompt.slice(0, 40);
         let result: LaunchResult | undefined;
         let err: unknown;
@@ -205,8 +207,12 @@ export class LifecycleHandler {
             criteria: originalTask.criteria,
             agentType: msg.agentType ?? originalTask.agentType,
             dependencies: msg.dependencies,
-            ...(msg.effort ? { effort: msg.effort } : {}),
-            ...(msg.model ? { model: msg.model } : {}),
+            ...(msg.effort !== undefined
+              ? { effort: msg.effort }
+              : knownLaunchPins?.effort !== undefined ? { effort: knownLaunchPins.effort } : {}),
+            ...(msg.model !== undefined
+              ? { model: msg.model }
+              : knownLaunchPins?.model !== undefined ? { model: knownLaunchPins.model } : {}),
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

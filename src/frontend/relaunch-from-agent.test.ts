@@ -61,8 +61,9 @@ describe('relaunchFromAgent', () => {
     expect(setRelaunchTask).not.toHaveBeenCalled();
   });
 
-  test('reuses playbook fields without fetching the task body', async () => {
+  test('falls back to snapshot playbook data when hydration fails', async () => {
     const setRelaunchTask = vi.fn<(task: RelaunchTask) => void>();
+    vi.mocked(getTask).mockRejectedValueOnce(new Error('network'));
 
     await relaunchFromAgent(
       completedAgent({
@@ -72,11 +73,41 @@ describe('relaunchFromAgent', () => {
       setRelaunchTask,
     );
 
-    expect(getTask).not.toHaveBeenCalled();
     expect(setRelaunchTask).toHaveBeenCalledWith({
       prompt: 'Ship the dashboard next actions slice',
       cwd: '/tmp/kookr',
       agentType: 'claude-code',
+      playbookId: 'oss-pr-lessons',
+      playbookParameterValues: { repo: 'kookr-ai/kookr' },
+    });
+  });
+
+  test('fetches playbook tasks so persisted pins are available for relaunch', async () => {
+    const setRelaunchTask = vi.fn<(task: RelaunchTask) => void>();
+    vi.mocked(getTask).mockResolvedValue({
+      prompt: 'Ship the dashboard next actions slice',
+      cwd: '/tmp/kookr',
+      agentType: 'claude-code',
+      playbookId: 'oss-pr-lessons',
+      playbookParameterValues: { repo: 'kookr-ai/kookr' },
+      metadata: { launchPins: { state: 'known-pinned', effort: 'high', model: 'claude-opus' } },
+    });
+
+    await relaunchFromAgent(
+      completedAgent({
+        playbookId: 'oss-pr-lessons',
+        playbookParameterValues: { repo: 'kookr-ai/kookr' },
+      }),
+      setRelaunchTask,
+    );
+
+    expect(getTask).toHaveBeenCalledWith('task-1');
+    expect(setRelaunchTask).toHaveBeenCalledWith({
+      prompt: 'Ship the dashboard next actions slice',
+      cwd: '/tmp/kookr',
+      agentType: 'claude-code',
+      effort: 'high',
+      model: 'claude-opus',
       playbookId: 'oss-pr-lessons',
       playbookParameterValues: { repo: 'kookr-ai/kookr' },
     });

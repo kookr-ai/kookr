@@ -179,6 +179,33 @@ Do the test thing.
     });
   });
 
+  it('keeps round-robin as a launch sentinel when pins are present', async () => {
+    const schedule = store.create({
+      name: 'Round robin pinned',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      agentType: 'round-robin',
+      effort: 'ultra',
+      model: 'gpt-5.6-sol',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      agentType: 'round-robin',
+      effort: 'ultra',
+      model: 'gpt-5.6-sol',
+    });
+  });
+
   it('inherits getDefaultAgentType when schedule has no agentType pin', async () => {
     const schedule = store.create({
       name: 'Unpinned inherit',

@@ -169,7 +169,7 @@ describe('DetailPanel completion signal presentation', () => {
     expect(sent).toContainEqual({ type: 'dismissAgentSignal', taskId: 'task-1' });
   });
 
-  test('renders post-merge next actions and sends snapshot reflection requests', () => {
+  test('renders post-merge next actions and sends snapshot reflection requests', async () => {
     const sent: ClientMessage[] = [];
     const agent = completionSignalAgent({
       anomaly: null,
@@ -207,12 +207,12 @@ describe('DetailPanel completion signal presentation', () => {
     act(() => {
       launchFollowUp?.click();
     });
-    expect(useKookrStore.getState().relaunchTask).toMatchObject({
+    await vi.waitFor(() => expect(useKookrStore.getState().relaunchTask).toMatchObject({
       prompt: 'Ship the dashboard next actions slice',
       cwd: '/tmp/kookr',
       playbookId: 'oss-pr-lessons',
       playbookParameterValues: { repo: 'kookr-ai/kookr' },
-    });
+    }));
 
     const runSnapshot = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent === 'Run snapshot');

@@ -13,7 +13,6 @@ import {
 import {
   isAgentType,
   ROUND_ROBIN_AGENT_TYPE,
-  resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
   type AgentFallbackPolicy,
   type AgentSelection,
@@ -1143,14 +1142,9 @@ export class ScheduleRunner {
     const available = filterLaunchableAgentTypes(registered, {
       grokAuthUsable: this.deps.isGrokAuthUsable?.() ?? true,
     });
-    if (selection === ROUND_ROBIN_AGENT_TYPE) {
-      if (schedule.effort === undefined && schedule.model === undefined) return null;
-      if (available.length === 0) return null;
-      const candidate = resolveRoundRobinAgent(0, available, []);
-      return candidate
-        ? { kind: 'available', agentType: candidate, substituted: false }
-        : null;
-    }
+    // Keep round-robin as a sentinel so launchTask owns cursor advancement,
+    // health deprioritization, and pin compatibility resolution.
+    if (selection === ROUND_ROBIN_AGENT_TYPE) return null;
     if (!isAgentType(selection)) return null;
     // Explicit pins are harness-specific intent. Keep the selected agent when
     // it is launchable; substituting it would send a Codex-only effort token

@@ -182,6 +182,9 @@ interface Props {
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
+  /** Original launch pins to pre-fill when relaunching a playbook task. */
+  defaultEffort?: string;
+  defaultModel?: string;
   /** When launched from a project detail drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
   /** Update the execution target without leaving the selected playbook detail. */
@@ -268,6 +271,8 @@ export function PlaybookBrowser({
   taskTargetCwd,
   relaunchPlaybookId,
   relaunchParameterValues,
+  defaultEffort,
+  defaultModel,
   projectContext,
   onTaskTargetCwdChange,
   onRequestEditCwd,
@@ -297,8 +302,8 @@ export function PlaybookBrowser({
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
   );
-  const [effort, setEffort] = useState('');
-  const [model, setModel] = useState('');
+  const [effort, setEffort] = useState(defaultEffort ?? '');
+  const [model, setModel] = useState(defaultModel ?? '');
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,

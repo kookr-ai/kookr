@@ -118,7 +118,7 @@ export interface LaunchOpts {
    * creates the task as normal; any later request for the same key
    * (including one racing concurrently with the first) returns the same
    * task with {@link LaunchResult.idempotentReplay} set instead of creating a
-   * duplicate. Distinct from the prompt+cwd+agentType dedup in
+   * duplicate. Distinct from the prompt+cwd+agentType+model+effort dedup in
    * `checkSubmission`: that dedup is defeated when the prompt varies between
    * attempts (e.g. an embedded random branch suffix); an idempotency key
    * protects retries of the exact same logical request regardless of prompt

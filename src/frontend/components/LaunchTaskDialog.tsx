@@ -239,6 +239,8 @@ interface Props {
   defaultPrompt?: string;
   defaultCriteria?: string;
   defaultAgentType?: AgentType;
+  defaultEffort?: string;
+  defaultModel?: string;
   /** When set, auto-switch to playbooks tab and pre-select this playbook for relaunch. */
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
@@ -252,7 +254,7 @@ interface Props {
   sttShortcutBinding?: ShortcutBinding;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, defaultEffort, defaultModel, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -329,7 +331,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
-  const [initialPins] = useState(() => restoreLastLaunchPins());
+  const [initialPins] = useState(() =>
+    isRelaunch
+      ? sanitizeLaunchPins(defaultEffort ?? '', defaultModel ?? '')
+      : restoreLastLaunchPins(),
+  );
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
@@ -975,6 +981,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               : {})}
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
+            defaultEffort={defaultEffort}
+            defaultModel={defaultModel}
             projectContext={projectContext}
             onRequestEditCwd={() => {
               setTab('manual');

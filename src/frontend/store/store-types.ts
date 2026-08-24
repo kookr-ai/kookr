@@ -68,6 +68,8 @@ export interface RelaunchTask {
   cwd: string;
   criteria?: string;
   agentType?: AgentType;
+  effort?: string;
+  model?: string;
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
 }

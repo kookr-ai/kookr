@@ -59,6 +59,9 @@ export interface AgentState {
   description?: string;
   cwd?: string;
   agentType?: AgentType;
+  /** Durable launch pins for client-side duplicate warnings when known. */
+  effort?: string;
+  model?: string;
   startedAt?: string;
   /**
    * ISO timestamp for the first terminal transition. Present on synthetic

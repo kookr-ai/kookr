@@ -255,9 +255,9 @@ offending path in the message.
 
 `effort` (optional, string) sets the reasoning-effort level for *this one task*,
 overriding the per-agent-type default. It must be a non-empty printable token
-of at most 200 characters; capability suggestions are advisory and the
-selected harness is authoritative. A malformed value returns `400 {"error"}`;
-shape-valid values that the harness cannot use surface as its launch error.
+of at most 200 characters. Known cross-harness values are rejected before
+launch; unknown values remain harness-authoritative and may surface as a
+provider launch error. A malformed value returns `400 {"error"}`.
 
 Omitting `effort` falls back to the per-agent-type setting. For `codex-cli`,
 missing or empty `agentEffort` maps pass no effort override (model-native
@@ -276,7 +276,7 @@ per-schedule value → global agent-type default → unset**.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*
-mechanism from the existing prompt+cwd+agentType dedup (`disableDedup` /
+mechanism from the existing prompt+cwd+agentType+model+effort dedup (`disableDedup` /
 `metadata.intent`): that dedup is defeated whenever the prompt varies between
 attempts — for example a spawn helper that embeds a fresh random branch
 suffix in the prompt on every call. An idempotency key instead identifies the
@@ -1215,12 +1215,12 @@ delta sequence number.
 | `skipAll` | Skip findings for multiple agents. | `agentIds` |
 | `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
 | `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
-| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
+| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `effort`, `model`, `dependencies`, `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
 | `completeTask` | Mark a task complete, optionally with feedback, reflection request, or worktree cleanup override. | `taskId`, optional `feedback`, `requestReflect`, `cleanupWorktree` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |
 | `requestTaskSnapshotReflect` | Start an anytime task snapshot reflection, with an optional free-text hint to steer the analysis. | `taskId`, optional `hint` |
-| `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `dependencies` |
+| `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `effort`, `model`, `dependencies` (omitted pins inherit the original task) |
 | `cancelTask` | Cancel a task and terminate its session. | `taskId` |
 | `batchAbortTasks` | Idempotently abort multiple tasks at once, interrupting each live session; broadcasts a concise result summary. | `taskIds`, optional `reason` |
 | `reopenTask` | Reopen a terminal task. | `taskId` |
@@ -1232,7 +1232,7 @@ delta sequence number.
 | `stop` | Stop an agent session. | `agentId` |
 | `reflect` | Launch session-friction reflection. | none |
 | `listPlaybooks` | Discover playbooks for a cwd. | `cwd` |
-| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `scope`, `projectId` |
+| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `effort`, `model`, `scope`, `projectId` |
 | `telemetry` | Send frontend telemetry events. | `events` |
 | `setProjectConfig` | Update a tracked project's configuration. | `project`, `config` |
 | `clearCompleted` | Clear completed tasks, optionally including terminated tasks or scoping to a project. | optional `includeTerminated`, `projectId` |

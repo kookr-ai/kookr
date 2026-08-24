@@ -19,6 +19,8 @@ interface SessionSnapshotMeta {
   displayPrompt: string;
   cwd: string;
   agentType: AgentType;
+  effort?: string;
+  model?: string;
   createdAt: Date;
   taskStatus: TaskStatus;
   sessionStatus?: AgentStatus | 'completed' | 'aborted';
@@ -142,6 +144,9 @@ export function buildSnapshotProjection(deps: {
         displayPrompt: sessionIsTerminal ? '' : (taskDisplayPrompt ??= displayPromptForTask(task)),
         cwd: session.cwd,
         agentType: session.agentType,
+        ...(task.metadata?.launchPins?.state === 'known-pinned'
+          ? { effort: task.metadata.launchPins.effort, model: task.metadata.launchPins.model }
+          : {}),
         createdAt: session.createdAt,
         taskStatus: task.status,
         sessionStatus: session.lastStatus,
@@ -270,6 +275,8 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.description = meta.displayPrompt;
   state.cwd = meta.cwd;
   state.agentType = meta.agentType;
+  state.effort = meta.effort;
+  state.model = meta.model;
   state.startedAt = meta.createdAt.toISOString();
   state.playbookId = meta.playbookId;
   state.playbookParameterValues = meta.playbookParameterValues;
@@ -323,6 +330,9 @@ function buildPendingTaskEntry(task: Task): AgentState {
     description: displayPrompt,
     cwd: task.cwd,
     agentType: task.agentType,
+    ...(task.metadata?.launchPins?.state === 'known-pinned'
+      ? { effort: task.metadata.launchPins.effort, model: task.metadata.launchPins.model }
+      : {}),
     startedAt: task.createdAt.toISOString(),
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
@@ -356,6 +366,9 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     description: displayPrompt,
     cwd: lastSession?.cwd ?? task.cwd,
     agentType: lastSession?.agentType ?? task.agentType,
+    ...(task.metadata?.launchPins?.state === 'known-pinned'
+      ? { effort: task.metadata.launchPins.effort, model: task.metadata.launchPins.model }
+      : {}),
     startedAt: task.createdAt.toISOString(),
     finishedAt,
     playbookId: task.playbookId,

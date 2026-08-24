@@ -150,10 +150,11 @@ export function taskMatchesLaunchDuplicate(
   if (!cwdEquivalent(task.cwd, query.cwd)) return false;
   const pinned = query.agentType && query.agentType !== 'round-robin' ? query.agentType : null;
   if (pinned && typeof task.agentType === 'string' && task.agentType !== pinned) return false;
-  // Older snapshots do not expose durable pins. Fail open for a pinned
-  // request so the server remains the authoritative deduplication boundary.
-  if (query.effort !== undefined && task.effort !== query.effort) return false;
-  if (query.model !== undefined && task.model !== query.model) return false;
+  // Older snapshots do not expose durable pins. Comparing undefined as the
+  // unpinned value keeps pinned and unpinned intents distinct while the server
+  // remains the authoritative deduplication boundary.
+  if ((task.effort ?? undefined) !== (query.effort ?? undefined)) return false;
+  if ((task.model ?? undefined) !== (query.model ?? undefined)) return false;
   return promptMatches(task, query.prompt, query.cwd);
 }
 

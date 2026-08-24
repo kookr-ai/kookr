@@ -94,6 +94,7 @@ import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handl
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
+import { isValidLaunchPin } from '../shared/contracts/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { applyKillSwitchTransition, resolveSafeModeStatus } from '../core/automation-kill-switch.js';
 import { OpsStatusWriter, opsStatusPath } from '../core/ops-status.js';
@@ -3173,6 +3174,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         const claim = task.issueClaim;
         if (!claim) return { holdForResume: true };
         const now = Date.now();
+        const launchPins = task.metadata?.launchPins;
+        const unsafeLaunchPins = launchPins?.state === 'unknown'
+          || launchPins?.state === 'malformed'
+          || (launchPins?.state === 'known-pinned'
+            && (launchPins.effort === undefined && launchPins.model === undefined
+              || (launchPins.effort !== undefined && !isValidLaunchPin(launchPins.effort))
+              || (launchPins.model !== undefined && !isValidLaunchPin(launchPins.model))));
+        if (unsafeLaunchPins) {
+          // Do not silently resume a task whose durable launch intent cannot
+          // be reconstructed. It remains available for manual recovery.
+          return { holdForResume: false };
+        }
+        const knownLaunchPins = launchPins?.state === 'known-pinned' ? launchPins : undefined;
         // `record` LATCHES the reset time at first observation and returns it, so
         // this comparison flips to false once the latched reset elapses (unlike a
         // freshly-resolved reset, which is always in the future — see #1896 review).
@@ -3190,6 +3204,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             playbookParameterValues: task.playbookParameterValues,
             projectId: task.projectId,
             agentType: task.agentType,
+            ...(knownLaunchPins?.effort !== undefined ? { effort: knownLaunchPins.effort } : {}),
+            ...(knownLaunchPins?.model !== undefined ? { model: knownLaunchPins.model } : {}),
             autoCloseOnSignal: task.autoCloseOnSignal,
             issueClaim: { repo: claim.repo, number: claim.number },
             provenance: task.provenance,

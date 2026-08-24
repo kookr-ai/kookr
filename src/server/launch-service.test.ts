@@ -319,9 +319,10 @@ describe('launchTask', () => {
       expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'ultra' });
     });
 
-    it('accepts a newly released effort token for Claude Code', async () => {
-      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: 'ultra' });
-      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ effort: 'ultra' });
+    it('rejects a known Codex-only effort for Claude Code', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: 'ultra' }),
+      ).rejects.toBeInstanceOf(EffortValidationError);
     });
 
     it('rejects an empty-string effort (guards the !== undefined check, not truthiness)', async () => {
@@ -371,6 +372,18 @@ describe('launchTask', () => {
     it('accepts an explicit model pin for codex-cli (#1518)', async () => {
       await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', model: 'gpt-5.6-sol' });
       expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ model: 'gpt-5.6-sol' });
+    });
+
+    it('rejects a known Codex model on Claude Code', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', model: 'gpt-5.6-sol' }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+    });
+
+    it('rejects a known Claude model on Codex CLI', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', model: 'claude-fable-5' }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
     });
 
     it('rejects empty-string model (#1518)', async () => {
@@ -1847,6 +1860,31 @@ describe('launchTask round-robin', () => {
       state: 'known-pinned', effort: 'ultra', model: 'gpt-5.6-sol',
     });
     expect(cursor).toBe(1);
+  });
+
+  it('keeps custom round-robin pins harness-authoritative', async () => {
+    const result = await launchTask({ ...deps, getDefaultAgentType: () => 'round-robin' as const }, {
+      prompt: 'custom pinned round robin',
+      cwd: '/tmp',
+      effort: 'provider-new-effort',
+      model: 'provider-new-model',
+    });
+    expect(result.task.agentType).toBe('claude-code');
+    expect(result.task.metadata?.launchPins).toMatchObject({
+      state: 'known-pinned', effort: 'provider-new-effort', model: 'provider-new-model',
+    });
+  });
+
+  it('keeps dated Claude model pins on the Claude harness', async () => {
+    const result = await launchTask({ ...deps, getDefaultAgentType: () => 'round-robin' as const }, {
+      prompt: 'dated Claude model',
+      cwd: '/tmp',
+      model: 'claude-haiku-4-5-20251001',
+    });
+    expect(result.task.agentType).toBe('claude-code');
+    expect(result.task.metadata?.launchPins).toMatchObject({
+      state: 'known-pinned', model: 'claude-haiku-4-5-20251001',
+    });
   });
 
   it('lets an explicit concrete request override a round-robin default', async () => {

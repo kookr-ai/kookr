@@ -274,7 +274,14 @@ describe('deriveAutoIdempotencyKey', () => {
 
   it('differs when any identity component differs', () => {
     const ref = deriveAutoIdempotencyKey({ ...base });
-    for (const patch of [{ prompt: 'implement #43' }, { cwd: '/repo/two' }, { criteria: 'other' }, { agent: 'codex-cli' }]) {
+    for (const patch of [
+      { prompt: 'implement #43' },
+      { cwd: '/repo/two' },
+      { criteria: 'other' },
+      { agent: 'codex-cli' },
+      { effort: 'high' },
+      { model: 'gpt-5.6-sol' },
+    ]) {
       expect(deriveAutoIdempotencyKey({ ...base, ...patch })).not.toBe(ref);
     }
   });

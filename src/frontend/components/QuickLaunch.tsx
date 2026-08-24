@@ -112,7 +112,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }, []);
 
   // Selected-task / last-used effects can change the agent without the
-  // picker onChange. Keep pins the new agent still accepts; drop the rest.
+  // picker onChange. Keep lexically valid pins; the selected harness remains
+  // authoritative for semantic model/effort support.
   useEffect(() => {
     setEffort((current) => sanitizeLaunchPins(current, '').effort);
     setModel((current) => sanitizeLaunchPins('', current).model);
@@ -215,7 +216,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           roundRobinIndex={roundRobinIndex}
           grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
         />
-        {(effortOptionsForSelection(agentType).length > 0
+        {(agentType === 'round-robin'
+          || effortOptionsForSelection(agentType).length > 0
           || modelOptionsForSelection(agentType).length > 0) && (
           <details className="quick-launch-pins">
             <summary>Pins</summary>

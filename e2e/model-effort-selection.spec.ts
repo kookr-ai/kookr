@@ -24,7 +24,6 @@ test.describe('model and effort parity', () => {
     expect(agentTypes.length).toBeGreaterThan(0);
 
     for (const agentType of agentTypes) {
-      if (agentType === 'round-robin') continue;
       await agent.selectOption(agentType);
       const effort = dialog.getByLabel('Reasoning effort').first();
       const model = dialog.getByLabel('Model').first();
