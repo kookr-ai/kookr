@@ -108,8 +108,8 @@
     "yaml": "^2.9.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
-    "@google/genai": "^2.17.1",
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@google/genai": "^2.18.0",
     "@hono/node-server": "^2.1.1",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
@@ -120,7 +120,7 @@
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.0",
     "groq-sdk": "^1.5.0",
-    "hono": "4.13.2",
+    "hono": "4.13.3",
     "node-pty": "^1.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
