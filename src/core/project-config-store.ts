@@ -85,15 +85,6 @@ export class ProjectConfigStore {
     for (const rawConfig of arr) {
       const config = sanitizeProjectConfig(rawConfig);
       if (config) {
-        if (
-          this.maxZeroDrainIssueLimit !== undefined
-          && config.zeroDrainIssueLimit !== undefined
-          && config.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
-        ) {
-          // A deployment cap may be lowered between restarts. Preserve the
-          // project row but fail closed for this setting until it is corrected.
-          delete config.zeroDrainIssueLimit;
-        }
         this.configs.set(config.project, config);
       }
     }
@@ -169,8 +160,10 @@ export class ProjectConfigStore {
     const existing = this.configs.get(project) ?? { project };
     const updated = sanitizeProjectConfig({ ...existing, ...patch, project });
     if (!updated) throw new Error(`Invalid project config: ${project}`);
+    const zeroDrainIssueLimitWasProvided = Object.prototype.hasOwnProperty.call(patch, 'zeroDrainIssueLimit');
     if (
-      this.maxZeroDrainIssueLimit !== undefined
+      zeroDrainIssueLimitWasProvided
+      && this.maxZeroDrainIssueLimit !== undefined
       && updated.zeroDrainIssueLimit !== undefined
       && updated.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
     ) {

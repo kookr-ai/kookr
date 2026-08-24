@@ -55,6 +55,23 @@ describe('ProjectConfigStore', () => {
       .toBe(1000);
   });
 
+  test('preserves an over-cap value when the deployment ceiling is lowered', async () => {
+    writeFileSync(join(tempDir, 'project-configs.json'), JSON.stringify([{
+      project: 'github.com/org/repo',
+      zeroDrainIssueLimit: 1000,
+    }]));
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 500 });
+    await capped.load();
+    expect(capped.getConfig('github.com/org/repo')?.zeroDrainIssueLimit).toBe(1000);
+    expect(() => capped.setConfig('github.com/org/repo', { zeroDrainIssueLimit: 1000 }))
+      .toThrow(ProjectConfigLimitError);
+    capped.setConfig('github.com/org/repo', { notes: 'lower the limit before filing' });
+    await capped.save();
+    const reloaded = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 500 });
+    await reloaded.load();
+    expect(reloaded.getConfig('github.com/org/repo')?.zeroDrainIssueLimit).toBe(1000);
+  });
+
   test('reads an optional deployment ceiling without a built-in fallback', () => {
     expect(readMaxZeroDrainIssueLimitFromEnv({})).toBeUndefined();
     expect(readMaxZeroDrainIssueLimitFromEnv({ [PROJECT_ISSUE_EMISSION_LIMIT_ENV]: '1000' })).toBe(1000);

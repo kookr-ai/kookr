@@ -378,6 +378,20 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(io.errs.join('\n')).toMatch(/KOOKR_PORT=auto requires --kookr-dir/);
   });
 
+  it('allows stateless emission commands in auto-port mode', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['version', '--json'],
+      {
+        ...io,
+        env: { KOOKR_PORT: 'auto' },
+        runGit: () => 'export const EMISSION_BUDGET_SCHEMA_VERSION = 1;',
+      },
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(io.logs[0]!).ok).toBe(true);
+  });
+
   it('refuses the plan when the drain search throws', async () => {
     const io = mkIo();
     // The open-backlog query succeeds but the is:closed drain query throws; the

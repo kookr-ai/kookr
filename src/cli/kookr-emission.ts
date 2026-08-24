@@ -507,7 +507,8 @@ export async function runEmissionCli(
     return 0;
   }
 
-  if (!args.kookrDirExplicit && autoPortAmbiguous(env)) {
+  const usesKookrStateDir = args.verb === 'plan' || args.verb === 'defer';
+  if (usesKookrStateDir && !args.kookrDirExplicit && autoPortAmbiguous(env)) {
     err.error('[kookr emission] KOOKR_PORT=auto requires --kookr-dir because the active port namespace is unknown.');
     return 2;
   }
