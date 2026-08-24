@@ -1368,6 +1368,22 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 
 **Evidence:** `tts/src/server.py`, `tts/docker-compose.yml`, `tts/tests/test_server.py`.
 
+## R15: Orchestration Pause Provenance
+
+### R15.1: Preserve Explicit Quota-Drain Lifecycles [#2782] — SHALL — `done`
+
+The system SHALL persist each orchestration pause as an explicit lifecycle record and SHALL keep current pause state separate from historical quota-drain overlap.
+
+**Acceptance criteria:**
+- Every pause start is persisted as `active`, `ended`, `cancelled`, or `unresolved`, with the source and lifecycle timestamps needed to explain that state.
+- Explicit, automatic, and kill-switch-off resumes close the active record with an end timestamp and source instead of deleting its history.
+- A record without a trustworthy end is represented as `unresolved`, is excluded from known historical overlap, and contributes an explicit incomplete-record warning.
+- Process restart reloads the persisted active record without creating a duplicate, while retained terminal records remain available for audit.
+- The orchestration status and health payloads expose current pause state, known historical overlap for the 24-hour window, and incomplete-record warnings as separate fields.
+- The 2026-08-23 fixture (19.3 hours of historical overlap with pause currently cleared) remains below the recent baseline and reports the incomplete-quota caveat without adding another pause heuristic.
+
+**Evidence:** `src/core/orchestration-pause.ts`, `src/server/orchestration-pause-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/orchestration-pause.test.ts`, `src/server/orchestration-pause-service.test.ts`, `src/server/routes/orchestration-routes.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1474,6 +1490,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
 | R13.2 | F4.9 | SHALL | done | presentation formatCostRate, DetailPanel, FindingCard |
 | R14.1 | #1445 | SHALL | done | TTS server input validation |
+| R15.1 | #2782 | SHALL | done | orchestration-pause, orchestration-pause-service, diagnostics-routes |
 
 ---
 

@@ -78,7 +78,7 @@ describe('orchestration routes (issue #2672)', () => {
     expect(statusBody.quota).toMatchObject({ agentType: 'grok-build', supported: false });
   });
 
-  it('POST /resume disengages SAFE MODE and clears the record', async () => {
+  it('POST /resume disengages SAFE MODE and closes the current record', async () => {
     const deps = mkDeps(dir, { initial: { automationKillSwitch: true } });
     const app = mkApp(deps);
     await app.request('/api/orchestration/pause', { method: 'POST', body: JSON.stringify({ by: 'jean' }) });
@@ -91,7 +91,10 @@ describe('orchestration routes (issue #2672)', () => {
     expect(body.resumed).toBe(true);
     expect(body.paused).toBe(false);
     expect(deps.settings!.get().automationKillSwitch).toBe(false);
-    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(false);
+    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(true);
+    expect(body.currentPause).toMatchObject({ active: false, record: null });
+    expect(body.pauseProvenance.history).toHaveLength(1);
+    expect(body.pauseProvenance.history[0]).toMatchObject({ lifecycle: 'ended', endSource: 'explicit-resume' });
   });
 
   it('a soft auto-resume declines to lift a human pause', async () => {

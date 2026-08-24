@@ -6,6 +6,8 @@ import {
   SOFT_QUOTA_PAUSE_AT,
   SOFT_QUOTA_RESUME_AT,
   buildPauseRecord,
+  buildPauseProvenance,
+  closePauseRecord,
   evaluateSoftQuotaPause,
   isOrchestrationPaused,
   orchestratorShouldSpawn,
@@ -13,6 +15,7 @@ import {
   pauseRecordCreatedByKillSwitch,
   resolveDefaultAgentQuotaSample,
   resolveOrchestrationPausePath,
+  type PauseLifecycle,
   type OrchestrationPauseRecord,
 } from './orchestration-pause.js';
 
@@ -46,7 +49,8 @@ describe('parsePauseRecord', () => {
     expect(rec).not.toBeNull();
     expect(rec!.source).toBe('human');
     expect(rec!.paused).toBe(true);
-    expect(rec!.schemaVersion).toBe(2);
+    expect(rec!.schemaVersion).toBe(3);
+    expect(rec!.lifecycle).toBe('unresolved');
     expect(rec!.pausedBy).toBe('jean');
     expect(rec!.notes).toEqual(['aborted unused PIB']);
     expect(rec!.mechanism).toBe('automationKillSwitch / SAFE MODE');
@@ -71,6 +75,16 @@ describe('parsePauseRecord', () => {
   it('preserves paused:false records', () => {
     const rec = parsePauseRecord({ paused: false, source: 'soft-quota' });
     expect(rec!.paused).toBe(false);
+  });
+
+  it('marks a legacy record without an end as unresolved instead of active', () => {
+    const rec = parsePauseRecord({
+      schemaVersion: 2,
+      paused: true,
+      source: 'soft-quota',
+      pausedAt: '2026-08-22T14:14:00.000Z',
+    });
+    expect(rec).toMatchObject({ lifecycle: 'unresolved', paused: true, source: 'soft-quota' });
   });
 });
 
@@ -107,15 +121,16 @@ describe('pauseRecordCreatedByKillSwitch', () => {
 });
 
 describe('buildPauseRecord', () => {
-  it('builds a v2 record with the given fields', () => {
+  it('builds an active v3 record with the given fields', () => {
     const rec = buildPauseRecord({
       source: 'human',
       reason: 'quota reset window',
       by: 'jean',
       atIso: '2026-08-19T00:00:00.000Z',
     });
-    expect(rec).toEqual<OrchestrationPauseRecord>({
-      schemaVersion: 2,
+    expect(rec).toMatchObject<Partial<OrchestrationPauseRecord>>({
+      schemaVersion: 3,
+      lifecycle: 'active',
       paused: true,
       source: 'human',
       reason: 'quota reset window',
@@ -123,6 +138,112 @@ describe('buildPauseRecord', () => {
       pausedBy: 'jean',
       mechanism: 'automationKillSwitch',
     });
+    expect(rec.id).toBe('pause-2026-08-19T00:00:00.000Z');
+  });
+});
+
+describe('pause lifecycle and provenance', () => {
+  const active = buildPauseRecord({
+    id: 'active-1',
+    source: 'human',
+    reason: 'current hold',
+    by: 'jean',
+    atIso: '2026-08-23T10:00:00.000Z',
+  });
+
+  it.each(['ended', 'cancelled'] satisfies PauseLifecycle[])('closes a pause as %s with source and timestamps', (lifecycle) => {
+    const closed = closePauseRecord(active, {
+      lifecycle,
+      atIso: '2026-08-23T12:00:00.000Z',
+      by: 'operator',
+      source: `test-${lifecycle}`,
+    });
+    expect(closed).toMatchObject({
+      id: 'active-1',
+      lifecycle,
+      paused: false,
+      endedAt: '2026-08-23T12:00:00.000Z',
+      endedBy: 'operator',
+      endSource: `test-${lifecycle}`,
+    });
+  });
+
+  it('keeps current state separate and excludes unresolved history from known overlap', () => {
+    const ended = closePauseRecord(active, {
+      lifecycle: 'ended',
+      atIso: '2026-08-23T12:00:00.000Z',
+      by: 'operator',
+      source: 'explicit-resume',
+    });
+    const unresolved = parsePauseRecord({
+      id: 'unknown-1',
+      paused: true,
+      source: 'soft-quota',
+      pausedAt: '2026-08-22T14:14:00.000Z',
+    })!;
+    const provenance = buildPauseProvenance([ended, unresolved], {
+      windowStartMs: Date.parse('2026-08-22T12:00:00.000Z'),
+      windowEndMs: Date.parse('2026-08-23T12:00:00.000Z'),
+    });
+    expect(provenance.currentPause).toBeNull();
+    expect(provenance.historicalOverlap.overlapMs).toBe(2 * 60 * 60 * 1000);
+    expect(provenance.historicalOverlap.incompleteRecordCount).toBe(1);
+    expect(provenance.incompleteRecords).toEqual([
+      expect.objectContaining({ id: 'unknown-1', source: 'soft-quota' }),
+    ]);
+  });
+
+  it('counts an explicitly active record through the requested window', () => {
+    const provenance = buildPauseProvenance([active], {
+      windowStartMs: Date.parse('2026-08-23T00:00:00.000Z'),
+      windowEndMs: Date.parse('2026-08-23T12:00:00.000Z'),
+    });
+    expect(provenance.currentPause).toBe(active);
+    expect(provenance.historicalOverlap.overlapMs).toBe(2 * 60 * 60 * 1000);
+    expect(provenance.historicalOverlap.incompleteRecordCount).toBe(0);
+  });
+
+  it('keeps the 2026-08-23 quota-drain fixture measurable without inventing an active pause', () => {
+    const historical = closePauseRecord(buildPauseRecord({
+      id: 'quota-drain-2026-08-23',
+      source: 'soft-quota',
+      reason: 'near quota',
+      by: 'orchestrator',
+      atIso: '2026-08-22T14:14:00.000Z',
+    }), {
+      lifecycle: 'ended',
+      atIso: '2026-08-23T09:32:00.000Z',
+      by: 'orchestrator',
+      source: 'auto-resume',
+    });
+    const unresolved = parsePauseRecord({
+      id: 'quota-drain-incomplete',
+      paused: true,
+      source: 'soft-quota',
+      pausedAt: '2026-08-22T14:14:00.000Z',
+    })!;
+    const provenance = buildPauseProvenance([historical, unresolved], {
+      windowStartMs: Date.parse('2026-08-22T09:32:00.000Z'),
+      windowEndMs: Date.parse('2026-08-23T09:32:00.000Z'),
+    });
+    expect(provenance.currentPause).toBeNull();
+    expect(provenance.historicalOverlap.overlapMs).toBe(19.3 * 60 * 60 * 1000);
+    expect(provenance.historicalOverlap.overlapFraction).toBeCloseTo(19.3 / 24, 5);
+    expect(provenance.historicalOverlap.incompleteRecordCount).toBe(1);
+  });
+
+  it('unions overlapping known windows instead of double-counting quota drain', () => {
+    const first = closePauseRecord(buildPauseRecord({
+      id: 'overlap-1', source: 'soft-quota', reason: 'r', by: 'orchestrator', atIso: '2026-08-23T00:00:00.000Z',
+    }), { lifecycle: 'ended', atIso: '2026-08-23T02:00:00.000Z', by: 'orchestrator', source: 'auto-resume' });
+    const second = closePauseRecord(buildPauseRecord({
+      id: 'overlap-2', source: 'human', reason: 'r', by: 'jean', atIso: '2026-08-23T01:00:00.000Z',
+    }), { lifecycle: 'ended', atIso: '2026-08-23T03:00:00.000Z', by: 'jean', source: 'explicit-resume' });
+    const provenance = buildPauseProvenance([first, second], {
+      windowStartMs: Date.parse('2026-08-23T00:00:00.000Z'),
+      windowEndMs: Date.parse('2026-08-23T04:00:00.000Z'),
+    });
+    expect(provenance.historicalOverlap.overlapMs).toBe(3 * 60 * 60 * 1000);
   });
 });
 
@@ -139,11 +260,8 @@ describe('isOrchestrationPaused / orchestratorShouldSpawn', () => {
     expect(orchestratorShouldSpawn({ safeModeEngaged: true, record: null })).toBe(false);
   });
 
-  it('is paused when the record says paused even without SAFE MODE', () => {
-    // Leftover paused records still gate spawn until they are cleared. The
-    // settings path that turns the kill switch off must therefore delete
-    // kill-switch-created records (issue #2743); this predicate stays OR-based
-    // so an uncleared file cannot be ignored.
+  it('is paused when the record is explicitly active even without SAFE MODE', () => {
+    // A lifecycle-active record remains a real spawn gate until it is closed.
     expect(isOrchestrationPaused({ safeModeEngaged: false, record: softRecord })).toBe(true);
     expect(orchestratorShouldSpawn({ safeModeEngaged: false, record: softRecord })).toBe(false);
   });

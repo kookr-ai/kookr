@@ -131,8 +131,9 @@ curl -fsS "$KOOKR_API_BASE_URL/api/health" \
 ### Disengage
 
 Same read-modify-write with `automationKillSwitch: false` (server clears
-`safeModeSince`, and deletes `playbook-state/orchestrator/quota-pause.json`
-when that record's `mechanism` is the kill switch — issue #2743):
+`safeModeSince`, and closes the current lifecycle record in
+`playbook-state/orchestrator/quota-pause.json` when that record's `mechanism`
+is the kill switch — issue #2743):
 
 ```bash
 curl -fsS "$KOOKR_API_BASE_URL/api/settings" -o /tmp/kookr-settings.json
@@ -155,8 +156,9 @@ curl -fsS -X PUT "$KOOKR_API_BASE_URL/api/settings" \
 
 Expect `safeMode: { engaged: false }` on the next health probe. If the pause was
 created by the kill switch, `GET /api/orchestration/status` should then show
-`paused: false` and no `pause` record. A record whose `mechanism` is not the
-kill switch is left in place.
+`paused: false` and a retained terminal pause record in the provenance history.
+A record whose `mechanism` is not the kill switch is left open for explicit
+handling.
 
 **Do not** set `safeModeSince` by hand — the server owns transition bookkeeping.
 

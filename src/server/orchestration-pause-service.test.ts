@@ -13,6 +13,7 @@ import {
 import {
   OrchestrationPauseService,
   clearKillSwitchCreatedPauseRecord,
+  readPauseStateSync,
   readPauseRecordSync,
 } from './orchestration-pause-service.js';
 
@@ -65,17 +66,20 @@ describe('OrchestrationPauseService', () => {
     expect(existsSync(path)).toBe(true);
     const rec = JSON.parse(readFileSync(path, 'utf8'));
     expect(rec).toMatchObject({
-      schemaVersion: 2,
-      paused: true,
-      source: 'human',
-      reason: 'quota reset window',
-      pausedBy: 'jean',
-      pausedAt: fixedNow.toISOString(),
-      mechanism: 'automationKillSwitch',
+      schemaVersion: 3,
+      records: [expect.objectContaining({
+        lifecycle: 'active',
+        paused: true,
+        source: 'human',
+        reason: 'quota reset window',
+        pausedBy: 'jean',
+        pausedAt: fixedNow.toISOString(),
+        mechanism: 'automationKillSwitch',
+      })],
     });
   });
 
-  it('resume disengages SAFE MODE and clears the record', async () => {
+  it('resume disengages SAFE MODE and closes the record without deleting history', async () => {
     const settings = makeSettings(() => fixedNow);
     const svc = new OrchestrationPauseService({
       kookrDir: dir,
@@ -90,7 +94,14 @@ describe('OrchestrationPauseService', () => {
     expect(result.resumed).toBe(true);
     expect(settings.peek().automationKillSwitch).toBe(false);
     expect(settings.peek().safeModeSince).toBeNull();
-    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(false);
+    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(true);
+    expect(readPauseStateSync(dir).records[0]).toMatchObject({
+      lifecycle: 'ended',
+      paused: false,
+      endedAt: fixedNow.toISOString(),
+      endedBy: 'jean',
+      endSource: 'explicit-resume',
+    });
     expect(result.status.paused).toBe(false);
   });
 
@@ -127,7 +138,55 @@ describe('OrchestrationPauseService', () => {
 
     expect(result.resumed).toBe(true);
     expect(settings.peek().automationKillSwitch).toBe(false);
-    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(false);
+    expect(readPauseStateSync(dir).records[0]).toMatchObject({ lifecycle: 'ended', endSource: 'auto-resume' });
+  });
+
+  it('reloads an active record after a process restart without duplicating it', async () => {
+    const settings = makeSettings(() => fixedNow);
+    const first = new OrchestrationPauseService({
+      kookrDir: dir,
+      getSettings: settings.get,
+      updateSettings: settings.update,
+      now: () => fixedNow,
+    });
+    await first.pause({ source: 'soft-quota', reason: 'near quota', by: 'orchestrator' });
+
+    const restarted = new OrchestrationPauseService({
+      kookrDir: dir,
+      getSettings: settings.get,
+      updateSettings: settings.update,
+      now: () => fixedNow,
+    });
+    const status = restarted.status();
+    expect(status.currentPause).toMatchObject({ active: true, record: { lifecycle: 'active' } });
+    expect(status.pauseProvenance.history).toHaveLength(1);
+    expect(readPauseStateSync(dir).records).toHaveLength(1);
+  });
+
+  it('keeps an unclosed legacy record unresolved and warns instead of treating it as current', async () => {
+    const path = resolveOrchestrationPausePath(dir);
+    mkdirSync(join(dir, 'playbook-state', 'orchestrator'), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      schemaVersion: 2,
+      paused: true,
+      source: 'soft-quota',
+      reason: 'historical quota drain',
+      pausedAt: '2026-08-22T14:14:00.000Z',
+      pausedBy: 'orchestrator',
+      mechanism: 'automationKillSwitch',
+    }), 'utf8');
+    const settings = makeSettings(() => fixedNow);
+    const svc = new OrchestrationPauseService({
+      kookrDir: dir,
+      getSettings: settings.get,
+      updateSettings: settings.update,
+      now: () => fixedNow,
+    });
+    const status = svc.status();
+    expect(status.paused).toBe(false);
+    expect(status.currentPause).toMatchObject({ active: false, record: null });
+    expect(status.pauseProvenance.historicalOverlap.overlapMs).toBe(0);
+    expect(status.pauseProvenance.historicalOverlap.incompleteRecordCount).toBe(1);
   });
 
   it('a soft-quota pause does NOT overwrite an active human pause (stickiness at the service layer)', async () => {
@@ -207,7 +266,7 @@ describe('OrchestrationPauseService', () => {
     expect(status.recommendation?.action).toBe('pause');
   });
 
-  it('clearKillSwitchCreatedPauseRecord deletes a leftover kill-switch record so spawn is allowed (issue #2743)', async () => {
+  it('clearKillSwitchCreatedPauseRecord closes a leftover kill-switch record so spawn is allowed (issue #2743)', async () => {
     const settings = makeSettings(() => fixedNow);
     const svc = new OrchestrationPauseService({
       kookrDir: dir,
@@ -223,7 +282,8 @@ describe('OrchestrationPauseService', () => {
 
     const cleared = clearKillSwitchCreatedPauseRecord(dir);
     expect(cleared).toBe(true);
-    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(false);
+    expect(existsSync(resolveOrchestrationPausePath(dir))).toBe(true);
+    expect(readPauseStateSync(dir).records[0]).toMatchObject({ lifecycle: 'cancelled', endSource: 'kill-switch-off' });
     expect(readPauseRecordSync(dir)).toBeNull();
     expect(svc.status().paused).toBe(false);
     expect(orchestratorShouldSpawn({

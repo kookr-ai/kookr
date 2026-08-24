@@ -975,19 +975,26 @@ describe('diagnostics routes', () => {
           since?: string;
           reason?: string;
           by?: string;
+          currentPause?: { active: boolean; source?: string };
+          pauseProvenance?: {
+            historicalOverlap: { overlapMs: number; incompleteRecordCount: number };
+            incompleteRecords: unknown[];
+          };
           defaultAgentQuota?: { supported: boolean };
         };
       };
       expect(body.orchestrationPause!.paused).toBe(true);
-      // The record's who/why/since/source project onto the health block.
-      expect(body.orchestrationPause).toMatchObject({
-        source: 'human',
-        since: '2026-08-18T08:05:04.931Z',
-        reason: 'operator hold until quotas reset',
-        by: 'jean',
-      });
+      // The legacy record is retained as unresolved history, not projected as
+      // current provenance without an explicit active lifecycle.
+      expect(body.orchestrationPause!.currentPause).toMatchObject({ active: true });
       // Grok default ⇒ quota unsupported (no non-key signal).
       expect(body.orchestrationPause!.defaultAgentQuota).toMatchObject({ supported: false });
+      expect(body.orchestrationPause!.pauseProvenance!.incompleteRecords).toEqual([
+        expect.objectContaining({ source: 'human', reason: 'missing pause end timestamp' }),
+      ]);
+      expect(body.orchestrationPause!.pauseProvenance).toMatchObject({
+        historicalOverlap: { incompleteRecordCount: 1 },
+      });
     });
   });
 
