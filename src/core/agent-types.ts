@@ -46,4 +46,9 @@ export {
   modelsForAgent,
   isValidModelForAgent,
   isKnownModelId,
+  isValidLaunchPin,
+  MAX_LAUNCH_PIN_LENGTH,
+  modelSuggestionsForAgent,
+  CODEX_CLI_MODEL_SUGGESTIONS,
+  GROK_BUILD_MODEL_SUGGESTIONS,
 } from '../shared/contracts/agent-types.js';

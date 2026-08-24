@@ -35,6 +35,8 @@ export interface PreparePlaybookLaunchInput {
   playbookPath: string;
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
+  effort?: string;
+  model?: string;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
 }
@@ -154,6 +156,8 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       playbookId: playbook.id,
       playbookParameterValues: parameterValues,
       agentType: input.agentType,
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.model ? { model: input.model } : {}),
       projectId,
       dependencies: playbook.dependencies,
       ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),

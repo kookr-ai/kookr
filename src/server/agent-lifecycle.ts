@@ -28,6 +28,7 @@ import {
   type CompletionPath,
 } from '../core/lesson-decision.js';
 import { appendAuditRow } from '../core/audit-log.js';
+import { adapterOptionsForTask } from './task-launch-options.js';
 import {
   planTerminalClassification,
   type TerminalClassificationPlan,
@@ -919,7 +920,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     try {
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
-      await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      const launchOptions = adapterOptionsForTask(pending);
+      if (Object.keys(launchOptions).length === 0) {
+        await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      } else {
+        await adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, launchOptions);
+      }
       if (deps.bypassAllPermissions === true) {
         const launchPermissionPosture = {
           bypassAllPermissions: true as const,

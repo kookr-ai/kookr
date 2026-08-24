@@ -178,9 +178,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['--effort', 'minimal']).effort).toBe('minimal');
   });
 
-  it('accepts Codex ultra and rejects values outside the cross-agent union (#681)', () => {
+  it('accepts harness-native effort tokens and rejects malformed values (#681)', () => {
     expect(parseArgs(['--effort', 'ultra']).effort).toBe('ultra');
-    expect(() => parseArgs(['--effort', 'supermax'])).toThrow(UsageError);
+    expect(parseArgs(['--effort', 'supermax']).effort).toBe('supermax');
     expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
   });
 
@@ -191,10 +191,10 @@ describe('parseArgs', () => {
     expect(parseArgs(['--model', 'claude-haiku-4-5-20251001']).model).toBe('claude-haiku-4-5-20251001');
   });
 
-  it('rejects unknown --model values at the CLI (#1518)', () => {
-    expect(() => parseArgs(['--model', 'gpt-5.6-sol'])).toThrow(UsageError);
+  it('accepts harness-native --model values and rejects malformed values (#1518)', () => {
+    expect(parseArgs(['--model', 'gpt-5.6-sol']).model).toBe('gpt-5.6-sol');
     expect(() => parseArgs(['--model', ''])).toThrow(UsageError);
-    expect(() => parseArgs(['--model', 'not-a-model'])).toThrow(UsageError);
+    expect(parseArgs(['--model', 'not-a-model']).model).toBe('not-a-model');
   });
 
   it('rejects invalid --dedupe value', () => {

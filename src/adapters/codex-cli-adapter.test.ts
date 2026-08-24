@@ -1112,7 +1112,7 @@ describe('CodexCliAdapter', () => {
       expect(spec.args[effortIndex - 1]).toBe('-c');
     });
 
-    test('stock Codex skips fork-only max instead of forcing a Kookr model', async () => {
+    test('stock Codex carries an explicit max pin to the harness', async () => {
       const stockAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         probeExec: stockProbeExec,
@@ -1124,7 +1124,7 @@ describe('CodexCliAdapter', () => {
       const spec = backend.sessions.get(sessionId)!.spec;
       expect(spec.args).not.toContain('model="gpt-5.6-sol"');
       expect(spec.args).not.toContain('model="gpt-5.6-luna"');
-      expect(effortValueIndex(spec.args)).toBe(-1);
+      expect(spec.args[effortValueIndex(spec.args)]).toBe('model_reasoning_effort="max"');
     });
 
     test('explicit ultra selects the Sol model that supports it', async () => {
@@ -1158,8 +1158,7 @@ describe('CodexCliAdapter', () => {
       expect(overrides).toEqual(['model_reasoning_effort="minimal"']);
     });
 
-    test('an effort invalid for codex-cli is skipped (defensive guard), not passed', async () => {
-      // Unknown values must never reach Codex argv.
+    test('a newly released effort token is forwarded instead of silently dropped', async () => {
       const effortAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         probeExec: forkProbeExec,
@@ -1169,7 +1168,7 @@ describe('CodexCliAdapter', () => {
       const task = taskStore.createTask('Fix bug', '/cwd');
       const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');
       const spec = backend.sessions.get(sessionId)!.spec;
-      expect(effortValueIndex(spec.args)).toBe(-1);
+      expect(spec.args).toContain('model_reasoning_effort="supermax"');
     });
 
     test('the prompt positional stays last even with an effort override (stock codex)', async () => {

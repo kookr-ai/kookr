@@ -302,6 +302,8 @@ export async function replaceLoopedPlaybook(
       prompt: loopPrompt,
       disableDedup: true,
       launchSource: input.launchSource,
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.model ? { model: input.model } : {}),
       // PR4: inject RALPH_VERDICT_FILE on iteration 0 so the agent's first
       // launch can write a verdict. Subsequent iterations get this via
       // launchFreshRuntime's extraEnv. Without this, iteration 0 silently

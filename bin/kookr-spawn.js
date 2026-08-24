@@ -57,31 +57,11 @@ const EXIT_DUPLICATE_BLOCKED = 5;
 const EXIT_WAIT_TIMEOUT = 6;
 const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
-// #681: union of every agent's accepted reasoning-effort levels — claude-code
-// (low|medium|high|xhigh|max) ∪ codex-cli (none|minimal|low|medium|high|xhigh|max|ultra).
-// This is a cross-agent fast-fail check only: the CLI cannot know which agent a
-// `round-robin` launch resolves to, so the authoritative agent-specific check
-// runs server-side for agent-specific validation. Keep in sync with
-// ALL_EFFORT_LEVELS in
-// src/shared/contracts/agent-types.ts.
-const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-// #1518: known model base ids for CLI fast-fail. Keep in sync with
-// ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in src/shared/contracts/agent-types.ts.
-// Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
-// with a known base. Authoritative agent-specific check still runs server-side.
-const MODEL_IDS = [
-  'claude-fable-5',
-  'claude-opus-4-8',
-  'claude-opus-4-7',
-  'claude-opus-4-6',
-  'claude-sonnet-5',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5',
-];
-function isKnownModelId(model) {
-  if (typeof model !== 'string' || model.length === 0) return false;
-  if (MODEL_IDS.includes(model)) return true;
-  return MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+// Harnesses own semantic model/effort support. The CLI only enforces the
+// shared transport shape so newly released values are not blocked here.
+const LAUNCH_PIN_TOKEN = /^[^\s'"\\\u0000-\u001f\u007f-\u009f]+$/;
+function isLaunchPin(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200 && LAUNCH_PIN_TOKEN.test(value);
 }
 // #1526 Phase B: keep in sync with MAX_IDEMPOTENCY_KEY_LENGTH in
 // src/shared/contracts/launch.ts.
@@ -122,10 +102,10 @@ function isTruthyEnv(value) {
  * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
-function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null }) {
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
-  const identity = JSON.stringify([prompt ?? '', cwd ?? '', criteria ?? '', agent ?? '']);
+  const identity = JSON.stringify([prompt ?? '', cwd ?? '', criteria ?? '', agent ?? '', effort ?? '', model ?? '']);
   // 64-bit digest — collision-negligible at any realistic spawn rate.
   const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
   return `auto-${digest}`;
@@ -147,15 +127,10 @@ Options:
                            (default: server default).
       --effort <level>     Reasoning effort for this task (default: server's
                            per-agent-type setting, else the agent CLI default).
-                           claude-code: low|medium|high|xhigh|max.
-                           codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
-                           grok-build:  omit --effort (server rejects any value).
+                           harness-native value; the server/harness validates it.
       --model <id>         Pin the model for this task (default: agent CLI /
-                           env default). claude-code accepts known Claude ids
-                           (e.g. claude-fable-5, claude-opus-4-8,
-                           claude-sonnet-5, claude-haiku-4-5 and dated
-                           suffixes). codex-cli / grok-build reject --model
-                           (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
+                           env default). All three agents accept a bounded
+                           custom id; the harness is authoritative.
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --idempotency-key <key>
@@ -371,15 +346,11 @@ function parseArgs(argv) {
   if (!DEDUPE_MODES.has(out.dedupe)) {
     throw new UsageError(`--dedupe must be "warn", "block", or "skip" (got: ${out.dedupe})`);
   }
-  if (out.effort !== null && !EFFORT_LEVELS.has(out.effort)) {
-    throw new UsageError(
-      `--effort must be one of: ${[...EFFORT_LEVELS].join(', ')} (got: ${out.effort})`,
-    );
+  if (out.effort !== null && !isLaunchPin(out.effort)) {
+    throw new UsageError('--effort must be a non-empty printable token of at most 200 characters');
   }
-  if (out.model !== null && !isKnownModelId(out.model)) {
-    throw new UsageError(
-      `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
-    );
+  if (out.model !== null && !isLaunchPin(out.model)) {
+    throw new UsageError('--model must be a non-empty printable token of at most 200 characters');
   }
   if (out.idempotencyKey !== null) {
     const trimmed = out.idempotencyKey.trim();
@@ -2067,6 +2038,8 @@ async function main({
       cwd: cwdAbs,
       criteria: args.criteria,
       agent: args.agent,
+      effort: args.effort,
+      model: args.model,
     });
   }
 

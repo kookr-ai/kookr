@@ -63,6 +63,14 @@ export interface TaskLaunchPermissionPosture {
   capturedAt: string;
 }
 
+/** Durable per-task model/effort intent used by promotion and recovery. */
+export interface TaskLaunchPins {
+  version: 1;
+  state: 'known-pinned' | 'known-unpinned' | 'unknown' | 'malformed';
+  effort?: string;
+  model?: string;
+}
+
 /**
  * One hop in an agent substitution / rotation chain (issue #2001).
  * Schedule WS1.3 and plan-quota admission (#1936) each append a hop so the
@@ -78,6 +86,8 @@ export interface AgentSubstitutionHop {
 }
 
 export interface TaskMetadata {
+  /** Explicitly records omitted pins; absent pre-feature metadata is equivalent. */
+  launchPins?: TaskLaunchPins;
   intent?: TaskMetadataIntent;
   /** Audit marker for tasks launched while permission prompts were globally bypassed. */
   launchPermissionPosture?: TaskLaunchPermissionPosture;

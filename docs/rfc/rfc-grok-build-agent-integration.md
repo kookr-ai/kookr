@@ -257,8 +257,9 @@ hard-coded in the adapter. If xAI changes the recommended coding model, Kookr
 can update its default without renaming the agent type.
 
 Adding the agent type also requires replacing the current binary Claude-versus-
-Codex effort fallback with an exhaustive per-agent map/switch. Grok must expose
-no effort choices until POC-A validates its exact accepted values.
+Codex effort fallback with an exhaustive per-agent map/switch. Grok exposes a
+custom effort control and forwards it to `--reasoning-effort`; exact accepted
+values remain harness-authoritative until the CLI provides a stable enumeration.
 
 Expected launch shape, entirely hypothetical until exact-build root and
 subcommand help is captured by POC-A:
@@ -268,7 +269,7 @@ grok
   --cwd <task cwd>
   --plugin-dir <resolved Kookr plugin>
   --model <configured model>
-  --effort <validated effort>
+  --reasoning-effort <harness-native effort>
   [permission flags]
   [resume/session flags]
 ```

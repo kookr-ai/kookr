@@ -429,7 +429,8 @@ features agree instead of duplicating the check.
 - **Grok task, no transcript.** Fine — brief uses intent + digest + git.
 - **Target binary missing.** `target_agent_unavailable` via preflight; no silent
   fallback.
-- **Source effort/model invalid for target** (Grok has no effort levels). Dropped.
+- **Source effort/model invalid for target.** The bounded pins remain explicit;
+  the target harness rejects unsupported values rather than silently defaulting.
 - **Two tasks share a worktree.** One migrates; others `worktree_contended`.
 - **Batch exceeds pending cap.** Excess `queued`, then `blocked: queue_full`;
   re-run to drain (not a stampede, not silent truncation).
@@ -510,7 +511,8 @@ spawn path would duplicate backpressure, dedup, and validation.
   live probe; `same_agent_use_restore` via `isForkEligible`.
 - `buildContinuationBrief` includes intent + digest + git; never reads a
   transcript; degrades on detached/dirty/non-repo; bounds git output.
-- Effort/model re-resolution drops levers invalid for the target.
+- Effort/model pins remain explicit through migration; malformed values block the
+  migration and target-harness rejection never retries with defaults.
 - Lineage: continuation carries `migratedFromTaskId`/`migratedFromAgentType`;
   source carries `migratedToTaskId`; source `agentType` unchanged.
 

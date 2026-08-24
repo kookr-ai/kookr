@@ -7,6 +7,7 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookSelector } from './PlaybookSelector.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import {
   createSchedule,
@@ -270,6 +271,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   const [prefillUnmatched, setPrefillUnmatched] = useState(false);
   // Empty string = no pin; fire uses settings.defaultAgentType.
   const [agentType, setAgentType] = useState<AgentSelection | ''>('');
+  const [effort, setEffort] = useState('');
+  const [model, setModel] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [preview, setPreview] = useState<SchedulePreviewResponse | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -392,6 +395,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
         cwd: cwd.trim(),
         enabled,
         ...(agentType ? { agentType } : {}),
+        ...(effort.trim() ? { effort: effort.trim() } : {}),
+        ...(model.trim() ? { model: model.trim() } : {}),
         playbook: {
           path: selectedPlaybook.id,
           parameters: parameterValues,
@@ -572,6 +577,15 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
               }
               roundRobinIndex={roundRobinIndex}
             />
+            {agentType && (
+              <LaunchEffortModelPickers
+                agentType={agentType}
+                effort={effort}
+                model={model}
+                onEffortChange={setEffort}
+                onModelChange={setModel}
+              />
+            )}
 
             <label className="schedule-enable-checkbox">
               <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />

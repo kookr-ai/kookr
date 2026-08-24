@@ -253,7 +253,7 @@ export class DailyCap {
 
 export interface PendingSpec {
   /** ms epoch */ createdAt: number;
-  /** pre-validated spec */ spec: { prompt: string; cwd: string; agentType: AgentType; suggestedBranch?: string };
+  /** pre-validated spec */ spec: { prompt: string; cwd: string; agentType: AgentType; suggestedBranch?: string; effort?: string; model?: string };
   /** chat that created this draft */ chatId: number;
 }
 

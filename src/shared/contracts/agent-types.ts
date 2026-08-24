@@ -89,16 +89,50 @@ export function agentSelectionHint(value: string | undefined | null): string | u
 export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 /**
- * Grok Build exposes NO validated effort levels (issue #1343 / RFC "Grok Build
- * adapter"). Grok advertises a `--reasoning-effort` flag, but POC-A did not
- * validate its accepted values, so Kookr passes no effort lever to Grok at all
- * until a follow-up empirically qualifies the exact tokens. Keeping this empty
- * (rather than reusing Claude's levels) is the whole point of the exhaustive
- * per-agent map below: a new agent type must NOT silently inherit Claude effort
- * values. `isValidEffortForAgent('grok-build', …)` is therefore always false and
- * the adapter never emits an effort flag.
+ * Grok Build has no stable enumerated effort list yet. Keep suggestions empty
+ * rather than reusing another harness's levels; the picker shows a custom
+ * field and the adapter forwards a shape-valid value to `--reasoning-effort`.
  */
 export const GROK_BUILD_EFFORT_LEVELS = [] as const;
+
+/**
+ * Harness-verified suggestions shown by the launch picker.  These are
+ * intentionally separate from validation: providers can add model ids
+ * without requiring a Kookr release, so custom values remain valid.
+ */
+export const CODEX_CLI_MODEL_SUGGESTIONS = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+] as const;
+export const GROK_BUILD_MODEL_SUGGESTIONS = ['grok-4.6', 'grok-4.5'] as const;
+
+/** Suggested models from the current harness probes, including custom input. */
+export function modelSuggestionsForAgent(agent: AgentType): readonly string[] {
+  switch (agent) {
+    case 'claude-code':
+      return CLAUDE_CODE_MODEL_IDS;
+    case 'codex-cli':
+      return CODEX_CLI_MODEL_SUGGESTIONS;
+    case 'grok-build':
+      return GROK_BUILD_MODEL_SUGGESTIONS;
+    default:
+      return assertNeverAgentType(agent);
+  }
+}
+
+/** Bounded lexical validation shared by API, schedule, relay, and CLI paths. */
+export const MAX_LAUNCH_PIN_LENGTH = 200;
+const LAUNCH_PIN_TOKEN = /^[^\s'"\\\u0000-\u001f\u007f-\u009f]+$/;
+
+export function isValidLaunchPin(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_LAUNCH_PIN_LENGTH
+    && LAUNCH_PIN_TOKEN.test(value);
+}
 
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_LEVELS)[number];
 export type CodexCliEffort = (typeof CODEX_CLI_EFFORT_LEVELS)[number];
@@ -174,10 +208,9 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
  *   plus the other Anthropic ids already priced in `MODEL_PRICING`. Dated
  *   suffixes (e.g. `claude-haiku-4-5-20251001`) match via prefix against an
  *   allowlisted base id — see {@link isValidModelForAgent}.
- * - `codex-cli` / `grok-build`: empty for now. Those agents keep their
- *   existing model selection (`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`); a
- *   per-task model pin for them is rejected until a follow-up adds their
- *   allowlists. Empty (not Claude inheritance) mirrors the effort pattern.
+ * - `codex-cli` / `grok-build`: these settings-era allowlists remain empty;
+ *   per-task launch pins use the provider-specific suggestions below plus
+ *   bounded custom input, so new provider ids do not require a Kookr release.
  */
 export const CLAUDE_CODE_MODEL_IDS = [
   'claude-fable-5',

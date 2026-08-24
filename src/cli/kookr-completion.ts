@@ -17,9 +17,9 @@ const LESSON_REMEMBER_FLAGS = [
 // #2311: yield flags mirror `kookr lesson yield` in src/cli/kookr-lesson.ts.
 const LESSON_YIELD_FLAGS = ['--json', '--days', '--kookr-dir', '-h', '--help'] as const;
 const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
-// #1858 / #1518: known model base ids for spawn --model tab-completion.
-// Keep in sync with ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in
-// src/shared/contracts/agent-types.ts and MODEL_IDS in bin/kookr-spawn.js.
+// #1858 / #1518: verified model suggestions for --model tab-completion.
+// Custom ids remain valid when a provider adds a model before this list is
+// refreshed. Inlined so completion works before a build.
 // Inlined (not imported) so `kookr completion` still loads from source without
 // a prior build — this file is imported by bin/kookr.js via strip-types.
 const SPAWN_MODEL_IDS = [
@@ -30,6 +30,13 @@ const SPAWN_MODEL_IDS = [
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'grok-4.6',
+  'grok-4.5',
 ] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
@@ -151,6 +158,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--set-default',
       '--only-isolated',
       '--effort',
+      '--model',
       '--dry-run',
       '--yes',
     ],

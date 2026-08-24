@@ -1,7 +1,8 @@
 import {
   effortLevelsForAgent,
   isAgentType,
-  modelsForAgent,
+  modelSuggestionsForAgent,
+  isValidLaunchPin,
   type AgentSelection,
 } from '../../shared/protocol.js';
 import { loadLastEffort, loadLastModel } from '../store/last-launch-pins.js';
@@ -28,31 +29,30 @@ export function effortOptionsForSelection(agentType: AgentSelection): readonly s
   return isAgentType(agentType) ? effortLevelsForAgent(agentType) : [];
 }
 
-/** Known model ids for a concrete agent; empty when that agent rejects a pin. */
+/** Current model suggestions for a concrete agent; custom values remain valid. */
 export function modelOptionsForSelection(agentType: AgentSelection): readonly string[] {
-  return isAgentType(agentType) ? modelsForAgent(agentType) : [];
+  return isAgentType(agentType) ? modelSuggestionsForAgent(agentType) : [];
 }
 
-function acceptedPin(value: string, options: readonly string[]): string {
-  return value && options.includes(value) ? value : '';
+function acceptedPin(value: string): string {
+  return value && isValidLaunchPin(value) ? value : '';
 }
 
 /**
- * Keep only pins the resolved agent can show in its pickers.
- * Anything else becomes "" so the menu stays on "Agent default".
+ * Keep only lexically safe pins. Capability suggestions are advisory, so a
+ * valid custom value remains editable even when the agent has no enumeration.
  */
 export function sanitizeLaunchPins(
-  agentType: AgentSelection,
   effort: string,
   model: string,
 ): { effort: string; model: string } {
   return {
-    effort: acceptedPin(effort, effortOptionsForSelection(agentType)),
-    model: acceptedPin(model, modelOptionsForSelection(agentType)),
+    effort: acceptedPin(effort),
+    model: acceptedPin(model),
   };
 }
 
-/** Restore last-sent pins that the current agent still accepts. */
-export function restoreLastLaunchPins(agentType: AgentSelection): { effort: string; model: string } {
-  return sanitizeLaunchPins(agentType, loadLastEffort() ?? '', loadLastModel() ?? '');
+/** Restore last-sent pins that are still safe to send. */
+export function restoreLastLaunchPins(): { effort: string; model: string } {
+  return sanitizeLaunchPins(loadLastEffort() ?? '', loadLastModel() ?? '');
 }

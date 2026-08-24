@@ -26,6 +26,17 @@ function seedStore(overrides: Record<string, unknown> = {}): void {
 }
 
 describe('buildSpawnCommand', () => {
+  test('includes both independent model and effort pins', () => {
+    const built = buildSpawnCommand({
+      prompt: 'run tests',
+      cwd: CWD,
+      agentType: 'codex-cli',
+      effort: 'high',
+      model: 'gpt-5.6-sol',
+    });
+    expect(built.command).toContain('--effort high');
+    expect(built.command).toContain('--model gpt-5.6-sol');
+  });
   test('simple prompt yields a runnable quoted one-liner', () => {
     const built = buildSpawnCommand({
       prompt: 'review the diff since origin/main',

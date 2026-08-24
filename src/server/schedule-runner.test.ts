@@ -237,15 +237,15 @@ Do the test thing.
       });
     });
 
-    it('substitutes an unavailable pin to an available agent and stamps reasonCode', async () => {
+    it('parks an unavailable pinned agent instead of changing harness semantics', async () => {
       const schedule = store.create({
         name: 'Pinned unavailable',
         cron: '* * * * *',
         playbook: { path: 'test.md', parameters: {} },
         cwd: dir,
         agentType: 'codex-cli',
-        // Effort pin is for codex; must be dropped on substitution so the
-        // substitute (claude) is not rejected for an invalid effort.
+        // Pins remain explicit launch intent; the selected harness is the
+        // authority for whether its native token is supported.
         effort: 'minimal',
       });
       replaceSchedule(schedule.id, {
@@ -262,19 +262,13 @@ Do the test thing.
       });
       await runner.tick();
 
-      expect(launched).toHaveLength(1);
-      expect(launched[0]).toMatchObject({
-        agentType: 'claude-code',
-      });
-      // Effort pin for the unavailable agent must not travel with the substitute.
-      expect(launched[0]!.effort).toBeUndefined();
-      expect(substitutions).toHaveLength(1);
+      expect(launched).toHaveLength(0);
+      expect(substitutions).toHaveLength(0);
       const latest = store.get(schedule.id)!.latestExecution;
       expect(latest).toMatchObject({
-        outcome: 'running',
-        reasonCode: 'agent_substituted',
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
       });
-      expect(latest?.message).toMatch(/codex-cli.*claude-code/);
       // Never a dispatch_failed for a pinned-but-unavailable agent.
       expect(latest?.outcome).not.toBe('dispatch_failed');
     });
@@ -2030,7 +2024,7 @@ Do the plugin thing.
       }));
     });
 
-    it('substitutes an unavailable pin on loop arm and drops effort/model pins (#1895)', async () => {
+    it('parks an unavailable pinned loop instead of changing harness semantics (#1895)', async () => {
       const schedule = store.create({
         name: 'LoopSubstitute',
         cron: '* * * * *',
@@ -2038,8 +2032,9 @@ Do the plugin thing.
         cwd: dir,
         loop: {},
         agentType: 'codex-cli',
-        // codex-only effort — must not travel with the claude substitute.
+        // The pin remains part of the task launch intent after substitution.
         effort: 'minimal',
+        model: 'gpt-5.6-sol',
       });
       replaceSchedule(schedule.id, {
         createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
@@ -2066,11 +2061,11 @@ Do the plugin thing.
 
       await runner.tick();
 
-      expect(looped).toEqual([{ agentType: 'claude-code', effort: undefined, model: undefined }]);
-      expect(substitutions).toHaveLength(1);
+      expect(looped).toHaveLength(0);
+      expect(substitutions).toHaveLength(0);
       expect(store.get(schedule.id)!.latestExecution).toMatchObject({
-        outcome: 'running',
-        reasonCode: 'agent_substituted',
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
       });
     });
 

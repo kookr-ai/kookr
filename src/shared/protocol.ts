@@ -44,6 +44,8 @@ export {
   isValidEffortForAgent,
   isValidModelForAgent,
   modelsForAgent,
+  modelSuggestionsForAgent,
+  isValidLaunchPin,
   previewRoundRobinNextLabel,
   resolveRoundRobinAgent,
 } from './contracts/agent-types.js';

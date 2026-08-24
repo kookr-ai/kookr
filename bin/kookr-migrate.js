@@ -58,6 +58,8 @@ Options:
                              worktree (skip shared checkouts).
       --effort <level>      Reasoning effort for the continuation task
                              (default: agent's own default).
+      --model <id>          Model id for the continuation task
+                             (default: agent's own default).
       --dry-run             Print the migration plan (GET
                              /api/tasks/migratable) and exit without POSTing.
       --yes, -y              Skip the confirmation prompt.
@@ -93,6 +95,7 @@ function parseArgs(argv) {
     dryRun: false,
     yes: false,
     effort: null,
+    model: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -128,6 +131,10 @@ function parseArgs(argv) {
       out.effort = eat();
     } else if (tok.startsWith('--effort=')) {
       out.effort = tok.slice('--effort='.length);
+    } else if (tok === '--model') {
+      out.model = eat();
+    } else if (tok.startsWith('--model=')) {
+      out.model = tok.slice('--model='.length);
     } else if (tok === '--') {
       for (let j = i + 1; j < argv.length; j++) out.taskIds.push(argv[j]);
       break;
@@ -444,6 +451,7 @@ async function main({
     targetAgent: args.to,
     scope,
     ...(args.effort ? { effort: args.effort } : {}),
+    ...(args.model ? { model: args.model } : {}),
     ...(args.setDefault ? { setAsDefault: true } : {}),
     ...(args.onlyIsolated ? { onlyIsolated: true } : {}),
   };

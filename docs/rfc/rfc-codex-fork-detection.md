@@ -10,7 +10,7 @@
 
 ## Problem
 
-PRs [#241](https://github.com/kookr-ai/kookr/pull/241) and [#242](https://github.com/kookr-ai/kookr/pull/242) shipped the Codex `--plugin-dir` adapter wiring with a runtime capability probe. The kookr-fork of Codex (jeanibarz/codex#52) advertises `--plugin-dir` in `codex --help`, so the adapter auto-injects the plugin tree and enables fork-specific Luna/Sol model and effort settings. Stock Codex (`npm i -g @openai/codex`) does not, so the adapter skips those fork-only settings and emits a one-time `console.warn` pointing at `pnpm codex:rebuild`.
+PRs [#241](https://github.com/kookr-ai/kookr/pull/241) and [#242](https://github.com/kookr-ai/kookr/pull/242) shipped the Codex `--plugin-dir` adapter wiring with a runtime capability probe. The kookr-fork of Codex (jeanibarz/codex#52) advertises `--plugin-dir` in `codex --help`, so the adapter auto-injects the plugin tree and enables fork-specific Luna/Sol defaults. Stock Codex (`npm i -g @openai/codex`) does not, so fork-specific defaults are skipped; explicit per-task model and effort pins are still forwarded to the stock binary.
 
 The warn is the only signal a dev gets that their Codex sessions will not see the kookr-toolkit. It fires:
 

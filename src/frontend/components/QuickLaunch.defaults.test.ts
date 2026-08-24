@@ -156,7 +156,7 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
     act(() => root.unmount());
   });
 
-  test('selecting effort includes it in the launch payload and grok-build hides model', async () => {
+  test('selecting effort includes it in the launch payload and grok-build exposes model', async () => {
     const sent: ClientMessage[] = [];
     const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return true; });
     await flush();
@@ -196,7 +196,8 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
       agentSelect.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await flush();
-    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Model"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Reasoning effort"]')).not.toBeNull();
     act(() => root.unmount());
   });
 
@@ -319,7 +320,7 @@ describe('QuickLaunch last-used effort and model (#2616)', () => {
     act(() => root.unmount());
   });
 
-  test('stored model is dropped when the resolved agent does not accept it', async () => {
+  test('stored model remains editable when the resolved agent has no static match', async () => {
     localStorage.setItem(LAST_AGENT_TYPE_KEY, 'codex-cli');
     localStorage.setItem(LAST_EFFORT_KEY, 'high');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
@@ -329,11 +330,11 @@ describe('QuickLaunch last-used effort and model (#2616)', () => {
 
     expect(getAgentSelectEl(container).value).toBe('codex-cli');
     expect((container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement).value).toBe('high');
-    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
+    expect((container.querySelector('select[aria-label="Model"]') as HTMLSelectElement).value).toBe('claude-fable-5');
     act(() => root.unmount());
   });
 
-  test('a stored Codex-only effort falls back to Agent default on Claude', async () => {
+  test('a stored harness-native effort remains editable on Claude', async () => {
     localStorage.setItem(LAST_AGENT_TYPE_KEY, 'claude-code');
     localStorage.setItem(LAST_EFFORT_KEY, 'ultra');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
@@ -342,7 +343,7 @@ describe('QuickLaunch last-used effort and model (#2616)', () => {
     await flush();
 
     expect(getAgentSelectEl(container).value).toBe('claude-code');
-    expect((container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement).value).toBe('');
+    expect((container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement).value).toBe('ultra');
     expect((container.querySelector('select[aria-label="Model"]') as HTMLSelectElement).value).toBe('claude-fable-5');
     act(() => root.unmount());
   });

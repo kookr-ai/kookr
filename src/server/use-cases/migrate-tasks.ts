@@ -14,7 +14,7 @@
 
 import { existsSync } from 'node:fs';
 import type { AgentType } from '../../shared/contracts/agent-types.js';
-import { isValidEffortForAgent } from '../../shared/contracts/agent-types.js';
+import { isValidLaunchPin } from '../../shared/contracts/agent-types.js';
 import type { AgentSubstitutionHop } from '../../shared/contracts/task.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { isTerminalStatus } from '../../core/task-status.js';
@@ -46,6 +46,7 @@ export type MigrateBlockReason =
   | 'queue_full'
   | 'spawn_burst'
   | 'launch_failed'
+  | 'invalid_launch_pin'
   | 'migration_in_progress'
   | 'not_found';
 
@@ -65,6 +66,7 @@ export interface MigrateTasksRequest {
   scope: MigrateScope;
   targetAgent: AgentType;
   effort?: string;
+  model?: string;
   setAsDefault?: boolean;
   /** Restrict to tasks whose checkout is a dedicated worktree (not shared). */
   onlyIsolated?: boolean;
@@ -276,6 +278,7 @@ async function migrateOne(
   candidate: Candidate,
   targetAgent: AgentType,
   effort: string | undefined,
+  model: string | undefined,
 ): Promise<MigrateTaskResult> {
   const { task, cwd, worktreeShared } = candidate;
   if (inFlight.has(task.id)) {
@@ -287,7 +290,14 @@ async function migrateOne(
     const worktree = await readWorktree(cwd, worktreeShared);
     const brief = buildContinuationBrief({ task, targetAgent, worktree });
     const hop: AgentSubstitutionHop = { reason: 'task_migrate', from: task.agentType, to: targetAgent };
-    const effectiveEffort = effort && isValidEffortForAgent(targetAgent, effort) ? effort : undefined;
+    if (effort !== undefined && !isValidLaunchPin(effort)) {
+      return { taskId: task.id, outcome: 'blocked', reason: 'invalid_launch_pin', worktreeShared };
+    }
+    if (model !== undefined && !isValidLaunchPin(model)) {
+      return { taskId: task.id, outcome: 'blocked', reason: 'invalid_launch_pin', worktreeShared };
+    }
+    const effectiveEffort = effort;
+    const effectiveModel = model;
 
     // No deterministic idempotency key (correctness review #2): the migrate path
     // deliberately allows RE-continuing a source once its prior continuation has
@@ -305,6 +315,7 @@ async function migrateOne(
       priorAgentSubstitutions: [hop],
       launchSource: 'api',
       ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+      ...(effectiveModel ? { model: effectiveModel } : {}),
     };
 
     let result: LaunchResult;
@@ -318,12 +329,11 @@ async function migrateOne(
         return { taskId: task.id, outcome: 'blocked', reason: 'spawn_burst', worktreeShared };
       }
       if (err instanceof EffortValidationError || err instanceof ModelValidationError) {
-        // Retry once without the invalid lever rather than failing the migration.
-        const { effort: _e, ...rest } = opts;
-        result = await deps.launchTask(rest);
-      } else {
-        return { taskId: task.id, outcome: 'blocked', reason: 'launch_failed', worktreeShared };
+        // A selected pin is explicit user intent; never retry with an implicit
+        // default after the target harness rejects it.
+        return { taskId: task.id, outcome: 'blocked', reason: 'invalid_launch_pin', worktreeShared };
       }
+      return { taskId: task.id, outcome: 'blocked', reason: 'launch_failed', worktreeShared };
     }
 
     // Quiesce an interrupted-but-not-terminal source ONLY after a continuation
@@ -380,7 +390,7 @@ export async function migrateTasks(
 
   const results: MigrateTaskResult[] = [...blocked];
   for (const candidate of eligible) {
-    results.push(await migrateOne(deps, candidate, targetAgent, req.effort));
+    results.push(await migrateOne(deps, candidate, targetAgent, req.effort, req.model));
   }
 
   // "Set as default" only when the target actually launched something.

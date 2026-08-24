@@ -4,6 +4,7 @@ import {
   ROUND_ROBIN_AGENT_TYPE,
   type AgentSelection,
   type AgentType,
+  isValidLaunchPin,
 } from '../shared/contracts/agent-types.js';
 import {
   findLaunchAllowlistEntry,
@@ -57,6 +58,8 @@ export interface RemoteLaunchRequest {
   prompt: string;
   criteria?: string;
   agentType?: AgentType;
+  effort?: string;
+  model?: string;
 }
 
 export interface RemoteLaunchResponse {
@@ -73,6 +76,8 @@ export interface RemoteLaunchTaskOpts {
   projectId: string;
   disableDedup: boolean;
   launchSource: 'remote-relay';
+  effort?: string;
+  model?: string;
 }
 
 export interface RemoteLaunchTaskResult {
@@ -129,6 +134,8 @@ function requestFingerprint(
       prompt: payload.prompt,
       criteria: payload.criteria,
       agentType: resolveRemoteLaunchAgentType(payload.agentType, getDefaultAgentType),
+      effort: payload.effort,
+      model: payload.model,
     },
   });
 }
@@ -156,7 +163,9 @@ function isLaunchRequest(value: unknown): value is RemoteLaunchRequest {
     && typeof req.prompt === 'string'
     && req.prompt.trim() !== ''
     && (req.criteria === undefined || typeof req.criteria === 'string')
-    && (req.agentType === undefined || isLaunchAllowlistAgent(req.agentType));
+    && (req.agentType === undefined || isLaunchAllowlistAgent(req.agentType))
+    && (req.effort === undefined || isValidLaunchPin(req.effort))
+    && (req.model === undefined || isValidLaunchPin(req.model));
 }
 
 export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchCommand, RemoteLaunchResponse> {
@@ -248,6 +257,8 @@ export class RemoteLaunchBroker implements RemoteCommandHandler<RemoteLaunchComm
         projectId,
         disableDedup: false,
         launchSource: 'remote-relay',
+        effort: payload.effort,
+        model: payload.model,
       });
       return {
         ok: true,

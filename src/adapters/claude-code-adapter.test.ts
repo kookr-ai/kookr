@@ -1479,16 +1479,14 @@ describe('ClaudeCodeAdapter reasoning effort (#681)', () => {
     expect(spec.args).not.toContain('--effort');
   });
 
-  test('an effort invalid for claude-code is skipped (defensive guard), not passed', async () => {
-    // `minimal`/`none` are codex-only; `max` is the claude-only top. A value
-    // outside claude's set must never reach the argv (it would break launch).
+  test('a harness-native effort token is passed through for Claude Code', async () => {
     const adapter = new ClaudeCodeAdapter(backend, taskStore, {
       resolveDefaultEffort: () => 'minimal',
     });
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
     const spec = backend.sessions.get(sessionId)!.spec;
-    expect(spec.args).not.toContain('--effort');
+    expect(spec.args[spec.args.indexOf('--effort') + 1]).toBe('minimal');
   });
 });
 
@@ -1534,14 +1532,14 @@ describe('ClaudeCodeAdapter model pin (#1518)', () => {
     expect(spec.args[spec.args.indexOf('--effort') + 1]).toBe('max');
   });
 
-  test('an invalid model is skipped (defensive guard), not passed', async () => {
+  test('a harness-native model token is passed through for Claude Code', async () => {
     const adapter = new ClaudeCodeAdapter(backend, taskStore);
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
       model: 'not-a-model',
     });
     const spec = backend.sessions.get(sessionId)!.spec;
-    expect(spec.args).not.toContain('--model');
+    expect(spec.args[spec.args.indexOf('--model') + 1]).toBe('not-a-model');
   });
 
   describe('preflight', () => {

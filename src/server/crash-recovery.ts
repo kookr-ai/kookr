@@ -5,6 +5,7 @@ import { isRecoverableTermination } from '../core/task-status.js';
 import { AdapterRegistry, type ResumeContext } from '../adapters/agent-adapter.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
+import { adapterOptionsForTask } from './task-launch-options.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
@@ -218,7 +219,13 @@ export async function recoverCrashedSessions(
     // continues the prior conversation on a forked branch.
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const newSessionId = await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const newSessionId = await adapter.launch(
+        task.id,
+        task.prompt,
+        session.cwd,
+        resumeContext,
+        adapterOptionsForTask(task),
+      );
 
       // Transfer relaunch metadata to the new session. Mark resumedFromCrash
       // only when we actually requested resume; the adapter may have ignored

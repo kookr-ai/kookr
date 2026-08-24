@@ -65,6 +65,21 @@ describe('rephrase', () => {
     }
   });
 
+  it('preserves structured effort and model pins from the LLM', async () => {
+    const llm = fakeLlm(JSON.stringify({
+      prompt: 'Fix the sweep button.',
+      cwd: '/workspace/kookr',
+      agentType: 'codex-cli',
+      effort: 'ultra',
+      model: 'gpt-5.6-sol',
+    }));
+    const r = await rephrase('use Codex ultra on gpt-5.6-sol', { allowedProjects: PROJECTS, llm });
+    expect(r).toMatchObject({
+      kind: 'spec',
+      spec: { agentType: 'codex-cli', effort: 'ultra', model: 'gpt-5.6-sol' },
+    });
+  });
+
   it('returns ambiguous when LLM emits {ambiguous: ...}', async () => {
     const llm = fakeLlm(JSON.stringify({
       prompt: 'placeholder',  // schema requires prompt; ambiguous can coexist

@@ -735,26 +735,26 @@ The system SHALL allow playbooks discovered from Kookr's catalog cwd to launch t
 
 ### R4b.9: Per-Task Effort and Model Pickers on Launch [F4.1] — SHALL — `done`
 
-The system SHALL let the operator pin reasoning effort and model on a dashboard launch when the selected agent accepts those pins.
+The system SHALL let the operator pin reasoning effort and model independently on every concrete dashboard launch (Claude Code, Codex CLI, and Grok Build).
 
 **Acceptance criteria:**
-- Launch dialog and Quick Launch expose optional effort and model selects for the resolved agent
+- Launch dialog, Quick Launch, playbook launches, and schedule launches expose independent effort and model controls for every concrete agent
 - Chosen values are forwarded on the WebSocket `launch` payload into the existing `LaunchOpts` contract
 - Leaving a select on "Agent default" omits that field so the server default still applies
-- Agents that reject a per-task model pin (currently Codex CLI and Grok Build) hide the model select
-- Agents with no validated effort levels (currently Grok Build) hide the effort select
+- Capability suggestions are agent-specific built-in fallback hints rather than a validation allowlist; custom values remain editable and the harness is authoritative
+- Codex maps model and effort independently; Grok maps model and `--reasoning-effort` independently
 
-**Rationale:** The launch pipeline already validates per-task effort (#681) and model (#1518). Without dashboard controls, operators could only pin those values via CLI or API.
+**Rationale:** All supported harnesses expose independent model and effort controls, and the launch pipeline must preserve them across direct, playbook, schedule, relay, Telegram, queue, recovery, and Ralph paths.
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchEffortModelPickers.tsx`, `src/shared/contracts/messages.ts`, `src/server/ws-handlers/lifecycle-handler.ts`. Tests: `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`, `src/server/ws-handlers/lifecycle-handler.test.ts`, `src/shared/contracts/client-message-schema.test.ts`.
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchEffortModelPickers.tsx`, `src/frontend/components/PlaybookBrowser.tsx`, `src/frontend/components/SchedulesDialog.tsx`, `src/shared/contracts/messages.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `src/server/ws-handlers/playbook-handler.ts`, `src/server/schedule-validator.ts`. Tests: `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`, `src/server/ws-handlers/lifecycle-handler.test.ts`, `src/shared/contracts/client-message-schema.test.ts`, `src/server/schedule-validator.test.ts`.
 
 ### R4b.10: Remember Last Launch Effort and Model [F4.1] — SHALL — `done`
 
-The system SHALL remember the last effort and model pins sent from dashboard Launch or Quick Launch and restore them on the next open when the current agent still accepts them.
+The system SHALL remember the last effort and model pins sent from dashboard Launch or Quick Launch and restore them on the next open when they remain lexically valid.
 
 **Acceptance criteria:**
 - Closing and reopening Launch after a pinned launch shows the same effort and model in the dropdowns
-- Switching to an agent that does not accept a stored pin falls back to "Agent default" for that pin
+- Switching agents preserves valid bounded custom pins; malformed or empty values fall back to "Agent default" for that pin
 - A failed send (not connected) does not write the new values
 - Last-used agent-type persistence is unchanged
 - Effort and model are stored as separate localStorage keys

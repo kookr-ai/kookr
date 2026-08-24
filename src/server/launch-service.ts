@@ -10,10 +10,9 @@ import {
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
-  isValidEffortForAgent,
+  isValidLaunchPin,
   effortLevelsForAgent,
-  isValidModelForAgent,
-  modelsForAgent,
+  modelSuggestionsForAgent,
 } from '../core/agent-types.js';
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
@@ -33,6 +32,7 @@ import { MAX_ACTIVE_TASKS } from './config.js';
 import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { hashPrompt } from './hash-prompt.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
+import { adapterOptionsForTask } from './task-launch-options.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
@@ -521,9 +521,9 @@ export function isEffortValidationError(err: unknown): err is EffortValidationEr
 }
 
 /**
- * Thrown by {@link launchTask} when a per-task `model` pin is not on the
- * resolved agent's known-model allowlist (#1518). Same placement as effort
- * validation (after round-robin resolves). The API maps this to HTTP 400.
+ * Thrown by {@link launchTask} when a per-task `model` pin has an unsafe
+ * transport shape (#1518). The selected harness may still reject a
+ * shape-valid value. The API maps this to HTTP 400.
  */
 export class ModelValidationError extends Error {
   readonly code = 'invalid_model';
@@ -900,17 +900,17 @@ function allowRemoteChatCodex(): boolean {
  * exists. Uses the live-task view so a large completed-task pile is not cloned
  * on every spawn. Returns the existing task if found, undefined otherwise.
  *
- * Dedup key is (promptHash, agentType, canonicalCwd). Two launches with the
- * same prompt in different directories are different tasks; two launches with
- * the same prompt in the same directory — even reached via symlink, trailing
- * slash, relative path, or case-aliased path on case-insensitive FS — dedup
- * to the first.
+ * Dedup key is (promptHash, agentType, canonicalCwd, effort, model). Two
+ * launches with different pins are distinct intents even when their prompt
+ * and directory match.
  */
 export function checkSubmission(
   taskStore: TaskStore,
   prompt: string,
   agentType: AgentType,
   cwd: string,
+  effort?: string,
+  model?: string,
 ): Task | undefined {
   const hash = hashPrompt(prompt);
   const canonicalIncoming = canonicalizeCwd(cwd);
@@ -919,6 +919,10 @@ export function checkSubmission(
   for (const task of taskStore.viewLiveTasks()) {
     if (!ACTIVE_STATUSES.has(task.status)) continue;
     if (task.agentType !== agentType) continue;
+    const taskPins = task.metadata?.launchPins;
+    const taskEffort = taskPins?.state === 'known-pinned' ? taskPins.effort : undefined;
+    const taskModel = taskPins?.state === 'known-pinned' ? taskPins.model : undefined;
+    if (taskEffort !== effort || taskModel !== model) continue;
     if (hashPrompt(task.prompt) !== hash) continue;
     if (canonicalizeCwd(task.cwd) !== canonicalIncoming) continue;
     // Verify live status — don't rely on cached state
@@ -1013,7 +1017,34 @@ export async function launchTask(
   if (opts.idempotencyKey === undefined || !deps.idempotencyLedger) {
     return launchTaskCore(deps, opts, serverOpts);
   }
-  return launchTaskIdempotent(deps, opts, serverOpts, deps.idempotencyLedger, opts.idempotencyKey);
+  return launchTaskIdempotent(
+    deps,
+    opts,
+    serverOpts,
+    deps.idempotencyLedger,
+    scopedIdempotencyKey(opts.idempotencyKey, opts, deps),
+  );
+}
+
+/** Explicit idempotency keys identify the full launch intent, including pins. */
+function scopedIdempotencyKey(key: string, opts: LaunchOpts, deps: LaunchServiceDeps): string {
+  // Preserve replay compatibility with ledger entries written before pin
+  // identity was introduced. Pinned requests use the richer identity below.
+  if (opts.effort === undefined && opts.model === undefined) return key;
+  const requestedAgent =
+    opts.agentType
+    ?? deps.getDefaultAgentType?.()
+    ?? deps.adapterRegistry.getDefaultType()
+    ?? DEFAULT_AGENT_TYPE;
+  return `${key}\u001f${JSON.stringify({
+    // Keep the sentinel here: the launch service performs the authoritative
+    // pin-compatible resolution immediately before task creation. Resolving
+    // with a guessed cursor would make the ledger identity disagree with the
+    // actual concrete agent selected for a pinned request.
+    agentType: requestedAgent,
+    effort: opts.effort ?? null,
+    model: opts.model ?? null,
+  })}`;
 }
 
 /**
@@ -1236,20 +1267,64 @@ async function launchTaskCore(
   const launchableTypes = filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
     grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
   });
+  // A round-robin pin must not land on a harness whose verified vocabulary
+  // excludes it. Unknown/custom values remain harness-authoritative; when a
+  // provider has no stable catalog (Grok effort today), it is not filtered.
+  let roundRobinCandidates = launchableTypes;
+  if (isRoundRobin && opts.effort !== undefined) {
+    const knownEffortAgents = launchableTypes.filter((candidate) =>
+      effortLevelsForAgent(candidate).length > 0,
+    );
+    if (knownEffortAgents.length > 0) {
+      const compatible = knownEffortAgents.filter((candidate) =>
+        effortLevelsForAgent(candidate).includes(opts.effort!),
+      );
+      const unknownEffortAgents = launchableTypes.filter((candidate) =>
+        effortLevelsForAgent(candidate).length === 0,
+      );
+      if (compatible.length === 0 && unknownEffortAgents.length === 0) {
+        throw new EffortValidationError(
+          `No available agent can handle explicit round-robin effort "${opts.effort}"`,
+        );
+      }
+      roundRobinCandidates = [...compatible, ...unknownEffortAgents];
+    }
+  }
+  if (isRoundRobin && opts.model !== undefined) {
+    const knownModelAgents = launchableTypes.filter((candidate) =>
+      modelSuggestionsForAgent(candidate).length > 0,
+    );
+    if (knownModelAgents.length > 0) {
+      const compatible = knownModelAgents.filter((candidate) =>
+        modelSuggestionsForAgent(candidate).includes(opts.model!),
+      );
+      if (compatible.length === 0) {
+        throw new ModelValidationError(
+          `No available agent can handle explicit round-robin model "${opts.model}"`,
+        );
+      }
+      roundRobinCandidates = roundRobinCandidates.filter((candidate) => compatible.includes(candidate));
+      if (roundRobinCandidates.length === 0) {
+        throw new ModelValidationError(
+          `No available agent can handle the explicit round-robin model/effort pins`,
+        );
+      }
+    }
+  }
   // `peek` (not advance): the rotation cursor must only move once a task is
   // actually committed, so a deduplicated or rejected launch does not consume
   // a rotation slot. The matching `advance()` calls fire after `createTask`.
   let agentType: AgentType = isRoundRobin
     ? resolveRoundRobinAgent(
         deps.roundRobinCursor?.peek() ?? 0,
-        launchableTypes,
+        roundRobinCandidates,
         // Boot-reliability failover precondition (#1898): skip agents whose
         // recent boot latency is unhealthy while a healthier one is registered.
-        deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
+        deps.getDeprioritizedAgentTypes?.(roundRobinCandidates) ?? [],
       )
     : requestedAgent;
-  // Per-task effort/model pins may be dropped if plan-quota rotation (#1936)
-  // substitutes a different agent — same as schedule WS1.3 substitution.
+  // Explicit per-task effort/model pins prevent plan-quota rotation to a
+  // different agent; silently changing the harness would change their meaning.
   let effectiveEffort: string | undefined = opts.effort;
   let effectiveModel: string | undefined = opts.model;
   // Populated when plan-quota admission rotates claude-code onto an alternate.
@@ -1266,30 +1341,20 @@ async function launchTaskCore(
     ...(opts.priorAgentSubstitutions ?? []),
   ];
 
-  // Validate a per-task effort override against the *resolved* agent's allowed
-  // set (#681), before any side effect or task record. Done here — not at the
-  // route — because round-robin only resolves to a concrete agent now, and the
-  // allowed set is agent-specific (`minimal`/`none`/`ultra` are codex-only). The
-  // per-agent-type *default* is applied inside the adapter and
-  // validated when settings are saved, so it is not re-checked here.
-  if (effectiveEffort !== undefined && !isValidEffortForAgent(agentType, effectiveEffort)) {
+  // Validate only the transport-safe shape before any side effect or task
+  // record. The selected harness remains authoritative for supported values.
+  if (effectiveEffort !== undefined && !isValidLaunchPin(effectiveEffort)) {
     throw new EffortValidationError(
       `Invalid effort "${effectiveEffort}" for agent ${agentType}; ` +
-      `valid levels: ${effortLevelsForAgent(agentType).join(', ')}`,
+      `use a non-empty printable token up to 200 characters`,
     );
   }
 
-  // Validate a per-task model pin against the *resolved* agent's allowlist
-  // (#1518). Same placement as effort — after round-robin, before side effects.
-  // No silent fallback: unknown models throw rather than launch with the CLI
-  // default. codex-cli / grok-build currently have empty allowlists.
-  if (effectiveModel !== undefined && !isValidModelForAgent(agentType, effectiveModel)) {
-    const valid = modelsForAgent(agentType);
+  // Model pins use the same shape-only boundary. Unknown values are forwarded
+  // to the selected harness rather than silently replaced with its default.
+  if (effectiveModel !== undefined && !isValidLaunchPin(effectiveModel)) {
     throw new ModelValidationError(
-      valid.length === 0
-        ? `Invalid model "${effectiveModel}" for agent ${agentType}; this agent does not accept a per-task model pin`
-        : `Invalid model "${effectiveModel}" for agent ${agentType}; ` +
-          `valid models: ${valid.join(', ')} (dated suffixes of those bases also accepted)`,
+      `Invalid model "${effectiveModel}" for agent ${agentType}; use a non-empty printable token up to 200 characters`,
     );
   }
 
@@ -1325,7 +1390,14 @@ async function launchTaskCore(
   if (!opts.disableDedup) {
     let staleDuplicate: Task | undefined;
     let existing: Task | undefined;
-    while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd))) {
+    while ((existing = checkSubmission(
+      taskStore,
+      effectivePrompt,
+      agentType,
+      opts.cwd,
+      opts.effort,
+      opts.model,
+    ))) {
       const activeDuplicate = await validateDuplicateCandidate(deps, existing);
       if (activeDuplicate) {
         const canonicalCwd = canonicalizeCwd(opts.cwd);
@@ -1471,13 +1543,19 @@ async function launchTaskCore(
       }
       if (toAgent) {
         const fromAgent = agentType;
-        // Drop pins that are invalid for the substitute (schedule WS1.3 drops
-        // all pins on substitution; we only drop ones the substitute rejects).
-        if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
-          effectiveEffort = undefined;
-        }
-        if (effectiveModel !== undefined && !isValidModelForAgent(toAgent, effectiveModel)) {
-          effectiveModel = undefined;
+        // Explicit pins make substitution unsafe because their meaning is
+        // harness-specific; reject before creating a task record.
+        if (effectiveEffort !== undefined || effectiveModel !== undefined) {
+          if (effectiveModel !== undefined && effectiveEffort === undefined) {
+            throw new ModelValidationError(
+              `Cannot automatically substitute ${fromAgent} with an explicit model pin; ` +
+              `the selected agent must remain launchable`,
+            );
+          }
+          throw new EffortValidationError(
+            `Cannot automatically substitute ${fromAgent} with explicit model/effort pins; ` +
+            `the selected agent must remain launchable`,
+          );
         }
         agentType = toAgent;
         planQuotaRotation = {
@@ -1633,15 +1711,21 @@ async function launchTaskCore(
     // pendings as self-releasing. Additive — absent when no source was given.
     // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
     // hops so receipts match the final agentType after multi-hop cascade.
-    metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
-      ? {
-          ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
-          ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
-          ...(agentSubstitutionChain.length > 0
-            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
-            : {}),
-        }
-      : undefined,
+    metadata: {
+      launchPins: {
+        version: 1,
+        state: opts.effort !== undefined || opts.model !== undefined
+          ? 'known-pinned'
+          : 'known-unpinned',
+        ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+        ...(opts.model !== undefined ? { model: opts.model } : {}),
+      },
+      ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
+      ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+      ...(agentSubstitutionChain.length > 0
+        ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+        : {}),
+    },
     launchHealthSummary,
     launchNote,
     deliveryAuthorization,
@@ -2073,7 +2157,7 @@ export async function launchFreshTaskSession(
     prompt,
     task.cwd,
     undefined,
-    opts,
+    { ...adapterOptionsForTask(task, opts), ...opts },
   );
   const launchedTask = deps.taskStore.getTask(task.id) ?? task;
   await registerNewAgent(launchedTask, deps.lifecycleDeps);

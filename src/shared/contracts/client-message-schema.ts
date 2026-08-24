@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { type ClientMessage, MAX_BATCH_ABORT_TASKS } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
-import { AGENT_SELECTIONS } from './agent-types.js';
+import { AGENT_SELECTIONS, isValidLaunchPin } from './agent-types.js';
 import { canonicalizeAnomalyTypeKey } from './anomalies.js';
 
 /**
@@ -21,6 +21,9 @@ import { canonicalizeAnomalyTypeKey } from './anomalies.js';
 const agentSelection = z.enum(AGENT_SELECTIONS);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(LAUNCH_DEPENDENCIES);
+const launchPin = z.string().refine(isValidLaunchPin, {
+  message: 'must be a non-empty printable launch token up to 200 characters',
+});
 const taskPriorityUpdate = z.enum(['high', 'normal']);
 const permissionRequestBinding = z.object({
   requestId: z.string(),
@@ -79,6 +82,8 @@ const launchPlaybookMessage = z.object({
   projectId: z.string().optional(),
   parameterValues: z.record(z.string(), z.string()),
   agentType: agentSelection.optional(),
+  effort: launchPin.optional(),
+  model: launchPin.optional(),
   scope: playbookScope.optional(),
 }).superRefine((value, ctx) => {
   const hasLegacy = value.cwd !== undefined;
@@ -143,9 +148,9 @@ const ClientMessageSchemaImpl = z.union([
     cwd: z.string(),
     criteria: z.string().optional(),
     agentType: agentSelection.optional(),
+    effort: launchPin.optional(),
+    model: launchPin.optional(),
     dependencies: z.array(launchDependency).optional(),
-    effort: z.string().min(1).optional(),
-    model: z.string().min(1).optional(),
     disableDedup: z.boolean().optional(),
     metadataIntent: z.literal('keep_as_duplicate').optional(),
   }).superRefine((val, ctx) => {
@@ -203,6 +208,8 @@ const ClientMessageSchemaImpl = z.union([
     taskId: z.string(),
     prompt: z.string(),
     agentType: agentSelection.optional(),
+    effort: launchPin.optional(),
+    model: launchPin.optional(),
     dependencies: z.array(launchDependency).optional(),
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),

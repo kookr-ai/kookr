@@ -47,7 +47,9 @@ A `POST /api/tasks` attempt resolves to exactly one of these classes. The class
 Send an `idempotencyKey` (≤200 chars) on **every** request you might retry. It is
 the load-bearing primitive for safe reconciliation:
 
-- The first POST carrying a key creates the task (`201`).
+- The first POST carrying a key creates the task (`201`). The request identity
+  includes `agentType`, `model`, and `effort`, so retries with different pins
+  cannot replay the wrong launch.
 - Any later POST with the **same** key returns `200` with the task shape plus
   `"idempotentReplay": true`, referencing the **same** task — no duplicate, no
   confirmation UX. This holds even for a request racing concurrently with the

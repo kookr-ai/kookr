@@ -464,7 +464,13 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         return;
       }
       // Same Zod gate as rephrase output (round-3 V12).
-      const candidate = { prompt: parsed.prompt, cwd: parsed.project.cwd, agentType };
+      const candidate = {
+        prompt: parsed.prompt,
+        cwd: parsed.project.cwd,
+        agentType,
+        ...(parsed.effort ? { effort: parsed.effort } : {}),
+        ...(parsed.model ? { model: parsed.model } : {}),
+      };
       const v = TaskSpecBypassSchema.safeParse(candidate);
       if (!v.success) {
         await sendMessageSafe(m.chat.id, `/task validation failed: ${v.error.issues[0]?.message ?? 'unknown'}`);
@@ -472,7 +478,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       }
       audit({ kind: 'agent_resolved', sender: userId, agentType, source: agentSource });
       audit({ kind: 'task_command', sender: userId, project: parsed.project.name, agentType });
-      const spec: ValidatedTaskSpec = { ...v.data, agentType };
+      const spec: ValidatedTaskSpec = { ...v.data, agentType, effort: parsed.effort, model: parsed.model };
       await sendConfirmation(m.chat.id, spec);
       return;
     }
@@ -658,6 +664,8 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         prompt: consumed.spec.prompt,
         cwd: consumed.spec.cwd,
         agentType: consumed.spec.agentType,
+        effort: consumed.spec.effort,
+        model: consumed.spec.model,
         launchSource: 'remote-chat-telegram',
       });
     } catch (err) {

@@ -14,10 +14,8 @@ interface Props {
 /**
  * Per-task effort and model selects for a dashboard launch.
  *
- * Each select appears only when the resolved agent accepts that pin.
- * Grok Build hides both (no validated effort or model allowlist). Codex
- * shows effort and hides model. Round-robin hides both until a concrete
- * agent is chosen — the server validates against the resolved type.
+ * Both controls are available for every concrete agent. Suggestions are
+ * capability hints; custom values remain editable while harnesses evolve.
  */
 export function LaunchEffortModelPickers({
   agentType,
@@ -29,15 +27,15 @@ export function LaunchEffortModelPickers({
 }: Props) {
   const effortLevels = effortOptionsForSelection(agentType);
   const modelIds = modelOptionsForSelection(agentType);
-  if (effortLevels.length === 0 && modelIds.length === 0) return null;
+  if (agentType === 'round-robin') return null;
 
   const selectClass = compact ? 'agent-type-select compact' : 'agent-type-select';
 
   return (
     <div className={compact ? 'launch-effort-model-pickers compact' : 'launch-effort-model-pickers'}>
-      {effortLevels.length > 0 && (
-        <label className={selectClass}>
-          <span className="agent-type-select-label">Effort</span>
+      <label className={selectClass}>
+        <span className="agent-type-select-label">Effort</span>
+        {effortLevels.length > 0 ? (<>
           <select
             aria-label="Reasoning effort"
             value={effort}
@@ -47,12 +45,26 @@ export function LaunchEffortModelPickers({
             {effortLevels.map((level) => (
               <option key={level} value={level}>{level}</option>
             ))}
+            {effort && !effortLevels.includes(effort) && <option value={effort}>{effort} (custom)</option>}
           </select>
-        </label>
-      )}
-      {modelIds.length > 0 && (
-        <label className={selectClass}>
-          <span className="agent-type-select-label">Model</span>
+          <input
+            aria-label="Custom reasoning effort"
+            value={effort && !effortLevels.includes(effort) ? effort : ''}
+            placeholder="Custom effort"
+            onChange={(e) => onEffortChange(e.target.value)}
+          />
+        </>) : (
+          <input
+            aria-label="Reasoning effort"
+            value={effort}
+            placeholder="Agent default or custom"
+            onChange={(e) => onEffortChange(e.target.value)}
+          />
+        )}
+      </label>
+      <label className={selectClass}>
+        <span className="agent-type-select-label">Model</span>
+        {modelIds.length > 0 ? (<>
           <select
             aria-label="Model"
             value={model}
@@ -62,9 +74,23 @@ export function LaunchEffortModelPickers({
             {modelIds.map((id) => (
               <option key={id} value={id}>{id}</option>
             ))}
+            {model && !modelIds.includes(model) && <option value={model}>{model} (custom)</option>}
           </select>
-        </label>
-      )}
+          <input
+            aria-label="Custom model"
+            value={model && !modelIds.includes(model) ? model : ''}
+            placeholder="Custom model"
+            onChange={(e) => onModelChange(e.target.value)}
+          />
+        </>) : (
+          <input
+            aria-label="Model"
+            value={model}
+            placeholder="Agent default or custom"
+            onChange={(e) => onModelChange(e.target.value)}
+          />
+        )}
+      </label>
     </div>
   );
 }

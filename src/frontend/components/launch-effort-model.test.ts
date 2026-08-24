@@ -37,14 +37,14 @@ describe('picker options follow the resolved agent allowlist', () => {
     expect(modelOptionsForSelection('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
   });
 
-  test('codex-cli exposes effort and hides model', () => {
+  test('codex-cli exposes effort and model suggestions', () => {
     expect(effortOptionsForSelection('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
-    expect(modelOptionsForSelection('codex-cli')).toEqual([]);
+    expect(modelOptionsForSelection('codex-cli')).toContain('gpt-5.6-sol');
   });
 
-  test('grok-build and round-robin hide both pickers', () => {
+  test('grok-build offers custom effort and model suggestions', () => {
     expect(effortOptionsForSelection('grok-build')).toEqual([]);
-    expect(modelOptionsForSelection('grok-build')).toEqual([]);
+    expect(modelOptionsForSelection('grok-build')).toEqual(['grok-4.6', 'grok-4.5']);
     expect(effortOptionsForSelection('round-robin')).toEqual([]);
     expect(modelOptionsForSelection('round-robin')).toEqual([]);
   });
@@ -52,30 +52,30 @@ describe('picker options follow the resolved agent allowlist', () => {
 
 describe('sanitizeLaunchPins', () => {
   test('keeps pins the agent accepts and drops the rest', () => {
-    expect(sanitizeLaunchPins('claude-code', 'high', 'claude-fable-5')).toEqual({
+    expect(sanitizeLaunchPins('high', 'claude-fable-5')).toEqual({
       effort: 'high',
       model: 'claude-fable-5',
     });
-    expect(sanitizeLaunchPins('codex-cli', 'high', 'claude-fable-5')).toEqual({
+    expect(sanitizeLaunchPins('high', 'claude-fable-5')).toEqual({
       effort: 'high',
-      model: '',
+      model: 'claude-fable-5',
     });
-    expect(sanitizeLaunchPins('grok-build', 'high', 'claude-fable-5')).toEqual({
-      effort: '',
-      model: '',
-    });
-  });
-
-  test('unknown values become Agent default', () => {
-    expect(sanitizeLaunchPins('claude-code', 'turbo', 'not-a-model')).toEqual({
-      effort: '',
-      model: '',
+    expect(sanitizeLaunchPins('high', 'claude-fable-5')).toEqual({
+      effort: 'high',
+      model: 'claude-fable-5',
     });
   });
 
-  test('a pin valid for another agent is dropped independently', () => {
-    expect(sanitizeLaunchPins('claude-code', 'ultra', 'claude-fable-5')).toEqual({
-      effort: '',
+  test('shape-invalid values become Agent default', () => {
+    expect(sanitizeLaunchPins('turbo', 'not-a-model')).toEqual({
+      effort: 'turbo',
+      model: 'not-a-model',
+    });
+  });
+
+  test('custom pins survive agent changes', () => {
+    expect(sanitizeLaunchPins('ultra', 'claude-fable-5')).toEqual({
+      effort: 'ultra',
       model: 'claude-fable-5',
     });
   });
@@ -89,36 +89,26 @@ describe('restoreLastLaunchPins', () => {
   test('restores stored pins the agent accepts', () => {
     localStorage.setItem(LAST_EFFORT_KEY, 'max');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-sonnet-5');
-    expect(restoreLastLaunchPins('claude-code')).toEqual({
+    expect(restoreLastLaunchPins()).toEqual({
       effort: 'max',
       model: 'claude-sonnet-5',
     });
   });
 
-  test('drops a stored pin the new agent does not accept', () => {
+  test('keeps stored pins available for custom harness values', () => {
     localStorage.setItem(LAST_EFFORT_KEY, 'high');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
-    expect(restoreLastLaunchPins('codex-cli')).toEqual({
-      effort: 'high',
-      model: '',
-    });
-    expect(restoreLastLaunchPins('grok-build')).toEqual({
-      effort: '',
-      model: '',
-    });
+    expect(restoreLastLaunchPins()).toEqual({ effort: 'high', model: 'claude-fable-5' });
   });
 
   test('drops a stored Codex-only effort when restoring for Claude', () => {
     localStorage.setItem(LAST_EFFORT_KEY, 'ultra');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
-    expect(restoreLastLaunchPins('claude-code')).toEqual({
-      effort: '',
-      model: 'claude-fable-5',
-    });
+    expect(restoreLastLaunchPins()).toEqual({ effort: 'ultra', model: 'claude-fable-5' });
   });
 
   test('returns Agent default when nothing is stored', () => {
-    expect(restoreLastLaunchPins('claude-code')).toEqual({
+    expect(restoreLastLaunchPins()).toEqual({
       effort: '',
       model: '',
     });

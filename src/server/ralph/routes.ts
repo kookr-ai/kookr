@@ -7,7 +7,7 @@ import {
   readIterationLog,
 } from '../../core/ralph-iteration-log.js';
 import { nowISO } from '../../core/interaction-log.js';
-import { normalizeAgentType } from '../../core/agent-types.js';
+import { isValidLaunchPin, normalizeAgentType } from '../../core/agent-types.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { resolveRalphCostSignal, resolveStallConfig } from '../../shared/contracts/ralph.js';
 import { cancelTask as cancelTaskLifecycle } from '../agent-lifecycle.js';
@@ -380,6 +380,8 @@ interface RalphPlaybookLaunchBody {
   projectId?: unknown;
   parameterValues?: unknown;
   agentType?: string;
+  effort?: unknown;
+  model?: unknown;
   scope?: unknown;
 }
 
@@ -441,6 +443,8 @@ function validateRalphPlaybookBody(body: RalphPlaybookLaunchBody): string | null
   if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
     return 'scope must be "project", "user", or "plugin"';
   }
+  if (body.effort !== undefined && !isValidLaunchPin(body.effort)) return 'effort must be a non-empty printable token up to 200 characters';
+  if (body.model !== undefined && !isValidLaunchPin(body.model)) return 'model must be a non-empty printable token up to 200 characters';
   return null;
 }
 
@@ -453,6 +457,8 @@ function ralphPlaybookLaunchOptions(body: RalphPlaybookLaunchBody) {
     projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
     playbookPath: body.playbookPath as string,
     parameterValues: body.parameterValues as Record<string, string>,
+    effort: typeof body.effort === 'string' ? body.effort : undefined,
+    model: typeof body.model === 'string' ? body.model : undefined,
   };
 }
 

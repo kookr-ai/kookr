@@ -32,7 +32,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { isValidEffortForAgent, isValidModelForAgent } from '../shared/contracts/agent-types.js';
+import { isValidLaunchPin } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -139,7 +139,8 @@ export interface ClaudeCodeAdapterOptions {
    * — the default when no effort is configured — passes no effort flag, leaving
    * the launch argv byte-identical to pre-#681. Wired to live server settings
    * so an operator's settings change takes effect on the next launch without a
-   * restart. Invalid values are ignored (skip + warn) as a final guard.
+   * restart. Invalid configured defaults are ignored (skip + warn); explicit
+   * per-task pins are validated and rejected before adapter launch.
    */
   resolveDefaultEffort?: () => string | undefined;
 }
@@ -312,31 +313,24 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // (opts.effort) → configured per-agent-type default (resolveDefaultEffort)
     // → unset. When both are absent, no `--effort` is pushed and the argv is
     // byte-identical to pre-#681. The agent-specific validity guard is a
-    // last line of defense — the route + settings validation already reject
-    // invalid values upstream — so a stray bad value is skipped (+ warn)
-    // rather than passed through to break the launch.
+    // last line of defense — shape validation is shared by the route and
+    // adapter, while Claude remains authoritative for semantic acceptance.
     const effort = opts?.effort ?? this.resolveDefaultEffort?.();
     if (effort) {
-      if (isValidEffortForAgent(this.agentType, effort)) {
+      if (isValidLaunchPin(effort)) {
         args.push('--effort', effort);
       } else {
-        console.warn(
-          `[claude-code-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
-          `valid: low, medium, high, xhigh, max`,
-        );
+        throw new Error(`Invalid Claude Code effort pin: ${effort}`);
       }
     }
     // Model pin (#1518). Resolution order: per-task override (opts.model) →
     // unset (Claude Code's own default). No Kookr-global per-agent model
-    // default for claude-code. Upstream validation rejects unknown ids, so a
-    // stray bad value is skipped (+ warn) rather than passed to break launch.
+    // default for claude-code. Claude remains authoritative for model ids.
     if (opts?.model) {
-      if (isValidModelForAgent(this.agentType, opts.model)) {
+      if (isValidLaunchPin(opts.model)) {
         args.push('--model', opts.model);
       } else {
-        console.warn(
-          `[claude-code-adapter] ignoring invalid model "${opts.model}" for ${this.agentType}`,
-        );
+        throw new Error(`Invalid Claude Code model pin: ${opts.model}`);
       }
     }
     if (useResume) {

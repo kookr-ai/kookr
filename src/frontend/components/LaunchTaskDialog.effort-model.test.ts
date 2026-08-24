@@ -156,25 +156,26 @@ describe('LaunchTaskDialog effort and model pickers (#2448)', () => {
     act(() => root.unmount());
   });
 
-  test('grok-build hides the model picker', async () => {
+  test('grok-build exposes both pickers', async () => {
     const { root } = renderDialog(container, 'grok-build');
     await flush();
 
-    expect(getModelSelect(container)).toBeNull();
+    expect(getModelSelect(container)).not.toBeNull();
     expect(getEffortSelect(container)).toBeNull();
+    expect(container.querySelector('input[aria-label="Reasoning effort"]')).not.toBeNull();
     act(() => root.unmount());
   });
 
-  test('codex-cli shows effort and hides model', async () => {
+  test('codex-cli shows both effort and model', async () => {
     const { root } = renderDialog(container, 'codex-cli');
     await flush();
 
     expect(getEffortSelect(container)).not.toBeNull();
-    expect(getModelSelect(container)).toBeNull();
+    expect(getModelSelect(container)).not.toBeNull();
     act(() => root.unmount());
   });
 
-  test('switching to grok-build drops a previously chosen model pin from the payload', async () => {
+  test('switching to grok-build preserves both previously chosen pins', async () => {
     const { root, sent } = renderDialog(container, 'claude-code');
     await flush();
 
@@ -185,8 +186,7 @@ describe('LaunchTaskDialog effort and model pickers (#2448)', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'grok-build' });
-    expect(sent[0]).not.toHaveProperty('effort');
-    expect(sent[0]).not.toHaveProperty('model');
+    expect(sent[0]).toMatchObject({ effort: 'max', model: 'claude-fable-5' });
     act(() => root.unmount());
   });
 });
@@ -246,17 +246,17 @@ describe('LaunchTaskDialog last-used effort and model (#2616)', () => {
     await act(async () => { setSelectValue(getAgentSelectEl(container), 'codex-cli'); });
     await flush();
     expect(getEffortSelect(container)?.value).toBe('high');
-    expect(getModelSelect(container)).toBeNull();
+    expect(getModelSelect(container)).not.toBeNull();
     act(() => root.unmount());
   });
 
-  test('a stored Codex-only effort falls back to Agent default while a valid model stays', async () => {
+  test('a stored harness-native effort and model stay editable', async () => {
     localStorage.setItem(LAST_EFFORT_KEY, 'ultra');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
 
     const { root } = renderDialog(container, 'claude-code');
     await flush();
-    expect(getEffortSelect(container)?.value).toBe('');
+    expect(getEffortSelect(container)?.value).toBe('ultra');
     expect(getModelSelect(container)?.value).toBe('claude-fable-5');
     act(() => root.unmount());
   });

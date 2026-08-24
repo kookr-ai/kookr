@@ -1589,7 +1589,11 @@ describe('createKookrServer', () => {
       expect(second.id).not.toBe(first.id);
       // launchSource is stamped alongside the intent (issue #1526 Phase C /
       // C3) — this request carried X-Kookr-Launch-Source: cli.
-      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate', launchSource: 'cli' });
+      expect(second.metadata).toEqual({
+        intent: 'keep_as_duplicate',
+        launchPins: { version: 1, state: 'known-unpinned' },
+        launchSource: 'cli',
+      });
 
       const listRes = await fetch(`${baseUrl}/api/tasks`);
       const tasks = await listRes.json();

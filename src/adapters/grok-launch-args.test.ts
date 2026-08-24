@@ -18,9 +18,10 @@ describe('buildGrokLaunchArgs', () => {
     ]);
   });
 
-  it('never emits a --reasoning-effort flag (Grok exposes no validated effort)', () => {
-    const args = buildGrokLaunchArgs({ model: 'grok-build' });
-    expect(args.join(' ')).not.toContain('effort');
+  it('emits an independent native reasoning-effort pin', () => {
+    expect(buildGrokLaunchArgs({ model: 'grok-4.6', effort: 'high' })).toEqual([
+      '--no-alt-screen', '--model', 'grok-4.6', '--reasoning-effort', 'high',
+    ]);
   });
 
   it('maps explicit bypass opt-in to --permission-mode bypassPermissions', () => {

@@ -120,7 +120,7 @@ capacity).
 | `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe. Supervisor endpoint — see below |
 | `POST /api/tasks/completion-ready/ack-all` | Complete every stale `completion_ready` task in one call (`{"force": true}` to ignore auto-close policy). Supervisor endpoint — see below |
 | `GET /api/tasks/migratable` | Preview cross-agent migration candidates for a `?targetAgent=`. Optional `fromAgent` / `includeCancelled` / `onlyIsolated` / `taskIds` (comma-separated) filters. Returns `{ targetAgent, candidates: [{taskId, eligible, reason?, worktreeShared, …}] }` |
-| `POST /api/tasks/migrate` | Continue interrupted tasks under a **different** agent by launching linked continuation tasks. Body `{ targetAgent, scope: {kind:'ids', taskIds} \| {kind:'all', fromAgent?, includeCancelled?}, effort?, setAsDefault?, onlyIsolated? }`. Per-task `migrated` / `queued` / `blocked` results; `200` even on mixed outcomes; `400` malformed. Behind the same `/api` auth + CSRF middleware as `POST /api/tasks` (a task-creation path) — **not** supervisor-gated, unlike `POST /api/tasks/abort` |
+| `POST /api/tasks/migrate` | Continue interrupted tasks under a **different** agent by launching linked continuation tasks. Body `{ targetAgent, scope: {kind:'ids', taskIds} \| {kind:'all', fromAgent?, includeCancelled?}, effort?, model?, setAsDefault?, onlyIsolated? }`. Per-task `migrated` / `queued` / `blocked` results; `200` even on mixed outcomes; `400` malformed. Behind the same `/api` auth + CSRF middleware as `POST /api/tasks` (a task-creation path) — **not** supervisor-gated, unlike `POST /api/tasks/abort` |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
@@ -254,13 +254,10 @@ non-directory path returns `400 {"error", "code": "invalid_cwd"}` with the
 offending path in the message.
 
 `effort` (optional, string) sets the reasoning-effort level for *this one task*,
-overriding the per-agent-type default (see [Reasoning effort](#reasoning-effort)).
-It is validated against the **resolved** agent's allowed set — `round-robin`
-resolves to a concrete agent first — and an invalid level returns
-`400 {"error", "code": "invalid_effort"}`. Allowed levels:
-
-- `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
-- `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`
+overriding the per-agent-type default. It must be a non-empty printable token
+of at most 200 characters; capability suggestions are advisory and the
+selected harness is authoritative. A malformed value returns `400 {"error"}`;
+shape-valid values that the harness cannot use surface as its launch error.
 
 Omitting `effort` falls back to the per-agent-type setting. For `codex-cli`,
 missing or empty `agentEffort` maps pass no effort override (model-native
@@ -269,23 +266,13 @@ with `KOOKR_CODEX_MODEL`. The `kookr-spawn --effort <level>` flag maps to this
 field. The dashboard Launch dialog and Quick Launch send the same field
 when the operator picks an effort there.
 
-`model` (optional, string) pins the model for *this one task* (#1518). Validated
-against the **resolved** agent's known-model allowlist after any `round-robin`
-resolution; an invalid id returns `400 {"error", "code": "invalid_model"}` with
-no silent fallback. Allowed base ids for `claude-code`:
-
-- `claude-fable-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`,
-  `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
-- dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
-  accepted
-
-`codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
-`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
-CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
-field. The dashboard Launch dialog and Quick Launch send the same field
-when the operator picks a model there. Resolution order for both `effort`
-and `model`: **per-task override → per-schedule value → global agent-type
-default → unset**.
+`model` (optional, string) pins the model for *this one task*. It follows the
+same non-empty printable-token boundary (maximum 200 characters); the selected
+harness is authoritative for whether the model exists or is entitled. Omitting
+`model` leaves the agent CLI / env default unchanged. The `kookr-spawn --model
+<id>` flag, dashboard Launch dialog, and Quick Launch all map to this field.
+Resolution order for both `effort` and `model`: **per-task override →
+per-schedule value → global agent-type default → unset**.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*
@@ -906,8 +893,9 @@ Quick Launch, or `kookr-spawn --effort` overrides the settings default
 for one launch. Schedules may also pin
 `effort` / `model` on create/update; those values are forwarded into each
 spawned task. Resolution order: per-task override → per-schedule value →
-per-agent-type setting → unset (CLI/model default). Stock binaries skip
-fork-only model and effort overrides.
+per-agent-type setting → unset (CLI/model default). Explicit per-task model
+and effort pins are forwarded to stock and forked Codex binaries; stock
+binaries still use native default-model probing when no pin is supplied.
 
 ### Admin / runtime control
 

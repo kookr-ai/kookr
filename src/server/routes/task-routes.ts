@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
-import { normalizeAgentSelection } from '../../core/agent-types.js';
+import { normalizeAgentSelection, isValidLaunchPin } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { isTerminalStatus } from '../../core/task-status.js';
 import { redactSecrets } from '../../core/redact-secrets.js';
@@ -544,14 +544,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
         return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
       }
-      // #681 / #1518: shape check only. The agent-specific allowed-set check
-      // runs in launchTask after round-robin resolution and surfaces as a 400
-      // via EffortValidationError / ModelValidationError (mapped below).
+      // #681 / #1518: validate transport shape here; the selected harness is
+      // authoritative for whether a shape-valid value is supported.
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
       }
+      if (body.effort !== undefined && !isValidLaunchPin(body.effort)) {
+        return c.json({ error: 'effort must be a non-empty printable token up to 200 characters' }, 400);
+      }
       if (body.model !== undefined && typeof body.model !== 'string') {
         return c.json({ error: 'model must be a string' }, 400);
+      }
+      if (body.model !== undefined && !isValidLaunchPin(body.model)) {
+        return c.json({ error: 'model must be a non-empty printable token up to 200 characters' }, 400);
       }
       if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
         return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
@@ -861,6 +866,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       targetAgent?: unknown;
       scope?: unknown;
       effort?: unknown;
+      model?: unknown;
       setAsDefault?: unknown;
       onlyIsolated?: unknown;
     };
@@ -913,11 +919,21 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (body.effort !== undefined && typeof body.effort !== 'string') {
       return c.json({ error: 'effort must be a string when supplied' }, 400);
     }
+    if (body.model !== undefined && typeof body.model !== 'string') {
+      return c.json({ error: 'model must be a string when supplied' }, 400);
+    }
+    if (body.effort !== undefined && !isValidLaunchPin(body.effort)) {
+      return c.json({ error: 'effort must be a non-empty printable token up to 200 characters' }, 400);
+    }
+    if (body.model !== undefined && !isValidLaunchPin(body.model)) {
+      return c.json({ error: 'model must be a non-empty printable token up to 200 characters' }, 400);
+    }
     try {
       const result = await migrateTasks(buildMigrateDeps(c.req.header(ACTOR_HEADER)), {
         scope,
         targetAgent,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
+        model: typeof body.model === 'string' ? body.model : undefined,
         setAsDefault: body.setAsDefault === true,
         onlyIsolated: body.onlyIsolated === true,
       });

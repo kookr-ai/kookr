@@ -303,8 +303,8 @@ any other `launchTask` caller, including schedule):
    (issue **#1895** / PR **#1921**, WS1.3 — `resolvePinnedAgentFallback` over
    `AVAILABLE_AGENT_TYPES`, skipping deprioritized agents while a healthier
    alternate remains). Claude-code is treated as unavailable for that launch;
-   effort/model pins that are invalid for the substitute are dropped (same as
-   WS1.3 schedule substitution).
+   explicit effort/model pins prevent substitution because changing the harness
+   would change their meaning; the launch rejects before creating a task record.
 3. Only when **no** healthy alternate is registered does the launch reject with
    `quota_headroom_admission` and **no task record**.
 4. A process-local **binding-window cache** records the deny until `resetsAt`

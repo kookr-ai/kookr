@@ -37,7 +37,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { isValidLaunchPin } from '../shared/contracts/agent-types.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
@@ -224,7 +224,8 @@ export interface CodexCliAdapterOptions {
    * Returning `undefined` — the default when no effort is configured — passes
    * no `model_reasoning_effort` override; the adapter still selects its
    * configured default model.
-   * Invalid values are ignored (skip + warn) as a final guard.
+   * Invalid configured defaults are ignored (skip + warn); explicit per-task
+   * pins are validated and rejected before adapter launch.
    */
   resolveDefaultEffort?: () => string | undefined;
 }
@@ -286,7 +287,6 @@ export class CodexCliAdapter implements AgentAdapter {
   /** Also gates fork-only model and reasoning-effort settings. */
   private kookrForkSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPluginDirSupport = false;
-  private warnedAboutUnsupportedForkEfforts = new Set<string>();
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
@@ -484,7 +484,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // advertises ultra — regardless of KOOKR_CODEX_MODEL.
     const forkCapabilitiesSupported = await this.probeKookrForkSupport();
     const effort = opts?.effort ?? this.resolveDefaultEffort?.();
-    const model = forkCapabilitiesSupported ? resolveCodexModel(effort) : undefined;
+    const model = opts?.model ?? (forkCapabilitiesSupported ? resolveCodexModel(effort) : undefined);
 
     // V8: argv-based launch through the backend. No shell features needed;
     // env goes in SessionSpec.env, flags become argv.
@@ -504,24 +504,11 @@ export class CodexCliAdapter implements AgentAdapter {
     // guard is a last line of defense (route + settings validation reject
     // invalid values upstream). The prompt positional is appended later, so
     // this flag pair never lands in trailing-positional position.
-    const forkOnlyEffort = effort === 'max' || effort === 'ultra';
-    if (effort && forkOnlyEffort && !forkCapabilitiesSupported) {
-      if (!this.warnedAboutUnsupportedForkEfforts.has(effort)) {
-        this.warnedAboutUnsupportedForkEfforts.add(effort);
-        console.warn(
-          `[codex-cli-adapter] effort "${effort}" requires the Kookr Codex fork; ` +
-          `keeping the stock Codex model and skipping the unsupported override. ` +
-          `Run \`pnpm codex:rebuild\` from kookr to install the fork.`,
-        );
-      }
-    } else if (effort) {
-      if (isValidEffortForAgent(this.agentType, effort)) {
+    if (effort) {
+      if (isValidLaunchPin(effort)) {
         args.push('-c', `model_reasoning_effort="${effort}"`);
       } else {
-        console.warn(
-          `[codex-cli-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
-          `valid: none, minimal, low, medium, high, xhigh, max, ultra`,
-        );
+        throw new Error(`Invalid Codex CLI effort pin: ${effort}`);
       }
     }
     if (promptFileSupported) {

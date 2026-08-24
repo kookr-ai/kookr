@@ -9,14 +9,7 @@ import type { PlaybookScope } from '../core/playbook.js';
 import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import {
-  DEFAULT_AGENT_TYPE,
-  ROUND_ROBIN_AGENT_TYPE,
-  isAgentType,
-  isValidEffortForAgent,
-  isValidModelForAgent,
-  effortLevelsForAgent,
-  modelsForAgent,
-  ALL_EFFORT_LEVELS,
+  isValidLaunchPin,
   type AgentSelection,
 } from '../core/agent-types.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
@@ -35,7 +28,7 @@ const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the select
 export class ScheduleValidator {
   async validateCreate(
     input: CreateScheduleInput,
-    getDefaultAgentType?: () => AgentSelection,
+    _getDefaultAgentType?: () => AgentSelection,
   ): Promise<void> {
     const fieldErrors: Record<string, string> = {};
 
@@ -48,10 +41,7 @@ export class ScheduleValidator {
       fieldErrors.maxTriggers = 'Must be a positive integer';
     }
 
-    // Effort/model pins are validated against the pin when present, else the
-    // live server default (same agent the fire path will use).
-    const agentType = input.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE;
-    Object.assign(fieldErrors, validateScheduleEffortModel(agentType, input.effort, input.model));
+    Object.assign(fieldErrors, validateScheduleEffortModel(input.effort, input.model));
 
     if (Object.keys(fieldErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', fieldErrors);
@@ -68,7 +58,7 @@ export class ScheduleValidator {
   async validateDefinitionUpdate(
     existing: Schedule,
     patch: UpdateScheduleDefinitionInput,
-    getDefaultAgentType?: () => AgentSelection,
+    _getDefaultAgentType?: () => AgentSelection,
   ): Promise<void> {
     if (patch.cron !== undefined) {
       const cronError = validateCron(patch.cron);
@@ -82,13 +72,9 @@ export class ScheduleValidator {
 
     // null clears the pin → validate against the live default; omit keeps
     // the existing pin (or default when the schedule never pinned).
-    const resolvedAgent =
-      patch.agentType === null
-        ? (getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE)
-        : (patch.agentType ?? existing.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE);
     const effort = patch.effort !== undefined ? patch.effort : existing.effort;
     const model = patch.model !== undefined ? patch.model : existing.model;
-    const effortModelErrors = validateScheduleEffortModel(resolvedAgent, effort, model);
+    const effortModelErrors = validateScheduleEffortModel(effort, model);
     if (Object.keys(effortModelErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', effortModelErrors);
     }
@@ -239,46 +225,22 @@ export function validateCron(cron: string): string | undefined {
 /**
  * Validate optional schedule-level effort/model pins (#1518).
  *
- * For a concrete agent, use the agent-specific allowlists. For `round-robin`,
- * use the cross-agent union (authoritative check still runs at launch once a
- * concrete agent is resolved). Empty allowlists (codex/grok model) reject any
- * model pin with an explicit message rather than silently ignoring it.
+ * Validate transport-safe shape only. Suggestions are agent-specific, but the
+ * selected harness remains authoritative for supported values after launch.
  */
 export function validateScheduleEffortModel(
-  agentType: AgentSelection,
   effort: string | undefined,
   model: string | undefined,
 ): Record<string, string> {
   const fieldErrors: Record<string, string> = {};
   if (effort !== undefined) {
-    if (typeof effort !== 'string' || effort.length === 0) {
+    if (!isValidLaunchPin(effort)) {
       fieldErrors.effort = 'Must be a non-empty string';
-    } else if (agentType === ROUND_ROBIN_AGENT_TYPE) {
-      if (!ALL_EFFORT_LEVELS.includes(effort)) {
-        fieldErrors.effort = `Must be one of: ${ALL_EFFORT_LEVELS.join(', ')}`;
-      }
-    } else if (isAgentType(agentType)) {
-      if (!isValidEffortForAgent(agentType, effort)) {
-        const levels = effortLevelsForAgent(agentType);
-        fieldErrors.effort = levels.length === 0
-          ? `Agent ${agentType} does not accept an effort pin`
-          : `Must be one of: ${levels.join(', ')}`;
-      }
     }
   }
   if (model !== undefined) {
-    if (typeof model !== 'string' || model.length === 0) {
+    if (!isValidLaunchPin(model)) {
       fieldErrors.model = 'Must be a non-empty string';
-    } else if (agentType === ROUND_ROBIN_AGENT_TYPE) {
-      // Model pins require a concrete agent so the allowlist is meaningful.
-      fieldErrors.model = 'model requires a concrete agentType (not round-robin)';
-    } else if (isAgentType(agentType)) {
-      if (!isValidModelForAgent(agentType, model)) {
-        const models = modelsForAgent(agentType);
-        fieldErrors.model = models.length === 0
-          ? `Agent ${agentType} does not accept a per-schedule model pin`
-          : `Must be one of: ${models.join(', ')} (dated suffixes of those bases also accepted)`;
-      }
     }
   }
   return fieldErrors;

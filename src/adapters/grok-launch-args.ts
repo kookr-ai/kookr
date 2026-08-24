@@ -25,6 +25,8 @@ export const GROK_BUILD_KILL_SWITCH_ENV = 'KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES
 
 export interface BuildGrokLaunchArgsOptions {
   model: string;
+  /** Optional native reasoning-effort pin. Grok validates its token. */
+  effort?: string;
   /**
    * Explicit permission-bypass opt-in (RFC safety req 4 — mapped independently
    * from any sandbox profile). Default (false) launches in Grok's default
@@ -43,11 +45,11 @@ export interface BuildGrokLaunchArgsOptions {
  * POC), and the prompt is delivered as terminal bytes after readiness — never
  * on argv (RFC: "Long prompts must not be placed on argv").
  *
- * No `--reasoning-effort` is ever emitted: POC-A did not validate Grok's
- * accepted effort values, so Grok exposes none (see GROK_BUILD_EFFORT_LEVELS).
+ * When supplied, `--reasoning-effort` is emitted independently of model.
  */
 export function buildGrokLaunchArgs(opts: BuildGrokLaunchArgsOptions): string[] {
   const args = ['--no-alt-screen', '--model', opts.model];
+  if (opts.effort) args.push('--reasoning-effort', opts.effort);
   if (opts.bypassAllPermissions) {
     args.push('--permission-mode', 'bypassPermissions');
   }

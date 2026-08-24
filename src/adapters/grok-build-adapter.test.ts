@@ -108,6 +108,18 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
+  test('forwards independent model and effort overrides to the harness', async () => {
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('pinned grok', '/workspace');
+    const sessionId = await adapter.launch(task.id, 'pinned grok', '/workspace', undefined, {
+      model: 'grok-4.6',
+      effort: 'high',
+    });
+    expect(backend.sessions.get(sessionId)!.spec.args).toEqual([
+      '--no-alt-screen', '--model', 'grok-4.6', '--reasoning-effort', 'high',
+    ]);
+  });
+
   test('reports the dtach master via onSessionCreated once the session exists (issue #2500)', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');

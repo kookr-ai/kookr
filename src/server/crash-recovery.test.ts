@@ -91,6 +91,25 @@ describe('Crash Recovery', () => {
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
   });
 
+  test('relaunches a crashed task with its durable model and effort pins', async () => {
+    const cwd = join(tempDir, 'pinned-project');
+    const task = await setupCrashedTask('Pinned recovery', cwd);
+    taskStore.getTaskForMutation(task.id)!.metadata = {
+      launchPins: { version: 1, state: 'known-pinned', effort: 'high', model: 'claude-fable-5' },
+    };
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(1);
+    const recovered = taskStore.getTask(task.id)!.sessions.at(-1)!;
+    const args = terminal.sessions.get(recovered.tmuxSession)!.spec.args;
+    expect(args).toContain('--model');
+    expect(args[args.indexOf('--model') + 1]).toBe('claude-fable-5');
+    expect(args).toContain('--effort');
+    expect(args[args.indexOf('--effort') + 1]).toBe('high');
+  });
+
   test('does NOT relaunch a spawned task that finished its turn cleanly (#693)', async () => {
     // A self-continuation chain link (parentTaskId set) that ended on a clean
     // `completed_turn` is done, not crashed. reconcile auto-completes it; crash

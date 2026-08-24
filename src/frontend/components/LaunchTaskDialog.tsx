@@ -194,6 +194,8 @@ export function buildSpawnCommand(input: {
   cwd: string;
   agentType: AgentSelection;
   criteria?: string;
+  effort?: string;
+  model?: string;
 }): SpawnCommandBuild {
   const prompt = input.prompt.trim();
   const cwd = input.cwd.trim();
@@ -204,6 +206,8 @@ export function buildSpawnCommand(input: {
   if (input.agentType !== ROUND_ROBIN_AGENT_TYPE) {
     flags.push(`-a ${input.agentType}`);
   }
+  if (input.effort?.trim()) flags.push(`--effort ${shellArg(input.effort.trim())}`);
+  if (input.model?.trim()) flags.push(`--model ${shellArg(input.model.trim())}`);
 
   if (PROMPT_ARGV_UNSAFE.test(prompt)) {
     const spawnFlags = [...flags, '--prompt-file "$prompt_file"'];
@@ -325,7 +329,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
     return serverDefaultAgentType ?? 'claude-code';
   });
-  const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
+  const [initialPins] = useState(() => restoreLastLaunchPins());
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
@@ -432,8 +436,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   }, [cwd, allCwdSuggestions]);
 
   const activeDuplicate = useMemo(
-    () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
-    [duplicateCandidates, prompt, cwd, agentType],
+    () => findActiveLaunchDuplicate(duplicateCandidates, {
+      prompt, cwd, agentType, effort: effort || undefined, model: model || undefined,
+    }),
+    [duplicateCandidates, prompt, cwd, agentType, effort, model],
   );
   const busyDirectoryTasks = useMemo(
     () => findLiveTasksInDirectory(duplicateCandidates, cwd),
@@ -449,6 +455,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       prompt: trimmed,
       cwd: cwd.trim(),
       agentType,
+      effort: effort || undefined,
+      model: model || undefined,
     })) {
       return;
     }
@@ -532,7 +540,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   async function handleCopySpawn() {
     if (!canCopySpawn) return;
-    const built = buildSpawnCommand({ prompt, cwd, agentType, criteria });
+    const built = buildSpawnCommand({ prompt, cwd, agentType, criteria, effort, model });
     try {
       await copyText(built.command);
       setSpawnCopied(true);
@@ -872,7 +880,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               value={agentType}
               onChange={(next) => {
                 setAgentType(next);
-                const nextPins = sanitizeLaunchPins(next, effort, model);
+                const nextPins = sanitizeLaunchPins(effort, model);
                 setEffort(nextPins.effort);
                 setModel(nextPins.model);
               }}

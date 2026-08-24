@@ -302,6 +302,8 @@ type LaunchPlaybookBaseMessage = {
   playbookPath: string;
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
+  effort?: string;
+  model?: string;
   scope?: PlaybookScope;
 };
 
@@ -563,7 +565,7 @@ export type ClientMessage =
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
   | { type: 'requestTaskSnapshotReflect'; taskId: string; hint?: string }
-  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
+  | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; effort?: string; model?: string; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'batchAbortTasks'; taskIds: string[]; reason?: string }
   | { type: 'reopenTask'; taskId: string }

@@ -1079,6 +1079,39 @@ describe('promotePendingTasks', () => {
     );
   });
 
+  test('passes durable model and effort pins when promoting a pending task', async () => {
+    const pendingTask = lifecycleTask({
+      id: 'pending-pinned',
+      status: 'pending',
+      metadata: { launchPins: { version: 1, state: 'known-pinned', effort: 'high', model: 'claude-fable-5' } },
+    });
+    const mockTaskStore = {
+      getActiveCount: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(1),
+      getNextPending: vi.fn().mockReturnValueOnce(pendingTask).mockReturnValueOnce(undefined),
+      listTasks: vi.fn().mockReturnValue([]),
+      hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
+      getTask: vi.fn().mockReturnValue(pendingTask),
+      cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
+    };
+    const lifecycleDeps = makeDeps();
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const deps = makePromotionDeps({ taskStore: mockTaskStore as any, lifecycleDeps });
+
+    await promotePendingTasks(deps);
+
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      'pending-pinned',
+      'Fix the bug in auth',
+      '/workspace/project',
+      undefined,
+      { effort: 'high', model: 'claude-fable-5' },
+    );
+  });
+
   test('returns 0 and does not broadcast when no pending tasks', async () => {
     const deps = makePromotionDeps();
 

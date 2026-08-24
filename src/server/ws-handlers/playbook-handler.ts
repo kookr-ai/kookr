@@ -45,6 +45,8 @@ export class PlaybookHandler {
             playbookPath: msg.playbookPath,
             parameterValues: msg.parameterValues,
             agentType: msg.agentType,
+            effort: msg.effort,
+            model: msg.model,
             scope: msg.scope,
           });
           result = await this.deps.launchTask?.(prepared.launchOpts, { deliveryPolicy: prepared.deliveryPolicy });

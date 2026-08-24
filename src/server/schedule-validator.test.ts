@@ -256,7 +256,7 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
       })).resolves.toBeUndefined();
     });
 
-    it('rejects invalid effort for the agent', async () => {
+    it('accepts a bounded custom effort for a harness-added value', async () => {
       await expect(validator.validateCreate({
         name: 'Bad effort',
         cron: '0 9 * * *',
@@ -264,13 +264,10 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         agentType: 'claude-code',
         effort: 'ultra',
         playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
-      })).rejects.toMatchObject({
-        name: 'ScheduleValidationError',
-        fieldErrors: { effort: expect.stringMatching(/low|medium|high/) },
-      });
+      })).resolves.toBeUndefined();
     });
 
-    it('rejects invalid model for claude-code', async () => {
+    it('accepts a bounded custom model for claude-code', async () => {
       await expect(validator.validateCreate({
         name: 'Bad model',
         cron: '0 9 * * *',
@@ -278,13 +275,10 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         agentType: 'claude-code',
         model: 'gpt-5.6-sol',
         playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
-      })).rejects.toMatchObject({
-        name: 'ScheduleValidationError',
-        fieldErrors: { model: expect.stringMatching(/claude-fable-5|Must be one of/) },
-      });
+      })).resolves.toBeUndefined();
     });
 
-    it('rejects model pin for round-robin agent selection', async () => {
+    it('accepts model pin for round-robin until concrete resolution', async () => {
       await expect(validator.validateCreate({
         name: 'RR model',
         cron: '0 9 * * *',
@@ -292,13 +286,10 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         agentType: 'round-robin',
         model: 'claude-fable-5',
         playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
-      })).rejects.toMatchObject({
-        name: 'ScheduleValidationError',
-        fieldErrors: { model: expect.stringMatching(/round-robin/) },
-      });
+      })).resolves.toBeUndefined();
     });
 
-    it('rejects model pin for codex-cli (empty allowlist)', async () => {
+    it('accepts model pin for codex-cli', async () => {
       await expect(validator.validateCreate({
         name: 'Codex model',
         cron: '0 9 * * *',
@@ -306,10 +297,26 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         agentType: 'codex-cli',
         model: 'claude-fable-5',
         playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
-      })).rejects.toMatchObject({
-        name: 'ScheduleValidationError',
-        fieldErrors: { model: expect.stringMatching(/does not accept/) },
-      });
+      })).resolves.toBeUndefined();
+    });
+
+    it('rejects malformed or oversized pins at the schedule boundary', async () => {
+      await expect(validator.validateCreate({
+        name: 'Whitespace effort',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'claude-code',
+        effort: 'high value',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toThrow();
+      await expect(validator.validateCreate({
+        name: 'Oversized model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'claude-code',
+        model: 'm'.repeat(201),
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toThrow();
     });
   });
 });

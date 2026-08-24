@@ -19,9 +19,12 @@ Use the dashboard **Launch** button for an interactive start:
 1. Pick the project directory.
 2. Choose the agent provider when available.
 3. Optionally pin reasoning effort and model. Leave them on "Agent default"
-   to keep the server / CLI default. Codex hides Model; Grok Build hides both.
-   After a successful launch, the next open restores those pins when the
-   current agent still accepts them.
+   to keep the server / CLI default. All three agents expose both controls;
+   capability suggestions are editable custom values when a harness adds a new
+   model or effort.
+   After a successful launch, the next open restores those pins when they are
+   valid transport tokens; the selected harness remains authoritative and may
+   reject a value at launch.
 4. Enter the task prompt, or click a sample on the Manual tab to fill one
    (working directory and Launch stay yours).
 5. Add optional completion criteria.
@@ -33,7 +36,7 @@ Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their
 
 ### Pinning Model And Effort
 
-The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. The last pins you launched with are remembered locally and shown in those menus the next time you open Launch or Quick Launch. From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` and `grok-build` reject `--model` (set `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL` instead) and have their own effort rules. See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
+The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. After a successful launch, the next open restores any lexically valid effort and model pins, including custom values; the selected harness remains authoritative and may reject a value at launch. From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Claude maps them to `--model`/`--effort`, Codex to `-c model=...`/`-c model_reasoning_effort=...`, and Grok to `--model`/`--reasoning-effort`. Kookr provides agent-specific built-in fallback suggestions and keeps bounded custom input available; the harness remains authoritative.
 
 To set a lasting default instead of pinning each launch, use **Settings → Task Management**, where each agent type has a reasoning-effort default that new tasks start at. A per-task `--effort` always wins over that default.
 

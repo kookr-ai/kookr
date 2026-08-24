@@ -71,8 +71,8 @@ Options:
 | --- | --- | --- | --- |
 | `-C`, `--cwd` | path | Current shell directory | Working directory for the task. Relative paths are resolved from the invoking process's cwd. |
 | `-a`, `--agent` | `claude-code`, `codex-cli`, or `grok-build` | Server default | Agent type to launch for this task. |
-| `--effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` | Kookr per-agent setting; Codex defaults to GPT-5.6 Sol with no effort override | Reasoning effort override for this task. `claude-code` accepts `low`, `medium`, `high`, `xhigh`, and `max`; `codex-cli` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; `grok-build` does not support effort — omit `--effort` (the server rejects any value). |
-| `--model` | known Claude model id (e.g. `claude-fable-5`) | Agent CLI / env default | Pin the model for this task (#1518). `claude-code` accepts known Claude ids and dated suffixes; `codex-cli` / `grok-build` reject `--model` (use `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Server returns 400 for invalid values — no silent fallback. |
+| `--effort` | bounded printable token, ≤200 chars | Kookr per-agent setting; harness default when omitted | Independent reasoning-effort pin. Claude emits `--effort`, Codex emits `-c model_reasoning_effort=...`, and Grok emits `--reasoning-effort`; the selected harness validates the value. |
+| `--model` | bounded printable token, ≤200 chars | Agent CLI / env default | Independent model pin for Claude, Codex, or Grok. Kookr provides built-in agent-specific suggestions; custom ids remain valid and the harness is authoritative. |
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
 | `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key returns the task an earlier attempt with that key already created, instead of launching a second one. |
@@ -1217,6 +1217,7 @@ working-tree state), not a conversation transplant.
 | `--set-default` | On success, set `<agent>` as the server's default agent for new launches |
 | `--only-isolated` | Only tasks whose checkout is a dedicated worktree (not a shared checkout) |
 | `--effort <level>` | Reasoning effort for the continuation task (re-validated against the target agent) |
+| `--model <id>` | Model id for the continuation task (the target harness remains authoritative) |
 | `--dry-run` | Print the plan and exit without launching |
 | `--yes`, `-y` | Skip the confirmation prompt |
 

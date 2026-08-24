@@ -600,7 +600,11 @@ export class GrokBuildAdapter implements AgentAdapter {
     // A per-call `bypassPermissions` override wins over the constructor-time
     // default for THIS launch only; when unset the instance default applies.
     const bypassPermissions = opts?.bypassPermissions ?? this.bypassAllPermissions;
-    const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: bypassPermissions });
+    const args = buildGrokLaunchArgs({
+      model: opts?.model ?? this.model,
+      effort: opts?.effort,
+      bypassAllPermissions: bypassPermissions,
+    });
 
     // Arm handshake signals *before* spawn so a fast SessionStart cannot be missed.
     const sessionStarted = this.armSessionStartSignal(tmuxName);

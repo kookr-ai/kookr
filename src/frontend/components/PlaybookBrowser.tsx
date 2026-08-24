@@ -18,6 +18,7 @@ import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
@@ -296,6 +297,8 @@ export function PlaybookBrowser({
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType || 'claude-code'
   );
+  const [effort, setEffort] = useState('');
+  const [model, setModel] = useState('');
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,
@@ -657,6 +660,8 @@ export function PlaybookBrowser({
       playbookPath,
       parameterValues: paramValues,
       agentType,
+      ...(effort.trim() ? { effort: effort.trim() } : {}),
+      ...(model.trim() ? { model: model.trim() } : {}),
       ...(selected?.scope ? { scope: selected.scope } : {}),
     };
     if (!shouldSendSplitFields) {
@@ -892,6 +897,13 @@ export function PlaybookBrowser({
           options={agentOptions}
           roundRobinIndex={roundRobinIndex}
           grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
+        />
+        <LaunchEffortModelPickers
+          agentType={agentType}
+          effort={effort}
+          model={model}
+          onEffortChange={setEffort}
+          onModelChange={setModel}
         />
         {showGrokAuthBanner && grokAuth?.message && (
           <GrokAuthPreflightBanner message={grokAuth.message} />

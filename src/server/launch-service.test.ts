@@ -299,13 +299,9 @@ describe('launchTask', () => {
       expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ sandboxProfile: 'reflect' });
     });
 
-    it('validates against the RESOLVED agent: an unknown level is rejected for codex-cli', async () => {
-      await expect(
-        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'supermax' }),
-      ).rejects.toBeInstanceOf(EffortValidationError);
-      // Fail-fast: no task record, no adapter launch.
-      expect(store.listTasks()).toHaveLength(0);
-      expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
+    it('accepts a newly released effort token for codex-cli', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'supermax' });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'supermax' });
     });
 
     it('accepts a codex-only level for codex-cli (minimal)', async () => {
@@ -323,10 +319,9 @@ describe('launchTask', () => {
       expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'ultra' });
     });
 
-    it('rejects an entirely unknown effort token', async () => {
-      await expect(
-        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: 'ultra' }),
-      ).rejects.toBeInstanceOf(EffortValidationError);
+    it('accepts a newly released effort token for Claude Code', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: 'ultra' });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ effort: 'ultra' });
     });
 
     it('rejects an empty-string effort (guards the !== undefined check, not truthiness)', async () => {
@@ -346,6 +341,7 @@ describe('launchTask', () => {
         model: 'claude-fable-5',
       });
       expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-fable-5' });
+      expect(store.listTasks()[0]?.metadata?.launchPins).toEqual({ version: 1, state: 'known-pinned', model: 'claude-fable-5' });
     });
 
     it('threads model together with effort (#1518)', async () => {
@@ -359,29 +355,22 @@ describe('launchTask', () => {
         model: 'claude-fable-5',
         effort: 'max',
       });
+      expect(store.listTasks()[0]?.metadata?.launchPins).toEqual({
+        version: 1,
+        state: 'known-pinned',
+        model: 'claude-fable-5',
+        effort: 'max',
+      });
     });
 
-    it('rejects an unknown model for claude-code without creating a task (#1518)', async () => {
-      await expect(
-        launchTask(deps, {
-          prompt: 'hello',
-          cwd: '/tmp',
-          agentType: 'claude-code',
-          model: 'not-a-real-model',
-        }),
-      ).rejects.toBeInstanceOf(ModelValidationError);
-      expect(store.listTasks()).toHaveLength(0);
+    it('accepts a newly released model for claude-code (#1518)', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', model: 'not-a-real-model' });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'not-a-real-model' });
     });
 
-    it('rejects any model pin for codex-cli empty allowlist (#1518)', async () => {
-      await expect(
-        launchTask(deps, {
-          prompt: 'hello',
-          cwd: '/tmp',
-          agentType: 'codex-cli',
-          model: 'claude-fable-5',
-        }),
-      ).rejects.toBeInstanceOf(ModelValidationError);
+    it('accepts an explicit model pin for codex-cli (#1518)', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', model: 'gpt-5.6-sol' });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ model: 'gpt-5.6-sol' });
     });
 
     it('rejects empty-string model (#1518)', async () => {
@@ -680,8 +669,8 @@ describe('launchTask', () => {
 
     expect(second.duplicate).toBeUndefined();
     expect(second.task.id).not.toBe(first.task.id);
-    expect(second.task.metadata).toEqual({ intent: 'keep_as_duplicate' });
-    expect(store.getTask(second.task.id)?.metadata).toEqual({ intent: 'keep_as_duplicate' });
+    expect(second.task.metadata).toEqual({ intent: 'keep_as_duplicate', launchPins: { version: 1, state: 'known-unpinned' } });
+    expect(store.getTask(second.task.id)?.metadata).toEqual({ intent: 'keep_as_duplicate', launchPins: { version: 1, state: 'known-unpinned' } });
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledTimes(2);
   });
 
@@ -1845,6 +1834,21 @@ describe('launchTask round-robin', () => {
     expect(cursor).toBe(1);
   });
 
+  it('preserves model and effort pins while round-robin resolves compatibility', async () => {
+    const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
+    const result = await launchTask(roundRobinDeps, {
+      prompt: 'pinned round robin',
+      cwd: '/tmp',
+      effort: 'ultra',
+      model: 'gpt-5.6-sol',
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(result.task.metadata?.launchPins).toMatchObject({
+      state: 'known-pinned', effort: 'ultra', model: 'gpt-5.6-sol',
+    });
+    expect(cursor).toBe(1);
+  });
+
   it('lets an explicit concrete request override a round-robin default', async () => {
     const roundRobinDeps = { ...deps, getDefaultAgentType: () => 'round-robin' as const };
     const result = await launchTask(roundRobinDeps, {
@@ -2197,6 +2201,48 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
 
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
     expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('active prompt dedup does not discard different pins', async () => {
+    const first = await launchTask(deps, {
+      prompt: 'same prompt, different pin',
+      cwd: '/tmp',
+      effort: 'high',
+    });
+    const second = await launchTask(deps, {
+      prompt: 'same prompt, different pin',
+      cwd: '/tmp',
+      effort: 'max',
+    });
+    expect(second.duplicate).toBeUndefined();
+    expect(second.task.id).not.toBe(first.task.id);
+  });
+
+  it('same key with different pins is a distinct launch intent', async () => {
+    const first = await launchTask(deps, {
+      prompt: 'same request',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'high',
+      model: 'claude-fable-5',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+      idempotencyKey: 'k-pins',
+    });
+    const second = await launchTask(deps, {
+      prompt: 'same request',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-opus-4-8',
+      disableDedup: true,
+      metadataIntent: 'keep_as_duplicate',
+      idempotencyKey: 'k-pins',
+    });
+
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(store.listTasks()).toHaveLength(2);
   });
 
   it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {
@@ -3388,11 +3434,11 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(store.getTask(result.task.id)?.metadata?.launchSource).toBe('schedule');
     });
 
-    it('leaves metadata absent when no source is given', async () => {
+    it('records explicit unpinned metadata when no source is given', async () => {
       const store = new TaskStore();
       const deps = makeDeps(store);
       const result = await launchTask(deps, { prompt: 'unstamped', cwd: '/tmp' });
-      expect(store.getTask(result.task.id)?.metadata).toBeUndefined();
+      expect(store.getTask(result.task.id)?.metadata).toEqual({ launchPins: { version: 1, state: 'known-unpinned' } });
     });
   });
 });

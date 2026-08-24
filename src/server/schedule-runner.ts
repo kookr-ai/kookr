@@ -13,6 +13,7 @@ import {
 import {
   isAgentType,
   ROUND_ROBIN_AGENT_TYPE,
+  resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
   type AgentFallbackPolicy,
   type AgentSelection,
@@ -890,8 +891,6 @@ export class ScheduleRunner {
               to: agentResolution.agentType,
             }]
           : undefined;
-      // Effort/model pins target the original agent; drop them on substitution
-      // so an invalid pin for the substitute cannot reintroduce dispatch_failed.
       const result = await this.deps.launcher({
         prompt: launch.prompt,
         cwd: launch.cwd,
@@ -902,8 +901,8 @@ export class ScheduleRunner {
         agentType,
         // #1518: forward schedule-level effort/model pins into the spawned
         // task. launchTask still validates them against the resolved agent.
-        ...(!substituted && schedule.effort ? { effort: schedule.effort } : {}),
-        ...(!substituted && schedule.model ? { model: schedule.model } : {}),
+        ...(schedule.effort ? { effort: schedule.effort } : {}),
+        ...(schedule.model ? { model: schedule.model } : {}),
         ...(priorAgentSubstitutions ? { priorAgentSubstitutions } : {}),
         disableDedup: true,
         // issue #1526 Phase C / C3: mark schedule provenance. This (a)
@@ -1012,18 +1011,15 @@ export class ScheduleRunner {
     }
 
     // issue #1895: same pinned-agent fallback as one-shot fire — loop arming
-    // must not dispatch into a missing adapter either. On substitution, drop
-    // effort/model pins (they target the original agent); create-schedule-runtime
-    // forwards them into launchLoopedPlaybook and an invalid pin would reintroduce
-    // dispatch_failed after a successful agent substitution.
+    // must not dispatch into a missing adapter either. Explicit pins are
+    // preserved; the launch boundary rejects an incompatible substitution.
     const agentResolution = this.resolveScheduleAgent(schedule);
     if (agentResolution?.kind === 'unavailable') {
       return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
     }
     let scheduleForLaunch: Schedule = schedule;
     if (agentResolution?.kind === 'substituted') {
-      const { effort: _effort, model: _model, ...rest } = schedule;
-      scheduleForLaunch = { ...rest, agentType: agentResolution.agentType };
+      scheduleForLaunch = { ...schedule, agentType: agentResolution.agentType };
     } else if (agentResolution?.kind === 'available') {
       scheduleForLaunch = { ...schedule, agentType: agentResolution.agentType };
     }
@@ -1143,12 +1139,27 @@ export class ScheduleRunner {
     // Unpinned schedules inherit the live server default before availability
     // substitution — same agent launchTask would pick if agentType were omitted.
     const selection = resolveScheduleAgentSelection(schedule, this.deps.getDefaultAgentType);
-    if (selection === ROUND_ROBIN_AGENT_TYPE) return null;
-    if (!isAgentType(selection)) return null;
     const registered = this.deps.getAvailableAgentTypes();
     const available = filterLaunchableAgentTypes(registered, {
       grokAuthUsable: this.deps.isGrokAuthUsable?.() ?? true,
     });
+    if (selection === ROUND_ROBIN_AGENT_TYPE) {
+      if (schedule.effort === undefined && schedule.model === undefined) return null;
+      if (available.length === 0) return null;
+      const candidate = resolveRoundRobinAgent(0, available, []);
+      return candidate
+        ? { kind: 'available', agentType: candidate, substituted: false }
+        : null;
+    }
+    if (!isAgentType(selection)) return null;
+    // Explicit pins are harness-specific intent. Keep the selected agent when
+    // it is launchable; substituting it would send a Codex-only effort token
+    // to Claude. If it is unavailable, park the fire instead.
+    if (schedule.effort !== undefined || schedule.model !== undefined) {
+      return available.includes(selection)
+        ? { kind: 'available', agentType: selection, substituted: false }
+        : { kind: 'unavailable', from: selection };
+    }
     const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
     const policy = this.deps.getAgentFallbackPolicy?.();
     return resolvePinnedAgentFallback(selection, available, deprioritized, policy);

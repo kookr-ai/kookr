@@ -6,6 +6,11 @@
 
 import { z } from 'zod';
 import type { AgentType } from '../../core/agent-types.js';
+import { isValidLaunchPin } from '../../shared/contracts/agent-types.js';
+
+const launchPin = z.string().refine(isValidLaunchPin, {
+  message: 'must be a non-empty printable launch token up to 200 characters',
+});
 
 export const AgentTypeSchema = z.enum(['claude-code', 'codex-cli']);
 
@@ -24,6 +29,8 @@ export const TaskSpecSchema = z
     prompt: z.string().min(1).max(2000),
     cwd: z.string(),
     agentType: AgentTypeSchema.optional(),
+    effort: launchPin.optional(),
+    model: launchPin.optional(),
     suggestedBranch: z
       .string()
       .regex(/^[a-zA-Z0-9_/-]{1,80}$/)
@@ -42,6 +49,8 @@ export const TaskSpecBypassSchema = z
     prompt: z.string().min(1).max(2000),
     cwd: z.string(),
     agentType: AgentTypeSchema.optional(),
+    effort: launchPin.optional(),
+    model: launchPin.optional(),
   })
   .strict();
 
@@ -60,5 +69,7 @@ export interface ValidatedTaskSpec {
   prompt: string;
   cwd: string;
   agentType: AgentType;
+  effort?: string;
+  model?: string;
   suggestedBranch?: string;
 }

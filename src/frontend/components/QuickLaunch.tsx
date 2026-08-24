@@ -58,7 +58,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
     return store.defaultAgentType ?? 'claude-code';
   });
-  const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
+  const [initialPins] = useState(() => restoreLastLaunchPins());
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
 
@@ -114,19 +114,27 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   // Selected-task / last-used effects can change the agent without the
   // picker onChange. Keep pins the new agent still accepts; drop the rest.
   useEffect(() => {
-    setEffort((current) => sanitizeLaunchPins(agentType, current, '').effort);
-    setModel((current) => sanitizeLaunchPins(agentType, '', current).model);
+    setEffort((current) => sanitizeLaunchPins(current, '').effort);
+    setModel((current) => sanitizeLaunchPins('', current).model);
   }, [agentType]);
 
   const activeDuplicate = useMemo(
-    () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
-    [duplicateCandidates, prompt, cwd, agentType],
+    () => findActiveLaunchDuplicate(duplicateCandidates, {
+      prompt, cwd, agentType, effort: effort || undefined, model: model || undefined,
+    }),
+    [duplicateCandidates, prompt, cwd, agentType, effort, model],
   );
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd) return;
-    if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
+    if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, {
+      prompt: trimmed,
+      cwd,
+      agentType,
+      effort: effort || undefined,
+      model: model || undefined,
+    })) {
       return;
     }
     recentPaths.add(cwd);
