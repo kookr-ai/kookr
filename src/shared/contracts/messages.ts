@@ -581,7 +581,10 @@ export type ClientMessage =
   | {
       type: 'setProjectConfig';
       project: string;
-      config: Omit<Partial<ProjectConfig>, 'budgetWarnUsd'> & { budgetWarnUsd?: number | null };
+      config: Omit<Partial<ProjectConfig>, 'budgetWarnUsd' | 'zeroDrainIssueLimit'> & {
+        budgetWarnUsd?: number | null;
+        zeroDrainIssueLimit?: number | null;
+      };
     }
   | { type: 'clearCompleted'; includeTerminated?: boolean; projectId?: string }
   | { type: 'ackTerminatedTask'; taskId: string }

@@ -157,6 +157,36 @@ describe('POST /api/projects/configs webhook routing', () => {
       minSeverity: 'critical',
     });
   });
+
+  test('persists a zero-drain issue limit and rejects only the configured deployment ceiling', async () => {
+    const cappedStore = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 1000 });
+    await cappedStore.load();
+    const app = mkApp({ projectConfigStore: cappedStore, broadcastProjectSummaries: () => {} });
+
+    const accepted = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/maison', zeroDrainIssueLimit: 1000 }),
+    });
+    expect(accepted.status).toBe(200);
+    expect((await accepted.json()).zeroDrainIssueLimit).toBe(1000);
+
+    const rejected = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/maison', zeroDrainIssueLimit: 1001 }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ field: 'zeroDrainIssueLimit', maximum: 1000 });
+
+    const invalid = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'github.com/kookr-ai/maison', zeroDrainIssueLimit: 1.5 }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: expect.stringContaining('safe integer') });
+  });
 });
 
 describe('GET /api/projects', () => {

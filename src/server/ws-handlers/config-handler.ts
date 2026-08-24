@@ -53,6 +53,9 @@ export class ConfigHandler {
           if (config.budgetWarnUsd !== undefined) {
             patch.budgetWarnUsd = config.budgetWarnUsd ?? undefined;
           }
+          if (config.zeroDrainIssueLimit !== undefined) {
+            patch.zeroDrainIssueLimit = config.zeroDrainIssueLimit ?? undefined;
+          }
           if (config.notes !== undefined) patch.notes = config.notes;
           if (config.webhook !== undefined) {
             const webhook = normalizeProjectWebhookRoutingSettings(config.webhook);

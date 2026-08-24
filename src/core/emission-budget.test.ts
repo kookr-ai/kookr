@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONSTRAINED_BUDGET,
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
+  DEFAULT_DRAIN_FLOOR_BUDGET,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
   DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
@@ -269,18 +270,19 @@ describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
     expect(plan.overThreshold).toBe(false);
     expect(plan.drainCoupled).toBe(true);
     expect(plan.drainCount).toBe(1);
-    expect(plan.drainCap).toBe(1); // floor 0 + ceil(1 * 1)
+    expect(plan.drainCap).toBe(1); // ceil(1 * 1); no bootstrap floor for active repos
     expect(plan.allowedBudget).toBe(1);
     expect(plan.deferredCount).toBe(9);
     expect(plan.action).toBe('constrain');
     expect(plan.reason).toMatch(/drain cap 1/i);
   });
 
-  it('refuses emission into a repo draining nothing (drainCount 0, floor 0)', () => {
+  it('retains strict refusal when drain floor 0 is explicit', () => {
     const plan = resolveEmissionBudget({
       openBacklogCount: 10,
       requestedBudget: 5,
       drainCount: 0,
+      drainFloorBudget: 0,
     });
     expect(plan.drainCap).toBe(0);
     expect(plan.allowedBudget).toBe(0);
@@ -288,7 +290,20 @@ describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
     expect(plan.deferredCount).toBe(5);
   });
 
-  it('honors a drain floor so a fresh repo can still admit a few', () => {
+  it('retains strict refusal for a fresh repo by default', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 0,
+      requestedBudget: 10,
+      drainCount: 0,
+    });
+    expect(plan.drainCap).toBe(0);
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.deferredCount).toBe(10);
+    expect(plan.action).toBe('refuse');
+    expect(plan.reason).toMatch(/not draining/i);
+  });
+
+  it('honors an explicitly raised drain floor for a zero-drain target', () => {
     const plan = resolveEmissionBudget({
       openBacklogCount: 10,
       requestedBudget: 5,

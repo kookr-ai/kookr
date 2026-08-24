@@ -340,8 +340,7 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 | `--constrained <N>` | plan | Budget when over the open-backlog threshold. |
 | `--drain-window <N>` | plan | Drain-rate window in days. |
 | `--drain-ratio <N>` | plan | New issues earned per drained issue. |
-| `--drain-floor <N>` | plan | Minimum budget regardless of drain. |
-| `--no-drain-coupling` | plan | Disable drain coupling (legacy backlog-only budget). |
+| `--drain-floor <N>` | plan | Compatibility option; must remain `0`. Configure a repository's zero-drain allowance in Kookr project settings. |
 | `--retro-verify-threshold <N>` | plan | Queue depth at/above which emission is withheld (default `0` = any pending debt). |
 | `--no-retro-verify-coupling` | plan | Disable the `ci_blind_debt` gate (do not read the queue). |
 | `--tolerance-blocker <type:scope>` | plan | Refuse emission when that external blocker already has a tolerance regime (#1702). |

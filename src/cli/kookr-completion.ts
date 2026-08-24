@@ -202,7 +202,6 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--drain-window',
       '--drain-ratio',
       '--drain-floor',
-      '--no-drain-coupling',
       '--retro-verify-threshold',
       '--no-retro-verify-coupling',
       '--retro-verify-dir',

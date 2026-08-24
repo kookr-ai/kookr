@@ -88,6 +88,32 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
       config: expect.objectContaining({ budgetWarnUsd: null }),
     }));
   });
+
+  test('renders and saves the repository zero-drain issue limit without a built-in maximum', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ zeroDrainIssueLimit: 1000 }), false, send);
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    expect(input.value).toBe('1000');
+    expect(input.getAttribute('max')).toBeNull();
+    act(() => setInputValue(input, '2500'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ zeroDrainIssueLimit: 2500 }),
+    }));
+  });
+
+  test('keeps an over-cap value dirty and explains the deployment ceiling', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ zeroDrainIssueLimitMax: 1000 }), false, send);
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '1001'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('allows at most 1000');
+    expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
+  });
   test('shows accumulated spend against the cost-warning threshold', () => {
     renderDrawer(baseProject({ costUsd: 3.2, budgetWarnUsd: 7.5 }));
     const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;

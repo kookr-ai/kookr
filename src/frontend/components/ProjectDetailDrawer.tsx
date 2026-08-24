@@ -53,6 +53,8 @@ function TaskRow({ task }: { task: TaskSummary }) {
 export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, compact = false }: Props) {
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
   const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
+  const [zeroDrainIssueLimit, setZeroDrainIssueLimit] = useState<string>(project.zeroDrainIssueLimit?.toString() ?? '');
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
@@ -68,6 +70,17 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   function handleSave() {
     const limit = parseInt(dailyLimit, 10);
     const budget = Number(budgetWarnUsd);
+    const zeroDrainLimit = Number(zeroDrainIssueLimit);
+    if (zeroDrainIssueLimit.trim() !== '') {
+      if (!Number.isSafeInteger(zeroDrainLimit) || zeroDrainLimit < 0) {
+        setSaveError('Zero-drain issue limit must be a non-negative whole number.');
+        return;
+      }
+      if (project.zeroDrainIssueLimitMax !== undefined && zeroDrainLimit > project.zeroDrainIssueLimitMax) {
+        setSaveError(`This Kookr installation allows at most ${project.zeroDrainIssueLimitMax}.`);
+        return;
+      }
+    }
     send({
       type: 'setProjectConfig',
       project: project.project,
@@ -75,9 +88,13 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         project: project.project,
         dailyPrLimit: isNaN(limit) ? undefined : limit,
         budgetWarnUsd: budgetWarnUsd.trim() === '' || !Number.isFinite(budget) ? null : budget,
+        zeroDrainIssueLimit: zeroDrainIssueLimit.trim() === '' || !Number.isFinite(zeroDrainLimit)
+          ? null
+          : zeroDrainLimit,
         notes: notes || undefined,
       },
     });
+    setSaveError(null);
     setDirty(false);
   }
 
@@ -370,6 +387,27 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               className="project-drawer-input"
               data-testid="budget-warn-input"
             />
+          </div>
+          <div className="project-drawer-setting">
+            <label htmlFor={`zero-drain-issue-limit-${project.project}`}>Zero-drain issue limit</label>
+            <input
+              id={`zero-drain-issue-limit-${project.project}`}
+              type="number"
+              min="0"
+              step="1"
+              max={project.zeroDrainIssueLimitMax}
+              value={zeroDrainIssueLimit}
+              placeholder="0 (disabled)"
+              onChange={(e) => { setZeroDrainIssueLimit(e.target.value); setSaveError(null); setDirty(true); }}
+              aria-invalid={saveError !== null}
+              className="project-drawer-input"
+              data-testid="zero-drain-issue-limit-input"
+            />
+            <span className="project-drawer-setting-hint">
+              Issues allowed when the repository closed none in the drain window.
+              {project.zeroDrainIssueLimitMax !== undefined && ` Installation maximum: ${project.zeroDrainIssueLimitMax}.`}
+            </span>
+            {saveError && <span className="project-drawer-setting-error" role="alert">{saveError}</span>}
           </div>
           <div className="project-drawer-setting project-drawer-setting-block">
             <label htmlFor={`notes-${project.project}`}>Notes</label>

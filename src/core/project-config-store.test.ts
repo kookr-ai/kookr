@@ -2,7 +2,12 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ProjectConfigStore } from './project-config-store.js';
+import {
+  ProjectConfigLimitError,
+  ProjectConfigStore,
+  PROJECT_ISSUE_EMISSION_LIMIT_ENV,
+  readMaxZeroDrainIssueLimitFromEnv,
+} from './project-config-store.js';
 
 describe('ProjectConfigStore', () => {
   let tempDir: string;
@@ -33,6 +38,28 @@ describe('ProjectConfigStore', () => {
     expect(config.dailyPrLimit).toBe(3);
     expect(config.notes).toBe('Be careful');
     expect(store.getConfig('github.com/org/repo')).toEqual(config);
+  });
+
+  test('persists an unrestricted zero-drain issue limit such as 1000', async () => {
+    await store.load();
+    const config = store.setConfig('github.com/org/repo', { zeroDrainIssueLimit: 1000 });
+    expect(config.zeroDrainIssueLimit).toBe(1000);
+  });
+
+  test('enforces only the deployment-provided zero-drain ceiling', async () => {
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 1000 });
+    await capped.load();
+    expect(() => capped.setConfig('github.com/org/repo', { zeroDrainIssueLimit: 1001 }))
+      .toThrow(ProjectConfigLimitError);
+    expect(capped.setConfig('github.com/org/repo', { zeroDrainIssueLimit: 1000 }).zeroDrainIssueLimit)
+      .toBe(1000);
+  });
+
+  test('reads an optional deployment ceiling without a built-in fallback', () => {
+    expect(readMaxZeroDrainIssueLimitFromEnv({})).toBeUndefined();
+    expect(readMaxZeroDrainIssueLimitFromEnv({ [PROJECT_ISSUE_EMISSION_LIMIT_ENV]: '1000' })).toBe(1000);
+    expect(() => readMaxZeroDrainIssueLimitFromEnv({ [PROJECT_ISSUE_EMISSION_LIMIT_ENV]: '-1' }))
+      .toThrow(/non-negative safe integer/);
   });
 
   test('update existing config', async () => {

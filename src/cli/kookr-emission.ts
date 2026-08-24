@@ -14,8 +14,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   DEFAULT_CONSTRAINED_BUDGET,
@@ -49,6 +49,11 @@ import {
   readPendingRetroVerify,
 } from '../core/retro-verify-queue.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
+import { resolveKookrDataDir } from './kookr-maintenance.js';
+import {
+  PROJECT_ISSUE_EMISSION_LIMIT_ENV,
+  readMaxZeroDrainIssueLimitFromEnv,
+} from '../core/project-config-store.js';
 
 export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
 
@@ -77,8 +82,7 @@ Options:
   --constrained <N>       Budget when over threshold (default: ${DEFAULT_CONSTRAINED_BUDGET}).
   --drain-window <N>      Drain-rate window in days (plan; default: ${NET_BACKLOG_DELTA_WINDOW_DAYS}).
   --drain-ratio <N>       New issues earned per drained issue (default: ${DEFAULT_DRAIN_COUPLING_RATIO}).
-  --drain-floor <N>       Minimum budget regardless of drain (default: ${DEFAULT_DRAIN_FLOOR_BUDGET}).
-  --no-drain-coupling     Disable drain coupling (legacy backlog-only budget).
+  --drain-floor <N>       Internal compatibility option; must remain ${DEFAULT_DRAIN_FLOOR_BUDGET}.
   --retro-verify-threshold <N>
                           Depth at/above which emission is withheld
                           (default: ${DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD}).
@@ -101,6 +105,7 @@ Options:
 Environment:
   GH_TOKEN / gh auth      Required for live GitHub counts (plan/dedupe/metrics).
   KOOKR_RETRO_VERIFY_QUEUE_DIR  Override retro-verify queue path.
+  KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT  Optional deployment-wide ceiling for repository zero-drain limits.
 
 Exit codes:
   0  Success.
@@ -146,7 +151,6 @@ interface ParsedArgs {
   drainWindow: number;
   drainRatio: number;
   drainFloor: number;
-  drainCoupling: boolean;
   retroVerifyCoupling: boolean;
   retroVerifyDepthThreshold: number;
   retroVerifyDir: string | null;
@@ -173,7 +177,6 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     drainWindow: NET_BACKLOG_DELTA_WINDOW_DAYS,
     drainRatio: DEFAULT_DRAIN_COUPLING_RATIO,
     drainFloor: DEFAULT_DRAIN_FLOOR_BUDGET,
-    drainCoupling: true,
     retroVerifyCoupling: true,
     retroVerifyDepthThreshold: DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
     retroVerifyDir: null,
@@ -250,8 +253,6 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
       if (!Number.isFinite(out.drainFloor)) {
         throw new EmissionUsageError('--drain-floor must be a number');
       }
-    } else if (tok === '--no-drain-coupling') {
-      out.drainCoupling = false;
     } else if (tok === '--no-retro-verify-coupling') {
       out.retroVerifyCoupling = false;
     } else if (tok === '--retro-verify-threshold' || tok.startsWith('--retro-verify-threshold=')) {
@@ -280,6 +281,10 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     } else {
       throw new EmissionUsageError(`unexpected argument: ${tok}`);
     }
+  }
+
+  if (out.drainFloor !== DEFAULT_DRAIN_FLOOR_BUDGET) {
+    throw new EmissionUsageError(`--drain-floor is fixed at ${DEFAULT_DRAIN_FLOOR_BUDGET}; configure zero-drain allowance in the repository settings`);
   }
 
   return out;
@@ -317,6 +322,38 @@ function requireRepo(repo: string | null): string {
     throw new EmissionUsageError('--repo must be owner/repo');
   }
   return repo;
+}
+
+function readConfiguredZeroDrainIssueLimit(
+  repo: string,
+  kookrDir: string,
+  env: NodeJS.ProcessEnv,
+): number {
+  const path = join(kookrDir, 'project-configs.json');
+  let configured = 0;
+  try {
+    const rows = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (Array.isArray(rows)) {
+      const row = rows.find((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return false;
+        const project = (candidate as { project?: unknown }).project;
+        const normalizedRepo = repo.toLowerCase();
+        return project === `github.com/${normalizedRepo}` || project === normalizedRepo;
+      }) as { zeroDrainIssueLimit?: unknown } | undefined;
+      if (row && Number.isSafeInteger(row.zeroDrainIssueLimit) && (row.zeroDrainIssueLimit as number) >= 0) {
+        configured = row.zeroDrainIssueLimit as number;
+      }
+    }
+  } catch {
+    // Missing/corrupt optional project settings keep the strict default.
+  }
+  const maximum = readMaxZeroDrainIssueLimitFromEnv(env);
+  if (maximum !== undefined && configured > maximum) {
+    throw new EmissionUsageError(
+      `project zeroDrainIssueLimit=${configured} exceeds ${maximum} (${PROJECT_ISSUE_EMISSION_LIMIT_ENV})`,
+    );
+  }
+  return configured;
 }
 
 function searchTotalCount(runGh: (args: string[]) => string, query: string): number {
@@ -467,10 +504,18 @@ export async function runEmissionCli(
     return 0;
   }
 
+  // Keep the implicit state root aligned with the server's per-port namespace.
+  // An explicit --kookr-dir remains authoritative; this only replaces the
+  // parser's default ~/.kookr when the caller did not choose a path.
+  if (args.kookrDir === join(homedir(), '.kookr')) {
+    args.kookrDir = resolveKookrDataDir(env);
+  }
+
   try {
     if (args.verb === 'plan') {
       const repo = requireRepo(args.repo);
       if (args.requested === null) throw new EmissionUsageError('--requested is required for plan');
+      const zeroDrainIssueLimit = readConfiguredZeroDrainIssueLimit(repo, args.kookrDir, env);
       // Prefer search total_count so backlog >200 is not under-counted by list --limit.
       let openBacklogCount: number;
       try {
@@ -483,18 +528,16 @@ export async function runEmissionCli(
       // closed-issue count, so a high-drain actor filing into a low-drain repo
       // is budgeted by the low-drain target, never the actor's home repo.
       let drainCount: number | undefined;
-      if (args.drainCoupling) {
-        const since = utcDayKeyDaysAgo(args.drainWindow, now());
-        try {
-          drainCount = searchTotalCount(
-            runGh,
-            `repo:${repo} is:issue is:closed closed:>=${since}`,
-          );
-        } catch {
-          // Leave drainCount undefined → drain coupling is skipped this run
-          // rather than failing the whole plan on a flaky search query.
-          drainCount = undefined;
-        }
+      const since = utcDayKeyDaysAgo(args.drainWindow, now());
+      try {
+        drainCount = searchTotalCount(
+          runGh,
+          `repo:${repo} is:issue is:closed closed:>=${since}`,
+        );
+      } catch (error) {
+        throw new Error(
+          `drain count unavailable; refusing to plan issue emission (${error instanceof Error ? error.message : String(error)})`,
+        );
       }
       // ci_blind_debt / retro-verify coupling (#1703): read the durable queue
       // and withhold feature emissions while depth exceeds the threshold so
@@ -530,7 +573,7 @@ export async function runEmissionCli(
           ? {
               drainCount,
               drainCouplingRatio: args.drainRatio,
-              drainFloorBudget: args.drainFloor,
+              drainFloorBudget: zeroDrainIssueLimit,
             }
           : {}),
         ...(retroVerifyDepth !== undefined
@@ -549,6 +592,7 @@ export async function runEmissionCli(
       const payload = {
         ok: true,
         repo,
+        zeroDrainIssueLimit,
         plan,
         ...(ciBlindDebt
           ? {

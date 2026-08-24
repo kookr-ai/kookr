@@ -17,6 +17,32 @@ export interface RateLimitConfig {
 
 export type { ProjectConfig };
 
+export const PROJECT_ISSUE_EMISSION_LIMIT_ENV = 'KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT';
+
+/** Read the optional deployment-wide ceiling for the per-project zero-drain setting. */
+export function readMaxZeroDrainIssueLimitFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env.KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${PROJECT_ISSUE_EMISSION_LIMIT_ENV} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+export class ProjectConfigLimitError extends Error {
+  constructor(
+    public readonly field: 'zeroDrainIssueLimit',
+    public readonly value: number,
+    public readonly maximum: number,
+  ) {
+    super(`${field}=${value} exceeds deployment limit ${maximum}`);
+    this.name = 'ProjectConfigLimitError';
+  }
+}
+
 /**
  * Extract "owner/repo" from a project ID ("github.com/owner/repo").
  * Returns null for local projects.
@@ -37,10 +63,12 @@ export class ProjectConfigStore {
   private blockedRepos: Set<string> = new Set();
   private filePath: string;
   private rateLimitsPath: string;
+  private readonly maxZeroDrainIssueLimit: number | undefined;
 
-  constructor(kookrDir: string) {
+  constructor(kookrDir: string, options: { maxZeroDrainIssueLimit?: number } = {}) {
     this.filePath = join(kookrDir, 'project-configs.json');
     this.rateLimitsPath = join(kookrDir, 'rate-limits.json');
+    this.maxZeroDrainIssueLimit = options.maxZeroDrainIssueLimit;
   }
 
   /** Get the path to the rate-limits config (for file watching). */
@@ -56,7 +84,18 @@ export class ProjectConfigStore {
     this.configs.clear();
     for (const rawConfig of arr) {
       const config = sanitizeProjectConfig(rawConfig);
-      if (config) this.configs.set(config.project, config);
+      if (config) {
+        if (
+          this.maxZeroDrainIssueLimit !== undefined
+          && config.zeroDrainIssueLimit !== undefined
+          && config.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+        ) {
+          // A deployment cap may be lowered between restarts. Preserve the
+          // project row but fail closed for this setting until it is corrected.
+          delete config.zeroDrainIssueLimit;
+        }
+        this.configs.set(config.project, config);
+      }
     }
   }
 
@@ -122,10 +161,25 @@ export class ProjectConfigStore {
     return this.configs.get(project);
   }
 
+  getMaxZeroDrainIssueLimit(): number | undefined {
+    return this.maxZeroDrainIssueLimit;
+  }
+
   setConfig(project: string, patch: Partial<Omit<ProjectConfig, 'project'>>): ProjectConfig {
     const existing = this.configs.get(project) ?? { project };
     const updated = sanitizeProjectConfig({ ...existing, ...patch, project });
     if (!updated) throw new Error(`Invalid project config: ${project}`);
+    if (
+      this.maxZeroDrainIssueLimit !== undefined
+      && updated.zeroDrainIssueLimit !== undefined
+      && updated.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+    ) {
+      throw new ProjectConfigLimitError(
+        'zeroDrainIssueLimit',
+        updated.zeroDrainIssueLimit,
+        this.maxZeroDrainIssueLimit,
+      );
+    }
     this.configs.set(project, updated);
     return updated;
   }

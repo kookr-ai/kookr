@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { access } from 'node:fs/promises';
-import type { ProjectConfig } from '../../core/project-config-store.js';
+import { ProjectConfigLimitError, type ProjectConfig } from '../../core/project-config-store.js';
 import { configSeedsMembership, type ProjectSummary } from '../../core/project-summary.js';
 import { getProjectSummaries } from '../use-cases/get-snapshot.js';
 import { parseOwnerRepoSlug } from '../../shared/repo-slug.js';
@@ -74,6 +74,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
       budgetWarnUsd?: number | null;
+      zeroDrainIssueLimit?: number | null;
       notes?: string;
       webhook?: unknown;
     };
@@ -86,6 +87,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
       budgetWarnUsd?: number;
+      zeroDrainIssueLimit?: number;
       notes?: string;
       webhook?: ProjectConfig['webhook'];
     } = {};
@@ -93,13 +95,30 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
     if (body.dailyPrLimit !== undefined) patch.dailyPrLimit = body.dailyPrLimit;
     if (body.weeklyPrLimit !== undefined) patch.weeklyPrLimit = body.weeklyPrLimit;
     if (body.budgetWarnUsd !== undefined) patch.budgetWarnUsd = body.budgetWarnUsd ?? undefined;
+    if (body.zeroDrainIssueLimit !== undefined) {
+      if (
+        body.zeroDrainIssueLimit !== null
+        && (!Number.isSafeInteger(body.zeroDrainIssueLimit) || body.zeroDrainIssueLimit < 0)
+      ) {
+        return c.json({ error: 'zeroDrainIssueLimit must be a non-negative safe integer' }, 400);
+      }
+      patch.zeroDrainIssueLimit = body.zeroDrainIssueLimit ?? undefined;
+    }
     if (body.notes !== undefined) patch.notes = body.notes;
     if (body.webhook !== undefined) {
       const webhook = normalizeProjectWebhookRoutingSettings(body.webhook);
       if (webhook !== undefined) patch.webhook = webhook;
     }
 
-    const config = deps.projectConfigStore.setConfig(body.project, patch);
+    let config: ProjectConfig;
+    try {
+      config = deps.projectConfigStore.setConfig(body.project, patch);
+    } catch (error) {
+      if (error instanceof ProjectConfigLimitError) {
+        return c.json({ error: error.message, field: error.field, maximum: error.maximum }, 400);
+      }
+      throw error;
+    }
     await deps.projectConfigStore.save();
     deps.broadcastProjectSummaries?.();
     return c.json(config);
