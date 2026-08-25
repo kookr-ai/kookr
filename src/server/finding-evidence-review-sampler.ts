@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { LlmClient } from '../core/llm-client.js';
 import {
@@ -158,8 +158,18 @@ export class FindingEvidenceReviewQueueStore {
   async save(ledger: FindingEvidenceReviewQueueLedgerV1): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
     const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
-    await rename(tempPath, this.path);
+    let renamed = false;
+    try {
+      await writeFile(tempPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+      await rename(tempPath, this.path);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { await unlink(tempPath); } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+      }
+    }
   }
 
   async runExclusive<T>(staleMs: number, fn: () => Promise<T>): Promise<{ status: 'acquired'; value: T } | { status: 'busy' }> {

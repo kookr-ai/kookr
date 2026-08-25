@@ -118,6 +118,53 @@ describe('runMaintenanceCli', () => {
     expect(await exists(join(dataDir, 'hooks', 'kookr-old.jsonl'))).toBe(true);
   });
 
+  test('--dry-run reports the root atomic-temp sweep in human and JSON output', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    const tempPath = join(dataDir, '.tmp-123e4567-e89b-12d3-a456-426614174010');
+    await writeFile(tempPath, 'orphaned temp data\n', 'utf8');
+    const old = new Date(Date.now() - 20 * MS_PER_DAY);
+    await utimes(tempPath, old, old);
+
+    const human = captureConsole();
+    const humanCode = await runMaintenanceCli(['prune', '--dry-run', '--dir', dataDir], { out: human.out });
+    expect(humanCode).toBe(0);
+    expect(human.logs.join('\n')).toMatch(/atomic-write-temp/);
+    expect(human.logs.join('\n')).toMatch(/atomic temp sweep/i);
+    expect(await exists(tempPath)).toBe(true);
+
+    const json = captureConsole();
+    const jsonCode = await runMaintenanceCli(['prune', '--dry-run', '--dir', dataDir, '--json'], { out: json.out });
+    expect(jsonCode).toBe(0);
+    const report = JSON.parse(json.logs.join('\n')) as {
+      atomicWriteTempSweep: { plannedCount: number; reclaimedBytes: number };
+    };
+    expect(report.atomicWriteTempSweep).toMatchObject({ plannedCount: 1, reclaimedBytes: expect.any(Number) });
+  });
+
+  test('validates and forwards --atomic-temp-max-age-days', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    const tempPath = join(dataDir, '.tmp-123e4567-e89b-12d3-a456-426614174011');
+    await writeFile(tempPath, 'orphaned temp data\n', 'utf8');
+    const old = new Date(Date.now() - 5 * MS_PER_DAY);
+    await utimes(tempPath, old, old);
+
+    const retained = captureConsole();
+    const retainedCode = await runMaintenanceCli(
+      ['prune', '--dry-run', '--atomic-temp-max-age-days', '10', '--dir', dataDir, '--json'],
+      { out: retained.out },
+    );
+    expect(retainedCode).toBe(0);
+    expect(JSON.parse(retained.logs.join('\n')).atomicWriteTempSweep.plannedCount).toBe(0);
+
+    const rejected = captureConsole();
+    const rejectedCode = await runMaintenanceCli(
+      ['prune', '--atomic-temp-max-age-days', '0', '--dir', dataDir],
+      { out: rejected.out },
+    );
+    expect(rejectedCode).toBe(2);
+    expect(rejected.errors.join('\n')).toMatch(/atomic-temp-max-age-days requires a positive/);
+  });
+
   test('warns (without --dir) when KOOKR_PORT=auto', async () => {
     const c = captureConsole();
     const code = await runMaintenanceCli(['prune', '--dir', dataDir], { out: c.out, env: { KOOKR_PORT: 'auto' } });
@@ -141,6 +188,45 @@ describe('runMaintenanceCli', () => {
     expect(parsed.removed).toHaveLength(1);
     expect(parsed.removed[0].tmuxSession).toBe('kookr-old');
     expect(await exists(join(dataDir, 'hooks', 'kookr-old.jsonl'))).toBe(false);
+  });
+
+  test('live prune audits atomic-temp deletion in human and JSON output', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    const humanTemp = join(dataDir, '.tmp-123e4567-e89b-12d3-a456-426614174012');
+    await writeFile(humanTemp, 'human orphan temp\n', 'utf8');
+    const old = new Date(Date.now() - 20 * MS_PER_DAY);
+    await utimes(humanTemp, old, old);
+    const humanBytes = (await stat(humanTemp)).size;
+    const openFileChecker = async (paths: readonly string[]) =>
+      new Map(paths.map((path) => [path, 'closed'] as const));
+
+    const human = captureConsole();
+    const humanCode = await runMaintenanceCli(['prune', '--dir', dataDir], { out: human.out, openFileChecker });
+    expect(humanCode).toBe(0);
+    expect(human.logs.join('\n')).toMatch(/Removed 1 of 1 planned artifact/);
+    expect(human.logs.join('\n')).toMatch(new RegExp(`${humanBytes} B reclaimed`));
+    expect(await exists(humanTemp)).toBe(false);
+
+    const jsonTemp = join(dataDir, '.tmp-123e4567-e89b-12d3-a456-426614174013');
+    await writeFile(jsonTemp, 'json orphan temp\n', 'utf8');
+    await utimes(jsonTemp, old, old);
+    const json = captureConsole();
+    const jsonCode = await runMaintenanceCli(
+      ['prune', '--dir', dataDir, '--json'],
+      { out: json.out, openFileChecker },
+    );
+    expect(jsonCode).toBe(0);
+    const report = JSON.parse(json.logs.join('\n')) as {
+      removed: Array<{ kind: string; bytes: number }>;
+      reclaimedBytes: number;
+      atomicWriteTempSweep: { removedCount: number; reclaimedBytes: number };
+    };
+    expect(report.removed).toEqual([
+      expect.objectContaining({ kind: 'atomic-write-temp', bytes: 17 }),
+    ]);
+    expect(report.reclaimedBytes).toBe(17);
+    expect(report.atomicWriteTempSweep).toMatchObject({ removedCount: 1, reclaimedBytes: 17 });
+    expect(await exists(jsonTemp)).toBe(false);
   });
 
   test('prune removes aged orphan activity-ledger files and reports them', async () => {

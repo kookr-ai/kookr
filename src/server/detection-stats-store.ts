@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { DetectionStats } from '../core/detection-stats.js';
 
@@ -57,8 +57,18 @@ export class DetectionStatsStore {
         stats,
       };
       const tmp = `${this.path}.tmp-${process.pid}`;
-      await writeFile(tmp, `${JSON.stringify(payload)}\n`, 'utf8');
-      await rename(tmp, this.path);
+      let renamed = false;
+      try {
+        await writeFile(tmp, `${JSON.stringify(payload)}\n`, 'utf8');
+        await rename(tmp, this.path);
+        renamed = true;
+      } finally {
+        if (!renamed) {
+          try { await unlink(tmp); } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          }
+        }
+      }
     });
     return this.writeChain;
   }

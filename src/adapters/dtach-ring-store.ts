@@ -258,19 +258,32 @@ export class DtachRingStore {
       const metaPath = this.metaPathFor(state.id);
       const tmpBin = `${binPath}.${randomUUID()}.tmp`;
       const tmpMeta = `${metaPath}.${randomUUID()}.tmp`;
-      writeFileSync(tmpBin, out, { mode: 0o600 });
-      writeFileSync(
-        tmpMeta,
-        JSON.stringify({
-          version: RING_META_VERSION,
-          size,
-          savedAt: new Date().toISOString(),
-          lastByteAt: state.lastByteAt,
-        }),
-        { mode: 0o600 },
-      );
-      renameSync(tmpBin, binPath);
-      renameSync(tmpMeta, metaPath);
+      let binRenamed = false;
+      let metaRenamed = false;
+      try {
+        writeFileSync(tmpBin, out, { mode: 0o600 });
+        writeFileSync(
+          tmpMeta,
+          JSON.stringify({
+            version: RING_META_VERSION,
+            size,
+            savedAt: new Date().toISOString(),
+            lastByteAt: state.lastByteAt,
+          }),
+          { mode: 0o600 },
+        );
+        renameSync(tmpBin, binPath);
+        binRenamed = true;
+        renameSync(tmpMeta, metaPath);
+        metaRenamed = true;
+      } finally {
+        if (!binRenamed) {
+          try { unlinkSync(tmpBin); } catch { /* best-effort temp cleanup */ }
+        }
+        if (!metaRenamed) {
+          try { unlinkSync(tmpMeta); } catch { /* best-effort temp cleanup */ }
+        }
+      }
 
       state.lastFlushedHead = head;
     } catch (err) {

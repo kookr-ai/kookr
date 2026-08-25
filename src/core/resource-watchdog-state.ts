@@ -84,12 +84,15 @@ export class FileResourceWatchdogStateStore implements ResourceWatchdogStateStor
       dirname(this.path),
       `.resource-watchdog-state.${randomBytes(6).toString('hex')}.tmp`,
     );
-    writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+    let renamed = false;
     try {
+      writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
       renameSync(tempPath, this.path);
-    } catch (err) {
-      try { unlinkSync(tempPath); } catch { /* best-effort */ }
-      throw err;
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tempPath); } catch { /* best-effort */ }
+      }
     }
   }
 }

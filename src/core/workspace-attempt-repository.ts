@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, closeSync, writeFileSync, fsyncSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, closeSync, unlinkSync, writeFileSync, fsyncSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
   WorkspaceAttemptRecord,
@@ -197,17 +197,25 @@ export class WorkspaceAttemptRepository {
       attempts: Array.from(this.attempts.values()),
     };
 
-    const fd = openSync(tempPath, 'w');
+    let renamed = false;
     try {
-      // Compact JSON: create/update rewrites the full attempts array; pretty-print
-      // inflates bytes/CPU on every mutation with no parse benefit (issue #2280).
-      // Load still accepts legacy pretty-printed files via JSON.parse.
-      writeFileSync(fd, JSON.stringify(payload) + '\n', 'utf-8');
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+      const fd = openSync(tempPath, 'w');
+      try {
+        // Compact JSON: create/update rewrites the full attempts array; pretty-print
+        // inflates bytes/CPU on every mutation with no parse benefit (issue #2280).
+        // Load still accepts legacy pretty-printed files via JSON.parse.
+        writeFileSync(fd, JSON.stringify(payload) + '\n', 'utf-8');
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
 
-    renameSync(tempPath, this.filePath);
+      renameSync(tempPath, this.filePath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tempPath); } catch { /* best-effort temp cleanup */ }
+      }
+    }
   }
 }

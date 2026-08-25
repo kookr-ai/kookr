@@ -202,8 +202,16 @@ export class StateStore {
   }
   private async persist(): Promise<void> {
     const tmp = `${this.path}.tmp`;
-    await writeFile(tmp, JSON.stringify(this.state), { mode: 0o600 });
-    await rename(tmp, this.path);
+    let renamed = false;
+    try {
+      await writeFile(tmp, JSON.stringify(this.state), { mode: 0o600 });
+      await rename(tmp, this.path);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+      }
+    }
   }
 }
 

@@ -25,7 +25,7 @@
  * the same trust boundary as the signal outbox and lesson-write spool.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -257,8 +257,16 @@ async function rewritePending(spoolDir: string, entries: RetroVerifyEntry[]): Pr
   const body = entries.length === 0
     ? ''
     : `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
-  await writeFile(tmp, body, 'utf8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, body, 'utf8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 /**
