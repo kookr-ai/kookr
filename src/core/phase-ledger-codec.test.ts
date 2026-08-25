@@ -108,7 +108,14 @@ describe('phase ledger codec', () => {
       taskId: 'correction-task',
     }] } satisfies PhaseLedger;
     const oldBlock = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`;
-    expect(reconcilePhaseResultComments(corrected, [oldBlock])).toEqual(corrected);
+    const oldOwner = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, status: 'in-flight', taskId: 'old-owner' })} -->`;
+    expect(reconcilePhaseResultComments(corrected, [oldOwner, oldBlock])).toEqual(corrected);
+  });
+
+  test('never raises a durable lower cap from a later comment', () => {
+    const capped = { ...ledger, phases: [ledger.phases[0]!, { ...ledger.phases[1]!, reviewIterationCap: 3 }] } satisfies PhaseLedger;
+    const later = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewIterationCap: 20 })} -->`;
+    expect(reconcilePhaseResultComments(capped, [later]).phases[1]?.reviewIterationCap).toBe(3);
   });
 
   test('rejects a per-phase cap above the canonical maximum', () => {

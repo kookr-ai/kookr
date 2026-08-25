@@ -320,6 +320,9 @@ export function reconcilePhaseResultComments(
     const phase = byId.get(result.phaseId);
     if (!phase) continue;
     if (result.reviewVerdict !== undefined && (result.reviewAttempts ?? 1) < (phase.reviewAttempts ?? 0)) continue;
+    // Once a correction attempt is durable, legacy owner comments without an
+    // attempt generation cannot resurrect the superseded PR/task.
+    if (result.reviewVerdict === undefined && phase.reviewAttempts !== undefined && result.reviewAttempts === undefined) continue;
     if (result.prNumber !== undefined) phase.prNumber = result.prNumber;
     if (result.status !== undefined) phase.status = result.status;
     if (result.taskId !== undefined) phase.taskId = result.taskId;
@@ -338,7 +341,9 @@ export function reconcilePhaseResultComments(
       // omitted legacy counts never increment on replay.
       phase.reviewAttempts = Math.max(phase.reviewAttempts ?? 0, result.reviewAttempts ?? 1);
     }
-    if (result.reviewIterationCap !== undefined) phase.reviewIterationCap = result.reviewIterationCap;
+    if (result.reviewIterationCap !== undefined) {
+      phase.reviewIterationCap = Math.min(phase.reviewIterationCap ?? result.reviewIterationCap, result.reviewIterationCap);
+    }
   }
   return validatePhaseLedger({ ...ledger, phases });
 }

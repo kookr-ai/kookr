@@ -128,7 +128,8 @@ export function assessReviewReflection(
     && metrics.heldOutEvaluationRate === 1
     && metrics.exactHeadBindingRate === 1
     && metrics.safeMergeRate === 1
-    && (metrics.calibrationError === null || metrics.calibrationError <= 0.2)
+    && metrics.calibrationError !== null
+    && metrics.calibrationError <= 0.2
     && metrics.f1 !== null;
   return {
     due,

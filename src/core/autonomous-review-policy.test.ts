@@ -97,4 +97,13 @@ describe('autonomous review policy', () => {
     expect(decision.metrics.blindEvaluationRate).toBe(0);
     expect(decision.metrics.heldOutEvaluationRate).toBe(0);
   });
+
+  test('reflection requires calibration evidence, not just a perfect self-report', () => {
+    const observations = Array.from({ length: 5 }, (_, index) => observation({
+      unitId: `uncalibrated-${index}`,
+      predictedConfidence: undefined,
+      outcomeCorrect: undefined,
+    }));
+    expect(assessReviewReflection(observations, 5, 0).mutationEligible).toBe(false);
+  });
 });
