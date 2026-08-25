@@ -23,6 +23,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
+import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
@@ -977,21 +978,32 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       taskStore.setLaunchAdmission(pending.id, undefined);
     }
 
-    // Safety: prevent infinite loop if a task stays pending after launch
-    if (seen.has(pending.id)) {
-      console.error(`[promotion] Task ${pending.id} still pending after launch — breaking to prevent infinite loop`);
-      taskStore.cancelTask(pending.id);
-      break;
-    }
-    seen.add(pending.id);
-
     // #700 fix: synchronous pick-to-launch reservation. Concurrent
     // promotePendingTasks invocations (5s liveness tick + completion-triggered
     // promotions) all passed getNextPending for the SAME task because its
     // status only flips when the adapter attaches a session, seconds later.
     // beginLaunch is a synchronous CAS — exactly one promoter wins; losers
     // skip (the task no longer shows in getNextPending while reserved).
-    if (!taskStore.beginLaunch(pending.id)) continue;
+    if (!taskStore.beginLaunch(pending.id)) {
+      if (dependencyAdmission?.admit) {
+        // Losing the synchronous reservation is not a failed provider probe.
+        // Release the token while keeping the circuit half-open so another
+        // promoter can make the bounded recovery attempt.
+        lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+      }
+      continue;
+    }
+
+    // Safety: prevent infinite loop if a task stays pending after launch.
+    // Record this only after winning the reservation; a CAS loser is expected
+    // during concurrent promotion and must not trip the same-task guard.
+    if (seen.has(pending.id)) {
+      console.error(`[promotion] Task ${pending.id} still pending after launch — breaking to prevent infinite loop`);
+      taskStore.cancelTask(pending.id);
+      taskStore.endLaunch(pending.id);
+      break;
+    }
+    seen.add(pending.id);
 
     try {
       const intent = validatePersistedLaunchIntent(pending);

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 1 implemented (v3 - post-review revision)**
+**Phase 1 implemented (v4 - provider-aware admission)**
 
 **Date:** 2026-05-13
 **Author:** Jean Ibarz (with Codex)
@@ -12,9 +12,14 @@
 
 ## Problem
 
-Kookr currently blocks task launch when a declared launch dependency fails preflight. The concrete failure on 2026-05-13 was a playbook launch for `local-research-agent` that declared `dependencies: [kb]`. Kookr ran `kb doctor --format=json`, received a non-zero exit, and rejected the task before creating it.
+Historically, Kookr blocked task launch when a declared launch dependency failed preflight. The concrete failure on 2026-05-13 was a playbook launch for `local-research-agent` that declared `dependencies: [kb]`. Kookr ran `kb doctor --format=json`, received a non-zero exit, and rejected the task before creating it. The provider-aware admission slice in issue #2841 now preserves the task but prevents the adapter launch when health is confirmed degraded.
 
-That behavior is wrong for Kookr's role. Kookr is an attention router and supervisor. A degraded context source should not prevent an agent session from starting. The system should preserve user momentum, surface the dependency failure as diagnostic evidence, and make it easy to launch a bounded repair workflow.
+That behavior was wrong for advisory context sources, but the issue also exposed the
+opposite failure mode: Kookr admitted work whose required provider was already
+unhealthy. Kookr is an attention router and supervisor, so it should preserve the
+vetted launch intent and surface the dependency failure without consuming a worker
+slot. Unknown health must remain fail-open so a broken diagnostic path does not
+pause the fleet.
 
 The observed case also exposed two independent bugs:
 
@@ -34,11 +39,14 @@ No empirical claim was falsified. The KB-first lookup for prior notes could not 
 
 ## Recommendation
 
-Advisory dependencies should not block task launch. For the current system, the only advisory dependency is legacy `kb`.
+The current string dependency contract is treated as a required admission
+declaration: confirmed degradation parks the task before adapter launch. A clean
+or unknown result remains launchable; future explicit advisory policies can opt
+into degraded launch behavior without changing the durable intent contract.
 
 My recommendation is deliberately phased:
 
-1. **Phase 1 fixes the launch blocker only.** Keep the existing string dependency contract. Treat `dependencies: ['kb']` as advisory internally. Run a better KB preflight, classify failures accurately, and launch the task with minimal launch health metadata instead of throwing.
+1. **Phase 1 fixes the launch boundary.** Keep the existing string dependency contract. Run a better KB preflight, classify failures accurately, persist the launch intent, and park confirmed-degraded work without consuming a worker slot. Healthy and unknown results remain launchable with minimal health metadata.
 2. **Phase 2 adds durable dependency incidents.** Add explicit dependency policies, a persistent redacted incident store, queue-aware launch intent, UI inspection, and manual repair tasks.
 3. **Phase 3 adds guarded self-healing.** Auto-repair and GitHub escalation become opt-in automation after incident classification, sanitization, repair verdicts, and rate limits exist.
 
@@ -46,22 +54,22 @@ Do not start with unconditional GitHub issue creation or unconditional repair-ag
 
 ## Phase 1 Requirements
 
-- **P1-R1.** Legacy `dependencies: ['kb']` SHALL NOT prevent task creation, queueing, or adapter launch.
+- **P1-R1.** A declared dependency SHALL NOT prevent task creation or queueing. Confirmed dependency degradation SHALL park the task before adapter launch; unknown health SHALL remain fail-open.
 - **P1-R2.** Phase 1 SHALL keep the public dependency contract as a string array. Object-form dependency policies are deferred.
 - **P1-R3.** Phase 1 SHALL preserve the user's original task prompt for identity, deduplication, relaunch, and display.
 - **P1-R4.** Phase 1 SHALL attach a minimal `launchHealthSummary` or equivalent metadata to the task/result when KB is degraded.
-- **P1-R5.** Phase 1 SHALL pass any warning to the adapter/session as a launch note after dedup, not by mutating `Task.prompt`.
+- **P1-R5.** Launch notes SHALL be passed to the adapter/session after dedup, not by mutating `Task.prompt`. Confirmed degradation SHALL use a durable `launchAdmission.status: "parked"` marker instead of starting the adapter; unknown findings may continue with a bounded note.
 - **P1-R6.** Phase 1 SHALL parse structured `kb doctor --format=json` output even when the command exits non-zero.
 - **P1-R7.** Phase 1 SHALL add a bounded, read-only `kb search` smoke test so doctor-pass/search-fail is visible at launch time.
 - **P1-R8.** Phase 1 SHALL redact and bound any diagnostic snippets returned to clients or inserted into launch notes.
-- **P1-R9.** Failure to record or display advisory diagnostics SHALL NOT re-block launch.
+- **P1-R9.** Failure to record or display diagnostics SHALL NOT turn unknown health into a fleet-wide block; only the provider-aware admission decision may park a confirmed-degraded launch.
 
 ## Future Requirements
 
 - **F-R1.** Explicit dependency declarations SHALL support `advisory` and `required` policies.
 - **F-R2.** Required dependency failures SHALL be exposed through the same redacted public error shape as advisory incidents.
-- **F-R3.** Queued tasks SHALL persist normalized launch dependency intent so promotion can re-evaluate the same policy.
-- **F-R4.** Required dependency failure during promotion SHALL use an explicit blocked-pending representation, not plain `pending`.
+- **F-R3. [Implemented by issue #2841.]** Queued tasks SHALL persist normalized launch dependency intent so promotion can re-evaluate the same policy.
+- **F-R4. [Implemented by issue #2841.]** Required dependency failure during promotion SHALL use an explicit blocked-pending representation, not plain `pending`.
 - **F-R5.** Dependency incidents SHALL be fingerprinted, deduplicated, persisted, and retained with bounds.
 - **F-R6.** Manual repair tasks SHALL use an internal recursion guard and return a machine-readable repair verdict.
 - **F-R7.** Auto-repair and GitHub escalation SHALL be opt-in, rate-limited, and server-mediated.
@@ -72,7 +80,7 @@ Do not start with unconditional GitHub issue creation or unconditional repair-ag
 - No automatic repair-agent spawning in Phase 1.
 - No public dependency object contract in Phase 1.
 - No persistent incident store in Phase 1.
-- No queue blocked-state redesign in Phase 1.
+- No general queue blocked-state redesign in Phase 1; issue #2841 adds only the minimal parked admission marker needed for provider-aware promotion.
 - No cloud telemetry or remote crash reporting.
 - No guarantee that a degraded task produces the same answer quality as a task with KB healthy.
 - No runtime transcript monitoring for dependency failures in Phase 1. Phase 1 only handles launch-time evidence.
@@ -84,13 +92,13 @@ Do not start with unconditional GitHub issue creation or unconditional repair-ag
 Phase 1 is a small backend reliability change:
 
 - `dependencies: ['kb']` remains valid.
-- KB failure becomes advisory.
-- Launch continues.
+- Confirmed KB/provider failure becomes parked admission work.
+- Unknown or healthy health evidence continues launch.
 - The prompt identity remains unchanged.
 - The launch result/task carries minimal health metadata.
-- The session receives a short launch note if KB is degraded.
+- A session receives a short launch note only when a launch remains admissible; confirmed degradation is represented by the parked task instead.
 
-No incident ids, persistent incident store, UI inspection panel, repair task, public policy object, or GitHub issue creation ships in Phase 1.
+No incident ids, persistent incident store, full incident inspection panel, repair task, public policy object, or GitHub issue creation ships in Phase 1; the dashboard only surfaces parked counts and reasons.
 
 ### Core And I/O Boundary
 
@@ -100,7 +108,7 @@ Recommended split:
 
 - `src/core/launch-dependency-preflight.ts`: pure types, structured classification, report shaping, redaction helpers that operate on provided strings/objects.
 - `src/server/launch-dependency-runner.ts` or `src/adapters/kb-dependency-preflight.ts`: concrete `kb doctor` and `kb search` command execution.
-- `launch-service.ts`: orchestrates the runner and decides advisory continuation.
+- `launch-service.ts`: orchestrates the runner and applies the provider-aware admission decision.
 
 This keeps external process execution at an I/O boundary while letting core logic remain testable.
 
@@ -117,7 +125,7 @@ Phase 1 behavior:
 
 ```ts
 const report = await runLaunchDependencyPreflights(opts.dependencies);
-const advisoryKbFindings = report.findings.filter((finding) => finding.dependency === 'kb');
+const admission = launchDependencyAdmission.evaluate(opts.dependencies);
 
 const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
 const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
@@ -128,12 +136,15 @@ const existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd
 const task = taskStore.createTask({
   prompt: effectivePrompt,
   cwd: opts.cwd,
-  launchHealthSummary: summarizeLaunchHealth(advisoryKbFindings),
+  launchIntent: buildLaunchIntent(opts),
+  launchAdmission: admission.admit ? undefined : toTaskLaunchAdmission(admission),
 });
 
-await adapter.launch(task, {
-  launchNote: formatLaunchHealthNote(advisoryKbFindings),
-});
+if (!admission.admit) {
+  taskStore.pendTask(task.id);
+} else {
+  await adapter.launch(task, { launchNote: formatLaunchHealthNote(report.findings) });
+}
 ```
 
 The exact adapter API may differ; the requirement is that the warning is separate from the durable prompt before dedup.
@@ -145,7 +156,7 @@ Phase 1 KB preflight runs:
 1. `kb doctor --format=json`
 2. a bounded read-only search smoke test that exercises the query path
 
-The smoke test must not refresh or mutate the index. No-results is acceptable if the command exits successfully. Command failure becomes an advisory finding such as `query_runtime_failure`.
+The smoke test must not refresh or mutate the index. No-results is acceptable if the command exits successfully. Command failure becomes a classified finding such as `query_runtime_failure`; confirmed degradation parks the dependent launch while an unclassifiable timeout remains fail-open.
 
 Structured classification order:
 
@@ -170,25 +181,26 @@ Minimum rules:
 
 This redacted shape is used for launch health metadata, API errors, and launch notes.
 
-### Queued Tasks In Phase 1
+### Admission-Aware Queued Tasks
 
-Phase 1 does not introduce required dependency semantics. Therefore it does not need a blocked-pending state.
+The provider-aware admission slice (issue #2841) extends the queued-task
+contract without changing the public string dependency declaration:
 
-For legacy KB:
-
-- preflight may run at submission and/or immediately before adapter launch
-- any KB failure is advisory
-- task creation and promotion continue
-- `launchHealthSummary` should reflect the latest preflight result available at actual adapter launch
-- queued tasks carry enough Phase 1 launch metadata for promotion to preserve the launch note, even before Phase 2 adds full `QueuedLaunchIntent`
+- every declared dependency is retained in `Task.launchIntent` with the original prompt, repository, agent, effort, model, and idempotency key;
+- confirmed degradation creates `Task.launchAdmission.status: "parked"`, keeps the task in `pending`, and consumes no worker slot;
+- promotion re-runs the bounded preflight, skips parked work while degradation remains, and permits one half-open recovery probe before returning the circuit to `healthy`;
+- health collection failures are `unknown` and remain fail-open, so instrumentation gaps do not create an unbounded retry loop or fleet-wide pause;
+- capacity and launch-dependency diagnostics report parked work separately from tasks that already launched with degraded findings.
 
 Implementation ownership:
 
-- `launch-service.ts` computes the submission-time KB health and stores minimal `launchHealthSummary` / `launchNote` on the task when it creates a pending task.
-- `agent-lifecycle.ts` owns promotion-time behavior. It may re-run the KB preflight before `adapter.launch`, update the task's minimal launch health, and pass the launch note to the adapter.
+- `launch-service.ts` computes submission-time dependency health, stores the normalized launch intent, and applies the provider-aware admission circuit before adapter launch.
+- `agent-lifecycle.ts` owns promotion-time behavior. It re-runs dependency preflight before `adapter.launch`, updates parked admission state, and passes only applicable launch notes to the adapter.
 - The adapter launch boundary accepts the optional launch note without changing the durable task prompt.
 
-The durable queue contract for required dependencies is deferred to Phase 2. Phase 1 only preserves advisory KB health across queue promotion.
+The general policy-object queue contract is deferred to Phase 2. This slice
+already preserves string dependency declarations across queue promotion and
+parks confirmed-degraded work.
 
 ## Phase 2 Design
 
@@ -415,8 +427,8 @@ Phase 1:
 - `src/core/launch-dependency-preflight.ts`: pure report types, structured classification, redacted public finding shape.
 - `src/core/launch-dependency-preflight.test.ts`: structured classification, doctor non-zero JSON, search-smoke failure classification, redaction.
 - `src/server/launch-dependency-runner.ts` or `src/adapters/kb-dependency-preflight.ts`: concrete `kb doctor` and `kb search` execution.
-- `src/server/launch-service.ts`: continue legacy KB launches, preserve prompt identity, attach launch health metadata, pass runtime launch note.
-- `src/server/launch-service.test.ts`: advisory KB failure launches degraded; dedup ignores launch note.
+- `src/server/launch-service.ts`: preserve prompt identity, persist launch intent, park confirmed-degraded work, and pass runtime launch notes only for admissible launches.
+- `src/server/launch-service.test.ts`: confirmed dependency degradation parks without adapter launch; unknown health remains fail-open and dedup ignores launch notes.
 - `src/core/tasks.ts` / `src/core/monitor.ts`: minimal `launchHealthSummary` field on task persistence and snapshots.
 
 Phase 2:
@@ -430,7 +442,7 @@ Phase 2:
 - `src/core/dependency-incident.ts`: incident draft, fingerprinting, severity, redaction model.
 - `src/server/dependency-incident-store.ts`: persistent best-effort store.
 - `src/core/types.ts`: queued launch intent, `pendingLaunchBlocker`, `nextPromotionAttemptAt`, and incident/task cross-references.
-- `src/server/agent-lifecycle.ts`: promotion recheck, blocked-pending skip/retry behavior.
+- `src/server/agent-lifecycle.ts`: promotion recheck, parked-pending skip/retry behavior, and bounded half-open recovery probes.
 - `src/server/ws.ts` / handlers: dependency incident snapshot and actions.
 - `src/frontend/*`: degraded badge, incident inspection, manual repair action.
 - repair verdict ingestion and verification endpoint/action.
@@ -449,10 +461,10 @@ Docs:
 
 - **Agent binary missing.** Still blocking. No useful session can run.
 - **Invalid cwd.** Still blocking unless a future RFC defines a safe resolver.
-- **KB doctor passes but search fails.** Phase 1 catches this with a smoke search and launches degraded.
-- **Diagnostic recording/display fails.** Launch still proceeds for legacy KB. Kookr logs a server warning.
+- **KB doctor passes but search fails.** Phase 1 catches this with a smoke search and parks the dependent launch.
+- **Diagnostic recording/display fails.** Health collection remains fail-open when it is unknown. Kookr logs a server warning.
 - **Identical task launched during outage and after recovery.** Dedup uses the original prompt/cwd/agent identity, not the degradation note.
-- **Queued task sees KB state change in Phase 1.** Since KB is advisory, promotion continues with the latest available launch health.
+- **Queued task sees dependency state change in the current slice.** Confirmed degradation keeps the task parked; a clean preflight moves it through one half-open recovery probe. Unknown health remains fail-open.
 - **Required dependency fails at promotion in Phase 2.** The task gets `pendingLaunchBlocker` and `nextPromotionAttemptAt`; later pending tasks are not starved.
 - **Repair task causes another dependency incident.** Internal override suppresses auto-repair recursion.
 - **Private data in diagnostics.** Redaction applies before UI, prompts, transcripts, and GitHub escalation.
@@ -463,11 +475,11 @@ Docs:
 
 ### Keep Hard Blocking
 
-Rejected. It optimizes for preflight purity over user momentum. The observed failure forced manual diagnosis before any task existed.
+Rejected as a pre-create rejection. It optimizes for preflight purity over user momentum and loses the vetted launch intent. The current boundary parks confirmed-degraded work after creating the durable pending record.
 
 ### Make Every Dependency Non-Blocking
 
-Rejected. Some prerequisites define whether an agent session can exist. The correct durable boundary is advisory vs required, with legacy KB mapped to advisory.
+Rejected. Some prerequisites define whether an agent session can produce useful work. The current string contract treats declared dependencies as required for admission; explicit advisory policy is deferred until the public policy contract is introduced.
 
 ### Mutate The Prompt With Warnings
 
@@ -475,7 +487,7 @@ Rejected. It breaks task identity and dedup semantics. Use launch metadata plus 
 
 ### Add Public Dependency Policies In Phase 1
 
-Rejected. It is a reasonable Phase 2 design, but Phase 1 only needs to unblock legacy KB launches. Public policy objects would expand WS, REST, and playbook parser scope before queue semantics are ready.
+Rejected. It is a reasonable Phase 2 design, but public policy objects would expand WS, REST, and playbook parser scope before queue semantics are ready. The current slice keeps the string contract and uses the parked marker for confirmed failures.
 
 ### Always Auto-Create GitHub Issues
 
@@ -487,25 +499,25 @@ Rejected as the default. It is useful in trusted local mode but needs loop contr
 
 ### Remove Dependency Preflights Entirely
 
-Rejected. Preflights are useful because they make degraded capabilities explicit before the agent wastes time. The problem was treating advisory capability failure as a launch blocker.
+Rejected. Preflights are useful because they make degraded capabilities explicit before the agent wastes time. The problem was either rejecting before persistence or admitting work after a confirmed required-provider failure.
 
 ## Implementation Plan
 
-### Phase 1: Degraded Launch For Legacy KB
+### Phase 1: Provider-Aware Admission For Declared Dependencies
 
 - Move concrete KB command execution to server/adapters.
 - Parse non-zero doctor JSON structurally.
 - Add bounded KB search smoke test.
-- Treat legacy KB dependency findings as advisory.
+- Treat confirmed dependency findings as parked admission work.
 - Preserve task prompt identity.
 - Store minimal launch health metadata.
-- Launch advisory failures with runtime launch note.
+- Launch healthy/unknown findings with a bounded runtime launch note.
 - Add focused tests.
 
 ### Phase 2: Incident Surface And Manual Repair
 
 - Add explicit dependency policy contract.
-- Persist queued launch dependency intent and blocked-pending state.
+- Persist queued launch dependency intent and the minimal parked-pending state.
 - Add redacted incident model and best-effort store.
 - Add fingerprint dedupe and lifecycle.
 - Add UI inspection surface.

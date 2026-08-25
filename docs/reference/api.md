@@ -230,6 +230,12 @@ GET /api/tasks?limit=50&offset=100
 `agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
 `autoCloseOnSignal`, `unattended`, and `idempotencyKey`.
 
+When a declared dependency is confirmed degraded, `POST /api/tasks` still
+creates the task and returns `queued: true`, but the task carries
+`launchAdmission.status: "parked"` and no worker is started or counted as
+active. The original launch intent is retained so promotion can retry it after
+recovery evidence. An `unknown` health result remains fail-open.
+
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
 Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30
@@ -846,7 +852,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/orchestration/status` | Orchestration pause state (SAFE MODE) + pause record + default-agent quota sample |
 | `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
 | `POST /api/orchestration/resume` | Disengage SAFE MODE and close the current pause record |
-| `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
+| `GET /api/diagnostics/launch-dependencies` | Aggregates historical degraded launches by dependency and category, plus live circuit states (`healthy`, `degraded`, `unknown`, `half_open`) and parked task IDs, dependencies, counts, and reasons |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |

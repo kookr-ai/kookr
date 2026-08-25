@@ -155,6 +155,23 @@ export function handleLaunchResult(
     return { duplicate: true };
   }
   if (result.queued) {
+    if (result.parked) {
+      const dependencies = result.dependencyAdmission?.dependencies
+        .map((dependency) => `${dependency.dependency}=${dependency.state}`)
+        .join(', ');
+      send({
+        type: 'alert',
+        agentId: '',
+        summary: `Parked: ${promptExcerpt}`,
+        details: [
+          'A required launch dependency is degraded; no worker slot was consumed.',
+          dependencies ? `Dependencies: ${dependencies}.` : undefined,
+          'Kookr will retry the preserved launch intent after recovery evidence.',
+        ].filter(Boolean).join('\n'),
+        severity: 'warning',
+      });
+      return { duplicate: false };
+    }
     send({
       type: 'alert',
       agentId: '',

@@ -20,10 +20,10 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
-import {
-  type LaunchDependencyAdmissionDecision,
+import type {
+  LaunchDependencyAdmission,
+  LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
-import type { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -2148,6 +2148,7 @@ function buildLaunchIntent(
     agentType: resolved.agentType,
     ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
     ...(resolved.model !== undefined ? { model: resolved.model } : {}),
+    ...(opts.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
     ...(opts.dependencies ? { dependencies: [...opts.dependencies] } : {}),
     ...(opts.idempotencyKey !== undefined ? { idempotencyKey: opts.idempotencyKey } : {}),
   };

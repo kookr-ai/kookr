@@ -134,6 +134,8 @@ export interface TaskLaunchIntent {
   agentType: AgentType;
   effort?: string;
   model?: string;
+  /** Preserve Ralph iteration-0 verdict wiring across deferred promotion. */
+  ralphVerdictEnv?: boolean;
   dependencies?: LaunchDependency[];
   idempotencyKey?: string;
 }

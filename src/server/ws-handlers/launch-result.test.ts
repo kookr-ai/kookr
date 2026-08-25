@@ -56,6 +56,32 @@ describe('handleLaunchResult', () => {
     expect(alert.summary).toContain('Grok authentication expired');
   });
 
+  it('distinguishes a dependency-parked launch from a capacity queue', () => {
+    const { send, sent } = collect();
+
+    const { duplicate } = handleLaunchResult(send, 'use the knowledge base', {
+      task: { id: 'task-parked' } as any,
+      queued: true,
+      parked: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(duplicate).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'alert',
+      severity: 'warning',
+      summary: 'Parked: use the knowledge base',
+      details: expect.stringContaining('no worker slot was consumed'),
+    });
+    expect((sent[0] as Extract<ServerMessage, { type: 'alert' }>).details).toContain('kb=degraded');
+  });
+
   // --- Server-side backpressure (issue #1526 Phase C / C3) ---
 
   const ledger = {

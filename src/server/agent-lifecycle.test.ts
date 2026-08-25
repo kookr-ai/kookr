@@ -1393,6 +1393,7 @@ describe('promotePendingTasks (integration)', () => {
         agentType: 'claude-code',
         effort: 'max',
         model: 'claude-fable-5',
+        ralphVerdictEnv: true,
         dependencies: ['kb'],
       },
       launchAdmission: {
@@ -1417,8 +1418,54 @@ describe('promotePendingTasks (integration)', () => {
       'use the knowledge base',
       '/cwd',
       undefined,
-      expect.objectContaining({ effort: 'max', model: 'claude-fable-5' }),
+      expect.objectContaining({
+        effort: 'max',
+        model: 'claude-fable-5',
+        extraEnv: {
+          RALPH_VERDICT_FILE: expect.stringMatching(/\/\.ralph-verdict-/),
+          RALPH_ITERATION: '0',
+        },
+      }),
     );
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
+  });
+
+  test('releases a recovery probe when the launch reservation is lost', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider unavailable',
+    } satisfies LaunchPreflightFinding]);
+    launchDependencyAdmission.observe(['kb'], []);
+
+    const task = taskStore.createTask({
+      prompt: 'recover the provider',
+      cwd: '/cwd',
+      launchIntent: {
+        prompt: 'recover the provider',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    const beginLaunch = vi.spyOn(taskStore, 'beginLaunch')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(1);
+    expect(beginLaunch).toHaveBeenCalledTimes(2);
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);

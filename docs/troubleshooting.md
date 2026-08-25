@@ -184,19 +184,21 @@ KOOKR_CODEX_BIN=/path/to/codex
 
 Kookr's Codex adapter defaults to `codex` on `PATH`; the local fork is maintained separately at `~/git/codex`.
 
-## Task Launch Blocked By A Dependency Preflight
+## Task Launch Parked By A Dependency Preflight
 
 Some tasks declare runtime **dependencies** — for example, a knowledge-base
 lookup needs the `kb` CLI and a healthy index. Before such a task starts, Kookr
 runs a **dependency preflight** ([`src/core/launch-dependency-preflight.ts`](../src/core/launch-dependency-preflight.ts))
-and **blocks the launch** if a dependency is not ready. This is deliberate:
+and parks the task if a dependency is confirmed degraded. This is deliberate:
 starting a KB-dependent agent against a broken or empty index wastes a run and
-produces misleading output.
+produces misleading output, while preserving the original launch intent for
+automatic recovery.
 
-A blocked launch shows a **critical alert** in the dashboard:
+A parked launch remains `pending`, consumes no worker slot, and shows the
+dependency reason in the dashboard diagnostics:
 
 ```text
-Error starting "<prompt excerpt>": <summary> (<category>). <detail> Recommended action: <action>
+Parked "<prompt excerpt>" — required dependency is degraded; no worker slot was consumed.
 Dependency: kb
 Failure mode: <category>
 Detail: <what kb doctor reported>
@@ -217,15 +219,20 @@ recovery tells you how to clear it.
 
 ### Continue now, or fix first?
 
-The preflight is a **hard gate**, not an advisory warning — a failing dependency
-blocks the launch, so there is no "continue anyway" button. Your two options:
+Confirmed dependency degradation is an **admission gate**, not an advisory
+warning — the task is created and queued, but there is no "continue anyway"
+button that starts a worker against the unhealthy dependency. Your two options:
 
 1. **Fix the dependency** (recommended): apply the recovery for the reported
-   failure mode, confirm with `kb doctor --format=json` (clean exit, no
-   `error`/`failed` checks), then re-launch the task.
+   failure mode; Kookr will re-run the bounded preflight and promote the parked
+   task after recovery evidence.
 2. **Launch a task that doesn't declare the dependency**: the preflight only runs
    for dependencies the task actually declares, so an unrelated `kb` outage won't
    block tasks that don't use the knowledge base.
+
+If health collection itself times out or cannot be classified, the dependency
+state is `unknown` and Kookr fails open. This state is distinct from confirmed
+degradation so a transient diagnostic outage does not pause the fleet.
 
 `kb doctor --format=json` is the same probe the preflight runs — use it to
 reproduce a failure and confirm a fix:
