@@ -40,7 +40,7 @@ function countLabel(count: number, singular: string, plural: string): string {
 }
 
 /**
- * One-glance scorecard: fires · measured spend · artifacts.
+ * One-glance scorecard: fires · recorded closeout snapshot spend · artifacts.
  * Returns null when there are no retained fires so a never-run schedule
  * (the store still materializes a zero row) does not read as "unmeasured".
  * Unmeasured fires (no token usage) never render as $0.
@@ -50,14 +50,14 @@ export function formatScheduleRollupLine(rollup: ScheduleRollupGlance): string |
   const fires = countLabel(rollup.fires, 'fire', 'fires');
   const artifacts = countLabel(rollup.artifacts, 'artifact', 'artifacts');
   const cost = rollup.measuredFires > 0
-    ? `${formatCost(rollup.costUsd)} measured`
+    ? `${formatCost(rollup.costUsd)} recorded closeout`
     : 'unmeasured';
   return `${fires} · ${cost} · ${artifacts}`;
 }
 
 /** Names the measuredFires denominator so $0 is not inferred from missing usage. */
 export function scheduleRollupTooltip(rollup: Pick<ScheduleRollup, 'fires' | 'measuredFires'>): string {
-  return `Measured spend covers ${rollup.measuredFires} of ${rollup.fires} fires that reported token usage. Unmeasured fires are omitted from cost, not counted as $0.`;
+  return `Recorded closeout spend covers ${rollup.measuredFires} of ${rollup.fires} fires that reported token usage. This is a ledger snapshot, not a budget-burn peak. Unmeasured fires are omitted from cost, not counted as $0.`;
 }
 
 function nextRunSortKey(schedule: Pick<ScheduleResponse, 'nextRunAt'>): number {

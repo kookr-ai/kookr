@@ -486,7 +486,7 @@ describe('SchedulesDialog rollup ROI', () => {
     await renderWith();
 
     const line = container.querySelector('.schedule-manager-roi');
-    expect(line?.textContent).toBe('5 fires · $1.25 measured · 2 artifacts');
+    expect(line?.textContent).toBe('5 fires · $1.25 recorded closeout · 2 artifacts');
     expect(line?.getAttribute('title')).toContain('3 of 5 fires');
     expect(container.querySelector('.schedule-manager-meta')?.textContent).toContain('Last:');
     expect(container.querySelector('.schedule-ledger')).not.toBeNull();
