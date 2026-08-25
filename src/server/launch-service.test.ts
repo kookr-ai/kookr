@@ -145,6 +145,43 @@ describe('checkSubmission', () => {
     expect(checkSubmission(store, 'fix the bug', 'codex-cli', '/tmp')).toBeUndefined();
   });
 
+  it('does not deduplicate a legacy task whose launch intent is missing', () => {
+    const task = store.createTask({ prompt: 'legacy work', cwd: '/tmp' });
+    const mutable = store.getTaskForMutation(task.id)!;
+    delete mutable.launchIntent;
+    store.startTask(task.id);
+
+    expect(checkSubmission(store, 'legacy work', 'claude-code', '/tmp')).toBeUndefined();
+  });
+
+  it('deduplicates only when independent model and effort pins both match', () => {
+    const task = store.createTask({
+      prompt: 'pinned work',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        agentType: 'claude-code',
+        model: 'model-a',
+        effort: 'effort-a',
+      },
+    });
+    store.startTask(task.id);
+
+    expect(checkSubmission(store, 'pinned work', 'claude-code', '/tmp', {
+      model: 'model-a',
+      effort: 'effort-a',
+    })?.id).toBe(task.id);
+    expect(checkSubmission(store, 'pinned work', 'claude-code', '/tmp', {
+      model: 'model-a',
+      effort: 'effort-b',
+    })).toBeUndefined();
+    expect(checkSubmission(store, 'pinned work', 'claude-code', '/tmp', {
+      model: 'model-b',
+      effort: 'effort-a',
+    })).toBeUndefined();
+  });
+
   it('does not dedup when the cwd differs (same prompt, different repos)', () => {
     const task = store.createTask({ prompt: 'review the diff', cwd: '/tmp/repo-a' });
     store.startTask(task.id);
@@ -268,6 +305,22 @@ describe('launchTask', () => {
     expect(result.duplicate).toBeUndefined();
     expect(result.task.prompt).toBe('hello');
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('persists the exact independent model and effort pins on the task', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'preserve pins',
+      cwd: '/tmp',
+      model: 'claude-fable-5',
+      effort: 'max',
+    });
+
+    expect(result.task.launchIntent).toEqual({
+      schemaVersion: 'task-launch-intent.v1',
+      agentType: 'claude-code',
+      model: 'claude-fable-5',
+      effort: 'max',
+    });
   });
 
   describe('per-task effort override (#681)', () => {

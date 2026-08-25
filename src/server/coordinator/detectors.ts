@@ -1,6 +1,7 @@
 import { hashPrompt } from '../hash-prompt.js';
 import { canonicalizeCwd } from '../cwd.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
+import { launchIntentFingerprint } from '../../core/task-launch-intent.js';
 import type { Task } from '../../core/tasks.js';
 import type { AgentType } from '../../shared/contracts/agent-types.js';
 import type {
@@ -176,7 +177,8 @@ function detectDuplicateTasks(tasks: readonly CoordinatorTask[]): CoordinatorDet
   for (const task of activeTasks) {
     if (task.metadata?.intent === 'keep_as_duplicate') continue;
     const promptHash = hashPrompt(normalizePromptFileReferences(task.prompt, task.cwd));
-    const duplicateKey = `${task.agentType}\0${canonicalizeCwd(task.cwd)}\0${promptHash}`;
+    const launchFingerprint = launchIntentFingerprint(task.launchIntent) ?? 'legacy';
+    const duplicateKey = `${task.agentType}\0${canonicalizeCwd(task.cwd)}\0${promptHash}\0${launchFingerprint}`;
     const group = groups.get(duplicateKey) ?? { promptHash, tasks: [] };
     group.tasks.push(task);
     groups.set(duplicateKey, group);

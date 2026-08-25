@@ -47,7 +47,7 @@ vi.mock('../core/interaction-log.js', () => ({
 }));
 
 function lifecycleTask(overrides: Partial<Task> = {}): Task {
-  return aTask({
+  const task = aTask({
     prompt: 'Fix the bug in auth',
     cwd: '/workspace/project',
     sessions: [aSession({
@@ -60,6 +60,17 @@ function lifecycleTask(overrides: Partial<Task> = {}): Task {
     updatedAt: new Date(),
     ...overrides,
   });
+  // These fixtures model tasks created by the current TaskStore. Tests that
+  // exercise legacy recovery explicitly construct a task without intent.
+  return task.launchIntent === undefined
+    ? {
+        ...task,
+        launchIntent: {
+          schemaVersion: 'task-launch-intent.v1',
+          agentType: task.agentType,
+        },
+      }
+    : task;
 }
 
 function makeDeps(overrides: Partial<AgentLifecycleDeps> = {}): AgentLifecycleDeps {

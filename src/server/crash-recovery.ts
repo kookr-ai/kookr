@@ -5,6 +5,11 @@ import { isRecoverableTermination } from '../core/task-status.js';
 import { AdapterRegistry, type ResumeContext } from '../adapters/agent-adapter.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
+import {
+  launchIntentFingerprint,
+  launchIntentPins,
+  validatePersistedLaunchIntent,
+} from '../core/task-launch-intent.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
@@ -81,7 +86,7 @@ export async function recoverCrashedSessions(
     const match = findTaskAndSession(taskStore, tmuxName);
     if (match) {
       tasksWithLiveSessions.add(match.task.id);
-      livePromptHashes.add(promptDedupKey(match.task.agentType, match.task.prompt));
+      livePromptHashes.add(promptDedupKey(match.task.agentType, match.task.prompt, match.task.launchIntent));
     }
   }
 
@@ -147,8 +152,25 @@ export async function recoverCrashedSessions(
       continue;
     }
 
+    const intent = validatePersistedLaunchIntent(task);
+    if (!intent.ok) {
+      taskStore.setRelaunchDisposition(task.id, {
+        outcome: 'not_relaunched',
+        source: 'crash-recovery',
+        reason: intent.reason,
+        at: new Date().toISOString(),
+        detail: intent.detail,
+      });
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: intent.detail,
+      });
+      continue;
+    }
+
     // Guard: another task with an identical prompt is already running or was just relaunched
-    const promptHash = promptDedupKey(task.agentType, task.prompt);
+    const promptHash = promptDedupKey(task.agentType, task.prompt, task.launchIntent);
     if (livePromptHashes.has(promptHash) || relaunchedPromptHashes.has(promptHash)) {
       result.skipped.push({
         taskId: task.id,
@@ -218,7 +240,13 @@ export async function recoverCrashedSessions(
     // continues the prior conversation on a forked branch.
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const newSessionId = await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const newSessionId = await adapter.launch(
+        task.id,
+        task.prompt,
+        session.cwd,
+        resumeContext,
+        launchIntentPins(intent.intent),
+      );
 
       // Transfer relaunch metadata to the new session. Mark resumedFromCrash
       // only when we actually requested resume; the adapter may have ignored
@@ -304,8 +332,8 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-function promptDedupKey(agentType: string, prompt: string): string {
-  return `${agentType}:${hashPrompt(prompt)}`;
+function promptDedupKey(agentType: string, prompt: string, intent: Task['launchIntent']): string {
+  return `${agentType}:${hashPrompt(prompt)}:${launchIntentFingerprint(intent) ?? 'legacy'}`;
 }
 
 function findTaskAndSession(

@@ -1384,6 +1384,7 @@ type CompactApiTask = Pick<
   | 'status'
   | 'cwd'
   | 'agentType'
+  | 'launchIntent'
   | 'playbookId'
   | 'projectId'
   | 'priority'
@@ -1408,6 +1409,7 @@ type CompactApiTask = Pick<
   | 'terminationSignal'
   | 'terminationDetail'
   | 'disposition'
+  | 'relaunchDisposition'
 > & {
   /** Alias of `id`, mirroring the full `ApiTask` surface. */
   taskId: string;
@@ -1436,6 +1438,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     status: task.status,
     cwd: task.cwd,
     agentType: task.agentType,
+    launchIntent: task.launchIntent,
     playbookId: task.playbookId,
     projectId: task.projectId,
     priority: task.priority,
@@ -1461,6 +1464,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     terminationSignal: task.terminationSignal,
     terminationDetail: task.terminationDetail,
     disposition: task.disposition,
+    relaunchDisposition: task.relaunchDisposition,
     sessions: task.sessions.map((session) => ({
       tmuxSession: session.tmuxSession,
       agentType: session.agentType,

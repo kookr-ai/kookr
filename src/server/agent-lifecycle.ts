@@ -7,6 +7,7 @@ import type { AgentEvent } from '../core/types.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
@@ -917,9 +918,25 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     if (!taskStore.beginLaunch(pending.id)) continue;
 
     try {
+      const intent = validatePersistedLaunchIntent(pending);
+      if (!intent.ok) {
+        taskStore.setRelaunchDisposition(pending.id, {
+          outcome: 'not_relaunched',
+          source: 'pending-promotion',
+          reason: intent.reason,
+          at: nowISO(),
+          detail: intent.detail,
+        });
+        throw new Error(`Pending task ${pending.id} has no replayable launch intent: ${intent.detail}`);
+      }
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
-      await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      const pins = launchIntentPins(intent.intent);
+      if (pins.model !== undefined || pins.effort !== undefined) {
+        await adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, pins);
+      } else {
+        await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      }
       if (deps.bypassAllPermissions === true) {
         const launchPermissionPosture = {
           bypassAllPermissions: true as const,

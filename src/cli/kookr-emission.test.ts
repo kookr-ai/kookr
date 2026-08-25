@@ -270,10 +270,15 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
 
   it('refuses an empty target repo when no repository allowance is configured', async () => {
     const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-empty-repo-'));
     const code = await runEmissionCli(
-      ['plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json'],
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
       { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
     );
+    rmSync(configDir, { recursive: true, force: true });
     expect(code).toBe(0);
     const payload = JSON.parse(io.logs[0]!);
     expect(payload.plan.openBacklogCount).toBe(0);

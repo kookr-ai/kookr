@@ -8,7 +8,7 @@ import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -76,6 +76,8 @@ export interface CreateTaskOptions {
    */
   scheduleId?: string;
   agentType?: AgentType;
+  /** Explicitly persisted launch settings. Omitted means a new unpinned intent is created. */
+  launchIntent?: TaskLaunchIntent;
   name?: string;
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
@@ -148,6 +150,8 @@ export interface Task {
   cwd: string;
   criteria?: string;
   agentType: AgentType;
+  /** Optional for backward compatibility; legacy records have no replay contract. */
+  launchIntent?: TaskLaunchIntent;
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
@@ -293,6 +297,8 @@ export interface Task {
    * Absent on every task that reached a session (the overwhelming majority).
    */
   disposition?: TaskDisposition;
+  /** Durable reason an automatic relaunch was rejected at its intent boundary. */
+  relaunchDisposition?: TaskRelaunchDisposition;
   /**
    * Per-phase launch instrumentation (issue #1589). Recorded on EVERY launch
    * attempt that reaches the adapter — successful or not — so a failed launch

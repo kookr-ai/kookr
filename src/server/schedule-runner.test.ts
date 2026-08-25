@@ -279,6 +279,30 @@ Do the test thing.
       expect(latest?.outcome).not.toBe('dispatch_failed');
     });
 
+    it('preserves a compatible effort pin independently when provider fallback drops the model pin', async () => {
+      const schedule = store.create({
+        name: 'Pinned fallback intent',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'codex-cli',
+        model: 'codex-provider-model',
+        effort: 'high',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code'],
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(1);
+      expect(launched[0]).toMatchObject({ agentType: 'claude-code', effort: 'high' });
+      expect(launched[0]!.model).toBeUndefined();
+    });
+
     it('parks via provider_paused when no substitute is registered', async () => {
       const schedule = store.create({
         name: 'No agents',

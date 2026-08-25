@@ -13,9 +13,12 @@ import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
 import type {
   TaskDependencyEdge,
   TaskDisposition,
+  TaskLaunchIntent,
   TaskLaunchPermissionPosture,
   TaskPriorityUpdate,
+  TaskRelaunchDisposition,
 } from '../shared/contracts/task.js';
+import { TASK_LAUNCH_INTENT_SCHEMA } from './task-launch-intent.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import { SessionRegistry } from './session-registry.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
@@ -303,6 +306,7 @@ export class TaskStore {
       launchSource,
       scheduleId,
       agentType,
+      launchIntent,
       name,
       playbookId,
       playbookParameterValues,
@@ -342,13 +346,18 @@ export class TaskStore {
       : parentForInherit?.unattended === true;
 
     const now = new Date();
+    const effectiveAgentType = agentType ?? DEFAULT_AGENT_TYPE;
     const task: Task = {
       id: randomUUID(),
       prompt,
       userPrompt,
       cwd,
       criteria,
-      agentType: agentType ?? DEFAULT_AGENT_TYPE,
+      agentType: effectiveAgentType,
+      launchIntent: structuredClone(launchIntent ?? {
+        schemaVersion: TASK_LAUNCH_INTENT_SCHEMA,
+        agentType: effectiveAgentType,
+      }) as TaskLaunchIntent,
       parentTaskId,
       // Immutable launch provenance (issue #1583). Derived once from the
       // launch signals present at creation; never mutated afterward.
@@ -894,6 +903,18 @@ export class TaskStore {
     const task = this.tasks.get(id);
     if (!task || task.disposition) return;
     task.disposition = { ...disposition };
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+  }
+
+  /**
+   * Persist a fail-closed automatic-relaunch outcome. First-write-wins keeps
+   * repeated recovery ticks from obscuring the original missing/malformed data.
+   */
+  setRelaunchDisposition(id: string, disposition: TaskRelaunchDisposition): void {
+    const task = this.tasks.get(id);
+    if (!task || task.relaunchDisposition || !disposition) return;
+    task.relaunchDisposition = structuredClone(disposition);
     task.updatedAt = new Date();
     this.markTaskDirty(id);
   }

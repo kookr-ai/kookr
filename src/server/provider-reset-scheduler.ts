@@ -111,6 +111,9 @@ export interface ProviderResumeSource {
   playbookParameterValues?: Record<string, string>;
   projectId?: string;
   agentType?: AgentType;
+  /** Independent pins copied from the persisted launch intent. */
+  model?: string;
+  effort?: string;
   autoCloseOnSignal?: boolean;
   /** The issue claim the resume dedups on — required (no claim ⇒ no resume). */
   issueClaim: { repo: string; number: number };
@@ -142,6 +145,8 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
       : {}),
     ...(task.projectId ? { projectId: task.projectId } : {}),
     ...(task.agentType ? { agentType: task.agentType } : {}),
+    ...(task.model !== undefined ? { model: task.model } : {}),
+    ...(task.effort !== undefined ? { effort: task.effort } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },
     disableDedup: true,
     launchSource: 'schedule',
