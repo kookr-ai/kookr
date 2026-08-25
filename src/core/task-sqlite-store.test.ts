@@ -114,12 +114,10 @@ describe('task-sqlite-store', () => {
         dependencies: ['kb'],
         idempotencyKey: 'stable-key',
       });
-      expect(t.launchAdmission).toEqual({
-        status: 'parked',
-        reason: 'dependency_degraded',
-        dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
-        parkedAt: '2026-08-25T10:00:00.000Z',
-      });
+      // A parked admission is cleared when the task reaches a terminal
+      // status; pending parked intent is covered by the JSON/SQLite pending
+      // round-trip below.
+      expect(t.launchAdmission).toBeUndefined();
       expect(t.sessions[0]?.tmuxSession).toBe('kookr-sess-1');
       expect(t.completionDigest?.bullets).toEqual(['did stuff']);
       expect(t.tokenUsage?.costUsd).toBe(0.01);
@@ -127,6 +125,42 @@ describe('task-sqlite-store', () => {
       expect(t.updatedAt).toBeInstanceOf(Date);
       expect(t.finishedAt).toBeInstanceOf(Date);
       expect(loaded.lifetimeSpendUsd).toBeCloseTo(0.01);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('round-trip pending parked admission through SQLite', () => {
+    const store = new TaskStore();
+    const parked = store.createTask({
+      prompt: 'parked work',
+      cwd: '/repo',
+      launchIntent: {
+        prompt: 'parked work',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+    store.pendTask(parked.id);
+
+    const db = new TaskSqliteStore(join(tempDir, 'parked-roundtrip.sqlite'));
+    try {
+      db.importSnapshot({ tasks: store.getAllTasks(), lifetimeSpendUsd: 0, relations: [] });
+      const loaded = db.loadAll().tasks[0];
+      expect(loaded?.status).toBe('pending');
+      expect(loaded?.launchAdmission).toEqual({
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      });
     } finally {
       db.close();
     }

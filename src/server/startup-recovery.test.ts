@@ -225,6 +225,40 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
       expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);
   });
+
+  test('does not hydrate a terminal task with a legacy parked marker', async () => {
+    const deps = fakeDeps();
+    const task = deps.taskStore.createTask({
+      prompt: 'canceled work',
+      cwd: '/repo',
+      launchIntent: {
+        prompt: 'canceled work',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    deps.taskStore.cancelTask(task.id);
+    // Simulate a legacy persisted record written before terminal cleanup.
+    deps.taskStore.setLaunchAdmission(task.id, {
+      status: 'parked',
+      reason: 'dependency_degraded',
+      dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      parkedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const admission = new LaunchDependencyAdmission();
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(admission.snapshot()).toEqual([]);
+  });
 });
 
 describe('runStartupRecoveryPhase — disposition ledger wiring (issue #1540)', () => {
