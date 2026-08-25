@@ -842,8 +842,13 @@ describe('launchTask', () => {
     });
 
     expect(result.queued).toBe(true);
-    expect(result.parked).toBeUndefined();
+    expect(result.parked).toBe(true);
     expect(result.task.status).toBe('pending');
+    expect(result.task.launchAdmission).toMatchObject({
+      status: 'parked',
+      reason: 'half_open_probe_busy',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+    });
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'half_open' }),
     ]);

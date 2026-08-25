@@ -1456,6 +1456,22 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     livenessTickRunning = true;
     timerHealth?.recordFire('liveness', livenessIntervalMs);
     try {
+      let promotedPending = 0;
+      if (deps.agentLifecycleDeps) {
+        // Dependency recovery is not itself a reconcile event. Run the same
+        // bounded promotion pass on every liveness tick so parked work is
+        // retried while the fleet is otherwise idle.
+        promotedPending = await promotePendingTasks({
+          taskStore,
+          adapterRegistry: deps.adapterRegistry,
+          lifecycleDeps: deps.agentLifecycleDeps,
+          broadcastToAll: deps.broadcastToAll,
+          serverCwd: deps.serverCwd,
+          getMaxActiveTasks: deps.getMaxActiveTasks,
+          bypassAllPermissions: deps.bypassAllPermissions,
+        });
+      }
+
       if (
         deps.worktreeRegistry
         && deps.worktreeRegistryRepoPath
@@ -2055,19 +2071,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || hungSuspectTtlResult.reclaimedTaskIds.length > 0
         || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
         || orphanLoopsFailed > 0
+        || promotedPending > 0
       ) {
-        // Promote pending tasks when slots open from auto-transitioned sessions
-        // (completed via backfill, or terminated via the new dead-session path).
-        if (deps.agentLifecycleDeps) {
-          await promotePendingTasks({
-            taskStore,
-            adapterRegistry: deps.adapterRegistry,
-            lifecycleDeps: deps.agentLifecycleDeps,
-            broadcastToAll, serverCwd,
-            getMaxActiveTasks: deps.getMaxActiveTasks,
-            bypassAllPermissions: deps.bypassAllPermissions,
-          });
-        }
         broadcastDashboardSnapshot(deps);
       }
     } catch (err) {

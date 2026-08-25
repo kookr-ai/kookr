@@ -1788,7 +1788,16 @@ async function launchTaskCore(
   }
 
   if (taskStore.getActiveCount() >= effectiveMaxActive) {
-    const queuedTask = taskStore.pendTask(task.id);
+    let queuedTask = taskStore.pendTask(task.id);
+    const probeWaitAdmission = dependencyAdmissionDecision?.admit
+      ? toHalfOpenProbeWaitAdmission(dependencyAdmissionDecision)
+      : undefined;
+    if (probeWaitAdmission) {
+      // Keep the half-open recovery requirement durable while the task waits
+      // for capacity. The in-memory probe token is released below, so this
+      // marker is what makes promotion and restart re-enter half-open safely.
+      queuedTask = taskStore.setLaunchAdmission(task.id, probeWaitAdmission);
+    }
     deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
@@ -1806,6 +1815,9 @@ async function launchTaskCore(
     return {
       task: queuedTask,
       queued: true,
+      ...(probeWaitAdmission
+        ? { parked: true, dependencyAdmission: probeWaitAdmission }
+        : {}),
       ...(planQuotaRotation
         ? {
             admission: 'rotated' as const,
@@ -2170,6 +2182,22 @@ function toTaskLaunchAdmission(
     status: 'parked',
     reason: decision.reason,
     dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
+    parkedAt: nowISO(),
+  };
+}
+
+function toHalfOpenProbeWaitAdmission(
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: true }>,
+): TaskLaunchAdmission | undefined {
+  if (!decision.probe) return undefined;
+  return {
+    status: 'parked',
+    reason: 'half_open_probe_busy',
+    dependencies: decision.probe.dependencies.map((dependency) => ({
+      dependency,
+      state: 'half_open',
+      reason: 'Recovery probe waits for an available worker slot',
+    })),
     parkedAt: nowISO(),
   };
 }
