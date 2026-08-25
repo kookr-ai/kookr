@@ -10,6 +10,7 @@ import {
 } from '../../core/phase-ledger-codec.js';
 import { nextEligiblePhase } from '../../core/phase-ledger.js';
 import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../../core/autonomous-review-policy.js';
+import { AutonomousReviewReflectionStore } from '../../core/autonomous-review-reflection.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
 import { withCrossProcessLock } from '../cross-process-lock.js';
 import { evaluateIndependentReview, isSelfAdvancingDisabled } from '../self-advancing-authority.js';
@@ -54,6 +55,7 @@ export interface UmbrellaChainAdvancerDeps {
   staleMs?: number;
   now?: () => Date;
   logger?: UmbrellaChainAdvancerLogger;
+  reviewReflection?: Pick<AutonomousReviewReflectionStore, 'record'>;
 }
 
 export interface UmbrellaChainHealth {
@@ -168,6 +170,7 @@ export class UmbrellaChainAdvancer {
   private readonly logger: UmbrellaChainAdvancerLogger;
   private readonly claimStore: Pick<UmbrellaChainClaimStore, 'claim' | 'finalize' | 'release' | 'get'>;
   private readonly lockPath: string;
+  private readonly reviewReflection: Pick<AutonomousReviewReflectionStore, 'record'>;
   private timer: ReturnType<typeof setInterval> | undefined;
   private inFlightSweep: Promise<void> | undefined;
   private lastTickAt: string | null = null;
@@ -186,6 +189,7 @@ export class UmbrellaChainAdvancer {
     this.logger = deps.logger ?? console;
     this.claimStore = deps.claimStore ?? new UmbrellaChainClaimStore(deps.kookrDir);
     this.lockPath = join(deps.kookrDir, 'umbrella-chain-advancer.sweep.lock');
+    this.reviewReflection = deps.reviewReflection ?? new AutonomousReviewReflectionStore(deps.kookrDir);
   }
 
   start(): void {
@@ -282,6 +286,7 @@ export class UmbrellaChainAdvancer {
     const reconciled = reconcilePhaseResultComments(ledger, issue.comments.map((comment) => comment.body));
     let changed = JSON.stringify(reconciled) !== JSON.stringify(ledger);
     ledger = reconciled;
+    await this.observeReviewQuality(ledger);
 
     const reachable = new Map<number, boolean>();
     const currentHeadByPr = new Map<number, string>();
@@ -477,6 +482,28 @@ export class UmbrellaChainAdvancer {
       const reason = `claim-finalize-failed:${messageOf(error)}`;
       this.recordHealth(ledger, 'blocked', phase.id, true, reason);
       this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'skip', reason }, issue.number);
+    }
+  }
+
+  private async observeReviewQuality(ledger: PhaseLedger): Promise<void> {
+    for (const phase of ledger.phases) {
+      if (phase.reviewVerdict === undefined || phase.reviewedAt === undefined) continue;
+      const exactHead = phase.reviewHeadSha !== undefined;
+      await this.reviewReflection.record({
+        unitId: `${ledger.chainId}:${phase.id}:${phase.reviewAttempts ?? 1}`,
+        iterations: phase.reviewAttempts ?? 1,
+        cap: phase.reviewIterationCap ?? DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP,
+        truePositives: 0,
+        falsePositives: 0,
+        defectsInEvaluationSet: 0,
+        defectsFound: 0,
+        reviewerWasFresh: phase.reviewerTaskId !== undefined && phase.reviewerTaskId !== phase.taskId,
+        blindEvaluation: false,
+        heldOutEvaluation: false,
+        verdictBoundToCurrentHead: exactHead,
+        reviewWasPerformed: true,
+        mergeAllowed: phase.reviewVerdict === 'pass' && exactHead,
+      });
     }
   }
 
