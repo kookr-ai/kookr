@@ -42,7 +42,7 @@ vi.mock('./crash-recovery.js', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted above imports by
 // vitest, but keep the import here for readability of the dependency order).
-const { runStartupRecoveryPhase } = await import('./startup-recovery.js');
+const { promotePendingStartupTasks, runStartupRecoveryPhase } = await import('./startup-recovery.js');
 
 function reconciliationResult(overrides: Partial<ReconciliationResult> = {}): ReconciliationResult {
   return {
@@ -68,9 +68,14 @@ function crashRecoveryResult(overrides: Partial<CrashRecoveryResult> = {}): Cras
 }
 
 function fakeDeps() {
-  const monitor = { registerAgent: vi.fn(), unregisterAgent: vi.fn() };
+  const monitor = { registerAgent: vi.fn(), unregisterAgent: vi.fn(), getSnapshot: vi.fn(() => []) };
   const watchdog = { registerAgent: vi.fn(), unregisterAgent: vi.fn() };
-  const hookWatcher = { watch: vi.fn(), isWatching: vi.fn(() => false), stop: vi.fn() };
+  const hookWatcher = {
+    watch: vi.fn(),
+    isWatching: vi.fn(() => false),
+    stop: vi.fn(),
+    pruneStaleReplayCheckpoints: vi.fn(() => 0),
+  };
   const suppressionTracker = { import: vi.fn() };
   const interactionLog = { append: vi.fn(async () => undefined) };
   const ralphLoopService = {
@@ -159,6 +164,20 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
   test('restores persisted parked dependencies before recovery promotion', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([]);
+    const adapter = {
+      agentType: 'claude-code',
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+        deps.taskStore.addSession(taskId, {
+          tmuxSession: 'startup-recovery-session',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'startup-recovery-session';
+      }),
+    } as any;
+    deps.adapterRegistry.register(adapter);
     const task = deps.taskStore.createTask({
       prompt: 'use the knowledge base',
       cwd: '/repo',
@@ -179,6 +198,8 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     deps.lifecycleDeps = {
       ...deps.lifecycleDeps,
       launchDependencyAdmission: admission,
+      dependencyPreflightRunner,
+      taskStore: deps.taskStore,
     };
 
     await runStartupRecoveryPhase({
@@ -188,6 +209,20 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
 
     expect(admission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+
+    await promotePendingStartupTasks({
+      taskStore: deps.taskStore,
+      adapterRegistry: deps.adapterRegistry,
+      lifecycleDeps: deps.lifecycleDeps,
+      broadcastToAll: deps.broadcastToAll,
+      serverCwd: deps.serverCwd,
+    });
+
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);
   });
 });
