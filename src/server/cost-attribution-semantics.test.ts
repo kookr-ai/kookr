@@ -22,7 +22,7 @@ function usage(costUsd: number): TokenUsage {
   };
 }
 
-describe('reaped-task cost attribution contract (#2786)', () => {
+describe('reaped-task cost attribution contract (#2837)', () => {
   test('keeps closeout snapshot, late peak observation, and child usage separate', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'kookr-cost-attribution-'));
     try {
@@ -88,10 +88,22 @@ describe('reaped-task cost attribution contract (#2786)', () => {
         '2026-07-26T06:00:41.886Z',
       );
       await runtime.scheduleService.markExecutionAccepted(schedule.id, receipt.id, parent.id, false);
-      await runtime.scheduleService.recordTaskTerminalOutcome(parent.id, 'completed');
+      // Model the real hung-task reaper transition. The schedule closeout still
+      // joins the parent-owned snapshot, while the child remains a separate
+      // dashboard aggregate and the later peak is diagnostics-only.
+      taskStore.terminateTask(parent.id, {
+        reason: 'timeout',
+        detail: 'deterministic cost-attribution fixture reap',
+      });
+      await runtime.scheduleService.recordTaskTerminalOutcome(parent.id, 'cancelled', 'timeout');
+      expect(taskStore.getTask(parent.id)).toMatchObject({
+        status: 'terminated',
+        terminationReason: 'timeout',
+      });
 
       const stored = runtime.scheduleStore.get(schedule.id)!;
       expect(stored.executionLedger[0]?.tokenUsage?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
+      expect(stored.executionLedger[0]?.outcome).toBe('cancelled');
       expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
 
       // Completion metadata and stop-token scans can update the terminal task

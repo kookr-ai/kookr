@@ -8,7 +8,9 @@ The rollup is windowed to the retained ledger rows, so `windowStart` and
 `windowEnd` identify the period represented; it is not lifetime spend.
 
 See the [cost-attribution semantics record](../reports/cost-attribution-semantics-reaped-tasks.md)
-for the pending operator decision and the `757de464` regression shape. Keeping
+for the pending operator decision and the `757de464` regression shape. The
+record is not an operator-approved billing policy: it pins current behavior
+while reaping-truncation and child-cost inclusion remain unresolved. Keeping
 the two measurements named separately is required: adding a diagnostic peak to
 a closeout snapshot would double-count or inflate spend without a durable
 attribution basis.
