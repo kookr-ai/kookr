@@ -153,6 +153,8 @@ describe('formatScheduleRollupLine', () => {
   });
 
   test('tooltip names the measuredFires denominator', () => {
-    expect(scheduleRollupTooltip({ fires: 5, measuredFires: 3 })).toContain('3 of 5 fires');
+    const tooltip = scheduleRollupTooltip({ fires: 5, measuredFires: 3 });
+    expect(tooltip).toContain('3 of 5 fires');
+    expect(tooltip).toContain('final closeout');
   });
 });
