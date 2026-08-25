@@ -42,6 +42,7 @@ import type { TokenTracker } from '../core/token-tracker.js';
 import type { AgentEvent, TokenUsage } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { resolveAutonomousReviewIterationCap } from '../core/autonomous-review-policy.js';
 
 /**
  * Default cap on automatic terminal relaunches before a loop escalates to
@@ -225,8 +226,15 @@ export function validateRalphLoopRequest(body: {
   if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
     return { ok: false, error: 'prompt is required and must be a non-empty string' };
   }
-  if (typeof body.iterationCap !== 'number' || !Number.isInteger(body.iterationCap) || body.iterationCap <= 0) {
+  if (body.iterationCap !== undefined
+    && (typeof body.iterationCap !== 'number' || !Number.isInteger(body.iterationCap) || body.iterationCap <= 0)) {
     return { ok: false, error: 'iterationCap is required and must be a positive integer' };
+  }
+  let iterationCap: number;
+  try {
+    iterationCap = resolveAutonomousReviewIterationCap(typeof body.iterationCap === 'number' ? body.iterationCap : undefined).cap;
+  } catch {
+    return { ok: false, error: 'iterationCap must be within the shared autonomous review cap' };
   }
   if (body.stopPredicate !== undefined && typeof body.stopPredicate !== 'string') {
     return { ok: false, error: 'stopPredicate, when present, must be a string' };
@@ -272,7 +280,7 @@ export function validateRalphLoopRequest(body: {
     ok: true,
     value: {
       prompt: body.prompt,
-      iterationCap: body.iterationCap,
+      iterationCap,
       ...(body.stopPredicate !== undefined ? { stopPredicate: body.stopPredicate } : {}),
       ...(body.stallPredicate !== undefined ? { stallPredicate: body.stallPredicate } : {}),
       ...(body.zeroDiffConvergence !== undefined

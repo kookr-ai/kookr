@@ -134,19 +134,39 @@ describe('evaluateIndependentReview — unforgeable, capped verdict gate', () =>
       reviewerRan: true,
       verdict: 'PASS',
       reviewAttempts: 1,
+      reviewHeadSha: 'head-1',
+      currentHeadSha: 'head-1',
     });
     expect(d.decision).toBe('merge-allowed');
   });
 
-  test('independent BLOCK → blocked (stop, distinct from failure)', () => {
+  test('independent BLOCK → correction/review retry while budget remains', () => {
     const d = evaluateIndependentReview({
       implementerLineage: lineage,
       reviewerTaskId: 'task-reviewer',
       reviewerRan: true,
       verdict: 'BLOCK',
       reviewAttempts: 1,
+      reviewHeadSha: 'head-1',
+      currentHeadSha: 'head-1',
     });
-    expect(d.decision).toBe('blocked');
+    expect(d.decision).toBe('retry-review');
+    expect(d.reason).toMatch(/correction\/review attempt 2\/10/);
+  });
+
+  test('independent BLOCK at the configured cap is a concrete blocker', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerTaskId: 'task-reviewer',
+      reviewerRan: true,
+      verdict: 'BLOCK',
+      reviewAttempts: 2,
+      maxReviewAttempts: 2,
+      reviewHeadSha: 'head-1',
+      currentHeadSha: 'head-1',
+    });
+    expect(d.decision).toBe('human-required');
+    expect(d.reason).toMatch(/BLOCK.*2\/2/);
   });
 
   test('reviewer in implementer lineage → human-required (not independent)', () => {
@@ -191,6 +211,7 @@ describe('evaluateIndependentReview — unforgeable, capped verdict gate', () =>
       reviewerTaskId: 'task-reviewer',
       reviewerRan: true,
       reviewAttempts: 2,
+      maxReviewAttempts: 2,
     });
     expect(d.decision).toBe('human-required');
   });
@@ -204,14 +225,63 @@ describe('evaluateIndependentReview — unforgeable, capped verdict gate', () =>
     expect(d.decision).toBe('retry-review');
   });
 
+  test('default review budget is ten attempts', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerRan: false,
+      reviewAttempts: 9,
+    });
+    expect(d.decision).toBe('retry-review');
+  });
+
+  test('stale PASS cannot authorize a merge and is re-reviewed while budget remains', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerTaskId: 'task-reviewer',
+      reviewerRan: true,
+      verdict: 'PASS',
+      reviewAttempts: 1,
+      reviewHeadSha: 'old-head',
+      currentHeadSha: 'new-head',
+    });
+    expect(d.decision).toBe('retry-review');
+  });
+
+  test('stale PASS at the configured cap is a discoverable blocker', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerTaskId: 'task-reviewer',
+      reviewerRan: true,
+      verdict: 'PASS',
+      reviewAttempts: 2,
+      maxReviewAttempts: 2,
+      reviewHeadSha: 'old-head',
+      currentHeadSha: 'new-head',
+    });
+    expect(d.decision).toBe('human-required');
+    expect(d.reason).toMatch(/current PR head/);
+  });
+
   test('reviewer failed to run, cap exhausted → human-required', () => {
     const d = evaluateIndependentReview({
       implementerLineage: lineage,
       reviewerRan: false,
       reviewAttempts: 2,
+      maxReviewAttempts: 2,
     });
     expect(d.decision).toBe('human-required');
     expect(d.reason).toContain('attempts');
+  });
+
+  test('rejects a configured cap above the shared maximum', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerRan: false,
+      reviewAttempts: 1,
+      maxReviewAttempts: 21,
+    });
+    expect(d.decision).toBe('human-required');
+    expect(d.reason).toMatch(/shared autonomous review cap/);
   });
 
   test('reviewer ran without a verdict, attempts left → retry-review', () => {

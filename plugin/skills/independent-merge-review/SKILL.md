@@ -1,6 +1,6 @@
 ---
 name: independent-merge-review
-description: Before an autonomous self-merge, spawn a fresh-context reviewer (Codex lane, Claude fallback) that posts a machine-readable PR verdict comment; the merge wrapper blocks on a BLOCK verdict and on a missing verdict.
+description: Before an autonomous self-merge, spawn a fresh-context reviewer (Codex lane, Claude fallback) that posts a machine-readable exact-head PR verdict; BLOCK and missing or stale verdicts start another correction cycle.
 keywords: independent review, merge gate, self-merge, reviewer verdict, codex reviewer, claude fallback, review-skipped-timeout, before merge, autonomous merge
 related: pre-pr-review, pr-review-triage, git-commit-discipline
 ---
@@ -16,7 +16,7 @@ Autonomous batches were merging PRs in ~1 minute with **zero** review activity �
 the only external reviewer would silently drop a PR when it hit its usage limit,
 and the flow degraded to no review rather than a fallback (issue #1717). This
 skill closes that gap: **every autonomous self-merge must carry a fresh-context
-reviewer verdict, or the sanctioned timeout label.**
+reviewer verdict bound to the exact current head.**
 
 The gate is enforced deterministically in `scripts/kookr-merge.sh` (`pnpm
 merge`), so it is unreachable to merge without one. This skill is the
@@ -53,8 +53,8 @@ Rules the gate depends on:
 - **`kookr-review-verdict: block`** ⇒ merge is refused (exit 4). An explicit
   block is never overridden by the timeout label.
 - **`kookr-review-verdict: pass`** with a `review-head-sha` matching the PR's
-  current head ⇒ merge allowed. A `pass` bound to an **older** commit is treated
-  as stale and refused — re-run the reviewer after any new commit.
+  current head ⇒ merge allowed. A missing or older binding is refused — re-run
+  the reviewer after any new commit.
 - The **latest** verdict comment wins, so the fix-and-re-review loop is honored:
   block → fix → post a fresh `pass` for the new head.
 
@@ -139,11 +139,11 @@ finding, do exactly one:
 Never edit an old BLOCK comment to say pass — post a new verdict comment; the
 gate reads the latest.
 
-### 5. Latency budget — never deadlock throughput
+### 5. Latency budget — never turn timeout into quality
 
 The reviewer verdict must land within **10 minutes**. If the reviewer (including
-the Claude fallback) has not returned a verdict by then, do **not** stall the
-batch indefinitely:
+the Claude fallback) has not returned a verdict by then, record a bounded retry
+and do **not** merge:
 
 ```bash
 gh label create review-skipped-timeout --repo "$REPO" \
@@ -151,13 +151,32 @@ gh label create review-skipped-timeout --repo "$REPO" \
 gh issue edit "$PR" --repo "$REPO" --add-label review-skipped-timeout
 ```
 
-`review-skipped-timeout` is the timeout label the merge gate recognizes. With it
-present, the gate allows the merge and the `review:coverage` metric counts the
-PR as *timed-out* (not *reviewed*), so the escape hatch stays visible instead of
-silently passing as a review.
+`review-skipped-timeout` is telemetry only. The merge gate refuses the PR while
+it is the latest state; retry the reviewer, use the configured fallback, and
+after the default **10 correction/review attempts** record a concrete blocker.
+An explicitly lower project cap remains authoritative. A timeout, missing
+review, or stale review never counts as a successful quality improvement.
 
-Use the timeout label sparingly — it is the last resort for a genuinely
-unresponsive reviewer, not a way to skip review.
+Use the timeout label to make an external blocker discoverable, never as a way
+to skip review.
+
+### 6. Correction budget and periodic reflection
+
+One iteration is one implementation attempt followed by one fresh independent
+review of the resulting head. A BLOCK must be fixed or rebutted and followed by
+another review; a PASS is usable only for the exact current head. The durable
+attempt counter belongs to the unit/continuation lineage, survives restart and
+branch-head changes, and defaults to 10. It must not reset when a successor task
+or reviewer task is launched.
+
+Every five completed units, run a bounded self-reflection using blind or held-out
+review data. Track mean iterations alongside precision, recall, F1, calibration,
+fresh-review rate, exact-head binding, review coverage, and safe-merge rate.
+Mutation may improve reviewer selection, prompts, mutators/judges, or gates only
+when the quality sample is large enough and safety metrics are intact. Never
+optimize for fewer iterations alone, and never let the reviewer weaken its own
+gate to improve that number. Use `reviewer-distillation-meta` for blind
+prediction/judging/mutation and retain a held-out evaluation set.
 
 ## Trust model (a guardrail, not a sandbox)
 

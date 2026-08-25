@@ -24,6 +24,8 @@ export interface UmbrellaChainRemote {
   refreshBase(repoPath: string, baseBranch: string): Promise<void>;
   isPullRequestReachable(repoPath: string, baseBranch: string, prNumber: number, repo: string): Promise<boolean>;
   getPullRequestMergedAt(repo: string, prNumber: number): Promise<string | null>;
+  /** Current head is required to bind an independent review to the exact diff. */
+  getPullRequestHeadSha(repo: string, prNumber: number): Promise<string | null>;
 }
 
 export interface GhUmbrellaChainClientOptions {
@@ -39,6 +41,7 @@ interface GhPullRequestView {
   state?: unknown;
   mergeCommit?: { oid?: unknown } | null;
   mergedAt?: unknown;
+  commits?: Array<{ oid?: unknown }>;
 }
 
 function json<T>(stdout: string): T {
@@ -132,6 +135,19 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
         && isValidIsoTimestamp(pr.mergedAt)
         ? pr.mergedAt
         : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async getPullRequestHeadSha(repo: string, prNumber: number): Promise<string | null> {
+    try {
+      const { stdout } = await this.run('gh', [
+        'pr', 'view', String(prNumber), '--repo', repo, '--json', 'commits',
+      ], { timeout: 20_000 });
+      const pr = json<GhPullRequestView>(stdout);
+      const oid = pr.commits?.at(-1)?.oid;
+      return typeof oid === 'string' && oid.length > 0 ? oid.toLowerCase() : null;
     } catch {
       return null;
     }

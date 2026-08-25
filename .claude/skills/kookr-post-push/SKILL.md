@@ -104,11 +104,14 @@ or scheduling wakeups. Do not invoke `gh pr merge --auto` on this repo.
 
 **Independent merge-review gate (issue #1717).** For an autonomous self-merge,
 the wrapper additionally refuses (exit 4) unless the PR carries a fresh-context
-reviewer verdict of `pass` for the current head, or the `review-skipped-timeout`
-label. Before calling `pnpm merge`, run the [[independent-merge-review]] skill:
+reviewer verdict of `pass` with an exact `review-head-sha` for the current head.
+The `review-skipped-timeout` label is telemetry only and never bypasses the
+gate. Before calling `pnpm merge`, run the [[independent-merge-review]] skill:
 it spawns a reviewer blind to your implementation reasoning (Codex lane, Claude
 fallback when Codex is rate-limited), posts the verdict comment, and applies the
-timeout label if no verdict lands within the 10-minute budget. Only a
+timeout label if no verdict lands within the 10-minute budget; retry up to the
+durable default of 10 correction/review attempts, then record a concrete
+blocker. Only a
 human-driven manual merge may bypass it with `KOOKR_MERGE_REQUIRE_REVIEW=0`.
 
 ### 7. Report PR health explicitly
@@ -120,7 +123,7 @@ Before you say the branch is in good shape, report:
 - checklist/body: current / stale
 - CI: passing / failing / pending
 - feedback: none / bot comments pending / review comments pending
-- independent review (before an autonomous merge): verdict `pass`/`block` (lane) / timeout-labeled / not yet run
+- independent review (before an autonomous merge): exact-head verdict `pass`/`block` (lane) / timeout-blocked / not yet run
 - next action: wait / fix / triage / merge-ready
 
 Do not leave the user to ask whether CI, mergeability, or the post-push workflow was checked.

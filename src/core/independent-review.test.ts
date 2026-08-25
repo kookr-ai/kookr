@@ -124,31 +124,31 @@ describe('evaluateMergeReviewGate', () => {
     expect(result.code).toBe('stale-verdict');
   });
 
-  test('timeout label authorizes a merge when no verdict arrived', () => {
+  test('timeout label never authorizes a merge when no verdict arrived', () => {
     const result = evaluateMergeReviewGate({
       comments: [],
       labels: [REVIEW_SKIPPED_TIMEOUT_LABEL],
       headSha: head,
     });
-    expect(result).toMatchObject({ allowed: true, code: 'timeout-label' });
+    expect(result).toMatchObject({ allowed: false, code: 'timeout-label' });
   });
 
-  test('a stale pass rescued by the timeout label is allowed', () => {
+  test('a stale pass is not rescued by the timeout label', () => {
     const result = evaluateMergeReviewGate({
       comments: [{ body: verdictComment({ verdict: 'pass', headSha: 'oldsha' }) }],
       labels: [REVIEW_SKIPPED_TIMEOUT_LABEL],
       headSha: 'newsha',
     });
-    expect(result).toMatchObject({ allowed: true, code: 'timeout-label' });
+    expect(result).toMatchObject({ allowed: false, code: 'stale-verdict' });
   });
 
-  test('a pass without a head-sha binding is accepted (lenient mode)', () => {
+  test('a pass without a head-sha binding is refused', () => {
     const result = evaluateMergeReviewGate({
       comments: [{ body: verdictComment({ verdict: 'pass' }) }],
       labels: [],
       headSha: head,
     });
-    expect(result).toMatchObject({ allowed: true, code: 'pass' });
+    expect(result).toMatchObject({ allowed: false, code: 'unbound-verdict' });
   });
 });
 

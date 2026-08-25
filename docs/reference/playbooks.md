@@ -153,16 +153,24 @@ for the design rationale.
 Loop settings are only effective when `tags` includes `loopable`. A loopable
 playbook with no `loop:` block receives these defaults:
 
+The omitted iteration cap is the shared autonomous-review default of **10**. A
+deliberate lower project cap remains authoritative and is carried through
+continuations; it must not reset when a worker or reviewer restarts. Independent
+review loops may merge only after a fresh exact-head PASS and green local/check
+gates. Timeouts and stale reviews are blockers, not quality successes. Bounded
+self-reflection runs every five completed units using blind/held-out quality
+metrics rather than iteration count alone.
+
 | Effective field | Default |
 | --- | --- |
-| `iterationCap` | `6` |
+| `iterationCap` | `10` |
 | `costCapUsd` | `25` |
 
 The optional `loop:` block accepts:
 
 | Field | Type | Default | Limits |
 | --- | --- | --- | --- |
-| `iterationCap` | integer | `6` | `1` through `20` |
+| `iterationCap` | integer | `10` | `1` through `20` |
 | `zeroDiffConsecutiveIterations` | integer | absent | Positive integer, not greater than effective `iterationCap` |
 | `costCapUsd` | number | `25` | Greater than `0`, at most `25` |
 | `stopPredicate` | string | absent | Non-empty single-line shell predicate |

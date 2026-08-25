@@ -146,7 +146,7 @@ describe('implement-github-issue playbook', () => {
     expect(gateIdx).toBeGreaterThan(phase8Start);
     // The gate instruction must precede the merge command.
     expect(mergeIdx).toBeGreaterThan(gateIdx);
-    // Fresh-context reviewer + Codex→Claude fallback + timeout label are the load-bearing pieces.
+    // Fresh-context reviewer + Codex→Claude fallback + explicit timeout telemetry are load-bearing pieces.
     const gateText = pb.body.slice(gateIdx, mergeIdx);
     expect(gateText).toMatch(/fresh-context/i);
     expect(gateText).toContain('independent-merge-review');
