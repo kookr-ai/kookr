@@ -3,6 +3,8 @@
 The Schedules dialog reports a materialized rollup over the retained execution
 ledger. Its measured spend is a sum of **final task closeout costs** from rows
 that carry `tokenUsage`; it is not a budget-burn high-water mark.
+The rollup is windowed to the retained ledger rows, so `windowStart` and
+`windowEnd` identify the period represented; it is not lifetime spend.
 
 See the [cost-attribution semantics record](../reports/cost-attribution-semantics-reaped-tasks.md)
 for the pending operator decision and the `757de464` regression shape. Keeping

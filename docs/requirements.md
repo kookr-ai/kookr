@@ -1277,7 +1277,7 @@ The system SHALL show a per-schedule scorecard on each Schedules dialog card fro
 - A card with a rollup row that has retained fires shows fire count, measured cost, and artifact count
 - A card with no rollup row, or a zero-fire row, omits the scorecard line
 - Unmeasured fires (those without token usage) never render as $0; the tooltip names the `measuredFires` denominator
-- Cost attribution follows the [per-schedule ROI guidance](reference/schedule-roi.md): final task closeout cost, budget-burn peak, and child-task usage are not silently combined while the operator decision remains pending
+- Cost attribution follows the [per-schedule ROI guidance](reference/schedule-roi.md): for each measured fire, `costUsd` sums that fire task's final closeout `tokenUsage.costUsd`; diagnostic peaks and descendant usage do not affect the rollup while the operator decision remains pending
 - The last-execution line and last-three ledger rows remain the detail tier
 
 **Evidence:** `src/frontend/components/SchedulesDialog.tsx`, `src/frontend/schedule-api.ts`, `src/frontend/schedule-format.ts`, `src/frontend/components/SchedulesDialog.test.ts`, `src/frontend/schedule-format.test.ts`, `src/frontend/schedule-api.test.ts`, `docs/reference/schedule-roi.md`, `docs/reports/cost-attribution-semantics-reaped-tasks.md`, `src/server/cost-attribution-semantics.test.ts`.
