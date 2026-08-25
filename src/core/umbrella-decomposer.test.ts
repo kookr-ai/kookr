@@ -958,6 +958,17 @@ describe('kookr#1548 frozen-campaign residual decomposition', () => {
     }
   });
 
+  it('preserves both residual dispositions and destructive-operation guards', () => {
+    const plan = KOOKR_1548_LEAF_PLAN;
+    const text = plan.flatMap((leaf) => [leaf.goal, ...leaf.acceptanceCriteria]).join(' ');
+    expect(text).toMatch(/rescue\/gitlab-enoent-staged-snapshot/);
+    expect(text).toMatch(/identity|HEAD|path/);
+    expect(text).toMatch(/ignored-file/);
+    expect(text).toMatch(/git worktree remove --force/);
+    expect(text).toMatch(/never deletes the branch/);
+    expect(text).toMatch(/owner approval/);
+  });
+
   it('selects the residual plan when #1548 has no open children', () => {
     const decision = evaluateQueueFeeder({
       capacity: { free: 6, pendingQueueDepth: 0 },

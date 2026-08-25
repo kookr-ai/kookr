@@ -2077,20 +2077,21 @@ export const LUCY_1594_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
- * Kookr #1548's only remaining concrete acceptance gap is the explicitly
- * human-gated `main` worktree. Keep the wave operationally narrow: audit the
- * exact binding first, remove it only after owner approval, then verify the
- * worktree invariant. No leaf authorizes force-removal or branch deletion.
+ * Kookr #1548's remaining concrete acceptance gap is the explicitly
+ * human-gated worktree cleanup. Keep the wave operationally narrow: reconcile
+ * the `main` binding and rescue snapshot first, remove only an exactly
+ * revalidated target after owner approval, then verify both dispositions.
+ * No leaf authorizes branch deletion or an unreviewed destructive operation.
  */
 export const KOOKR_1548_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title: 'audit(worktrees): classify the stale main-bound worktree for #1548',
     goal:
-      'Inspect the worktree currently binding branch `main` and publish a durable evidence record ' +
-      'of its staged, dirty, and ahead/behind state before any removal decision.',
+      'Inspect the worktree currently binding branch `main` and the rescue snapshot, then publish a ' +
+      'durable evidence record of their identity, ignored files, staged/dirty state, and reachability.',
     acceptanceCriteria: [
-      'The audit records `git worktree list --porcelain`, the target worktree status/diff summary, and branch reachability evidence for the exact main-bound path.',
-      'The result is posted on umbrella #1548 with an explicit disposition: safe for owner-approved removal or blocked because user work requires review.',
+      'The audit records fresh `git worktree list --porcelain`, repository identity, path, HEAD/branch, ahead/behind, status/diff summary, and ignored-file evidence for the exact `main` binding and `rescue/gitlab-enoent-staged-snapshot` candidate.',
+      'The result is posted on umbrella #1548 with an explicit disposition for both candidates: safe for owner-approved removal, retain/protect, or blocked because user work requires review.',
       'The audit performs no worktree removal, branch deletion, force operation, or file overwrite.',
     ],
     fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
@@ -2100,26 +2101,26 @@ export const KOOKR_1548_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
   Object.freeze({
     title: 'chore(worktrees): remove the audited main-bound worktree after #1548 owner approval',
     goal:
-      'Resolve the audited stale `main` worktree binding only after the owner records approval, ' +
-      'while keeping the branch and all reachable commits intact.',
+      'Resolve the audited stale `main` worktree binding only after immediate identity revalidation ' +
+      'and explicit owner approval, while keeping the branch and all reachable commits intact.',
     acceptanceCriteria: [
-      'Removal targets exactly the path recorded by the audit and proceeds only when #1548 contains explicit owner approval; otherwise the leaf records a human-gated blocker and makes no change.',
-      'The operation never uses force removal or deletes the branch when dirty, staged, or unpushed work is present; that evidence is escalated instead.',
-      'The post-operation evidence confirms the `main` branch and its commits remain reachable and records the outcome on #1548.',
+      'Immediately before removal, fresh `git worktree list --porcelain` plus repository identity, path, HEAD, branch, primary-worktree, and ignored-file checks match the audited non-primary target; #1548 must contain explicit owner approval covering the staged/dirty/ignored-file disposition, otherwise the leaf records a blocker and makes no change.',
+      'After those guards pass, `git worktree remove --force` may target only that exact non-primary path; it never deletes the branch, and any identity change, primary binding, or missing rescue-snapshot disposition stops the operation.',
+      'The post-operation evidence confirms the `main` branch and its commits remain reachable and records the outcome plus the rescue-snapshot disposition on #1548.',
     ],
-    fileHints: ['git worktree remove with keep-branch semantics', 'kookr#1548 residual acceptance item'],
-    testHints: ['dry-run or command transcript proving exact-target and owner-approval guards'],
+    fileHints: ['git worktree remove with keep-branch semantics', 'git status --ignored evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['command transcript proving immediate identity/HEAD/path revalidation, ignored-file review, exact-target, and owner-approval guards'],
     labels: ['enhancement', 'automation-blocked'],
   }),
   Object.freeze({
     title: 'verify(worktrees): confirm the main checkout invariant after #1548 cleanup',
     goal:
-      'Verify the delivery-debt cleanup outcome so no worktree still binds `main` and the primary ' +
-      'Kookr checkout remains on a named working branch.',
+      'Verify the delivery-debt cleanup outcome so no worktree still binds `main`, the rescue snapshot ' +
+      'has a recorded disposition, and the primary Kookr checkout remains on a named working branch.',
     acceptanceCriteria: [
       'A fresh `git worktree list --porcelain` shows no worktree on `refs/heads/main` after the approved cleanup, or records the exact remaining human blocker on #1548.',
-      'The primary Kookr checkout reports a named branch and the retained `main` ref remains reachable from the repository without changing tracked source.',
-      'The verification evidence is posted on #1548 and is sufficient for the umbrella owner to close the residual acceptance item.',
+      'The primary Kookr checkout reports a named branch, the retained `main` ref remains reachable from the repository without changing tracked source, and the rescue/gitlab-enoent-staged-snapshot candidate has an explicit retain/protect, removed-after-approval, or blocked disposition.',
+      'The verification evidence, including ignored-file status where relevant, is posted on #1548 and is sufficient for the umbrella owner to close both residual acceptance items.',
     ],
     fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
     testHints: ['post-cleanup invariant check against porcelain worktree output'],
