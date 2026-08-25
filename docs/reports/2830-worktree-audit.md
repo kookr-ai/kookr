@@ -82,7 +82,7 @@ Ref: `refs/heads/rescue/gitlab-enoent-staged-snapshot`
 | Subject | `rescue: snapshot staged state found on hijacked main worktree (2026-07-27)` |
 | Local reachability | Ref resolves to a commit in the shared object database |
 | Ahead/behind `origin/main` | `1 ahead, 920 behind` |
-| Remote branch | None (`git ls-remote` returned no matching ref) |
+| Matching `origin` branch | None (`git ls-remote` returned no matching ref) |
 | GitHub PR | None |
 | Worktree binding | None |
 | Diff against `origin/main` | 1,354 files: 31 added, 831 deleted, 492 modified/renamed; 24,766 insertions and 235,680 deletions |
@@ -98,8 +98,11 @@ was performed.
 | Candidate | Disposition | Rationale |
 | --- | --- | --- |
 | `/home/jean/git/kookr-issue-2682` on `main` <!-- portability-ok: exact local path required by #2830 evidence --> | Blocked pending owner-approved exact-target removal | Tracked state is clean, but ignored state exists and the worktree is the live binding of `main`. Revalidate path, branch, HEAD, and ignored files immediately before any owner-approved removal. |
-| `rescue/gitlab-enoent-staged-snapshot` | Retain/protect pending human triage | The local-only rescue commit is reachable, has no PR or remote backup, and diverges from `origin/main` across 1,354 files. Do not delete the branch or its former worktree until its contents are reviewed or preserved elsewhere. |
+| `rescue/gitlab-enoent-staged-snapshot` | Retain/protect pending human triage | The local rescue commit is reachable, with no matching `origin` branch or GitHub PR found by the exact checks above, and diverges from `origin/main` across 1,354 files. Do not delete the branch or its former worktree until its contents are reviewed or preserved elsewhere. |
 
-This audit performed no cleanup and overwrote no files outside its fresh
-implementation worktree. The evidence and dispositions are posted on
+This audit performed no cleanup and did not modify tracked or untracked user
+files in any pre-existing worktree. The required fetch updated shared Git
+metadata only (including `FETCH_HEAD` and the `origin/main` remote-tracking
+ref), and the report was written in the fresh implementation worktree. The
+evidence and dispositions are posted on
 [umbrella #1548](https://github.com/kookr-ai/kookr/issues/1548).
