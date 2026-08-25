@@ -1,15 +1,16 @@
 # Per-schedule ROI guidance
 
 The Schedules dialog reports a materialized rollup over the retained execution
-ledger. Its measured spend is a sum of **final task closeout costs** from rows
-that carry `tokenUsage`; it is not a budget-burn high-water mark.
+ledger. Its measured spend is a sum of **recorded closeout snapshot costs** from
+rows that carry `tokenUsage`; it is not a task's guaranteed final cost or a
+budget-burn high-water mark.
 The rollup is windowed to the retained ledger rows, so `windowStart` and
 `windowEnd` identify the period represented; it is not lifetime spend.
 
 See the [cost-attribution semantics record](../reports/cost-attribution-semantics-reaped-tasks.md)
 for the pending operator decision and the `757de464` regression shape. Keeping
 the two measurements named separately is required: adding a diagnostic peak to
-a final closeout would double-count or inflate spend without a durable
+a closeout snapshot would double-count or inflate spend without a durable
 attribution basis.
 
 ## What the rollup means
@@ -17,9 +18,10 @@ attribution basis.
 - `costUsd` is the sum of joined `executionLedger[].tokenUsage.costUsd` values.
 - `measuredFires` is the denominator for that sum. Fires without usage are
   omitted, not treated as `$0`.
-- A reaped task contributes only the task-owned closeout usage that was
-  persisted when the fire was closed. A later diagnostic observation cannot
-  reconstruct a deleted task.
+- A reaped task contributes only the task-owned usage captured when the fire's
+  ledger row was closed. Later task-usage updates, including asynchronous
+  completion metadata or stop-token scans, cannot revise that row; a later
+  diagnostic observation cannot reconstruct a deleted task.
 - Child-task usage is excluded from a schedule fire. Parent/descendant
   aggregates belong to the task dashboard and are not schedule ROI.
 - Budget-burn peaks remain diagnostics-only until an operator approves a

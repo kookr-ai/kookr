@@ -8,7 +8,7 @@ import { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diag
 import type { LaunchServiceDeps } from './launch-service.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 
-const FINAL_TASK_COST_USD = 8.05;
+const CLOSEOUT_SNAPSHOT_COST_USD = 8.05;
 const BUDGET_BURN_PEAK_USD = 13.68;
 const CHILD_TASK_COST_USD = 2.41;
 
@@ -23,7 +23,7 @@ function usage(costUsd: number): TokenUsage {
 }
 
 describe('reaped-task cost attribution contract (#2786)', () => {
-  test('keeps final closeout, peak observation, and child usage separate', async () => {
+  test('keeps closeout snapshot, late peak observation, and child usage separate', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'kookr-cost-attribution-'));
     try {
       // Synthetic fixture for the reported 757de464 shape. The historical task
@@ -57,19 +57,19 @@ describe('reaped-task cost attribution contract (#2786)', () => {
       });
       taskStore.startTask(parent.id);
 
-      const parentFinalUsage = usage(FINAL_TASK_COST_USD);
+      const parentCloseoutUsage = usage(CLOSEOUT_SNAPSHOT_COST_USD);
       const childUsage = usage(CHILD_TASK_COST_USD);
-      taskStore.updateTokenUsage(parent.id, parentFinalUsage);
+      taskStore.updateTokenUsage(parent.id, parentCloseoutUsage);
       taskStore.updateTokenUsage(child.id, childUsage);
 
       const aggregate = taskStore.getAggregateTokenUsage(parent.id);
-      expect(aggregate?.costUsd).toBeCloseTo(FINAL_TASK_COST_USD + CHILD_TASK_COST_USD);
+      expect(aggregate?.costUsd).toBeCloseTo(CLOSEOUT_SNAPSHOT_COST_USD + CHILD_TASK_COST_USD);
 
       const diagnostics = new ProgressBudgetBurnDiagnostics({ minCostDeltaUsd: 0.01 });
       expect(diagnostics.sample({
         task: taskStore.getTask(parent.id)!,
         agentId: 'fixture-agent',
-        usage: parentFinalUsage,
+        usage: parentCloseoutUsage,
         events: [],
         now: new Date('2026-07-26T06:23:00.000Z'),
       })).toBeNull();
@@ -91,13 +91,20 @@ describe('reaped-task cost attribution contract (#2786)', () => {
       await runtime.scheduleService.recordTaskTerminalOutcome(parent.id, 'completed');
 
       const stored = runtime.scheduleStore.get(schedule.id)!;
-      expect(stored.executionLedger[0]?.tokenUsage?.costUsd).toBe(FINAL_TASK_COST_USD);
-      expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(FINAL_TASK_COST_USD);
+      expect(stored.executionLedger[0]?.tokenUsage?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
+      expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
+
+      // Completion metadata and stop-token scans can update the terminal task
+      // after the ledger snapshot. The current contract does not backfill that
+      // late usage into an already-closed schedule row.
+      taskStore.updateTokenUsage(parent.id, usage(BUDGET_BURN_PEAK_USD));
+      expect(taskStore.getTask(parent.id)?.tokenUsage?.costUsd).toBe(BUDGET_BURN_PEAK_USD);
+      expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
 
       // Reaping/deleting the terminal task cannot change the already-joined
       // schedule value or make the diagnostic peak part of the rollup.
       taskStore.deleteTask(parent.id);
-      expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(FINAL_TASK_COST_USD);
+      expect(runtime.scheduleService.getRollup(schedule.id)?.costUsd).toBe(CLOSEOUT_SNAPSHOT_COST_USD);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

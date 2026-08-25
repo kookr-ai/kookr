@@ -122,7 +122,7 @@ describe('formatScheduleRollupLine', () => {
       measuredFires: 3,
       costUsd: 1.25,
       artifacts: 2,
-    })).toBe('5 fires · $1.25 final closeout · 2 artifacts');
+    })).toBe('5 fires · $1.25 recorded closeout · 2 artifacts');
   });
 
   test('does not render unmeasured cost as $0 even if costUsd is leftover', () => {
@@ -140,7 +140,7 @@ describe('formatScheduleRollupLine', () => {
       measuredFires: 2,
       costUsd: 0,
       artifacts: 0,
-    })).toBe('2 fires · $0.0000 final closeout · 0 artifacts');
+    })).toBe('2 fires · $0.0000 recorded closeout · 0 artifacts');
   });
 
   test('returns null for a never-run (zero-fire) row', () => {
@@ -155,6 +155,7 @@ describe('formatScheduleRollupLine', () => {
   test('tooltip names the measuredFires denominator', () => {
     const tooltip = scheduleRollupTooltip({ fires: 5, measuredFires: 3 });
     expect(tooltip).toContain('3 of 5 fires');
-    expect(tooltip).toContain('final closeout');
+    expect(tooltip).toContain('Recorded closeout');
+    expect(tooltip).toContain('not a budget-burn peak');
   });
 });

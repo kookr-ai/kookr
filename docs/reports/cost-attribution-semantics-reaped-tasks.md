@@ -3,22 +3,25 @@
 Status: pending operator sign-off (2026-08-25)
 
 This record separates two measurements that can describe the same scheduled task:
-the cost persisted when the task is closed and the highest cost observed while
-the task was still being scanned. It records the current behavior and the safe
-interim rule for schedule ROI. It does not approve a billing-policy change.
+the cost captured when the schedule ledger is closed and the highest cost
+observed while the task is being scanned. It records the current behavior and
+the safe interim rule for schedule ROI. It does not approve a billing-policy
+change.
 
 ## Current semantics
 
-### Final task cost
+### Recorded closeout snapshot
 
-The final task cost is `task.tokenUsage.costUsd` at the point where the
+The schedule ledger records `task.tokenUsage.costUsd` at the point where the
 schedule service closes the fire. `deriveLedgerEnrichment()` copies that
 task-owned usage onto the execution-ledger row. The schedule rollup sums those
 joined `tokenUsage` values across measured fires.
 
-This is a closeout measurement, not a high-water mark. It can be absent when no
-usage was persisted, and it must not be backfilled from a diagnostic sample
-after the task has been reaped or deleted.
+This is a closeout snapshot, not a guaranteed final task cost or a high-water
+mark. It can be absent when no usage was persisted. The current completion path
+records the ledger outcome before asynchronous completion metadata and some
+stop-token scans finish, so later task-usage updates do not backfill the closed
+ledger row.
 
 ### Budget-burn peak
 
@@ -27,13 +30,14 @@ token-tracking or diagnostics path during the task's lifetime. It is an
 observation of spend as it was seen at a point in time; it is not currently a
 field in the schedule execution ledger or the per-schedule ROI rollup.
 
-### Reaping
+### Reaping and late usage
 
-Reaping ends the task's live observation window. It does not rewrite the task's
-persisted `tokenUsage`, but no later transcript growth can be incorporated after
-the task is terminal. A later high-water observation and the final closeout can
+Reaping ends the task's live observation window, but it does not itself rewrite
+the task's persisted `tokenUsage`. A post-closeout update may still land before
+the task record is pruned, while the already-closed ledger row remains
+unchanged. A later high-water observation and the closeout snapshot can
 therefore differ. The current system does not claim that reaping itself is a
-billing adjustment.
+billing adjustment or that it truncates provider billing.
 
 ### Child-task costs
 
@@ -51,28 +55,30 @@ schedule row has no retained cost fields, so the original accounting cannot be
 reconstructed safely from that row alone. The focused fixture in
 `src/server/cost-attribution-semantics.test.ts` preserves the reported shape:
 
-- final task closeout: `$8.05`;
+- recorded closeout snapshot: `$8.05`;
 - observed budget-burn peak: `$13.68`;
 - child usage remains a separate attribution question rather than being
   silently folded into the final schedule cost.
 
 The fixture deliberately asserts that the schedule rollup remains `$8.05`
-while the peak remains `$13.68`; it does not assert why the historical peak was
-higher or claim that the difference was caused by a child task.
+while the peak remains `$13.68`, even after a later task-usage update; it does
+not assert why the historical peak was higher or claim that the difference was
+caused by a child task.
 
 ## Interim rule pending sign-off
 
 Until an operator records an approved decision, consumers must:
 
-1. label schedule ROI as **measured final closeout cost**;
+1. label schedule ROI as **measured recorded closeout snapshot cost**;
 2. keep budget-burn peaks in diagnostics and never add them to the rollup;
 3. exclude child-task costs from a schedule fire; and
 4. leave an unmeasured fire out of `costUsd`, rather than rendering it as zero.
 
 The operator decision still needed is whether a future schedule ROI contract
-should report final closeout cost, a separately named high-water cost, or both,
-and whether child-task costs should be included in either measure. No operator
-sign-off for that choice is recorded in issue #2786 as of this date.
+should report the recorded closeout snapshot, a guaranteed final task cost, a
+separately named high-water cost, or more than one of these, and whether
+child-task costs should be included in either measure. No operator sign-off for
+that choice is recorded in issue #2786 as of this date.
 
 ## References
 
