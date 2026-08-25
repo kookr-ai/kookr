@@ -24,7 +24,7 @@ Repository identity:
 
 - Fetch remote: `git@github.com:kookr-ai/kookr.git`
 - Push remote: `https://github.com/kookr-ai/kookr.git`
-- Shared Git directory: `/home/jean/git/kookr/.git`
+- Shared Git directory: `/home/jean/git/kookr/.git` <!-- portability-ok: exact local path required by #2830 evidence -->
 - Fresh audit worktree: `/home/jean/git/kookr-feat-issue-2830-audit-worktrees` <!-- portability-ok: exact local path required by #2830 evidence -->
 - `origin/main` at capture: `9c73f89f79676511a53433edbba905b7cf90e376`
 
