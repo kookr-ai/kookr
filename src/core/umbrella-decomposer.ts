@@ -2077,11 +2077,63 @@ export const LUCY_1594_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * Kookr #1548's only remaining concrete acceptance gap is the explicitly
+ * human-gated `main` worktree. Keep the wave operationally narrow: audit the
+ * exact binding first, remove it only after owner approval, then verify the
+ * worktree invariant. No leaf authorizes force-removal or branch deletion.
+ */
+export const KOOKR_1548_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title: 'audit(worktrees): classify the stale main-bound worktree for #1548',
+    goal:
+      'Inspect the worktree currently binding branch `main` and publish a durable evidence record ' +
+      'of its staged, dirty, and ahead/behind state before any removal decision.',
+    acceptanceCriteria: [
+      'The audit records `git worktree list --porcelain`, the target worktree status/diff summary, and branch reachability evidence for the exact main-bound path.',
+      'The result is posted on umbrella #1548 with an explicit disposition: safe for owner-approved removal or blocked because user work requires review.',
+      'The audit performs no worktree removal, branch deletion, force operation, or file overwrite.',
+    ],
+    fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['read-only shell evidence with the target path and branch identity captured'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+  Object.freeze({
+    title: 'chore(worktrees): remove the audited main-bound worktree after #1548 owner approval',
+    goal:
+      'Resolve the audited stale `main` worktree binding only after the owner records approval, ' +
+      'while keeping the branch and all reachable commits intact.',
+    acceptanceCriteria: [
+      'Removal targets exactly the path recorded by the audit and proceeds only when #1548 contains explicit owner approval; otherwise the leaf records a human-gated blocker and makes no change.',
+      'The operation never uses force removal or deletes the branch when dirty, staged, or unpushed work is present; that evidence is escalated instead.',
+      'The post-operation evidence confirms the `main` branch and its commits remain reachable and records the outcome on #1548.',
+    ],
+    fileHints: ['git worktree remove with keep-branch semantics', 'kookr#1548 residual acceptance item'],
+    testHints: ['dry-run or command transcript proving exact-target and owner-approval guards'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+  Object.freeze({
+    title: 'verify(worktrees): confirm the main checkout invariant after #1548 cleanup',
+    goal:
+      'Verify the delivery-debt cleanup outcome so no worktree still binds `main` and the primary ' +
+      'Kookr checkout remains on a named working branch.',
+    acceptanceCriteria: [
+      'A fresh `git worktree list --porcelain` shows no worktree on `refs/heads/main` after the approved cleanup, or records the exact remaining human blocker on #1548.',
+      'The primary Kookr checkout reports a named branch and the retained `main` ref remains reachable from the repository without changing tracked source.',
+      'The verification evidence is posted on #1548 and is sufficient for the umbrella owner to close the residual acceptance item.',
+    ],
+    fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['post-cleanup invariant check against porcelain worktree output'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
  */
 export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> = Object.freeze({
+  'kookr-ai/kookr#1548': KOOKR_1548_LEAF_PLAN,
   'jeanibarz/lucy#1588': LUCY_1588_LEAF_PLAN,
   'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
   'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,
