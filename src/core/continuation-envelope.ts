@@ -23,7 +23,7 @@
  * access at the call site and the selection/recovery logic fully unit-testable.
  */
 
-import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from './autonomous-review-policy.js';
+import { resolveAutonomousReviewIterationCap } from './autonomous-review-policy.js';
 
 /** Envelope schema version. Bump when the shape changes incompatibly. */
 export const CONTINUATION_ENVELOPE_VERSION = 1;
@@ -96,7 +96,7 @@ export interface ContinuationEnvelope {
 
 /** Resolve the durable per-unit cap without resetting an older envelope. */
 export function continuationAttemptCap(envelope: ContinuationEnvelope): number {
-  return envelope.cursor.attemptCap ?? DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP;
+  return resolveAutonomousReviewIterationCap(envelope.cursor.attemptCap).cap;
 }
 
 /** Snapshot of current durable state, produced by an injected {@link StateResolver}. */
@@ -218,8 +218,11 @@ export function parseContinuationEnvelope(raw: unknown): ContinuationEnvelope {
     cursor.remainingUnits = cursorObj.remainingUnits.filter((u): u is string => typeof u === 'string');
   }
   if (typeof cursorObj.sourceRevision === 'string') cursor.sourceRevision = cursorObj.sourceRevision;
-  if (typeof cursorObj.attemptCap === 'number' && Number.isFinite(cursorObj.attemptCap)) {
-    cursor.attemptCap = cursorObj.attemptCap;
+  if (cursorObj.attemptCap !== undefined) {
+    if (typeof cursorObj.attemptCap !== 'number' || !Number.isFinite(cursorObj.attemptCap)) {
+      throw new Error('continuation cursor attemptCap must be a finite integer within the shared review cap');
+    }
+    cursor.attemptCap = resolveAutonomousReviewIterationCap(cursorObj.attemptCap).cap;
   }
 
   const parent: ParentRefs = {};

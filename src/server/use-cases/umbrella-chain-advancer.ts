@@ -9,6 +9,7 @@ import {
   type PhaseLedgerPhase,
 } from '../../core/phase-ledger-codec.js';
 import { nextEligiblePhase } from '../../core/phase-ledger.js';
+import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../../core/autonomous-review-policy.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
 import { withCrossProcessLock } from '../cross-process-lock.js';
 import { evaluateIndependentReview, isSelfAdvancingDisabled } from '../self-advancing-authority.js';
@@ -106,19 +107,26 @@ function reviewAuditBlocker(
       && Date.parse(candidate.reviewedAt) <= Date.parse(candidate.mergedAt)) return true;
     if (candidate.taskId === undefined || candidate.reviewedAt === undefined) return true;
     const currentHeadSha = currentHeadByPr.get(candidate.prNumber);
-    const decision = evaluateIndependentReview({
-      implementerLineage: [candidate.taskId],
-      reviewerTaskId: candidate.reviewerTaskId,
-      reviewerRan: candidate.reviewerTaskId !== undefined || candidate.reviewVerdict !== undefined,
-      ...(candidate.reviewVerdict !== undefined
-        ? { verdict: candidate.reviewVerdict === 'pass' ? 'PASS' as const : 'BLOCK' as const }
-        : {}),
-      reviewAttempts: candidate.reviewAttempts ?? (candidate.reviewerTaskId !== undefined || candidate.reviewVerdict !== undefined ? 1 : 0),
-      ...(candidate.reviewIterationCap !== undefined ? { maxReviewAttempts: candidate.reviewIterationCap } : {}),
-      ...(candidate.reviewHeadSha !== undefined ? { reviewHeadSha: candidate.reviewHeadSha } : {}),
-      ...(currentHeadSha !== undefined ? { currentHeadSha } : {}),
-    });
+    const decision = evaluatePhaseReview(candidate, currentHeadSha);
     return decision.decision !== 'merge-allowed';
+  });
+}
+
+function evaluatePhaseReview(phase: PhaseLedgerPhase, currentHeadSha?: string) {
+  if (phase.taskId === undefined || phase.reviewedAt === undefined) {
+    return { decision: 'retry-review' as const, reason: 'review is missing' };
+  }
+  return evaluateIndependentReview({
+    implementerLineage: [phase.taskId],
+    reviewerTaskId: phase.reviewerTaskId,
+    reviewerRan: phase.reviewerTaskId !== undefined || phase.reviewVerdict !== undefined,
+    ...(phase.reviewVerdict !== undefined
+      ? { verdict: phase.reviewVerdict === 'pass' ? 'PASS' as const : 'BLOCK' as const }
+      : {}),
+    reviewAttempts: phase.reviewAttempts ?? (phase.reviewerTaskId !== undefined || phase.reviewVerdict !== undefined ? 1 : 0),
+    ...(phase.reviewIterationCap !== undefined ? { maxReviewAttempts: phase.reviewIterationCap } : {}),
+    ...(phase.reviewHeadSha !== undefined ? { reviewHeadSha: phase.reviewHeadSha } : {}),
+    ...(currentHeadSha !== undefined ? { currentHeadSha } : {}),
   });
 }
 
@@ -335,6 +343,7 @@ export class UmbrellaChainAdvancer {
     if (result.outcome === 'complete') {
       const reviewBlocker = await this.findReviewAuditBlocker(ledger.phases, currentHeadByPr);
       if (reviewBlocker) {
+        if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
         const reviewAudit = reviewAuditKind(reviewBlocker);
         const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
         ledger.blockedReason = 'review-block';
@@ -359,6 +368,7 @@ export class UmbrellaChainAdvancer {
     const predecessorPhases = ledger.phases.slice(0, ledger.phases.indexOf(phase));
     const reviewBlocker = await this.findReviewAuditBlocker(predecessorPhases, currentHeadByPr);
     if (reviewBlocker) {
+      if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
       const reviewAudit = reviewAuditKind(reviewBlocker);
       const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
       if (ledger.blockedReason !== 'review-block' || ledger.blockedSince === undefined) {
@@ -506,6 +516,61 @@ export class UmbrellaChainAdvancer {
       if (!(await this.deps.isReviewTaskIndependent(phase.taskId, phase.reviewerTaskId))) return phase;
     }
     return undefined;
+  }
+
+  private async launchReviewCorrection(
+    issue: UmbrellaIssue,
+    ledger: PhaseLedger,
+    phase: PhaseLedgerPhase,
+    currentHeadByPr: ReadonlyMap<number, string>,
+  ): Promise<boolean> {
+    if (this.mode !== 'spawn' || !this.deps.launch || phase.reviewVerdict !== 'block' || phase.prNumber === undefined) return false;
+    const decision = evaluatePhaseReview(phase, currentHeadByPr.get(phase.prNumber));
+    if (decision.decision !== 'retry-review') return false;
+    if (this.deps.isReviewTaskIndependent && phase.taskId && phase.reviewerTaskId
+      && !(await this.deps.isReviewTaskIndependent(phase.taskId, phase.reviewerTaskId))) return false;
+
+    const attempt = (phase.reviewAttempts ?? 1) + 1;
+    const key = `${phaseClaimKey(ledger.issueNumber, phase.id)}:review:${attempt}`;
+    const claim = await this.claimStore.claim(key);
+    if (claim.kind !== 'claimed') return false;
+    let launchedTaskId: string | undefined;
+    try {
+      const launched = await this.deps.launch({
+        prompt: [
+          `Correct the confirmed independent-review findings for phase ${phase.id} of umbrella issue #${issue.number}.`,
+          `This is autonomous correction/review attempt ${attempt}/${phase.reviewIterationCap ?? DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP}.`,
+          'Inspect the blocked PR and its review findings, fix the confirmed defects in a fresh worktree, run all local gates, open the corrective PR, and arrange a fresh independent exact-head review.',
+          'Append the phase-result marker with the new PR number, owner task id, reviewAttempts, and exact reviewHeadSha when the fresh review completes.',
+          '',
+          issue.body,
+        ].join('\n'),
+        cwd: this.deps.repoPath,
+        idempotencyKey: key,
+        claimIssue: { number: ledger.issueNumber, repo: this.deps.repo },
+      });
+      launchedTaskId = launched.taskId;
+      phase.status = 'in-flight';
+      phase.taskId = launchedTaskId;
+      phase.ownerTerminal = false;
+      delete phase.prNumber;
+      delete phase.mergedAt;
+      delete phase.reviewVerdict;
+      delete phase.reviewedAt;
+      delete phase.reviewerTaskId;
+      delete phase.reviewHeadSha;
+      phase.reviewAttempts = attempt;
+      await this.claimStore.finalize(key, launchedTaskId, claim.claim.ownerToken);
+      await this.persistIfChanged(issue, ledger, true);
+      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'spawn', reason: `review-correction:${phase.id}:${attempt}` }, issue.number);
+      return true;
+    } catch (error) {
+      if (launchedTaskId === undefined) {
+        try { await this.claimStore.release(key, claim.claim.ownerToken); } catch { /* retain the original blocker */ }
+      }
+      this.logger.warn?.(`[umbrella-chain-advancer] review correction failed: ${messageOf(error)}`);
+      return false;
+    }
   }
 
   private recordHealth(

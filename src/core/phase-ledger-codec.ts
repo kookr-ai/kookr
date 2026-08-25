@@ -1,5 +1,6 @@
 import type { Phase, PhaseStatus } from './phase-ledger.js';
 import { isValidIsoTimestamp } from './iso-timestamp.js';
+import { resolveAutonomousReviewIterationCap } from './autonomous-review-policy.js';
 
 /** The first version of the machine-readable umbrella ledger. */
 export const PHASE_LEDGER_SCHEMA_VERSION = 1 as const;
@@ -153,8 +154,13 @@ function parsePhase(value: unknown, index: number): PhaseLedgerPhase {
   if (value.reviewHeadSha !== undefined && (typeof value.reviewHeadSha !== 'string' || value.reviewHeadSha.trim() === '')) {
     fail(`phase ${value.id} has an invalid reviewHeadSha`);
   }
-  if (value.reviewIterationCap !== undefined && !isPositiveInteger(value.reviewIterationCap)) {
-    fail(`phase ${value.id} has an invalid reviewIterationCap`);
+  if (value.reviewIterationCap !== undefined) {
+    if (!isPositiveInteger(value.reviewIterationCap)) fail(`phase ${value.id} has an invalid reviewIterationCap`);
+    try {
+      resolveAutonomousReviewIterationCap(value.reviewIterationCap);
+    } catch {
+      fail(`phase ${value.id} has an invalid reviewIterationCap`);
+    }
   }
   return {
     id: value.id,
@@ -271,7 +277,14 @@ export function parsePhaseResultComment(body: string): PhaseResultComment | null
     if (value.reviewerTaskId !== undefined && value.reviewVerdict === undefined) return null;
     if (value.reviewAttempts !== undefined && !isPositiveInteger(value.reviewAttempts)) return null;
     if (value.reviewHeadSha !== undefined && (typeof value.reviewHeadSha !== 'string' || value.reviewHeadSha.trim() === '')) return null;
-    if (value.reviewIterationCap !== undefined && !isPositiveInteger(value.reviewIterationCap)) return null;
+    if (value.reviewIterationCap !== undefined) {
+      if (!isPositiveInteger(value.reviewIterationCap)) return null;
+      try {
+        resolveAutonomousReviewIterationCap(value.reviewIterationCap);
+      } catch {
+        return null;
+      }
+    }
     return {
       version: PHASE_LEDGER_SCHEMA_VERSION,
       chainId: value.chainId,
@@ -311,14 +324,19 @@ export function reconcilePhaseResultComments(
     if (result.taskId !== undefined) phase.taskId = result.taskId;
     if (result.ownerTerminal !== undefined) phase.ownerTerminal = result.ownerTerminal;
     if (result.mergedAt !== undefined) phase.mergedAt = result.mergedAt;
-    if (result.reviewVerdict !== undefined) phase.reviewVerdict = result.reviewVerdict;
+    if (result.reviewVerdict !== undefined) {
+      phase.reviewVerdict = result.reviewVerdict;
+      if (result.reviewHeadSha !== undefined) phase.reviewHeadSha = result.reviewHeadSha;
+      else delete phase.reviewHeadSha;
+    }
     if (result.reviewedAt !== undefined) phase.reviewedAt = result.reviewedAt;
     if (result.reviewerTaskId !== undefined) phase.reviewerTaskId = result.reviewerTaskId;
     if (result.reviewVerdict !== undefined) {
-      phase.reviewAttempts = Math.max(phase.reviewAttempts ?? 0, result.reviewAttempts ?? (phase.reviewAttempts ?? 0) + 1);
+      // Verdict comments are append-only but the same history is reconciled on
+      // every sweep. Explicit counts are authoritative only monotonically;
+      // omitted legacy counts never increment on replay.
+      phase.reviewAttempts = Math.max(phase.reviewAttempts ?? 0, result.reviewAttempts ?? 1);
     }
-    if (result.reviewAttempts !== undefined) phase.reviewAttempts = result.reviewAttempts;
-    if (result.reviewHeadSha !== undefined) phase.reviewHeadSha = result.reviewHeadSha;
     if (result.reviewIterationCap !== undefined) phase.reviewIterationCap = result.reviewIterationCap;
   }
   return validatePhaseLedger({ ...ledger, phases });

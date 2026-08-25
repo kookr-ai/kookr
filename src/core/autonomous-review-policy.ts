@@ -117,6 +117,7 @@ export function assessReviewReflection(
     && metrics.reviewCoverage === 1
     && metrics.freshReviewRate === 1
     && metrics.exactHeadBindingRate === 1
+    && metrics.safeMergeRate === 1
     && (metrics.calibrationError === null || metrics.calibrationError <= 0.2)
     && metrics.f1 !== null;
   return {

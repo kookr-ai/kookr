@@ -531,13 +531,20 @@ describe('parseContinuationEnvelope', () => {
     ).toThrow(/goal/);
   });
 
-  test('drops a non-finite attemptCap rather than trusting it', () => {
-    const parsed = parseContinuationEnvelope({
+  test('rejects a non-finite attemptCap rather than trusting it', () => {
+    expect(() => parseContinuationEnvelope({
       version: CONTINUATION_ENVELOPE_VERSION,
       goal: 'g',
       cursor: { repo: 'r', selector: 's', attemptCap: Number.POSITIVE_INFINITY },
-    });
-    expect(parsed.cursor.attemptCap).toBeUndefined();
+    })).toThrow(/attemptCap/);
+  });
+
+  test('rejects an attemptCap above the shared maximum on restart', () => {
+    expect(() => parseContinuationEnvelope({
+      version: CONTINUATION_ENVELOPE_VERSION,
+      goal: 'g',
+      cursor: { repo: 'r', selector: 's', attemptCap: 21 },
+    })).toThrow(/iteration cap/);
   });
 
   test('drops non-boolean authorization values rather than trusting them', () => {

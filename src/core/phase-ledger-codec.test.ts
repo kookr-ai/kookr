@@ -89,6 +89,27 @@ describe('phase ledger codec', () => {
     });
   });
 
+  test('reconciliation is idempotent and an unbound latest verdict clears the old head', () => {
+    const comments = [
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`,
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T11:00:00.000Z', reviewerTaskId: 'review-2' })} -->`,
+    ];
+    const once = reconcilePhaseResultComments(ledger, comments);
+    const twice = reconcilePhaseResultComments(once, comments);
+    expect(once.phases[1]).toMatchObject({ reviewAttempts: 1, reviewVerdict: 'pass' });
+    expect(once.phases[1]?.reviewHeadSha).toBeUndefined();
+    expect(twice).toEqual(once);
+  });
+
+  test('rejects a per-phase cap above the canonical maximum', () => {
+    expect(() => parsePhaseLedgerFromIssueBody(
+      `\`\`\`kookr-phase-ledger\n${JSON.stringify({
+        ...ledger,
+        phases: [{ ...ledger.phases[0], reviewIterationCap: 21 }, ledger.phases[1]],
+      })}\n\`\`\``,
+    )).toThrow(/reviewIterationCap/);
+  });
+
   test('rejects a non-positive durable review cap', () => {
     expect(() => parsePhaseLedgerFromIssueBody(
       `\`\`\`kookr-phase-ledger\n${JSON.stringify({

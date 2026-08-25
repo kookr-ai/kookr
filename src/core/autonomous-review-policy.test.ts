@@ -70,4 +70,17 @@ describe('autonomous review policy', () => {
     expect(metrics.reviewCoverage).toBe(0);
     expect(metrics.exactHeadBindingRate).toBe(0);
   });
+
+  test('reflection cannot reward a reviewer that never earned a safe merge', () => {
+    const observations = Array.from({ length: 5 }, (_, index) => observation({
+      unitId: `blocked-${index}`,
+      mergeAllowed: false,
+      predictedConfidence: 0.2,
+      outcomeCorrect: true,
+    }));
+    const decision = assessReviewReflection(observations, 5, 0);
+    expect(decision.due).toBe(true);
+    expect(decision.mutationEligible).toBe(false);
+    expect(decision.metrics.safeMergeRate).toBe(0);
+  });
 });
