@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isSecretFieldName, redactSecrets as redactSecretString } from '../core/redact-secrets.js';
 
@@ -278,14 +278,22 @@ export class LastGoodHealthWriter {
     const tmp = `${this.filePath}.tmp-${process.pid}`;
     // mode on write only applies when the temp path is created; chmod forces
     // exact bits after open (umask / leftover .tmp) before rename.
-    writeFileSync(tmp, text, { encoding: 'utf8', mode: LAST_GOOD_HEALTH_FILE_MODE });
+    let renamed = false;
     try {
-      chmodSync(tmp, LAST_GOOD_HEALTH_FILE_MODE);
-    } catch {
-      // Best-effort: create mode already requested 0o600. Do not fail the
-      // write — record() still needs to update throttle bookkeeping.
+      writeFileSync(tmp, text, { encoding: 'utf8', mode: LAST_GOOD_HEALTH_FILE_MODE });
+      try {
+        chmodSync(tmp, LAST_GOOD_HEALTH_FILE_MODE);
+      } catch {
+        // Best-effort: create mode already requested 0o600. Do not fail the
+        // write — record() still needs to update throttle bookkeeping.
+      }
+      renameSync(tmp, this.filePath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tmp); } catch { /* Best-effort temp cleanup. */ }
+      }
     }
-    renameSync(tmp, this.filePath);
     // Rename replaces the path with the temp inode on POSIX, but chmod the
     // final path so a leftover 0644 dest is tightened even if a filesystem
     // preserves dest mode across overwrite.

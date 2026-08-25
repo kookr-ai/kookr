@@ -406,6 +406,7 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'maintenance', 'prune', ''])).resolves.toEqual([
       '--dry-run',
       '--max-age-days',
+      '--atomic-temp-max-age-days',
       '--dir',
       '--json',
     ]);
@@ -631,6 +632,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     await expect(completeZsh(['kookr', 'maintenance', 'prune', ''], 4)).resolves.toEqual([
       '--dry-run',
       '--max-age-days',
+      '--atomic-temp-max-age-days',
       '--dir',
       '--json',
     ]);

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile, mkdir, rename } from 'node:fs/promises';
+import { open, readFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Schedule, ScheduleExecutionOutcome } from './schedule.js';
 
@@ -357,14 +357,22 @@ export class ScheduleRollupStore {
     const data = JSON.stringify(payload);
     const tmpPath = join(dirname(this.filePath), `.schedule-rollups-${randomUUID()}.tmp`);
     await mkdir(dirname(this.filePath), { recursive: true });
-    const fh = await open(tmpPath, 'w');
+    let renamed = false;
     try {
-      await fh.writeFile(data, 'utf-8');
-      await fh.sync();
+      const fh = await open(tmpPath, 'w');
+      try {
+        await fh.writeFile(data, 'utf-8');
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+      await rename(tmpPath, this.filePath);
+      renamed = true;
     } finally {
-      await fh.close();
+      if (!renamed) {
+        try { await unlink(tmpPath); } catch { /* best-effort temp cleanup */ }
+      }
     }
-    await rename(tmpPath, this.filePath);
   }
 }
 

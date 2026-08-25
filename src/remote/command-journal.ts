@@ -631,8 +631,16 @@ export class CommandJournal {
     };
     await mkdir(dirname(this.snapshotPath), { recursive: true });
     const tmp = `${this.snapshotPath}.${process.pid}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, 'utf8');
-    await rename(tmp, this.snapshotPath);
+    let renamed = false;
+    try {
+      await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, 'utf8');
+      await rename(tmp, this.snapshotPath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+      }
+    }
     this.lastCompactedAuditSize = activeAuditSizeBytes;
   }
 }

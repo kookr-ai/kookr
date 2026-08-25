@@ -577,6 +577,21 @@ The system SHOULD let the developer choose whether completing a task should clea
 
 **Linked tests:** `TS-CLEANUP-001` through `TS-CLEANUP-004`.
 
+### R4.8: Reclaim Orphaned Atomic-Write Temporary Files [F4.4] — SHALL — `done`
+
+The system SHALL reclaim abandoned root-level temporary files created by its
+atomic-write paths before data-directory disk admission is exhausted.
+
+**Acceptance criteria:**
+- Stale files are matched only by an explicit allowlist of Kookr atomic-write names and a conservative age threshold.
+- Fresh files and files held open by a live process are preserved; the sweep fails closed when open-file verification is unavailable.
+- Dry-run output reports candidates, counts, and reclaimable bytes, while live runs report each deletion and bytes actually reclaimed.
+- A failed atomic write removes its temporary file when cleanup is still safe to perform.
+
+**Evidence:** `src/core/maintenance-prune.ts`, `src/core/persistence-utils.ts`, `src/cli/kookr-maintenance.ts`.
+
+**Linked tests:** `maintenance-prune.test.ts`, `persistence-utils.test.ts`, `kookr-maintenance.test.ts`.
+
 ---
 
 ## R4b: Task Launch UX
@@ -1434,6 +1449,7 @@ The system SHALL persist each orchestration pause as an explicit lifecycle recor
 | R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
 | R4.6 | F4.6 | SHOULD | done | local-dtach-backend (stable socket path), TerminalPanel (in-browser xterm.js) |
 | R4.7 | F4.4 | SHOULD | done | settings-store, App, SettingsDialog, agent-lifecycle, client-message-schema |
+| R4.8 | F4.4 | SHALL | done | maintenance-prune, persistence-utils, kookr-maintenance |
 | R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchTaskDialog |
 | R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |

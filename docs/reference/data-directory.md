@@ -36,6 +36,7 @@ as internal unless this table says they are safe to remove.
 | `tasks.json.daily.YYYYMMDD` | task persistence | First successful task save of each local day. Used for boot-time recovery when `tasks.json` is corrupt. | Automatic 7-day retention. |
 | `tasks.json.predelete.YYYYMMDDTHHMMSS` | task lifecycle | Snapshot taken before `clearCompleted` deletes finished tasks. | Automatic last-5 retention. |
 | `tasks.json.corrupt-<ISO>` | boot recovery | Quarantined corrupt live task file. | Keep until you confirm recovery; then archive or delete manually. |
+| `.tmp-<uuid>`, `.tmp-<pid>`, and known writer suffixes such as `effort-split.jsonl.tmp-*` (root-level only) | atomic-write paths | In-progress write-to-temp files created beside a durable JSON or state file. A successful write renames the temp into place; a failed common atomic write removes its temp when possible. | `kookr maintenance prune` recognizes only its explicit allowlist at the data-directory root after a separate seven-day default age threshold. Fresh or open files, and files whose open state cannot be verified, are preserved. Bare `.tmp-write` and `.tmp-prune` are nested marker names, not recognized root-level names. Use `--atomic-temp-max-age-days` to override the threshold. |
 | `hooks/*.jsonl` and `hooks/*.jsonl.N` | hook ingestion | Raw Claude Code hook events per terminal session. The active file is size-rotated into numbered generations once it exceeds `KOOKR_HOOK_MAX_BYTES` (`KOOKR_HOOK_ROTATE_KEEP` generations retained — see [environment-variables.md](environment-variables.md); issue #1433). | `kookr maintenance prune` can remove aged completed-task or orphan logs, including rotated generations. |
 | `hook-replay-checkpoints.json` | hook file watcher (issue #1045, prune #2385) | Restart-safe per-session read offsets for `hooks/*.jsonl`: `filePath`, `dev`/`ino`, `sizeBytes`, `offsetChars`, and an `offsetTail` content fragment used to verify the checkpoint still matches the file before resuming. Written atomically after each successful drain. | Keep while sessions are live. Keys are removed on intentional `stop(tmuxName)`, by a missing-file sweep on watcher construct, and by a post-startup-recovery drop of non-watched sessions (issue #2385). Not touched by `kookr maintenance prune`. Safe to delete only while Kookr is stopped (next restart falls back to offset zero / full replay). |
 | `activity/*.jsonl` and `activity/*.jsonl.1` | activity ledger | Durable parsed hook ledger used for diagnostics and activity views. | Size-rotated per session; `kookr maintenance prune` can remove aged completed-task or orphan ledgers (same terminal/orphan-and-aged rules as hook logs). |
@@ -156,6 +157,7 @@ It can delete only:
 - aged activity ledgers (`activity/*.jsonl` and the rotated `.jsonl.1` companion) for terminal tasks and aged orphans, under the same active-session safety model as hook logs
 - aged `playbook-state/<playbook>/<runKey>` run directories (keeps the newest `--playbook-keep-last` runs per playbook and never removes a run whose key matches an active task)
 - aged numbered `server.log.N` generations
+- stale allowlisted root-level atomic-write temporary files, using a separate conservative age threshold and a live-open safety check. The allowlist covers `.tmp-<uuid|pid>`, `effort-split.jsonl.tmp-*`, `detection-stats.json.tmp-*`, `last-good-health.json.tmp-*`, `timer-health.state.json.tmp-*`, `finding-evidence-review-queue.json.<pid>.<timestamp>.tmp`, `.achievements-<uuid>.tmp`, `.schedules-<uuid>.tmp`, `.schedule-rollups-<uuid>.tmp`, `.resource-watchdog-state.<hex>.tmp`, `hook-replay-checkpoints.json.tmp`, `audit.snapshot.json.<pid>.tmp`, `relay-connection.json.<pid>.<timestamp>.tmp`, and `.node-id.<pid>.<timestamp>.tmp` / `.node-epoch.<pid>.<timestamp>.tmp`. Bare `.tmp-write` and `.tmp-prune` names are deliberately excluded because those suffixes are used by nested marker files, not root-level data files.
 
 A live/in-progress session's activity ledger and an active task's playbook run
 are never eligible regardless of age. It deliberately preserves `tasks.json`,
@@ -163,8 +165,9 @@ snapshot files, dtach runtime state, interaction logs, contribution history
 (`contribution-ledger.jsonl`, `oss-attempts.json`, `workspace-attempts.json`),
 hook replay checkpoints (`hook-replay-checkpoints.json`), issue-claims audit
 (`issue-claims-audit.jsonl`), and ambiguous audit stores. When `tasks.json` is
-unreadable, session-keyed and playbook pruning is skipped entirely and only
-`server.log.N` generations prune.
+unreadable, session-keyed and playbook pruning is skipped entirely; root-level
+allowlisted atomic-write temps and independent diagnostic stores follow their
+separate safety rules.
 
 The prune can also run automatically on a server-side timer — set
 `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` (off by default); see

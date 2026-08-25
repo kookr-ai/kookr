@@ -14,7 +14,7 @@
  * {@link clearKillSwitchCreatedPauseRecord}.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { KookrSettings } from '../core/settings-store.js';
@@ -64,8 +64,16 @@ function writePauseStateSync(kookrDir: string, state: OrchestrationPauseState): 
   const path = resolveOrchestrationPausePath(kookrDir);
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = `${path}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  renameSync(temporaryPath, path);
+  let renamed = false;
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    renameSync(temporaryPath, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { unlinkSync(temporaryPath); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 /**

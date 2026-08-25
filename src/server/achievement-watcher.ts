@@ -187,14 +187,24 @@ async function saveAchievements(data: AchievementFile, filePath: string): Promis
   // multiplies CPU and IO on every unlock/counter tick for no operational gain.
   const json = JSON.stringify(data);
   const tempPath = join(dirname(filePath), `.achievements-${randomUUID()}.tmp`);
-  const fh = await open(tempPath, 'w');
+  let renamed = false;
   try {
-    await fh.writeFile(json, 'utf-8');
-    await fh.sync();
+    const fh = await open(tempPath, 'w');
+    try {
+      await fh.writeFile(json, 'utf-8');
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tempPath, filePath);
+    renamed = true;
   } finally {
-    await fh.close();
+    if (!renamed) {
+      try { await unlink(tempPath); } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
   }
-  await rename(tempPath, filePath);
 }
 
 // --- Watcher ---
@@ -579,4 +589,3 @@ export class AchievementWatcher {
     }
   }
 }
-

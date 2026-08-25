@@ -5,7 +5,7 @@
  * (user-scoped, same tree as other playbook-state artifacts).
  */
 
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   defaultPipelineStarvationStateDir,
@@ -275,7 +275,15 @@ export async function savePipelineStarvationState(
   const path = pipelineStarvationStatePath(stateDir, state.repo);
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
   return path;
 }

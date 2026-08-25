@@ -6,7 +6,7 @@
  * kept as dotfiles alongside the outbox.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { detectTransition, type MonitorStatus } from './emit-transition.js';
@@ -37,8 +37,16 @@ async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
 
 async function writeJsonFile(path: string, value: unknown): Promise<void> {
   const tmp = `${path}.tmp-write`;
-  await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 export interface RunTransitionEmitInput {

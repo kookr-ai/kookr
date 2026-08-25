@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceAttemptRepository } from './workspace-attempt-repository.js';
@@ -381,6 +381,21 @@ describe('WorkspaceAttemptRepository', () => {
       expect(parsed.attempts[0].attemptId).toBe(attempt.attemptId);
       expect(parsed.attempts[0].projectId).toBe('proj');
       expect(parsed.attempts[0].evidenceSummary).toBe('compact write check');
+    });
+
+    it('cleans up the temp file when the final rename fails', () => {
+      const filePath = join(tempDir, 'workspace-attempts-target');
+      mkdirSync(filePath);
+      const persistentRepo = new WorkspaceAttemptRepository(filePath);
+
+      expect(() => persistentRepo.createAttempt({
+        type: 'cleanup',
+        projectId: 'proj',
+        reasonCode: 'cleanup_requested',
+        source: 'workspace_ui',
+        evidenceSummary: 'rename failure cleanup',
+      })).toThrow();
+      expect(readdirSync(tempDir).filter((name) => name.startsWith('.tmp-'))).toEqual([]);
     });
 
     it('load accepts legacy pretty-printed workspace-attempts.json (issue #2280)', () => {
