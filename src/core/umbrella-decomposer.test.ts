@@ -6,6 +6,7 @@ import {
   DEFAULT_MAX_LEAVES,
   DEFAULT_MAX_SECONDARY_PER_FIRE,
   KOOKR_1548_LEAF_PLAN,
+  KOOKR_1552_LEAF_PLAN,
   LUCY_1586_LEAF_PLAN,
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
@@ -986,6 +987,45 @@ describe('kookr#1548 frozen-campaign residual decomposition', () => {
 
     expect(decision.action).toBe('shred');
     expect(decision.selected?.ref).toBe('kookr-ai/kookr#1548');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(3);
+  });
+});
+
+describe('kookr#1552 frozen-campaign residual decomposition', () => {
+  it('registers the three existing residual leaves without inventing duplicate titles', () => {
+    const plan = curatedLeafPlan('kookr-ai/kookr#1552');
+    expect(plan).toBe(KOOKR_1552_LEAF_PLAN);
+    expect(plan).toHaveLength(3);
+    expect(normalizeLeafPlan(plan).ok).toBe(true);
+    expect(plan?.map((leaf) => leaf.title)).toEqual([
+      'Define and test cost-attribution semantics for reaped tasks (#1549)',
+      'chore(worktrees): remove the audited main-bound worktree after #1548 owner approval',
+      'verify(worktrees): confirm the main checkout invariant after #1548 cleanup',
+    ]);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('selects the residual reuse plan while the campaign umbrella has no direct children', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'kookr-ai/kookr',
+          number: 1552,
+          title: 'Tracking: 2026-07-26 two-day-retro umbrella batch (8 umbrellas, suggested spawn order)',
+          labels: ['enhancement', 'automation-blocked'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 2,
+    });
+
+    expect(decision.action).toBe('shred');
+    expect(decision.selected?.ref).toBe('kookr-ai/kookr#1552');
     expect(decision.selected?.needsAuthoring).toBe(false);
     expect(decision.leafCount).toBe(3);
   });
