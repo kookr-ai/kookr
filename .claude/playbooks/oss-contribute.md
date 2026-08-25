@@ -142,7 +142,7 @@ cat ${RECON_DIR}/contributions.json | jq \
   > /tmp/contrib-tmp.json && mv /tmp/contrib-tmp.json ${RECON_DIR}/contributions.json
 ```
 
-### Phase 7: Iterative AI Review (max 3 rounds)
+### Phase 7: Iterative AI Review (default max 10 rounds)
 
 ```
 SPECIALISTS_DIR="${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/reviewer-specialists"
