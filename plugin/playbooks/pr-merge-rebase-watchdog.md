@@ -70,7 +70,7 @@ parameters:
     default: ""
     type: textarea
 loop:
-  iterationCap: 6
+  iterationCap: 10
   costCapUsd: 10
   stopPredicate: 'test -f .watchdog-stop && grep -qE "^STOP:" .watchdog-stop'
 checklist:

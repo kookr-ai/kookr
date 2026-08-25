@@ -129,6 +129,10 @@ describe('RalphLoopService', () => {
       ok: true,
       value: { prompt: 'go', iterationCap: 2 },
     });
+    expect(validateRalphLoopRequest({ prompt: 'go' })).toEqual({
+      ok: true,
+      value: { prompt: 'go', iterationCap: 10 },
+    });
     expect(validateRalphLoopRequest({ prompt: '', iterationCap: 2 })).toMatchObject({
       ok: false,
       error: 'prompt is required and must be a non-empty string',

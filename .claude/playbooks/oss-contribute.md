@@ -146,7 +146,8 @@ cat ${RECON_DIR}/contributions.json | jq \
 
 ```
 SPECIALISTS_DIR="${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/reviewer-specialists"
-MAX_ITERATIONS=3
+# Shared autonomous-review default; a deliberate lower project cap may override it.
+MAX_ITERATIONS="${KOOKR_AUTONOMOUS_REVIEW_ITERATION_CAP:-10}"
 iteration=0
 prev_actionable=999
 
@@ -334,7 +335,7 @@ If any gate fails, fix it, commit, push, re-run the gate.
 - **DO NOT** manually `r?` reviewers unless recon confirms it's expected
 - **DO NOT** include "Generated with Claude Code" unless repo patterns show AI disclosure is expected
 - **DO NOT** skip re-reading the recon report before creating the PR
-- **DO NOT** exceed 3 review iterations — cap and move on
+- **DO NOT** exceed the durable configured review cap (default 10) — record a concrete blocker when it is exhausted
 - **DO NOT** spawn more than 4 specialist agents at once (concurrency limit)
 - **DO NOT** work on main branch — always use a worktree
 - **DO NOT** investigate an issue without checking contributions.json first — the grafana#120918 incident wasted a full session on an already-fixed issue

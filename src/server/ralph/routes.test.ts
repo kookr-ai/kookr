@@ -57,7 +57,7 @@ function mkRalphDeps(
     startLoop: vi.fn(async (task) => {
       taskStore.getTaskForMutation(task.id)!.ralphLoop = {
         prompt: task.prompt,
-        iterationCap: 6,
+        iterationCap: 10,
         currentIteration: 0,
         status: 'running',
         lastIterationStartedAt: Date.now(),
@@ -142,7 +142,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     task.status = 'pending';
     task.ralphLoop = {
       prompt: 'loop',
-      iterationCap: 6,
+      iterationCap: 10,
       currentIteration: 2,
       status: 'running',
       lastIterationStartedAt: Date.now(),
@@ -193,7 +193,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     const task = createTaskForMutation(taskStore, 'loop', '/cwd');
     task.ralphLoop = {
       prompt: 'loop',
-      iterationCap: 6,
+      iterationCap: 10,
       currentIteration: 2,
       status: 'running',
       lastIterationStartedAt: Date.now(),
@@ -227,7 +227,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     const task = createTaskForMutation(taskStore, 'loop', '/cwd');
     task.ralphLoop = {
       prompt: 'loop',
-      iterationCap: 6,
+      iterationCap: 10,
       currentIteration: 2,
       status: 'running',
       lastIterationStartedAt: Date.now(),
@@ -256,7 +256,7 @@ describe('PATCH /api/tasks/:id/ralph-loop/burned-targets', () => {
     const task = createTaskForMutation(taskStore, 'loop', '/cwd');
     task.ralphLoop = {
       prompt: 'loop',
-      iterationCap: 6,
+      iterationCap: 10,
       currentIteration: 2,
       status: 'running',
       lastIterationStartedAt: Date.now(),

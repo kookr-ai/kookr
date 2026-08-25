@@ -76,6 +76,28 @@ describe('phase ledger codec', () => {
     expect(reconciled.phases[0]).toEqual(ledger.phases[0]);
   });
 
+  test('persists review attempts and exact reviewed head across reconciliation', () => {
+    const comments = [
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`,
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T11:00:00.000Z', reviewerTaskId: 'review-2', reviewAttempts: 2, reviewHeadSha: 'NEW' })} -->`,
+    ];
+    const phase = reconcilePhaseResultComments(ledger, comments).phases[1]!;
+    expect(phase).toMatchObject({
+      reviewAttempts: 2,
+      reviewHeadSha: 'new',
+      reviewVerdict: 'pass',
+    });
+  });
+
+  test('rejects a non-positive durable review cap', () => {
+    expect(() => parsePhaseLedgerFromIssueBody(
+      `\`\`\`kookr-phase-ledger\n${JSON.stringify({
+        ...ledger,
+        phases: [{ ...ledger.phases[0], reviewIterationCap: 0 }, ledger.phases[1]],
+      })}\n\`\`\``,
+    )).toThrow(/reviewIterationCap/);
+  });
+
   test('parses invalid result comments as non-events', () => {
     expect(parsePhaseResultComment('ordinary comment')).toBeNull();
     expect(parsePhaseResultComment('<!-- kookr-phase-result {"version":1} -->')).toBeNull();

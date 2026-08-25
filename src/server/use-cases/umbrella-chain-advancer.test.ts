@@ -32,6 +32,7 @@ function makeHarness(ledger: PhaseLedger, options: {
   now?: () => Date;
   launchFails?: boolean;
   finalizeFails?: boolean;
+  headSha?: string | null;
 } = {}) {
   const events: string[] = [];
   const calls: string[] = [];
@@ -66,6 +67,10 @@ function makeHarness(ledger: PhaseLedger, options: {
     async getPullRequestMergedAt(repo, prNumber) {
       calls.push(`merged:${repo}#${prNumber}`);
       return options.mergedAt === undefined ? '2026-08-22T00:00:00.000Z' : options.mergedAt;
+    },
+    async getPullRequestHeadSha(repo, prNumber) {
+      calls.push(`head:${repo}#${prNumber}`);
+      return options.headSha ?? 'test-head';
     },
   };
   const logger: UmbrellaChainAdvancerLogger = {
@@ -177,6 +182,7 @@ describe('UmbrellaChainAdvancer', () => {
         reviewVerdict: 'pass',
         reviewedAt: '2026-08-22T01:00:00.000Z',
         reviewerTaskId: 'review-1',
+        reviewHeadSha: 'test-head',
       },
       { id: 'P2', dependsOn: ['P1'], status: 'pending' },
     ] }), { mode: 'spawn', reachable: new Set([10]), terminalTasks: new Set() });
@@ -209,6 +215,7 @@ describe('UmbrellaChainAdvancer', () => {
         reviewVerdict: 'pass',
         reviewedAt: '2026-08-23T10:00:00.000Z',
         reviewerTaskId: 'review-1',
+        reviewHeadSha: 'test-head',
       })} -->`,
     });
     await harness.advancer.sweep();
@@ -236,11 +243,25 @@ describe('UmbrellaChainAdvancer', () => {
         reviewVerdict: 'pass',
         reviewedAt: '2026-08-23T09:30:00.000Z',
         reviewerTaskId: 'review-1',
+        reviewHeadSha: 'test-head',
       })} -->`,
     });
     await harness.advancer.sweep();
     expect(harness.issue.body).toContain('"mergedAt": "2026-08-23T09:00:00.000Z"');
     expect(harness.calls).toContain('launch:chain:2711:phase:P2');
+  });
+
+  test('does not advance on a review bound to a stale PR head', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'merged', taskId: 'owner-1', ownerTerminal: true, mergedAt: '2026-08-22T00:00:00.000Z', reviewVerdict: 'pass', reviewedAt: '2026-08-23T09:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'old-head' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set([10]), headSha: 'new-head' });
+    await harness.advancer.sweep();
+    expect(harness.calls).toContain('head:kookr-ai/kookr#10');
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.issue.body).toContain('"blockedReason": "review-block"');
   });
 
   test('holds the chain when the remote cannot provide a merge time', async () => {
@@ -295,6 +316,7 @@ describe('UmbrellaChainAdvancer', () => {
           ownerTerminal: true,
           mergedAt: '2026-08-23T10:00:00.000Z',
           reviewVerdict: 'pass',
+          reviewHeadSha: 'test-head',
           reviewedAt: '2026-08-23T09:59:00.000Z',
           reviewerTaskId: 'review-1',
         },
@@ -353,6 +375,7 @@ describe('UmbrellaChainAdvancer', () => {
           ownerTerminal: true,
           mergedAt: '2026-08-22T00:00:00.000Z',
           reviewVerdict: 'pass',
+          reviewHeadSha: 'test-head',
           reviewedAt: '2026-08-22T01:00:00.000Z',
           reviewerTaskId: 'review-1',
         },

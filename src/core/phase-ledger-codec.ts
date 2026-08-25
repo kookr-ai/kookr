@@ -27,6 +27,12 @@ export interface PhaseLedgerPhase extends Phase {
   reviewedAt?: string;
   /** Distinct task identity that produced the independent review verdict. */
   reviewerTaskId?: string;
+  /** Durable count of correction/review attempts for this phase. */
+  reviewAttempts?: number;
+  /** Exact PR head SHA reviewed by the latest verdict. */
+  reviewHeadSha?: string;
+  /** Optional deliberate lower per-phase cap; omitted uses the shared default. */
+  reviewIterationCap?: number;
 }
 
 export interface PhaseLedger {
@@ -52,6 +58,9 @@ export interface PhaseResultComment {
   reviewVerdict?: 'pass' | 'block';
   reviewedAt?: string;
   reviewerTaskId?: string;
+  reviewAttempts?: number;
+  reviewHeadSha?: string;
+  reviewIterationCap?: number;
 }
 
 export class PhaseLedgerParseError extends Error {
@@ -99,7 +108,7 @@ function parsePhase(value: unknown, index: number): PhaseLedgerPhase {
   if (!isRecord(value)) fail(`phase ${index + 1} must be an object`);
   assertOnlyKeys(
     value,
-    ['id', 'prNumber', 'status', 'dependsOn', 'taskId', 'ownerTerminal', 'mergedAt', 'reviewVerdict', 'reviewedAt', 'reviewerTaskId'],
+    ['id', 'prNumber', 'status', 'dependsOn', 'taskId', 'ownerTerminal', 'mergedAt', 'reviewVerdict', 'reviewedAt', 'reviewerTaskId', 'reviewAttempts', 'reviewHeadSha', 'reviewIterationCap'],
     `phase ${index + 1}`,
   );
   if (typeof value.id !== 'string' || value.id.trim() === '') {
@@ -138,6 +147,15 @@ function parsePhase(value: unknown, index: number): PhaseLedgerPhase {
   if (value.reviewerTaskId !== undefined && value.reviewVerdict === undefined) {
     fail(`phase ${value.id} requires reviewVerdict when reviewerTaskId is present`);
   }
+  if (value.reviewAttempts !== undefined && (!isPositiveInteger(value.reviewAttempts))) {
+    fail(`phase ${value.id} has an invalid reviewAttempts`);
+  }
+  if (value.reviewHeadSha !== undefined && (typeof value.reviewHeadSha !== 'string' || value.reviewHeadSha.trim() === '')) {
+    fail(`phase ${value.id} has an invalid reviewHeadSha`);
+  }
+  if (value.reviewIterationCap !== undefined && !isPositiveInteger(value.reviewIterationCap)) {
+    fail(`phase ${value.id} has an invalid reviewIterationCap`);
+  }
   return {
     id: value.id,
     dependsOn: [...value.dependsOn],
@@ -149,6 +167,9 @@ function parsePhase(value: unknown, index: number): PhaseLedgerPhase {
     ...(value.reviewVerdict !== undefined ? { reviewVerdict: value.reviewVerdict } : {}),
     ...(value.reviewedAt !== undefined ? { reviewedAt: value.reviewedAt } : {}),
     ...(value.reviewerTaskId !== undefined ? { reviewerTaskId: value.reviewerTaskId } : {}),
+    ...(value.reviewAttempts !== undefined ? { reviewAttempts: value.reviewAttempts } : {}),
+    ...(value.reviewHeadSha !== undefined ? { reviewHeadSha: value.reviewHeadSha.toLowerCase() } : {}),
+    ...(value.reviewIterationCap !== undefined ? { reviewIterationCap: value.reviewIterationCap } : {}),
   };
 }
 
@@ -236,7 +257,7 @@ export function parsePhaseResultComment(body: string): PhaseResultComment | null
   try {
     const value = JSON.parse(match[1]!) as unknown;
     if (!isRecord(value)) return null;
-    assertOnlyKeys(value, ['version', 'chainId', 'issueNumber', 'phaseId', 'prNumber', 'status', 'taskId', 'ownerTerminal', 'mergedAt', 'reviewVerdict', 'reviewedAt', 'reviewerTaskId'], 'phase result');
+    assertOnlyKeys(value, ['version', 'chainId', 'issueNumber', 'phaseId', 'prNumber', 'status', 'taskId', 'ownerTerminal', 'mergedAt', 'reviewVerdict', 'reviewedAt', 'reviewerTaskId', 'reviewAttempts', 'reviewHeadSha', 'reviewIterationCap'], 'phase result');
     if (value.version !== PHASE_LEDGER_SCHEMA_VERSION || typeof value.chainId !== 'string' || !isPositiveInteger(value.issueNumber) || typeof value.phaseId !== 'string' || value.phaseId.length === 0) return null;
     if (value.prNumber !== undefined && !isPositiveInteger(value.prNumber)) return null;
     if (value.status !== undefined && (typeof value.status !== 'string' || !STATUSES.has(value.status as PhaseStatus))) return null;
@@ -248,6 +269,9 @@ export function parsePhaseResultComment(body: string): PhaseResultComment | null
     if (value.reviewedAt !== undefined && value.reviewVerdict === undefined) return null;
     if (value.reviewerTaskId !== undefined && (typeof value.reviewerTaskId !== 'string' || value.reviewerTaskId.trim() === '')) return null;
     if (value.reviewerTaskId !== undefined && value.reviewVerdict === undefined) return null;
+    if (value.reviewAttempts !== undefined && !isPositiveInteger(value.reviewAttempts)) return null;
+    if (value.reviewHeadSha !== undefined && (typeof value.reviewHeadSha !== 'string' || value.reviewHeadSha.trim() === '')) return null;
+    if (value.reviewIterationCap !== undefined && !isPositiveInteger(value.reviewIterationCap)) return null;
     return {
       version: PHASE_LEDGER_SCHEMA_VERSION,
       chainId: value.chainId,
@@ -261,6 +285,9 @@ export function parsePhaseResultComment(body: string): PhaseResultComment | null
       ...(value.reviewVerdict !== undefined ? { reviewVerdict: value.reviewVerdict } : {}),
       ...(value.reviewedAt !== undefined ? { reviewedAt: value.reviewedAt } : {}),
       ...(value.reviewerTaskId !== undefined ? { reviewerTaskId: value.reviewerTaskId } : {}),
+      ...(value.reviewAttempts !== undefined ? { reviewAttempts: value.reviewAttempts } : {}),
+      ...(value.reviewHeadSha !== undefined ? { reviewHeadSha: value.reviewHeadSha.toLowerCase() } : {}),
+      ...(value.reviewIterationCap !== undefined ? { reviewIterationCap: value.reviewIterationCap } : {}),
     };
   } catch {
     return null;
@@ -287,6 +314,12 @@ export function reconcilePhaseResultComments(
     if (result.reviewVerdict !== undefined) phase.reviewVerdict = result.reviewVerdict;
     if (result.reviewedAt !== undefined) phase.reviewedAt = result.reviewedAt;
     if (result.reviewerTaskId !== undefined) phase.reviewerTaskId = result.reviewerTaskId;
+    if (result.reviewVerdict !== undefined) {
+      phase.reviewAttempts = Math.max(phase.reviewAttempts ?? 0, result.reviewAttempts ?? (phase.reviewAttempts ?? 0) + 1);
+    }
+    if (result.reviewAttempts !== undefined) phase.reviewAttempts = result.reviewAttempts;
+    if (result.reviewHeadSha !== undefined) phase.reviewHeadSha = result.reviewHeadSha;
+    if (result.reviewIterationCap !== undefined) phase.reviewIterationCap = result.reviewIterationCap;
   }
   return validatePhaseLedger({ ...ledger, phases });
 }

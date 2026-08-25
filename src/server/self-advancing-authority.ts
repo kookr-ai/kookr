@@ -14,6 +14,8 @@
  * them in.
  */
 
+import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../core/autonomous-review-policy.js';
+
 /**
  * Global env kill switch. When set to a truthy value it halts **all**
  * self-advancing merges and spawns regardless of any issue's content — the
@@ -35,7 +37,7 @@ export const DEFAULT_SELF_MERGE_RATE_CAP_PER_HOUR = 4;
 /** Default rate-cap window in milliseconds (one hour). */
 export const SELF_MERGE_RATE_CAP_WINDOW_MS = 60 * 60 * 1000;
 /** Default cap on independent-review attempts before hard-blocking to a human. */
-export const MAX_INDEPENDENT_REVIEW_ATTEMPTS = 2;
+export const MAX_INDEPENDENT_REVIEW_ATTEMPTS = DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP;
 
 export interface SelfMergeGrantInput {
   /** The PR's head branch (e.g. `refactor/product-metric-alerts-#3272-p2`). */
@@ -140,12 +142,16 @@ export interface IndependentReviewInput {
   reviewAttempts: number;
   /** Cap on attempts before hard-blocking to a human. Defaults to the module cap. */
   maxReviewAttempts?: number;
+  /** Exact PR head reviewed by this verdict. Required for a merge grant. */
+  reviewHeadSha?: string;
+  /** Exact PR head at the merge decision. Required for a merge grant. */
+  currentHeadSha?: string;
 }
 
 export type IndependentReviewDecision =
   /** Identity is independent and the verdict is PASS — the merge may proceed. */
   | { decision: 'merge-allowed'; reason: string }
-  /** The reviewer returned BLOCK — stop; never force-merge. */
+  /** The reviewer returned BLOCK at the cap — stop; never force-merge. */
   | { decision: 'blocked'; reason: string }
   /** The reviewer failed to run (or returned no verdict) — retry and alert. */
   | { decision: 'retry-review'; reason: string }
@@ -164,6 +170,10 @@ export type IndependentReviewDecision =
 export function evaluateIndependentReview(input: IndependentReviewInput): IndependentReviewDecision {
   const maxAttempts = input.maxReviewAttempts ?? MAX_INDEPENDENT_REVIEW_ATTEMPTS;
 
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    return { decision: 'human-required', reason: 'review attempt cap is invalid' };
+  }
+
   // A reviewer that ran but shares the implementer's lineage (or reported no
   // task id) can never authorize a merge — this is an identity failure, not a
   // transient "did not run", so it goes straight to a human.
@@ -179,9 +189,36 @@ export function evaluateIndependentReview(input: IndependentReviewInput): Indepe
     }
   }
 
-  // A definitive BLOCK stops the chain regardless of attempts.
+  const headMatches = Boolean(input.reviewHeadSha && input.currentHeadSha
+    && input.reviewHeadSha.toLowerCase() === input.currentHeadSha.toLowerCase());
+  if (input.reviewerRan && input.verdict !== undefined && !headMatches) {
+    if (input.reviewAttempts >= maxAttempts) {
+      return {
+        decision: 'human-required',
+        reason: `review verdict is not bound to the current PR head after ${input.reviewAttempts}/${maxAttempts} attempts`,
+      };
+    }
+    return {
+      decision: 'retry-review',
+      reason: 'review verdict is missing or stale for the current PR head — run a fresh review',
+    };
+  }
+
+  // A BLOCK is a correction signal, not a terminal success or a reason to
+  // abandon autonomous work. Give the implementer a fresh correction/review
+  // cycle while durable budget remains; the cap turns an unresolved finding
+  // into a concrete human-required blocker.
   if (input.reviewerRan && input.verdict === 'BLOCK') {
-    return { decision: 'blocked', reason: 'independent reviewer returned BLOCK' };
+    if (input.reviewAttempts >= maxAttempts) {
+      return {
+        decision: 'human-required',
+        reason: `independent reviewer returned BLOCK after ${input.reviewAttempts}/${maxAttempts} correction/review attempts`,
+      };
+    }
+    return {
+      decision: 'retry-review',
+      reason: `independent reviewer returned BLOCK — start correction/review attempt ${input.reviewAttempts + 1}/${maxAttempts}`,
+    };
   }
 
   // Independent PASS → merge may proceed.

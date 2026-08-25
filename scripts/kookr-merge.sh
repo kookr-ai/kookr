@@ -6,9 +6,10 @@
 # without branch protection — see issue #29).
 #
 # Before merging, an independent-review gate (issue #1717) refuses to merge
-# unless the PR carries a fresh-context reviewer verdict of `pass` for the
-# current head, or the sanctioned `review-skipped-timeout` label. This makes
-# zero-review autonomous merges unreachable. The gate literals below are kept in
+# unless the PR carries a fresh-context reviewer verdict of `pass` explicitly
+# bound to the exact current head. The `review-skipped-timeout` label is
+# telemetry only and never authorizes a merge. This makes zero-review
+# autonomous merges unreachable. The gate literals below are kept in
 # sync with src/core/independent-review.ts by a contract test. Set
 # KOOKR_MERGE_REQUIRE_REVIEW=0 to disable the gate (manual merges, OSS repos).
 #
@@ -48,8 +49,8 @@ EOF
 
 # require_review_verdict — enforce the independent merge-review gate (#1717).
 # Allows the merge only when the latest reviewer verdict comment is `pass` for
-# the current head SHA, or the PR carries the timeout label. Returns 0 to allow,
-# 4 to block. Set KOOKR_MERGE_REQUIRE_REVIEW=0 to skip entirely.
+# the current head SHA. Timeout labels are telemetry only. Returns 0 to allow,
+# 4 to block. Set KOOKR_MERGE_REQUIRE_REVIEW=0 to skip entirely for a human merge.
 require_review_verdict() {
   local require="${KOOKR_MERGE_REQUIRE_REVIEW:-1}"
   if [[ "$require" == "0" || "$require" == "false" ]]; then
@@ -60,7 +61,8 @@ require_review_verdict() {
   local view head_sha decision
   # Prefer fields available across gh versions. `headRefOid` is missing on gh < ~2.14
   # (issue #1853); `commits` has been a valid `gh pr view --json` field much longer.
-  # Empty head SHA is OK — the staleness check already no-ops when $head is empty.
+  # An empty head SHA is a hard block: exact-head binding is part of the safety
+  # contract, not an optional enhancement.
   if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,commits)"; then
     echo "kookr-merge: could not read PR comments/labels for the review gate" >&2
     return 4
@@ -91,11 +93,13 @@ require_review_verdict() {
     ([ .labels[]?.name | ascii_downcase ] | index($tlabel)) as $hasLabel
     | ( verdicts | sort_by(.ts) | last ) as $v
     | if $v == null then
-        (if $hasLabel then "allow:timeout-label" else "block:no-verdict" end)
+        (if $hasLabel then "block:timeout-label" else "block:no-verdict" end)
       elif $v.verdict == "block" then
         "block:blocked-finding"
-      elif ($v.sha != "" and $head != "" and $v.sha != $head) then
-        (if $hasLabel then "allow:timeout-label-stale" else "block:stale-verdict" end)
+      elif ($v.sha == "" or $head == "") then
+        "block:unbound-verdict"
+      elif $v.sha != $head then
+        "block:stale-verdict"
       else
         "allow:pass"
       end
@@ -108,8 +112,8 @@ require_review_verdict() {
       ;;
     *)
       echo "kookr-merge: BLOCKED by the independent-review gate: ${decision#block:}" >&2
-      echo "kookr-merge: the latest reviewer verdict must be 'pass' for the current head ($head_sha)," >&2
-      echo "kookr-merge: or the PR must carry the '$KOOKR_REVIEW_TIMEOUT_LABEL' label." >&2
+      echo "kookr-merge: the latest reviewer verdict must be 'pass' with review-head-sha equal to the current head ($head_sha)." >&2
+      echo "kookr-merge: '$KOOKR_REVIEW_TIMEOUT_LABEL' is telemetry only and cannot bypass review." >&2
       echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
       return 4
       ;;
@@ -317,14 +321,15 @@ echo "kookr-merge: checks passed, squash-merging PR #$PR"
 # Pin the merge to the reviewed head when the review gate ran (REVIEW_HEAD_SHA is
 # set inside require_review_verdict). If the head advanced during the wait, gh
 # refuses the merge rather than merging an unreviewed commit.
-# --match-head-commit is absent on older gh (issue #1853); feature-probe and omit
-# it rather than failing the entire merge.
+# --match-head-commit is required. Without it the wrapper cannot close the
+# check-watch TOCTOU window, so an old gh becomes a concrete blocker.
 HEAD_PIN=()
 if [[ -n "${REVIEW_HEAD_SHA:-}" ]]; then
   if gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
     HEAD_PIN=(--match-head-commit "$REVIEW_HEAD_SHA")
   else
-    echo "kookr-merge: notice: installed gh lacks --match-head-commit; merge will not pin to reviewed head $REVIEW_HEAD_SHA" >&2
+    echo "kookr-merge: BLOCKED: installed gh lacks --match-head-commit; cannot safely merge an exact-head review" >&2
+    exit 4
   fi
 fi
 gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch ${HEAD_PIN[@]+"${HEAD_PIN[@]}"}

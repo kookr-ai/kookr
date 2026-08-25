@@ -3,7 +3,7 @@ name: Ralph Wiggum Loop
 description: Drive an agent through a fixed-prompt iteration loop with a stop predicate and an iteration cap, using Kookr's first-class Ralph mode (issue #440)
 tags: [workflow, loopable]
 loop:
-  iterationCap: 6
+  iterationCap: 10
   costCapUsd: 25
 checklist:
   - Ralph loop attached to the right task via POST /api/tasks/:id/ralph-loop

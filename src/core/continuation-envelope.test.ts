@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   CONTINUATION_ENVELOPE_VERSION,
   advanceEnvelope,
+  continuationAttemptCap,
   areContinuationsDistinct,
   continuationCursorKey,
   parseContinuationEnvelope,
@@ -249,6 +250,39 @@ describe('resolveContinuationState — outcome (blocked vs complete distinction)
 });
 
 describe('advanceEnvelope — authorization toggles survive continuation exactly', () => {
+  test('resolves the shared default and persists it across a continuation', () => {
+    const current = envelope({ cursor: { repo: 'owner/repo', selector: 'open' } });
+    expect(continuationAttemptCap(current)).toBe(10);
+    const next = advanceEnvelope(current, {
+      selectedUnit: 'next',
+      outcome: 'eligible',
+      blockedUnits: [],
+      remainingUnits: ['next'],
+      cursorWasStale: false,
+      parentMissing: false,
+      notes: [],
+    });
+    expect(next.cursor.attemptCap).toBe(10);
+    expect(continuationAttemptCap(next)).toBe(10);
+  });
+
+  test('preserves an explicit lower cap across a restart-shaped parse/reload', () => {
+    const current = envelope();
+    current.cursor.attemptCap = 3;
+    const reloaded = parseContinuationEnvelope(JSON.parse(JSON.stringify(current)));
+    expect(continuationAttemptCap(reloaded)).toBe(3);
+    const next = advanceEnvelope(reloaded, {
+      selectedUnit: 'next',
+      outcome: 'eligible',
+      blockedUnits: [],
+      remainingUnits: ['next'],
+      cursorWasStale: false,
+      parentMissing: false,
+      notes: [],
+    });
+    expect(next.cursor.attemptCap).toBe(3);
+  });
+
   test('copies authorization verbatim (deep equal, no re-derivation)', () => {
     const current = envelope();
     const next = advanceEnvelope(current, {

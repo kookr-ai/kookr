@@ -96,12 +96,16 @@ function phaseClaimKey(issueNumber: number, phaseId: string): string {
   return `chain:${issueNumber}:phase:${phaseId}`;
 }
 
-function reviewAuditBlocker(phases: readonly PhaseLedgerPhase[]): PhaseLedgerPhase | undefined {
+function reviewAuditBlocker(
+  phases: readonly PhaseLedgerPhase[],
+  currentHeadByPr: ReadonlyMap<number, string> = new Map(),
+): PhaseLedgerPhase | undefined {
   return phases.find((candidate) => {
     if (candidate.prNumber === undefined) return false;
     if (candidate.mergedAt !== undefined && candidate.reviewedAt !== undefined
       && Date.parse(candidate.reviewedAt) <= Date.parse(candidate.mergedAt)) return true;
     if (candidate.taskId === undefined || candidate.reviewedAt === undefined) return true;
+    const currentHeadSha = currentHeadByPr.get(candidate.prNumber);
     const decision = evaluateIndependentReview({
       implementerLineage: [candidate.taskId],
       reviewerTaskId: candidate.reviewerTaskId,
@@ -109,7 +113,10 @@ function reviewAuditBlocker(phases: readonly PhaseLedgerPhase[]): PhaseLedgerPha
       ...(candidate.reviewVerdict !== undefined
         ? { verdict: candidate.reviewVerdict === 'pass' ? 'PASS' as const : 'BLOCK' as const }
         : {}),
-      reviewAttempts: candidate.reviewerTaskId !== undefined || candidate.reviewVerdict !== undefined ? 1 : 0,
+      reviewAttempts: candidate.reviewAttempts ?? (candidate.reviewerTaskId !== undefined || candidate.reviewVerdict !== undefined ? 1 : 0),
+      ...(candidate.reviewIterationCap !== undefined ? { maxReviewAttempts: candidate.reviewIterationCap } : {}),
+      ...(candidate.reviewHeadSha !== undefined ? { reviewHeadSha: candidate.reviewHeadSha } : {}),
+      ...(currentHeadSha !== undefined ? { currentHeadSha } : {}),
     });
     return decision.decision !== 'merge-allowed';
   });
@@ -127,7 +134,7 @@ function phasePrompt(issue: UmbrellaIssue, phase: PhaseLedgerPhase, chainId: str
     'This is an unattended Phase-2 chain continuation. Work in a fresh worktree, run the repository gates, and open the phase PR when complete.',
     `The phase owner must emit an append-only GitHub issue comment containing this marker after the PR is created:`,
     `<!-- kookr-phase-result {"version":1,"chainId":${JSON.stringify(chainId)},"issueNumber":${issue.number},"phaseId":${JSON.stringify(phase.id)},"prNumber":<number>,"status":"in-flight","taskId":"<task-id>","ownerTerminal":false} -->`,
-    'After the PR is merged, an independent reviewer task must append a second marker with reviewVerdict "pass" or "block", reviewedAt, and reviewerTaskId. The reviewerTaskId must differ from the phase owner taskId. A missing or blocking verdict prevents the next phase from spawning.',
+    'After the PR is merged, an independent reviewer task must append a second marker with reviewVerdict "pass" or "block", reviewedAt, reviewerTaskId, reviewAttempts, and reviewHeadSha equal to the exact PR head it reviewed. The reviewerTaskId must differ from the phase owner taskId. A missing, stale, or blocking verdict prevents the next phase from spawning. The default durable review cap is 10; preserve a deliberately lower configured cap.',
     '',
     'Do not edit the fenced kookr-phase-ledger body directly; the umbrella-chain advancer is its single writer.',
     '',
@@ -269,6 +276,7 @@ export class UmbrellaChainAdvancer {
     ledger = reconciled;
 
     const reachable = new Map<number, boolean>();
+    const currentHeadByPr = new Map<number, string>();
     for (const phase of ledger.phases) {
       if (phase.prNumber === undefined) continue;
       const isReachable = await this.deps.remote.isPullRequestReachable(
@@ -278,6 +286,8 @@ export class UmbrellaChainAdvancer {
         this.deps.repo,
       );
       if (isReachable) {
+        const headSha = await this.deps.remote.getPullRequestHeadSha(this.deps.repo, phase.prNumber);
+        if (headSha) currentHeadByPr.set(phase.prNumber, headSha);
         const mergedAt = await this.deps.remote.getPullRequestMergedAt(this.deps.repo, phase.prNumber);
         if (mergedAt === null || !isValidIsoTimestamp(mergedAt)) {
           reachable.set(phase.prNumber, false);
@@ -323,7 +333,7 @@ export class UmbrellaChainAdvancer {
       return;
     }
     if (result.outcome === 'complete') {
-      const reviewBlocker = await this.findReviewAuditBlocker(ledger.phases);
+      const reviewBlocker = await this.findReviewAuditBlocker(ledger.phases, currentHeadByPr);
       if (reviewBlocker) {
         const reviewAudit = reviewAuditKind(reviewBlocker);
         const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
@@ -347,7 +357,7 @@ export class UmbrellaChainAdvancer {
 
     const phase = ledger.phases.find((candidate) => candidate.id === result.phase!.id)!;
     const predecessorPhases = ledger.phases.slice(0, ledger.phases.indexOf(phase));
-    const reviewBlocker = await this.findReviewAuditBlocker(predecessorPhases);
+    const reviewBlocker = await this.findReviewAuditBlocker(predecessorPhases, currentHeadByPr);
     if (reviewBlocker) {
       const reviewAudit = reviewAuditKind(reviewBlocker);
       const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
@@ -484,8 +494,11 @@ export class UmbrellaChainAdvancer {
     }
   }
 
-  private async findReviewAuditBlocker(phases: readonly PhaseLedgerPhase[]): Promise<PhaseLedgerPhase | undefined> {
-    const blocker = reviewAuditBlocker(phases);
+  private async findReviewAuditBlocker(
+    phases: readonly PhaseLedgerPhase[],
+    currentHeadByPr: ReadonlyMap<number, string> = new Map(),
+  ): Promise<PhaseLedgerPhase | undefined> {
+    const blocker = reviewAuditBlocker(phases, currentHeadByPr);
     if (blocker) return blocker;
     for (const phase of phases) {
       if (phase.prNumber === undefined) continue;
