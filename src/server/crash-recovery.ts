@@ -17,7 +17,12 @@ import {
   type LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
-import { DEFAULT_LAUNCH_TIMEOUT_MS, raceLaunchAgainstTimeout } from './launch-timeout.js';
+import {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  noteLaunchSession,
+  raceLaunchAgainstTimeout,
+  type LaunchReapGuard,
+} from './launch-timeout.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
@@ -276,10 +281,14 @@ export async function recoverCrashedSessions(
     // continues the prior conversation on a forked branch.
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const launchOptions = buildRecoveryLaunchOptions(task, intent.intent);
-      const launchPromise = Object.keys(launchOptions).length > 0
-        ? adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions)
-        : adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const launchReapGuard: LaunchReapGuard = { reaped: false };
+      const launchOptions = {
+        ...buildRecoveryLaunchOptions(task, intent.intent),
+        onSessionCreated: (sessionId: string) => {
+          noteLaunchSession(launchReapGuard, adapter, task.agentType, task.id, sessionId);
+        },
+      };
+      const launchPromise = adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions);
       const configuredTimeout = options.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout
@@ -288,6 +297,8 @@ export async function recoverCrashedSessions(
         taskId: task.id,
         agentType: task.agentType,
         adapter,
+        reapGuard: launchReapGuard,
+        reapKnownSessionOnTimeout: true,
       });
       if (dependencyAdmission?.admit) {
         options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);

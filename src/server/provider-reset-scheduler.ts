@@ -134,6 +134,8 @@ export interface ProviderResumeSource {
  */
 export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpts {
   const intent = task.launchIntent;
+  const replayEffort = intent ? intent.effort : task.effort;
+  const replayModel = intent ? intent.model : task.model;
   const scheduleId = task.provenance?.kind === 'schedule' ? task.provenance.sourceId : undefined;
   return {
     prompt: intent?.prompt ?? task.prompt,
@@ -153,8 +155,8 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
     ...((intent?.agentType ?? task.agentType)
       ? { agentType: intent?.agentType ?? task.agentType }
       : {}),
-    ...(intent?.effort !== undefined ? { effort: intent.effort } : {}),
-    ...(intent?.model !== undefined ? { model: intent.model } : {}),
+    ...(replayEffort !== undefined ? { effort: replayEffort } : {}),
+    ...(replayModel !== undefined ? { model: replayModel } : {}),
     ...(intent?.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
     ...(intent?.dependencies ? { dependencies: [...intent.dependencies] } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },

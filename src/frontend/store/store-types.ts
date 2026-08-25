@@ -591,8 +591,9 @@ export interface ParkedLaunchDependencyStatusRow {
 
 /**
  * Slim projection of `GET /api/health.launchDependencies` for the status-bar
- * warn pill (issue #2364). Pill is elevated-only (`totalDegradedTasks > 0`);
- * the poll may still store a zeroed projection when the block is present.
+ * warn pill (issue #2364). The pill is elevated when dependency degradation
+ * or parked launch work is present; the poll may still store a zeroed
+ * projection when the block is present.
  */
 export interface LaunchDependenciesStatus {
   totalDegradedTasks: number;

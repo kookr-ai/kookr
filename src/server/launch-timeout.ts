@@ -22,6 +22,45 @@ export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
   return err instanceof LaunchTimeoutError;
 }
 
+export interface LaunchReapGuard {
+  reaped: boolean;
+  timedOut?: boolean;
+  sessionId?: string;
+}
+
+/** Record a session created during a bounded launch and reap it if abandoned. */
+export function noteLaunchSession(
+  guard: LaunchReapGuard,
+  adapter: Pick<AgentAdapter, 'stop'>,
+  agentType: AgentType,
+  taskId: string,
+  sessionId: string,
+): void {
+  guard.sessionId = sessionId;
+  if (guard.timedOut) reapLateLaunchSession(guard, adapter, agentType, taskId, sessionId);
+}
+
+function reapLateLaunchSession(
+  guard: LaunchReapGuard,
+  adapter: Pick<AgentAdapter, 'stop'>,
+  agentType: AgentType,
+  taskId: string,
+  sessionId: string,
+): void {
+  if (guard.reaped) return;
+  guard.reaped = true;
+  console.warn(
+    `[launch] adapter ${agentType} settled LATE after timeout for task ${taskId} ` +
+    `(session ${sessionId}) — stopping orphaned session`,
+  );
+  void Promise.resolve(adapter.stop(sessionId)).catch((stopErr) => {
+    console.warn(
+      `[launch] failed to stop late-settled session ${sessionId}: ` +
+      `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+    );
+  });
+}
+
 /**
  * Race one adapter launch against a hard timeout. A late session id is stopped
  * best-effort so a recovery timeout cannot leave an unowned terminal session.
@@ -34,7 +73,9 @@ export async function raceLaunchAgainstTimeout(
     agentType: AgentType;
     adapter: Pick<AgentAdapter, 'stop'>;
     /** Shared reap guard for launch-service's onSessionCreated path. */
-    reapGuard?: { reaped: boolean };
+    reapGuard?: LaunchReapGuard;
+    /** Reap a session reported before the adapter promise settles. */
+    reapKnownSessionOnTimeout?: boolean;
   },
 ): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -51,29 +92,43 @@ export async function raceLaunchAgainstTimeout(
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) launchPromise.then(
-      (sessionId) => {
-        if (ctx.reapGuard) {
-          if (ctx.reapGuard.reaped) return;
-          ctx.reapGuard.reaped = true;
-        }
-        console.warn(
-          `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
-          `(session ${sessionId}) — stopping orphaned session`,
-        );
-        void Promise.resolve(ctx.adapter.stop(sessionId)).catch((stopErr) => {
-          console.warn(
-            `[launch] failed to stop late-settled session ${sessionId}: ` +
-            `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+    if (timedOut) {
+      if (ctx.reapGuard) {
+        ctx.reapGuard.timedOut = true;
+        if (ctx.reapKnownSessionOnTimeout && ctx.reapGuard.sessionId) {
+          reapLateLaunchSession(
+            ctx.reapGuard,
+            ctx.adapter,
+            ctx.agentType,
+            ctx.taskId,
+            ctx.reapGuard.sessionId,
           );
-        });
-      },
-      (err) => {
-        console.warn(
-          `[launch] abandoned launch for task ${ctx.taskId} rejected after timeout (ignored): ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        );
-      },
-    );
+        }
+      }
+      launchPromise.then(
+        (sessionId) => {
+          if (ctx.reapGuard) {
+            reapLateLaunchSession(ctx.reapGuard, ctx.adapter, ctx.agentType, ctx.taskId, sessionId);
+            return;
+          }
+          console.warn(
+            `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
+            `(session ${sessionId}) — stopping orphaned session`,
+          );
+          void Promise.resolve(ctx.adapter.stop(sessionId)).catch((stopErr) => {
+            console.warn(
+              `[launch] failed to stop late-settled session ${sessionId}: ` +
+              `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+            );
+          });
+        },
+        (err) => {
+          console.warn(
+            `[launch] abandoned launch for task ${ctx.taskId} rejected after timeout (ignored): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
+    }
   }
 }

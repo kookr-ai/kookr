@@ -758,6 +758,42 @@ describe('launchTask', () => {
     expect(store.getActiveCount()).toBe(0);
   });
 
+  it('returns parked admission metadata when a duplicate matches an existing parked task', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB is unavailable',
+      recommendedAction: 'Restore KB.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+    const first = await launchTask(gatedDeps, {
+      prompt: 'parked duplicate',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    });
+    const duplicate = await launchTask(gatedDeps, {
+      prompt: 'parked duplicate',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    });
+
+    expect(first.parked).toBe(true);
+    expect(duplicate).toMatchObject({
+      task: { id: first.task.id },
+      queued: true,
+      duplicate: true,
+      parked: true,
+      dependencyAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+  });
+
   it('releases a half-open probe when task creation rejects', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

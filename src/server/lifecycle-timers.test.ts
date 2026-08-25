@@ -820,7 +820,13 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       now,
     );
 
-    expect(launch).toHaveBeenCalledWith(pending.id, pending.prompt, '/tmp');
+    expect(launch).toHaveBeenCalledWith(
+      pending.id,
+      pending.prompt,
+      '/tmp',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
   });
 });
 

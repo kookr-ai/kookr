@@ -500,7 +500,6 @@ describe('ProviderResetScheduler', () => {
       expect(opts.projectId).toBe('github.com/kookr-ai/kookr');
       expect(opts.agentType).toBe('claude-code');
       expect(opts.model).toBe('claude-fable-5');
-      expect(opts.effort).toBe('effort-b');
       expect(opts.autoCloseOnSignal).toBe(true);
       expect(opts.effort).toBe('max');
       expect(opts.model).toBe('claude-fable-5');

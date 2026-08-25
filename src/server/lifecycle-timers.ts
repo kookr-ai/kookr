@@ -1457,10 +1457,19 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     timerHealth?.recordFire('liveness', livenessIntervalMs);
     try {
       let promotedPending = 0;
+
+      if (
+        deps.worktreeRegistry
+        && deps.worktreeRegistryRepoPath
+        && (deps.getDashboardClientCount?.() ?? 0) > 0
+      ) {
+        await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
+      }
+      const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+
       if (deps.agentLifecycleDeps) {
-        // Dependency recovery is not itself a reconcile event. Run the same
-        // bounded promotion pass on every liveness tick so parked work is
-        // retried while the fleet is otherwise idle.
+        // Reconcile first so sessions that just died or were reaped free their
+        // slots before parked dependency work is considered for promotion.
         promotedPending = await promotePendingTasks({
           taskStore,
           adapterRegistry: deps.adapterRegistry,
@@ -1471,15 +1480,6 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           bypassAllPermissions: deps.bypassAllPermissions,
         });
       }
-
-      if (
-        deps.worktreeRegistry
-        && deps.worktreeRegistryRepoPath
-        && (deps.getDashboardClientCount?.() ?? 0) > 0
-      ) {
-        await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
-      }
-      const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
 
       // Prune delivery-watchdog entries for loops no longer active (issue
       // #1902). The registry is sampled per-iteration in ralph-loop-service;

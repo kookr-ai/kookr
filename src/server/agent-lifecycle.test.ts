@@ -1045,7 +1045,13 @@ describe('promotePendingTasks', () => {
     const result = await promotePendingTasks(deps);
 
     expect(result).toBe(1);
-    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith('pending-1', 'Fix the bug in auth', '/workspace/project');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      'pending-1',
+      'Fix the bug in auth',
+      '/workspace/project',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
     expect(mockTaskStore.setLaunchPermissionPosture).toHaveBeenCalledWith('pending-1', undefined);
     expect(deps.broadcastToAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'snapshot' }),
@@ -1089,6 +1095,8 @@ describe('promotePendingTasks', () => {
       'pending-1',
       '[Kookr launch warning] KB unavailable.\n\nFix the bug in auth',
       '/workspace/project',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
     );
   });
 
@@ -1498,6 +1506,17 @@ describe('promotePendingTasks (integration)', () => {
         dependencies: ['kb'],
       },
     });
+    const parkedSecond = taskStore.createTask({
+      prompt: 'needs kb too',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'needs kb too',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
     const healthy = taskStore.createTask({
       prompt: 'independent work',
       cwd: '/cwd',
@@ -1510,31 +1529,41 @@ describe('promotePendingTasks (integration)', () => {
       },
     });
     taskStore.pendTask(parked.id);
+    taskStore.pendTask(parkedSecond.id);
     taskStore.pendTask(healthy.id);
 
     const launchDependencyAdmission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn(async (dependencies: string[]) => dependencies.includes('kb')
+      ? [{
+          dependency: 'kb',
+          status: 'failed',
+          category: 'provider_api',
+          summary: 'KB provider unavailable',
+          recommendedAction: 'Restore the provider.',
+        } satisfies LaunchPreflightFinding]
+      : []);
     deps = {
       ...deps,
       lifecycleDeps: {
         ...deps.lifecycleDeps,
         launchDependencyAdmission,
-        dependencyPreflightRunner: vi.fn(async (dependencies) => dependencies.includes('kb')
-          ? [{
-              dependency: 'kb',
-              status: 'failed',
-              category: 'provider_api',
-              summary: 'KB provider unavailable',
-              recommendedAction: 'Restore the provider.',
-            } satisfies LaunchPreflightFinding]
-          : []),
+        dependencyPreflightRunner,
       },
     };
 
     expect(await promotePendingTasks(deps)).toBe(1);
     expect(taskStore.getTask(parked.id)?.status).toBe('pending');
     expect(taskStore.getTask(parked.id)?.launchAdmission?.reason).toBe('dependency_degraded');
+    expect(taskStore.getTask(parkedSecond.id)?.launchAdmission?.reason).toBe('dependency_degraded');
     expect(taskStore.getTask(healthy.id)?.status).toBe('inProgress');
-    expect(adapter.launch).toHaveBeenCalledWith(healthy.id, 'independent work', '/cwd');
+    expect(adapter.launch).toHaveBeenCalledWith(
+      healthy.id,
+      'independent work',
+      '/cwd',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
+    expect(dependencyPreflightRunner).toHaveBeenCalledTimes(2);
   });
 
   test('fails open when a parked task recovery preflight times out', async () => {
@@ -1569,9 +1598,61 @@ describe('promotePendingTasks (integration)', () => {
     expect(await promotePendingTasks(deps)).toBe(1);
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
-    expect(adapter.launch).toHaveBeenCalledWith(task.id, 'recover after timeout', '/cwd');
+    expect(adapter.launch).toHaveBeenCalledWith(
+      task.id,
+      'recover after timeout',
+      '/cwd',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
+    ]);
+  });
+
+  test('does not write parked state after a pending task is cancelled during preflight', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    const task = taskStore.createTask({
+      prompt: 'cancel while checking dependencies',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel while checking dependencies',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+
+    let releasePreflight!: (findings: LaunchPreflightFinding[]) => void;
+    let markStarted!: () => void;
+    const preflightStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const preflight = new Promise<LaunchPreflightFinding[]>((resolve) => { releasePreflight = resolve; });
+    const dependencyPreflightRunner = vi.fn(() => {
+      markStarted();
+      return preflight;
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner,
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await preflightStarted;
+    taskStore.cancelTask(task.id);
+    releasePreflight([]);
+
+    expect(await promotion).toBe(0);
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);
   });
 });
@@ -1871,6 +1952,44 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     expect(a + b).toBe(1);
     expect(taskStore.getTask(task.id)!.sessions).toHaveLength(1);
     expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+  });
+
+  test('two concurrent promoters allow only one half-open dependency probe', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'recover one provider probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'recover one provider probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const preflight = vi.fn().mockResolvedValue([]);
+    const lifecycleDeps = makeDeps({ taskStore, launchDependencyAdmission, dependencyPreflightRunner: preflight });
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const launchedIds: string[] = [];
+    const adapter = slowAdapter(taskStore, launchedIds, Promise.resolve());
+    const deps = makePromotionDeps({
+      taskStore,
+      adapterRegistry: createAdapterRegistry(adapter),
+      lifecycleDeps,
+    });
+
+    const [a, b] = await Promise.all([promotePendingTasks(deps), promotePendingTasks(deps)]);
+
+    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(launchedIds).toEqual([task.id]);
+    expect(a + b).toBe(1);
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
   });
 
   test('reservation holds the concurrency slot while a launch is mid-await', async () => {

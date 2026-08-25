@@ -26,7 +26,12 @@ import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
-import { DEFAULT_LAUNCH_TIMEOUT_MS, raceLaunchAgainstTimeout } from './launch-timeout.js';
+import {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  noteLaunchSession,
+  raceLaunchAgainstTimeout,
+  type LaunchReapGuard,
+} from './launch-timeout.js';
 import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
@@ -1044,6 +1049,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         throw new Error(`Pending task ${pending.id} has no replayable launch intent: ${intent.detail}`);
       }
       const adapter = adapterRegistry.get(pending.agentType);
+      const launchReapGuard: LaunchReapGuard = { reaped: false };
       // The parked admission note explains why the task waited; it is an
       // operator diagnostic, not part of the recovered agent's prompt.
       const launchPrompt = pending.launchAdmission?.status === 'parked'
@@ -1053,6 +1059,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       const pins = launchIntentPins(intent.intent);
       const adapterOpts = {
         ...pins,
+        onSessionCreated: (sessionId: string) => {
+          noteLaunchSession(launchReapGuard, adapter, pending.agentType, pending.id, sessionId);
+        },
         ...(originalIntent?.ralphVerdictEnv
           ? {
               extraEnv: {
@@ -1062,9 +1071,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
             }
           : {}),
       };
-      const launchPromise = Object.keys(adapterOpts).length > 0
-        ? adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, adapterOpts)
-        : adapter.launch(pending.id, launchPrompt, pending.cwd);
+      const launchPromise = adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout
@@ -1073,6 +1080,8 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         taskId: pending.id,
         agentType: pending.agentType,
         adapter,
+        reapGuard: launchReapGuard,
+        reapKnownSessionOnTimeout: true,
       });
       if (dependencyAdmission?.admit) {
         lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
@@ -1105,7 +1114,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       }
       // If launch fails, cancel the task rather than leaving it pending forever
       console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
-      taskStore.cancelTask(pending.id);
+      try {
+        taskStore.cancelTask(pending.id);
+      } catch (cancelErr) {
+        console.warn(
+          `[promotion] Could not cancel failed pending task ${pending.id}:`,
+          cancelErr instanceof Error ? cancelErr.message : cancelErr,
+        );
+      }
     } finally {
       // Success: addSession already consumed the reservation (task is
       // inProgress). Failure: release so the record isn't left reserved.
