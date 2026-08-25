@@ -1568,6 +1568,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
     launchDependencyAdmission,
+    getLaunchTimeoutMs,
   };
 
   // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
@@ -3430,6 +3431,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       restartEpoch,
       dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       staleOpenLaunchTaskIds,
+      getLaunchTimeoutMs,
     });
     await promotePendingStartupTasks({
       taskStore,

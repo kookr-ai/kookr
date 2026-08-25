@@ -20,9 +20,9 @@ describe('createProviderTransientRetryHandler', () => {
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
-      launchIntent: buildTaskLaunchIntent('claude-code'),
       provenance: { kind: 'schedule', sourceId: 'sched-lucy' },
       launchIntent: {
+        ...buildTaskLaunchIntent('claude-code'),
         prompt: 'original caller prompt',
         cwd: '/repo',
         agentType: 'claude-code',

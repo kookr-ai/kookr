@@ -126,9 +126,9 @@ export interface TaskLaunchIntent {
   /** Versioned replay contract used by automatic relaunch paths. */
   schemaVersion: 'task-launch-intent.v1';
   /** Original caller-authored prompt, before Kookr guardrails are injected. */
-  prompt: string;
+  prompt?: string;
   /** Requested repository/work directory. */
-  cwd: string;
+  cwd?: string;
   /** Normalized repository identity, when one was available at launch time. */
   projectId?: string;
   agentType: AgentType;

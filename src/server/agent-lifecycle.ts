@@ -8,7 +8,6 @@ import type { HookFileWatcher } from './hook-watcher.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
-import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
@@ -23,10 +22,11 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
-import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
+import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
+import { DEFAULT_LAUNCH_TIMEOUT_MS, raceLaunchAgainstTimeout } from './launch-timeout.js';
 import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
@@ -96,6 +96,8 @@ export interface AgentLifecycleDeps {
   launchDependencyAdmission?: LaunchDependencyAdmission;
   /** Optional preflight runner seam for provider recovery probes. */
   dependencyPreflightRunner?: DependencyPreflightRunner;
+  /** Live adapter-launch timeout used by pending promotion recovery. */
+  getLaunchTimeoutMs?: () => number;
 }
 
 /**
@@ -912,27 +914,33 @@ export function pickNextPendingForPromotion(
 async function evaluatePendingDependencyAdmission(
   task: Task,
   deps: AgentLifecycleDeps,
+  findingsCache?: Map<string, Promise<Array<{ dependency: string; category: string; summary?: string }>>>,
 ): Promise<LaunchDependencyAdmissionDecision | undefined> {
   const admission = deps.launchDependencyAdmission;
   const dependencies = task.launchIntent?.dependencies;
   if (!admission || !dependencies || dependencies.length === 0) return undefined;
 
-  let findings: Array<{ dependency: string; category: string; summary?: string }>;
-  try {
-    findings = await (deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(dependencies);
-  } catch (err) {
-    // Health collection is explicitly fail-open. The state remains visible as
-    // unknown rather than turning an instrumentation timeout into a fleet stop.
-    console.warn(
-      `[promotion] dependency preflight could not complete for task ${task.id}:`,
-      err instanceof Error ? err.message : err,
-    );
-    findings = dependencies.map((dependency) => ({
-      dependency,
-      category: 'unknown',
-      summary: 'Dependency health collection did not complete',
-    }));
+  const cacheKey = [...new Set(dependencies)].sort().join('\u0000');
+  let findingsPromise = findingsCache?.get(cacheKey);
+  if (!findingsPromise) {
+    findingsPromise = (deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(dependencies).catch((err) => {
+      // Health collection is explicitly fail-open. The state remains visible
+      // as unknown rather than turning an instrumentation timeout into a fleet
+      // stop. Cache the fallback too so a liveness pass cannot storm the
+      // provider with identical retries for every parked task.
+      console.warn(
+        `[promotion] dependency preflight could not complete for ${cacheKey}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return dependencies.map((dependency) => ({
+        dependency,
+        category: 'unknown',
+        summary: 'Dependency health collection did not complete',
+      }));
+    });
+    findingsCache?.set(cacheKey, findingsPromise);
   }
+  const findings = await findingsPromise;
   admission.observe(dependencies, findings);
   return admission.evaluate(dependencies);
 }
@@ -959,6 +967,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   let promoted = 0;
   const seen = new Set<string>();
   const blockedByDependency = new Set<string>();
+  const dependencyFindingsCache = new Map<string, Promise<Array<{ dependency: string; category: string; summary?: string }>>>();
 
   for (;;) {
     const activeCount = taskStore.getActiveCount();
@@ -968,7 +977,17 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount, blockedByDependency);
     if (!pending) break;
 
-    const dependencyAdmission = await evaluatePendingDependencyAdmission(pending, lifecycleDeps);
+    const dependencyAdmission = await evaluatePendingDependencyAdmission(pending, lifecycleDeps, dependencyFindingsCache);
+    // A preflight is asynchronous. The task may have been cancelled or
+    // otherwise transitioned while it was running; never write a parked
+    // marker back onto that newer state, and release any probe claim we took.
+    const currentPending = taskStore.getTask(pending.id);
+    if (!currentPending || currentPending.status !== 'pending') {
+      if (dependencyAdmission?.admit) {
+        lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+      }
+      continue;
+    }
     if (dependencyAdmission && !dependencyAdmission.admit) {
       blockedByDependency.add(pending.id);
       taskStore.setLaunchAdmission(pending.id, toTaskLaunchAdmission(dependencyAdmission));
@@ -1043,9 +1062,18 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
             }
           : {}),
       };
-      await (Object.keys(adapterOpts).length > 0
+      const launchPromise = Object.keys(adapterOpts).length > 0
         ? adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, adapterOpts)
-        : adapter.launch(pending.id, launchPrompt, pending.cwd));
+        : adapter.launch(pending.id, launchPrompt, pending.cwd);
+      const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();
+      const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : DEFAULT_LAUNCH_TIMEOUT_MS;
+      await raceLaunchAgainstTimeout(launchPromise, launchTimeoutMs, {
+        taskId: pending.id,
+        agentType: pending.agentType,
+        adapter,
+      });
       if (dependencyAdmission?.admit) {
         lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
       }

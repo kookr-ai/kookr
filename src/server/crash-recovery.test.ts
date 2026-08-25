@@ -207,6 +207,40 @@ describe('Crash Recovery', () => {
     });
   });
 
+  test('bounds a recovery launch and returns a failed probe to degraded', async () => {
+    const cwd = join(tempDir, 'project-timeout');
+    const task = await setupCrashedTask('Provider recovery timeout', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Provider recovery timeout',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider unavailable',
+    }]);
+    const launch = vi.spyOn(adapter, 'launch').mockImplementation(
+      () => new Promise<string>(() => {}),
+    );
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      getLaunchTimeoutMs: () => 5,
+    });
+
+    expect(launch).toHaveBeenCalledOnce();
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.failed[0]?.error).toContain('launch timed out');
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+  });
+
   test('does NOT relaunch a spawned task that finished its turn cleanly (#693)', async () => {
     // A self-continuation chain link (parentTaskId set) that ended on a clean
     // `completed_turn` is done, not crashed. reconcile auto-completes it; crash

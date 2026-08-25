@@ -182,6 +182,7 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
       prompt: 'use the knowledge base',
       cwd: '/repo',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'use the knowledge base',
         cwd: '/repo',
         agentType: 'claude-code',
@@ -232,6 +233,7 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
       prompt: 'canceled work',
       cwd: '/repo',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'canceled work',
         cwd: '/repo',
         agentType: 'claude-code',

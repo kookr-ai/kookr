@@ -311,7 +311,6 @@ export class TaskStore {
       playbookId,
       playbookParameterValues,
       launchHealthSummary,
-      launchIntent,
       launchAdmission,
       launchNote,
       projectId,

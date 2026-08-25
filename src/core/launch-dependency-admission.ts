@@ -80,7 +80,13 @@ export class LaunchDependencyAdmission {
         this.transition(entry, 'degraded');
       } else {
         entry.reason = relevant[0]?.summary;
-        this.transition(entry, 'unknown');
+        // A concurrent health collection must not erase the claim held by an
+        // in-flight half-open probe. Clearing that token would let a second
+        // launch bypass the single-probe gate while the first provider launch
+        // is still running. Keep the circuit half-open until the probe settles.
+        if (entry.state !== 'half_open' || entry.probeToken === undefined) {
+          this.transition(entry, 'unknown');
+        }
       }
     }
   }

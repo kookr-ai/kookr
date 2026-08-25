@@ -64,6 +64,19 @@ import {
   sameLaunchIntent,
   validatePersistedLaunchIntent,
 } from '../core/task-launch-intent.js';
+import {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  isLaunchTimeoutError,
+  LaunchTimeoutError,
+  raceLaunchAgainstTimeout,
+} from './launch-timeout.js';
+
+export {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  isLaunchTimeoutError,
+  LaunchTimeoutError,
+  raceLaunchAgainstTimeout,
+} from './launch-timeout.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -338,13 +351,6 @@ export interface LaunchServiceDeps {
 export const DEFAULT_MAX_PENDING_TASKS = 24;
 
 /**
- * Default hard ceiling on one `adapter.launch()` await (issue #1528). Mirrors
- * the `launchTimeoutSeconds` settings default (180s); the settings range is
- * 30–900s.
- */
-export const DEFAULT_LAUNCH_TIMEOUT_MS = 180_000;
-
-/**
  * Default `Retry-After` (seconds) advertised when a launch is refused because
  * the node is draining / redeploying (issue #1976). Short enough that a client
  * that respects the header retries inside the target API-blackout window
@@ -573,34 +579,6 @@ export function isCwdValidationError(err: unknown): err is CwdValidationError {
 }
 
 /**
- * Thrown by {@link launchTask} when `adapter.launch()` does not settle within
- * the configured `launchTimeoutSeconds` (issue #1526 Phase C / #1528). By the
- * time this propagates, the launch has already been cleaned up exactly like a
- * thrown launch: reservation released (`endLaunch`) and the task DISPOSED —
- * marked terminal with a `launch_timeout` {@link Task.disposition} rather than
- * deleted (issue #1588), so the record stays queryable, a terminal task can't
- * block dedup, no capacity slot stays held, and a retry with the same
- * idempotency key replays this task instead of creating a sibling. A
- * schedule-fired launch that hits this records `dispatch_failed`
- * (reasonCode `launch_error`) through the runner's normal error path.
- */
-export class LaunchTimeoutError extends Error {
-  readonly code = 'launch_timeout';
-  constructor(agentType: string, taskId: string, timeoutMs: number) {
-    super(
-      `Agent launch timed out after ${Math.round(timeoutMs / 1000)}s ` +
-      `(agent ${agentType}, task ${taskId}) — launch abandoned and task cleaned up`,
-    );
-    this.name = 'LaunchTimeoutError';
-  }
-}
-
-/** Type guard for {@link LaunchTimeoutError}. */
-export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
-  return err instanceof LaunchTimeoutError;
-}
-
-/**
  * Thrown by {@link launchTask} when a launch would pend at capacity but the
  * pending queue is already at its depth limit (issue #1526 Phase C / C3,
  * FM3). Carries the capacity-ledger snapshot so every surface can render WHY:
@@ -786,98 +764,6 @@ function effectiveMaxActiveForLaunch(
   const reservedSources = deps.getReservedSlotSources?.() ?? [];
   if (isReservedSlotLaunch(launchSource, launchActorId, reservedSources)) return maxActive;
   return Math.max(0, maxActive - reserved);
-}
-
-/**
- * Race one adapter launch against the hard timeout (issue #1528).
- *
- * On timeout, the caller cleans up (endLaunch, then DISPOSES the task terminal
- * with a `launch_timeout` disposition rather than deleting it — issue #1588)
- * and moves on; the underlying promise is NOT cancelled — adapters expose no
- * abort hook for an in-flight launch — so this helper pins down what a LATE
- * settlement can do:
- *
- * - Late REJECTION is swallowed (logged). The common case: the task is now
- *   terminal, so the adapter's own `taskStore.addSession` throws ("Cannot
- *   attach session to terminal task") and the launch rejects on its own — the
- *   same self-clean the old `deleteTask` produced via "Task not found", now via
- *   the terminal guard (issue #1588) so the disposed record stays session-free.
- *   NOTE the honest caveat: if the adapter created a terminal session before
- *   that throw, the session process leaks until reconcile reports it — boot and
- *   periodic `reconcile()` list sessions with no owning task as `orphans`
- *   (logged, not killed). In the #1528 incident the hang was *before* session
- *   creation (buildAgentLaunchContext), so the typical timeout leaks nothing.
- * - Late RESOLUTION (a session id came back after we gave up) is neutralized
- *   with the one cleanup hook adapters do expose: `adapter.stop(sessionId)`
- *   kills the orphaned terminal session, best-effort. State cannot be
- *   corrupted either way — the success path (posture stamping, round-robin
- *   advance, registerNewAgent) only runs when the race resolves in time, and a
- *   late `addSession` onto the terminated disposed task is refused outright, so
- *   the record never gains a phantom session.
- */
-async function raceLaunchAgainstTimeout(
-  launchPromise: Promise<string>,
-  timeoutMs: number,
-  ctx: {
-    taskId: string;
-    agentType: AgentType;
-    adapter: Pick<import('../adapters/agent-adapter.js').AgentAdapter, 'stop'>;
-    /**
-     * Shared reap guard (issue #2500). When the caller already links + reaps the
-     * abandoned session via `onSessionCreated` (the common case), a late
-     * RESOLUTION of the same promise must NOT `stop()` the same id a second time
-     * and log a misleading "orphaned session" warning. If provided and already
-     * `reaped`, the late-settle stop is skipped; otherwise this handler claims it.
-     */
-    reapGuard?: { reaped: boolean };
-  },
-): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  try {
-    return await Promise.race([
-      launchPromise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          reject(new LaunchTimeoutError(ctx.agentType, ctx.taskId, timeoutMs));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) {
-      // Settle-once: whatever the abandoned launch does later is observed,
-      // logged, and defused — never allowed back into launch state.
-      launchPromise.then(
-        (sessionId) => {
-          // Issue #2500: the abandon path may already have linked + reaped this
-          // exact session via `onSessionCreated`. Skip a redundant second stop()
-          // (and its misleading "orphaned session" warning) when it did.
-          if (ctx.reapGuard) {
-            if (ctx.reapGuard.reaped) return;
-            ctx.reapGuard.reaped = true;
-          }
-          console.warn(
-            `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
-            `(session ${sessionId}) — stopping orphaned session`,
-          );
-          void Promise.resolve(ctx.adapter.stop(sessionId)).catch((stopErr) => {
-            console.warn(
-              `[launch] failed to stop late-settled session ${sessionId}: ` +
-              `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-            );
-          });
-        },
-        (err) => {
-          console.warn(
-            `[launch] abandoned launch for task ${ctx.taskId} rejected after timeout (ignored): ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-          );
-        },
-      );
-    }
-  }
 }
 
 /** Resolve the effective launch timeout from the live getter, defensively. */
@@ -1371,7 +1257,14 @@ async function launchTaskCore(
           canonicalCwd,
           timestamp: nowISO(),
         });
-        return { task: activeDuplicate, queued: false, duplicate: true };
+        return {
+          task: activeDuplicate,
+          queued: activeDuplicate.status === 'pending',
+          duplicate: true,
+          ...(activeDuplicate.launchAdmission?.status === 'parked'
+            ? { parked: true, dependencyAdmission: activeDuplicate.launchAdmission }
+            : {}),
+        };
       }
       staleDuplicate = existing;
     }

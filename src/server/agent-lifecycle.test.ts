@@ -1388,6 +1388,7 @@ describe('promotePendingTasks (integration)', () => {
       cwd: '/cwd',
       agentType: 'claude-code',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'use the knowledge base',
         cwd: '/cwd',
         agentType: 'claude-code',
@@ -1456,6 +1457,7 @@ describe('promotePendingTasks (integration)', () => {
       prompt: 'recover the provider',
       cwd: '/cwd',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'recover the provider',
         cwd: '/cwd',
         agentType: 'claude-code',
@@ -1489,6 +1491,7 @@ describe('promotePendingTasks (integration)', () => {
       prompt: 'needs kb',
       cwd: '/cwd',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'needs kb',
         cwd: '/cwd',
         agentType: 'claude-code',
@@ -1499,6 +1502,7 @@ describe('promotePendingTasks (integration)', () => {
       prompt: 'independent work',
       cwd: '/cwd',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'independent work',
         cwd: '/cwd',
         agentType: 'claude-code',
@@ -1539,6 +1543,7 @@ describe('promotePendingTasks (integration)', () => {
       prompt: 'recover after timeout',
       cwd: '/cwd',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'recover after timeout',
         cwd: '/cwd',
         agentType: 'claude-code',

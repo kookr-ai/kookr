@@ -74,6 +74,27 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('keeps an active half-open probe claimed when a concurrent health check is unknown', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.observe(['kb'], [failure]);
+    admission.observe(['kb'], []);
+    const probe = admission.evaluate(['kb']);
+    if (!probe.admit || !probe.probe) throw new Error('expected a recovery probe');
+
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'unknown',
+      summary: 'concurrent health check timed out',
+    }]);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+    admission.completeProbe(probe.probe, true);
+    expect(admission.evaluate(['kb'])).toMatchObject({ admit: true });
+  });
+
   test('restores persisted parked state through a bounded recovery probe', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreParked([{

@@ -472,6 +472,7 @@ describe('ProviderResetScheduler', () => {
       issueClaim: { repo: REPO, number: 42 },
       provenance: { kind: 'schedule', sourceId: 'sched-9' },
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'original caller prompt',
         cwd: '/repo/kookr',
         projectId: 'github.com/kookr-ai/kookr',
@@ -498,7 +499,7 @@ describe('ProviderResetScheduler', () => {
       expect(opts.playbookParameterValues).toEqual({ issue: '42' });
       expect(opts.projectId).toBe('github.com/kookr-ai/kookr');
       expect(opts.agentType).toBe('claude-code');
-      expect(opts.model).toBe('model-a');
+      expect(opts.model).toBe('claude-fable-5');
       expect(opts.effort).toBe('effort-b');
       expect(opts.autoCloseOnSignal).toBe(true);
       expect(opts.effort).toBe('max');

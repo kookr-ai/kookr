@@ -319,6 +319,8 @@ describe('launchTask', () => {
     expect(result.task.launchIntent).toEqual({
       schemaVersion: 'task-launch-intent.v1',
       agentType: 'claude-code',
+      prompt: 'preserve pins',
+      cwd: '/tmp',
       model: 'claude-fable-5',
       effort: 'max',
     });

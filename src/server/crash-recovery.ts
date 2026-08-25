@@ -17,6 +17,7 @@ import {
   type LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
+import { DEFAULT_LAUNCH_TIMEOUT_MS, raceLaunchAgainstTimeout } from './launch-timeout.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
@@ -59,6 +60,8 @@ export interface CrashRecoveryOptions {
   launchDependencyAdmission?: LaunchDependencyAdmission;
   /** Injectable health runner for recovery tests and bounded provider probes. */
   dependencyPreflightRunner?: DependencyPreflightRunner;
+  /** Live adapter-launch timeout used by startup recovery. */
+  getLaunchTimeoutMs?: () => number;
 }
 
 /** How recently a session must have been relaunched to be considered a rapid crash-loop (ms). */
@@ -274,9 +277,18 @@ export async function recoverCrashedSessions(
     try {
       const adapter = adapterRegistry.get(task.agentType);
       const launchOptions = buildRecoveryLaunchOptions(task, intent.intent);
-      const newSessionId = Object.keys(launchOptions).length > 0
-        ? await adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions)
-        : await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const launchPromise = Object.keys(launchOptions).length > 0
+        ? adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions)
+        : adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      const configuredTimeout = options.getLaunchTimeoutMs?.();
+      const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : DEFAULT_LAUNCH_TIMEOUT_MS;
+      const newSessionId = await raceLaunchAgainstTimeout(launchPromise, launchTimeoutMs, {
+        taskId: task.id,
+        agentType: task.agentType,
+        adapter,
+      });
       if (dependencyAdmission?.admit) {
         options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
       }

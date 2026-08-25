@@ -158,6 +158,7 @@ describe('Task Persistence', () => {
       prompt: 'Rendered prompt',
       cwd: '/repo',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'Original caller prompt',
         cwd: '/repo',
         projectId: 'github.com/example/repo',
@@ -181,6 +182,7 @@ describe('Task Persistence', () => {
     const { tasks } = await loadTasks(filePath);
 
     expect(tasks[0]?.launchIntent).toEqual({
+      schemaVersion: 'task-launch-intent.v1',
       prompt: 'Original caller prompt',
       cwd: '/repo',
       projectId: 'github.com/example/repo',

@@ -53,6 +53,7 @@ describe('task-sqlite-store', () => {
       projectId: 'proj-1',
       metadata: { note: 'x' },
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'Original caller prompt',
         cwd: '/repo',
         projectId: 'proj-1',
@@ -136,6 +137,7 @@ describe('task-sqlite-store', () => {
       prompt: 'parked work',
       cwd: '/repo',
       launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
         prompt: 'parked work',
         cwd: '/repo',
         agentType: 'claude-code',
