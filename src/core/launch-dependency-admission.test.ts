@@ -73,4 +73,26 @@ describe('LaunchDependencyAdmission', () => {
       reason: 'dependency_degraded',
     });
   });
+
+  test('restores persisted parked state through a bounded recovery probe', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.restoreParked([{
+      dependency: 'kb',
+      state: 'degraded',
+      reason: 'KB provider was unavailable before restart',
+    }]);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+
+    admission.observe(['kb'], []);
+    const probe = admission.evaluate(['kb']);
+    expect(probe).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+      states: [{ state: 'half_open' }],
+    });
+  });
 });

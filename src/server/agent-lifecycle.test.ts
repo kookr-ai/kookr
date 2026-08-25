@@ -1402,6 +1402,16 @@ describe('promotePendingTasks (integration)', () => {
         dependencies: [{ dependency: 'kb', state: 'degraded' }],
         parkedAt: '2026-01-01T00:00:00.000Z',
       },
+      launchHealthSummary: {
+        degradedDependencies: ['kb'],
+        findings: [{
+          dependency: 'kb',
+          status: 'failed',
+          category: 'provider_api',
+          summary: 'KB provider is unavailable',
+          recommendedAction: 'Restore the KB provider.',
+        }],
+      },
     });
     taskStore.pendTask(task.id);
 
@@ -1413,6 +1423,7 @@ describe('promotePendingTasks (integration)', () => {
     expect(await promotePendingTasks(deps)).toBe(1);
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.launchHealthSummary).toBeUndefined();
     expect(adapter.launch).toHaveBeenCalledWith(
       task.id,
       'use the knowledge base',

@@ -257,6 +257,29 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
     expect(container.textContent).not.toContain('Deps:');
   });
 
+  test('shows the launch-deps pill for parked work even without degraded launch history (issue #2841)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      launchDependencies: {
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+        parkedTaskCount: 2,
+        parkedByDependency: [{
+          dependency: 'kb',
+          taskCount: 2,
+          reasons: ['dependency_degraded'],
+        }],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
+    expect(pill?.textContent).toBe('Deps: 0 · Parked: kb×2');
+    expect(pill?.getAttribute('title')).toContain('2 tasks parked awaiting dependency recovery');
+    expect(pill?.getAttribute('title')).toContain('kb=2 (dependency_degraded)');
+  });
+
   test('shows Deps: kb×N when launch dependencies are degraded (issue #2364)', async () => {
     useKookrStore.getState().handleOpsHealth({
       launchDependencies: {

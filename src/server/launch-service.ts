@@ -908,15 +908,15 @@ function allowRemoteChatCodex(): boolean {
 }
 
 /**
- * Check if an active task with the same prompt hash and canonical cwd already
- * exists. Uses the live-task view so a large completed-task pile is not cloned
- * on every spawn. Returns the existing task if found, undefined otherwise.
+ * Check if an active task with the same launch identity already exists. Uses
+ * the live-task view so a large completed-task pile is not cloned on every
+ * spawn. Returns the existing task if found, undefined otherwise.
  *
- * Dedup key is (promptHash, agentType, canonicalCwd). Two launches with the
- * same prompt in different directories are different tasks; two launches with
- * the same prompt in the same directory — even reached via symlink, trailing
- * slash, relative path, or case-aliased path on case-insensitive FS — dedup
- * to the first.
+ * Dedup key is (promptHash, agentType, canonicalCwd, model, effort). Two
+ * launches with the same prompt in different directories are different tasks;
+ * two launches with different model/effort pins are also different tasks. The
+ * cwd comparison canonicalizes symlinks, trailing slashes, relative paths, and
+ * case aliases on case-insensitive filesystems.
  */
 export function checkSubmission(
   taskStore: TaskStore,

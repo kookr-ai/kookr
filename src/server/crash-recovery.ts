@@ -261,6 +261,9 @@ export async function recoverCrashedSessions(
     }
     if (dependencyAdmission && task.launchAdmission) {
       taskStore.setLaunchAdmission(task.id, undefined);
+      if (task.launchAdmission.status === 'parked') {
+        taskStore.setLaunchHealthSummary(task.id, undefined);
+      }
     }
 
     // Launch a new session using the EXISTING launch path.

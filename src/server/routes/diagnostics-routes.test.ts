@@ -1250,6 +1250,62 @@ describe('diagnostics routes', () => {
       };
       expectLaunchDependencyDiagnostics(body.launchDependencies, { firstTaskId, secondTaskId });
     });
+
+    test('keeps live circuit state and parked work visible separately', async () => {
+      const taskStore = new TaskStore();
+      const parked = taskStore.createTask({
+        prompt: 'needs kb',
+        cwd: '/repo',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+          parkedAt: '2026-08-25T10:00:00.000Z',
+        },
+      });
+      taskStore.pendTask(parked.id);
+      const admission = new LaunchDependencyAdmission();
+      admission.observe(['kb'], [{
+        dependency: 'kb',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+      }]);
+
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        launchServiceDeps: { launchDependencyAdmission: admission } as never,
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        launchDependencies: {
+          totalDegradedTasks: number;
+          totalFindings: number;
+          dependencyStates: Array<{ dependency: string; state: string }>;
+          parkedTasks: {
+            total: number;
+            taskIds: string[];
+            byDependency: Array<{ dependency: string; taskCount: number; reasons: string[] }>;
+          };
+        };
+      };
+      expect(body.launchDependencies).toMatchObject({
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencyStates: [{ dependency: 'kb', state: 'degraded' }],
+        parkedTasks: {
+          total: 1,
+          taskIds: [parked.id],
+          byDependency: [{
+            dependency: 'kb',
+            taskCount: 1,
+            reasons: ['provider unavailable'],
+          }],
+        },
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

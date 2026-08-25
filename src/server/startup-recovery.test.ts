@@ -15,6 +15,7 @@ import type { HookFileWatcher } from './hook-watcher.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { CrashRecoveryResult } from './crash-recovery.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 // Env key accessed via bracket indirection so the literal `process.env.<NAME>`
 // dot form never appears in source — the PR-checklist env rule flags any such
@@ -151,6 +152,43 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
     expect(returned).toEqual(skipOnly);
     // Interaction log stays gated to relaunched/failed material outcomes.
     expect(deps.spies.interactionLog.append).not.toHaveBeenCalled();
+  });
+});
+
+describe('runStartupRecoveryPhase — parked dependency hydration', () => {
+  test('restores persisted parked dependencies before recovery promotion', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const task = deps.taskStore.createTask({
+      prompt: 'use the knowledge base',
+      cwd: '/repo',
+      launchIntent: {
+        prompt: 'use the knowledge base',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(task.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
   });
 });
 

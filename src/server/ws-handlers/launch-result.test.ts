@@ -82,6 +82,29 @@ describe('handleLaunchResult', () => {
     expect((sent[0] as Extract<ServerMessage, { type: 'alert' }>).details).toContain('kb=degraded');
   });
 
+  it('explains when a half-open recovery probe is already in flight', () => {
+    const { send, sent } = collect();
+
+    handleLaunchResult(send, 'use the knowledge base', {
+      task: { id: 'task-probe-busy' } as any,
+      queued: true,
+      parked: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open', reason: 'A recovery probe is already in flight' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(sent[0]).toMatchObject({
+      type: 'alert',
+      severity: 'warning',
+      summary: 'Parked: use the knowledge base',
+      details: expect.stringContaining('recovery probe is already in flight'),
+    });
+  });
+
   // --- Server-side backpressure (issue #1526 Phase C / C3) ---
 
   const ledger = {

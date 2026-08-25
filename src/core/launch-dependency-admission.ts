@@ -146,6 +146,22 @@ export class LaunchDependencyAdmission {
     }
   }
 
+  /**
+   * Restore the degraded side of a persisted parked launch after a process
+   * restart. The next clean preflight must pass through half-open and claim
+   * one bounded recovery probe instead of treating the fresh in-memory
+   * circuit as healthy.
+   */
+  restoreParked(dependencies: readonly TaskLaunchAdmissionDependency[]): void {
+    for (const dependency of dependencies) {
+      const entry = this.entry(dependency.dependency);
+      entry.state = 'degraded';
+      entry.lastChangedAt = this.now();
+      entry.reason = dependency.reason ?? 'Dependency was parked before restart';
+      entry.probeToken = undefined;
+    }
+  }
+
   snapshot(): LaunchDependencyCircuitSnapshot[] {
     return Array.from(this.entries.keys())
       .sort()

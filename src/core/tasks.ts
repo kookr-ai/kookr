@@ -955,6 +955,16 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Clear or replace the launch-time dependency health snapshot. */
+  setLaunchHealthSummary(id: string, summary: Task['launchHealthSummary'] | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchHealthSummary = summary ? structuredClone(summary) : undefined;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
     return cloneTask(this.transition(id, 'open'));
   }

@@ -93,6 +93,17 @@ export async function runStartupRecoveryPhase({
   staleOpenLaunchTaskIds = [],
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
+  // LaunchDependencyAdmission is process-local, while parked launch intents
+  // are durable. Rehydrate the degraded side before crash recovery or pending
+  // promotion so a clean first check after restart is a bounded half-open
+  // probe rather than an unguarded launch.
+  if (lifecycleDeps.launchDependencyAdmission) {
+    for (const task of taskStore.listTasks()) {
+      if (task.launchAdmission?.status === 'parked') {
+        lifecycleDeps.launchDependencyAdmission.restoreParked(task.launchAdmission.dependencies);
+      }
+    }
+  }
   // Tracks crash-recovery's own outcome so the post-recovery audit below can
   // see it even on a boot with nothing to relaunch/fail. Populated whenever
   // recoverCrashedSessions actually runs. `startupRecoverySummary` is now

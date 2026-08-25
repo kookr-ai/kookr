@@ -974,8 +974,15 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       taskStore.setLaunchAdmission(pending.id, toTaskLaunchAdmission(dependencyAdmission));
       continue;
     }
-    if (dependencyAdmission && taskStore.getTask(pending.id)?.launchAdmission) {
+    const priorAdmission = taskStore.getTask(pending.id)?.launchAdmission;
+    if (dependencyAdmission && priorAdmission) {
       taskStore.setLaunchAdmission(pending.id, undefined);
+      // A parked task's original launch-health warning described the blocked
+      // admission, not the now-successful worker launch. Do not keep counting
+      // that stale finding as a degraded launch in diagnostics.
+      if (priorAdmission.status === 'parked') {
+        taskStore.setLaunchHealthSummary(pending.id, undefined);
+      }
     }
 
     // #700 fix: synchronous pick-to-launch reservation. Concurrent
