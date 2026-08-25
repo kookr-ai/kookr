@@ -141,6 +141,10 @@ describe('RalphLoopService', () => {
       ok: false,
       error: 'iterationCap is required and must be a positive integer',
     });
+    expect(validateRalphLoopRequest({ prompt: 'go', iterationCap: 21 })).toMatchObject({
+      ok: false,
+      error: 'iterationCap must be within the shared autonomous review cap',
+    });
   });
 
   test('startLoop initializes Ralph state and claims the newest live session as owner', async () => {

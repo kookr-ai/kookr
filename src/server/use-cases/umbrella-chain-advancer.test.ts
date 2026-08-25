@@ -264,6 +264,20 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.issue.body).toContain('"blockedReason": "review-block"');
   });
 
+  test('launches a correction task for an exact-head BLOCK while review budget remains', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'merged', taskId: 'owner-1', ownerTerminal: true, mergedAt: '2026-08-22T00:00:00.000Z', reviewVerdict: 'block', reviewedAt: '2026-08-23T09:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'test-head' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set([10]) });
+    await harness.advancer.sweep();
+    expect(harness.calls).toContain('launch:chain:2711:phase:P1:review:2');
+    expect(harness.issue.body).toContain('"status": "in-flight"');
+    expect(harness.issue.body).toContain('"taskId": "task-next"');
+    expect(harness.issue.body).not.toContain('"reviewVerdict": "block"');
+  });
+
   test('holds the chain when the remote cannot provide a merge time', async () => {
     const harness = makeHarness(makeLedger({
       phases: [
