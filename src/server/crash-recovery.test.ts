@@ -9,6 +9,7 @@ import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
 import { recoverCrashedSessions } from './crash-recovery.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 describe('Crash Recovery', () => {
   let taskStore: TaskStore;
@@ -132,6 +133,77 @@ describe('Crash Recovery', () => {
     expect(launchSpy.mock.calls[0]?.[4]).toMatchObject({
       model: 'claude-fable-5',
       effort: 'max',
+    });
+  });
+
+  test('reuses persisted launch intent when recovering a dead session', async () => {
+    const cwd = join(tempDir, 'project-intent');
+    const task = await setupCrashedTask('Rendered prompt', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Original caller prompt',
+      cwd,
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      ralphVerdictEnv: true,
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(launch).toHaveBeenCalledWith(
+      task.id,
+      'Rendered prompt',
+      cwd,
+      undefined,
+      expect.objectContaining({
+        effort: 'max',
+        model: 'claude-fable-5',
+        extraEnv: {
+          RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-/),
+          RALPH_ITERATION: '0',
+        },
+      }),
+    );
+  });
+
+  test('parks crash recovery when a required dependency is confirmed degraded', async () => {
+    const cwd = join(tempDir, 'project-degraded');
+    const task = await setupCrashedTask('Needs the provider', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Needs the provider',
+      cwd,
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+    const admission = new LaunchDependencyAdmission();
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider unavailable',
+        recommendedAction: 'Restore the provider.',
+      }]),
+    });
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toContain('dependency_degraded');
+    expect(launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+      },
     });
   });
 

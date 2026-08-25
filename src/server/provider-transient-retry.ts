@@ -72,16 +72,20 @@ export function createProviderTransientRetryHandler(
     const pins = launchIntentPins(intent.intent);
 
     const launchOpts: LaunchOpts = {
-      prompt: original.prompt,
-      cwd: original.cwd,
+      prompt: original.launchIntent?.prompt ?? original.prompt,
+      cwd: original.launchIntent?.cwd ?? original.cwd,
       ...(original.criteria ? { criteria: original.criteria } : {}),
       ...(original.name ? { name: original.name } : {}),
       ...(original.playbookId ? { playbookId: original.playbookId } : {}),
       ...(original.playbookParameterValues ? { playbookParameterValues: original.playbookParameterValues } : {}),
-      ...(original.projectId ? { projectId: original.projectId } : {}),
-      agentType: original.agentType,
+      ...((original.launchIntent?.projectId ?? original.projectId)
+        ? { projectId: original.launchIntent?.projectId ?? original.projectId }
+        : {}),
+      agentType: intent.intent.agentType,
       ...(pins.model !== undefined ? { model: pins.model } : {}),
       ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+      ...(original.launchIntent?.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+      ...(original.launchIntent?.dependencies ? { dependencies: [...original.launchIntent.dependencies] } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.
       disableDedup: true,
       launchSource: 'schedule',

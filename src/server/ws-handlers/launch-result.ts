@@ -157,14 +157,21 @@ export function handleLaunchResult(
   if (result.queued) {
     if (result.parked) {
       const dependencies = result.dependencyAdmission?.dependencies
-        .map((dependency) => `${dependency.dependency}=${dependency.state}`)
+        .map((dependency) => {
+          const reason = dependency.reason ? ` (${dependency.reason})` : '';
+          return `${dependency.dependency}=${dependency.state}${reason}`;
+        })
         .join(', ');
+      const admissionReason = result.dependencyAdmission?.reason;
+      const admissionMessage = admissionReason === 'half_open_probe_busy'
+        ? 'A dependency recovery probe is already in flight; no worker slot was consumed.'
+        : 'A required launch dependency is degraded; no worker slot was consumed.';
       send({
         type: 'alert',
         agentId: '',
         summary: `Parked: ${promptExcerpt}`,
         details: [
-          'A required launch dependency is degraded; no worker slot was consumed.',
+          admissionMessage,
           dependencies ? `Dependencies: ${dependencies}.` : undefined,
           'Kookr will retry the preserved launch intent after recovery evidence.',
         ].filter(Boolean).join('\n'),

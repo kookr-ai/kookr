@@ -43,6 +43,7 @@
 import { claimKeyString, type ClaimKey } from '../core/issue-claim-types.js';
 import type { AgentType } from '../shared/contracts/agent-types.js';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
+import type { TaskLaunchIntent } from '../shared/contracts/task.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
 
 /** Default per-window resume budget (token-bucket capacity). */
@@ -118,6 +119,8 @@ export interface ProviderResumeSource {
   /** The issue claim the resume dedups on — required (no claim ⇒ no resume). */
   issueClaim: { repo: string; number: number };
   provenance?: { kind: string; sourceId?: string };
+  /** Immutable launch shape retained for provider-reset admission replay. */
+  launchIntent?: TaskLaunchIntent;
 }
 
 /**
@@ -130,10 +133,11 @@ export interface ProviderResumeSource {
  *    fire and (correctly) still subject to the automation kill-switch.
  */
 export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpts {
+  const intent = task.launchIntent;
   const scheduleId = task.provenance?.kind === 'schedule' ? task.provenance.sourceId : undefined;
   return {
-    prompt: task.prompt,
-    cwd: task.cwd,
+    prompt: intent?.prompt ?? task.prompt,
+    cwd: intent?.cwd ?? task.cwd,
     ...(task.criteria ? { criteria: task.criteria } : {}),
     ...(task.name ? { name: task.name } : {}),
     ...(task.playbookId ? { playbookId: task.playbookId } : {}),
@@ -143,10 +147,16 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
     ...(task.playbookParameterValues
       ? { playbookParameterValues: structuredClone(task.playbookParameterValues) }
       : {}),
-    ...(task.projectId ? { projectId: task.projectId } : {}),
-    ...(task.agentType ? { agentType: task.agentType } : {}),
-    ...(task.model !== undefined ? { model: task.model } : {}),
-    ...(task.effort !== undefined ? { effort: task.effort } : {}),
+    ...((intent?.projectId ?? task.projectId)
+      ? { projectId: intent?.projectId ?? task.projectId }
+      : {}),
+    ...((intent?.agentType ?? task.agentType)
+      ? { agentType: intent?.agentType ?? task.agentType }
+      : {}),
+    ...(intent?.effort !== undefined ? { effort: intent.effort } : {}),
+    ...(intent?.model !== undefined ? { model: intent.model } : {}),
+    ...(intent?.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+    ...(intent?.dependencies ? { dependencies: [...intent.dependencies] } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },
     disableDedup: true,
     launchSource: 'schedule',

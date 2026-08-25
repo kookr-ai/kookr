@@ -63,4 +63,12 @@ describe('launch-deps-pill helpers (issue #2364)', () => {
     expect(title).toContain('2 tasks parked awaiting dependency recovery');
     expect(title).toContain('kb=2 (provider down)');
   });
+
+  test('keeps parked-only status visible when dependency rows are unavailable', () => {
+    expect(formatLaunchDepsLabel({
+      totalDegradedTasks: 0,
+      dependencies: [],
+      parkedTaskCount: 3,
+    })).toBe('Deps: 0 · Parked: 3');
+  });
 });

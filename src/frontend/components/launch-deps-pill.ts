@@ -38,13 +38,21 @@ export function formatLaunchDepsLabel(status: LaunchDependenciesStatus): string 
     ? `Deps: ${total}`
     : `Deps: ${elevated.join(' · ')}`;
   if (parked.length === 0) {
-    if (elevated.length === 0) return label;
+    if (elevated.length === 0) {
+      return parkedCountLabel(status, label);
+    }
     const remaining =
       status.dependencies.filter((row) => row.degradedTaskCount > 0).length - elevated.length;
-    return remaining > 0 ? `${label} +${remaining}` : label;
+    const elevatedLabel = remaining > 0 ? `${label} +${remaining}` : label;
+    return parkedCountLabel(status, elevatedLabel);
   }
 
   return `${label} · Parked: ${parked.join(' · ')}`;
+}
+
+function parkedCountLabel(status: LaunchDependenciesStatus, label: string): string {
+  const parkedCount = Math.max(0, Math.floor(status.parkedTaskCount ?? 0));
+  return parkedCount > 0 ? `${label} · Parked: ${parkedCount}` : label;
 }
 
 /**

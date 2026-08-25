@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
+import { LaunchDependencyAdmission } from '../../core/launch-dependency-admission.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { DEFAULT_SETTINGS } from '../../core/settings-store.js';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
@@ -3053,6 +3054,49 @@ describe('diagnostics routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as Parameters<typeof expectLaunchDependencyDiagnostics>[0];
       expectLaunchDependencyDiagnostics(body, { firstTaskId, secondTaskId });
+    });
+
+    test('returns live circuit states and parked work separately', async () => {
+      const taskStore = new TaskStore();
+      const parked = taskStore.createTask({
+        prompt: 'needs kb',
+        cwd: '/repo',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+          parkedAt: '2026-08-25T10:00:00.000Z',
+        },
+      });
+      taskStore.pendTask(parked.id);
+      const admission = new LaunchDependencyAdmission();
+      admission.observe(['kb'], [{
+        dependency: 'kb',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+      }]);
+
+      const res = await mkApp({
+        taskStore,
+        launchServiceDeps: { launchDependencyAdmission: admission } as never,
+      }).request('/api/diagnostics/launch-dependencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencyStates: [{ dependency: 'kb', state: 'degraded' }],
+        parkedTasks: {
+          total: 1,
+          taskIds: [parked.id],
+          byDependency: [{
+            dependency: 'kb',
+            taskCount: 1,
+            taskIds: [parked.id],
+            reasons: ['provider unavailable'],
+          }],
+        },
+      });
     });
 
     test('returns an empty launch dependency diagnostics snapshot without degraded tasks', async () => {

@@ -52,6 +52,23 @@ describe('task-sqlite-store', () => {
       criteria: 'tests green',
       projectId: 'proj-1',
       metadata: { note: 'x' },
+      launchIntent: {
+        prompt: 'Original caller prompt',
+        cwd: '/repo',
+        projectId: 'proj-1',
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+        idempotencyKey: 'stable-key',
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
     });
     store.startTask(created.id);
     store.addSession(created.id, {
@@ -89,6 +106,20 @@ describe('task-sqlite-store', () => {
       expect(t.criteria).toBe('tests green');
       expect(t.status).toBe('completed');
       expect(t.projectId).toBe('proj-1');
+      expect(t.launchIntent).toMatchObject({
+        prompt: 'Original caller prompt',
+        effort: 'max',
+        model: 'claude-fable-5',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+        idempotencyKey: 'stable-key',
+      });
+      expect(t.launchAdmission).toEqual({
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      });
       expect(t.sessions[0]?.tmuxSession).toBe('kookr-sess-1');
       expect(t.completionDigest?.bullets).toEqual(['did stuff']);
       expect(t.tokenUsage?.costUsd).toBe(0.01);

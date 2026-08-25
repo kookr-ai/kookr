@@ -2,14 +2,21 @@ import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TaskStore, SessionInfo, Task } from '../core/tasks.js';
 import { isRecoverableTermination } from '../core/task-status.js';
-import { AdapterRegistry, type ResumeContext } from '../adapters/agent-adapter.js';
+import { AdapterRegistry, type AdapterLaunchOptions, type ResumeContext } from '../adapters/agent-adapter.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
 import {
   launchIntentFingerprint,
-  launchIntentPins,
   validatePersistedLaunchIntent,
 } from '../core/task-launch-intent.js';
+import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
+import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
+import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
+import {
+  type LaunchDependencyAdmission,
+  type LaunchDependencyAdmissionDecision,
+} from '../core/launch-dependency-admission.js';
+import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
 
 export interface CrashRecoveryEntry {
   taskId: string;
@@ -47,6 +54,13 @@ export interface CrashRecoveryResult {
   failed: CrashRecoveryFailure[];
 }
 
+export interface CrashRecoveryOptions {
+  /** Shared provider circuit used to gate automatic recovery launches. */
+  launchDependencyAdmission?: LaunchDependencyAdmission;
+  /** Injectable health runner for recovery tests and bounded provider probes. */
+  dependencyPreflightRunner?: DependencyPreflightRunner;
+}
+
 /** How recently a session must have been relaunched to be considered a rapid crash-loop (ms). */
 const CRASH_LOOP_WINDOW_MS = 60_000;
 
@@ -66,6 +80,7 @@ export async function recoverCrashedSessions(
   taskStore: TaskStore,
   adapterRegistry: AdapterRegistry,
   reconcileResult: ReconciliationResult,
+  options: CrashRecoveryOptions = {},
 ): Promise<CrashRecoveryResult> {
   const result: CrashRecoveryResult = {
     relaunched: [],
@@ -233,6 +248,21 @@ export async function recoverCrashedSessions(
     // See docs/rfc/rfc-crash-recovery-resume.md.
     const { resumeContext, fallbackReason } = await buildResumeContext(task, session);
 
+    const dependencyAdmission = await evaluateRecoveryDependencyAdmission(task, options);
+    if (dependencyAdmission && !dependencyAdmission.admit) {
+      taskStore.setLaunchAdmission(task.id, toTaskLaunchAdmission(dependencyAdmission));
+      taskStore.pendTask(task.id);
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: `launch dependency admission parked: ${dependencyAdmission.reason}`,
+      });
+      continue;
+    }
+    if (dependencyAdmission && task.launchAdmission) {
+      taskStore.setLaunchAdmission(task.id, undefined);
+    }
+
     // Launch a new session using the EXISTING launch path.
     // adapter.launch() handles: sessionId creation, addSession(), sessionToTaskId,
     // settings file generation, and git info capture. When `resumeContext`
@@ -240,13 +270,13 @@ export async function recoverCrashedSessions(
     // continues the prior conversation on a forked branch.
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const newSessionId = await adapter.launch(
-        task.id,
-        task.prompt,
-        session.cwd,
-        resumeContext,
-        launchIntentPins(intent.intent),
-      );
+      const launchOptions = buildRecoveryLaunchOptions(task, intent.intent);
+      const newSessionId = Object.keys(launchOptions).length > 0
+        ? await adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions)
+        : await adapter.launch(task.id, task.prompt, session.cwd, resumeContext);
+      if (dependencyAdmission?.admit) {
+        options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
+      }
 
       // Transfer relaunch metadata to the new session. Mark resumedFromCrash
       // only when we actually requested resume; the adapter may have ignored
@@ -279,6 +309,9 @@ export async function recoverCrashedSessions(
       }
       result.relaunched.push(entry);
     } catch (err) {
+      if (dependencyAdmission?.admit) {
+        options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+      }
       result.failed.push({
         taskId: task.id,
         sessionId: tmuxName,
@@ -288,6 +321,61 @@ export async function recoverCrashedSessions(
   }
 
   return result;
+}
+
+async function evaluateRecoveryDependencyAdmission(
+  task: Task,
+  options: CrashRecoveryOptions,
+): Promise<LaunchDependencyAdmissionDecision | undefined> {
+  const admission = options.launchDependencyAdmission;
+  const dependencies = task.launchIntent?.dependencies;
+  if (!admission || !dependencies || dependencies.length === 0) return undefined;
+
+  let findings: Array<{ dependency: string; category: string; summary?: string }>;
+  try {
+    findings = await (options.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(dependencies);
+  } catch (err) {
+    // Recovery must remain fail-open when health collection itself is broken.
+    console.warn(
+      `[crash-recovery] dependency preflight could not complete for task ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    findings = dependencies.map((dependency) => ({
+      dependency,
+      category: 'unknown',
+      summary: 'Dependency health collection did not complete',
+    }));
+  }
+  admission.observe(dependencies, findings);
+  return admission.evaluate(dependencies);
+}
+
+function toTaskLaunchAdmission(
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
+): TaskLaunchAdmission {
+  return {
+    status: 'parked',
+    reason: decision.reason,
+    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
+    parkedAt: new Date().toISOString(),
+  };
+}
+
+function buildRecoveryLaunchOptions(task: Task, validatedIntent: Task['launchIntent']): AdapterLaunchOptions {
+  const intent = validatedIntent;
+  const originalIntent = task.launchIntent;
+  return {
+    ...(intent?.effort !== undefined ? { effort: intent.effort } : {}),
+    ...(intent?.model !== undefined ? { model: intent.model } : {}),
+    ...(originalIntent?.ralphVerdictEnv
+      ? {
+          extraEnv: {
+            RALPH_VERDICT_FILE: defaultVerdictPath(task.cwd, task.id),
+            RALPH_ITERATION: '0',
+          },
+        }
+      : {}),
+  };
 }
 
 /**

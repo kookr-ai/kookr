@@ -205,6 +205,11 @@ Detail: <what kb doctor reported>
 Recommended action: <what to do>
 ```
 
+The WebSocket alert uses the same information in compact form, for example
+`Dependencies: kb=degraded (KB provider is unavailable).` A half-open retry
+that is already occupied is reported as `half_open_probe_busy` instead of a
+new provider failure.
+
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the
 recovery tells you how to clear it.
@@ -215,6 +220,7 @@ recovery tells you how to clear it.
 | `provider_api` | The embedding **provider** or its API is misconfigured or unavailable — missing API key, provider/model not running. | Start or reconfigure the embedding provider/API the KB index uses (pull the model, set the API key, point at the right endpoint). |
 | `empty_index_data` | The CLI is healthy but there is **nothing to search** — no ingested chunks, an empty index, or no knowledge bases registered. | Ingest or refresh the knowledge-base index before launching the KB-dependent task. |
 | `configuration` | The `kb` CLI itself is misconfigured — missing from `PATH`, no active model selected, bad config. | Fix the KB CLI configuration, model selection, or `PATH`, then re-run `kb doctor --format=json`. |
+| `query_runtime_failure` | The doctor check passed, but the bounded search smoke test failed in the query path. | Run a small `kb search`, then repair the query/index runtime before launching the KB-dependent task. |
 | `unknown` | The preflight failed but the output didn't match a known signature, or `kb doctor` returned unparseable JSON. | Run `kb doctor --format=json` manually and address the reported failure, or check the CLI version. |
 
 ### Continue now, or fix first?

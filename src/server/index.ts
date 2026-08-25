@@ -3212,6 +3212,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             autoCloseOnSignal: task.autoCloseOnSignal,
             issueClaim: { repo: claim.repo, number: claim.number },
             provenance: task.provenance,
+            launchIntent: task.launchIntent,
           }),
         });
         return { holdForResume: now < latchedResetsAt };

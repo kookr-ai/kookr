@@ -517,10 +517,10 @@ Rejected. Preflights are useful because they make degraded capabilities explicit
 ### Phase 2: Incident Surface And Manual Repair
 
 - Add explicit dependency policy contract.
-- Persist queued launch dependency intent and the minimal parked-pending state.
+- Expand the incident model beyond the minimal parked-pending state already delivered by issue #2841.
 - Add redacted incident model and best-effort store.
 - Add fingerprint dedupe and lifecycle.
-- Add UI inspection surface.
+- Expand the dashboard beyond its current parked-count/reason pill into a full incident inspection surface.
 - Add manual repair task action with internal preflight override.
 - Require machine-readable repair verdict and verification.
 

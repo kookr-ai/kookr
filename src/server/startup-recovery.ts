@@ -103,7 +103,10 @@ export async function runStartupRecoveryPhase({
   if (process.env.KOOKR_AUTO_RELAUNCH === 'false') {
     console.log('[crash-recovery] Disabled (KOOKR_AUTO_RELAUNCH=false), skipping');
   } else if (reconcileResult.markedCompleted.length > 0) {
-    const recoveryResult = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+    const recoveryResult = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: lifecycleDeps.launchDependencyAdmission,
+      dependencyPreflightRunner: lifecycleDeps.dependencyPreflightRunner,
+    });
     crashRecoveryResult = recoveryResult;
 
     for (const entry of recoveryResult.relaunched) {
