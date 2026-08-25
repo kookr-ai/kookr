@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
-import type { DeliveryAuthorization, TaskDispositionReason } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchAdmission, TaskLaunchIntent } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -20,6 +20,10 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
+import {
+  type LaunchDependencyAdmissionDecision,
+} from '../core/launch-dependency-admission.js';
+import type { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -146,6 +150,8 @@ export interface LaunchServiceDeps {
    */
   auditLogPath?: string;
   dependencyPreflightRunner?: DependencyPreflightRunner;
+  /** Provider-aware circuit that parks launches requiring confirmed-degraded dependencies. */
+  launchDependencyAdmission?: LaunchDependencyAdmission;
   /**
    * Operator drain gate (issue #659). When provided and returning false, the
    * node is draining and {@link launchTask} refuses new launches by throwing
@@ -1127,7 +1133,14 @@ async function launchTaskIdempotent(
     if (reservation.kind === 'replay') {
       const task = deps.taskStore.getTask(reservation.taskId);
       if (task && isReplayableTask(task)) {
-        return { task, queued: task.status === 'pending', idempotentReplay: true };
+        return {
+          task,
+          queued: task.status === 'pending',
+          idempotentReplay: true,
+          ...(task.launchAdmission?.status === 'parked'
+            ? { parked: true, dependencyAdmission: task.launchAdmission }
+            : {}),
+        };
       }
       // Either the finalized task no longer exists (e.g. deleted), or it's
       // terminal-and-never-ran (issue #1526 Phase B review item 2) — the key
@@ -1141,7 +1154,14 @@ async function launchTaskIdempotent(
       if (outcome.ok) {
         const task = deps.taskStore.getTask(outcome.taskId);
         if (task && isReplayableTask(task)) {
-          return { task, queued: task.status === 'pending', idempotentReplay: true };
+          return {
+            task,
+            queued: task.status === 'pending',
+            idempotentReplay: true,
+            ...(task.launchAdmission?.status === 'parked'
+              ? { parked: true, dependencyAdmission: task.launchAdmission }
+              : {}),
+          };
         }
         // Task missing, or terminal-and-never-ran. The owner already
         // finalized this key, so the next `reserveOrWait` call below returns
@@ -1323,7 +1343,7 @@ async function launchTaskCore(
     opts.dependencies,
   ));
   const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
-  const launchNote = formatLaunchNote(dependencyFindings);
+  let launchNote = formatLaunchNote(dependencyFindings);
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
@@ -1358,6 +1378,14 @@ async function launchTaskCore(
     if (staleDuplicate) {
       console.log(`[dedup] Ignored stale duplicate prompt (existing task ${staleDuplicate.id}, status=${staleDuplicate.status}, cwd=${canonicalizeCwd(opts.cwd)})`);
     }
+  }
+
+  // Observe after dedup so a retry of an already parked task cannot affect
+  // admission twice. The half-open probe token is claimed later, immediately
+  // before task creation, after all reject-before-create admission checks.
+  let dependencyAdmissionDecision: LaunchDependencyAdmissionDecision | undefined;
+  if (deps.launchDependencyAdmission && opts.dependencies && opts.dependencies.length > 0) {
+    deps.launchDependencyAdmission.observe(opts.dependencies, dependencyFindings);
   }
 
   // --- Issue-claim key resolution (RFC PR 1b, R4 phase a; #1711 arbiter) ---
@@ -1626,6 +1654,16 @@ async function launchTaskCore(
     }
   }
 
+  // Claim a half-open probe only after every pre-create rejection path has
+  // passed. If capacity is unavailable below, the probe is released and the
+  // pending task will claim it again when promotion has a real worker slot.
+  if (deps.launchDependencyAdmission && opts.dependencies && opts.dependencies.length > 0) {
+    dependencyAdmissionDecision = deps.launchDependencyAdmission.evaluate(opts.dependencies);
+    if (!dependencyAdmissionDecision.admit) {
+      launchNote = formatParkedLaunchNote(dependencyFindings, dependencyAdmissionDecision);
+    }
+  }
+
   const task = taskStore.createTask({
     prompt: effectivePrompt,
     userPrompt,
@@ -1646,6 +1684,14 @@ async function launchTaskCore(
     playbookId: opts.playbookId,
     projectId: opts.projectId,
     playbookParameterValues: opts.playbookParameterValues,
+    launchIntent: buildLaunchIntent(opts, {
+      agentType,
+      effort: effectiveEffort,
+      model: effectiveModel,
+    }),
+    ...(dependencyAdmissionDecision && !dependencyAdmissionDecision.admit
+      ? { launchAdmission: toTaskLaunchAdmission(dependencyAdmissionDecision) }
+      : {}),
     // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
     // the record so the promotion posture guard can recognize schedule-fired
     // pendings as self-releasing. Additive — absent when no source was given.
@@ -1671,6 +1717,7 @@ async function launchTaskCore(
   if (resolvedClaimKey && deps.relaunchArbiter) {
     const acquire = deps.relaunchArbiter.tryAcquire(resolvedClaimKey, task.id);
     if (!acquire.ok) {
+      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
       taskStore.deleteTask(task.id);
       if (acquire.reason === 'backoff') {
         throw new RelaunchDeniedError('backoff', resolvedClaimKey, {
@@ -1684,6 +1731,7 @@ async function launchTaskCore(
   if (resolvedClaimKey && deps.issueClaimRegistry) {
     const claimResult = deps.issueClaimRegistry.claim(resolvedClaimKey, { taskId: task.id });
     if (!claimResult.ok) {
+      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
       // Single-threaded so this should be unreachable after the pre-check;
       // keep it as a self-healing backstop: no orphaned task without a claim.
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
@@ -1705,6 +1753,7 @@ async function launchTaskCore(
       !deps.issueClaimRegistry ||
       deps.issueClaimRegistry.ownerRecord(resolvedClaimKey)?.taskId === task.id;
     if (!arbiterHeld || !claimHeld) {
+      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
       deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
       taskStore.deleteTask(task.id);
@@ -1712,8 +1761,30 @@ async function launchTaskCore(
     }
   }
 
+  if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
+    const parkedTask = taskStore.pendTask(task.id);
+    if (isRoundRobin) deps.roundRobinCursor?.advance();
+    if (resolvedClaimKey && deps.flushTasks) {
+      try {
+        await deps.flushTasks();
+      } catch (err) {
+        console.error(
+          `[issue-claims] flush after dependency parking failed for task ${task.id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return {
+      task: parkedTask,
+      queued: true,
+      parked: true,
+      dependencyAdmission: parkedTask.launchAdmission,
+    };
+  }
+
   if (taskStore.getActiveCount() >= effectiveMaxActive) {
     const queuedTask = taskStore.pendTask(task.id);
+    deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
@@ -1873,6 +1944,7 @@ async function launchTaskCore(
       { taskId: task.id, agentType, adapter, reapGuard: abandon },
     );
   } catch (err) {
+    deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision?.probe, false);
     // Never silently delete a persisted task (issue #1588). A launch that
     // timed out or threw before any session attached still left a real record;
     // deleting it (the old behaviour) erased the evidence AND let a retried
@@ -1946,6 +2018,7 @@ async function launchTaskCore(
     throw err;
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
+  deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision?.probe, true);
   deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
   // Instrumentation (issue #1589): finalize and persist the full
   // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
@@ -2047,6 +2120,54 @@ function formatLaunchNote(findings: LaunchPreflightFinding[]): string | undefine
     '[Kookr launch warning] One or more advisory launch dependencies are degraded. Continue the task without assuming those services are available.',
     ...lines,
   ].join('\n');
+}
+
+function formatParkedLaunchNote(
+  findings: LaunchPreflightFinding[],
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
+): string {
+  const lines = findings.map((finding) => {
+    const detail = finding.detail ? ` Detail: ${finding.detail}` : '';
+    return `- ${finding.summary} (${finding.category}).${detail} Recommended action: ${finding.recommendedAction}`;
+  });
+  const dependencies = decision.dependencies.map((dependency) => dependency.dependency).join(', ');
+  return [
+    `[Kookr launch parked] Required launch dependency is ${decision.reason === 'dependency_degraded' ? 'degraded' : 'awaiting a bounded recovery probe'} (${dependencies}). No worker slot was consumed; Kookr will retry this pending intent when recovery evidence is available.`,
+    ...lines,
+  ].join('\n');
+}
+
+function buildLaunchIntent(
+  opts: LaunchOpts,
+  resolved: { agentType: AgentType; effort?: string; model?: string },
+): TaskLaunchIntent {
+  return {
+    prompt: opts.prompt,
+    cwd: opts.cwd,
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
+    agentType: resolved.agentType,
+    ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
+    ...(resolved.model !== undefined ? { model: resolved.model } : {}),
+    ...(opts.dependencies ? { dependencies: [...opts.dependencies] } : {}),
+    ...(opts.idempotencyKey !== undefined ? { idempotencyKey: opts.idempotencyKey } : {}),
+  };
+}
+
+function toTaskLaunchAdmission(
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
+): TaskLaunchAdmission {
+  return {
+    status: 'parked',
+    reason: decision.reason,
+    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
+    parkedAt: nowISO(),
+  };
+}
+
+function probeOf(
+  decision: LaunchDependencyAdmissionDecision | undefined,
+) {
+  return decision?.admit ? decision.probe : undefined;
 }
 
 async function collectAdvisoryDependencyFindings(

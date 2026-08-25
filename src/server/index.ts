@@ -189,6 +189,7 @@ import {
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TimerHealthTracker, timerHealthStatePath } from '../core/timer-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
 import {
@@ -1555,6 +1556,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // --- HTTP (Hono) ---
 
   // Shared post-launch registration deps — used by both WS handler and REST routes
+  const launchDependencyAdmission = new LaunchDependencyAdmission();
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
@@ -1565,6 +1567,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       onTaskOutcomeHolder?.(taskId, outcome);
     },
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
+    launchDependencyAdmission,
   };
 
   // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
@@ -1638,6 +1641,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore,
     adapterRegistry,
     lifecycleDeps,
+    launchDependencyAdmission,
     getMaxActiveTasks,
     getDefaultAgentType,
     roundRobinCursor,

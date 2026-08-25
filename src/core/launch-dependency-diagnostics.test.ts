@@ -63,6 +63,40 @@ describe('buildLaunchDependencyDiagnostics', () => {
     });
   });
 
+  test('reports parked work separately from degraded launch findings and live circuit state', () => {
+    const snapshot = buildLaunchDependencyDiagnostics(
+      [{
+        ...task('parked-1', '2026-03-01T12:00:00.000Z'),
+        launchHealthSummary: {
+          degradedDependencies: ['kb'],
+          findings: [finding('kb', 'provider_api')],
+        },
+        launchAdmission: {
+          status: 'parked' as const,
+          reason: 'dependency_degraded' as const,
+          dependencies: [{ dependency: 'kb', state: 'degraded' as const, reason: 'provider down' }],
+          parkedAt: '2026-03-01T12:01:00.000Z',
+        },
+      }],
+      [{ dependency: 'kb', state: 'degraded', lastChangedAt: 123, reason: 'provider down' }],
+    );
+
+    expect(snapshot.totalDegradedTasks).toBe(0);
+    expect(snapshot.parkedTasks).toEqual({
+      total: 1,
+      taskIds: ['parked-1'],
+      byDependency: [{
+        dependency: 'kb',
+        taskCount: 1,
+        taskIds: ['parked-1'],
+        reasons: ['provider down'],
+      }],
+    });
+    expect(snapshot.dependencyStates).toEqual([
+      { dependency: 'kb', state: 'degraded', lastChangedAt: 123, reason: 'provider down' },
+    ]);
+  });
+
   test('one task with multi-findings rolls up findingCount and related sets', () => {
     const snapshot = buildLaunchDependencyDiagnostics([
       task('t1', '2026-03-01T12:00:00.000Z', [

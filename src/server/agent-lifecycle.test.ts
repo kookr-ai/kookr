@@ -17,6 +17,8 @@ import {
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
+import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Mock MAX_ACTIVE_TASKS to 2 for concurrency tests
 vi.mock('./config.js', () => ({ MAX_ACTIVE_TASKS: 2 }));
@@ -1359,6 +1361,67 @@ describe('promotePendingTasks (integration)', () => {
     expect(promoted).toBe(0);
     expect(adapter.launch).not.toHaveBeenCalled();
     expect(taskStore.getTask(t3.id)!.status).toBe('pending');
+  });
+
+  test('parks a pending intent while degraded, then promotes it through a recovery probe', async () => {
+    const dependencyPreflightRunner = vi.fn()
+      .mockResolvedValueOnce([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+        recommendedAction: 'Restore the KB provider.',
+      } satisfies LaunchPreflightFinding])
+      .mockResolvedValueOnce([]);
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner,
+      },
+    };
+
+    const task = taskStore.createTask({
+      prompt: 'use the knowledge base',
+      cwd: '/cwd',
+      agentType: 'claude-code',
+      launchIntent: {
+        prompt: 'use the knowledge base',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    taskStore.pendTask(task.id);
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(taskStore.getTask(task.id)?.status).toBe('pending');
+    expect(taskStore.getActiveCount()).toBe(0);
+    expect(adapter.launch).not.toHaveBeenCalled();
+
+    expect(await promotePendingTasks(deps)).toBe(1);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(adapter.launch).toHaveBeenCalledWith(
+      task.id,
+      'use the knowledge base',
+      '/cwd',
+      undefined,
+      expect.objectContaining({ effort: 'max', model: 'claude-fable-5' }),
+    );
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
   });
 });
 

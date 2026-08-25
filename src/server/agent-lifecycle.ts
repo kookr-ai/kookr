@@ -8,6 +8,7 @@ import type { HookFileWatcher } from './hook-watcher.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
+import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
@@ -23,6 +24,10 @@ import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
+import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
+import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
+import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
+import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
 import {
   stampTaskCompletionProvenance,
@@ -86,6 +91,10 @@ export interface AgentLifecycleDeps {
     status: 'completed' | 'cancelled',
     terminationReason?: TerminationReason,
   ) => void | Promise<void>;
+  /** Shared provider-aware circuit used by new launches and pending promotion. */
+  launchDependencyAdmission?: LaunchDependencyAdmission;
+  /** Optional preflight runner seam for provider recovery probes. */
+  dependencyPreflightRunner?: DependencyPreflightRunner;
 }
 
 /**
@@ -871,15 +880,71 @@ function isSelfReleasingPending(task: Pick<Task, 'autoCloseOnSignal' | 'metadata
  * pending, the oldest one still promotes into the last slot exactly as
  * before.
  */
-export function pickNextPendingForPromotion(taskStore: TaskStore, freeSlots: number): Task | undefined {
-  if (freeSlots > 1) return taskStore.getNextPending();
+export function pickNextPendingForPromotion(
+  taskStore: TaskStore,
+  freeSlots: number,
+  excludedTaskIds: ReadonlySet<string> = new Set(),
+): Task | undefined {
+  if (freeSlots > 1) {
+    let next = taskStore.getNextPending();
+    while (next && excludedTaskIds.has(next.id)) {
+      // The store owns FIFO ordering; callers only use this loop to skip a
+      // task parked by dependency admission during this promotion pass.
+      const candidates = taskStore
+        .listTasks({ status: 'pending' })
+        .filter((task) => !excludedTaskIds.has(task.id) && !taskStore.hasFreshLaunchReservation(task.id))
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      return candidates[0];
+    }
+    return next;
+  }
   // Last free slot: FIFO within each posture class, self-releasing first.
   const eligible = taskStore
     .listTasks({ status: 'pending' })
+    .filter((task) => !excludedTaskIds.has(task.id))
     .filter((task) => !taskStore.hasFreshLaunchReservation(task.id))
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   if (eligible.length === 0) return undefined;
   return eligible.find(isSelfReleasingPending) ?? eligible[0];
+}
+
+async function evaluatePendingDependencyAdmission(
+  task: Task,
+  deps: AgentLifecycleDeps,
+): Promise<LaunchDependencyAdmissionDecision | undefined> {
+  const admission = deps.launchDependencyAdmission;
+  const dependencies = task.launchIntent?.dependencies;
+  if (!admission || !dependencies || dependencies.length === 0) return undefined;
+
+  let findings: Array<{ dependency: string; category: string; summary?: string }>;
+  try {
+    findings = await (deps.dependencyPreflightRunner ?? runLaunchDependencyPreflights)(dependencies);
+  } catch (err) {
+    // Health collection is explicitly fail-open. The state remains visible as
+    // unknown rather than turning an instrumentation timeout into a fleet stop.
+    console.warn(
+      `[promotion] dependency preflight could not complete for task ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    findings = dependencies.map((dependency) => ({
+      dependency,
+      category: 'unknown',
+      summary: 'Dependency health collection did not complete',
+    }));
+  }
+  admission.observe(dependencies, findings);
+  return admission.evaluate(dependencies);
+}
+
+function toTaskLaunchAdmission(
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
+): TaskLaunchAdmission {
+  return {
+    status: 'parked',
+    reason: decision.reason,
+    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
+    parkedAt: nowISO(),
+  };
 }
 
 /**
@@ -892,14 +957,25 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   let promoted = 0;
   const seen = new Set<string>();
+  const blockedByDependency = new Set<string>();
 
   for (;;) {
     const activeCount = taskStore.getActiveCount();
     if (!(activeCount < maxActive)) break;
     // Posture guard (issue #1526 Phase C / C3): the pick prefers
     // self-releasing tasks when this promotion would fill the last free slot.
-    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount);
+    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount, blockedByDependency);
     if (!pending) break;
+
+    const dependencyAdmission = await evaluatePendingDependencyAdmission(pending, lifecycleDeps);
+    if (dependencyAdmission && !dependencyAdmission.admit) {
+      blockedByDependency.add(pending.id);
+      taskStore.setLaunchAdmission(pending.id, toTaskLaunchAdmission(dependencyAdmission));
+      continue;
+    }
+    if (dependencyAdmission && taskStore.getTask(pending.id)?.launchAdmission) {
+      taskStore.setLaunchAdmission(pending.id, undefined);
+    }
 
     // Safety: prevent infinite loop if a task stays pending after launch
     if (seen.has(pending.id)) {
@@ -930,12 +1006,29 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         throw new Error(`Pending task ${pending.id} has no replayable launch intent: ${intent.detail}`);
       }
       const adapter = adapterRegistry.get(pending.agentType);
-      const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
+      // The parked admission note explains why the task waited; it is an
+      // operator diagnostic, not part of the recovered agent's prompt.
+      const launchPrompt = pending.launchAdmission?.status === 'parked'
+        ? pending.prompt
+        : pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
+      const originalIntent = pending.launchIntent;
       const pins = launchIntentPins(intent.intent);
-      if (pins.model !== undefined || pins.effort !== undefined) {
-        await adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, pins);
-      } else {
-        await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      const adapterOpts = {
+        ...pins,
+        ...(originalIntent?.ralphVerdictEnv
+          ? {
+              extraEnv: {
+                RALPH_VERDICT_FILE: defaultVerdictPath(pending.cwd, pending.id),
+                RALPH_ITERATION: '0',
+              },
+            }
+          : {}),
+      };
+      await (Object.keys(adapterOpts).length > 0
+        ? adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, adapterOpts)
+        : adapter.launch(pending.id, launchPrompt, pending.cwd));
+      if (dependencyAdmission?.admit) {
+        lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
       }
       if (deps.bypassAllPermissions === true) {
         const launchPermissionPosture = {
@@ -960,6 +1053,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       await registerNewAgent(launched, lifecycleDeps);
       promoted++;
     } catch (err) {
+      if (dependencyAdmission?.admit) {
+        lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+      }
       // If launch fails, cancel the task rather than leaving it pending forever
       console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
       taskStore.cancelTask(pending.id);

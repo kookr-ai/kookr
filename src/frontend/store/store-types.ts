@@ -583,6 +583,12 @@ export interface LaunchDependencyStatusRow {
   categories: string[];
 }
 
+export interface ParkedLaunchDependencyStatusRow {
+  dependency: string;
+  taskCount: number;
+  reasons: string[];
+}
+
 /**
  * Slim projection of `GET /api/health.launchDependencies` for the status-bar
  * warn pill (issue #2364). Pill is elevated-only (`totalDegradedTasks > 0`);
@@ -592,6 +598,8 @@ export interface LaunchDependenciesStatus {
   totalDegradedTasks: number;
   totalFindings?: number;
   dependencies: LaunchDependencyStatusRow[];
+  parkedTaskCount?: number;
+  parkedByDependency?: ParkedLaunchDependencyStatusRow[];
 }
 
 /**

@@ -311,6 +311,8 @@ export class TaskStore {
       playbookId,
       playbookParameterValues,
       launchHealthSummary,
+      launchIntent,
+      launchAdmission,
       launchNote,
       projectId,
       metadata,
@@ -395,6 +397,8 @@ export class TaskStore {
     if (launchHealthSummary) {
       task.launchHealthSummary = structuredClone(launchHealthSummary);
     }
+    if (launchIntent) task.launchIntent = structuredClone(launchIntent);
+    if (launchAdmission) task.launchAdmission = structuredClone(launchAdmission);
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
     if (priority === 'high') task.priority = priority;
@@ -939,6 +943,16 @@ export class TaskStore {
 
   pendTask(id: string): Task {
     return cloneTask(this.transition(id, 'pending'));
+  }
+
+  /** Update the pre-worker dependency admission marker without changing status. */
+  setLaunchAdmission(id: string, admission: Task['launchAdmission'] | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchAdmission = admission ? structuredClone(admission) : undefined;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
   }
 
   reopenTask(id: string): Task {

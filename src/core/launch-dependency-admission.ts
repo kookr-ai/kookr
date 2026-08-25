@@ -1,0 +1,191 @@
+import type { LaunchDependency } from './playbook.js';
+import type { LaunchDependencyState, TaskLaunchAdmissionDependency } from '../shared/contracts/task.js';
+
+export type { LaunchDependencyState };
+
+export interface LaunchDependencyCircuitSnapshot {
+  dependency: string;
+  state: LaunchDependencyState;
+  lastChangedAt: number;
+  reason?: string;
+}
+
+export interface LaunchDependencyProbe {
+  token: string;
+  dependencies: string[];
+}
+
+export type LaunchDependencyAdmissionDecision =
+  | {
+      admit: true;
+      states: LaunchDependencyCircuitSnapshot[];
+      probe?: LaunchDependencyProbe;
+    }
+  | {
+      admit: false;
+      reason: 'dependency_degraded' | 'half_open_probe_busy';
+      dependencies: TaskLaunchAdmissionDependency[];
+      states: LaunchDependencyCircuitSnapshot[];
+    };
+
+interface CircuitEntry {
+  state: LaunchDependencyState;
+  lastChangedAt: number;
+  reason?: string;
+  probeToken?: string;
+}
+
+/**
+ * Per-dependency admission state for launches that explicitly require an
+ * external service.
+ *
+ * The circuit only treats a non-`unknown` preflight failure as confirmation of
+ * degradation. A timeout or collection failure is retained as `unknown` and
+ * remains fail-open: missing health data must not become a fleet-wide pause.
+ * A clean preflight after degradation is recovery evidence, but it first moves
+ * the dependency to `half_open`; one bounded probe must launch successfully
+ * before the dependency is considered healthy again.
+ */
+export class LaunchDependencyAdmission {
+  private readonly entries = new Map<string, CircuitEntry>();
+  private probeSequence = 0;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /**
+   * Fold one dependency-preflight result into the circuit. Dependencies with
+   * no finding are healthy evidence; a finding with category `unknown` stays
+   * distinguishable from a confirmed degraded dependency.
+   */
+  observe(
+    dependencies: readonly LaunchDependency[] | undefined,
+    findings: readonly { dependency: string; category: string; summary?: string }[],
+  ): void {
+    for (const dependency of uniqueDependencies(dependencies)) {
+      const relevant = findings.filter((finding) => finding.dependency === dependency);
+      const entry = this.entry(dependency);
+      if (relevant.length === 0) {
+        if (entry.state === 'degraded') {
+          this.transition(entry, 'half_open');
+        } else if (entry.state !== 'half_open') {
+          this.transition(entry, 'healthy');
+        }
+        entry.reason = undefined;
+        continue;
+      }
+
+      const confirmed = relevant.find((finding) => finding.category !== 'unknown');
+      if (confirmed) {
+        entry.reason = confirmed.summary;
+        this.transition(entry, 'degraded');
+      } else {
+        entry.reason = relevant[0]?.summary;
+        this.transition(entry, 'unknown');
+      }
+    }
+  }
+
+  /** Decide whether a launch may consume a worker slot. */
+  evaluate(dependencies: readonly LaunchDependency[] | undefined): LaunchDependencyAdmissionDecision {
+    const states = uniqueDependencies(dependencies).map((dependency) => this.snapshotEntry(dependency));
+    const degraded = states.filter((snapshot) => snapshot.state === 'degraded');
+    if (degraded.length > 0) {
+      return {
+        admit: false,
+        reason: 'dependency_degraded',
+        dependencies: degraded.map(toAdmissionDependency),
+        states,
+      };
+    }
+
+    const halfOpen = states.filter((snapshot) => snapshot.state === 'half_open');
+    const busy = halfOpen.filter((snapshot) => this.entries.get(snapshot.dependency)?.probeToken !== undefined);
+    if (busy.length > 0) {
+      return {
+        admit: false,
+        reason: 'half_open_probe_busy',
+        dependencies: busy.map((snapshot) => ({
+          ...toAdmissionDependency(snapshot),
+          reason: 'A recovery probe is already in flight',
+        })),
+        states,
+      };
+    }
+
+    if (halfOpen.length === 0) return { admit: true, states };
+
+    const token = `launch-dependency-probe-${++this.probeSequence}`;
+    for (const snapshot of halfOpen) {
+      this.entries.get(snapshot.dependency)!.probeToken = token;
+    }
+    return {
+      admit: true,
+      states,
+      probe: { token, dependencies: halfOpen.map((snapshot) => snapshot.dependency) },
+    };
+  }
+
+  /** Complete a half-open probe and close or re-open its dependency circuit. */
+  completeProbe(probe: LaunchDependencyProbe | undefined, healthy: boolean): void {
+    if (!probe) return;
+    for (const dependency of probe.dependencies) {
+      const entry = this.entries.get(dependency);
+      if (!entry || entry.probeToken !== probe.token) continue;
+      entry.probeToken = undefined;
+      entry.reason = healthy ? undefined : 'Recovery probe failed';
+      this.transition(entry, healthy ? 'healthy' : 'degraded');
+    }
+  }
+
+  /** Release a claimed probe when the task was queued or rejected pre-launch. */
+  releaseProbe(probe: LaunchDependencyProbe | undefined): void {
+    if (!probe) return;
+    for (const dependency of probe.dependencies) {
+      const entry = this.entries.get(dependency);
+      if (entry?.probeToken === probe.token) entry.probeToken = undefined;
+    }
+  }
+
+  snapshot(): LaunchDependencyCircuitSnapshot[] {
+    return Array.from(this.entries.keys())
+      .sort()
+      .map((dependency) => this.snapshotEntry(dependency));
+  }
+
+  private entry(dependency: string): CircuitEntry {
+    const existing = this.entries.get(dependency);
+    if (existing) return existing;
+    const created: CircuitEntry = { state: 'healthy', lastChangedAt: this.now() };
+    this.entries.set(dependency, created);
+    return created;
+  }
+
+  private snapshotEntry(dependency: string): LaunchDependencyCircuitSnapshot {
+    const entry = this.entry(dependency);
+    return {
+      dependency,
+      state: entry.state,
+      lastChangedAt: entry.lastChangedAt,
+      ...(entry.reason ? { reason: entry.reason } : {}),
+    };
+  }
+
+  private transition(entry: CircuitEntry, state: LaunchDependencyState): void {
+    if (entry.state === state) return;
+    entry.state = state;
+    entry.lastChangedAt = this.now();
+    if (state !== 'half_open') entry.probeToken = undefined;
+  }
+}
+
+function uniqueDependencies(dependencies: readonly LaunchDependency[] | undefined): string[] {
+  return [...new Set(dependencies ?? [])];
+}
+
+function toAdmissionDependency(snapshot: LaunchDependencyCircuitSnapshot): TaskLaunchAdmissionDependency {
+  return {
+    dependency: snapshot.dependency,
+    state: snapshot.state,
+    ...(snapshot.reason ? { reason: snapshot.reason } : {}),
+  };
+}

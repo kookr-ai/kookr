@@ -17,6 +17,7 @@ import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -707,6 +708,125 @@ describe('launchTask', () => {
     expect(result.task.prompt).toBe('needs kb');
     expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('parks a launch on confirmed dependency degradation without consuming a worker slot', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB provider is unavailable',
+      recommendedAction: 'Restore the KB provider.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'needs the knowledge base',
+      cwd: '/tmp',
+      projectId: 'github.com/example/project',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-kb-task',
+    });
+
+    expect(result).toMatchObject({ queued: true, parked: true });
+    expect(result.task.status).toBe('pending');
+    expect(result.task.launchIntent).toMatchObject({
+      prompt: 'needs the knowledge base',
+      cwd: '/tmp',
+      projectId: 'github.com/example/project',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-kb-task',
+    });
+    expect(result.task.launchAdmission).toMatchObject({
+      status: 'parked',
+      reason: 'dependency_degraded',
+      dependencies: [{ dependency: 'kb', state: 'degraded' }],
+    });
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.getActiveCount()).toBe(0);
+  });
+
+  it('fails open when dependency health is unknown', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'unknown',
+        summary: 'KB health probe timed out',
+        recommendedAction: 'Retry the health probe.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'best effort without health data',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.parked).toBeUndefined();
+    expect(result.task.launchAdmission).toBeUndefined();
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('fails open when health collection times out', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockRejectedValue(new Error('health probe timeout')),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'continue while health collection is unavailable',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.parked).toBeUndefined();
+    expect(result.task.launchAdmission).toBeUndefined();
+    expect(gatedDeps.launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
+    ]);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('does not hold a half-open probe while recovery work waits for capacity', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.queued).toBe(true);
+    expect(result.parked).toBeUndefined();
+    expect(result.task.status).toBe('pending');
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'half_open' }),
+    ]);
+    const nextProbe = launchDependencyAdmission.evaluate(['kb']);
+    expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    if (nextProbe.admit) launchDependencyAdmission.releaseProbe(nextProbe.probe);
   });
 
   it('returns duplicate:true for an identical active prompt', async () => {
@@ -2250,6 +2370,41 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
 
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
     expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('retries a dependency-parked launch by replaying the same intent', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB provider is unavailable',
+      recommendedAction: 'Restore the KB provider.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const first = await launchTask(gatedDeps, {
+      prompt: 'retry me after KB recovers',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-retry',
+    });
+    const second = await launchTask(gatedDeps, {
+      prompt: 'retry me after KB recovers',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-retry',
+    });
+
+    expect(first.parked).toBe(true);
+    expect(second.parked).toBe(true);
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+    expect(store.listTasks()).toHaveLength(1);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 
   it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {

@@ -138,6 +138,30 @@ describe('buildCapacityLedger', () => {
     expect(ledger.pendingQueueDepth).toBe(2);
   });
 
+  test('reports dependency-parked pending work separately from active capacity', () => {
+    const ledger = byClassOf([
+      task({
+        id: 'parked-1',
+        status: 'pending',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: '2026-07-24T11:00:00.000Z',
+        },
+      }),
+    ]);
+
+    expect(ledger.active).toBe(0);
+    expect(ledger.free).toBe(10);
+    expect(ledger.pendingQueueDepth).toBe(1);
+    expect(ledger.parked).toEqual({
+      taskCount: 1,
+      taskIds: ['parked-1'],
+      byDependency: [{ dependency: 'kb', taskCount: 1, taskIds: ['parked-1'] }],
+    });
+  });
+
   test('faaStaleThresholdMs / faaTtlMs deps flow into FAA classification (issue #2142)', () => {
     // A 45-min-old opted-in FAA task: with the default 60-min stale threshold it
     // reads as awaiting_poll, but with the live 30-min auto-close delay wired in

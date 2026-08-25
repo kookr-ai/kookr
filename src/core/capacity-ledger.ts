@@ -129,6 +129,16 @@ export interface CapacityLedger {
    * against genuine productive load (not just phantom hold).
    */
   freeForGeneralSources?: number;
+  /** Dependency-parked backlog, kept separate from slot-occupying classes. */
+  parked?: {
+    taskCount: number;
+    taskIds: string[];
+    byDependency: Array<{
+      dependency: string;
+      taskCount: number;
+      taskIds: string[];
+    }>;
+  };
 }
 
 /**
@@ -199,6 +209,8 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
   let pendingQueueDepth = 0;
   let oldestPendingAt: number | undefined;
   let oldestFinishedAwaitingAckAt: number | undefined;
+  const parkedTaskIds: string[] = [];
+  const parkedByDependency = new Map<string, Set<string>>();
 
   for (const task of tasks) {
     const taskClass = classifyTaskCapacity(task, {
@@ -226,6 +238,14 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
       const createdAt = task.createdAt.getTime();
       if (oldestPendingAt === undefined || createdAt < oldestPendingAt) {
         oldestPendingAt = createdAt;
+      }
+    }
+    if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
+      parkedTaskIds.push(task.id);
+      for (const dependency of task.launchAdmission.dependencies) {
+        const ids = parkedByDependency.get(dependency.dependency) ?? new Set<string>();
+        ids.add(task.id);
+        parkedByDependency.set(dependency.dependency, ids);
       }
     }
   }
@@ -265,6 +285,20 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
         }
       : undefined;
 
+  const parked = parkedTaskIds.length > 0
+    ? {
+        taskCount: parkedTaskIds.length,
+        taskIds: [...parkedTaskIds].sort(),
+        byDependency: Array.from(parkedByDependency.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([dependency, ids]) => ({
+            dependency,
+            taskCount: ids.size,
+            taskIds: Array.from(ids).sort(),
+          })),
+      }
+    : undefined;
+
   return {
     maxActiveTasks: deps.maxActiveTasks,
     active,
@@ -279,6 +313,7 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     oldestPendingAgeMs: oldestPendingAt !== undefined ? deps.now - oldestPendingAt : null,
     oldestFinishedAwaitingAckAgeMs: oldestFinishedAwaitingAckAt !== undefined ? deps.now - oldestFinishedAwaitingAckAt : null,
     ...(reservation ?? {}),
+    ...(parked ? { parked } : {}),
   };
 }
 
