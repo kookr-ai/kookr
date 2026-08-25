@@ -118,6 +118,14 @@ describe('phase ledger codec', () => {
     expect(reconcilePhaseResultComments(capped, [later]).phases[1]?.reviewIterationCap).toBe(3);
   });
 
+  test('does not accept an equal-attempt PASS over a durable BLOCK', () => {
+    const comments = [
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'block', reviewAttempts: 1, reviewHeadSha: 'head' })} -->`,
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewAttempts: 1, reviewHeadSha: 'head' })} -->`,
+    ];
+    expect(reconcilePhaseResultComments(ledger, comments).phases[1]?.reviewVerdict).toBe('block');
+  });
+
   test('rejects a per-phase cap above the canonical maximum', () => {
     expect(() => parsePhaseLedgerFromIssueBody(
       `\`\`\`kookr-phase-ledger\n${JSON.stringify({

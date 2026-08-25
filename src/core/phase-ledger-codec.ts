@@ -320,6 +320,8 @@ export function reconcilePhaseResultComments(
     const phase = byId.get(result.phaseId);
     if (!phase) continue;
     if (result.reviewVerdict !== undefined && (result.reviewAttempts ?? 1) < (phase.reviewAttempts ?? 0)) continue;
+    if (phase.reviewVerdict === 'block' && result.reviewVerdict === 'pass'
+      && (result.reviewAttempts ?? 1) <= (phase.reviewAttempts ?? 0)) continue;
     // Once a correction attempt is durable, legacy owner comments without an
     // attempt generation cannot resurrect the superseded PR/task.
     if (result.reviewVerdict === undefined && phase.reviewAttempts !== undefined && result.reviewAttempts === undefined) continue;

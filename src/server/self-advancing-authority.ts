@@ -181,6 +181,12 @@ export function evaluateIndependentReview(input: IndependentReviewInput): Indepe
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     return { decision: 'human-required', reason: 'review attempt cap is invalid' };
   }
+  if (!Number.isInteger(input.reviewAttempts) || input.reviewAttempts < 0 || input.reviewAttempts > maxAttempts) {
+    return {
+      decision: 'human-required',
+      reason: `review attempt count ${input.reviewAttempts} exceeds the configured cap ${maxAttempts}`,
+    };
+  }
 
   // A reviewer that ran but shares the implementer's lineage (or reported no
   // task id) can never authorize a merge — this is an identity failure, not a
