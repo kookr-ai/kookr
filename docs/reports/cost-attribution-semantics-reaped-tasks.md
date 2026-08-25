@@ -1,12 +1,30 @@
 # Cost attribution semantics for reaped tasks
 
-Status: pending operator sign-off (2026-08-25)
+Decision status: pending operator sign-off (2026-08-25)
+
+Operator sign-off: not recorded. This is an implementation contract for the
+safe interim behavior, not an approval to change billing or production
+aggregation.
 
 This record separates two measurements that can describe the same scheduled task:
 the cost captured when the schedule ledger is closed and the highest cost
 observed while the task is being scanned. It records the current behavior and
 the safe interim rule for schedule ROI. It does not approve a billing-policy
 change.
+
+## Pending decision
+
+The unresolved policy questions are explicit:
+
+- **Does reaping truncate accrual?** Unresolved. The schedule ledger freezes
+  the closeout snapshot when the fire is closed, but Kookr does not infer that
+  this snapshot truncates provider billing or later task telemetry.
+- **Are child-task costs included?** Unresolved as policy. The current schedule
+  ROI implementation excludes descendant usage; parent/descendant aggregation
+  remains a separate dashboard measure.
+
+Until an operator signs off, these observed implementation boundaries remain
+pinned by the regression fixture below and production aggregation is unchanged.
 
 ## Current semantics
 
@@ -78,11 +96,13 @@ The operator decision still needed is whether a future schedule ROI contract
 should report the recorded closeout snapshot, a guaranteed final task cost, a
 separately named high-water cost, or more than one of these, and whether
 child-task costs should be included in either measure. No operator sign-off for
-that choice is recorded in issue #2786 as of this date.
+that choice is recorded in issue #2837 as of this date. Issue #2786 is the
+closed predecessor; its implementation did not provide operator sign-off.
 
 ## References
 
 - [Per-schedule ROI guidance](../reference/schedule-roi.md)
 - [Schedule rollup implementation](../../src/core/schedule-rollup.ts)
 - [Schedule closeout enrichment](../../src/server/schedule-service.ts)
-- [Issue #2786](https://github.com/kookr-ai/kookr/issues/2786)
+- [Issue #2837](https://github.com/kookr-ai/kookr/issues/2837)
+- [Closed predecessor #2786](https://github.com/kookr-ai/kookr/issues/2786)
