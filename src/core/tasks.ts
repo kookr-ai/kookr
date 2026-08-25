@@ -849,12 +849,20 @@ export class TaskStore {
       throw new InvalidTransitionError(task.status, to);
     }
     const now = new Date();
+    const parkedLaunch = task.launchAdmission?.status === 'parked';
     task.status = to;
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
       task.finishedAt ??= now;
     } else {
       delete task.finishedAt;
+    }
+    if (parkedLaunch && isTerminalStatus(to)) {
+      // Terminal work is no longer retryable pending intent. Remove the
+      // admission marker and its pre-launch health snapshot so diagnostics and
+      // the next startup cannot resurrect canceled/terminated parked work.
+      task.launchAdmission = undefined;
+      task.launchHealthSummary = undefined;
     }
     this.markTaskDirty(id);
     return task;

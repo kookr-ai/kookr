@@ -1664,55 +1664,60 @@ async function launchTaskCore(
     }
   }
 
-  const task = taskStore.createTask({
-    prompt: effectivePrompt,
-    userPrompt,
-    cwd: opts.cwd,
-    criteria: opts.criteria,
-    parentTaskId: opts.parentTaskId,
-    // Launch provenance signals (issue #1583). createTask derives the immutable
-    // Task.provenance from these plus parentTaskId; the metadata.launchSource
-    // stamp below stays for the backpressure/promotion-guard consumers.
-    launchSource: opts.launchSource,
-    scheduleId: opts.scheduleId,
-    agentType,
-    launchIntent: buildTaskLaunchIntent(agentType, {
-      model: effectiveModel,
-      effort: effectiveEffort,
-    }),
-    name: opts.name,
-    playbookId: opts.playbookId,
-    projectId: opts.projectId,
-    playbookParameterValues: opts.playbookParameterValues,
-    launchIntent: buildLaunchIntent(opts, {
+  let task: Task;
+  try {
+    task = taskStore.createTask({
+      prompt: effectivePrompt,
+      userPrompt,
+      cwd: opts.cwd,
+      criteria: opts.criteria,
+      parentTaskId: opts.parentTaskId,
+      // Launch provenance signals (issue #1583). createTask derives the immutable
+      // Task.provenance from these plus parentTaskId; the metadata.launchSource
+      // stamp below stays for the backpressure/promotion-guard consumers.
+      launchSource: opts.launchSource,
+      scheduleId: opts.scheduleId,
       agentType,
-      effort: effectiveEffort,
-      model: effectiveModel,
-    }),
-    ...(dependencyAdmissionDecision && !dependencyAdmissionDecision.admit
-      ? { launchAdmission: toTaskLaunchAdmission(dependencyAdmissionDecision) }
-      : {}),
-    // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
-    // the record so the promotion posture guard can recognize schedule-fired
-    // pendings as self-releasing. Additive — absent when no source was given.
-    // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
-    // hops so receipts match the final agentType after multi-hop cascade.
-    metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
-      ? {
-          ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
-          ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
-          ...(agentSubstitutionChain.length > 0
-            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
-            : {}),
-        }
-      : undefined,
-    launchHealthSummary,
-    launchNote,
-    deliveryAuthorization,
-    autoCloseOnSignal: opts.autoCloseOnSignal,
-    unattended: opts.unattended,
-    migratedFromTaskId: opts.migratedFromTaskId,
-  });
+      name: opts.name,
+      playbookId: opts.playbookId,
+      projectId: opts.projectId,
+      playbookParameterValues: opts.playbookParameterValues,
+      launchIntent: buildLaunchIntent(opts, {
+        agentType,
+        effort: effectiveEffort,
+        model: effectiveModel,
+      }),
+      ...(dependencyAdmissionDecision && !dependencyAdmissionDecision.admit
+        ? { launchAdmission: toTaskLaunchAdmission(dependencyAdmissionDecision) }
+        : {}),
+      // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
+      // the record so the promotion posture guard can recognize schedule-fired
+      // pendings as self-releasing. Additive — absent when no source was given.
+      // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
+      // hops so receipts match the final agentType after multi-hop cascade.
+      metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
+        ? {
+            ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
+            ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+            ...(agentSubstitutionChain.length > 0
+              ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+              : {}),
+          }
+        : undefined,
+      launchHealthSummary,
+      launchNote,
+      deliveryAuthorization,
+      autoCloseOnSignal: opts.autoCloseOnSignal,
+      unattended: opts.unattended,
+      migratedFromTaskId: opts.migratedFromTaskId,
+    });
+  } catch (err) {
+    // createTask can still reject after the probe is claimed (for example when
+    // a supplied parent task disappeared). Never strand the circuit in
+    // half_open_probe_busy when no task was persisted.
+    deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+    throw err;
+  }
 
   if (resolvedClaimKey && deps.relaunchArbiter) {
     const acquire = deps.relaunchArbiter.tryAcquire(resolvedClaimKey, task.id);
@@ -2142,6 +2147,10 @@ function buildLaunchIntent(
   resolved: { agentType: AgentType; effort?: string; model?: string },
 ): TaskLaunchIntent {
   return {
+    ...buildTaskLaunchIntent(resolved.agentType, {
+      model: resolved.model,
+      effort: resolved.effort,
+    }),
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.projectId ? { projectId: opts.projectId } : {}),

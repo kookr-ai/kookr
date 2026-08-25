@@ -23,6 +23,7 @@ function task(
 ) {
   return {
     id,
+    status: 'completed' as const,
     createdAt: new Date(createdAt),
     launchHealthSummary: findings.length > 0
       ? {
@@ -49,6 +50,7 @@ describe('buildLaunchDependencyDiagnostics', () => {
       task('t-healthy', '2026-01-01T00:00:00.000Z'),
       {
         id: 't-empty-summary',
+        status: 'completed' as const,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         launchHealthSummary: { degradedDependencies: [], findings: [] },
       },
@@ -67,6 +69,7 @@ describe('buildLaunchDependencyDiagnostics', () => {
     const snapshot = buildLaunchDependencyDiagnostics(
       [{
         ...task('parked-1', '2026-03-01T12:00:00.000Z'),
+        status: 'pending' as const,
         launchHealthSummary: {
           degradedDependencies: ['kb'],
           findings: [finding('kb', 'provider_api')],
@@ -95,6 +98,21 @@ describe('buildLaunchDependencyDiagnostics', () => {
     expect(snapshot.dependencyStates).toEqual([
       { dependency: 'kb', state: 'degraded', lastChangedAt: 123, reason: 'provider down' },
     ]);
+  });
+
+  test('does not report terminal parked records as pending work', () => {
+    const snapshot = buildLaunchDependencyDiagnostics([{
+      ...task('cancelled-parked', '2026-03-01T12:00:00.000Z'),
+      status: 'cancelled' as const,
+      launchAdmission: {
+        status: 'parked' as const,
+        reason: 'dependency_degraded' as const,
+        dependencies: [{ dependency: 'kb', state: 'degraded' as const }],
+        parkedAt: '2026-03-01T12:01:00.000Z',
+      },
+    }]);
+
+    expect(snapshot.parkedTasks).toBeUndefined();
   });
 
   test('one task with multi-findings rolls up findingCount and related sets', () => {

@@ -756,6 +756,29 @@ describe('launchTask', () => {
     expect(store.getActiveCount()).toBe(0);
   });
 
+  it('releases a half-open probe when task creation rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'missing parent',
+      cwd: '/tmp',
+      parentTaskId: 'missing-parent',
+      dependencies: ['kb'],
+    })).rejects.toThrow('Parent task not found: missing-parent');
+
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
   it('fails open when dependency health is unknown', async () => {
     const gatedDeps = {
       ...deps,

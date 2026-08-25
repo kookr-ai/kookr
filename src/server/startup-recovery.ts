@@ -99,7 +99,7 @@ export async function runStartupRecoveryPhase({
   // probe rather than an unguarded launch.
   if (lifecycleDeps.launchDependencyAdmission) {
     for (const task of taskStore.listTasks()) {
-      if (task.launchAdmission?.status === 'parked') {
+      if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
         lifecycleDeps.launchDependencyAdmission.restoreParked(task.launchAdmission.dependencies);
       }
     }

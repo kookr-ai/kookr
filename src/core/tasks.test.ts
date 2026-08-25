@@ -757,6 +757,50 @@ describe('TaskStore', () => {
 
       expect(task.playbookParameterValues).toBeUndefined();
     });
+
+    test('terminal transitions clear parked launch admission and health', () => {
+      const parked = {
+        status: 'parked' as const,
+        reason: 'dependency_degraded' as const,
+        dependencies: [{ dependency: 'kb', state: 'degraded' as const }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      };
+      const launchHealthSummary = {
+        degradedDependencies: ['kb'],
+        findings: [{
+          dependency: 'kb',
+          status: 'failed' as const,
+          category: 'provider_api',
+          summary: 'provider unavailable',
+          recommendedAction: 'retry',
+        }],
+      };
+      const cancelled = store.createTask({
+        prompt: 'cancel me',
+        cwd: '/cwd',
+        launchAdmission: parked,
+        launchHealthSummary,
+      });
+      store.cancelTask(cancelled.id);
+      expect(store.getTask(cancelled.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        launchHealthSummary: undefined,
+      });
+
+      const terminated = store.createTask({
+        prompt: 'terminate me',
+        cwd: '/cwd',
+        launchAdmission: parked,
+        launchHealthSummary,
+      });
+      store.terminateTask(terminated.id);
+      expect(store.getTask(terminated.id)).toMatchObject({
+        status: 'terminated',
+        launchAdmission: undefined,
+        launchHealthSummary: undefined,
+      });
+    });
   });
 
   // Issue #1554: every task is named from birth so no code path can reach a

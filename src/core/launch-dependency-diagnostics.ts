@@ -49,7 +49,7 @@ interface MutableAggregate {
 }
 
 export function buildLaunchDependencyDiagnostics(
-  tasks: readonly Pick<Task, 'id' | 'createdAt' | 'launchHealthSummary' | 'launchAdmission'>[],
+  tasks: readonly Pick<Task, 'id' | 'status' | 'createdAt' | 'launchHealthSummary' | 'launchAdmission'>[],
   dependencyStates?: readonly LaunchDependencyCircuitSnapshot[],
 ): LaunchDependencyDiagnosticsSnapshot {
   const degradedTaskIds = new Set<string>();
@@ -60,7 +60,7 @@ export function buildLaunchDependencyDiagnostics(
   let totalFindings = 0;
 
   for (const task of tasks) {
-    const parkedAdmission = task.launchAdmission?.status === 'parked'
+    const parkedAdmission = task.status === 'pending' && task.launchAdmission?.status === 'parked'
       ? task.launchAdmission
       : undefined;
     if (parkedAdmission) {
