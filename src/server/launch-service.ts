@@ -54,6 +54,12 @@ import {
 } from '../core/launch-outcome-metrics.js';
 import type { RelaunchArbiter, RelaunchLease } from './relaunch-arbiter.js';
 import { isAutonomousLaunchSource } from '../core/automation-kill-switch.js';
+import {
+  buildTaskLaunchIntent,
+  launchIntentPins,
+  sameLaunchIntent,
+  validatePersistedLaunchIntent,
+} from '../core/task-launch-intent.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -911,6 +917,7 @@ export function checkSubmission(
   prompt: string,
   agentType: AgentType,
   cwd: string,
+  pins: { model?: string; effort?: string } = {},
 ): Task | undefined {
   const hash = hashPrompt(prompt);
   const canonicalIncoming = canonicalizeCwd(cwd);
@@ -921,6 +928,10 @@ export function checkSubmission(
     if (task.agentType !== agentType) continue;
     if (hashPrompt(task.prompt) !== hash) continue;
     if (canonicalizeCwd(task.cwd) !== canonicalIncoming) continue;
+    // Legacy tasks without a persisted intent must not silently dedup a new
+    // launch: the two records may have different provider pins. New tasks
+    // created by TaskStore carry an explicit unpinned intent.
+    if (!sameLaunchIntent(task.launchIntent, agentType, pins)) continue;
     // Verify live status — don't rely on cached state
     const liveTask = taskStore.getTask(task.id);
     if (liveTask && liveTask.agentType === agentType && ACTIVE_STATUSES.has(liveTask.status)) {
@@ -1325,7 +1336,10 @@ async function launchTaskCore(
   if (!opts.disableDedup) {
     let staleDuplicate: Task | undefined;
     let existing: Task | undefined;
-    while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd))) {
+    while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd, {
+      model: effectiveModel,
+      effort: effectiveEffort,
+    }))) {
       const activeDuplicate = await validateDuplicateCandidate(deps, existing);
       if (activeDuplicate) {
         const canonicalCwd = canonicalizeCwd(opts.cwd);
@@ -1624,6 +1638,10 @@ async function launchTaskCore(
     launchSource: opts.launchSource,
     scheduleId: opts.scheduleId,
     agentType,
+    launchIntent: buildTaskLaunchIntent(agentType, {
+      model: effectiveModel,
+      effort: effectiveEffort,
+    }),
     name: opts.name,
     playbookId: opts.playbookId,
     projectId: opts.projectId,
@@ -1828,8 +1846,8 @@ async function launchTaskCore(
           },
         }
       : {}),
-    ...(effectiveEffort ? { effort: effectiveEffort } : {}),
-    ...(effectiveModel ? { model: effectiveModel } : {}),
+    ...(effectiveEffort !== undefined ? { effort: effectiveEffort } : {}),
+    ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
   };
 
@@ -2068,12 +2086,29 @@ export async function launchFreshTaskSession(
   prompt: string,
   opts?: import('../adapters/agent-adapter.js').AdapterLaunchOptions,
 ): Promise<string> {
+  const intent = validatePersistedLaunchIntent(task);
+  if (!intent.ok) {
+    deps.taskStore.setRelaunchDisposition(task.id, {
+      outcome: 'not_relaunched',
+      source: 'ralph',
+      reason: intent.reason,
+      at: nowISO(),
+      detail: intent.detail,
+    });
+    throw new Error(`Automatic Ralph relaunch refused for task ${task.id}: ${intent.detail}`);
+  }
+  const pins = launchIntentPins(intent.intent);
+  const { effort: _ignoredEffort, model: _ignoredModel, ...callerOpts } = opts ?? {};
   const sessionId = await deps.adapterRegistry.get(task.agentType).launch(
     task.id,
     prompt,
     task.cwd,
     undefined,
-    opts,
+    {
+      ...callerOpts,
+      ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+      ...(pins.model !== undefined ? { model: pins.model } : {}),
+    },
   );
   const launchedTask = deps.taskStore.getTask(task.id) ?? task;
   await registerNewAgent(launchedTask, deps.lifecycleDeps);

@@ -8,6 +8,7 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
 import { recoverCrashedSessions } from './crash-recovery.js';
+import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 
 describe('Crash Recovery', () => {
   let taskStore: TaskStore;
@@ -89,6 +90,49 @@ describe('Crash Recovery', () => {
     const newSession = updatedTask.sessions.find((s) => s.tmuxSession !== deadSessionId)!;
     expect(newSession.relaunchCount).toBe(1);
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
+  });
+
+  test('fails closed and records a durable reason when persisted intent is missing', async () => {
+    const cwd = join(tempDir, 'missing-intent');
+    const task = await setupCrashedTask('Do not guess', cwd);
+    const mutable = taskStore.getTaskForMutation(task.id)!;
+    delete mutable.launchIntent;
+    const deadSessionId = task.sessions[0].tmuxSession;
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped).toEqual([expect.objectContaining({
+      taskId: task.id,
+      sessionId: deadSessionId,
+      reason: expect.stringContaining('no persisted launch intent'),
+    })]);
+    expect(taskStore.getTask(task.id)?.relaunchDisposition).toMatchObject({
+      outcome: 'not_relaunched',
+      source: 'crash-recovery',
+      reason: 'missing_launch_intent',
+      detail: expect.any(String),
+    });
+  });
+
+  test('passes independent model and effort pins through restart recovery', async () => {
+    const cwd = join(tempDir, 'pinned-recovery');
+    const task = await setupCrashedTask('Keep both pins', cwd);
+    const mutable = taskStore.getTaskForMutation(task.id)!;
+    mutable.launchIntent = buildTaskLaunchIntent('claude-code', {
+      model: 'claude-fable-5',
+      effort: 'max',
+    });
+    const launchSpy = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(launchSpy.mock.calls[0]?.[4]).toMatchObject({
+      model: 'claude-fable-5',
+      effort: 'max',
+    });
   });
 
   test('does NOT relaunch a spawned task that finished its turn cleanly (#693)', async () => {

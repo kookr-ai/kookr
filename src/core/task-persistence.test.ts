@@ -171,6 +171,7 @@ describe('Task Persistence', () => {
 
     expect(tasks).toHaveLength(1);
     expect(tasks[0].provenance).toEqual({ kind: 'unknown' });
+    expect(tasks[0].launchIntent).toBeUndefined();
   });
 
   test('load preserves provenance already present on persisted tasks (issue #1583)', async () => {

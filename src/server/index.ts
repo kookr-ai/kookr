@@ -157,6 +157,7 @@ import {
 } from './use-cases/umbrella-chain-advancer.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
+import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -3172,6 +3173,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       recordProviderPause: (task) => {
         const claim = task.issueClaim;
         if (!claim) return { holdForResume: true };
+        const intent = validatePersistedLaunchIntent(task);
+        if (!intent.ok) {
+          taskStore.setRelaunchDisposition(task.id, {
+            outcome: 'not_relaunched',
+            source: 'provider-reset',
+            reason: intent.reason,
+            at: new Date().toISOString(),
+            detail: intent.detail,
+          });
+          console.warn(`[provider-reset] task ${task.id} cannot be resumed safely: ${intent.detail}`);
+          return { holdForResume: false };
+        }
+        const pins = launchIntentPins(intent.intent);
         const now = Date.now();
         // `record` LATCHES the reset time at first observation and returns it, so
         // this comparison flips to false once the latched reset elapses (unlike a
@@ -3190,6 +3204,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             playbookParameterValues: task.playbookParameterValues,
             projectId: task.projectId,
             agentType: task.agentType,
+            ...pins,
             autoCloseOnSignal: task.autoCloseOnSignal,
             issueClaim: { repo: claim.repo, number: claim.number },
             provenance: task.provenance,

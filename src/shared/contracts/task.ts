@@ -1,6 +1,35 @@
 import type { RalphLoopState } from './ralph.js';
 import type { AgentType } from './agent-types.js';
 
+/** Optional persisted launch contract. Absence means a legacy record. */
+export interface TaskLaunchIntent {
+  schemaVersion: 'task-launch-intent.v1';
+  /** Concrete provider selected for the original launch. */
+  agentType: AgentType;
+  /** Provider-specific pin, preserved independently from effort. */
+  model?: string;
+  /** Provider-specific pin, preserved independently from model. */
+  effort?: string;
+}
+
+export type AutomaticRelaunchSource =
+  | 'crash-recovery'
+  | 'provider-transient-retry'
+  | 'provider-reset'
+  | 'ralph'
+  | 'pending-promotion';
+
+export type TaskRelaunchDispositionReason = 'missing_launch_intent' | 'malformed_launch_intent';
+
+/** Durable evidence that an automatic relaunch was deliberately not attempted. */
+export interface TaskRelaunchDisposition {
+  outcome: 'not_relaunched';
+  reason: TaskRelaunchDispositionReason;
+  source: AutomaticRelaunchSource;
+  at: string;
+  detail: string;
+}
+
 export type TaskDependencyEdge = `task:${string}` | `milestone:${string}`;
 export type TaskMetadataIntent = 'keep_as_duplicate';
 

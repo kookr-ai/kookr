@@ -25,6 +25,9 @@ const TASK_KEYS = new Set([
   'criteria',
   'agentType',
   'parentTaskId',
+  // New tasks persist an explicit launch intent. Legacy records may omit it,
+  // which is intentionally accepted by the read path.
+  'launchIntent',
   // Immutable launch provenance (issue #1583): createTask stamps this on every
   // task and it round-trips through persistence, so it is part of the
   // main-compatible on-disk shape.
