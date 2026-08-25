@@ -16,6 +16,8 @@ const observation = (overrides: Partial<Parameters<typeof computeReviewQualityMe
   defectsInEvaluationSet: 1,
   defectsFound: 1,
   reviewerWasFresh: true,
+  blindEvaluation: true,
+  heldOutEvaluation: true,
   verdictBoundToCurrentHead: true,
   reviewWasPerformed: true,
     mergeAllowed: true,
@@ -82,5 +84,17 @@ describe('autonomous review policy', () => {
     expect(decision.due).toBe(true);
     expect(decision.mutationEligible).toBe(false);
     expect(decision.metrics.safeMergeRate).toBe(0);
+  });
+
+  test('reflection requires blind and held-out evidence provenance', () => {
+    const observations = Array.from({ length: 5 }, (_, index) => observation({
+      unitId: `same-context-${index}`,
+      blindEvaluation: false,
+      heldOutEvaluation: false,
+    }));
+    const decision = assessReviewReflection(observations, 5, 0);
+    expect(decision.mutationEligible).toBe(false);
+    expect(decision.metrics.blindEvaluationRate).toBe(0);
+    expect(decision.metrics.heldOutEvaluationRate).toBe(0);
   });
 });

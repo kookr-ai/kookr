@@ -101,6 +101,16 @@ describe('phase ledger codec', () => {
     expect(twice).toEqual(once);
   });
 
+  test('does not replay an older BLOCK after a correction attempt is durable', () => {
+    const corrected = { ...ledger, phases: [ledger.phases[0]!, {
+      ...ledger.phases[1]!,
+      reviewAttempts: 2,
+      taskId: 'correction-task',
+    }] } satisfies PhaseLedger;
+    const oldBlock = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`;
+    expect(reconcilePhaseResultComments(corrected, [oldBlock])).toEqual(corrected);
+  });
+
   test('rejects a per-phase cap above the canonical maximum', () => {
     expect(() => parsePhaseLedgerFromIssueBody(
       `\`\`\`kookr-phase-ledger\n${JSON.stringify({

@@ -39,6 +39,10 @@ export interface ReviewLoopObservation {
   defectsInEvaluationSet: number;
   defectsFound: number;
   reviewerWasFresh: boolean;
+  /** Quality evidence came from a blind evaluation unavailable to the mutator. */
+  blindEvaluation: boolean;
+  /** Quality evidence was held out from reviewer/prompt tuning. */
+  heldOutEvaluation: boolean;
   verdictBoundToCurrentHead: boolean;
   reviewWasPerformed: boolean;
   mergeAllowed: boolean;
@@ -53,6 +57,8 @@ export interface ReviewQualityMetrics {
   recall: number | null;
   f1: number | null;
   freshReviewRate: number;
+  blindEvaluationRate: number;
+  heldOutEvaluationRate: number;
   exactHeadBindingRate: number;
   reviewCoverage: number;
   safeMergeRate: number;
@@ -85,6 +91,8 @@ export function computeReviewQualityMetrics(
     recall,
     f1,
     freshReviewRate: sampleSize === 0 ? 0 : observations.filter((row) => row.reviewerWasFresh).length / sampleSize,
+    blindEvaluationRate: sampleSize === 0 ? 0 : observations.filter((row) => row.blindEvaluation).length / sampleSize,
+    heldOutEvaluationRate: sampleSize === 0 ? 0 : observations.filter((row) => row.heldOutEvaluation).length / sampleSize,
     exactHeadBindingRate: sampleSize === 0 ? 0 : observations.filter((row) => row.verdictBoundToCurrentHead).length / sampleSize,
     reviewCoverage: sampleSize === 0 ? 0 : observations.filter((row) => row.reviewWasPerformed).length / sampleSize,
     safeMergeRate: sampleSize === 0 ? 0 : observations.filter((row) => row.mergeAllowed && row.reviewWasPerformed && row.verdictBoundToCurrentHead).length / sampleSize,
@@ -116,6 +124,8 @@ export function assessReviewReflection(
   const enoughEvidence = metrics.sampleSize >= MIN_REVIEW_REFLECTION_SAMPLE_SIZE
     && metrics.reviewCoverage === 1
     && metrics.freshReviewRate === 1
+    && metrics.blindEvaluationRate === 1
+    && metrics.heldOutEvaluationRate === 1
     && metrics.exactHeadBindingRate === 1
     && metrics.safeMergeRate === 1
     && (metrics.calibrationError === null || metrics.calibrationError <= 0.2)

@@ -319,6 +319,7 @@ export function reconcilePhaseResultComments(
     if (!result || result.chainId !== ledger.chainId || result.issueNumber !== ledger.issueNumber) continue;
     const phase = byId.get(result.phaseId);
     if (!phase) continue;
+    if (result.reviewVerdict !== undefined && (result.reviewAttempts ?? 1) < (phase.reviewAttempts ?? 0)) continue;
     if (result.prNumber !== undefined) phase.prNumber = result.prNumber;
     if (result.status !== undefined) phase.status = result.status;
     if (result.taskId !== undefined) phase.taskId = result.taskId;

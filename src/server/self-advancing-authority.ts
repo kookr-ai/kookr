@@ -14,7 +14,10 @@
  * them in.
  */
 
-import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../core/autonomous-review-policy.js';
+import {
+  DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP,
+  resolveAutonomousReviewIterationCap,
+} from '../core/autonomous-review-policy.js';
 
 /**
  * Global env kill switch. When set to a truthy value it halts **all**
@@ -168,7 +171,12 @@ export type IndependentReviewDecision =
  * blocks to a human rather than looping.
  */
 export function evaluateIndependentReview(input: IndependentReviewInput): IndependentReviewDecision {
-  const maxAttempts = input.maxReviewAttempts ?? MAX_INDEPENDENT_REVIEW_ATTEMPTS;
+  let maxAttempts: number;
+  try {
+    maxAttempts = resolveAutonomousReviewIterationCap(input.maxReviewAttempts ?? MAX_INDEPENDENT_REVIEW_ATTEMPTS).cap;
+  } catch {
+    return { decision: 'human-required', reason: 'review attempt cap exceeds the shared autonomous review cap' };
+  }
 
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     return { decision: 'human-required', reason: 'review attempt cap is invalid' };

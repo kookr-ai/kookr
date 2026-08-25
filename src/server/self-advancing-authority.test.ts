@@ -273,6 +273,17 @@ describe('evaluateIndependentReview — unforgeable, capped verdict gate', () =>
     expect(d.reason).toContain('attempts');
   });
 
+  test('rejects a configured cap above the shared maximum', () => {
+    const d = evaluateIndependentReview({
+      implementerLineage: lineage,
+      reviewerRan: false,
+      reviewAttempts: 1,
+      maxReviewAttempts: 21,
+    });
+    expect(d.decision).toBe('human-required');
+    expect(d.reason).toMatch(/shared autonomous review cap/);
+  });
+
   test('reviewer ran without a verdict, attempts left → retry-review', () => {
     const d = evaluateIndependentReview({
       implementerLineage: lineage,
