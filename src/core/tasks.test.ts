@@ -2541,6 +2541,27 @@ describe('launch reservations (#700)', () => {
     }
   });
 
+  test('a stale token cannot release a replacement reservation', () => {
+    vi.useFakeTimers();
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      store.pendTask(task.id);
+      const stale = store.beginLaunchWithToken(task.id)!;
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      const replacement = store.beginLaunchWithToken(task.id)!;
+
+      expect(store.ownsLaunchReservation(task.id, stale)).toBe(false);
+      expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
+      store.endLaunch(task.id, stale);
+      expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
+      store.endLaunch(task.id, replacement);
+      expect(store.hasFreshLaunchReservation(task.id)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('getNextPending skips reserved tasks; getActiveCount counts them', () => {
     const store = new TaskStore();
     const first = store.createTask('first', '/repo');
@@ -2576,7 +2597,7 @@ describe('launch reservations (#700)', () => {
     // Pin the consumption itself: once inProgress, a lingering reservation is
     // invisible to getActiveCount/getNextPending, so assert the private map
     // directly (mutation guard for the addSession delete).
-    const reservations = (store as unknown as { launchReservations: Map<string, number> }).launchReservations;
+    const reservations = (store as unknown as { launchReservations: Map<string, unknown> }).launchReservations;
     expect(reservations.has(task.id)).toBe(false);
   });
 

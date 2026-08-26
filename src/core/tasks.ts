@@ -144,6 +144,11 @@ export function isAgedTerminalTask(
  */
 const LAUNCH_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
+interface LaunchReservation {
+  reservedAt: number;
+  token: string;
+}
+
 export class TaskStore {
   private tasks = new Map<string, Task>();
   /**
@@ -155,7 +160,8 @@ export class TaskStore {
    * that closes that pick-to-launch window. Deliberately NOT persisted — a
    * reservation is meaningless across a restart (the launching process died).
    */
-  private launchReservations = new Map<string, number>();
+  private launchReservations = new Map<string, LaunchReservation>();
+  private launchReservationSequence = 0;
   /**
    * Typed task-relation graph (issue #599). Keyed by
    * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
@@ -1021,17 +1027,34 @@ export class TaskStore {
    * pick-and-reserve atomic.
    */
   beginLaunch(taskId: string): boolean {
-    const task = this.tasks.get(taskId);
-    if (!task) return false;
-    if (task.status !== 'open' && task.status !== 'pending') return false;
-    if (this.hasFreshLaunchReservation(taskId)) return false;
-    this.launchReservations.set(taskId, Date.now());
-    return true;
+    return this.beginLaunchWithToken(taskId) !== undefined;
   }
 
-  /** Release a launch reservation (launch failed or was abandoned). */
-  endLaunch(taskId: string): void {
+  /**
+   * Token-bearing reservation variant for async launch owners. A stale owner
+   * whose await outlives the reservation TTL can use the token to prove it
+   * still owns the task and cannot release a replacement owner's lease.
+   */
+  beginLaunchWithToken(taskId: string): string | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    if (task.status !== 'open' && task.status !== 'pending') return undefined;
+    if (this.hasFreshLaunchReservation(taskId)) return undefined;
+    const token = `launch-reservation-${++this.launchReservationSequence}`;
+    this.launchReservations.set(taskId, { reservedAt: Date.now(), token });
+    return token;
+  }
+
+  /** Release a launch reservation, optionally only for its exact owner. */
+  endLaunch(taskId: string, token?: string): void {
+    if (token !== undefined && this.launchReservations.get(taskId)?.token !== token) return;
     this.launchReservations.delete(taskId);
+  }
+
+  /** True only while the exact async owner still holds a fresh reservation. */
+  ownsLaunchReservation(taskId: string, token: string): boolean {
+    return this.hasFreshLaunchReservation(taskId)
+      && this.launchReservations.get(taskId)?.token === token;
   }
 
   /**
@@ -1041,9 +1064,9 @@ export class TaskStore {
    * already uses to count a reserved task against the cap).
    */
   hasFreshLaunchReservation(taskId: string): boolean {
-    const reservedAt = this.launchReservations.get(taskId);
-    if (reservedAt === undefined) return false;
-    if (Date.now() - reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
+    const reservation = this.launchReservations.get(taskId);
+    if (reservation === undefined) return false;
+    if (Date.now() - reservation.reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
       this.launchReservations.delete(taskId);
       return false;
     }

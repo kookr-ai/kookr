@@ -968,6 +968,8 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
@@ -1032,6 +1034,8 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
@@ -1077,6 +1081,8 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
@@ -1119,6 +1125,8 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
@@ -1156,6 +1164,8 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
     };
@@ -1173,7 +1183,7 @@ describe('promotePendingTasks', () => {
     expect(result).toBe(0);
     expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1');
     // Mutation guard: deleting the promote-loop's finally{endLaunch} must fail here.
-    expect(mockTaskStore.endLaunch).toHaveBeenCalledWith('fail-1');
+    expect(mockTaskStore.endLaunch).toHaveBeenCalledWith('fail-1', 'test-launch-reservation');
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to launch pending task fail-1'),
       expect.any(Error),
@@ -1825,6 +1835,153 @@ describe('promotePendingTasks (integration)', () => {
     }
   });
 
+  test('a stale denied promoter cannot overwrite or release a replacement probe owner', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn()
+      .mockResolvedValueOnce([{
+        dependency: 'kb',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+      }])
+      .mockResolvedValue([]);
+    const task = taskStore.createTask({
+      prompt: 'denied owner expires during persistence',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'denied owner expires during persistence',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 2_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseDenied!: () => void;
+    let releaseProbe!: () => void;
+    let markDeniedStarted!: () => void;
+    let markProbeStarted!: () => void;
+    const deniedStarted = new Promise<void>((resolve) => { markDeniedStarted = resolve; });
+    const probeStarted = new Promise<void>((resolve) => { markProbeStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockImplementationOnce(async () => {
+        markDeniedStarted();
+        await new Promise<void>((resolve) => { releaseDenied = resolve; });
+      })
+      .mockImplementationOnce(async () => {
+        markProbeStarted();
+        await new Promise<void>((resolve) => { releaseProbe = resolve; });
+      })
+      .mockResolvedValue(undefined);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner,
+        flushTasks,
+      },
+    };
+
+    try {
+      const deniedPromotion = promotePendingTasks(deps);
+      await deniedStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementPromotion = promotePendingTasks(deps);
+      await probeStarted;
+
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
+      expect(replacementMarker).toMatchObject({
+        status: 'probing',
+        sessionId: expect.stringMatching(/^kookr-/),
+      });
+      releaseDenied();
+      expect(await deniedPromotion).toBe(0);
+      expect(taskStore.getTask(task.id)?.launchAdmission).toEqual(replacementMarker);
+      expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(true);
+
+      releaseProbe();
+      expect(await replacementPromotion).toBe(1);
+      expect(adapter.launch).toHaveBeenCalledOnce();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('a stale second-barrier owner cannot release a replacement probe reservation', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'second barrier expires during persistence',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'second barrier expires during persistence',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 3_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    let releaseReplacement!: () => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    let markReplacementStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const replacementStarted = new Promise<void>((resolve) => { markReplacementStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockImplementationOnce(async () => {
+        markFirstStarted();
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      })
+      .mockImplementationOnce(async () => {
+        markSecondStarted();
+        await new Promise<void>((resolve) => { releaseSecond = resolve; });
+      })
+      .mockImplementationOnce(async () => {
+        markReplacementStarted();
+        await new Promise<void>((resolve) => { releaseReplacement = resolve; });
+      })
+      .mockResolvedValue(undefined);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      },
+    };
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await firstStarted;
+      launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementPromotion = promotePendingTasks(deps);
+      await replacementStarted;
+
+      releaseSecond();
+      expect(await stalePromotion).toBe(0);
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({ status: 'probing' });
+      expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(true);
+
+      releaseReplacement();
+      expect(await replacementPromotion).toBe(1);
+      expect(adapter.launch).toHaveBeenCalledOnce();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test('releases a recovery probe when the launch reservation is lost', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{
@@ -1846,9 +2003,10 @@ describe('promotePendingTasks (integration)', () => {
       },
     });
     taskStore.pendTask(task.id);
-    const beginLaunch = vi.spyOn(taskStore, 'beginLaunch')
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    const realBeginLaunch = taskStore.beginLaunchWithToken.bind(taskStore);
+    const beginLaunch = vi.spyOn(taskStore, 'beginLaunchWithToken')
+      .mockReturnValueOnce(undefined)
+      .mockImplementation(realBeginLaunch);
     deps = {
       ...deps,
       lifecycleDeps: {

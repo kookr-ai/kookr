@@ -103,7 +103,13 @@ export async function runStartupRecoveryPhase({
   if (lifecycleDeps.launchDependencyAdmission) {
     const successfulProbes: Array<{ dependencies: string[]; startedAt: number }> = [];
     const latestConfirmedAtByDependency = new Map<string, number>();
-    for (const task of taskStore.listTasks()) {
+    const persistedTasks = taskStore.listTasks();
+    const interruptedProbes: typeof persistedTasks = [];
+
+    // Pass 1 is deliberately synchronous: hydrate every durable dependency
+    // state before the first terminal-cleanup await. The HTTP listener may
+    // already be accepting requests during startup recovery.
+    for (const task of persistedTasks) {
       if (task.launchAdmission?.status === 'probing') {
         const liveProbeSession = task.status === 'inProgress'
           && task.sessions.some((session) => reconcileResult.resumed.includes(session.tmuxSession));
@@ -125,45 +131,11 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           continue;
         }
-        const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
-          ...dependency,
-          state: 'degraded' as const,
-          reason: 'Recovery probe was interrupted by server restart',
-        }));
-        // Hydrate the circuit before the first await. The HTTP listener may
-        // already be accepting requests while startup recovery reaps an old
-        // terminal, so leaving this process-local circuit healthy during
-        // killSession would open an unbounded admission window.
-        lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
-        const expectedProbeSessionId = task.launchAdmission.sessionId;
-        if (expectedProbeSessionId) {
-          try {
-            // The marker was persisted before createSession. If the previous
-            // process died before addSession was flushed, this exact terminal
-            // is otherwise an age-gated orphan and a retry could overlap it.
-            // killSession is idempotent when creation never reached the backend.
-            await terminalBackend.killSession(expectedProbeSessionId);
-          } catch (err) {
-            throw new Error(
-              `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
-              + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-        }
-        const parked = {
-          status: 'parked' as const,
-          reason: 'dependency_degraded' as const,
-          dependencies: interruptedDependencies,
-          parkedAt: new Date().toISOString(),
-        };
-        if (task.status === 'inProgress') taskStore.reopenTask(task.id);
-        if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
-        taskStore.setLaunchAdmission(task.id, parked);
-        recordLatestConfirmedEvidence(
-          latestConfirmedAtByDependency,
-          parked.dependencies,
-          parked.parkedAt,
+        lifecycleDeps.launchDependencyAdmission.restoreInterruptedProbe(
+          task.launchAdmission.dependencies,
+          task.id,
         );
+        interruptedProbes.push(task);
         continue;
       }
       if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
@@ -176,6 +148,50 @@ export async function runStartupRecoveryPhase({
           );
         }
       }
+    }
+
+    // Pass 2 may await terminal cleanup because every dependency above is now
+    // either degraded or explicitly half-open/busy in the process-local gate.
+    for (const task of interruptedProbes) {
+      if (task.launchAdmission?.status !== 'probing') continue;
+      const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
+        ...dependency,
+        state: 'degraded' as const,
+        reason: 'Recovery probe was interrupted by server restart',
+      }));
+      const expectedProbeSessionId = task.launchAdmission.sessionId;
+      if (expectedProbeSessionId) {
+        try {
+          // The marker was persisted before createSession. If the previous
+          // process died before addSession was flushed, this exact terminal
+          // is otherwise an age-gated orphan and a retry could overlap it.
+          // killSession is idempotent when creation never reached the backend.
+          await terminalBackend.killSession(expectedProbeSessionId);
+        } catch (err) {
+          lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
+          throw new Error(
+            `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
+            + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      // The expected worker is now absent. Convert startup's busy sentinel
+      // into ordinary degraded state before the task becomes replayable.
+      lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
+      const parked = {
+        status: 'parked' as const,
+        reason: 'dependency_degraded' as const,
+        dependencies: interruptedDependencies,
+        parkedAt: new Date().toISOString(),
+      };
+      if (task.status === 'inProgress') taskStore.reopenTask(task.id);
+      if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+      taskStore.setLaunchAdmission(task.id, parked);
+      recordLatestConfirmedEvidence(
+        latestConfirmedAtByDependency,
+        parked.dependencies,
+        parked.parkedAt,
+      );
     }
     for (const probe of successfulProbes) {
       lifecycleDeps.launchDependencyAdmission.restoreSuccessfulProbe(

@@ -1003,27 +1003,30 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     // Reserve before the asynchronous health collection. Without this CAS,
     // two promoters can both probe the same pending task and a slower loser
     // can overwrite the winner's live state with a parked marker.
-    if (!taskStore.beginLaunch(pending.id)) continue;
+    const launchReservationToken = taskStore.beginLaunchWithToken(pending.id);
+    if (!launchReservationToken) continue;
 
     const dependencyAdmission = await evaluatePendingDependencyAdmission(pending, lifecycleDeps, dependencyFindingsCache);
     // A preflight is asynchronous. The task may have been cancelled or
     // otherwise transitioned while it was running; never write a parked
     // marker back onto that newer state, and release any probe claim we took.
     const currentPending = taskStore.getTask(pending.id);
-    if (!currentPending || currentPending.status !== 'pending') {
+    if (
+      !currentPending
+      || currentPending.status !== 'pending'
+      || !taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
+    ) {
       if (dependencyAdmission?.admit) {
         lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
       }
-      taskStore.endLaunch(pending.id);
+      taskStore.endLaunch(pending.id, launchReservationToken);
       continue;
     }
     const admissionBeforeDecision = currentPending.launchAdmission;
     if (dependencyAdmission && !dependencyAdmission.admit) {
       blockedByDependency.add(pending.id);
-      taskStore.setLaunchAdmission(
-        pending.id,
-        taskAdmissionForDeniedDecision(dependencyAdmission, nowISO()),
-      );
+      const deniedAdmission = taskAdmissionForDeniedDecision(dependencyAdmission, nowISO());
+      taskStore.setLaunchAdmission(pending.id, deniedAdmission);
       // Preserve the latest confirmed degradation across a restart before
       // releasing this reservation. Otherwise a clean boot could forget the
       // denial and treat the pending task as ordinary work.
@@ -1033,12 +1036,18 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         // Do not leave an unproven marker in memory: launch dedup can expose
         // pending admission metadata immediately after this function returns.
         const current = taskStore.getTask(pending.id);
-        if (current && !isTerminalStatus(current.status)) {
+        if (
+          current
+          && !isTerminalStatus(current.status)
+          && current.launchAdmission?.status === 'parked'
+          && current.launchAdmission.reason === deniedAdmission.reason
+          && current.launchAdmission.parkedAt === deniedAdmission.parkedAt
+        ) {
           taskStore.setLaunchAdmission(pending.id, admissionBeforeDecision);
         }
         throw err;
       } finally {
-        taskStore.endLaunch(pending.id);
+        taskStore.endLaunch(pending.id, launchReservationToken);
       }
       continue;
     }
@@ -1060,14 +1069,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     if (seen.has(pending.id)) {
       console.error(`[promotion] Task ${pending.id} still pending after launch — breaking to prevent infinite loop`);
       taskStore.cancelTask(pending.id);
-      taskStore.endLaunch(pending.id);
+      taskStore.endLaunch(pending.id, launchReservationToken);
       break;
     }
     seen.add(pending.id);
 
     let adapterLaunchSettled = false;
     let adapterLaunchStarted = false;
-    let reservationSuperseded = false;
     let launchAdapter: AgentAdapter | undefined;
     const launchReapGuard: LaunchReapGuard = { reaped: false };
     const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
@@ -1128,13 +1136,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           continue;
         }
         if (
-          currentAfterBarrier.launchAdmission?.status !== 'probing'
+          !taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
+          || currentAfterBarrier.launchAdmission?.status !== 'probing'
           || currentAfterBarrier.launchAdmission.sessionId !== probeSessionId
         ) {
           // A persistence wait may outlive the reservation TTL. A newer
           // promoter can then own this task and replace our marker. Never let
           // the stale owner launch or clear the newer owner's reservation.
-          reservationSuperseded = true;
           lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
           blockedByDependency.add(pending.id);
           continue;
@@ -1302,7 +1310,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     } finally {
       // Success: addSession already consumed the reservation (task is
       // inProgress). Failure: release so the record isn't left reserved.
-      if (!reservationSuperseded) taskStore.endLaunch(pending.id);
+      taskStore.endLaunch(pending.id, launchReservationToken);
     }
   }
 

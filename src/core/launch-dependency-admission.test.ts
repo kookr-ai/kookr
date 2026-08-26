@@ -151,6 +151,21 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('keeps an interrupted startup probe busy through concurrent clean evidence', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.restoreInterruptedProbe([{
+      dependency: 'kb',
+      state: 'half_open',
+    }], 'task-1');
+
+    admission.observe(['kb'], []);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   test('restores reconciled live-probe success after stale parked waiters', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreParked([{

@@ -172,6 +172,24 @@ export class LaunchDependencyAdmission {
   }
 
   /**
+   * Restore an interrupted probe as busy while startup reaps its expected
+   * terminal. Clean concurrent evidence must not admit a replacement probe
+   * until that physical worker has been proven absent.
+   */
+  restoreInterruptedProbe(
+    dependencies: readonly TaskLaunchAdmissionDependency[],
+    ownerToken: string,
+  ): void {
+    for (const dependency of dependencies) {
+      const entry = this.entry(dependency.dependency);
+      entry.state = 'half_open';
+      entry.lastChangedAt = this.now();
+      entry.reason = 'Interrupted recovery probe cleanup is in progress';
+      entry.probeToken = `startup-recovery:${ownerToken}`;
+    }
+  }
+
+  /**
    * Restore success evidence for a recovery probe whose attached session was
    * reconciled as live after restart. Call this after replaying parked task
    * markers. A confirmed degradation at or after the probe began supersedes

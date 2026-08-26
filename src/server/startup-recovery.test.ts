@@ -229,6 +229,17 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
         sessionId: 'kookr-awaiting-reap',
       },
     });
+    const laterParked = deps.taskStore.createTask({
+      prompt: 'different dependency parked later in task order',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'evolution-config', state: 'degraded' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(laterParked.id);
     deps.lifecycleDeps = {
       ...deps.lifecycleDeps,
       launchDependencyAdmission: admission,
@@ -240,7 +251,16 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     });
     await killStarted;
 
+    // Even clean evidence cannot admit a replacement until the old expected
+    // worker has been reaped.
+    admission.observe(['kb'], []);
     expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+    // The synchronous hydration pass also covered markers that appeared later
+    // in persisted task order before the first cleanup await.
+    expect(admission.evaluate(['evolution-config'])).toMatchObject({
       admit: false,
       reason: 'dependency_degraded',
     });
