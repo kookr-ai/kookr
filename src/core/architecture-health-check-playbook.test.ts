@@ -79,10 +79,21 @@ describe('architecture-health-check playbook', () => {
     expect(plainIssue).toBeGreaterThan(routeContinue);
 
     const rfcBranch = phase3.slice(routePredicate, plainIssue);
-    expect(rfcBranch).toContain('/api/tasks/$RFC_TASK_ID');
-    expect(rfcBranch).toMatch(/launch ambiguous[\s\S]*exit 0/);
-    expect(rfcBranch).not.toMatch(/launch (failed|ambiguous)[^\n]*continue/);
-    expect(rfcBranch).toMatch(/FILED=\$\(\(FILED \+ 1\)\)[\s\S]*REFACTOR_FILED=\$\(\(REFACTOR_FILED \+ 1\)\)/);
+    expect(rfcBranch).toContain(
+      '|| { echo "architecture-health-check: RFC-first launch ambiguous; stop and inspect idempotency state before retry"; exit 0; }',
+    );
+
+    const taskRead = rfcBranch.slice(
+      rfcBranch.indexOf('if ! curl -fsS --max-time 5'),
+      rfcBranch.indexOf('# Record rfcTaskId'),
+    );
+    expect(taskRead).toContain('/api/tasks/$RFC_TASK_ID');
+    expect(taskRead).toContain('.taskId == $taskId');
+    expect(taskRead).toContain('exit 0');
+
+    const counters = rfcBranch.slice(rfcBranch.indexOf('FILED=$((FILED + 1))'));
+    expect(counters).toContain('if [ "$ADMIT_REFACTOR" = "true" ]; then');
+    expect(counters).toMatch(/if \[ "\$ADMIT_REFACTOR" = "true" \]; then\s+REFACTOR_FILED=\$\(\(REFACTOR_FILED \+ 1\)\)\s+fi/);
   });
 
   test('preserves plain issue creation below the large-refactor threshold', () => {
