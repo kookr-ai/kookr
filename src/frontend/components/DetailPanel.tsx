@@ -5,7 +5,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatDuration, formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import { formatDuration, formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations, prLinkLabel } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -93,16 +93,6 @@ function criterionVerdictLabel(verdict: 'pass' | 'fail' | 'unknown'): string {
     case 'fail': return 'Failed';
     case 'unknown': return 'Unknown';
   }
-}
-
-/**
- * Short label for a PR link. Prefers `#<number>` parsed from a GitHub-style
- * `/pull/<n>` (or `/pulls/<n>`) path; falls back to a generic "View PR" when
- * the URL doesn't carry a recognizable number.
- */
-function prLinkLabel(url: string): string {
-  const match = /\/pulls?\/(\d+)/.exec(url);
-  return match ? `PR #${match[1]}` : 'View PR';
 }
 
 function PrLinksBlock({ digest }: { digest: NonNullable<AgentState['completionDigest']> }) {

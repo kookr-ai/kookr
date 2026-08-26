@@ -1,5 +1,6 @@
 import React from 'react';
 import type { AgentState } from '../../shared/protocol.js';
+import type { CompletionDigest } from '../../shared/contracts/completion-digest.js';
 import {
   commandPaletteHintKeys,
   detectShortcutPlatform,
@@ -14,7 +15,7 @@ import {
   usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
-import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, projectLabel } from '../presentation.js';
+import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, prLinkLabel, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
@@ -38,6 +39,92 @@ export const OVERVIEW_RECENT_COMPLETED_LIMIT = 3;
 /** Published install + first-agent walkthrough (docs-only; no in-app copy). */
 export const GETTING_STARTED_GUIDE_URL =
   'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md';
+
+/**
+ * Compact, neutral evidence markers for one Recently completed row, read from
+ * the agent's `completionDigest`. Deliberately presence-based, not outcome-based:
+ * these prove a task *recorded* test/verification output or opened a PR — they
+ * never assert the tests passed, the criteria were met, or the PR merged. Full
+ * detail (test summary text, how-to-verify commands, criteria verdict) stays in
+ * the selected-task pane; this is only the "there's evidence to review" signal
+ * an operator needs to decide what to open next.
+ *
+ * At most two evidence *types* render (issue #2851):
+ *  1. a neutral tests/verification tag, and
+ *  2. an actionable PR link (or links, when a task opened several).
+ * A row whose digest carries none of these renders nothing extra, and a
+ * cancelled/terminated task gains no success wording from these markers.
+ */
+function CompletedRowEvidence({
+  digest,
+  taskName,
+}: {
+  digest: CompletionDigest | undefined;
+  taskName: string;
+}) {
+  if (!digest) return null;
+
+  const hasTestSummary =
+    typeof digest.testSummary === 'string' && digest.testSummary.trim() !== '';
+  const hasVerificationCommands =
+    Array.isArray(digest.verificationCommands) && digest.verificationCommands.length > 0;
+  // Ignore blank/whitespace URLs so an empty string never renders a dead link.
+  // Guard the element type too: a malformed digest with a non-string entry must
+  // not throw and take down the whole overview render (this surface is at least
+  // as defensive as the sibling detail-pane PR list).
+  const prUrls = (digest.prUrls ?? []).filter(
+    (url): url is string => typeof url === 'string' && url.trim() !== '',
+  );
+
+  const showTestsTag = hasTestSummary || hasVerificationCommands;
+  const showPrLinks = prUrls.length > 0;
+  if (!showTestsTag && !showPrLinks) return null;
+
+  // Neutral by design: a test *summary* (even one describing failures) shows
+  // "Tests", command-only evidence shows "Verification evidence" — never
+  // "Verified"/"Passed", which would claim an outcome the digest can't prove.
+  const testsLabel = hasTestSummary ? 'Tests' : 'Verification evidence';
+  // Hover context without any success claim; the tag text itself stays neutral.
+  const testsTitle = hasTestSummary
+    ? digest.testSummary
+    : 'Verification commands recorded';
+
+  return (
+    <span className="overview-completed-evidence" data-testid="overview-completed-evidence">
+      {showTestsTag && (
+        <span
+          className="overview-completed-evidence-tag"
+          data-testid="overview-completed-evidence-tests"
+          title={testsTitle}
+        >
+          {testsLabel}
+        </span>
+      )}
+      {showPrLinks && (
+        <span
+          className="overview-completed-evidence-prs"
+          data-testid="overview-completed-evidence-prs"
+        >
+          {/* Every PR renders as its own link so multiple PRs stay discoverable
+              rather than silently collapsing to the first URL. */}
+          {prUrls.map((url, i) => (
+            <a
+              key={`${url}-${i}`}
+              className="overview-completed-pr-link"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open ${prLinkLabel(url)} for ${taskName} (opens in new tab)`}
+            >
+              {prLinkLabel(url)}
+              <span aria-hidden="true"> ↗</span>
+            </a>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
 
 interface Props {
   /**
@@ -237,6 +324,7 @@ export function OverviewEmptyState({
                     {finishedAgo && (
                       <span className="overview-completed-meta">{finishedAgo}</span>
                     )}
+                    <CompletedRowEvidence digest={agent.completionDigest} taskName={name} />
                     <span className="overview-completed-actions">
                       <button
                         type="button"

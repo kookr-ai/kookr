@@ -868,8 +868,9 @@ The system SHALL display the selected agent's interactive terminal and response 
 - Input box for responding to the agent
 - Empty state when no agent selected
 - On the no-selection overview, when at least one agent is live (waiting, running, or completed), show a compact runtime-mix line tallying agents by runtime — known runtimes first in canonical order with short labels (`Claude 3 · Codex 2 · Grok 1`), unknown/legacy `agentType` values kept verbatim and sorted after, alphabetically. Agents with no `agentType` are skipped and a zero-count runtime never appears; the line is absent when there are no tasks (issue #2670)
+- On the no-selection overview, each Recently completed row shows at most two compact, presence-only evidence markers read from the row's `completionDigest`: a neutral `Tests`/`Verification evidence` tag (from a test summary or recorded verification commands) and an actionable per-PR link (from `prUrls`). Wording is presence-based and never asserts a pass/verification/merge/delivery outcome; a failing test summary still reads `Tests`, multiple PRs each stay discoverable rather than collapsing to the first, and a row whose digest carries none of this evidence renders unchanged (issue #2851)
 
-**Evidence:** `src/frontend/components/DetailPanel.tsx` (terminal view, anomaly banner, input box, empty state), `src/frontend/components/TerminalPanel.tsx` (xterm.js terminal), `src/frontend/components/OverviewEmptyState.tsx` (no-selection overview, runtime-mix line), `src/frontend/presentation.ts` (`buildRuntimeMix`).
+**Evidence:** `src/frontend/components/DetailPanel.tsx` (terminal view, anomaly banner, input box, empty state), `src/frontend/components/TerminalPanel.tsx` (xterm.js terminal), `src/frontend/components/OverviewEmptyState.tsx` (no-selection overview, runtime-mix line, `CompletedRowEvidence` markers), `src/frontend/presentation.ts` (`buildRuntimeMix`, `prLinkLabel`).
 
 ### R5.3: Status Bar [F5.3] — SHOULD — `done`
 

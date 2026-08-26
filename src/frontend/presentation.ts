@@ -430,6 +430,19 @@ export function formatBranch(branch: string, maxLen = 30): string {
 }
 
 /**
+ * Short label for a PR link. Prefers `#<number>` parsed from a GitHub-style
+ * `/pull/<n>` (or `/pulls/<n>`) path; falls back to a generic "View PR" when
+ * the URL doesn't carry a recognizable number. Shared by the completed-task
+ * detail pane and the idle overview's Recently completed rows so both surfaces
+ * derive the visible PR label identically (each may still wrap it in its own
+ * accessible name).
+ */
+export function prLinkLabel(url: string): string {
+  const match = /\/pulls?\/(\d+)/.exec(url);
+  return match ? `PR #${match[1]}` : 'View PR';
+}
+
+/**
  * Format token usage as a compact summary string.
  */
 export function formatTokenUsage(usage: TokenUsage | undefined): string {
