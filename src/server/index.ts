@@ -157,7 +157,7 @@ import {
 } from './use-cases/umbrella-chain-advancer.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
-import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
+import { validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -1879,6 +1879,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       reflectWorktreesDir,
     }),
   });
+  lifecycleDeps.onPendingTaskPromoted = async (task) => {
+    await ralphLoopService.claimLatestLiveOwner(task);
+  };
 
   // --- Event pipeline ---
 
@@ -3190,7 +3193,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           console.warn(`[provider-reset] task ${task.id} cannot be resumed safely: ${intent.detail}`);
           return { holdForResume: false };
         }
-        const pins = launchIntentPins(intent.intent);
         const now = Date.now();
         // `record` LATCHES the reset time at first observation and returns it, so
         // this comparison flips to false once the latched reset elapses (unlike a
@@ -3201,19 +3203,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           resetsAt: resolveProviderResetMs(quotaAdapter.getLatest(), now),
           relaunch: buildProviderResumeLaunch({
             id: task.id,
-            prompt: task.prompt,
-            cwd: task.cwd,
+            prompt: intent.intent.prompt ?? task.prompt,
+            cwd: intent.intent.cwd ?? task.cwd,
             criteria: task.criteria,
             name: task.name,
             playbookId: task.playbookId,
             playbookParameterValues: task.playbookParameterValues,
-            projectId: task.projectId,
-            agentType: task.agentType,
-            ...pins,
+            projectId: intent.intent.projectId ?? task.projectId,
+            agentType: intent.intent.agentType,
             autoCloseOnSignal: task.autoCloseOnSignal,
             issueClaim: { repo: claim.repo, number: claim.number },
             provenance: task.provenance,
-            launchIntent: task.launchIntent,
+            launchIntent: intent.intent,
           }),
         });
         return { holdForResume: now < latchedResetsAt };

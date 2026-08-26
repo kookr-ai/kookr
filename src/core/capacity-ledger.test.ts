@@ -154,12 +154,28 @@ describe('buildCapacityLedger', () => {
 
     expect(ledger.active).toBe(0);
     expect(ledger.free).toBe(10);
-    expect(ledger.pendingQueueDepth).toBe(1);
+    expect(ledger.pendingQueueDepth).toBe(0);
     expect(ledger.parked).toEqual({
       taskCount: 1,
       taskIds: ['parked-1'],
       byDependency: [{ dependency: 'kb', taskCount: 1, taskIds: ['parked-1'] }],
     });
+  });
+
+  test('counts a half-open probe waiting for capacity as queued, not dependency-parked', () => {
+    const ledger = byClassOf([task({
+      id: 'capacity-probe',
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_waiting_for_capacity',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: '2026-07-24T11:00:00.000Z',
+      },
+    })]);
+
+    expect(ledger.pendingQueueDepth).toBe(1);
+    expect(ledger.parked).toBeUndefined();
   });
 
   test('faaStaleThresholdMs / faaTtlMs deps flow into FAA classification (issue #2142)', () => {

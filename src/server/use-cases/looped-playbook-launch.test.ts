@@ -573,6 +573,7 @@ Loop.
     await withPlaybook(`---
 name: Loopable
 tags: [workflow, loopable]
+dependencies: [kb]
 ---
 
 Loop.
@@ -597,6 +598,10 @@ Loop.
       });
 
       expect(result.parked).toBe(true);
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ dependencies: ['kb'] }),
+        { deliveryPolicy: 'pre-authorized' },
+      );
       expect(startLoop).toHaveBeenCalledOnce();
       expect(startLoop).toHaveBeenCalledWith(task, expect.objectContaining({ prompt: expect.any(String) }));
     });

@@ -48,6 +48,39 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toHaveLength(0);
   });
 
+  test('re-parks an in-progress probe whose attached session died during restart', async () => {
+    const task = taskStore.createTask({
+      prompt: 'probe dependency',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-dead-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.markedCompleted).toContain('kookr-dead-probe');
+    expect(result.tasksTerminated).not.toContain(task.id);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      },
+    });
+  });
+
   test('does not resume (SessionBridge-reattach) a launch-abandoned master linked to a terminated launch_timeout task (issue #2500)', async () => {
     // A launch that timed out: the task is terminated with a launch_timeout
     // disposition and the late dtach master was linked via
@@ -840,6 +873,30 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(after.terminatedAt).toBeInstanceOf(Date);
     // Terminal task no longer occupies a capacity slot.
     expect(taskStore.getActiveCount()).toBe(0);
+  });
+
+  test('re-parks an interrupted durable recovery probe instead of terminating it', () => {
+    const task = taskStore.createTask({
+      prompt: 'probe provider',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    expect(reconcileStaleOpenLaunches(taskStore)).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      },
+    });
+    expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
   });
 
   test('issue #1588: the terminated task carries a queryable stale_open_launch disposition', () => {

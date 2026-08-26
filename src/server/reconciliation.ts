@@ -191,11 +191,38 @@ export async function reconcile(
     const latestTask = taskStore.getTask(task.id) ?? task;
     const ralphActive =
       latestTask.ralphLoop?.status === 'running' || latestTask.ralphLoop?.status === 'paused';
+    const allSessionsDone = latestTask.sessions.length > 0
+      && latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted');
+
+    // A durable probe marker means this was an admission attempt, not an
+    // ordinary worker that should become terminal. If its session died with
+    // the server, preserve the same launch intent for another bounded probe.
+    // This conversion happens before terminal transitions, whose invariant is
+    // that every admission marker is cleared.
+    if (
+      latestTask.launchAdmission?.status === 'probing'
+      && (latestTask.status === 'inProgress' || latestTask.status === 'open')
+      && allSessionsDone
+    ) {
+      const probing = latestTask.launchAdmission;
+      if (latestTask.status === 'inProgress') taskStore.reopenTask(latestTask.id);
+      if (taskStore.getTask(latestTask.id)?.status === 'open') taskStore.pendTask(latestTask.id);
+      taskStore.setLaunchAdmission(latestTask.id, {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: probing.dependencies.map((dependency) => ({
+          ...dependency,
+          state: 'degraded',
+          reason: 'Recovery probe was interrupted by server restart',
+        })),
+        parkedAt: new Date().toISOString(),
+      });
+      continue;
+    }
     if (
       !ralphActive &&
       (latestTask.status === 'inProgress' || latestTask.status === 'open') &&
-      latestTask.sessions.length > 0 &&
-      latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
+      allSessionsDone
     ) {
       if (latestTask.status === 'open') {
         taskStore.startTask(latestTask.id);
@@ -268,6 +295,23 @@ export function reconcileStaleOpenLaunches(
     if (task.sessions.length > 0) continue;
     if (taskStore.hasFreshLaunchReservation(task.id)) continue;
     try {
+      if (task.launchAdmission?.status === 'probing') {
+        taskStore.setLaunchAdmission(task.id, {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: task.launchAdmission.dependencies.map((dependency) => ({
+            ...dependency,
+            state: 'degraded',
+            reason: 'Recovery probe was interrupted by server restart',
+          })),
+          parkedAt: new Date().toISOString(),
+        });
+        taskStore.pendTask(task.id);
+        console.warn(
+          `[startup-reconcile] re-parked interrupted dependency probe for task ${task.id}`,
+        );
+        continue;
+      }
       // Belt-and-braces backstop (issue #1554): tasks created after the
       // creation-time naming change already carry a name, but a legacy task
       // persisted before it may still be nameless here. Give it the

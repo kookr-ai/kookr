@@ -77,7 +77,7 @@ function lifecycleTask(overrides: Partial<Task> = {}): Task {
 
 function makeDeps(overrides: Partial<AgentLifecycleDeps> = {}): AgentLifecycleDeps {
   return {
-    monitor: { registerAgent: vi.fn() } as any,
+    monitor: { registerAgent: vi.fn(), getSnapshot: vi.fn().mockReturnValue([]) } as unknown as AgentLifecycleDeps['monitor'],
     watchdog: { registerAgent: vi.fn() } as any,
     hookWatcher: { isWatching: vi.fn().mockReturnValue(false), watch: vi.fn() } as any,
     interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as any,
@@ -1036,7 +1036,6 @@ describe('promotePendingTasks', () => {
       setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({
       taskStore: mockTaskStore as any,
       lifecycleDeps,
@@ -1082,7 +1081,6 @@ describe('promotePendingTasks', () => {
       setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({
       taskStore: mockTaskStore as any,
       lifecycleDeps,
@@ -1125,7 +1123,6 @@ describe('promotePendingTasks', () => {
       setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({
       taskStore: mockTaskStore as any,
       lifecycleDeps,
@@ -1349,6 +1346,34 @@ describe('promotePendingTasks (integration)', () => {
     expect(taskStore.getTask(t1.id)!.status).toBe('cancelled');
   });
 
+  test('cancels a healthy dependency launch failure instead of treating it as a probe retry', async () => {
+    const task = taskStore.createTask({
+      prompt: 'healthy dependency launch fails',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'healthy dependency launch fails',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockRejectedValueOnce(new Error('ordinary adapter failure'));
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission: new LaunchDependencyAdmission(),
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
   test('no-op when no pending tasks', async () => {
     const promoted = await promotePendingTasks(deps);
     expect(promoted).toBe(0);
@@ -1426,6 +1451,11 @@ describe('promotePendingTasks (integration)', () => {
 
     expect(await promotePendingTasks(deps)).toBe(0);
     expect(taskStore.getTask(task.id)?.status).toBe('pending');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({
+      status: 'parked',
+      reason: 'dependency_degraded',
+      parkedAt: '2026-03-31T00:00:00.000Z',
+    });
     expect(taskStore.getActiveCount()).toBe(0);
     expect(adapter.launch).not.toHaveBeenCalled();
 
@@ -1608,6 +1638,265 @@ describe('promotePendingTasks (integration)', () => {
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
     ]);
+  });
+
+  test('re-parks the same pending task when its half-open launch fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider unavailable',
+    }]);
+    const task = taskStore.createTask({
+      prompt: 'rendered prompt',
+      cwd: '/rendered-cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'original prompt',
+        cwd: '/original-cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockRejectedValueOnce(new Error('probe launch failed'));
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(adapter.launch).toHaveBeenCalledWith(
+      task.id,
+      'rendered prompt',
+      '/original-cwd',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('persists probing and aborts a partial promotion session before re-parking', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'partial promotion probe',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'partial promotion probe',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      expect(taskStore.getTask(taskId)?.launchAdmission).toMatchObject({ status: 'probing' });
+      options?.onSessionCreated?.('probe-partial-promotion');
+      taskStore.addSession(taskId, {
+        tmuxSession: 'probe-partial-promotion',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      throw new Error('provider failed after attach');
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'probe-partial-promotion',
+        lastStatus: 'aborted',
+      })],
+    });
+    expect(adapter.stop).toHaveBeenCalledWith('probe-partial-promotion');
+  });
+
+  test('reaps an unattached promoted session when its probe is cancelled before rejection', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'cancel promoted probe',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel promoted probe',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('cancelled-probe-promotion');
+      taskStore.cancelTask(taskId);
+      throw new Error('adapter rejected after cancellation');
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      sessions: [],
+    });
+    expect(adapter.stop).toHaveBeenCalledWith('cancelled-probe-promotion');
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('terminal state during promoted-session cleanup wins before circuit degradation', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'cancel while stopping promoted probe',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel while stopping promoted probe',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let finishStop!: () => void;
+    let markStopStarted!: () => void;
+    const stopStarted = new Promise<void>((resolve) => { markStopStarted = resolve; });
+    vi.mocked(adapter.stop).mockImplementationOnce(async () => {
+      markStopStarted();
+      await new Promise<void>((resolve) => { finishStop = resolve; });
+    });
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('probe-cleanup-promotion');
+      throw new Error('probe rejected before attachment');
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await stopStarted;
+    taskStore.cancelTask(task.id);
+    finishStop();
+
+    expect(await promotion).toBe(0);
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('reaps an unattached ordinary promoted session when adapter launch rejects', async () => {
+    const task = taskStore.createTask('ordinary promoted failure', '/cwd');
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('ordinary-unattached-promotion');
+      throw new Error('ordinary adapter rejection');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(0);
+      expect(taskStore.getTask(task.id)).toMatchObject({ status: 'cancelled', sessions: [] });
+      expect(adapter.stop).toHaveBeenCalledWith('ordinary-unattached-promotion');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('notifies orchestration after a deferred task successfully promotes', async () => {
+    const onPendingTaskPromoted = vi.fn();
+    const task = taskStore.createTask('deferred loop', '/cwd');
+    taskStore.pendTask(task.id);
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, onPendingTaskPromoted },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(1);
+    expect(onPendingTaskPromoted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: task.id, status: 'inProgress' }),
+    );
+  });
+
+  test('keeps an attached promoted worker live when orchestration notification fails', async () => {
+    const onPendingTaskPromoted = vi.fn().mockRejectedValue(new Error('Ralph catch-up failed'));
+    const task = taskStore.createTask('deferred loop notification failure', '/cwd');
+    taskStore.pendTask(task.id);
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, onPendingTaskPromoted },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(1);
+      expect(taskStore.getTask(task.id)).toMatchObject({ status: 'inProgress' });
+      expect(taskStore.getTask(task.id)?.sessions).toHaveLength(1);
+      expect(adapter.stop).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Post-launch orchestration notification failed'),
+        'Ralph catch-up failed',
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('keeps an attached promoted worker live when post-launch registration fails', async () => {
+    const task = taskStore.createTask('deferred registration failure', '/cwd');
+    taskStore.pendTask(task.id);
+    const onPendingTaskPromoted = vi.fn();
+    deps.lifecycleDeps.onPendingTaskPromoted = onPendingTaskPromoted;
+    vi.mocked(deps.lifecycleDeps.interactionLog!.append)
+      .mockRejectedValueOnce(new Error('launch audit unavailable'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(1);
+      expect(taskStore.getTask(task.id)).toMatchObject({ status: 'inProgress' });
+      expect(taskStore.getTask(task.id)?.sessions).toHaveLength(1);
+      expect(adapter.stop).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Post-launch registration failed for live task'),
+        'launch audit unavailable',
+      );
+      expect(onPendingTaskPromoted).toHaveBeenCalledWith(
+        expect.objectContaining({ id: task.id, status: 'inProgress' }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('does not write parked state after a pending task is cancelled during preflight', async () => {
@@ -1932,7 +2221,6 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     const adapter = slowAdapter(taskStore, launchedIds, gate);
 
     const lifecycleDeps = makeDeps({ taskStore });
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({
       taskStore,
       adapterRegistry: createAdapterRegistry(adapter),
@@ -1973,7 +2261,6 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
     const preflight = vi.fn().mockResolvedValue([]);
     const lifecycleDeps = makeDeps({ taskStore, launchDependencyAdmission, dependencyPreflightRunner: preflight });
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const launchedIds: string[] = [];
     const adapter = slowAdapter(taskStore, launchedIds, Promise.resolve());
     const deps = makePromotionDeps({
@@ -1984,7 +2271,7 @@ describe('promotePendingTasks launch reservation (#700)', () => {
 
     const [a, b] = await Promise.all([promotePendingTasks(deps), promotePendingTasks(deps)]);
 
-    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(preflight).toHaveBeenCalledTimes(1);
     expect(launchedIds).toEqual([task.id]);
     expect(a + b).toBe(1);
     expect(launchDependencyAdmission.snapshot()).toEqual([
@@ -2005,7 +2292,6 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     const adapter = slowAdapter(taskStore, launchedIds, gate);
 
     const lifecycleDeps = makeDeps({ taskStore });
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({
       taskStore,
       adapterRegistry: createAdapterRegistry(adapter),
@@ -2039,7 +2325,6 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     } as unknown as AgentAdapter;
 
     const lifecycleDeps = makeDeps({ taskStore });
-    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
     const deps = makePromotionDeps({ taskStore, adapterRegistry: createAdapterRegistry(adapter), lifecycleDeps });
 
     await promotePendingTasks(deps);

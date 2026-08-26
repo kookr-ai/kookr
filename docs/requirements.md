@@ -423,12 +423,12 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 
 **Acceptance criteria:**
 - Launch dialog accepts: task prompt (required), working directory (required), completion criteria (optional)
-- Agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md))
+- When launch admission permits, the agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md)); confirmed degradation follows R4b.12 and starts no session
 - Claude Code launched with `--settings` flag pointing to Kookr-generated hook settings
 - Hook settings are additive to user's existing settings
 - Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`
 - WebSocket client and server schemas validate concrete agent types consistently with the shared `AgentType` contract
-- New task created with status `open`, transitions to `in_progress` on agent start
+- An admitted task is created as `open` and transitions to `inProgress` on agent start; a confirmed-degraded task is persisted as `pending` until R4b.12 recovery admission succeeds
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
@@ -524,7 +524,7 @@ The system SHALL allow relaunching a task with the same or modified prompt and w
 
 ### R4.4: Task Lifecycle Management [F4.4] — SHALL — `done`
 
-The system SHALL manage tasks through a full lifecycle: Open → InProgress → Completed/Cancelled.
+The system SHALL manage tasks across `open`, `pending`, `inProgress`, `completed`, `cancelled`, and `terminated`: launches may enter `pending` before a session exists, admitted sessions enter `inProgress`, failed recovery probes return to `pending`, and terminal/user transitions select the appropriate end state.
 
 **Acceptance criteria:**
 - Tasks are the unit of work (distinct from agent sessions)
@@ -792,6 +792,22 @@ The system SHOULD let the operator fill the Launch dialog's working directory fr
 - Shape check only (`/` or `~/` after trim); no filesystem access
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (`looksLikeAbsoluteClipboardPath`, `handlePasteCwdFromClipboard`), `src/frontend/components/LaunchTaskDialog.paste.test.ts`.
+
+### R4b.12: Required Launch Dependency Admission [F4.12, F10.5] — SHALL — `done`
+
+The system SHALL preserve required work without consuming a worker when confirmed launch-dependency degradation makes that work non-viable.
+
+**Acceptance criteria:**
+- Confirmed degradation creates one durable pending task and starts no adapter session or worker slot
+- The original user prompt, cwd, project, agent/model/effort pins, Ralph verdict wiring, dependency list, and idempotency key survive every automatic replay path as intent identity, while the already worktree/delivery-guarded durable task prompt remains the adapter replay prompt
+- Unknown/timeout collection evidence stays distinct from confirmed degradation and cannot erase an already degraded or half-open gate
+- Recovery allows one half-open probe; concurrent promotion cannot duplicate it
+- Probe failure, or restart without a live reconciled probe session, re-parks the same task and stops any partial session only while the task remains non-terminal; a concurrent completion, cancellation, or termination wins, releases the probe, clears admission metadata, ignores the stale failure for circuit degradation, and prevents re-parking or launch. A live reconciled probe continues and clears its marker, but confirmed degradation recorded at or after that probe began still keeps the circuit degraded
+- Scheduled, interactive, and looped playbook launches all forward dependency declarations
+- Generic pending TTL and scheduled-work staleness do not expire or duplicate dependency-parked work, and capacity/diagnostics report launchable pending, parked, degraded, and unknown populations separately
+- Duplicate and idempotent REST responses preserve admission metadata; compact task listings retain only safe legacy launch pins (`schemaVersion`, `agentType`, `model`, `effort`) and redact prompt-bearing/replay fields
+
+**Evidence:** `src/core/launch-dependency-admission.ts`, `src/core/launch-dependency-task-admission.ts`, `src/core/task-launch-intent.ts`, `src/core/pending-task-ttl.ts`, `src/core/capacity-ledger.ts`, `src/core/launch-dependency-diagnostics.ts`, `src/core/session-registry.ts`, `src/server/launch-service.ts`, `src/server/agent-lifecycle.ts`, `src/server/crash-recovery.ts`, `src/server/provider-transient-retry.ts`, `src/server/reconciliation.ts`, `src/server/startup-recovery.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/server/ralph-loop-service.ts`, `src/server/use-cases/looped-playbook-launch.ts`, `src/server/routes/task-routes.ts`, and focused tests beside each module.
 
 ---
 
@@ -1465,6 +1481,7 @@ The system SHALL persist each orchestration pause as an explicit lifecycle recor
 | R4b.9 | F4.1 | SHALL | done | LaunchTaskDialog, QuickLaunch, LaunchEffortModelPickers, messages, lifecycle-handler |
 | R4b.10 | F4.1 | SHALL | done | last-launch-pins, LaunchTaskDialog, QuickLaunch, launch-effort-model |
 | R4b.11 | F4.1 | SHOULD | done | LaunchTaskDialog (`looksLikeAbsoluteClipboardPath`), LaunchTaskDialog.paste.test.ts |
+| R4b.12 | F4.12, F10.5 | SHALL | done | launch-dependency-admission, task-launch-intent, launch-service, agent-lifecycle, crash-recovery, schedule-validator, task-routes |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

@@ -144,16 +144,6 @@ export function handleLaunchResult(
     return { duplicate: false };
   }
   if (!result) return { duplicate: false };
-  if (result.duplicate) {
-    send({
-      type: 'alert',
-      agentId: result.task.sessions[0]?.tmuxSession ?? '',
-      summary: `Already running: ${promptExcerpt}`,
-      details: '',
-      severity: 'info',
-    });
-    return { duplicate: true };
-  }
   if (result.queued) {
     if (result.parked) {
       const dependencies = result.dependencyAdmission?.dependencies
@@ -165,7 +155,9 @@ export function handleLaunchResult(
       const admissionReason = result.dependencyAdmission?.reason;
       const admissionMessage = admissionReason === 'half_open_probe_busy'
         ? 'A dependency recovery probe is already in flight; no worker slot was consumed.'
-        : 'A required launch dependency is degraded; no worker slot was consumed.';
+        : admissionReason === 'half_open_waiting_for_capacity'
+          ? 'A dependency recovery probe is ready but is waiting for capacity.'
+          : 'One or more required launch dependencies are degraded; no worker slot was consumed.';
       send({
         type: 'alert',
         agentId: '',
@@ -177,7 +169,7 @@ export function handleLaunchResult(
         ].filter(Boolean).join('\n'),
         severity: 'warning',
       });
-      return { duplicate: false };
+      return { duplicate: result.duplicate === true };
     }
     send({
       type: 'alert',
@@ -186,6 +178,17 @@ export function handleLaunchResult(
       details: 'Concurrency limit reached — will start when a slot opens.',
       severity: 'info',
     });
+    return { duplicate: result.duplicate === true };
+  }
+  if (result.duplicate) {
+    send({
+      type: 'alert',
+      agentId: result.task.sessions[0]?.tmuxSession ?? '',
+      summary: `Already running: ${promptExcerpt}`,
+      details: '',
+      severity: 'info',
+    });
+    return { duplicate: true };
   }
   return { duplicate: false };
 }

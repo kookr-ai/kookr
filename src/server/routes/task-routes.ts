@@ -621,7 +621,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
         ...(claimIssue ? { claimIssue } : {}),
       });
-      const { task, queued, duplicate, idempotentReplay } = launchResult;
+      const { task, queued, duplicate, idempotentReplay, parked, dependencyAdmission } = launchResult;
       // Plan-quota rotation metadata (issue #1936) — flat fields on the spawn
       // JSON so supervisors/feeder log without parsing free-text errors.
       const planQuotaMeta = launchResult.admission
@@ -639,7 +639,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         : undefined;
 
       if (duplicate) {
-        return c.json({ task, duplicate: true, ...planQuotaMeta }, 200);
+        return c.json({
+          task,
+          duplicate: true,
+          ...(queued ? { queued: true } : {}),
+          ...(parked ? { parked: true } : {}),
+          ...(dependencyAdmission ? { dependencyAdmission } : {}),
+          ...planQuotaMeta,
+        }, 200);
       }
 
       // Idempotent replay (#1526 Phase B): the SAME task an earlier request
@@ -648,13 +655,22 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // callers that already parse a plain task object need no extra
       // branching to notice the replay via `idempotentReplay`.
       if (idempotentReplay) {
-        return c.json({ ...task, idempotentReplay: true, ...planQuotaMeta }, 200);
+        return c.json({
+          ...task,
+          idempotentReplay: true,
+          ...(queued ? { queued: true } : {}),
+          ...(parked ? { parked: true } : {}),
+          ...(dependencyAdmission ? { dependencyAdmission } : {}),
+          ...planQuotaMeta,
+        }, 200);
       }
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({
         ...task,
         ...(queued ? { queued: true } : {}),
+        ...(parked ? { parked: true } : {}),
+        ...(dependencyAdmission ? { dependencyAdmission } : {}),
         ...planQuotaMeta,
       }, 201);
     } catch (err) {
@@ -1384,7 +1400,6 @@ type CompactApiTask = Pick<
   | 'status'
   | 'cwd'
   | 'agentType'
-  | 'launchIntent'
   | 'playbookId'
   | 'projectId'
   | 'priority'
@@ -1415,6 +1430,8 @@ type CompactApiTask = Pick<
   taskId: string;
   /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
   aggregateTokenUsage?: TokenUsage;
+  /** Backward-compatible, secret-free launch pins (prompt/cwd/key omitted). */
+  launchIntent?: Pick<NonNullable<Task['launchIntent']>, 'schemaVersion' | 'agentType' | 'model' | 'effort'>;
   sessions: CompactApiTaskSession[];
   /** Why an `inProgress` task is occupying a slot without visible work (issue #1526 Phase B). */
   stuckReason?: TaskStuckReason;
@@ -1438,7 +1455,6 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     status: task.status,
     cwd: task.cwd,
     agentType: task.agentType,
-    launchIntent: task.launchIntent,
     playbookId: task.playbookId,
     projectId: task.projectId,
     priority: task.priority,
@@ -1456,6 +1472,14 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     pendingSignal: task.pendingSignal,
     issueClaim: task.issueClaim,
     ralphLoop: task.ralphLoop,
+    launchIntent: task.launchIntent
+      ? {
+          schemaVersion: task.launchIntent.schemaVersion,
+          agentType: task.launchIntent.agentType,
+          ...(task.launchIntent.model !== undefined ? { model: task.launchIntent.model } : {}),
+          ...(task.launchIntent.effort !== undefined ? { effort: task.launchIntent.effort } : {}),
+        }
+      : undefined,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,

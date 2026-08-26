@@ -234,7 +234,38 @@ When a declared dependency is confirmed degraded, `POST /api/tasks` still
 creates the task and returns `queued: true`, but the task carries
 `launchAdmission.status: "parked"` and no worker is started or counted as
 active. The original launch intent is retained so promotion can retry it after
-recovery evidence. An `unknown` health result remains fail-open.
+recovery evidence. An `unknown` health result remains fail-open, but cannot
+erase a previously confirmed degraded or half-open circuit. A recovery worker
+attempt is persisted as `launchAdmission.status: "probing"`; probe failure, or
+restart without a live reconciled probe session, re-parks the same task and
+idempotency identity only while it remains non-terminal. Completion,
+cancellation, or termination during preflight/probe launch wins: the probe is
+released, admission metadata is cleared, stale failure does not degrade the
+circuit, and no re-park or launch occurs. A live reconciled probe clears its
+marker as successful unless confirmed degradation recorded at or after that
+probe began still controls the circuit. Capacity-only waits use
+`reason: "half_open_waiting_for_capacity"` and are queued, not reported as
+dependency-parked launch rejections.
+
+Prompt-dedup and idempotent replay responses preserve `queued`, `parked`, and
+`dependencyAdmission` metadata. Root `parked: true` is present only for
+dependency-blocked/no-slot admission; a half-open capacity wait keeps
+`queued: true` plus `dependencyAdmission` without root `parked`. The compact
+task list preserves the backward-compatible safe `launchIntent` pins
+(`schemaVersion`, `agentType`, `model`, `effort`) while redacting prompt, cwd,
+project, dependency, Ralph, and idempotency fields; fetch `GET /api/tasks/:id`
+for the full intent. In `GET /api/health`,
+`capacity.pendingQueueDepth` counts launchable pending work while
+`capacity.parked` reports dependency-blocked/no-slot work separately; a
+`half_open_waiting_for_capacity` task is counted only in the launchable queue.
+The same health payload exposes the diagnostic snapshot under
+`launchDependencies`: legacy totals/rollups plus
+optional `totalConfirmedDegradedTasks`, `totalConfirmedFindings`,
+`totalUnknownTasks`, and `totalUnknownFindings` (each omitted when zero), optional
+`dependencyStates`, and optional
+`parkedTasks`. `capacity.parked` is the compact capacity-oriented parked
+backlog; `launchDependencies.parkedTasks` carries dependency reasons and live
+circuit context.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -739,7 +770,7 @@ Returns the full sanitized config object for that project.
 | `POST /api/schedules/preview` | Preview next-run timestamps for a candidate schedule |
 | `PATCH /api/schedules/:id` | Update a schedule |
 | `DELETE /api/schedules/:id` | Delete a schedule |
-| `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
+| `POST /api/schedules/:id/run` | Trigger a scheduled task immediately. A capacity wait returns `queued: true`; a required-dependency wait additionally returns `parked: true`, `outcome: "parked_dependency"`, and `reasonCode: "dependency_degraded"` so consumers do not misdiagnose it as capacity exhaustion. |
 | `POST /api/schedules/recover` | Bulk re-enable schedules parked by the fail-closed `consecutive_failures` auto-pause (issue #2520). Body `{ "stopReason": "consecutive_failures", "heldBefore"?: "<ISO>" }`; `heldBefore` scopes recovery to holds established before a fix-commit / deploy watermark. Returns `{ ok, recovered[], skipped[] }`. Backs `kookr schedule enable --stop-reason consecutive_failures`. |
 | `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
 
@@ -852,7 +883,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/orchestration/status` | Orchestration pause state (SAFE MODE) + pause record + default-agent quota sample |
 | `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
 | `POST /api/orchestration/resume` | Disengage SAFE MODE and close the current pause record |
-| `GET /api/diagnostics/launch-dependencies` | Aggregates historical degraded launches by dependency and category, plus live circuit states (`healthy`, `degraded`, `unknown`, `half_open`) and parked task IDs, dependencies, counts, and reasons |
+| `GET /api/diagnostics/launch-dependencies` | Returns `launch-dependency-diagnostics.v1`. Legacy `totalDegradedTasks`, `totalFindings`, `dependencies`, and `categories` retain their original all-finding semantics (including `unknown`); additive `totalConfirmedDegradedTasks` / `totalConfirmedFindings` distinguish confirmed degradation, while `totalUnknownTasks` / `totalUnknownFindings` distinguish collection uncertainty. Optional `dependencyStates` exposes live `healthy`/`degraded`/`unknown`/`half_open` circuit state, and `parkedTasks` lists dependency-blocked pending task IDs, dependencies, counts, and reasons. |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |

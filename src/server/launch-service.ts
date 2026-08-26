@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
-import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchAdmission, TaskLaunchIntent } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -24,6 +24,14 @@ import type {
   LaunchDependencyAdmission,
   LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
+import {
+  isNoSlotDependencyAdmission,
+  probeFromAdmissionDecision,
+  taskAdmissionForDeniedDecision,
+  taskAdmissionForFailedProbe,
+  taskAdmissionForProbe,
+  taskAdmissionForProbeCapacityWait,
+} from '../core/launch-dependency-task-admission.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -67,7 +75,6 @@ import {
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   isLaunchTimeoutError,
-  LaunchTimeoutError,
   raceLaunchAgainstTimeout,
 } from './launch-timeout.js';
 
@@ -798,7 +805,8 @@ function allowRemoteChatCodex(): boolean {
  * the live-task view so a large completed-task pile is not cloned on every
  * spawn. Returns the existing task if found, undefined otherwise.
  *
- * Dedup key is (promptHash, agentType, canonicalCwd, model, effort). Two
+ * Dedup key is (promptHash, agentType, canonicalCwd, model, effort,
+ * dependencies, ralphVerdictEnv). Two
  * launches with the same prompt in different directories are different tasks;
  * two launches with different model/effort pins are also different tasks. The
  * cwd comparison canonicalizes symlinks, trailing slashes, relative paths, and
@@ -809,7 +817,12 @@ export function checkSubmission(
   prompt: string,
   agentType: AgentType,
   cwd: string,
-  pins: { model?: string; effort?: string } = {},
+  intent: {
+    model?: string;
+    effort?: string;
+    dependencies?: readonly LaunchDependency[];
+    ralphVerdictEnv?: boolean;
+  } = {},
 ): Task | undefined {
   const hash = hashPrompt(prompt);
   const canonicalIncoming = canonicalizeCwd(cwd);
@@ -823,7 +836,7 @@ export function checkSubmission(
     // Legacy tasks without a persisted intent must not silently dedup a new
     // launch: the two records may have different provider pins. New tasks
     // created by TaskStore carry an explicit unpinned intent.
-    if (!sameLaunchIntent(task.launchIntent, agentType, pins)) continue;
+    if (!sameLaunchIntent(task.launchIntent, agentType, intent)) continue;
     // Verify live status — don't rely on cached state
     const liveTask = taskStore.getTask(task.id);
     if (liveTask && liveTask.agentType === agentType && ACTIVE_STATUSES.has(liveTask.status)) {
@@ -1023,9 +1036,8 @@ async function launchTaskIdempotent(
           task,
           queued: task.status === 'pending',
           idempotentReplay: true,
-          ...(task.launchAdmission?.status === 'parked'
-            ? { parked: true, dependencyAdmission: task.launchAdmission }
-            : {}),
+          ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
+          ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
         };
       }
       // Either the finalized task no longer exists (e.g. deleted), or it's
@@ -1044,9 +1056,8 @@ async function launchTaskIdempotent(
             task,
             queued: task.status === 'pending',
             idempotentReplay: true,
-            ...(task.launchAdmission?.status === 'parked'
-              ? { parked: true, dependencyAdmission: task.launchAdmission }
-              : {}),
+            ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
+            ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
           };
         }
         // Task missing, or terminal-and-never-ran. The owner already
@@ -1245,6 +1256,8 @@ async function launchTaskCore(
     while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd, {
       model: effectiveModel,
       effort: effectiveEffort,
+      dependencies: opts.dependencies,
+      ralphVerdictEnv: opts.ralphVerdictEnv,
     }))) {
       const activeDuplicate = await validateDuplicateCandidate(deps, existing);
       if (activeDuplicate) {
@@ -1261,8 +1274,9 @@ async function launchTaskCore(
           task: activeDuplicate,
           queued: activeDuplicate.status === 'pending',
           duplicate: true,
-          ...(activeDuplicate.launchAdmission?.status === 'parked'
-            ? { parked: true, dependencyAdmission: activeDuplicate.launchAdmission }
+          ...(isNoSlotDependencyAdmission(activeDuplicate.launchAdmission) ? { parked: true } : {}),
+          ...(activeDuplicate.launchAdmission
+            ? { dependencyAdmission: activeDuplicate.launchAdmission }
             : {}),
         };
       }
@@ -1505,19 +1519,6 @@ async function launchTaskCore(
     }
   }
 
-  // 3) Pending-queue depth limit (FM3). Only bites when the launch would
-  //    actually pend (node at capacity): below capacity the task launches
-  //    immediately and queue depth is irrelevant, so behavior is unchanged.
-  if (taskStore.getActiveCount() >= effectiveMaxActive) {
-    const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
-    if (taskStore.getPendingCount() >= maxPending) {
-      console.warn(
-        `[backpressure] pending queue full (${taskStore.getPendingCount()}/${maxPending}) at capacity — rejecting launch`,
-      );
-      throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
-    }
-  }
-
   // --- Issue-claim / relaunch-lease CAS (RFC PR 1b, R4 phase b; #1711) ---
   // Fully synchronous: check maps → createTask → acquire/claim. No await
   // between check and set. Denied → throw with NO task created.
@@ -1557,6 +1558,28 @@ async function launchTaskCore(
     }
   }
 
+  // 3) Pending-queue depth limit (FM3). Apply it only after dependency
+  //    admission is known: a confirmed dependency denial creates durable
+  //    no-slot work that is intentionally excluded from the ordinary pending
+  //    cap. Healthy launches and half-open probes waiting for capacity still
+  //    consume that cap. If the latter claimed a probe above, release it
+  //    before rejecting because no task will own the token.
+  if (
+    taskStore.getActiveCount() >= effectiveMaxActive
+    && (!dependencyAdmissionDecision || dependencyAdmissionDecision.admit)
+  ) {
+    const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
+    if (taskStore.getPendingCount() >= maxPending) {
+      deps.launchDependencyAdmission?.releaseProbe(
+        probeFromAdmissionDecision(dependencyAdmissionDecision),
+      );
+      console.warn(
+        `[backpressure] pending queue full (${taskStore.getPendingCount()}/${maxPending}) at capacity — rejecting launch`,
+      );
+      throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
+    }
+  }
+
   let task: Task;
   try {
     task = taskStore.createTask({
@@ -1581,7 +1604,7 @@ async function launchTaskCore(
         model: effectiveModel,
       }),
       ...(dependencyAdmissionDecision && !dependencyAdmissionDecision.admit
-        ? { launchAdmission: toTaskLaunchAdmission(dependencyAdmissionDecision) }
+        ? { launchAdmission: taskAdmissionForDeniedDecision(dependencyAdmissionDecision, nowISO()) }
         : {}),
       // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
       // the record so the promotion posture guard can recognize schedule-fired
@@ -1608,14 +1631,14 @@ async function launchTaskCore(
     // createTask can still reject after the probe is claimed (for example when
     // a supplied parent task disappeared). Never strand the circuit in
     // half_open_probe_busy when no task was persisted.
-    deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+    deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
     throw err;
   }
 
   if (resolvedClaimKey && deps.relaunchArbiter) {
     const acquire = deps.relaunchArbiter.tryAcquire(resolvedClaimKey, task.id);
     if (!acquire.ok) {
-      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       taskStore.deleteTask(task.id);
       if (acquire.reason === 'backoff') {
         throw new RelaunchDeniedError('backoff', resolvedClaimKey, {
@@ -1629,7 +1652,7 @@ async function launchTaskCore(
   if (resolvedClaimKey && deps.issueClaimRegistry) {
     const claimResult = deps.issueClaimRegistry.claim(resolvedClaimKey, { taskId: task.id });
     if (!claimResult.ok) {
-      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       // Single-threaded so this should be unreachable after the pre-check;
       // keep it as a self-healing backstop: no orphaned task without a claim.
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
@@ -1651,7 +1674,7 @@ async function launchTaskCore(
       !deps.issueClaimRegistry ||
       deps.issueClaimRegistry.ownerRecord(resolvedClaimKey)?.taskId === task.id;
     if (!arbiterHeld || !claimHeld) {
-      deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
       deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
       taskStore.deleteTask(task.id);
@@ -1683,7 +1706,7 @@ async function launchTaskCore(
   if (taskStore.getActiveCount() >= effectiveMaxActive) {
     let queuedTask = taskStore.pendTask(task.id);
     const probeWaitAdmission = dependencyAdmissionDecision?.admit
-      ? toHalfOpenProbeWaitAdmission(dependencyAdmissionDecision)
+      ? taskAdmissionForProbeCapacityWait(dependencyAdmissionDecision, nowISO())
       : undefined;
     if (probeWaitAdmission) {
       // Keep the half-open recovery requirement durable while the task waits
@@ -1691,7 +1714,7 @@ async function launchTaskCore(
       // marker is what makes promotion and restart re-enter half-open safely.
       queuedTask = taskStore.setLaunchAdmission(task.id, probeWaitAdmission);
     }
-    deps.launchDependencyAdmission?.releaseProbe(probeOf(dependencyAdmissionDecision));
+    deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
@@ -1709,7 +1732,7 @@ async function launchTaskCore(
       task: queuedTask,
       queued: true,
       ...(probeWaitAdmission
-        ? { parked: true, dependencyAdmission: probeWaitAdmission }
+        ? { dependencyAdmission: probeWaitAdmission }
         : {}),
       ...(planQuotaRotation
         ? {
@@ -1837,6 +1860,9 @@ async function launchTaskCore(
   // in-flight launch against the cap (audit item 1, second launch site).
   phaseTracker.enter('reserve');
   taskStore.beginLaunch(task.id);
+  if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    taskStore.setLaunchAdmission(task.id, taskAdmissionForProbe(dependencyAdmissionDecision, nowISO()));
+  }
   // The disposition guard wraps ONLY the launch race — the point before which
   // no session has attached. Post-attach bookkeeping (posture stamping, audit
   // append) runs AFTER this block, so a bookkeeping fault can never dispose a
@@ -1854,7 +1880,59 @@ async function launchTaskCore(
       { taskId: task.id, agentType, adapter, reapGuard: abandon },
     );
   } catch (err) {
-    deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision?.probe, false);
+    if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+      const current = taskStore.getTask(task.id);
+      if (
+        !current
+        || current.status === 'completed'
+        || current.status === 'terminated'
+        || current.status === 'cancelled'
+      ) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+      } else {
+        deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, false);
+      }
+      taskStore.endLaunch(task.id);
+      abandon.timedOut = true;
+      if (abandon.sessionId) {
+        linkAndReapAbandonedSession(abandon.sessionId);
+        try {
+          taskStore.updateSession(task.id, abandon.sessionId, { lastStatus: 'aborted' });
+        } catch {
+          // The abandoned-session linker may already have recorded the same
+          // terminal status, or the adapter may have failed before attachment.
+        }
+      }
+      phaseTracker.abort();
+      const phaseTimings = phaseTracker.snapshot();
+      taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+      const parked = reparkAfterFailedProbe(taskStore, task.id, dependencyAdmissionDecision);
+      deps.launchOutcomeMetrics?.record({
+        agentType,
+        outcome: 'failure',
+        reason: classifyLaunchFailureReason(err),
+      });
+      deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+      if (isRoundRobin) deps.roundRobinCursor?.advance();
+      if (resolvedClaimKey && deps.flushTasks) {
+        await deps.flushTasks().catch((flushErr) => {
+          console.error(
+            `[issue-claims] flush after failed dependency probe failed for task ${task.id}: `
+            + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+          );
+        });
+      }
+      // Explicit cancellation/termination wins over a late failed probe. The
+      // task stays terminal with no retry marker, and the launch request
+      // reports its original failure rather than claiming queued work exists.
+      if (!parked) throw err;
+      return {
+        task: parked,
+        queued: true,
+        parked: true,
+        dependencyAdmission: parked.launchAdmission,
+      };
+    }
     // Never silently delete a persisted task (issue #1588). A launch that
     // timed out or threw before any session attached still left a real record;
     // deleting it (the old behaviour) erased the evidence AND let a retried
@@ -1929,6 +2007,9 @@ async function launchTaskCore(
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
   deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision?.probe, true);
+  if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    taskStore.setLaunchAdmission(task.id, undefined);
+  }
   deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
   // Instrumentation (issue #1589): finalize and persist the full
   // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
@@ -2007,8 +2088,9 @@ export function promptWithLaunchNote(task: Pick<Task, 'prompt' | 'launchNote'>):
 
 function summarizeLaunchHealth(findings: LaunchPreflightFinding[]): TaskLaunchHealthSummary | undefined {
   if (findings.length === 0) return undefined;
+  const confirmed = findings.filter((finding) => finding.category !== 'unknown');
   return {
-    degradedDependencies: [...new Set(findings.map((finding) => finding.dependency))],
+    degradedDependencies: [...new Set(confirmed.map((finding) => finding.dependency))],
     findings,
   };
 }
@@ -2027,7 +2109,7 @@ function formatLaunchNote(findings: LaunchPreflightFinding[]): string | undefine
     return `- ${finding.summary} (${finding.category}).${detail} Recommended action: ${finding.recommendedAction}`;
   });
   return [
-    '[Kookr launch warning] One or more advisory launch dependencies are degraded. Continue the task without assuming those services are available.',
+    '[Kookr launch warning] One or more advisory launch dependencies are degraded or their health is unknown. Continue the task without assuming those services are available.',
     ...lines,
   ].join('\n');
 }
@@ -2051,54 +2133,34 @@ function buildLaunchIntent(
   opts: LaunchOpts,
   resolved: { agentType: AgentType; effort?: string; model?: string },
 ): TaskLaunchIntent {
-  return {
-    ...buildTaskLaunchIntent(resolved.agentType, {
-      model: resolved.model,
-      effort: resolved.effort,
-    }),
+  return buildTaskLaunchIntent(resolved.agentType, {
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.projectId ? { projectId: opts.projectId } : {}),
-    agentType: resolved.agentType,
     ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
     ...(resolved.model !== undefined ? { model: resolved.model } : {}),
     ...(opts.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
     ...(opts.dependencies ? { dependencies: [...opts.dependencies] } : {}),
     ...(opts.idempotencyKey !== undefined ? { idempotencyKey: opts.idempotencyKey } : {}),
-  };
+  });
 }
 
-function toTaskLaunchAdmission(
-  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
-): TaskLaunchAdmission {
-  return {
-    status: 'parked',
-    reason: decision.reason,
-    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
-    parkedAt: nowISO(),
-  };
-}
-
-function toHalfOpenProbeWaitAdmission(
+function reparkAfterFailedProbe(
+  taskStore: TaskStore,
+  taskId: string,
   decision: Extract<LaunchDependencyAdmissionDecision, { admit: true }>,
-): TaskLaunchAdmission | undefined {
-  if (!decision.probe) return undefined;
-  return {
-    status: 'parked',
-    reason: 'half_open_probe_busy',
-    dependencies: decision.probe.dependencies.map((dependency) => ({
-      dependency,
-      state: 'half_open',
-      reason: 'Recovery probe waits for an available worker slot',
-    })),
-    parkedAt: nowISO(),
-  };
-}
-
-function probeOf(
-  decision: LaunchDependencyAdmissionDecision | undefined,
-) {
-  return decision?.admit ? decision.probe : undefined;
+): Task | undefined {
+  if (!decision.probe) throw new Error('Cannot repark a launch without a recovery probe');
+  const live = taskStore.getTask(taskId);
+  if (!live) throw new Error(`Task not found: ${taskId}`);
+  if (live.status === 'completed' || live.status === 'terminated' || live.status === 'cancelled') {
+    taskStore.setLaunchAdmission(taskId, undefined);
+    return undefined;
+  }
+  if (live.status === 'inProgress') taskStore.reopenTask(taskId);
+  if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
+  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
+  return taskStore.getTask(taskId)!;
 }
 
 async function collectAdvisoryDependencyFindings(

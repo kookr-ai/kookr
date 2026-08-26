@@ -25,6 +25,7 @@ export interface DependencyCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  collectionFailure?: 'timeout' | 'max_buffer';
 }
 
 export class LaunchPreflightError extends Error {
@@ -48,6 +49,8 @@ export function formatLaunchPreflightError(findings: LaunchPreflightFinding[]): 
 }
 
 export function classifyKbDoctorCommandResult(result: DependencyCommandResult): LaunchPreflightFinding | null {
+  const collectionFinding = classifyCollectionFailure(result, 'doctor');
+  if (collectionFinding) return collectionFinding;
   let parsed: KbDoctorOutput;
   try {
     parsed = JSON.parse(result.stdout) as KbDoctorOutput;
@@ -77,6 +80,8 @@ export function classifyKbDoctorCommandResult(result: DependencyCommandResult): 
 }
 
 export function classifyKbSearchSmokeResult(result: DependencyCommandResult): LaunchPreflightFinding | null {
+  const collectionFinding = classifyCollectionFailure(result, 'search smoke');
+  if (collectionFinding) return collectionFinding;
   if (result.exitCode === 0) return null;
   const message = [result.stdout, result.stderr].filter(Boolean).join('\n') || `kb search exited ${result.exitCode}`;
   return {
@@ -86,6 +91,21 @@ export function classifyKbSearchSmokeResult(result: DependencyCommandResult): La
     summary: 'KB dependency preflight search smoke failed',
     detail: redactDiagnosticText(message, 500),
     recommendedAction: recommendedKbAction('query_runtime_failure'),
+  };
+}
+
+function classifyCollectionFailure(
+  result: DependencyCommandResult,
+  command: string,
+): LaunchPreflightFinding | null {
+  if (!result.collectionFailure) return null;
+  return {
+    dependency: 'kb',
+    status: 'failed',
+    category: 'unknown',
+    summary: `KB dependency preflight ${command} did not produce bounded health evidence`,
+    detail: redactDiagnosticText(result.stderr || result.stdout || result.collectionFailure, 500),
+    recommendedAction: 'Run the KB health commands manually; a collection timeout alone is not confirmed degradation.',
   };
 }
 

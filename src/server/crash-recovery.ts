@@ -2,7 +2,12 @@ import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TaskStore, SessionInfo, Task } from '../core/tasks.js';
 import { isRecoverableTermination } from '../core/task-status.js';
-import { AdapterRegistry, type AdapterLaunchOptions, type ResumeContext } from '../adapters/agent-adapter.js';
+import {
+  AdapterRegistry,
+  type AdapterLaunchOptions,
+  type AgentAdapter,
+  type ResumeContext,
+} from '../adapters/agent-adapter.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
 import {
@@ -16,7 +21,11 @@ import {
   type LaunchDependencyAdmission,
   type LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
-import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
+import {
+  taskAdmissionForDeniedDecision,
+  taskAdmissionForFailedProbe,
+  taskAdmissionForProbe,
+} from '../core/launch-dependency-task-admission.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   noteLaunchSession,
@@ -109,7 +118,12 @@ export async function recoverCrashedSessions(
     const match = findTaskAndSession(taskStore, tmuxName);
     if (match) {
       tasksWithLiveSessions.add(match.task.id);
-      livePromptHashes.add(promptDedupKey(match.task.agentType, match.task.prompt, match.task.launchIntent));
+      const liveIntent = validatePersistedLaunchIntent(match.task);
+      livePromptHashes.add(promptDedupKey(
+        match.task.agentType,
+        liveIntent.ok ? liveIntent.intent.prompt ?? match.task.prompt : match.task.prompt,
+        liveIntent.ok ? liveIntent.intent : match.task.launchIntent,
+      ));
     }
   }
 
@@ -193,7 +207,13 @@ export async function recoverCrashedSessions(
     }
 
     // Guard: another task with an identical prompt is already running or was just relaunched
-    const promptHash = promptDedupKey(task.agentType, task.prompt, task.launchIntent);
+    const identityPrompt = intent.intent.prompt ?? task.userPrompt ?? task.prompt;
+    // Task.prompt already contains the worktree/delivery-policy guardrails
+    // applied at initial admission. The raw intent prompt remains the stable
+    // dedup identity, but must not replace the guarded prompt on relaunch.
+    const effectivePrompt = task.prompt;
+    const originalCwd = intent.intent.cwd ?? session.cwd;
+    const promptHash = promptDedupKey(task.agentType, identityPrompt, intent.intent);
     if (livePromptHashes.has(promptHash) || relaunchedPromptHashes.has(promptHash)) {
       result.skipped.push({
         taskId: task.id,
@@ -225,18 +245,18 @@ export async function recoverCrashedSessions(
     }
 
     // Guard: CWD must exist (worktree may have been cleaned up)
-    const cwdExists = await directoryExists(session.cwd);
+    const cwdExists = await directoryExists(originalCwd);
     if (!cwdExists) {
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,
-        reason: `CWD does not exist: ${session.cwd}`,
+        reason: `CWD does not exist: ${originalCwd}`,
       });
       continue;
     }
 
     // Clean up stale .git/index.lock if present (left by agents mid-git-operation at crash time)
-    await removeStaleGitLock(session.cwd);
+    await removeStaleGitLock(originalCwd);
 
     // Reopen the task if reconcile auto-transitioned it. 'terminated' is the
     // new default after rfc-task-loss-prevention; 'completed' is kept for
@@ -256,9 +276,28 @@ export async function recoverCrashedSessions(
     // See docs/rfc/rfc-crash-recovery-resume.md.
     const { resumeContext, fallbackReason } = await buildResumeContext(task, session);
 
-    const dependencyAdmission = await evaluateRecoveryDependencyAdmission(task, options);
+    const dependencyAdmission = await evaluateRecoveryDependencyAdmission(intent.intent, options);
+    // Dependency collection is asynchronous. Cancellation or another state
+    // transition during that await must dominate the stale recovery attempt:
+    // never restore admission metadata or launch a worker onto a task that is
+    // no longer the open task this recovery reserved.
+    const currentAfterAdmission = taskStore.getTask(task.id);
+    if (!currentAfterAdmission || currentAfterAdmission.status !== 'open') {
+      if (dependencyAdmission?.admit) {
+        options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+      }
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: 'task changed state while recovery dependency admission was in flight',
+      });
+      continue;
+    }
     if (dependencyAdmission && !dependencyAdmission.admit) {
-      taskStore.setLaunchAdmission(task.id, toTaskLaunchAdmission(dependencyAdmission));
+      taskStore.setLaunchAdmission(
+        task.id,
+        taskAdmissionForDeniedDecision(dependencyAdmission, new Date().toISOString()),
+      );
       taskStore.pendTask(task.id);
       result.skipped.push({
         taskId: task.id,
@@ -267,10 +306,11 @@ export async function recoverCrashedSessions(
       });
       continue;
     }
-    if (dependencyAdmission && task.launchAdmission) {
+    if (dependencyAdmission && currentAfterAdmission.launchAdmission) {
       taskStore.setLaunchAdmission(task.id, undefined);
-      if (task.launchAdmission.status === 'parked') {
+      if (currentAfterAdmission.launchAdmission.status === 'parked') {
         taskStore.setLaunchHealthSummary(task.id, undefined);
+        taskStore.setLaunchNote(task.id, undefined);
       }
     }
 
@@ -279,16 +319,26 @@ export async function recoverCrashedSessions(
     // settings file generation, and git info capture. When `resumeContext`
     // is provided AND the adapter supports resume (Claude Code), the launch
     // continues the prior conversation on a forked branch.
+    let adapterLaunchSettled = false;
+    let launchAdapter: AgentAdapter | undefined;
+    const launchReapGuard: LaunchReapGuard = { reaped: false };
+    const priorSessionIds = new Set(task.sessions.map((candidate) => candidate.tmuxSession));
     try {
       const adapter = adapterRegistry.get(task.agentType);
-      const launchReapGuard: LaunchReapGuard = { reaped: false };
+      launchAdapter = adapter;
       const launchOptions = {
-        ...buildRecoveryLaunchOptions(task, intent.intent),
+        ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
         onSessionCreated: (sessionId: string) => {
           noteLaunchSession(launchReapGuard, adapter, task.agentType, task.id, sessionId);
         },
       };
-      const launchPromise = adapter.launch(task.id, task.prompt, session.cwd, resumeContext, launchOptions);
+      if (dependencyAdmission?.admit && dependencyAdmission.probe) {
+        taskStore.setLaunchAdmission(
+          task.id,
+          taskAdmissionForProbe(dependencyAdmission, new Date().toISOString()),
+        );
+      }
+      const launchPromise = adapter.launch(task.id, effectivePrompt, originalCwd, resumeContext, launchOptions);
       const configuredTimeout = options.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout
@@ -300,8 +350,10 @@ export async function recoverCrashedSessions(
         reapGuard: launchReapGuard,
         reapKnownSessionOnTimeout: true,
       });
+      adapterLaunchSettled = true;
       if (dependencyAdmission?.admit) {
         options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
+        taskStore.setLaunchAdmission(task.id, undefined);
       }
 
       // Transfer relaunch metadata to the new session. Mark resumedFromCrash
@@ -335,8 +387,66 @@ export async function recoverCrashedSessions(
       }
       result.relaunched.push(entry);
     } catch (err) {
-      if (dependencyAdmission?.admit) {
-        options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+      // onSessionCreated fires as soon as the physical terminal exists, before
+      // TaskStore attachment. Reap that session for every unsettled recovery
+      // launch failure so healthy/no-probe recovery cannot leak an orphan.
+      if (!adapterLaunchSettled) {
+        const failedSessionId = launchReapGuard.sessionId ?? taskStore.getTask(task.id)?.sessions
+          .filter((candidate) => !priorSessionIds.has(candidate.tmuxSession))
+          .at(-1)?.tmuxSession;
+        if (failedSessionId) {
+          try {
+            taskStore.updateSession(task.id, failedSessionId, { lastStatus: 'aborted' });
+          } catch {
+            // The adapter may report session creation before store attachment.
+          }
+          if (!launchReapGuard.reaped) {
+            launchReapGuard.reaped = true;
+            const adapter = launchAdapter ?? adapterRegistry.get(task.agentType);
+            await Promise.resolve(adapter.stop(failedSessionId)).catch(() => undefined);
+          }
+        }
+      }
+      if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
+        const currentAtFailure = taskStore.getTask(task.id);
+        if (
+          !currentAtFailure
+          || currentAtFailure.status === 'completed'
+          || currentAtFailure.status === 'terminated'
+          || currentAtFailure.status === 'cancelled'
+        ) {
+          options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+        } else {
+          options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+        }
+        const current = taskStore.getTask(task.id);
+        if (current?.status === 'inProgress') taskStore.reopenTask(task.id);
+        if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+        const afterTransition = taskStore.getTask(task.id);
+        if (
+          afterTransition
+          && afterTransition.status !== 'completed'
+          && afterTransition.status !== 'terminated'
+          && afterTransition.status !== 'cancelled'
+        ) {
+          taskStore.setLaunchAdmission(
+            task.id,
+            taskAdmissionForFailedProbe(dependencyAdmission, new Date().toISOString()),
+          );
+          result.skipped.push({
+            taskId: task.id,
+            sessionId: tmuxName,
+            reason: `recovery probe failed and task was re-parked: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        } else {
+          if (afterTransition) taskStore.setLaunchAdmission(task.id, undefined);
+          result.skipped.push({
+            taskId: task.id,
+            sessionId: tmuxName,
+            reason: 'task became terminal while its recovery probe was in flight',
+          });
+        }
+        continue;
       }
       result.failed.push({
         taskId: task.id,
@@ -350,11 +460,11 @@ export async function recoverCrashedSessions(
 }
 
 async function evaluateRecoveryDependencyAdmission(
-  task: Task,
+  intent: NonNullable<Task['launchIntent']>,
   options: CrashRecoveryOptions,
 ): Promise<LaunchDependencyAdmissionDecision | undefined> {
   const admission = options.launchDependencyAdmission;
-  const dependencies = task.launchIntent?.dependencies;
+  const dependencies = intent.dependencies;
   if (!admission || !dependencies || dependencies.length === 0) return undefined;
 
   let findings: Array<{ dependency: string; category: string; summary?: string }>;
@@ -363,7 +473,7 @@ async function evaluateRecoveryDependencyAdmission(
   } catch (err) {
     // Recovery must remain fail-open when health collection itself is broken.
     console.warn(
-      `[crash-recovery] dependency preflight could not complete for task ${task.id}:`,
+      '[crash-recovery] dependency preflight could not complete:',
       err instanceof Error ? err.message : err,
     );
     findings = dependencies.map((dependency) => ({
@@ -376,27 +486,18 @@ async function evaluateRecoveryDependencyAdmission(
   return admission.evaluate(dependencies);
 }
 
-function toTaskLaunchAdmission(
-  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
-): TaskLaunchAdmission {
+function buildRecoveryLaunchOptions(
+  taskId: string,
+  cwd: string,
+  intent: NonNullable<Task['launchIntent']>,
+): AdapterLaunchOptions {
   return {
-    status: 'parked',
-    reason: decision.reason,
-    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
-    parkedAt: new Date().toISOString(),
-  };
-}
-
-function buildRecoveryLaunchOptions(task: Task, validatedIntent: Task['launchIntent']): AdapterLaunchOptions {
-  const intent = validatedIntent;
-  const originalIntent = task.launchIntent;
-  return {
-    ...(intent?.effort !== undefined ? { effort: intent.effort } : {}),
-    ...(intent?.model !== undefined ? { model: intent.model } : {}),
-    ...(originalIntent?.ralphVerdictEnv
+    ...(intent.effort !== undefined ? { effort: intent.effort } : {}),
+    ...(intent.model !== undefined ? { model: intent.model } : {}),
+    ...(intent.ralphVerdictEnv
       ? {
           extraEnv: {
-            RALPH_VERDICT_FILE: defaultVerdictPath(task.cwd, task.id),
+            RALPH_VERDICT_FILE: defaultVerdictPath(cwd, taskId),
             RALPH_ITERATION: '0',
           },
         }

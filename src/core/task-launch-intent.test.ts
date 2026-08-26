@@ -60,4 +60,43 @@ describe('task launch intent', () => {
     expect(launchIntentFingerprint(null)).not.toBeUndefined();
     expect(launchIntentFingerprint(null)).not.toBe(launchIntentFingerprint(undefined));
   });
+
+  it('validates and sanitizes the full replay contract', () => {
+    const result = validatePersistedLaunchIntent({
+      agentType: 'claude-code',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        agentType: 'claude-code',
+        prompt: 'original prompt',
+        cwd: '/repo',
+        projectId: 'github.com/acme/repo',
+        ralphVerdictEnv: true,
+        dependencies: ['kb', 'kb'],
+        idempotencyKey: 'launch-1',
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      intent: expect.objectContaining({
+        prompt: 'original prompt',
+        cwd: '/repo',
+        projectId: 'github.com/acme/repo',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+        idempotencyKey: 'launch-1',
+      }),
+    });
+  });
+
+  it('keeps dependency and Ralph wiring in the dedup identity', () => {
+    const dependent = buildTaskLaunchIntent('claude-code', {
+      dependencies: ['kb'],
+      ralphVerdictEnv: true,
+    });
+
+    expect(sameLaunchIntent(dependent, 'claude-code', { dependencies: ['kb'], ralphVerdictEnv: true })).toBe(true);
+    expect(sameLaunchIntent(dependent, 'claude-code', { dependencies: [] })).toBe(false);
+    expect(sameLaunchIntent(dependent, 'claude-code', { dependencies: ['kb'] })).toBe(false);
+  });
 });

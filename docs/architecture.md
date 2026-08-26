@@ -268,6 +268,14 @@ Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.
 
 The split exists so that silent session deaths — WSL glitches, OOM kills, the dtach attach child being reaped out from under the backend — cannot propagate through a single "Clear completed" click and permanently delete work the user never saw. The Stop-hook signal was considered as a "user acknowledgement" proxy and rejected as unreliable.
 
+### Dependency-aware launch admission
+
+`launch-service.ts` collects bounded dependency health evidence before task creation. Confirmed degradation creates exactly one `pending` task with a durable `launchAdmission.status: "parked"` marker and an immutable `launchIntent`; no adapter launch or worker slot is consumed. The intent retains raw user identity fields, while replay launches the durable `Task.prompt` that already contains worktree and delivery-policy guardrails. Unknown collection evidence is distinct and fail-open only when no stronger degraded or half-open circuit state exists. Active-prompt dedup includes dependency and Ralph-verdict wiring, while the idempotency ledger remains the durable retry identity.
+
+`agent-lifecycle.ts` reserves a pending task before its asynchronous preflight, then allows one half-open recovery probe. The task carries `launchAdmission.status: "probing"` while that worker attempt is in flight. Success clears the marker; failure stops any partial session and moves the same task back to parked pending state only while it remains non-terminal. Completion, cancellation, or termination during preflight/probe launch wins over stale asynchronous results: the probe is released, admission metadata is cleared, the stale failure does not degrade the circuit, and no re-park or launch occurs. Startup reconciliation clears a live probe marker as successful and converts only an interrupted/dead probe to degraded parked work, while confirmed degradation recorded at or after that probe began still keeps the circuit degraded. Scheduled and looped playbook paths preserve the same dependency declaration; an armed Ralph loop claims its owner session only after promotion and catches up any Stop replayed during the ownership handoff.
+
+Capacity and launch-dependency diagnostics separate launchable pending work, dependency-parked backlog, confirmed degradation, and unknown evidence. Dependency-blocked/no-slot parked tasks do not expire through the ordinary pending TTL or the schedule staleness gate and do not suppress unrelated idle-capacity refill; `half_open_waiting_for_capacity` remains launchable pending work and retains the ordinary TTL.
+
 ### Issue-ownership claims (`KOOKR_ISSUE_CLAIMS`)
 
 RFC `rfc-issue-ownership-lock` (PR 1a). An in-process `IssueClaimRegistry`

@@ -3,6 +3,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
 import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
+import { aTask } from '../../core/__fixtures__/task-builders.js';
 
 function collect(): { send: (msg: ServerMessage) => void; sent: ServerMessage[] } {
   const sent: ServerMessage[] = [];
@@ -60,7 +61,7 @@ describe('handleLaunchResult', () => {
     const { send, sent } = collect();
 
     const { duplicate } = handleLaunchResult(send, 'use the knowledge base', {
-      task: { id: 'task-parked' } as any,
+      task: aTask({ id: 'task-parked', prompt: 'use the knowledge base' }),
       queued: true,
       parked: true,
       dependencyAdmission: {
@@ -82,11 +83,34 @@ describe('handleLaunchResult', () => {
     expect((sent[0] as Extract<ServerMessage, { type: 'alert' }>).details).toContain('kb=degraded');
   });
 
+  it('reports a parked prompt duplicate as parked rather than already running', () => {
+    const { send, sent } = collect();
+
+    const result = handleLaunchResult(send, 'duplicate blocked work', {
+      task: aTask({ id: 'task-parked-duplicate', prompt: 'duplicate blocked work', sessions: [] }),
+      queued: true,
+      parked: true,
+      duplicate: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(sent[0]).toMatchObject({
+      summary: 'Parked: duplicate blocked work',
+      severity: 'warning',
+    });
+  });
+
   it('explains when a half-open recovery probe is already in flight', () => {
     const { send, sent } = collect();
 
     handleLaunchResult(send, 'use the knowledge base', {
-      task: { id: 'task-probe-busy' } as any,
+      task: aTask({ id: 'task-probe-busy', prompt: 'use the knowledge base' }),
       queued: true,
       parked: true,
       dependencyAdmission: {

@@ -113,6 +113,31 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
     });
   });
 
+  it('preserves an armed loop while dependency-gated work is parked', async () => {
+    const task = createTaskForMutation(store, {
+      prompt: 'wait for provider',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: new Date(NOW - 1_000).toISOString(),
+      },
+    });
+    store.pendTask(task.id);
+    task.ralphLoop = baseLoop();
+
+    const summary = await reconcileStartupLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      now,
+    });
+
+    expect(task.ralphLoop?.status).toBe('running');
+    expect(task.ralphLoop?.ownerSessionId).toBeUndefined();
+    expect(recorder.appended).toHaveLength(0);
+    expect(summary).toMatchObject({ examined: 1, preserved: 1, failed: 0 });
+  });
+
   it('marks loop as failed when the only session is completed', async () => {
     const task = createTaskForMutation(store, 'all done', '/cwd');
     task.ralphLoop = baseLoop({ currentIteration: 12 });

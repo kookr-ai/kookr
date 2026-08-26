@@ -1,7 +1,5 @@
-import type { LaunchDependency } from './playbook.js';
+import type { LaunchDependency } from '../shared/contracts/playbook.js';
 import type { LaunchDependencyState, TaskLaunchAdmissionDependency } from '../shared/contracts/task.js';
-
-export type { LaunchDependencyState };
 
 export interface LaunchDependencyCircuitSnapshot {
   dependency: string;
@@ -18,14 +16,12 @@ export interface LaunchDependencyProbe {
 export type LaunchDependencyAdmissionDecision =
   | {
       admit: true;
-      states: LaunchDependencyCircuitSnapshot[];
       probe?: LaunchDependencyProbe;
     }
   | {
       admit: false;
       reason: 'dependency_degraded' | 'half_open_probe_busy';
       dependencies: TaskLaunchAdmissionDependency[];
-      states: LaunchDependencyCircuitSnapshot[];
     };
 
 interface CircuitEntry {
@@ -41,7 +37,8 @@ interface CircuitEntry {
  *
  * The circuit only treats a non-`unknown` preflight failure as confirmation of
  * degradation. A timeout or collection failure is retained as `unknown` and
- * remains fail-open: missing health data must not become a fleet-wide pause.
+ * is fail-open only when no confirmed degraded/half-open state already exists:
+ * missing health data cannot erase stronger evidence or bypass a live probe.
  * A clean preflight after degradation is recovery evidence, but it first moves
  * the dependency to `half_open`; one bounded probe must launch successfully
  * before the dependency is considered healthy again.
@@ -84,7 +81,7 @@ export class LaunchDependencyAdmission {
         // in-flight half-open probe. Clearing that token would let a second
         // launch bypass the single-probe gate while the first provider launch
         // is still running. Keep the circuit half-open until the probe settles.
-        if (entry.state !== 'half_open' || entry.probeToken === undefined) {
+        if (entry.state === 'healthy' || entry.state === 'unknown') {
           this.transition(entry, 'unknown');
         }
       }
@@ -100,7 +97,6 @@ export class LaunchDependencyAdmission {
         admit: false,
         reason: 'dependency_degraded',
         dependencies: degraded.map(toAdmissionDependency),
-        states,
       };
     }
 
@@ -114,11 +110,10 @@ export class LaunchDependencyAdmission {
           ...toAdmissionDependency(snapshot),
           reason: 'A recovery probe is already in flight',
         })),
-        states,
       };
     }
 
-    if (halfOpen.length === 0) return { admit: true, states };
+    if (halfOpen.length === 0) return { admit: true };
 
     const token = `launch-dependency-probe-${++this.probeSequence}`;
     for (const snapshot of halfOpen) {
@@ -126,7 +121,6 @@ export class LaunchDependencyAdmission {
     }
     return {
       admit: true,
-      states,
       probe: { token, dependencies: halfOpen.map((snapshot) => snapshot.dependency) },
     };
   }
@@ -164,6 +158,29 @@ export class LaunchDependencyAdmission {
       entry.state = 'degraded';
       entry.lastChangedAt = this.now();
       entry.reason = dependency.reason ?? 'Dependency was parked before restart';
+      entry.probeToken = undefined;
+    }
+  }
+
+  /**
+   * Restore success evidence for a recovery probe whose attached session was
+   * reconciled as live after restart. Call this after replaying parked task
+   * markers. A confirmed degradation at or after the probe began supersedes
+   * that old probe, matching the runtime token rule that ignores stale success;
+   * probe-busy waiters carry no confirmed timestamp and cannot override it.
+   */
+  restoreSuccessfulProbe(
+    dependencies: readonly string[],
+    probeStartedAt: number,
+    latestConfirmedAtByDependency: ReadonlyMap<string, number>,
+  ): void {
+    for (const dependency of new Set(dependencies)) {
+      const latestConfirmedAt = latestConfirmedAtByDependency.get(dependency);
+      if (latestConfirmedAt !== undefined && latestConfirmedAt >= probeStartedAt) continue;
+      const entry = this.entry(dependency);
+      entry.state = 'healthy';
+      entry.lastChangedAt = this.now();
+      entry.reason = undefined;
       entry.probeToken = undefined;
     }
   }

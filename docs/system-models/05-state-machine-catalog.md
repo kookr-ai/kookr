@@ -19,10 +19,13 @@ A task represents a unit of work the developer wants accomplished. It is created
 ```mermaid
 stateDiagram-v2
   [*] --> Open: Developer creates task (launches first agent)
+  [*] --> Pending: Confirmed dependency degradation (parked; no session)
 
   Open --> InProgress: Agent session started (slot available)
-  Open --> Pending: Agent session started (concurrency limit reached)
-  Pending --> InProgress: Slot opens (promotePendingTasks)
+  Open --> Pending: Launch queued at capacity (no session)
+  Pending --> InProgress: Slot opens and dependency admission permits
+  Pending --> InProgress: Exclusive half-open probe session attaches
+  InProgress --> Pending: Recovery probe fails [task remains non-terminal]
   Pending --> Cancelled: Launch failure
   InProgress --> Open: Agent session ended without completing the task
   InProgress --> Completed: Developer marks task as done
@@ -47,9 +50,12 @@ stateDiagram-v2
 | From | Event | To | Triggered By | Notes |
 |---|---|---|---|---|
 | - | create_task | Open | Developer via GUI (launch agent dialog) | Task = prompt + cwd + optional completion criteria |
+| - | create_task_dependency_degraded | Pending | Launch admission | Durable original launch intent is parked; no worker slot or session is created |
 | Open | agent_launched | InProgress | Agent adapter (agent session starts, slot available) | Task now has an active agent working on it |
-| Open | agent_launched_at_capacity | Pending | Server (concurrency limit `MAX_ACTIVE_TASKS` reached) | Task queued; agent will launch when a slot opens |
-| Pending | slot_opens | InProgress | Server (`promotePendingTasks` after a task completes/cancels) | Pending task promoted to active |
+| Open | launch_queued_at_capacity | Pending | Server (concurrency limit `MAX_ACTIVE_TASKS` reached) | No session starts; promote when capacity opens and dependency admission permits |
+| Pending | slot_opens_and_admission_permits | InProgress | Server (`promotePendingTasks` after a task completes/cancels) | Pending task promoted to active |
+| Pending | dependency_recovery_probe_session_attaches | InProgress | Server launch admission | Exactly one half-open probe owns the promotion; `launchAdmission` is durably `probing` before adapter launch, and task status changes when its session attaches |
+| Pending/InProgress | recovery_probe_failure [task remains non-terminal] | Pending | Server launch admission | Any partial session is stopped and the same task is re-parked with its original replay/idempotency identity. If completion, cancellation, or termination races preflight/probe launch, that terminal state wins: release the probe, clear admission metadata, ignore stale circuit failure, and do not re-park or launch. |
 | Pending | launch_failure | Cancelled | Server (agent launch fails during promotion) | |
 | InProgress | agent_session_ended | Open | Agent adapter (session completed/errored) | Task reverts to Open; developer decides next step |
 | InProgress | all_sessions_dead | Terminated | Reconciliation (all sessions dead; no user ack yet) | Since rfc-task-loss-prevention the auto-path lands in `terminated`, not `completed`. `reconciliation.ts:147-157` |
@@ -69,6 +75,7 @@ stateDiagram-v2
 
 - **Pending state** (added 2026-03-29): When the concurrency limit is reached, new tasks enter `Pending` instead of `InProgress`. They are promoted automatically when a slot opens. This prevents resource exhaustion when many tasks are launched simultaneously.
 - **Launch reservation** (added 2026-07-02, issue #700): the `Pending → InProgress` promotion is guarded by a synchronous, in-memory launch reservation (`TaskStore.beginLaunch`/`endLaunch`, 10-minute TTL, not persisted — see `docs/reports/issue-700-multi-session-attach-audit.md` §4). Exactly one concurrent promoter wins a pending task; while reserved the task is skipped by `getNextPending` and counts against `MAX_ACTIVE_TASKS` in `getActiveCount`. Not a new TaskStatus — a reservation dies with the server process.
+- **Dependency admission marker** (issue #2841): dependency-degraded/probe-busy `parked` is a durable no-slot wait, `half_open_waiting_for_capacity` is a launchable capacity queue marker, and `probing` records a claimed half-open worker attempt. On restart, a probe with a reconciled live session clears its task marker; only an interrupted/dead probe is converted back to degraded parked work, while confirmed degradation recorded at or after a live probe began still keeps the circuit degraded. Unknown collection evidence is fail-open only without stronger confirmed state and cannot erase a degraded/half-open gate. Dependency-blocked parked tasks are excluded from the ordinary pending TTL and launchable `pendingQueueDepth`; capacity-wait probes remain in both.
 - **InProgress → Open (not Completed)** when an agent session ends. The agent finishing its process does not mean the task is done — the developer must explicitly mark the task as complete. This avoids false positives where the agent ran to completion but produced wrong results.
 - **Terminated state** (added 2026-04-22 to this catalog to match long-standing code; state itself introduced by `rfc-task-loss-prevention.md`). When reconciliation finds every session for an `InProgress` / `Open` task dead, the task transitions to `Terminated` — *not* `Completed`. This split exists so silent tmux/dtach deaths (WSL glitches, OOM kills, external `tmux kill-server`) cannot propagate through "Clear completed" and permanently delete work the user never saw. The user then `ackTerminatedTask`s (→ `Completed`), reopens (→ `Open`), or cancels (→ `Cancelled`). See `docs/architecture.md` § "Task lifecycle — `completed` vs `terminated`" and `VALID_TRANSITIONS` in `src/core/tasks.ts` for the allowed transitions.
 - **Multiple agent sessions per task.** A task in Open state can have a new agent launched against it (retry with modified prompt, different approach, etc.). The task tracks its history of agent sessions.
@@ -243,13 +250,14 @@ Derivation (trailing `notification`/`subagent_stop` events are trimmed first so 
 | Entity | States | Owner | Notes |
 |---|---|---|---|
 | Ralph loop | `running`, `paused`, `completed`, `failed`, `cancelled` | `src/core/ralph-cycler.ts`, `src/server/ralph-loop-service.ts` | Terminal states prevent further iteration injection. `paused` preserves the loop but does not launch a fresh runtime until explicitly resumed. On a terminal exit the relaunch policy (`src/core/ralph-terminal-relaunch-policy.ts`, issue #1901) either re-arms a capped/stalled loop back to `running` (arbiter-gated via `RelaunchArbiter`) or stamps a `needsHuman` marker on budget exhaustion (`cost_cap`/`iteration_cost_cap`), surfaced through the task snapshot |
-| Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify running/completed/cancelled/deduplicated/dispatch-failed/skipped-active/skipped-capacity/unknown-after-restart states for the UI |
+| Schedule execution receipt | `reserved`, `accepted`, `terminal`, `unknown_after_restart` | `src/core/schedule.ts`, `src/server/schedule-runner.ts` | Latest execution outcomes further classify running, capacity-queued, dependency-parked, completed/cancelled, deduplicated, dispatch-failed, skipped, and unknown-after-restart states for the UI |
 | Workspace attempt | `running`, `passed`, `blocked`, `timed_out`, `cancelled`, `superseded`, `completed` | `src/core/workspace-attempt-repository.ts` | Durable cleanup/preflight/diagnostic attempt records, separate from task lifecycle |
 | Quota poller | `idle`, `polling`, `healthy`, `backoff`, `auth_failed`, `disabled` | `src/adapters/quota-adapter.ts` | Polling state for Anthropic OAuth usage quota, with backoff on 429/network/schema failures |
 | Watchdog verdict | `healthy`, `grace_period`, `needs_input`, `permission_blocked`, `tool_running`, `quiet_working`, `mcp_starting`, `stale_agent`, `hook_disconnected` | `src/core/watchdog.ts` | Verdict union is converted into queue anomalies by `Monitor.applyWatchdogVerdict()` when actionable |
 | Delivery watchdog | `unflagged`, `flagged` (hysteresis: N consecutive no-progress samples to engage, M consecutive progress samples to clear) | `src/core/loop-delivery-watchdog.ts`, sampled per iteration in `src/server/ralph-loop-service.ts` | Judges a Ralph loop on positive delivery progress (branch commits / PRs opened / PRs merged), not liveness — silence never flags. Observability-only (one warn line per transition); disabled at threshold 0 (issue #1902) |
 | Provider-reset resume | per issue-claim `ProviderResetEvent`: `record` → `resume` → `{ resume_failed \| (success) }`, or `deduped` / `dropped` | `src/server/provider-reset-scheduler.ts`, recorded by the reaper's `provider_paused` branch in `src/server/lifecycle-timers.ts`, swept once per schedule-runner tick | Auto-resumes a `provider_paused` issue at its quota reset instead of requiring manual re-dispatch (issue #1896 / #1699 WS1.4). Emitted events are `record` (tracked), `resume` (launch replayed), `resume_failed` (replay rejected — the operationally distinct outcome), `deduped`, `dropped` (`ProviderResetEvent` union, `provider-reset-scheduler.ts:193-198`); `deferred`/`rate-limited` are sweep-level *summary counters*, not per-claim events. Jittered + token-bucket-bounded; dedup keyed on the issue-claim relaunch lease (not the 24h launch ledger). The reaper stops holding the paused slot at reset and reaps it, freeing the lease so the resume hands off to a fresh task |
 | Circuit breaker | `closed`, `open`, `half-open` | `src/core/circuit-breaker.ts`, `src/shared/contracts/circuit-breaker.ts` | Generic breaker gating the LLM, STT, TTS, and GitHub-fetcher adapters. `closed → open` at the failure threshold; `open → half-open` when the reset timer fires; `half-open → closed` after enough consecutive successes; `half-open → open` on any failure; `* → closed` via manual `rearm()` (dashboard action). While `open`, `call()` short-circuits and throws |
+| Launch dependency admission | `healthy`, `degraded`, `unknown`, `half_open` plus durable task `parked` / `probing` | `src/core/launch-dependency-admission.ts`, `src/server/launch-service.ts`, `src/server/agent-lifecycle.ts` | Confirmed degradation parks required work before slot consumption. Clean evidence moves to half-open and one probe may launch. Unknown is fail-open only before confirmed degradation; probe failure or restart interruption re-parks the same task only while it remains non-terminal, a concurrent terminal transition wins, and newer confirmed evidence supersedes an older live-probe success. |
 | Relay connection | `localOnly`, `configured`, `connecting`, `connected`, `backingOff`, `stopped`, `authFailed`, `error` | `src/shared/contracts/relay-connection.ts`, `src/server/relay-connection-manager.ts` | Hosted-relay session-sharing link state. Nested: the manager's own `state` is authoritative only while no runtime exists; once a runtime is attached, the published `connectionState` is whatever the runtime's `RemoteNodeStatus` reports (mapped via `statusFromNodeState()`) — a known footgun when debugging status changes not triggered by this module. `authFailed`/`error` split by whether credential validation failed with an auth code; `forget()` returns to `localOnly` |
 
 ## Transition Ownership Table
@@ -257,6 +265,7 @@ Derivation (trailing `notification`/`subagent_stop` events are trimmed first so 
 | Entity | Owner of transitions | Persistence |
 |---|---|---|
 | Task | Core (tasks.ts) — developer actions + agent session events | Persisted (tasks.json) |
+| Launch dependency admission | Process-local `LaunchDependencyAdmission` owns circuit transitions; launch/promotion/recovery paths own task markers | Circuit is in-memory; `Task.launchIntent` and `Task.launchAdmission` are durable. On restart, live reconciled `probing` clears its task marker, interrupted/dead `probing` restores as degraded `parked`, and confirmed evidence at or after a live probe's start keeps the circuit degraded. Terminal task transitions clear every admission marker. |
 | Agent Session | Agent adapter (raw events) + Supervisor (derived states) | Persisted (inline in tasks.json) — ADR-008 |
 | Attention Event | Supervisor (creation) + Attention Router (skip/snooze/resolution) | In-memory |
 | Snooze Timer | Attention Router | In-memory queue state, serialized in the task-file envelope by `task-persistence.ts` |

@@ -101,10 +101,68 @@ export async function runStartupRecoveryPhase({
   // promotion so a clean first check after restart is a bounded half-open
   // probe rather than an unguarded launch.
   if (lifecycleDeps.launchDependencyAdmission) {
+    const successfulProbes: Array<{ dependencies: string[]; startedAt: number }> = [];
+    const latestConfirmedAtByDependency = new Map<string, number>();
     for (const task of taskStore.listTasks()) {
+      if (task.launchAdmission?.status === 'probing') {
+        const liveProbeSession = task.status === 'inProgress'
+          && task.sessions.some((session) => reconcileResult.resumed.includes(session.tmuxSession));
+        if (liveProbeSession) {
+          // The adapter attached a worker before the previous process died.
+          // Reconciliation proved it is still live, which is sufficient probe
+          // success evidence; do not poison that running task as parked.
+          successfulProbes.push({
+            dependencies: task.launchAdmission.dependencies.map((dependency) => dependency.dependency),
+            // Invalid legacy timestamps cannot safely supersede any confirmed
+            // evidence, but a live probe with no competing confirmation still
+            // counts as success.
+            startedAt: parseEvidenceTime(task.launchAdmission.startedAt, Number.NEGATIVE_INFINITY),
+          });
+          taskStore.setLaunchAdmission(task.id, undefined);
+          continue;
+        }
+        if (task.status === 'completed' || task.status === 'terminated' || task.status === 'cancelled') {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          continue;
+        }
+        const parked = {
+          status: 'parked' as const,
+          reason: 'dependency_degraded' as const,
+          dependencies: task.launchAdmission.dependencies.map((dependency) => ({
+            ...dependency,
+            state: 'degraded' as const,
+            reason: 'Recovery probe was interrupted by server restart',
+          })),
+          parkedAt: new Date().toISOString(),
+        };
+        if (task.status === 'inProgress') taskStore.reopenTask(task.id);
+        if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+        taskStore.setLaunchAdmission(task.id, parked);
+        lifecycleDeps.launchDependencyAdmission.restoreParked(parked.dependencies);
+        recordLatestConfirmedEvidence(
+          latestConfirmedAtByDependency,
+          parked.dependencies,
+          parked.parkedAt,
+        );
+        continue;
+      }
       if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
         lifecycleDeps.launchDependencyAdmission.restoreParked(task.launchAdmission.dependencies);
+        if (task.launchAdmission.reason === 'dependency_degraded') {
+          recordLatestConfirmedEvidence(
+            latestConfirmedAtByDependency,
+            task.launchAdmission.dependencies,
+            task.launchAdmission.parkedAt,
+          );
+        }
       }
+    }
+    for (const probe of successfulProbes) {
+      lifecycleDeps.launchDependencyAdmission.restoreSuccessfulProbe(
+        probe.dependencies,
+        probe.startedAt,
+        latestConfirmedAtByDependency,
+      );
     }
   }
   // Tracks crash-recovery's own outcome so the post-recovery audit below can
@@ -312,6 +370,25 @@ export async function runStartupRecoveryPhase({
   }
 
   return startupRecoverySummary;
+}
+
+function parseEvidenceTime(value: string, fallback: number): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function recordLatestConfirmedEvidence(
+  latestByDependency: Map<string, number>,
+  dependencies: readonly { dependency: string }[],
+  evidenceAt: string,
+): void {
+  const confirmedAt = parseEvidenceTime(evidenceAt, Number.POSITIVE_INFINITY);
+  for (const dependency of dependencies) {
+    latestByDependency.set(
+      dependency.dependency,
+      Math.max(latestByDependency.get(dependency.dependency) ?? Number.NEGATIVE_INFINITY, confirmedAt),
+    );
+  }
 }
 
 /**

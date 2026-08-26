@@ -1023,12 +1023,11 @@ export class ScheduleService {
   }
 
   /**
-   * `queued` reports whether the launcher pended the task instead of
-   * launching it immediately — for the schedule runner's launcher (which
-   * routes through the normal task-submission path, issue #1526 Phase A /
-   * FM8), that only ever happens because the node was at capacity, so it is
-   * recorded as `queued_capacity` (reasonCode `capacity`) rather than the
-   * legacy generic `queued`.
+   * `queued` reports whether the launcher pended the task instead of launching
+   * it immediately. Capacity waits become `queued_capacity`; callers set
+   * `details.dependencyParked` for a no-slot dependency gate, which becomes
+   * `parked_dependency` so the schedule ledger never misreports an outage as
+   * capacity exhaustion.
    *
    * `details.reasonCode` (issue #1895) lets the runner stamp an observability
    * code that is not implied by `queued` alone — e.g. `agent_substituted`
@@ -1040,13 +1039,21 @@ export class ScheduleService {
     receiptId: string,
     taskId: string,
     queued: boolean,
-    details: { reasonCode?: ScheduleExecutionReasonCode; message?: string } = {},
+    details: {
+      reasonCode?: ScheduleExecutionReasonCode;
+      message?: string;
+      dependencyParked?: boolean;
+    } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
     const triggeredAt = new Date().toISOString();
-    const outcome = queued ? 'queued_capacity' : 'running';
-    const reasonCode = details.reasonCode ?? (queued ? 'capacity' : 'none');
+    const outcome = details.dependencyParked
+      ? 'parked_dependency'
+      : queued ? 'queued_capacity' : 'running';
+    const reasonCode = details.dependencyParked
+      ? 'dependency_degraded'
+      : details.reasonCode ?? (queued ? 'capacity' : 'none');
     const latestExecution: ScheduleLatestExecutionStatus = {
       receiptId,
       executionToken: receipt.executionToken,
@@ -1089,7 +1096,7 @@ export class ScheduleService {
   async markExecutionOutcome(
     scheduleId: string,
     receiptId: string,
-    outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued' | 'queued_capacity'>,
+    outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued' | 'queued_capacity' | 'parked_dependency'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
     details: { blockingTaskId?: string; launchPhaseTimings?: LaunchPhaseTimings } = {},
@@ -1393,7 +1400,12 @@ export class ScheduleService {
       // 'queued' is legacy (issue #1526 Phase A retired it in favor of
       // 'queued_capacity') — both mean "mid-flight when the server
       // restarted" and need the same post-restart reconciliation.
-      if (latest.outcome !== 'running' && latest.outcome !== 'queued' && latest.outcome !== 'queued_capacity') continue;
+      if (
+        latest.outcome !== 'running'
+        && latest.outcome !== 'queued'
+        && latest.outcome !== 'queued_capacity'
+        && latest.outcome !== 'parked_dependency'
+      ) continue;
       if (!latest.taskId) continue;
 
       const task = taskStore.getTask(latest.taskId);

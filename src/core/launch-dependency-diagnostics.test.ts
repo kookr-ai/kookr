@@ -65,6 +65,23 @@ describe('buildLaunchDependencyDiagnostics', () => {
     });
   });
 
+  test('reports unknown separately while preserving legacy v1 totals and rollups', () => {
+    const snapshot = buildLaunchDependencyDiagnostics([
+      task('t-unknown', '2026-03-01T00:00:00.000Z', [finding('kb', 'unknown')]),
+    ]);
+
+    expect(snapshot).toMatchObject({
+      totalDegradedTasks: 1,
+      totalFindings: 1,
+      totalUnknownTasks: 1,
+      totalUnknownFindings: 1,
+      dependencies: [{ dependency: 'kb', findingCount: 1, categories: ['unknown'] }],
+      categories: [{ category: 'unknown', findingCount: 1, dependencies: ['kb'] }],
+    });
+    expect(snapshot.totalConfirmedDegradedTasks).toBeUndefined();
+    expect(snapshot.totalConfirmedFindings).toBeUndefined();
+  });
+
   test('reports parked work separately from degraded launch findings and live circuit state', () => {
     const snapshot = buildLaunchDependencyDiagnostics(
       [{
@@ -126,6 +143,8 @@ describe('buildLaunchDependencyDiagnostics', () => {
 
     expect(snapshot.totalDegradedTasks).toBe(1);
     expect(snapshot.totalFindings).toBe(3);
+    expect(snapshot.totalConfirmedDegradedTasks).toBe(1);
+    expect(snapshot.totalConfirmedFindings).toBe(3);
 
     expect(snapshot.dependencies).toEqual([
       {

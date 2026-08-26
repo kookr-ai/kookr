@@ -758,6 +758,45 @@ describe('launchTask', () => {
     expect(store.getActiveCount()).toBe(0);
   });
 
+  it('parks confirmed dependency degradation even when the ordinary pending queue is full', async () => {
+    const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
+    store.startTask(active.id);
+    const ordinaryPending = store.createTask({ prompt: 'capacity wait', cwd: '/tmp' });
+    store.pendTask(ordinaryPending.id);
+    const gatedDeps: LaunchServiceDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 1,
+      getMaxPendingTasks: () => 1,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+        recommendedAction: 'Restore the KB provider.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    expect(store.getPendingCount()).toBe(1);
+    const result = await launchTask(gatedDeps, {
+      prompt: 'must survive the provider outage',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      },
+    });
+    expect(store.listTasks().filter((task) => task.status === 'pending')).toHaveLength(2);
+    expect(store.getPendingCount()).toBe(1);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
   it('returns parked admission metadata when a duplicate matches an existing parked task', async () => {
     const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
       dependency: 'kb',
@@ -871,20 +910,23 @@ describe('launchTask', () => {
       getMaxActiveTasks: () => 0,
       dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
       launchDependencyAdmission,
+      idempotencyLedger: new IdempotencyLedger(repoDir),
     };
+    await gatedDeps.idempotencyLedger.load();
 
     const result = await launchTask(gatedDeps, {
       prompt: 'wait for a recovery slot',
       cwd: '/tmp',
       dependencies: ['kb'],
+      idempotencyKey: 'capacity-wait-probe',
     });
 
     expect(result.queued).toBe(true);
-    expect(result.parked).toBe(true);
+    expect(result.parked).toBeUndefined();
     expect(result.task.status).toBe('pending');
     expect(result.task.launchAdmission).toMatchObject({
       status: 'parked',
-      reason: 'half_open_probe_busy',
+      reason: 'half_open_waiting_for_capacity',
       dependencies: [{ dependency: 'kb', state: 'half_open' }],
     });
     expect(launchDependencyAdmission.snapshot()).toEqual([
@@ -893,6 +935,169 @@ describe('launchTask', () => {
     const nextProbe = launchDependencyAdmission.evaluate(['kb']);
     expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
     if (nextProbe.admit) launchDependencyAdmission.releaseProbe(nextProbe.probe);
+
+    const replay = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'capacity-wait-probe',
+    });
+    expect(replay).toMatchObject({
+      idempotentReplay: true,
+      queued: true,
+      dependencyAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(replay.parked).toBeUndefined();
+
+    const duplicate = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    expect(duplicate).toMatchObject({
+      duplicate: true,
+      queued: true,
+      dependencyAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(duplicate.parked).toBeUndefined();
+  });
+
+  it('releases a half-open probe when the ordinary capacity queue is full', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
+    store.startTask(active.id);
+    const pending = store.createTask({ prompt: 'ordinary capacity wait', cwd: '/tmp' });
+    store.pendTask(pending.id);
+    const gatedDeps: LaunchServiceDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 1,
+      getMaxPendingTasks: () => 1,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'recovery probe with no queue room',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toSatisfy(isPendingQueueFullError);
+
+    const nextProbe = launchDependencyAdmission.evaluate(['kb']);
+    expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    if (nextProbe.admit) launchDependencyAdmission.releaseProbe(nextProbe.probe);
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('re-parks the same task when a half-open provider launch fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    vi.mocked(gatedDeps.adapterRegistry.get('claude-code').launch)
+      .mockRejectedValueOnce(new Error('provider rejected recovery probe'));
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'preserve this recovery work',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'stable-recovery-identity',
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+        launchIntent: { idempotencyKey: 'stable-recovery-identity' },
+      },
+    });
+    expect(store.listTasks()).toHaveLength(1);
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  it('persists probing before launch and aborts a partial probe session before re-parking', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      expect(store.getTask(taskId)?.launchAdmission).toMatchObject({
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+      });
+      options?.onSessionCreated?.('probe-partial-direct');
+      store.addSession(taskId, {
+        tmuxSession: 'probe-partial-direct',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      throw new Error('provider failed after session creation');
+    });
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'preserve partially launched recovery work',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+        sessions: [expect.objectContaining({
+          tmuxSession: 'probe-partial-direct',
+          lastStatus: 'aborted',
+        })],
+      },
+    });
+    expect(adapter.stop).toHaveBeenCalledWith('probe-partial-direct');
+  });
+
+  it('does not degrade the circuit when a direct probe task is cancelled before rejection', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      options?.onSessionCreated?.('cancelled-probe-direct');
+      store.addSession(taskId, {
+        tmuxSession: 'cancelled-probe-direct',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      store.cancelTask(taskId);
+      throw new Error('adapter rejected after cancellation');
+    });
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'cancel this direct recovery probe',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('adapter rejected after cancellation');
+
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
   it('returns duplicate:true for an identical active prompt', async () => {
@@ -2593,6 +2798,49 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(second.idempotentReplay).toBeUndefined();
     expect(second.task.id).not.toBe(first.task.id);
     expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('an expired idempotency entry still converges on the same active parked intent', async () => {
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const ttlLedger = new IdempotencyLedger(ledgerDir, { ttlMs: 1000, now: () => nowMs });
+    await ttlLedger.load();
+    const admission = new LaunchDependencyAdmission();
+    const parkedDeps: LaunchServiceDeps = {
+      ...makeDeps(store),
+      idempotencyLedger: ttlLedger,
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+        recommendedAction: 'restore provider',
+      }]),
+    };
+
+    const first = await launchTask(parkedDeps, {
+      prompt: 'durable parked intent',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-key',
+    });
+    nowMs += 1001;
+    const retry = await launchTask(parkedDeps, {
+      prompt: 'durable parked intent',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-key',
+    });
+
+    expect(first).toMatchObject({ queued: true, parked: true });
+    expect(retry).toMatchObject({
+      task: { id: first.task.id },
+      duplicate: true,
+      queued: true,
+      parked: true,
+    });
+    expect(store.listTasks()).toHaveLength(1);
+    expect(parkedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 
   it('restart: ledger reloaded from disk still detects a replay', async () => {

@@ -94,6 +94,7 @@ export interface CapacityLedger {
    * on this, never on {@link utilizationPct}.
    */
   effectiveUtilizationPct: number;
+  /** Launchable pending work; dependency-parked tasks are reported separately. */
   pendingQueueDepth: number;
   oldestPendingAgeMs: number | null;
   oldestFinishedAwaitingAckAgeMs: number | null;
@@ -233,16 +234,19 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
       }
     }
 
-    if (task.status === 'pending') {
+    const dependencyParked = task.status === 'pending'
+      && task.launchAdmission?.status === 'parked'
+      && task.launchAdmission.reason !== 'half_open_waiting_for_capacity';
+    if (task.status === 'pending' && !dependencyParked) {
       pendingQueueDepth++;
       const createdAt = task.createdAt.getTime();
       if (oldestPendingAt === undefined || createdAt < oldestPendingAt) {
         oldestPendingAt = createdAt;
       }
     }
-    if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
+    if (dependencyParked) {
       parkedTaskIds.push(task.id);
-      for (const dependency of task.launchAdmission.dependencies) {
+      for (const dependency of task.launchAdmission!.dependencies) {
         const ids = parkedByDependency.get(dependency.dependency) ?? new Set<string>();
         ids.add(task.id);
         parkedByDependency.set(dependency.dependency, ids);

@@ -396,7 +396,6 @@ export class TaskStore {
     if (launchHealthSummary) {
       task.launchHealthSummary = structuredClone(launchHealthSummary);
     }
-    if (launchIntent) task.launchIntent = structuredClone(launchIntent);
     if (launchAdmission) task.launchAdmission = structuredClone(launchAdmission);
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
@@ -848,7 +847,7 @@ export class TaskStore {
       throw new InvalidTransitionError(task.status, to);
     }
     const now = new Date();
-    const parkedLaunch = task.launchAdmission?.status === 'parked';
+    const dependencyAdmission = task.launchAdmission !== undefined;
     task.status = to;
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
@@ -856,7 +855,7 @@ export class TaskStore {
     } else {
       delete task.finishedAt;
     }
-    if (parkedLaunch && isTerminalStatus(to)) {
+    if (dependencyAdmission && isTerminalStatus(to)) {
       // Terminal work is no longer retryable pending intent. Remove the
       // admission marker and its pre-launch health snapshot so diagnostics and
       // the next startup cannot resurrect canceled/terminated parked work.
@@ -972,6 +971,16 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Clear or replace the advisory text paired with launch-health findings. */
+  setLaunchNote(id: string, note: string | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchNote = note;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
     return cloneTask(this.transition(id, 'open'));
   }
@@ -1069,11 +1078,20 @@ export class TaskStore {
     return oldest ? cloneTask(oldest) : undefined;
   }
 
-  /** Count pending tasks. */
+  /**
+   * Count work in the capacity queue. Dependency-blocked parked work does not
+   * consume this limit; a half-open probe waiting for capacity does.
+   */
   getPendingCount(): number {
     let count = 0;
     for (const task of this.tasks.values()) {
-      if (task.status === 'pending') count++;
+      if (
+        task.status === 'pending'
+        && (
+          task.launchAdmission?.status !== 'parked'
+          || task.launchAdmission.reason === 'half_open_waiting_for_capacity'
+        )
+      ) count++;
     }
     return count;
   }

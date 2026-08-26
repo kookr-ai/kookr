@@ -33,7 +33,11 @@ import {
   type LaunchReapGuard,
 } from './launch-timeout.js';
 import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
-import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
+import {
+  taskAdmissionForDeniedDecision,
+  taskAdmissionForFailedProbe,
+  taskAdmissionForProbe,
+} from '../core/launch-dependency-task-admission.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
 import {
   stampTaskCompletionProvenance,
@@ -103,6 +107,8 @@ export interface AgentLifecycleDeps {
   dependencyPreflightRunner?: DependencyPreflightRunner;
   /** Live adapter-launch timeout used by pending promotion recovery. */
   getLaunchTimeoutMs?: () => number;
+  /** Claim deferred orchestration ownership after a parked task gets a session. */
+  onPendingTaskPromoted?: (task: Task) => void | Promise<void>;
 }
 
 /**
@@ -894,8 +900,8 @@ export function pickNextPendingForPromotion(
   excludedTaskIds: ReadonlySet<string> = new Set(),
 ): Task | undefined {
   if (freeSlots > 1) {
-    let next = taskStore.getNextPending();
-    while (next && excludedTaskIds.has(next.id)) {
+    const next = taskStore.getNextPending();
+    if (next && excludedTaskIds.has(next.id)) {
       // The store owns FIFO ordering; callers only use this loop to skip a
       // task parked by dependency admission during this promotion pass.
       const candidates = taskStore
@@ -922,7 +928,8 @@ async function evaluatePendingDependencyAdmission(
   findingsCache?: Map<string, Promise<Array<{ dependency: string; category: string; summary?: string }>>>,
 ): Promise<LaunchDependencyAdmissionDecision | undefined> {
   const admission = deps.launchDependencyAdmission;
-  const dependencies = task.launchIntent?.dependencies;
+  const validatedIntent = validatePersistedLaunchIntent(task);
+  const dependencies = validatedIntent.ok ? validatedIntent.intent.dependencies : undefined;
   if (!admission || !dependencies || dependencies.length === 0) return undefined;
 
   const cacheKey = [...new Set(dependencies)].sort().join('\u0000');
@@ -950,15 +957,22 @@ async function evaluatePendingDependencyAdmission(
   return admission.evaluate(dependencies);
 }
 
-function toTaskLaunchAdmission(
-  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
-): TaskLaunchAdmission {
-  return {
-    status: 'parked',
-    reason: decision.reason,
-    dependencies: decision.dependencies.map((dependency) => ({ ...dependency })),
-    parkedAt: nowISO(),
-  };
+function reparkPendingAfterFailedProbe(
+  taskStore: TaskStore,
+  taskId: string,
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: true }>,
+): boolean {
+  if (!decision.probe) return false;
+  const current = taskStore.getTask(taskId);
+  if (!current) return false;
+  if (current.status === 'completed' || current.status === 'terminated' || current.status === 'cancelled') {
+    taskStore.setLaunchAdmission(taskId, undefined);
+    return false;
+  }
+  if (current.status === 'inProgress') taskStore.reopenTask(taskId);
+  if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
+  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
+  return true;
 }
 
 /**
@@ -982,6 +996,11 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount, blockedByDependency);
     if (!pending) break;
 
+    // Reserve before the asynchronous health collection. Without this CAS,
+    // two promoters can both probe the same pending task and a slower loser
+    // can overwrite the winner's live state with a parked marker.
+    if (!taskStore.beginLaunch(pending.id)) continue;
+
     const dependencyAdmission = await evaluatePendingDependencyAdmission(pending, lifecycleDeps, dependencyFindingsCache);
     // A preflight is asynchronous. The task may have been cancelled or
     // otherwise transitioned while it was running; never write a parked
@@ -991,11 +1010,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       if (dependencyAdmission?.admit) {
         lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
       }
+      taskStore.endLaunch(pending.id);
       continue;
     }
     if (dependencyAdmission && !dependencyAdmission.admit) {
       blockedByDependency.add(pending.id);
-      taskStore.setLaunchAdmission(pending.id, toTaskLaunchAdmission(dependencyAdmission));
+      taskStore.setLaunchAdmission(
+        pending.id,
+        taskAdmissionForDeniedDecision(dependencyAdmission, nowISO()),
+      );
+      taskStore.endLaunch(pending.id);
       continue;
     }
     const priorAdmission = taskStore.getTask(pending.id)?.launchAdmission;
@@ -1006,23 +1030,8 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // that stale finding as a degraded launch in diagnostics.
       if (priorAdmission.status === 'parked') {
         taskStore.setLaunchHealthSummary(pending.id, undefined);
+        taskStore.setLaunchNote(pending.id, undefined);
       }
-    }
-
-    // #700 fix: synchronous pick-to-launch reservation. Concurrent
-    // promotePendingTasks invocations (5s liveness tick + completion-triggered
-    // promotions) all passed getNextPending for the SAME task because its
-    // status only flips when the adapter attaches a session, seconds later.
-    // beginLaunch is a synchronous CAS — exactly one promoter wins; losers
-    // skip (the task no longer shows in getNextPending while reserved).
-    if (!taskStore.beginLaunch(pending.id)) {
-      if (dependencyAdmission?.admit) {
-        // Losing the synchronous reservation is not a failed provider probe.
-        // Release the token while keeping the circuit half-open so another
-        // promoter can make the bounded recovery attempt.
-        lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
-      }
-      continue;
     }
 
     // Safety: prevent infinite loop if a task stays pending after launch.
@@ -1036,6 +1045,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     }
     seen.add(pending.id);
 
+    let adapterLaunchSettled = false;
+    let launchAdapter: AgentAdapter | undefined;
+    const launchReapGuard: LaunchReapGuard = { reaped: false };
+    const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
     try {
       const intent = validatePersistedLaunchIntent(pending);
       if (!intent.ok) {
@@ -1049,29 +1062,35 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         throw new Error(`Pending task ${pending.id} has no replayable launch intent: ${intent.detail}`);
       }
       const adapter = adapterRegistry.get(pending.agentType);
-      const launchReapGuard: LaunchReapGuard = { reaped: false };
-      // The parked admission note explains why the task waited; it is an
-      // operator diagnostic, not part of the recovered agent's prompt.
+      launchAdapter = adapter;
+      // Task.prompt is the durable effective prompt after worktree and
+      // delivery-policy guardrails. launchIntent.prompt deliberately retains
+      // the raw user text for identity/replay metadata, but must never replace
+      // those safety instructions at the adapter boundary.
+      const effectivePrompt = pending.prompt;
+      const originalCwd = intent.intent.cwd ?? pending.cwd;
       const launchPrompt = pending.launchAdmission?.status === 'parked'
-        ? pending.prompt
-        : pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
-      const originalIntent = pending.launchIntent;
+        ? effectivePrompt
+        : pending.launchNote ? `${pending.launchNote}\n\n${effectivePrompt}` : effectivePrompt;
       const pins = launchIntentPins(intent.intent);
       const adapterOpts = {
         ...pins,
         onSessionCreated: (sessionId: string) => {
           noteLaunchSession(launchReapGuard, adapter, pending.agentType, pending.id, sessionId);
         },
-        ...(originalIntent?.ralphVerdictEnv
+        ...(intent.intent.ralphVerdictEnv
           ? {
               extraEnv: {
-                RALPH_VERDICT_FILE: defaultVerdictPath(pending.cwd, pending.id),
+                RALPH_VERDICT_FILE: defaultVerdictPath(originalCwd, pending.id),
                 RALPH_ITERATION: '0',
               },
             }
           : {}),
       };
-      const launchPromise = adapter.launch(pending.id, launchPrompt, pending.cwd, undefined, adapterOpts);
+      if (dependencyAdmission?.admit && dependencyAdmission.probe) {
+        taskStore.setLaunchAdmission(pending.id, taskAdmissionForProbe(dependencyAdmission, nowISO()));
+      }
+      const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, undefined, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout
@@ -1083,8 +1102,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         reapGuard: launchReapGuard,
         reapKnownSessionOnTimeout: true,
       });
+      adapterLaunchSettled = true;
       if (dependencyAdmission?.admit) {
         lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
+        taskStore.setLaunchAdmission(pending.id, undefined);
       }
       if (deps.bypassAllPermissions === true) {
         const launchPermissionPosture = {
@@ -1106,11 +1127,81 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       }
       const launched = taskStore.getTask(pending.id);
       if (!launched) throw new Error(`Task disappeared after launch: ${pending.id}`);
-      await registerNewAgent(launched, lifecycleDeps);
+      try {
+        await registerNewAgent(launched, lifecycleDeps);
+      } catch (registrationErr) {
+        console.error(
+          `[promotion] Post-launch registration failed for live task ${pending.id}:`,
+          registrationErr instanceof Error ? registrationErr.message : registrationErr,
+        );
+      }
+      // Ownership/catch-up notification happens after the adapter attached a
+      // live session. It must still run when ancillary registration/audit
+      // failed: hook replay may already have delivered an ownerless Stop that
+      // this callback is responsible for catching up.
+      await notifyPendingTaskPromoted(lifecycleDeps, taskStore.getTask(pending.id) ?? launched);
       promoted++;
     } catch (err) {
-      if (dependencyAdmission?.admit) {
-        lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+      // The adapter may create and report a terminal session before attaching
+      // it to TaskStore. Clean that physical session up for every unsettled
+      // launch failure, not only dependency probes; otherwise an ordinary
+      // healthy launch rejection can leave an unowned process behind.
+      if (!adapterLaunchSettled) {
+        const failedSessionId = launchReapGuard.sessionId
+          ?? taskStore.getTask(pending.id)?.sessions
+            .filter((session) => !priorSessionIds.has(session.tmuxSession))
+            .at(-1)?.tmuxSession;
+        if (failedSessionId) {
+          try {
+            taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
+          } catch {
+            // The adapter may report session creation before store attachment.
+          }
+          if (!launchReapGuard.reaped) {
+            launchReapGuard.reaped = true;
+            const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
+            await Promise.resolve(adapter.stop(failedSessionId)).catch((stopErr) => {
+              console.warn(
+                `[promotion] Could not stop failed launch session ${failedSessionId}:`,
+                stopErr instanceof Error ? stopErr.message : stopErr,
+              );
+            });
+          }
+        }
+      }
+      if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
+        const current = taskStore.getTask(pending.id);
+        if (
+          !current
+          || current.status === 'completed'
+          || current.status === 'terminated'
+          || current.status === 'cancelled'
+        ) {
+          lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+        } else {
+          lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
+        }
+        const reparked = reparkPendingAfterFailedProbe(taskStore, pending.id, dependencyAdmission);
+        if (reparked) {
+          blockedByDependency.add(pending.id);
+          console.error(`[promotion] Recovery probe failed; re-parked task ${pending.id}:`, err);
+        } else {
+          console.error(`[promotion] Recovery probe failed after task became terminal ${pending.id}:`, err);
+        }
+        continue;
+      }
+      if (adapterLaunchSettled) {
+        // The worker is already attached and live. Registration/audit failures
+        // are post-launch evidence, not grounds to run the pre-launch rollback
+        // that would cancel a task while leaving its session alive.
+        console.error(
+          `[promotion] Post-launch setup failed for live task ${pending.id}:`,
+          err instanceof Error ? err.message : err,
+        );
+        const liveTask = taskStore.getTask(pending.id);
+        if (liveTask) await notifyPendingTaskPromoted(lifecycleDeps, liveTask);
+        promoted++;
+        continue;
       }
       // If launch fails, cancel the task rather than leaving it pending forever
       console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
@@ -1135,6 +1226,20 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   }
 
   return promoted;
+}
+
+async function notifyPendingTaskPromoted(
+  lifecycleDeps: AgentLifecycleDeps,
+  task: Task,
+): Promise<void> {
+  try {
+    await lifecycleDeps.onPendingTaskPromoted?.(task);
+  } catch (notifyErr) {
+    console.error(
+      `[promotion] Post-launch orchestration notification failed for task ${task.id}:`,
+      notifyErr instanceof Error ? notifyErr.message : notifyErr,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

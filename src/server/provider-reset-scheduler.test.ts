@@ -502,7 +502,6 @@ describe('ProviderResetScheduler', () => {
       expect(opts.model).toBe('claude-fable-5');
       expect(opts.autoCloseOnSignal).toBe(true);
       expect(opts.effort).toBe('max');
-      expect(opts.model).toBe('claude-fable-5');
       expect(opts.ralphVerdictEnv).toBe(true);
       expect(opts.dependencies).toEqual(['kb']);
       // scheduleId is carried only from schedule provenance:

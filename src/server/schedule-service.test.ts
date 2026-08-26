@@ -381,6 +381,31 @@ describe('ScheduleService status', () => {
     });
   });
 
+  it('records dependency parking separately from capacity queueing', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Dependency parked',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-parked', true, {
+        dependencyParked: true,
+      });
+
+      expect(store.get(schedule.id)?.latestExecution).toMatchObject({
+        taskId: 'task-parked',
+        outcome: 'parked_dependency',
+        reasonCode: 'dependency_degraded',
+      });
+      expect(store.get(schedule.id)?.executionLedger.at(-1)).toMatchObject({
+        outcome: 'parked_dependency',
+        reasonCode: 'dependency_degraded',
+      });
+    });
+  });
+
   it('records deferred catch-up without leaving the stale due slot replayable', async () => {
     await withService(async (service, store) => {
       const schedule = store.create({
@@ -1745,7 +1770,7 @@ describe('isGenuineExecutionFailure (issue #2521 — the single classifier)', ()
 
   it('never counts any other infra-lifecycle outcome (default-deny)', () => {
     const lifecycle: ScheduleExecutionOutcome[] = [
-      'completed', 'running', 'queued', 'queued_capacity', 'deduplicated',
+      'completed', 'running', 'queued', 'queued_capacity', 'parked_dependency', 'deduplicated',
       'skipped_capacity', 'skipped_draining', 'skipped_server_restarting',
       'skipped_safe_mode', 'skipped_manual', 'skipped_stale',
       'skipped_relaunch_locked', 'skipped_provider_paused', 'unknown_after_restart',

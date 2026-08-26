@@ -148,13 +148,20 @@ export interface TaskLaunchAdmissionDependency {
   reason?: string;
 }
 
-/** Durable marker for a task parked before it consumed a worker slot. */
-export interface TaskLaunchAdmission {
-  status: 'parked';
-  reason: 'dependency_degraded' | 'half_open_probe_busy';
-  dependencies: TaskLaunchAdmissionDependency[];
-  parkedAt: string;
-}
+/** Durable admission state for dependency-gated launches (issue #2841). */
+export type TaskLaunchAdmission =
+  | {
+      status: 'parked';
+      reason: 'dependency_degraded' | 'half_open_probe_busy' | 'half_open_waiting_for_capacity';
+      dependencies: TaskLaunchAdmissionDependency[];
+      parkedAt: string;
+    }
+  | {
+      status: 'probing';
+      reason: 'half_open_probe_in_flight';
+      dependencies: TaskLaunchAdmissionDependency[];
+      startedAt: string;
+    };
 
 export interface TaskCompletionFeedback {
   rating: 'up' | 'down';

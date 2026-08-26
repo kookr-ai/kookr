@@ -237,8 +237,10 @@ button that starts a worker against the unhealthy dependency. Your two options:
    block tasks that don't use the knowledge base.
 
 If health collection itself times out or cannot be classified, the dependency
-state is `unknown` and Kookr fails open. This state is distinct from confirmed
-degradation so a transient diagnostic outage does not pause the fleet.
+state is `unknown` and Kookr fails open only when no stronger degraded or
+half-open evidence exists. This state is distinct from confirmed degradation
+so a transient diagnostic outage neither pauses the fleet by itself nor erases
+an existing gate.
 
 `kb doctor --format=json` is the same probe the preflight runs — use it to
 reproduce a failure and confirm a fix:

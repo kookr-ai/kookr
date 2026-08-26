@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
-import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import { AdapterRegistry, type AgentAdapter } from '../adapters/agent-adapter.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
 import type { ReconciliationResult } from './reconciliation.js';
@@ -161,11 +161,227 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
 });
 
 describe('runStartupRecoveryPhase — parked dependency hydration', () => {
+  test('live reconciled probe success overrides stale probe-busy waiters', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      category: 'unknown',
+      summary: 'health collection timed out',
+    }]);
+    const adapter: AgentAdapter = {
+      agentType: 'claude-code',
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+        deps.taskStore.addSession(taskId, {
+          tmuxSession: 'waiter-session',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'waiter-session';
+      }),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+    deps.adapterRegistry.register(adapter);
+    const task = deps.taskStore.createTask({
+      prompt: 'live recovery probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: 'live-probe-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const waiter = deps.taskStore.createTask({
+      prompt: 'wait for the live probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'wait for the live probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(waiter.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['live-probe-session'] }),
+    });
+
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
+
+    await promotePendingStartupTasks({
+      taskStore: deps.taskStore,
+      adapterRegistry: deps.adapterRegistry,
+      lifecycleDeps: deps.lifecycleDeps,
+      broadcastToAll: deps.broadcastToAll,
+      serverCwd: deps.serverCwd,
+    });
+
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(deps.taskStore.getTask(waiter.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
+    ]);
+  });
+
+  test('newer confirmed degradation supersedes an older reconciled live probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const probeTask = deps.taskStore.createTask({
+      prompt: 'older live recovery probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(probeTask.id, {
+      tmuxSession: 'older-live-probe-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const confirmedTask = deps.taskStore.createTask({
+      prompt: 'newer confirmed outage',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-01-02T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(confirmedTask.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['older-live-probe-session'] }),
+    });
+
+    expect(deps.taskStore.getTask(probeTask.id)?.launchAdmission).toBeUndefined();
+    expect(deps.taskStore.getTask(confirmedTask.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+  });
+
+  test('a newer interrupted probe supersedes an older reconciled live probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const oldProbe = deps.taskStore.createTask({
+      prompt: 'old attached probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(oldProbe.id, {
+      tmuxSession: 'old-attached-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const interruptedProbe = deps.taskStore.createTask({
+      prompt: 'new interrupted probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'new interrupted probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-02T00:00:00.000Z',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['old-attached-probe'] }),
+    });
+
+    expect(deps.taskStore.getTask(oldProbe.id)?.launchAdmission).toBeUndefined();
+    expect(deps.taskStore.getTask(interruptedProbe.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [expect.objectContaining({
+          dependency: 'kb',
+          reason: 'Recovery probe was interrupted by server restart',
+        })],
+      },
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+  });
+
   test('restores persisted parked dependencies before recovery promotion', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();
     const dependencyPreflightRunner = vi.fn().mockResolvedValue([]);
-    const adapter = {
+    const adapter: AgentAdapter = {
       agentType: 'claude-code',
       launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
         deps.taskStore.addSession(taskId, {
@@ -176,7 +392,15 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
         });
         return 'startup-recovery-session';
       }),
-    } as any;
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
     deps.adapterRegistry.register(adapter);
     const task = deps.taskStore.createTask({
       prompt: 'use the knowledge base',

@@ -277,6 +277,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
     const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
     expect(pill?.textContent).toBe('Deps: 0 · Parked: kb×2');
     expect(pill?.getAttribute('title')).toContain('2 tasks parked awaiting dependency recovery');
+    expect(pill?.getAttribute('aria-label')).toBe(pill?.getAttribute('title'));
     expect(pill?.getAttribute('title')).toContain('kb=2 (dependency_degraded)');
   });
 

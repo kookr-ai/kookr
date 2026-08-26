@@ -800,6 +800,52 @@ describe('TaskStore', () => {
         launchAdmission: undefined,
         launchHealthSummary: undefined,
       });
+
+      const probing = store.createTask({
+        prompt: 'cancel in-flight probe',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          startedAt: '2026-08-25T10:01:00.000Z',
+        },
+        launchHealthSummary,
+      });
+      store.cancelTask(probing.id);
+      expect(store.getTask(probing.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        launchHealthSummary: undefined,
+      });
+    });
+
+    test('pending capacity count excludes dependency parking but includes a half-open capacity wait', () => {
+      const degraded = store.createTask({
+        prompt: 'dependency parked',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(degraded.id);
+      expect(store.getPendingCount()).toBe(0);
+
+      const capacityWait = store.createTask({
+        prompt: 'capacity wait',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'half_open_waiting_for_capacity',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(capacityWait.id);
+      expect(store.getPendingCount()).toBe(1);
     });
   });
 
@@ -1756,6 +1802,28 @@ describe('TaskStore', () => {
       ).toThrow(/terminal task/);
       expect(store.getTask(task.id)!.sessions).toHaveLength(0);
       expect(store.getTask(task.id)!.status).toBe('terminated');
+    });
+
+    test('addSession refuses a late attachment after a failed probe was re-parked', () => {
+      const task = store.createTask({
+        prompt: 'retry after provider recovery',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(task.id);
+
+      expect(() => store.addSession(task.id, {
+        tmuxSession: 'kookr-late-probe',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      })).toThrow(/dependency-parked task/);
+      expect(store.getTask(task.id)).toMatchObject({ status: 'pending', sessions: [] });
     });
   });
 

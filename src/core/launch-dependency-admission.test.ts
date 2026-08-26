@@ -28,7 +28,6 @@ describe('LaunchDependencyAdmission', () => {
     const probe = admission.evaluate(['kb']);
     expect(probe).toMatchObject({
       admit: true,
-      states: [{ dependency: 'kb', state: 'half_open' }],
       probe: { dependencies: ['kb'] },
     });
 
@@ -57,6 +56,23 @@ describe('LaunchDependencyAdmission', () => {
     expect(admission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'unknown', reason: 'probe timed out' }),
     ]);
+  });
+
+  test('does not erase confirmed degradation when a later collection is unknown', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.observe(['kb'], [failure]);
+
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'unknown',
+      summary: 'later probe timed out',
+    }]);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ dependency: 'kb', state: 'degraded' });
   });
 
   test('failed recovery probe returns the circuit to degraded', () => {
@@ -113,7 +129,37 @@ describe('LaunchDependencyAdmission', () => {
     expect(probe).toMatchObject({
       admit: true,
       probe: { dependencies: ['kb'] },
-      states: [{ state: 'half_open' }],
     });
+  });
+
+  test('restores reconciled live-probe success after stale parked waiters', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.restoreParked([{
+      dependency: 'kb',
+      state: 'half_open',
+      reason: 'A recovery probe was already in flight',
+    }]);
+
+    admission.restoreSuccessfulProbe(['kb'], 200, new Map());
+
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
+    expect(admission.evaluate(['kb'])).toEqual({ admit: true });
+  });
+
+  test('does not let an old reconciled probe erase newer confirmed degradation', () => {
+    const admission = new LaunchDependencyAdmission(() => 300);
+    admission.restoreParked([{
+      dependency: 'kb',
+      state: 'degraded',
+      reason: 'Provider failed after the probe began',
+    }]);
+
+    admission.restoreSuccessfulProbe(['kb'], 100, new Map([['kb', 200]]));
+
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
   });
 });
