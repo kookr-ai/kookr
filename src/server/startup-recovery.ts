@@ -125,6 +125,16 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           continue;
         }
+        const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
+          ...dependency,
+          state: 'degraded' as const,
+          reason: 'Recovery probe was interrupted by server restart',
+        }));
+        // Hydrate the circuit before the first await. The HTTP listener may
+        // already be accepting requests while startup recovery reaps an old
+        // terminal, so leaving this process-local circuit healthy during
+        // killSession would open an unbounded admission window.
+        lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
         const expectedProbeSessionId = task.launchAdmission.sessionId;
         if (expectedProbeSessionId) {
           try {
@@ -134,12 +144,6 @@ export async function runStartupRecoveryPhase({
             // killSession is idempotent when creation never reached the backend.
             await terminalBackend.killSession(expectedProbeSessionId);
           } catch (err) {
-            const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
-              ...dependency,
-              state: 'degraded' as const,
-              reason: 'Interrupted recovery probe terminal could not be reaped during restart',
-            }));
-            lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
             throw new Error(
               `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
               + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -149,17 +153,12 @@ export async function runStartupRecoveryPhase({
         const parked = {
           status: 'parked' as const,
           reason: 'dependency_degraded' as const,
-          dependencies: task.launchAdmission.dependencies.map((dependency) => ({
-            ...dependency,
-            state: 'degraded' as const,
-            reason: 'Recovery probe was interrupted by server restart',
-          })),
+          dependencies: interruptedDependencies,
           parkedAt: new Date().toISOString(),
         };
         if (task.status === 'inProgress') taskStore.reopenTask(task.id);
         if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
         taskStore.setLaunchAdmission(task.id, parked);
-        lifecycleDeps.launchDependencyAdmission.restoreParked(parked.dependencies);
         recordLatestConfirmedEvidence(
           latestConfirmedAtByDependency,
           parked.dependencies,

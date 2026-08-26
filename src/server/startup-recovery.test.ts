@@ -206,6 +206,49 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
   });
 
+  test('restores degraded admission before awaiting interrupted-terminal cleanup', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseKill!: () => void;
+    let markKillStarted!: () => void;
+    const killStarted = new Promise<void>((resolve) => { markKillStarted = resolve; });
+    deps.terminalBackend = {
+      killSession: vi.fn(async () => {
+        markKillStarted();
+        await new Promise<void>((resolve) => { releaseKill = resolve; });
+      }),
+    } as unknown as typeof deps.terminalBackend;
+    deps.taskStore.createTask({
+      prompt: 'probe awaiting startup reap',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-awaiting-reap',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await killStarted;
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+
+    releaseKill();
+    await recovery;
+  });
+
   test('fails startup closed when an interrupted probe terminal cannot be reaped', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();

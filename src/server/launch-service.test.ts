@@ -53,7 +53,7 @@ function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
     lifecycleDeps: {
       monitor: { registerAgent: vi.fn() } as any,
       watchdog: { registerAgent: vi.fn() } as any,
-      hookWatcher: { watch: vi.fn() } as any,
+      hookWatcher: { isWatching: vi.fn().mockReturnValue(false), watch: vi.fn() } as any,
       githubScanner: { scanTask: vi.fn(), isActive: vi.fn().mockReturnValue(false), processTaskPrompt: vi.fn() } as any,
       autoNameTask: vi.fn(),
     } as any,
@@ -760,6 +760,39 @@ describe('launchTask', () => {
     expect(store.getActiveCount()).toBe(0);
   });
 
+  it('does not acknowledge or retain dependency-denied work when its persistence barrier fails', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+        recommendedAction: 'Restore the KB provider.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn().mockRejectedValue(new Error('denied marker write failed')),
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'dependency denied durability failure',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('denied marker write failed');
+
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        disposition: expect.objectContaining({
+          reason: 'launch_error',
+          detail: expect.stringContaining('denied marker write failed'),
+        }),
+      }),
+    ]);
+  });
+
   it('parks confirmed dependency degradation even when the ordinary pending queue is full', async () => {
     const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
     store.startTask(active.id);
@@ -1219,6 +1252,88 @@ describe('launchTask', () => {
     });
     expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  it('disposes a direct probe when its re-park persistence barrier fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockRejectedValueOnce(new Error('direct re-park write failed')),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'failed direct re-park barrier',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('direct re-park write failed');
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        disposition: expect.objectContaining({ reason: 'launch_error' }),
+      }),
+    ]);
+  });
+
+  it('keeps a live direct probe when post-attach persistence fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('post-attach write failed'));
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      const sessionId = options?.tmuxName;
+      expect(sessionId).toMatch(/^kookr-/);
+      options?.onSessionCreated?.(sessionId!);
+      store.addSession(taskId, {
+        tmuxSession: sessionId!,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return sessionId!;
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await launchTask(gatedDeps, {
+        prompt: 'live direct probe survives post-attach flush failure',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({ queued: false, task: { status: 'inProgress', launchAdmission: undefined } });
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'healthy' });
   });
 
   it('does not degrade the circuit when a direct probe task is cancelled before rejection', async () => {
@@ -4142,18 +4257,56 @@ describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
 
   it('persists an ordinary claimed task before acknowledging a capacity wait', async () => {
     deps.getMaxActiveTasks = () => 0;
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps.flushTasks = vi.fn(async () => {
+      markFlushStarted();
+      await new Promise<void>((resolve) => { releaseFlush = resolve; });
+    });
 
-    const result = await launchTask(deps, {
+    let settled = false;
+    const launch = launchTask(deps, {
       prompt: 'claimed task waiting for capacity',
       cwd: '/tmp',
       claimIssue: { number: 43 },
     });
+    void launch.finally(() => { settled = true; });
+    await flushStarted;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseFlush();
+    const result = await launch;
 
     expect(result).toMatchObject({
       queued: true,
       task: { status: 'pending', issueClaim: { number: 43 } },
     });
     expect(deps.flushTasks).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim and disposes capacity-wait work when persistence fails', async () => {
+    deps.getMaxActiveTasks = () => 0;
+    deps.flushTasks = vi.fn().mockRejectedValue(new Error('claimed queue write failed'));
+
+    await expect(launchTask(deps, {
+      prompt: 'claimed capacity persistence failure',
+      cwd: '/tmp',
+      claimIssue: { number: 44 },
+    })).rejects.toThrow('claimed queue write failed');
+
+    expect(deps.issueClaimRegistry?.ownerRecord({
+      repo: 'github.com/kookr-ai/kookr',
+      number: 44,
+    })).toBeNull();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        disposition: expect.objectContaining({ reason: 'launch_error' }),
+      }),
+    ]);
+    expect(store.listTasks()[0]?.issueClaim).toBeUndefined();
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 

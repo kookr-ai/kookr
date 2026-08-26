@@ -1,7 +1,7 @@
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TaskStore, SessionInfo, Task } from '../core/tasks.js';
-import { isRecoverableTermination } from '../core/task-status.js';
+import { isRecoverableTermination, isTerminalStatus } from '../core/task-status.js';
 import {
   AdapterRegistry,
   type AdapterLaunchOptions,
@@ -297,6 +297,7 @@ export async function recoverCrashedSessions(
       });
       continue;
     }
+    const priorAdmission = currentAfterAdmission.launchAdmission;
     if (dependencyAdmission && !dependencyAdmission.admit) {
       taskStore.setLaunchAdmission(
         task.id,
@@ -308,6 +309,10 @@ export async function recoverCrashedSessions(
       try {
         await options.flushTasks?.();
       } catch (err) {
+        const current = taskStore.getTask(task.id);
+        if (current && !isTerminalStatus(current.status)) {
+          taskStore.setLaunchAdmission(task.id, priorAdmission);
+        }
         result.failed.push({
           taskId: task.id,
           sessionId: tmuxName,
@@ -322,7 +327,6 @@ export async function recoverCrashedSessions(
       });
       continue;
     }
-    const priorAdmission = currentAfterAdmission.launchAdmission;
     if (dependencyAdmission && priorAdmission) {
       taskStore.setLaunchAdmission(task.id, undefined);
       if (priorAdmission.status === 'parked') {
@@ -458,13 +462,12 @@ export async function recoverCrashedSessions(
           && current.status !== 'completed'
           && current.status !== 'terminated'
           && current.status !== 'cancelled'
-          && current.launchAdmission?.status === 'probing'
         ) {
           if (current.status === 'inProgress') taskStore.reopenTask(task.id);
           if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
           taskStore.setLaunchAdmission(
             task.id,
-            priorAdmission ?? taskAdmissionForProbeCapacityWait(dependencyAdmission, new Date().toISOString()),
+            priorAdmission,
           );
         }
         result.failed.push({

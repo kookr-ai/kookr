@@ -389,16 +389,25 @@ describe('Crash Recovery', () => {
     admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
     const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
     let probePersisted = false;
+    let expectedSessionId: string | undefined;
     const flushTasks = vi.fn(async () => {
-      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({ status: 'probing' });
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({
+        status: 'probing',
+        sessionId: expect.stringMatching(/^kookr-/),
+      });
+      const launchAdmission = taskStore.getTask(task.id)?.launchAdmission;
+      expectedSessionId = launchAdmission?.status === 'probing'
+        ? launchAdmission.sessionId
+        : undefined;
       probePersisted = true;
     });
     vi.spyOn(adapter, 'launch').mockImplementationOnce(async (taskId, _prompt, launchCwd, _resume, options) => {
       expect(probePersisted).toBe(true);
       expect(taskStore.getTask(taskId)?.launchAdmission).toMatchObject({ status: 'probing' });
-      options?.onSessionCreated?.('probe-partial-recovery');
+      expect(options?.tmuxName).toBe(expectedSessionId);
+      options?.onSessionCreated?.(expectedSessionId!);
       taskStore.addSession(taskId, {
-        tmuxSession: 'probe-partial-recovery',
+        tmuxSession: expectedSessionId!,
         agentType: 'claude-code',
         cwd: launchCwd,
         createdAt: new Date(),
@@ -419,12 +428,50 @@ describe('Crash Recovery', () => {
       status: 'pending',
       launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
       sessions: expect.arrayContaining([expect.objectContaining({
-        tmuxSession: 'probe-partial-recovery',
+        tmuxSession: expectedSessionId,
         lastStatus: 'aborted',
       })]),
     });
-    expect(stop).toHaveBeenCalledWith('probe-partial-recovery');
+    expect(stop).toHaveBeenCalledWith(expectedSessionId);
     expect(flushTasks).toHaveBeenCalledOnce();
+  });
+
+  test('keeps a live recovered probe when post-attach persistence fails', async () => {
+    const cwd = join(tempDir, 'project-live-post-attach-failure');
+    const task = await setupCrashedTask('Live recovery post-attach failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Live recovery post-attach failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('post-attach recovery write failed'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    let result;
+    try {
+      result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(result?.relaunched).toEqual([expect.objectContaining({ taskId: task.id })]);
+    expect(result?.failed).toHaveLength(0);
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'healthy' });
   });
 
   test('reports a failed recovery and starts no adapter when a denied marker cannot be persisted', async () => {
@@ -457,7 +504,7 @@ describe('Crash Recovery', () => {
     expect(result.skipped).toHaveLength(0);
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'pending',
-      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      launchAdmission: undefined,
     });
   });
 
@@ -488,7 +535,7 @@ describe('Crash Recovery', () => {
     })]);
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'pending',
-      launchAdmission: { reason: 'half_open_waiting_for_capacity' },
+      launchAdmission: undefined,
     });
     expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
@@ -576,6 +623,50 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'pending',
       launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('rolls back a re-park marker when its second recovery persistence barrier fails', async () => {
+    const cwd = join(tempDir, 'project-failed-invalidated-probe-persistence');
+    const task = await setupCrashedTask('Failed invalidated recovery persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Failed invalidated recovery persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockRejectedValueOnce(new Error('recovery re-park write failed')),
+    });
+    await flushStarted;
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('recovery re-park write failed'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: undefined,
     });
     expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
   });
