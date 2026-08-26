@@ -51,6 +51,7 @@ checklist:
   - Ran module interface audit for leaky/wide/mixed-level exports
   - Produced unified findings report with cross-agent correlations
   - Prioritized findings by impact and effort
+  - Classified large dependency-bearing structural findings for RFC-first routing
   - Created GitHub issues for the top findings, capped at the selected maximum (or skipped when set to Report only)
 ---
 
@@ -101,8 +102,36 @@ Cross-reference findings across all three analyses. Look for reinforcing signals
 Produce a **unified findings report** at `{{reportPath}}` with:
 1. Executive summary (3-5 sentences)
 2. Top findings ranked by impact × fixability
-3. Per-finding detail: what's wrong, evidence from which analysis, refactoring direction
+3. Per-finding detail: what's wrong, evidence from which analysis, refactoring direction, `changeShape`, `size`, `implementationReadiness`, a stable `findingKey`, and an `orderedPhases` list when phased delivery is warranted
 4. Positive findings: what's well-structured and should be preserved
+
+## Large-Refactor Threshold
+
+Route a finding through the RFC-first flow only when every condition is true:
+
+1. It is a behavior-preserving `structural` architecture refactor, not a
+   reductive capability change, policy decision, or speculative rewrite.
+2. Its classified size is `large` and its implementation readiness is
+   `needs-design`.
+3. Safe delivery requires at least two ordered, dependency-bearing phases. P1
+   has no predecessor; every later phase depends only on its adjacent
+   predecessor reaching `main`.
+4. The combined analysis supplies verified evidence and a testable outcome for
+   every phase.
+
+Set the finding's route to `rfc-first` only when all four hold. Otherwise leave
+the route `plain-issue` (or keep the finding in the report when it does not meet
+the issue quality bar). This threshold changes orchestration, not severity.
+
+For each `rfc-first` finding, use the agent's file-write tool to create a
+temporary `rfc-handoff.md` containing the six Architecture Refactor RFC inputs:
+repository, stable finding key, title, verified evidence, ordered phase plan,
+and this report as the source reference. Begin it with `Execute
+plugin/playbooks/architecture-refactor-rfc.md for this verified finding.` Treat
+evidence as prose to re-check; never place it in shell argv. Derive
+`findingKey` from the normalized title plus the first 12 hex characters of a
+SHA-256 over the canonical title and sorted affected paths, validate it against
+`^[a-z0-9][a-z0-9-]{2,80}$`, and reuse it for the same finding across retries.
 
 ## Phase 3 — Create Issues
 
@@ -113,6 +142,7 @@ Otherwise, resolve the drain-coupled emission budget first (issue #1607), then f
 ```bash
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) \
   || { echo "architecture-health-check: cannot resolve repo; skipping issue creation"; exit 0; }
+REPO_SLUG=$(printf '%s' "$REPO" | tr '/.' '--')
 EMISSION_PLAN=$(kookr emission plan --repo "$REPO" --requested "{{maxIssues}}" --json) \
   || { echo "architecture-health-check: emission plan failed; refusing to file issues"; exit 0; }
 ALLOWED=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.allowedBudget // empty')
@@ -199,6 +229,40 @@ if [ "$IS_DUP" = "true" ]; then
   continue
 fi
 
+# RFC-first routing gate. Phase 2 writes FINDING_ROUTE, FINDING_KEY, and an
+# RFC_HANDOFF_FILE containing the verified evidence + ordered phase plan. The
+# handoff begins with an instruction to execute
+# plugin/playbooks/architecture-refactor-rfc.md; generated finding prose never
+# appears in shell argv.
+if [ "${FINDING_ROUTE:-plain-issue}" = "rfc-first" ]; then
+  if ! printf '%s' "$FINDING_KEY" | grep -Eq '^[a-z0-9][a-z0-9-]{2,80}$'; then
+    echo "architecture-health-check: invalid RFC-first finding key for $ISSUE_TITLE"
+    continue
+  fi
+  if [ ! -s "$RFC_HANDOFF_FILE" ]; then
+    echo "architecture-health-check: missing RFC-first handoff for $ISSUE_TITLE"
+    continue
+  fi
+  RFC_SPAWN_JSON=$(kookr spawn -C "$(pwd)" \
+    --prompt-file "$RFC_HANDOFF_FILE" \
+    --criteria "RFC merged, umbrella created, and Phase 1 launched or a durable blocker recorded" \
+    --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
+    --unattended --json) \
+    || { echo "architecture-health-check: RFC-first launch failed; inspect idempotency state before retry"; continue; }
+  RFC_TASK_ID=$(printf '%s' "$RFC_SPAWN_JSON" | jq -r '.details.taskId // .task.id // .taskId // empty')
+  if [ -z "$RFC_TASK_ID" ]; then
+    echo "architecture-health-check: RFC-first launch returned no task id; refusing to record success"
+    continue
+  fi
+  # Record rfcTaskId beside this finding in {{reportPath}} (or its structured
+  # sidecar) before advancing FILED. A retry reuses the exact idempotency key.
+  FILED=$((FILED + 1))
+  continue
+fi
+
+# Findings below the large-refactor threshold preserve the existing plain issue
+# path and continue to the same gh issue create operation as before.
+
 # ... gh issue create ...
 FILED=$((FILED + 1))
 if [ "$ADMIT_REFACTOR" = "true" ]; then
@@ -210,11 +274,13 @@ When a finding is selected but over the emission budget **or** declined by the v
 
 `{{maxIssues}}` is a ceiling, not a quota. The emission budget is a second, drain-coupled ceiling. The value-density governor is a third ceiling specifically for refactor-class / cosmetic consolidations. Create fewer if fewer findings clear the bar — never split, pad, or promote a minor/watch-list finding just to reach the number. Any findings above either cap stay in the report's watch-list section (and, when over budget or declined, in the deferred-ideas / value-density decline logs).
 
-Skip creating issues for:
+Skip creating plain issues for:
 - Minor findings (cosmetic naming, low-severity smells)
 - Sub-threshold cosmetic consolidations declined by `kookr value-density admit` (#1846)
 - Findings that are intentional V1 trade-offs (documented in ADRs)
-- Findings that would require major rewrites without clear payoff
+- Findings that would require major rewrites without clear payoff. A verified,
+  behavior-preserving large refactor with a concrete ordered phase plan instead
+  follows the RFC-first routing gate above.
 
 ## Idempotency
 
@@ -223,10 +289,14 @@ Skip creating issues for:
 - If duplicate issues exist, update them with new evidence instead of creating new ones
 - Never file past the drain-coupled emission budget; defer over-budget candidates
 - Never file a refactor-class / cosmetic consolidation the value-density governor declined; log it via `kookr value-density decline` so the next reflection can see it
+- Use one stable `architecture-refactor-rfc:<repoSlug>:<findingKey>` launch key; after a timeout, inspect task/idempotency state before retrying and never mint a second key
 
 ## Anti-Patterns
 
-- Don't propose massive refactoring plans. Each issue should be a focused, independently shippable improvement.
+- Don't file massive refactoring plans as plain implementation issues. Route a
+  finding that clears the exact large-refactor threshold through
+  `architecture-refactor-rfc.md`; otherwise each issue remains focused and
+  independently shippable.
 - Don't flag V1 simplicity decisions as smells unless they've become actively harmful.
 - Don't create issues for things that are better fixed as drive-by improvements in other PRs.
 - Don't file issues when open backlog is over the emission threshold without consulting `kookr emission plan`.

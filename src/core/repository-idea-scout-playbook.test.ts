@@ -320,6 +320,20 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/Product-policy changes, broad architecture changes, major persistence changes/);
       expect(pb.body).toMatch(/visibly blocked from autonomous implementation/);
     });
+
+    test('defines the RFC-first threshold without widening ordinary review-required work', () => {
+      const start = pb.body.indexOf('## RFC-First Large-Refactor Routing');
+      const end = pb.body.indexOf('## Preservation-First Simplification');
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const routing = pb.body.slice(start, end);
+      expect(routing).toMatch(/changeShape.*structural/i);
+      expect(routing).toMatch(/size.*large/i);
+      expect(routing).toMatch(/implementationReadiness.*needs-design/i);
+      expect(routing).toMatch(/at least two|2\+/i);
+      expect(routing).toMatch(/ordered.*depend/i);
+      expect(routing).toMatch(/below.*threshold.*unchanged/i);
+    });
   });
 
   describe('reductive ideas cannot become autonomous implementation issues', () => {
@@ -335,6 +349,17 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/publishDecision = local-proposal/);
       expect(pb.body).toMatch(/publishDecision = local-investigation/);
       expect(pb.body).toMatch(/proposalsDoc/);
+    });
+
+    test('large structural candidates route to RFC-first while other decisions stay unchanged', () => {
+      const decisions = pb.body.slice(
+        pb.body.indexOf('### 5.4 Assign publish decisions'),
+        pb.body.indexOf('### 5.5 Write the ideas log'),
+      );
+      expect(decisions).toMatch(/large-refactor threshold.*publishDecision = rfc-first/is);
+      expect(decisions).toMatch(/authority = autonomous.*publishDecision = publish/is);
+      expect(decisions).toMatch(/review-required.*publishDecision = local-proposal/is);
+      expect(decisions).toMatch(/protected.*publishDecision = local-investigation/is);
     });
 
     test('a user note cannot promote a gated candidate', () => {
@@ -398,6 +423,22 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).not.toMatch(/>>?\s*"\$ISSUE_BODY_FILE"/);
       // And no run-local state variable is echoed into the published body.
       expect(phase7).not.toMatch(/\$(STATE_DIR|RECS_DIR|IDEA_DIR)[^\n]*"\$ISSUE_BODY_FILE"/);
+    });
+
+    test('Phase 7 launches RFC-first candidates idempotently before the plain issue loop', () => {
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7: Selective GitHub Issue Creation'));
+      expect(phase7).toContain('architecture-refactor-rfc.md');
+      expect(phase7).toContain('rfc-first');
+      expect(phase7).toContain('--idempotency-key');
+      expect(phase7).toContain('rfcTaskId');
+      expect(phase7).toContain('architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}');
+      expect(phase7).not.toContain('architecture-refactor-rfc:${REPO_SLUG}:${IDX}');
+      expect(phase7).toContain('/api/tasks/$SAVED_RFC_TASK_ID');
+      expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
+      const rfcRoute = phase7.indexOf('RFC-first launch loop');
+      const issueRoute = phase7.indexOf('> "$STATE_DIR/publishable.tsv"');
+      expect(rfcRoute).toBeGreaterThan(-1);
+      expect(issueRoute).toBeGreaterThan(rfcRoute);
     });
 
     test('Phase 7 applies drain-coupled emission budget + logged dedupe (issue #1607)', () => {

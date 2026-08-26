@@ -53,4 +53,29 @@ describe('architecture-health-check playbook emission budget', () => {
     expect(phase3).toContain('playbook-state/value-density');
     expect(phase3).toMatch(/cosmetic|value-density decline/i);
   });
+
+  test('routes only large dependent architecture refactors through the RFC-first playbook', () => {
+    expect(pb.body).toContain('## Large-Refactor Threshold');
+    const threshold = pb.body.slice(
+      pb.body.indexOf('## Large-Refactor Threshold'),
+      pb.body.indexOf('## Phase 3 — Create Issues'),
+    );
+    expect(threshold).toMatch(/behavior-preserving.*structural/i);
+    expect(threshold).toMatch(/size.*large/i);
+    expect(threshold).toMatch(/at least two|2\+/i);
+    expect(threshold).toMatch(/ordered.*depend/i);
+
+    expect(phase3).toContain('architecture-refactor-rfc.md');
+    expect(phase3).toContain('rfc-first');
+    expect(phase3).toContain('--idempotency-key');
+    const route = phase3.indexOf('RFC-first routing gate');
+    const plainIssue = phase3.indexOf('# ... gh issue create ...');
+    expect(route).toBeGreaterThan(-1);
+    expect(plainIssue).toBeGreaterThan(route);
+  });
+
+  test('preserves plain issue creation below the large-refactor threshold', () => {
+    expect(phase3).toMatch(/below.*large-refactor threshold.*existing.*issue/i);
+    expect(phase3).toContain('# ... gh issue create ...');
+  });
 });
