@@ -1004,6 +1004,54 @@ describe('Crash Recovery', () => {
     }
   });
 
+  test('stale recovery does not select an attached ended successor as its failed session', async () => {
+    const cwd = join(tempDir, 'project-ended-recovery-successor');
+    const task = await setupCrashedTask('Ended recovery successor', cwd);
+    const reconcileResult = await reconcile(taskStore, terminal);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(() => {
+      markFirstStarted();
+      return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+    });
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+
+    try {
+      const staleRecovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        getLaunchTimeoutMs: () => 1_000_000_000,
+      });
+      await firstStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = taskStore.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+      taskStore.addSession(task.id, {
+        tmuxSession: 'ended-recovery-successor',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      taskStore.updateSession(task.id, 'ended-recovery-successor', { lastStatus: 'completed' });
+      taskStore.reopenTask(task.id);
+
+      rejectFirst(new Error('stale recovery rejected after successor ended'));
+      await staleRecovery;
+
+      expect(stop).not.toHaveBeenCalledWith('ended-recovery-successor');
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'open',
+        sessions: expect.arrayContaining([expect.objectContaining({
+          tmuxSession: 'ended-recovery-successor',
+          lastStatus: 'completed',
+        })]),
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test('reaps an unattached recovery session when its probe is cancelled before rejection', async () => {
     const cwd = join(tempDir, 'project-cancelled-probe');
     const task = await setupCrashedTask('Cancelled recovery probe', cwd);

@@ -231,7 +231,6 @@ describe('LaunchDependencyAdmission', () => {
     const probe = admission.evaluate(['kb']);
     if (!probe.admit || !probe.probe) throw new Error('expected recovery probe');
 
-    admission.observe(['kb'], [failure]);
     admission.retainProbeCleanup(dependencies, 'task-1');
     admission.observe(['kb'], [failure]);
     admission.settleReconciledProbe(dependencies, 'released');

@@ -2452,9 +2452,9 @@ function reparkAfterFailedProbe(
     taskStore.setLaunchAdmission(taskId, undefined);
     return undefined;
   }
+  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
   if (live.status === 'inProgress') taskStore.reopenTask(taskId);
   if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
-  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
   return taskStore.getTask(taskId)!;
 }
 

@@ -779,7 +779,10 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
+      const result = await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
+      if (result.outcome === 'invalid' && result.code === 'task_cleanup_in_progress') {
+        return c.json({ error: result.error, code: result.code }, 409);
+      }
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {

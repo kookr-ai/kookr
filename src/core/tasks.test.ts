@@ -2679,6 +2679,7 @@ describe('launch reservations (#700)', () => {
     store.cancelTask(task.id);
 
     expect(() => store.deleteTask(task.id)).toThrow(/cleanup is in progress/);
+    expect(() => store.reopenTask(task.id)).toThrow(/cleanup is in progress/);
     expect(store.getTask(task.id)?.launchAdmission).toMatchObject({
       status: 'probing',
       sessionId: 'kookr-late-probe',

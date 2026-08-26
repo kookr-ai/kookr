@@ -561,12 +561,12 @@ export async function recoverCrashedSessions(
             && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
             && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
           ) {
-            if (current.status === 'inProgress') taskStore.reopenTask(task.id);
-            if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
             taskStore.setLaunchAdmission(
               task.id,
               priorAdmission,
             );
+            if (current.status === 'inProgress') taskStore.reopenTask(task.id);
+            if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
           }
           result.failed.push({
             taskId: task.id,
@@ -679,6 +679,10 @@ export async function recoverCrashedSessions(
                 && session.lastStatus !== 'completed'
                 && session.lastStatus !== 'aborted',
             ) ?? false;
+            const hasReplacementSession = current?.sessions.some(
+              (session) => session.tmuxSession !== failedLaunchSessionId
+                && !priorSessionIds.has(session.tmuxSession),
+            ) ?? false;
             const hasReplacementOwner = taskStore.hasForeignFreshLaunchReservation?.(
               task.id,
               launchReservationToken,
@@ -687,6 +691,7 @@ export async function recoverCrashedSessions(
               current
               && !isTerminalStatus(current.status)
               && !hasReplacementOwner
+              && !hasReplacementSession
               && (ownedLaunchAtFailure || (failedLaunchSessionId && !hasForeignLiveSession))
             ) {
               taskStore.cancelTask(task.id);
@@ -730,6 +735,12 @@ export async function recoverCrashedSessions(
             options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
           }
           const current = taskStore.getTask(task.id);
+          if (current && !isTerminalStatus(current.status)) {
+            taskStore.setLaunchAdmission(
+              task.id,
+              taskAdmissionForFailedProbe(dependencyAdmission, new Date().toISOString()),
+            );
+          }
           if (current?.status === 'inProgress') taskStore.reopenTask(task.id);
           if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
           const afterTransition = taskStore.getTask(task.id);
@@ -739,10 +750,6 @@ export async function recoverCrashedSessions(
             && afterTransition.status !== 'terminated'
             && afterTransition.status !== 'cancelled'
           ) {
-            taskStore.setLaunchAdmission(
-              task.id,
-              taskAdmissionForFailedProbe(dependencyAdmission, new Date().toISOString()),
-            );
             result.skipped.push({
               taskId: task.id,
               sessionId: tmuxName,

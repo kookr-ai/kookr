@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import type { AgentActivityMeta, AgentEvent } from '../../core/types.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { Task, TaskCompletionFeedback, TaskStore } from '../../core/tasks.js';
-import { InvalidTransitionError } from '../../core/tasks.js';
+import { InvalidTransitionError, TaskCleanupInProgressError } from '../../core/tasks.js';
 import { isTerminalStatus } from '../../core/task-status.js';
 import { redactSecrets } from '../../core/redact-secrets.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
@@ -78,7 +78,13 @@ interface TaskDeletionAuditRecord {
   count: number;
   deletedTaskIds: string[];
   targetTaskId?: string;
-  outcome: 'deleted' | 'not_found' | 'cleared' | 'invalid_scope' | 'snapshot_failed';
+  outcome:
+    | 'deleted'
+    | 'not_found'
+    | 'cleanup_in_progress'
+    | 'cleared'
+    | 'invalid_scope'
+    | 'snapshot_failed';
 }
 
 type TaskDeletionAuditRow = {
@@ -358,7 +364,26 @@ export class TaskLifecycleCommands {
     opts: { gcFeedbackBundle?: boolean } & TaskDeletionAuditOpts = {},
   ): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
-    const deleted = await deleteTask(this.deps.getLifecycleDeps(), taskId);
+    let deleted: boolean;
+    try {
+      deleted = await deleteTask(this.deps.getLifecycleDeps(), taskId);
+    } catch (err) {
+      if (!(err instanceof TaskCleanupInProgressError)) throw err;
+      await this.writeTaskDeletionAudit({
+        action: 'deleteTask',
+        actor: opts.actor,
+        projectId: task?.projectId,
+        count: 0,
+        deletedTaskIds: [],
+        targetTaskId: taskId,
+        outcome: 'cleanup_in_progress',
+      });
+      return {
+        outcome: 'invalid',
+        code: 'task_cleanup_in_progress',
+        error: err.message,
+      };
+    }
     await this.writeTaskDeletionAudit({
       action: 'deleteTask',
       actor: opts.actor,

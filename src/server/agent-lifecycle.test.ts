@@ -2599,7 +2599,7 @@ describe('promotePendingTasks (integration)', () => {
         })],
       });
       expect(taskStore.getTask(task.id)?.sessions.find(
-        (session) => session.tmuxSession === 'successor-session',
+        (session) => session.tmuxSession === expectedSessionId,
       )?.lastStatus).toBeUndefined();
       expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
         admit: false,
@@ -2792,6 +2792,67 @@ describe('promotePendingTasks (integration)', () => {
       expect(taskStore.getTask(task.id)?.sessions.find(
         (session) => session.tmuxSession === 'successor-session',
       )?.lastStatus).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('stale ordinary promoter neither selects nor cancels an ended successor', async () => {
+    const task = taskStore.createTask({
+      prompt: 'ended promotion successor',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'ended promotion successor',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+      },
+    });
+    taskStore.pendTask(task.id);
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, getLaunchTimeoutMs: () => 1_000_000_000 },
+    };
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    vi.mocked(adapter.launch)
+      .mockImplementationOnce(() => {
+        markFirstStarted();
+        return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+      })
+      .mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+        options?.onSessionCreated?.('ended-successor-session');
+        taskStore.addSession(taskId, {
+          tmuxSession: 'ended-successor-session',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'ended-successor-session';
+      });
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await firstStarted;
+      now += 10 * 60 * 1_000 + 1;
+      expect(await promotePendingTasks(deps)).toBe(1);
+      taskStore.updateSession(task.id, 'ended-successor-session', { lastStatus: 'completed' });
+      taskStore.reopenTask(task.id);
+
+      rejectFirst(new Error('stale owner rejected after successor ended'));
+      expect(await stalePromotion).toBe(0);
+
+      expect(adapter.stop).not.toHaveBeenCalledWith('ended-successor-session');
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'open',
+        sessions: [expect.objectContaining({
+          tmuxSession: 'ended-successor-session',
+          lastStatus: 'completed',
+        })],
+      });
     } finally {
       nowSpy.mockRestore();
     }

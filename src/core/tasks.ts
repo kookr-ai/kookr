@@ -74,8 +74,8 @@ export class InvalidTransitionError extends Error {
 }
 
 export class TaskCleanupInProgressError extends Error {
-  constructor(taskId: string) {
-    super(`Task ${taskId} cannot be deleted while dependency-probe cleanup is in progress`);
+  constructor(taskId: string, operation: 'deleted' | 'reopened' = 'deleted') {
+    super(`Task ${taskId} cannot be ${operation} while dependency-probe cleanup is in progress`);
     this.name = 'TaskCleanupInProgressError';
   }
 }
@@ -1005,6 +1005,13 @@ export class TaskStore {
   }
 
   reopenTask(id: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    // Reopening must not turn a terminal cleanup owner back into a launchable
+    // task while an exact probe stop/circuit settlement is still outstanding.
+    if (task.launchAdmission?.status === 'probing') {
+      throw new TaskCleanupInProgressError(id, 'reopened');
+    }
     return cloneTask(this.transition(id, 'open'));
   }
 

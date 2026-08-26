@@ -238,8 +238,6 @@ export async function reconcile(
       && allSessionsDone
     ) {
       const probing = latestTask.launchAdmission;
-      if (latestTask.status === 'inProgress') taskStore.reopenTask(latestTask.id);
-      if (taskStore.getTask(latestTask.id)?.status === 'open') taskStore.pendTask(latestTask.id);
       taskStore.setLaunchAdmission(latestTask.id, {
         status: 'parked',
         reason: 'dependency_degraded',
@@ -250,6 +248,8 @@ export async function reconcile(
         })),
         parkedAt: new Date().toISOString(),
       });
+      if (latestTask.status === 'inProgress') taskStore.reopenTask(latestTask.id);
+      if (taskStore.getTask(latestTask.id)?.status === 'open') taskStore.pendTask(latestTask.id);
       result.dependencyProbeCleanupSettled?.push({
         dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
         outcome: 'parked',

@@ -1704,6 +1704,7 @@ describe('launchTask', () => {
     await postAttachStarted;
     const taskId = store.listTasks()[0]!.id;
     store.completeTask(taskId);
+    expect(() => store.reopenTask(taskId)).toThrow(/cleanup is in progress/);
     releasePostAttach();
     await launched;
 

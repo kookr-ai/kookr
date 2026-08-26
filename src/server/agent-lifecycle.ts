@@ -988,9 +988,9 @@ function reparkPendingAfterFailedProbe(
     taskStore.setLaunchAdmission(taskId, undefined);
     return false;
   }
+  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
   if (current.status === 'inProgress') taskStore.reopenTask(taskId);
   if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
-  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
   return true;
 }
 
@@ -1493,13 +1493,22 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           && session.lastStatus !== 'completed'
           && session.lastStatus !== 'aborted',
       ) ?? false;
+      const hasReplacementSession = taskAtFailure?.sessions.some(
+        (session) => session.tmuxSession !== failedLaunchSessionId
+          && !priorSessionIds.has(session.tmuxSession),
+      ) ?? false;
       const hasReplacementOwner = taskStore.hasForeignFreshLaunchReservation?.(
         pending.id,
         launchReservationToken,
       ) ?? false;
       if (
         !ownedLaunchAtFailure
-        && (hasReplacementOwner || !failedLaunchSessionId || hasForeignLiveSession)
+        && (
+          hasReplacementOwner
+          || hasReplacementSession
+          || !failedLaunchSessionId
+          || hasForeignLiveSession
+        )
       ) {
         console.warn(`[promotion] Ignoring stale failed launch owner for task ${pending.id}`);
         continue;

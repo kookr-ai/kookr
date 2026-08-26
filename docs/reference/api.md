@@ -122,7 +122,7 @@ capacity).
 | `GET /api/tasks/migratable` | Preview cross-agent migration candidates for a `?targetAgent=`. Optional `fromAgent` / `includeCancelled` / `onlyIsolated` / `taskIds` (comma-separated) filters. Returns `{ targetAgent, candidates: [{taskId, eligible, reason?, worktreeShared, …}] }` |
 | `POST /api/tasks/migrate` | Continue interrupted tasks under a **different** agent by launching linked continuation tasks. Body `{ targetAgent, scope: {kind:'ids', taskIds} \| {kind:'all', fromAgent?, includeCancelled?}, effort?, setAsDefault?, onlyIsolated? }`. Per-task `migrated` / `queued` / `blocked` results; `200` even on mixed outcomes; `400` malformed. Behind the same `/api` auth + CSRF middleware as `POST /api/tasks` (a task-creation path) — **not** supervisor-gated, unlike `POST /api/tasks/abort` |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
-| `DELETE /api/tasks/:id` | Stop and remove a task |
+| `DELETE /api/tasks/:id` | Stop and remove a task. Returns `409 {code: "task_cleanup_in_progress", error}` while an exact dependency-probe cleanup marker owns the record; retry after reconciliation clears it |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
@@ -252,7 +252,9 @@ Runtime reconciliation or startup releases this cleanup-only fence only after
 physical absence is proven. Terminal transitions also retain an exact marker
 briefly after a proven stop so reconciliation can atomically settle the
 process-local circuit, so `probing` alone does not mean a worker is live or
-uncertain. Explicit and bulk deletion skip/refuse these cleanup owners. A live
+uncertain. Explicit deletion returns `409 task_cleanup_in_progress`, bulk
+deletion/pruning skip these cleanup owners, and reopen is refused until
+settlement. A live
 reconciled probe clears its marker as successful unless confirmed degradation
 recorded at or after that probe began still controls the circuit. Capacity-only waits use
 `reason: "half_open_waiting_for_capacity"` and are queued, not reported as
@@ -643,6 +645,10 @@ actor is recorded in `audit.jsonl` rows (`task.deleteTask`, `task.batchAbort`,
 `task.complete`, `task.completionReadyAckAll`) and, for the message route, in
 the interaction log's `user_input` event. The WebSocket transport attributes
 the same way using its per-connection id instead of a header.
+
+An expected `DELETE` conflict while dependency-probe cleanup owns the task is
+also recorded as a `task.deleteTask` row with
+`outcome: "cleanup_in_progress"`, `count: 0`, and no deleted ids.
 
 The header is **optional and never rejects the request** — an absent or blank
 value records the actor as `"unattributed"` and logs one deprecation-style

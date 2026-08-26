@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskStore } from '../../core/tasks.js';
+import { TaskCleanupInProgressError, TaskStore } from '../../core/tasks.js';
 import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
@@ -1850,6 +1850,26 @@ describe('DELETE /api/tasks/:id error paths', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toBe('session kill failed');
+  });
+
+  test('returns a stable 409 while dependency-probe cleanup owns the task', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Cleanup fenced', '/cwd');
+    vi.mocked(deleteTask).mockRejectedValueOnce(new TaskCleanupInProgressError(task.id));
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+
+    const res = await mkApp({
+      taskStore,
+      monitor,
+      broadcastToAll: broadcastNoop,
+      serverCwd: '/cwd',
+    }).request(`/api/tasks/${task.id}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      code: 'task_cleanup_in_progress',
+      error: `Task ${task.id} cannot be deleted while dependency-probe cleanup is in progress`,
+    });
   });
 
   test('still 404s when the task is unknown even with mocks wired', async () => {

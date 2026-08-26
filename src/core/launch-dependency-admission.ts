@@ -217,11 +217,12 @@ export class LaunchDependencyAdmission {
   ): void {
     for (const dependency of dependencies) {
       const entry = this.entry(dependency.dependency);
+      const invalidated = entry.state === 'degraded' || entry.probeInvalidated === true;
       entry.state = 'half_open';
       entry.lastChangedAt = this.now();
-      entry.reason = 'Interrupted recovery probe cleanup is in progress';
+      if (!invalidated) entry.reason = 'Interrupted recovery probe cleanup is in progress';
       entry.probeToken = undefined;
-      entry.probeInvalidated = undefined;
+      entry.probeInvalidated = invalidated || undefined;
       entry.startupRecoveryOwners ??= new Set();
       entry.startupRecoveryOwners.add(ownerToken);
     }

@@ -238,9 +238,9 @@ export async function runStartupRecoveryPhase({
           dependencies: interruptedDependencies,
           parkedAt: new Date().toISOString(),
         };
+        taskStore.setLaunchAdmission(task.id, parked);
         if (currentTask.status === 'inProgress') taskStore.reopenTask(task.id);
         if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
-        taskStore.setLaunchAdmission(task.id, parked);
         recordLatestConfirmedEvidence(
           latestConfirmedAtByDependency,
           parked.dependencies,
