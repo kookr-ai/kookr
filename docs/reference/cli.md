@@ -635,11 +635,11 @@ The envelope fields are:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `ok` | boolean | `true` for successful command outcomes, `false` for failures. |
-| `code` | string | Stable symbolic result code, such as `OK`, `USER_ERROR`, `NO_SERVER`, `SERVER_ERROR`, or `DUPLICATE_BLOCKED`. |
+| `code` | string | Stable symbolic result code, such as `OK`, `OK_DEGRADED`, `USER_ERROR`, `NO_SERVER`, `SERVER_ERROR`, or `DUPLICATE_BLOCKED`. |
 | `message` | string | Short human-readable summary of the outcome. |
 | `details` | object | Command-specific structured data. |
 
-`kookr status` exits `1` for invalid ports, unreachable servers, and unexpected responses; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`.
+`kookr status` exits `1` for invalid ports, unreachable servers, and an unexpected `/api/health` response; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. A slow, unreachable, or malformed `/api/snapshot` is non-fatal: the command exits `0` with `code: "OK_DEGRADED"` and a `details.degraded` block (issue #2848). When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`.
 
 Examples:
 
@@ -724,7 +724,7 @@ kookr status --json
 pnpm status
 ```
 
-The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts. It also surfaces health-derived operator lines when present: `SAFE MODE`, `CI-blind debt`, — when the issue belt is starved — one `Pipeline starvation: <repo> blockedEmpty=<n>` line per elevated repo (mirroring `/api/health` → `pipelineStarvation`), — when host-wide process leaks are elevated — one `Stale processes: dtach=<n> rss=<human>` line (and/or `relayServer=…`) mirroring `/api/health` → `staleProcesses` (issue #2209), always-on `Payload diet: tracked=<n> terminal=<n> snapshot=<human|none>` when `/api/health` publishes `payloadDiet` (issue #2220), — when non-zero — one `Hook replay checkpoints: sessions=<n> file=<human>` line mirroring `/api/health` → `hookReplayCheckpoints` (issue #2281), always-on `Startup recovery: relaunched=<n>  skipped=<n>  failed=<n>  crashLoop=<n>` when `/api/health` publishes `startupRecovery` (issue #2351), and — when capacity pressure is elevated (phantoms, a large util gap, or high nominal utilization) — one `Capacity: active=<n>/<max> free=<n> … effectiveWorking=… phantom=…` line with byClass counters mirroring `/api/health` → `capacity` (issue #2234). Slim summaries land under `details.pipelineStarvation` / `details.staleProcesses` / `details.capacity` in `--json` only when elevated; `details.payloadDiet` is always present when the health block exists; `details.hookReplayCheckpoints` is present when health publishes a non-null object (including zeros); `details.startupRecovery` is present when health publishes the block (including zeros); zero/absent elevated gauges stay quiet on the human path.
+The command requires `/api/health` and reads the full event snapshot `/api/snapshot` when available, then reports server uptime, build version, and per-agent severity counts. If the full event snapshot is slow, unreachable, or malformed, the command **degrades to a bounded fast path** built from `/api/health` plus the compact task list (`/api/tasks?view=compact`): it stays `ok`, emits `code: "OK_DEGRADED"`, reports task-outcome counts and cost in place of per-agent/finding detail, marks findings unavailable, and adds a `details.degraded` block naming each omitted/stale source with its status, reason, last-good freshness, and returned/original counts (issue #2848). Capacity, utilization, queue depth, pause state, and server freshness come from `/api/health`, so they remain present on the degraded path. It also surfaces health-derived operator lines when present: `SAFE MODE`, `CI-blind debt`, — when the issue belt is starved — one `Pipeline starvation: <repo> blockedEmpty=<n>` line per elevated repo (mirroring `/api/health` → `pipelineStarvation`), — when host-wide process leaks are elevated — one `Stale processes: dtach=<n> rss=<human>` line (and/or `relayServer=…`) mirroring `/api/health` → `staleProcesses` (issue #2209), always-on `Payload diet: tracked=<n> terminal=<n> snapshot=<human|none>` when `/api/health` publishes `payloadDiet` (issue #2220), — when non-zero — one `Hook replay checkpoints: sessions=<n> file=<human>` line mirroring `/api/health` → `hookReplayCheckpoints` (issue #2281), always-on `Startup recovery: relaunched=<n>  skipped=<n>  failed=<n>  crashLoop=<n>` when `/api/health` publishes `startupRecovery` (issue #2351), and — when capacity pressure is elevated (phantoms, a large util gap, or high nominal utilization) — one `Capacity: active=<n>/<max> free=<n> … effectiveWorking=… phantom=…` line with byClass counters mirroring `/api/health` → `capacity` (issue #2234). Slim summaries land under `details.pipelineStarvation` / `details.staleProcesses` / `details.capacity` in `--json` only when elevated; `details.payloadDiet` is always present when the health block exists; `details.hookReplayCheckpoints` is present when health publishes a non-null object (including zeros); `details.startupRecovery` is present when health publishes the block (including zeros); zero/absent elevated gauges stay quiet on the human path.
 
 Options:
 
@@ -736,8 +736,8 @@ Options:
 
 Exit behavior:
 
-- `0` when the status snapshot is read successfully and no `--fail-on` threshold is met.
-- `1` for invalid `KOOKR_PORT`, unreachable servers, or unexpected server responses.
+- `0` when the status snapshot is read successfully and no `--fail-on` threshold is met. This includes the degraded fast path (`code: "OK_DEGRADED"`) when `/api/health` is reachable but the full event snapshot is slow, unreachable, or malformed; on that path `--fail-on` cannot evaluate findings, so the gate does not fire and JSON reports `findingsEvaluated: false`.
+- `1` for invalid `KOOKR_PORT`, unreachable servers, or an unexpected `/api/health` response (a bad `/api/snapshot` is non-fatal — see the degraded path above).
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
 

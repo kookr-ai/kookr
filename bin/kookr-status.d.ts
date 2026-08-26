@@ -437,11 +437,38 @@ export interface HungSuspectTtlReclaimSummary {
   residualClasses?: Record<string, number>;
 }
 
+/** Compact task list row consumed on the degraded status path (issue #2848). */
+export interface TaskLike {
+  status?: string;
+  tokenUsage?: { costUsd?: number };
+}
+
+/** Task outcome summary rebuilt from the compact task list (issue #2848). */
+export interface TaskSummary {
+  statusCounts: Record<string, number>;
+  totalCost: number;
+  count: number;
+}
+
+/**
+ * Degraded-render context (issue #2848). Present only when the full event
+ * snapshot was slow/unavailable; the human report then omits agent/finding
+ * detail and renders task outcome counts instead.
+ */
+export interface DegradedRenderContext {
+  snapshotReason: string;
+  taskSummary: TaskSummary | null;
+  tasksReason: string | null;
+}
+
 export interface RenderReportArgs {
   port: number;
   health: HealthLike;
   agents: AgentLike[];
+  degraded?: DegradedRenderContext;
 }
+
+export function summarizeTasks(tasks: TaskLike[]): TaskSummary;
 
 export type PortResolution =
   | { kind: 'explicit'; port: number }

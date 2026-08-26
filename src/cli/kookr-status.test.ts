@@ -7,6 +7,7 @@ import {
   formatRss,
   isActiveFinding,
   summarize,
+  summarizeTasks,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
   summarizePipelineStarvation,
@@ -3826,19 +3827,328 @@ describe('kookr-status main (integration-style)', () => {
     });
   });
 
-  it('rejects a non-array /api/snapshot response', async () => {
+  it('degrades gracefully on a non-array /api/snapshot response (issue #2848)', async () => {
+    // A malformed snapshot is treated like an unavailable snapshot: the control
+    // plane is alive (health responded), so status returns a complete degraded
+    // document instead of failing the whole request.
     globalThis.fetch = vi.fn(async (url: string | URL) => {
       const href = typeof url === 'string' ? url : url.href;
       if (href.endsWith('/api/health')) {
-        return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        return new Response(
+          JSON.stringify({ status: 'ok', serverStartedAt: new Date(Date.now() - 60_000).toISOString() }),
+          { status: 200 },
+        );
+      }
+      if (href.includes('/api/tasks')) {
+        return new Response(JSON.stringify([{ status: 'inProgress' }]), { status: 200 });
       }
       return new Response(JSON.stringify({ not: 'an array' }), { status: 200 });
     }) as typeof fetch;
 
     const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK_DEGRADED',
+      details: {
+        summary: { statusCounts: { inProgress: 1 }, findingsAvailable: false },
+      },
+    });
+    expect(envelope.details.degraded.sections[0]).toEqual({
+      source: '/api/snapshot',
+      status: 'unavailable',
+      reason: 'unexpected /api/snapshot response (expected an array)',
+      omitted: ['agents', 'findings'],
+    });
+    expect(envelope.details.agents).toBeUndefined();
+  });
+});
+
+describe('kookr-status summarizeTasks (issue #2848)', () => {
+  it('counts tasks by status and sums per-task cost', () => {
+    const result = summarizeTasks([
+      { status: 'inProgress', tokenUsage: { costUsd: 0.5 } },
+      { status: 'inProgress', tokenUsage: { costUsd: 0.25 } },
+      { status: 'completed', tokenUsage: { costUsd: 1 } },
+      { status: 'completed' },
+      { status: 'pending' },
+    ]);
+    expect(result).toEqual({
+      statusCounts: { inProgress: 2, completed: 2, pending: 1 },
+      totalCost: 1.75,
+      count: 5,
+    });
+  });
+
+  it('buckets missing/invalid status and cost defensively', () => {
+    const result = summarizeTasks([
+      {},
+      { status: 'cancelled', tokenUsage: { costUsd: Number.NaN } },
+    ]);
+    expect(result).toEqual({
+      statusCounts: { unknown: 1, cancelled: 1 },
+      totalCost: 0,
+      count: 2,
+    });
+  });
+});
+
+describe('kookr-status main degraded snapshot path (issue #2848)', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function makeDeps(env: Record<string, string | undefined> = {}) {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const exits: number[] = [];
+    return {
+      env,
+      out: {
+        log: (m: string) => logs.push(m),
+        error: (m: string) => errors.push(m),
+      },
+      exit: ((code: number) => { exits.push(code); }) as () => never,
+      logs,
+      errors,
+      exits,
+    };
+  }
+
+  // health carries the capacity ledger + pause/queue gauges — the data that must
+  // remain present when the full event snapshot is unavailable.
+  const healthBody = {
+    status: 'ok',
+    serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
+    build: { version: 'dev' },
+    healthCacheAgeMs: 12,
+    capacity: {
+      maxActiveTasks: 16,
+      active: 15,
+      free: 1,
+      effectiveWorking: 10,
+      phantomActive: 3,
+      utilizationPct: 93.75,
+      effectiveUtilizationPct: 62.5,
+      byClass: { working: 10, finishedAwaitingAck: 2, hungSuspect: 3, launching: 0 },
+    },
+    // Pause state (issue #2079/#2236) and queue depth ride on /api/health, so
+    // they must survive onto the degraded envelope.
+    providerPausedOccupancy: { count: 2, oldestPauseAgeMs: 5_000 },
+    attentionQueue: { activeFindingDepth: 4, oldestFindingAgeMs: 9_000 },
+  };
+
+  const timeoutError = () => new DOMException('The operation timed out.', 'TimeoutError');
+
+  /**
+   * Snapshot rejects (slow/timed out); health always ok; tasks resolves to the
+   * supplied fixture (or rejects when `tasks` is an Error).
+   */
+  function mockDegradedFetch(tasks: unknown[] | Error) {
+    const attempted: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const href = typeof url === 'string' ? url : url.href;
+      attempted.push(href);
+      if (href.endsWith('/api/health')) {
+        return new Response(JSON.stringify(healthBody), { status: 200 });
+      }
+      if (href.endsWith('/api/snapshot')) {
+        throw timeoutError();
+      }
+      if (href.includes('/api/tasks')) {
+        if (tasks instanceof Error) throw tasks;
+        return new Response(JSON.stringify(tasks), { status: 200 });
+      }
+      throw new Error(`unexpected ${href}`);
+    }) as typeof fetch;
+    return attempted;
+  }
+
+  it('returns a parseable degraded summary when the snapshot times out but narrow endpoints are healthy', async () => {
+    const attempted = mockDegradedFetch([
+      { status: 'inProgress', tokenUsage: { costUsd: 0.5 } },
+      { status: 'completed', tokenUsage: { costUsd: 1.25 } },
+      { status: 'completed' },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+
+    expect(deps.exits).toEqual([0]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.code).toBe('OK_DEGRADED');
+
+    // Task outcome counts + cost are rebuilt from the compact task list.
+    expect(envelope.details.summary).toMatchObject({
+      statusCounts: { inProgress: 1, completed: 2 },
+      totalCost: 1.75,
+      source: 'tasks',
+      findingsAvailable: false,
+      taskCountsAvailable: true,
+    });
+
+    // Capacity / effective+phantom utilization / pause state / queue depth /
+    // freshness remain present because they derive from /api/health.
+    expect(envelope.details.capacity).toMatchObject({
+      phantomActive: 3,
+      utilizationPct: 93.75,
+      effectiveUtilizationPct: 62.5,
+    });
+    // Pause state (slim summary) and queue depth (raw health block) survive.
+    expect(envelope.details.providerPausedOccupancy).toMatchObject({ count: 2 });
+    expect(envelope.details.health.attentionQueue).toMatchObject({ activeFindingDepth: 4 });
+    expect(envelope.details.health).toMatchObject({ healthCacheAgeMs: 12 });
+    expect(envelope.details.degraded.serverFreshness).toMatchObject({
+      serverStartedAt: healthBody.serverStartedAt,
+      healthCacheAgeMs: 12,
+    });
+    expect(typeof envelope.details.degraded.serverFreshness.uptimeMs).toBe('number');
+
+    // The snapshot section is explicitly marked omitted; the tasks section reports
+    // its returned/original counts.
+    expect(envelope.details.degraded.sections).toEqual([
+      {
+        source: '/api/snapshot',
+        status: 'unavailable',
+        reason: 'The operation timed out.',
+        omitted: ['agents', 'findings'],
+      },
+      {
+        source: '/api/tasks?view=compact',
+        status: 'ok',
+        returnedCount: 3,
+        originalCount: 3,
+        bounded: false,
+      },
+    ]);
+
+    // The full event snapshot (agents array) is never serialized on the degraded
+    // default summary.
+    expect(envelope.details.agents).toBeUndefined();
+    // The compact task list was consulted; a heavy full snapshot was not required.
+    expect(attempted.some((h) => h.includes('/api/tasks?view=compact'))).toBe(true);
+  });
+
+  it('reports a partial narrow-endpoint failure when tasks also fail', async () => {
+    mockDegradedFetch(new Error('ECONNRESET'));
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.code).toBe('OK_DEGRADED');
+
+    // Task counts are unknown (null, not zero) so a consumer never mistakes a
+    // failed fetch for an empty fleet.
+    expect(envelope.details.summary).toMatchObject({
+      statusCounts: null,
+      totalCost: null,
+      source: 'unavailable',
+      taskCountsAvailable: false,
+    });
+
+    // Capacity from health survives the double narrow-endpoint degradation.
+    expect(envelope.details.capacity).toMatchObject({ phantomActive: 3 });
+    expect(envelope.details.degraded.sections).toEqual([
+      {
+        source: '/api/snapshot',
+        status: 'unavailable',
+        reason: 'The operation timed out.',
+        omitted: ['agents', 'findings'],
+      },
+      {
+        source: '/api/tasks?view=compact',
+        status: 'unavailable',
+        reason: 'ECONNRESET',
+        omitted: ['taskOutcomeCounts'],
+      },
+    ]);
+  });
+
+  it('summarizes a 400-task fixture on the degraded path', async () => {
+    const tasks = Array.from({ length: 400 }, (_, i) => ({
+      status: i % 4 === 0 ? 'inProgress' : 'completed',
+      tokenUsage: { costUsd: 0.01 },
+    }));
+    mockDegradedFetch(tasks);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.code).toBe('OK_DEGRADED');
+    const counts = envelope.details.summary.statusCounts;
+    expect(counts.inProgress + counts.completed).toBe(400);
+    expect(counts.inProgress).toBe(100);
+    expect(counts.completed).toBe(300);
+    expect(envelope.details.summary.totalCost).toBeCloseTo(4, 5);
+    expect(envelope.details.degraded.sections[1]).toMatchObject({
+      status: 'ok',
+      returnedCount: 400,
+      originalCount: 400,
+    });
+  });
+
+  it('does not fail the --fail-on gate on the degraded path (findings unevaluable)', async () => {
+    mockDegradedFetch([{ status: 'inProgress' }]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json', '--fail-on=critical'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+
+    expect(deps.exits).toEqual([0]);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.code).toBe('OK_DEGRADED');
+    expect(envelope.details).toMatchObject({
+      failOn: 'critical',
+      highestSeverity: null,
+      findingsEvaluated: false,
+    });
+  });
+
+  it('renders a compatible degraded human report', async () => {
+    mockDegradedFetch([
+      { status: 'inProgress' },
+      { status: 'completed' },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
     await main(deps);
-    expect(deps.exits).toEqual([1]);
-    expect(deps.errors.join('\n')).toContain('Unexpected /api/snapshot response');
+
+    expect(deps.exits).toEqual([]);
+    expect(deps.errors).toEqual([]);
+    expect(deps.logs).toHaveLength(1);
+    const out = deps.logs[0];
+    expect(out).toContain('Kookr on port 4800');
+    expect(out).toContain('Degraded: full event snapshot unavailable');
+    expect(out).toContain('Tasks:   2');
+    expect(out).toContain('completed=1');
+    expect(out).toContain('inProgress=1');
+    // Health-derived capacity line still renders on the degraded human path
+    // (elevated: phantom slots present in the fixture).
+    expect(out).toContain('Capacity:');
+    expect(out).toContain('Findings: unavailable (event snapshot degraded).');
+  });
+
+  it('keeps the human report readable when tasks are also unavailable', async () => {
+    mockDegradedFetch(new Error('ECONNRESET'));
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main(deps);
+
+    expect(deps.exits).toEqual([]);
+    const out = deps.logs[0];
+    expect(out).toContain('Degraded: full event snapshot unavailable');
+    expect(out).toContain('task outcome counts unavailable');
   });
 });
 
