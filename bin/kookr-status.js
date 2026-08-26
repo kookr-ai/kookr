@@ -19,6 +19,11 @@ const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
 const FAIL_ON_VALUES = /** @type {const} */ ([...SEVERITIES, 'none']);
 const FINDINGS_EXIT_CODE = 5;
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
+// Bounded per-request deadlines (issue #2848). Health is the required liveness
+// probe; a slow /api/snapshot must not block the whole status request, so the
+// snapshot and the degraded-path task list each carry their own bounded timeout.
+const SNAPSHOT_TIMEOUT_MS = 2000;
+const TASKS_TIMEOUT_MS = 2000;
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
 
 Usage:
@@ -144,6 +149,28 @@ function hasFindingsAtOrAbove(summary, failOn) {
 
 function highestKnownSeverity(summary) {
   return SEVERITIES.find((severity) => summary.severityCounts[severity] > 0) ?? null;
+}
+
+function errMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// Degraded-path task outcome summary (issue #2848). When the full /api/snapshot
+// event history is slow or unavailable, machine-readable status rebuilds the
+// stable summary from the bounded compact task list (`/api/tasks?view=compact`),
+// which omits event histories and multi-KB prompt bodies. Counts tasks by status
+// and sums per-task cost. Findings/anomalies are NOT derivable here (they live in
+// live monitor state), so the degraded envelope marks them omitted.
+function summarizeTasks(tasks) {
+  const statusCounts = Object.create(null);
+  let totalCost = 0;
+  for (const task of tasks) {
+    const status = task.status ?? 'unknown';
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    const cost = task.tokenUsage?.costUsd;
+    if (typeof cost === 'number' && Number.isFinite(cost)) totalCost += cost;
+  }
+  return { statusCounts, totalCost, count: tasks.length };
 }
 
 // Pipeline starvation projection (issue #2183). /api/health publishes
@@ -964,7 +991,7 @@ function summarizeHungSuspectTtlReclaim(health) {
   return summary;
 }
 
-function renderReport({ port, health, agents }) {
+function renderReport({ port, health, agents, degraded }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
   const uptime = Number.isFinite(startedAt) ? formatUptime(Date.now() - startedAt) : 'unknown';
@@ -976,17 +1003,38 @@ function renderReport({ port, health, agents }) {
 
   lines.push(`Kookr on port ${port}${buildLabel}`);
   lines.push(`Uptime:  ${uptime}`);
-  lines.push(`Agents:  ${agents.length}`);
 
-  if (agents.length > 0) {
-    const statusLine = Object.entries(statusCounts)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k}=${v}`)
-      .join('  ');
-    lines.push(`Status:  ${statusLine}`);
+  if (degraded) {
+    // Issue #2848: the full event snapshot was slow/unavailable — agent and
+    // finding detail are omitted. Health-derived capacity/pause/queue lines below
+    // still render, and task outcome counts come from the compact task list.
+    lines.push('⚠ Degraded: full event snapshot unavailable — agent/finding detail omitted.');
+    lines.push(`  snapshot: ${degraded.snapshotReason}`);
+    const ts = degraded.taskSummary;
+    if (ts) {
+      lines.push(`Tasks:   ${ts.count}`);
+      const statusLine = Object.entries(ts.statusCounts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
+        .join('  ');
+      if (statusLine) lines.push(`Status:  ${statusLine}`);
+      lines.push(`Cost:    ${formatCost(ts.totalCost)}`);
+    } else {
+      lines.push(`  tasks: ${degraded.tasksReason} (task outcome counts unavailable)`);
+    }
+  } else {
+    lines.push(`Agents:  ${agents.length}`);
+
+    if (agents.length > 0) {
+      const statusLine = Object.entries(statusCounts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
+        .join('  ');
+      lines.push(`Status:  ${statusLine}`);
+    }
+
+    lines.push(`Cost:    ${formatCost(totalCost)}`);
   }
-
-  lines.push(`Cost:    ${formatCost(totalCost)}`);
 
   // Automation kill-switch / SAFE MODE (issue #1710) — daily-digest line so
   // operators see the incident-response state without opening the dashboard.
@@ -1343,6 +1391,9 @@ function renderReport({ port, health, agents }) {
       const sev = String(f.severity).toUpperCase().padEnd(8);
       lines.push(`  [${sev}] ${f.taskName} — ${f.type}: ${f.explanation}`);
     }
+  } else if (degraded) {
+    lines.push('');
+    lines.push('Findings: unavailable (event snapshot degraded).');
   } else {
     lines.push('');
     lines.push('No active findings.');
@@ -1393,6 +1444,73 @@ function emitJson(out, { ok, code, message, details = {} }) {
 function exitJson({ out, exit, exitCode, ok, code, message, details }) {
   emitJson(out, { ok, code, message, details });
   return exit(exitCode);
+}
+
+// Health-derived slim projections shared by the happy and degraded --json paths
+// (issue #2848). Every input comes from /api/health, so these blocks (capacity,
+// pause state, queue/utilization gauges, …) remain present even when the full
+// /api/snapshot event history is unavailable. Returns a spreadable object that
+// carries only the blocks /api/health actually published — key ordering matches
+// the historical happy-path envelope.
+function buildHealthDetailProjections(health) {
+  const starvationSummary = summarizePipelineStarvation(health);
+  const staleSummary = summarizeStaleProcesses(health);
+  const hostStaleDtachReaperSummary = summarizeHostStaleDtachReaper(health);
+  const payloadDietSummary = summarizePayloadDiet(health);
+  const hookReplayCheckpointsSummary = summarizeHookReplayCheckpoints(health);
+  const firstHookMissSummary = summarizeFirstHookMiss(health);
+  const capacitySummary = summarizeCapacity(health);
+  const providerPausedSummary = summarizeProviderPausedOccupancy(health);
+  const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
+  const snapshotShedSummary = summarizeSnapshotShed(health);
+  const hookIngestionSummary = summarizeHookIngestion(health);
+  const launchDependenciesSummary = summarizeLaunchDependencies(health);
+  const schedulesPausedByFailureSummary = summarizeSchedulesPausedByFailure(health);
+  const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
+  const lessonYieldSummary = summarizeLessonYield(health);
+  const ossAttemptsSummary = summarizeOssAttempts(health);
+  const maintenancePruneSummary = summarizeMaintenancePrune(health);
+  const startupRecoverySummary = summarizeStartupRecovery(health);
+  return {
+    ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
+    ...(staleSummary ? { staleProcesses: staleSummary } : {}),
+    ...(hostStaleDtachReaperSummary
+      ? { hostStaleDtachReaper: hostStaleDtachReaperSummary }
+      : {}),
+    ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
+    ...(hookReplayCheckpointsSummary
+      ? { hookReplayCheckpoints: hookReplayCheckpointsSummary }
+      : {}),
+    ...(firstHookMissSummary
+      ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
+      : {}),
+    ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
+    ...(ossAttemptsSummary ? { ossAttempts: ossAttemptsSummary } : {}),
+    ...(maintenancePruneSummary
+      ? { maintenancePrune: maintenancePruneSummary }
+      : {}),
+    ...(startupRecoverySummary
+      ? { startupRecovery: startupRecoverySummary }
+      : {}),
+    ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
+    ...(launchDependenciesSummary
+      ? { launchDependencies: launchDependenciesSummary }
+      : {}),
+    ...(schedulesPausedByFailureSummary
+      ? { schedulesPausedByFailure: schedulesPausedByFailureSummary }
+      : {}),
+    ...(capacitySummary ? { capacity: capacitySummary } : {}),
+    ...(providerPausedSummary
+      ? { providerPausedOccupancy: providerPausedSummary }
+      : {}),
+    ...(nonCriticalTimerPauseSummary
+      ? { nonCriticalTimerPause: nonCriticalTimerPauseSummary }
+      : {}),
+    ...(snapshotShedSummary ? { snapshotShed: snapshotShedSummary } : {}),
+    ...(hungReclaimSummary
+      ? { hungSuspectTtlReclaim: hungReclaimSummary }
+      : {}),
+  };
 }
 
 async function main({ argv = process.argv.slice(2), env = process.env, out = console, exit = process.exit } = {}) {
@@ -1475,15 +1593,20 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
 
   const { port } = resolved;
   const base = `http://127.0.0.1:${port}`;
-  let health;
-  let agents;
-  try {
-    [health, agents] = await Promise.all([
-      fetchJson(`${base}/api/health`).catch((e) => { throw new Error(`/api/health: ${e.message}`); }),
-      fetchJson(`${base}/api/snapshot`).catch((e) => { throw new Error(`/api/snapshot: ${e.message}`); }),
-    ]);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+
+  // Issue #2848: health is the required liveness probe; the full event snapshot
+  // is optional. Fetch both in parallel (bounded deadlines) but treat only a
+  // health failure as fatal. A slow/unavailable/malformed /api/snapshot degrades
+  // to a bounded fast path built from /api/health plus the compact task list, so
+  // machine-readable status stays a cheap, reliable control-plane probe even when
+  // event history grows and full snapshot assembly slows.
+  const [healthResult, snapshotResult] = await Promise.allSettled([
+    fetchJson(`${base}/api/health`),
+    fetchJson(`${base}/api/snapshot`, SNAPSHOT_TIMEOUT_MS),
+  ]);
+
+  if (healthResult.status === 'rejected') {
+    const msg = `/api/health: ${errMessage(healthResult.reason)}`;
     // Issue #2410: an explicit-port fetch failure is also an "API unreachable"
     // case — read the marker for this port to tell a planned redeploy apart
     // from an unexpected outage.
@@ -1519,107 +1642,150 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     return exit(1);
   }
 
-  if (!Array.isArray(agents)) {
+  const health = healthResult.value;
+  const agents = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
+
+  if (Array.isArray(agents)) {
+    // Happy path — the full snapshot is present, so the envelope is byte-for-byte
+    // compatible with the historical output (agents array + snapshot-derived
+    // summary/findings, including the --fail-on gate).
+    const summary = summarize(agents);
+    const findingsExceeded = hasFindingsAtOrAbove(summary, args.failOn);
+    const gateDetails = args.failOn === 'none'
+      ? {}
+      : { failOn: args.failOn, highestSeverity: highestKnownSeverity(summary) };
+
     if (args.json) {
       return exitJson({
         out,
         exit,
-        exitCode: 1,
-        ok: false,
-        code: 'SERVER_ERROR',
-        message: 'Unexpected /api/snapshot response (expected an array).',
-        details: { port, health, snapshot: agents },
+        exitCode: findingsExceeded ? FINDINGS_EXIT_CODE : 0,
+        ok: !findingsExceeded,
+        code: findingsExceeded ? 'FINDINGS_PRESENT' : 'OK',
+        message: findingsExceeded
+          ? `Active findings meet or exceed ${args.failOn} severity.`
+          : 'Kookr status snapshot',
+        details: {
+          port,
+          health,
+          agents,
+          summary,
+          ...buildHealthDetailProjections(health),
+          ...gateDetails,
+        },
       });
     }
-    out.error(`Unexpected /api/snapshot response (expected an array).`);
-    return exit(1);
+    out.log(renderReport({ port, health, agents }));
+    if (findingsExceeded) return exit(FINDINGS_EXIT_CODE);
+    return;
   }
 
-  const summary = summarize(agents);
-  const findingsExceeded = hasFindingsAtOrAbove(summary, args.failOn);
-  const gateDetails = args.failOn === 'none'
-    ? {}
-    : { failOn: args.failOn, highestSeverity: highestKnownSeverity(summary) };
+  // Degraded path (issue #2848) — the full event snapshot is slow, unreachable,
+  // or malformed. Rebuild the stable machine summary from /api/health (capacity,
+  // utilization, queue depth, pause state, freshness) plus the bounded compact
+  // task list (task outcome counts). Findings/anomalies live only in the snapshot
+  // and are marked omitted rather than silently dropped. The document is complete
+  // and `ok` — the control plane is alive — so scheduled reflection and incident
+  // tooling still get a parseable probe.
+  const snapshotReason = snapshotResult.status === 'rejected'
+    ? errMessage(snapshotResult.reason)
+    : 'unexpected /api/snapshot response (expected an array)';
+
+  let tasks = null;
+  let tasksReason = null;
+  try {
+    const body = await fetchJson(`${base}/api/tasks?view=compact`, TASKS_TIMEOUT_MS);
+    if (Array.isArray(body)) tasks = body;
+    else tasksReason = 'unexpected /api/tasks response (expected an array)';
+  } catch (err) {
+    tasksReason = errMessage(err);
+  }
+
+  const taskSummary = tasks ? summarizeTasks(tasks) : null;
+
+  const startedAtMs = health && health.serverStartedAt
+    ? Date.parse(health.serverStartedAt)
+    : NaN;
+  const serverFreshness = {
+    serverStartedAt: (health && health.serverStartedAt) ?? null,
+    uptimeMs: Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : null,
+    // Cache age the served /api/health body stamps on itself (issue #2429/#2492)
+    // — how stale the health snapshot is relative to its last assembly.
+    healthCacheAgeMs: health && typeof health.healthCacheAgeMs === 'number'
+      ? health.healthCacheAgeMs
+      : null,
+  };
+
+  const degradedSections = [
+    {
+      source: '/api/snapshot',
+      status: 'unavailable',
+      reason: snapshotReason,
+      omitted: ['agents', 'findings'],
+    },
+    taskSummary
+      ? {
+        source: '/api/tasks?view=compact',
+        status: 'ok',
+        returnedCount: taskSummary.count,
+        originalCount: taskSummary.count,
+        bounded: false,
+      }
+      : {
+        source: '/api/tasks?view=compact',
+        status: 'unavailable',
+        reason: tasksReason,
+        omitted: ['taskOutcomeCounts'],
+      },
+  ];
+
+  const degradedSummary = {
+    statusCounts: taskSummary ? taskSummary.statusCounts : null,
+    // Severity/findings live in live monitor state carried only by /api/snapshot,
+    // which is unavailable here — reported as zeros with findingsAvailable:false
+    // so a consumer never mistakes "unknown" for "none".
+    severityCounts: { critical: 0, warning: 0, info: 0 },
+    findings: [],
+    totalCost: taskSummary ? taskSummary.totalCost : null,
+    source: taskSummary ? 'tasks' : 'unavailable',
+    findingsAvailable: false,
+    taskCountsAvailable: Boolean(taskSummary),
+  };
+
+  const degraded = {
+    reason: 'full event snapshot unavailable',
+    sections: degradedSections,
+    serverFreshness,
+  };
 
   if (args.json) {
-    // Computed only on the --json path; the text path derives the same slim
-    // summary inside renderReport, so computing it here too would be wasted work.
-    const starvationSummary = summarizePipelineStarvation(health);
-    const staleSummary = summarizeStaleProcesses(health);
-    const hostStaleDtachReaperSummary = summarizeHostStaleDtachReaper(health);
-    const payloadDietSummary = summarizePayloadDiet(health);
-    const hookReplayCheckpointsSummary = summarizeHookReplayCheckpoints(health);
-    const firstHookMissSummary = summarizeFirstHookMiss(health);
-    const capacitySummary = summarizeCapacity(health);
-    const providerPausedSummary = summarizeProviderPausedOccupancy(health);
-    const nonCriticalTimerPauseSummary = summarizeNonCriticalTimerPause(health);
-    const snapshotShedSummary = summarizeSnapshotShed(health);
-    const hookIngestionSummary = summarizeHookIngestion(health);
-    const launchDependenciesSummary = summarizeLaunchDependencies(health);
-    const schedulesPausedByFailureSummary = summarizeSchedulesPausedByFailure(health);
-    const hungReclaimSummary = summarizeHungSuspectTtlReclaim(health);
-    const lessonYieldSummary = summarizeLessonYield(health);
-    const ossAttemptsSummary = summarizeOssAttempts(health);
-    const maintenancePruneSummary = summarizeMaintenancePrune(health);
-    const startupRecoverySummary = summarizeStartupRecovery(health);
+    // Findings cannot be evaluated without the snapshot, so the --fail-on gate is
+    // reported as not evaluated and does not fail the probe (safe default: a cheap
+    // liveness probe must not exit non-zero merely because event history is slow).
+    const gateDetails = args.failOn === 'none'
+      ? {}
+      : { failOn: args.failOn, highestSeverity: null, findingsEvaluated: false };
     return exitJson({
       out,
       exit,
-      exitCode: findingsExceeded ? FINDINGS_EXIT_CODE : 0,
-      ok: !findingsExceeded,
-      code: findingsExceeded ? 'FINDINGS_PRESENT' : 'OK',
-      message: findingsExceeded
-        ? `Active findings meet or exceed ${args.failOn} severity.`
-        : 'Kookr status snapshot',
+      exitCode: 0,
+      ok: true,
+      code: 'OK_DEGRADED',
+      message: 'Kookr status snapshot (degraded: full event snapshot unavailable)',
       details: {
         port,
         health,
-        agents,
-        summary,
-        ...(starvationSummary ? { pipelineStarvation: starvationSummary } : {}),
-        ...(staleSummary ? { staleProcesses: staleSummary } : {}),
-        ...(hostStaleDtachReaperSummary
-          ? { hostStaleDtachReaper: hostStaleDtachReaperSummary }
-          : {}),
-        ...(payloadDietSummary ? { payloadDiet: payloadDietSummary } : {}),
-        ...(hookReplayCheckpointsSummary
-          ? { hookReplayCheckpoints: hookReplayCheckpointsSummary }
-          : {}),
-        ...(firstHookMissSummary
-          ? { firstHookMissTotal: firstHookMissSummary.firstHookMissTotal }
-          : {}),
-        ...(lessonYieldSummary ? { lessonYield: lessonYieldSummary } : {}),
-        ...(ossAttemptsSummary ? { ossAttempts: ossAttemptsSummary } : {}),
-        ...(maintenancePruneSummary
-          ? { maintenancePrune: maintenancePruneSummary }
-          : {}),
-        ...(startupRecoverySummary
-          ? { startupRecovery: startupRecoverySummary }
-          : {}),
-        ...(hookIngestionSummary ? { hookIngestion: hookIngestionSummary } : {}),
-        ...(launchDependenciesSummary
-          ? { launchDependencies: launchDependenciesSummary }
-          : {}),
-        ...(schedulesPausedByFailureSummary
-          ? { schedulesPausedByFailure: schedulesPausedByFailureSummary }
-          : {}),
-        ...(capacitySummary ? { capacity: capacitySummary } : {}),
-        ...(providerPausedSummary
-          ? { providerPausedOccupancy: providerPausedSummary }
-          : {}),
-        ...(nonCriticalTimerPauseSummary
-          ? { nonCriticalTimerPause: nonCriticalTimerPauseSummary }
-          : {}),
-        ...(snapshotShedSummary ? { snapshotShed: snapshotShedSummary } : {}),
-        ...(hungReclaimSummary
-          ? { hungSuspectTtlReclaim: hungReclaimSummary }
-          : {}),
+        summary: degradedSummary,
+        ...buildHealthDetailProjections(health),
+        degraded,
         ...gateDetails,
       },
     });
   }
-  out.log(renderReport({ port, health, agents }));
-  if (findingsExceeded) return exit(FINDINGS_EXIT_CODE);
+  // renderReport takes the slim DegradedRenderContext shape ({ snapshotReason,
+  // taskSummary, tasksReason }) — distinct from the richer `degraded` block above
+  // that the --json envelope carries. See bin/kookr-status.d.ts.
+  out.log(renderReport({ port, health, agents: [], degraded: { snapshotReason, taskSummary, tasksReason } }));
 }
 
 // Guard main() so vitest can import the module without triggering a fetch.
@@ -1654,6 +1820,7 @@ export {
   formatRss,
   isActiveFinding,
   summarize,
+  summarizeTasks,
   hasFindingsAtOrAbove,
   highestKnownSeverity,
   summarizePipelineStarvation,
