@@ -1306,16 +1306,20 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchStarted) {
         lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
         const current = taskStore.getTask(pending.id);
-        if (
+        const ownsFailedProbeMarker = Boolean(
           current
-          && !isTerminalStatus(current.status)
           && !taskStore.hasForeignFreshLaunchReservation(pending.id, launchReservationToken)
           && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-        ) {
-          taskStore.setLaunchAdmission(
-            pending.id,
-            priorAdmission,
-          );
+        );
+        if (ownsFailedProbeMarker) {
+          if (current && !isTerminalStatus(current.status)) {
+            taskStore.setLaunchAdmission(pending.id, priorAdmission);
+          } else {
+            // The adapter never started, so a terminal transition that won
+            // during the failed persistence barrier has no worker to reap.
+            taskStore.setLaunchAdmission(pending.id, undefined);
+            taskStore.setLaunchHealthSummary(pending.id, undefined);
+          }
         }
         throw err;
       }

@@ -118,6 +118,17 @@ export async function reconcile(
   const accountedFor = new Set<string>();
 
   for (const task of taskStore.listTasks()) {
+    const exactProbeSessionId = task.launchAdmission?.status === 'probing'
+      ? task.launchAdmission.sessionId
+      : undefined;
+    const exactProbeSessionAttached = exactProbeSessionId === undefined
+      || task.sessions.some((session) => session.tmuxSession === exactProbeSessionId);
+    if (exactProbeSessionId) {
+      // The persisted marker owns this preallocated terminal even in the
+      // create-before-attach window. Do not report it as an orphan merely
+      // because the adapter has not attached the SessionInfo row yet.
+      accountedFor.add(exactProbeSessionId);
+    }
     for (const session of task.sessions) {
       if (session.lastStatus === 'completed' || session.lastStatus === 'aborted') {
         continue;
@@ -225,6 +236,7 @@ export async function reconcile(
       latestTask.ralphLoop?.status === 'running' || latestTask.ralphLoop?.status === 'paused';
     const allSessionsDone = latestTask.sessions.length > 0
       && latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted');
+    const exactProbeCleanupDone = allSessionsDone && exactProbeSessionAttached;
 
     // A durable probe marker means this was an admission attempt, not an
     // ordinary worker that should become terminal. If its session died with
@@ -235,7 +247,7 @@ export async function reconcile(
     if (
       latestTask.launchAdmission?.status === 'probing'
       && (latestTask.status === 'inProgress' || latestTask.status === 'open')
-      && allSessionsDone
+      && exactProbeCleanupDone
     ) {
       const probing = latestTask.launchAdmission;
       taskStore.setLaunchAdmission(latestTask.id, {
@@ -259,7 +271,7 @@ export async function reconcile(
     if (
       latestTask.launchAdmission?.status === 'probing'
       && isTerminalStatus(latestTask.status)
-      && allSessionsDone
+      && exactProbeCleanupDone
     ) {
       const probing = latestTask.launchAdmission;
       taskStore.setLaunchAdmission(latestTask.id, undefined);
@@ -272,6 +284,7 @@ export async function reconcile(
     }
     if (
       !ralphActive &&
+      latestTask.launchAdmission?.status !== 'probing' &&
       (latestTask.status === 'inProgress' || latestTask.status === 'open') &&
       allSessionsDone
     ) {

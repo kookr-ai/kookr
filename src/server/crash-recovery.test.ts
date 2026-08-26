@@ -786,6 +786,51 @@ describe('Crash Recovery', () => {
     expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
+  test('clears a cancelled recovery fence when its pending marker flush rejects', async () => {
+    const cwd = join(tempDir, 'project-cancel-before-rejected-probe-persistence');
+    const task = await setupCrashedTask('Cancel before rejected probe persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel before rejected probe persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    });
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    rejectFlush(new Error('recovery marker write failed after cancellation'));
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('recovery marker write failed after cancellation'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      launchHealthSummary: undefined,
+      sessions: [expect.objectContaining({ lastStatus: 'completed' })],
+    });
+    expect(() => taskStore.deleteTask(task.id)).not.toThrow();
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
   test('re-parks recovery when confirmed degradation invalidates its probe token', async () => {
     const cwd = join(tempDir, 'project-invalidated-probe');
     const task = await setupCrashedTask('Invalidate recovery probe', cwd);

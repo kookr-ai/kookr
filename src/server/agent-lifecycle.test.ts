@@ -1774,6 +1774,54 @@ describe('promotePendingTasks (integration)', () => {
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
+  test('clears a cancelled promotion fence when its pending marker flush rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'cancel before rejected promotion persistence',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel before rejected promotion persistence',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn(async () => {
+          markFlushStarted();
+          await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+        }),
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    rejectFlush(new Error('promotion marker write failed after cancellation'));
+
+    await expect(promotion).rejects.toThrow('promotion marker write failed after cancellation');
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      launchHealthSummary: undefined,
+      sessions: [],
+    });
+    expect(() => taskStore.deleteTask(task.id)).not.toThrow();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
   test('re-parks a promotion when confirmed degradation invalidates its probe token', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

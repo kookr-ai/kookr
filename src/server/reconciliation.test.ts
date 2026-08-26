@@ -216,6 +216,44 @@ describe('Startup Reconciliation', () => {
     expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
   });
 
+  test('does not settle an unattached exact probe based on terminal historical sessions', async () => {
+    const task = taskStore.createTask({
+      prompt: 'probe after historical session',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-unattached-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-historical-session',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'aborted',
+    });
+    await backend.createSession(spec('kookr-unattached-probe'));
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.dependencyProbeCleanupSettled).toEqual([]);
+    expect(result.orphans).not.toContain('kookr-unattached-probe');
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: 'kookr-unattached-probe',
+      },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-historical-session',
+        lastStatus: 'aborted',
+      })],
+    });
+  });
+
   test('does not resume (SessionBridge-reattach) a launch-abandoned master linked to a terminated launch_timeout task (issue #2500)', async () => {
     // A launch that timed out: the task is terminated with a launch_timeout
     // disposition and the late dtach master was linked via

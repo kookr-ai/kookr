@@ -553,20 +553,22 @@ export async function recoverCrashedSessions(
         if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchStarted) {
           options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
           const current = taskStore.getTask(task.id);
-          if (
+          const ownsFailedProbeMarker = Boolean(
             current
-            && current.status !== 'completed'
-            && current.status !== 'terminated'
-            && current.status !== 'cancelled'
             && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
             && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-          ) {
-            taskStore.setLaunchAdmission(
-              task.id,
-              priorAdmission,
-            );
-            if (current.status === 'inProgress') taskStore.reopenTask(task.id);
-            if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+          );
+          if (ownsFailedProbeMarker) {
+            if (current && !isTerminalStatus(current.status)) {
+              taskStore.setLaunchAdmission(task.id, priorAdmission);
+              if (current.status === 'inProgress') taskStore.reopenTask(task.id);
+              if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+            } else {
+              // No adapter call crossed the failed barrier, so a terminal task
+              // cannot own physical cleanup from this exact probe attempt.
+              taskStore.setLaunchAdmission(task.id, undefined);
+              taskStore.setLaunchHealthSummary(task.id, undefined);
+            }
           }
           result.failed.push({
             taskId: task.id,
