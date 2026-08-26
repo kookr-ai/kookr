@@ -1530,6 +1530,44 @@ describe('launchTask', () => {
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
+  it('clears a cancelled direct-probe fence when its pending marker flush rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel before rejected direct probe persistence',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    rejectFlush(new Error('probe marker write failed after cancellation'));
+
+    await expect(launch).rejects.toThrow('probe marker write failed after cancellation');
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      launchHealthSummary: undefined,
+      sessions: [],
+    });
+    expect(() => store.deleteTask(task.id)).not.toThrow();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
   it('re-parks a direct probe when confirmed degradation invalidates its token during persistence', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

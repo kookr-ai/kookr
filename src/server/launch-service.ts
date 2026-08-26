@@ -2072,15 +2072,18 @@ async function launchTaskCore(
       const current = taskStore.getTask(task.id);
       if (!adapterLaunchStarted) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
-        const mayCompensatePersistenceFailure = current
-          && (current.status === 'open' || current.status === 'pending')
+        const ownsFailedProbeMarker = Boolean(current
           && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
-          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner);
-        if (mayCompensatePersistenceFailure) {
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner));
+        const mayCompensatePersistenceFailure = ownsFailedProbeMarker
+          && current !== undefined
+          && (current.status === 'open' || current.status === 'pending');
+        if (ownsFailedProbeMarker) {
           // The adapter never started, so this exact owner cannot have an
           // external worker to reap. Remove the durable cleanup fence before
-          // terminal disposal; otherwise the cancelled task can be neither
-          // reopened nor deleted until a restart repairs the stale marker.
+          // any terminal disposal. A cancellation may already have won while
+          // the failing flush was pending; retaining its marker would block
+          // deletion or reopening until restart despite no possible worker.
           taskStore.setLaunchAdmission(task.id, undefined);
           taskStore.setLaunchHealthSummary(task.id, undefined);
         }
