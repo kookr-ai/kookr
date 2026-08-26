@@ -2498,33 +2498,34 @@ describe('TaskStore.evaluateCompletionSignal', () => {
 // ---------------------------------------------------------------------------
 
 describe('launch reservations (#700)', () => {
-  test('beginLaunch is a CAS: second reserve on the same task fails', () => {
+  test('beginLaunchWithToken is a CAS: second reserve on the same task fails', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
-    expect(store.beginLaunch(task.id)).toBe(false);
+    expect(store.beginLaunchWithToken(task.id)).toBeDefined();
+    expect(store.beginLaunchWithToken(task.id)).toBeUndefined();
   });
 
   test('endLaunch frees the reservation', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
-    store.endLaunch(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
+    const token = store.beginLaunchWithToken(task.id);
+    expect(token).toBeDefined();
+    store.endLaunch(task.id, token!);
+    expect(store.beginLaunchWithToken(task.id)).toBeDefined();
   });
 
   test('refuses to reserve inProgress, terminal, or missing tasks', () => {
     const store = new TaskStore();
     const running = store.createTask('r', '/repo');
     store.startTask(running.id);
-    expect(store.beginLaunch(running.id)).toBe(false);
+    expect(store.beginLaunchWithToken(running.id)).toBeUndefined();
     const done = store.createTask('d', '/repo');
     store.startTask(done.id);
     store.completeTask(done.id);
-    expect(store.beginLaunch(done.id)).toBe(false);
-    expect(store.beginLaunch('nope')).toBe(false);
+    expect(store.beginLaunchWithToken(done.id)).toBeUndefined();
+    expect(store.beginLaunchWithToken('nope')).toBeUndefined();
   });
 
   test('a stale reservation expires and can be taken over (self-healing)', () => {
@@ -2533,9 +2534,9 @@ describe('launch reservations (#700)', () => {
       const store = new TaskStore();
       const task = store.createTask('t', '/repo');
       store.pendTask(task.id);
-      expect(store.beginLaunch(task.id)).toBe(true);
+      expect(store.beginLaunchWithToken(task.id)).toBeDefined();
       vi.advanceTimersByTime(10 * 60 * 1000 + 1); // past LAUNCH_RESERVATION_TTL_MS
-      expect(store.beginLaunch(task.id)).toBe(true); // wedged launch lost its hold
+      expect(store.beginLaunchWithToken(task.id)).toBeDefined(); // wedged launch lost its hold
     } finally {
       vi.useRealTimers();
     }
@@ -2574,11 +2575,12 @@ describe('launch reservations (#700)', () => {
     expect(store.getActiveCount()).toBe(0);
     expect(store.getNextPending()?.id).toBe(first.id);
 
-    expect(store.beginLaunch(first.id)).toBe(true);
+    const token = store.beginLaunchWithToken(first.id);
+    expect(token).toBeDefined();
     expect(store.getNextPending()?.id).toBe(second.id); // skips the reserved one
     expect(store.getActiveCount()).toBe(1); // the in-flight launch holds a slot
 
-    store.endLaunch(first.id);
+    store.endLaunch(first.id, token!);
     expect(store.getNextPending()?.id).toBe(first.id);
     expect(store.getActiveCount()).toBe(0);
   });
@@ -2626,11 +2628,43 @@ describe('launch reservations (#700)', () => {
     expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
   });
 
+  test('an unrelated live session does not retain an already-aborted exact probe marker', () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'mixed sessions',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-exact-probe',
+      },
+    });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-exact-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'aborted',
+    });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-unrelated-live',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    store.cancelTask(task.id);
+
+    expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
   test('addSession consumes the reservation (no double slot for launched tasks)', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    store.beginLaunch(task.id);
+    store.beginLaunchWithToken(task.id);
     store.addSession(task.id, {
       tmuxSession: 'kookr-x',
       agentType: 'claude-code',

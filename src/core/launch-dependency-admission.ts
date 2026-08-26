@@ -202,6 +202,18 @@ export class LaunchDependencyAdmission {
   }
 
   /**
+   * Retain an in-process cleanup owner after physical stop rejects. Reusing
+   * the interrupted-owner fence means subsequent provider observations cannot
+   * erase exact-session ownership and admit a replacement probe.
+   */
+  retainProbeCleanup(
+    dependencies: readonly TaskLaunchAdmissionDependency[],
+    ownerToken: string,
+  ): void {
+    this.restoreInterruptedProbe(dependencies, ownerToken);
+  }
+
+  /**
    * Release startup's physical-worker fence without manufacturing provider
    * failure evidence. The circuit remains unclaimed half-open so the next
    * eligible launch is still the single bounded recovery probe.
@@ -232,7 +244,7 @@ export class LaunchDependencyAdmission {
       entry.probeToken = undefined;
       entry.startupRecoveryOwners = undefined;
       if (outcome === 'parked') {
-        entry.reason = dependency.reason ?? 'Recovery probe failed';
+        entry.reason = 'Recovery probe ended before successful admission';
         this.transition(entry, 'degraded');
       } else {
         entry.reason = undefined;

@@ -7,7 +7,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { AdapterRegistry, type AgentAdapter } from '../adapters/agent-adapter.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
-import type { ReconciliationResult } from './reconciliation.js';
+import { reconcile, type ReconciliationResult } from './reconciliation.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import type { Monitor } from '../core/monitor.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -755,13 +755,12 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
 
   test('reaps a terminal cleanup-only probe marker before releasing half-open admission', async () => {
     const deps = fakeDeps();
-    const killSession = vi.fn().mockResolvedValue(undefined);
     deps.terminalBackend = {
       ...deps.terminalBackend,
-      killSession,
+      listSessions: vi.fn().mockResolvedValue([]),
+      isAlive: vi.fn().mockResolvedValue(false),
     } as typeof deps.terminalBackend;
     const task = deps.taskStore.createTask({ prompt: 'cancelled probe cleanup', cwd: '/repo' });
-    deps.taskStore.cancelTask(task.id);
     deps.taskStore.setLaunchAdmission(task.id, {
       status: 'probing',
       reason: 'half_open_probe_in_flight',
@@ -769,18 +768,34 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
       startedAt: '2026-01-01T00:00:00.000Z',
       sessionId: 'kookr-terminal-cleanup-probe',
     });
+    deps.taskStore.recordAbandonedLaunchSession(task.id, {
+      tmuxSession: 'kookr-terminal-cleanup-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    deps.taskStore.updateSession(task.id, 'kookr-terminal-cleanup-probe', {
+      lastStatus: undefined,
+    });
+    deps.taskStore.cancelTask(task.id);
     const admission = new LaunchDependencyAdmission();
     deps.lifecycleDeps = {
       ...deps.lifecycleDeps,
       launchDependencyAdmission: admission,
     };
 
+    const reconcileResult = await reconcile(deps.taskStore, deps.terminalBackend);
+    expect(reconcileResult.dependencyProbeCleanupSettled).toEqual([expect.objectContaining({
+      outcome: 'released',
+    })]);
+    expect(deps.taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult());
+
     await runStartupRecoveryPhase({
       ...deps,
-      reconcileResult: reconciliationResult(),
+      reconcileResult,
     });
 
-    expect(killSession).toHaveBeenCalledWith('kookr-terminal-cleanup-probe');
     expect(deps.taskStore.getTask(task.id)).toMatchObject({
       status: 'cancelled',
       launchAdmission: undefined,

@@ -1703,7 +1703,7 @@ async function launchTaskCore(
     } catch (err) {
       const current = taskStore.getTask(task.id);
       const mayCompensatePersistenceFailure = current
-        && !isTerminalStatus(current.status)
+        && (current.status === 'open' || current.status === 'pending')
         && !taskStore.hasForeignFreshLaunchReservation(task.id, denialReservationToken)
         && isSameTaskLaunchAdmission(current.launchAdmission, deniedAdmissionWrittenByOwner);
       taskStore.endLaunch(task.id, denialReservationToken);
@@ -1777,10 +1777,10 @@ async function launchTaskCore(
       } catch (err) {
         const current = taskStore.getTask(task.id);
         const mayCompensatePersistenceFailure = current
-          && !isTerminalStatus(current.status)
+          && (current.status === 'open' || current.status === 'pending')
           && !taskStore.hasForeignFreshLaunchReservation(task.id, capacityWaitReservationToken!)
           && isSameTaskLaunchAdmission(current.launchAdmission, probeWaitAdmission);
-        taskStore.endLaunch(task.id, capacityWaitReservationToken);
+        taskStore.endLaunch(task.id, capacityWaitReservationToken!);
         if (mayCompensatePersistenceFailure) {
           disposeUnacknowledgedTaskAfterPersistenceFailure(
             deps,
@@ -1796,7 +1796,7 @@ async function launchTaskCore(
         task.id,
         capacityWaitReservationToken!,
       ) || !isSameTaskLaunchAdmission(current?.launchAdmission, probeWaitAdmission);
-      taskStore.endLaunch(task.id, capacityWaitReservationToken);
+      taskStore.endLaunch(task.id, capacityWaitReservationToken!);
       if (!current || isTerminalStatus(current.status)) {
         throw new Error(`Task ${task.id} changed state while its capacity wait was persisted`);
       }
@@ -2037,7 +2037,7 @@ async function launchTaskCore(
     // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
     // a launch that hangs (CPU saturation wedging the spawn path) fails fast
     // through the SAME catch/cleanup as any thrown launch instead of holding
-    // its beginLaunch reservation — and its schedule's 'reserved' execution —
+    // its token-owned launch reservation — and its schedule's 'reserved' execution —
     // for hours. Late settlement of the abandoned promise is defused inside
     // the race helper.
     adapterLaunchStarted = true;
@@ -2052,7 +2052,7 @@ async function launchTaskCore(
       if (!adapterLaunchStarted) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
         const mayCompensatePersistenceFailure = current
-          && !isTerminalStatus(current.status)
+          && (current.status === 'open' || current.status === 'pending')
           && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
           && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner);
         taskStore.endLaunch(task.id, launchReservationToken);
@@ -2130,6 +2130,12 @@ async function launchTaskCore(
         // promoter cannot overwrite its marker; reconciliation/startup will
         // prove the exact session live or absent before another probe starts.
         const currentAfterCleanup = taskStore.getTask(task.id);
+        if (admissionMarkerWrittenByOwner?.status === 'probing') {
+          deps.launchDependencyAdmission?.retainProbeCleanup(
+            admissionMarkerWrittenByOwner.dependencies,
+            task.id,
+          );
+        }
         if (currentAfterCleanup && !isTerminalStatus(currentAfterCleanup.status)) {
           if (currentAfterCleanup.status === 'pending' || currentAfterCleanup.status === 'open') {
             taskStore.startTask(task.id);
@@ -2154,6 +2160,10 @@ async function launchTaskCore(
         || currentAfterCleanup.status === 'cancelled'
       ) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        if (currentAfterCleanup?.launchAdmission?.status === 'probing') {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
       } else {
         deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, false);
       }

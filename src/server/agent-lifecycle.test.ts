@@ -967,7 +967,6 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getActiveCount: vi.fn().mockReturnValue(0),
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
-      beginLaunch: vi.fn().mockReturnValue(true),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
@@ -1033,7 +1032,6 @@ describe('promotePendingTasks', () => {
       hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
-      beginLaunch: vi.fn().mockReturnValue(true),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
@@ -1080,7 +1078,6 @@ describe('promotePendingTasks', () => {
       hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
-      beginLaunch: vi.fn().mockReturnValue(true),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
@@ -1124,7 +1121,6 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn().mockReturnValue(stuckTask), // always returns same task
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
-      beginLaunch: vi.fn().mockReturnValue(true),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
@@ -1163,7 +1159,6 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
-      beginLaunch: vi.fn().mockReturnValue(true),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
@@ -2207,7 +2202,7 @@ describe('promotePendingTasks (integration)', () => {
     });
     taskStore.pendTask(task.id);
     const realBeginLaunch = taskStore.beginLaunchWithToken.bind(taskStore);
-    const beginLaunch = vi.spyOn(taskStore, 'beginLaunchWithToken')
+    const beginLaunchWithTokenSpy = vi.spyOn(taskStore, 'beginLaunchWithToken')
       .mockReturnValueOnce(undefined)
       .mockImplementation(realBeginLaunch);
     deps = {
@@ -2220,7 +2215,7 @@ describe('promotePendingTasks (integration)', () => {
     };
 
     expect(await promotePendingTasks(deps)).toBe(1);
-    expect(beginLaunch).toHaveBeenCalledTimes(2);
+    expect(beginLaunchWithTokenSpy).toHaveBeenCalledTimes(2);
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);
@@ -2496,6 +2491,62 @@ describe('promotePendingTasks (integration)', () => {
         })],
       });
       expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+      expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+        admit: false,
+        reason: 'half_open_probe_busy',
+      });
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('keeps an exact probe fence when timeout-triggered cleanup rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'timed out probe cleanup rejection',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'timed out probe cleanup rejection',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let expectedSessionId: string | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    vi.mocked(adapter.stop).mockRejectedValue(new Error('timeout cleanup rejected'));
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        getLaunchTimeoutMs: () => 5,
+      },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(0);
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+        sessions: [expect.objectContaining({
+          tmuxSession: expectedSessionId,
+          lastStatus: undefined,
+        })],
+      });
+      launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      launchDependencyAdmission.observe(['kb'], []);
       expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
         admit: false,
         reason: 'half_open_probe_busy',

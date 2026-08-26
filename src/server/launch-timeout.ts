@@ -30,6 +30,8 @@ export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
 
 export interface LaunchReapGuard {
   reaped: boolean;
+  /** Shared physical-stop attempt; `reaped` becomes true only on resolution. */
+  reapPromise?: Promise<void>;
   timedOut?: boolean;
   sessionId?: string;
 }
@@ -43,7 +45,9 @@ export function noteLaunchSession(
   sessionId: string,
 ): void {
   guard.sessionId = sessionId;
-  if (guard.timedOut) reapLateLaunchSession(guard, adapter, agentType, taskId, sessionId);
+  if (guard.timedOut) {
+    void reapLateLaunchSession(guard, adapter, agentType, taskId, sessionId).catch(() => undefined);
+  }
 }
 
 function reapLateLaunchSession(
@@ -52,19 +56,29 @@ function reapLateLaunchSession(
   agentType: AgentType,
   taskId: string,
   sessionId: string,
-): void {
-  if (guard.reaped) return;
-  guard.reaped = true;
+): Promise<void> {
+  if (guard.reaped) return Promise.resolve();
+  if (guard.reapPromise) return guard.reapPromise;
   console.warn(
     `[launch] adapter ${agentType} settled LATE after timeout for task ${taskId} ` +
     `(session ${sessionId}) — stopping orphaned session`,
   );
-  void Promise.resolve(adapter.stop(sessionId)).catch((stopErr) => {
-    console.warn(
-      `[launch] failed to stop late-settled session ${sessionId}: ` +
-      `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-    );
-  });
+  const attempt = Promise.resolve(adapter.stop(sessionId))
+    .then(() => {
+      guard.reaped = true;
+    })
+    .catch((stopErr) => {
+      console.warn(
+        `[launch] failed to stop late-settled session ${sessionId}: ` +
+        `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+      );
+      throw stopErr;
+    })
+    .finally(() => {
+      if (!guard.reaped) guard.reapPromise = undefined;
+    });
+  guard.reapPromise = attempt;
+  return attempt;
 }
 
 /**
@@ -102,19 +116,25 @@ export async function raceLaunchAgainstTimeout(
       if (ctx.reapGuard) {
         ctx.reapGuard.timedOut = true;
         if (ctx.reapKnownSessionOnTimeout && ctx.reapGuard.sessionId) {
-          reapLateLaunchSession(
+          void reapLateLaunchSession(
             ctx.reapGuard,
             ctx.adapter,
             ctx.agentType,
             ctx.taskId,
             ctx.reapGuard.sessionId,
-          );
+          ).catch(() => undefined);
         }
       }
       launchPromise.then(
         (sessionId) => {
           if (ctx.reapGuard) {
-            reapLateLaunchSession(ctx.reapGuard, ctx.adapter, ctx.agentType, ctx.taskId, sessionId);
+            void reapLateLaunchSession(
+              ctx.reapGuard,
+              ctx.adapter,
+              ctx.agentType,
+              ctx.taskId,
+              sessionId,
+            ).catch(() => undefined);
             return;
           }
           console.warn(

@@ -1277,7 +1277,8 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           if (!launchReapGuard.reaped) {
             const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
             try {
-              await Promise.resolve(adapter.stop(failedSessionId));
+              await (launchReapGuard.reapPromise
+                ?? Promise.resolve(adapter.stop(failedSessionId)));
               launchReapGuard.reaped = true;
               taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
             } catch (stopErr) {
@@ -1301,6 +1302,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         // active so later promotion cannot overwrite that marker; startup can
         // reconcile it as live or retry the physical reap.
         const current = taskStore.getTask(pending.id);
+        if (admissionMarkerWrittenByOwner?.status === 'probing') {
+          lifecycleDeps.launchDependencyAdmission?.retainProbeCleanup(
+            admissionMarkerWrittenByOwner.dependencies,
+            pending.id,
+          );
+        }
         if (current && !isTerminalStatus(current.status)) {
           if (failedLaunchSessionId) {
             taskStore.updateSession(pending.id, failedLaunchSessionId, { lastStatus: undefined });
@@ -1333,6 +1340,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           || current.status === 'cancelled'
         ) {
           lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          if (current?.launchAdmission?.status === 'probing') {
+            taskStore.setLaunchAdmission(pending.id, undefined);
+            taskStore.setLaunchHealthSummary(pending.id, undefined);
+          }
         } else {
           lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
         }

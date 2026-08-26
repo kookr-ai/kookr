@@ -345,6 +345,58 @@ describe('Crash Recovery', () => {
     ]);
   });
 
+  test('retains a timed-out recovery probe when physical cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-timeout-cleanup-rejection');
+    const task = await setupCrashedTask('Timed out probe cleanup rejection', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Timed out probe cleanup rejection',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    vi.spyOn(adapter, 'stop').mockRejectedValue(new Error('timeout cleanup rejected'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        getLaunchTimeoutMs: () => 5,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timeout cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: undefined,
+      })]),
+    });
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   test('reaps an unattached ordinary healthy recovery launch that rejects', async () => {
     const cwd = join(tempDir, 'project-healthy-launch-failure');
     const task = await setupCrashedTask('Healthy dependency relaunch', cwd);

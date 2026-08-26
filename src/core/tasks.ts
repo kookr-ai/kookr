@@ -157,7 +157,7 @@ export class TaskStore {
    * fix (docs/reports/issue-700-multi-session-attach-audit.md): concurrent
    * promotePendingTasks invocations could all pick the same pending task
    * because its status only flips to inProgress when the adapter calls
-   * addSession, seconds after the pick. beginLaunch() is the synchronous CAS
+   * addSession, seconds after the pick. beginLaunchWithToken() is the synchronous CAS
    * that closes that pick-to-launch window. Deliberately NOT persisted — a
    * reservation is meaningless across a restart (the launching process died).
    */
@@ -855,9 +855,14 @@ export class TaskStore {
     }
     const now = new Date();
     const dependencyAdmission = task.launchAdmission !== undefined;
-    const dependencyCleanupFence = task.launchAdmission?.status === 'probing'
+    const dependencyCleanupSessionId = task.launchAdmission?.status === 'probing'
+      ? task.launchAdmission.sessionId
+      : undefined;
+    const dependencyCleanupFence = dependencyCleanupSessionId !== undefined
       && task.sessions.some(
-        (session) => session.lastStatus !== 'completed' && session.lastStatus !== 'aborted',
+        (session) => session.tmuxSession === dependencyCleanupSessionId
+          && session.lastStatus !== 'completed'
+          && session.lastStatus !== 'aborted',
       );
     task.status = to;
     task.updatedAt = now;
@@ -1034,10 +1039,6 @@ export class TaskStore {
    * getNextPending() pick and this call — Node's single thread then makes the
    * pick-and-reserve atomic.
    */
-  beginLaunch(taskId: string): boolean {
-    return this.beginLaunchWithToken(taskId) !== undefined;
-  }
-
   /**
    * Token-bearing reservation variant for async launch owners. A stale owner
    * whose await outlives the reservation TTL can use the token to prove it
@@ -1074,8 +1075,8 @@ export class TaskStore {
   }
 
   /** Release a launch reservation, optionally only for its exact owner. */
-  endLaunch(taskId: string, token?: string): void {
-    if (token !== undefined && this.launchReservations.get(taskId)?.token !== token) return;
+  endLaunch(taskId: string, token: string): void {
+    if (this.launchReservations.get(taskId)?.token !== token) return;
     this.launchReservations.delete(taskId);
   }
 

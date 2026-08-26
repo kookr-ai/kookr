@@ -64,7 +64,7 @@ export class SessionRegistry {
     this.host.onSessionAttached(taskId);
     // Detection funnel (#700 audit item 2): every attach path crosses here.
     // A second not-known-dead session cannot be *prevented* at this point
-    // (the process already exists — prevention is beginLaunch upstream), but
+    // (the process already exists — prevention is the token reservation upstream), but
     // it must be a loud, attributable event instead of a supervisor
     // discovery. Exclusions, matching the other live-session predicates in
     // the codebase: crash-recovered siblings (reconcile stamped the dead

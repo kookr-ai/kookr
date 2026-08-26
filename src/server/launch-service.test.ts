@@ -1327,6 +1327,8 @@ describe('launchTask', () => {
       })],
     });
     expect(adapter.stop).toHaveBeenCalledWith(retainedSessionId);
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
     expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
       admit: false,
       reason: 'half_open_probe_busy',
@@ -4579,6 +4581,53 @@ describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
     ]);
     expect(store.listTasks()[0]?.issueClaim).toBeUndefined();
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('does not dispose a successor that attaches after a claimed capacity fence expires', async () => {
+    deps.getMaxActiveTasks = () => 0;
+    let now = 11_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (error: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps.flushTasks = vi.fn(async () => {
+      markFlushStarted();
+      await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+    });
+
+    try {
+      const launch = launchTask(deps, {
+        prompt: 'claimed capacity successor',
+        cwd: '/tmp',
+        claimIssue: { number: 45 },
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = store.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-capacity-successor',
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date(),
+      });
+
+      rejectFlush(new Error('stale claimed capacity write failed'));
+      await expect(launch).rejects.toThrow('stale claimed capacity write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        issueClaim: { number: 45 },
+        sessions: [expect.objectContaining({ tmuxSession: 'kookr-capacity-successor' })],
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(deps.issueClaimRegistry?.ownerRecord({
+        repo: 'github.com/kookr-ai/kookr',
+        number: 45,
+      })?.taskId).toBe(task.id);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('refuses with IssueClaimHeldError and creates no task when held', async () => {

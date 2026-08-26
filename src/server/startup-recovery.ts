@@ -102,6 +102,17 @@ export async function runStartupRecoveryPhase({
   // promotion so a clean first check after restart is a bounded half-open
   // probe rather than an unguarded launch.
   if (lifecycleDeps.launchDependencyAdmission) {
+    // Production reconciles terminal sessions before entering this phase.
+    // Reconciliation may therefore have cleared a cleanup-only marker after
+    // proving its exact session absent. Apply that settlement before scanning
+    // surviving markers so a fresh circuit becomes half-open/degraded rather
+    // than accidentally healthy.
+    for (const settled of reconcileResult.dependencyProbeCleanupSettled ?? []) {
+      lifecycleDeps.launchDependencyAdmission.settleReconciledProbe(
+        settled.dependencies,
+        settled.outcome,
+      );
+    }
     const successfulProbes: Array<{ dependencies: string[]; startedAt: number }> = [];
     const latestConfirmedAtByDependency = new Map<string, number>();
     const persistedTasks = taskStore.listTasks();
@@ -195,7 +206,10 @@ export async function runStartupRecoveryPhase({
       }
       const currentTask = taskStore.getTask(task.id);
       if (!currentTask || isTerminalStatus(currentTask.status)) {
-        if (currentTask) taskStore.setLaunchAdmission(task.id, undefined);
+        if (currentTask) {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
       } else {
         const parked = {
           status: 'parked' as const,

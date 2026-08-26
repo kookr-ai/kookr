@@ -125,7 +125,27 @@ export async function reconcile(
 
       accountedFor.add(session.tmuxSession);
 
-      if (liveSessions.has(session.tmuxSession)) {
+      let sessionIsLive = liveSessions.has(session.tmuxSession);
+      const exactProbeSession = task.launchAdmission?.status === 'probing'
+        && task.launchAdmission.sessionId === session.tmuxSession;
+      if (!sessionIsLive && exactProbeSession) {
+        // listSessions is a point-in-time snapshot. A probe can attach after
+        // that await but before task iteration, consuming its reservation; a
+        // blind "missing" verdict here would re-park it and admit a duplicate.
+        // Recheck the exact probe id at the decision boundary. Failure to
+        // probe liveness is not proof of absence, so retain the busy fence.
+        try {
+          sessionIsLive = await backend.isAlive(session.tmuxSession);
+        } catch (err) {
+          console.warn(
+            `[reconciliation] could not verify exact dependency probe ${session.tmuxSession}; `
+            + `retaining cleanup fence: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          continue;
+        }
+      }
+
+      if (sessionIsLive) {
         result.resumed.push(session.tmuxSession);
         const registryEntry = worktreeRegistry?.byPath(session.cwd);
         const registrySnapshot = worktreeRegistry?.snapshot();
@@ -242,6 +262,7 @@ export async function reconcile(
     ) {
       const probing = latestTask.launchAdmission;
       taskStore.setLaunchAdmission(latestTask.id, undefined);
+      taskStore.setLaunchHealthSummary(latestTask.id, undefined);
       result.dependencyProbeCleanupSettled?.push({
         dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
         outcome: 'released',
@@ -288,7 +309,7 @@ export async function reconcile(
  * #1526 Phase C / #1528). A task in `open` status with ZERO sessions exists
  * only while a launch is in flight (`launchTaskCore` creates it, then awaits
  * `adapter.launch`, which attaches the first session). A launch cannot
- * survive a process restart — `beginLaunch` reservations are deliberately
+ * survive a process restart — launch reservations are deliberately
  * in-memory only — so at boot every open/zero-session task without a fresh
  * reservation is stale by construction: its launcher is gone, no session will
  * ever attach, and `reconcile()`'s dead-session logic never touches it
@@ -304,7 +325,7 @@ export async function reconcile(
  * follows (it disposes rather than deletes).
  *
  * What distinguishes a legitimately mid-flight launch: a FRESH
- * `beginLaunch` reservation (`taskStore.hasFreshLaunchReservation`). At boot
+ * launch reservation (`taskStore.hasFreshLaunchReservation`). At boot
  * the reservation map is empty, so nothing is protected — correct, because
  * no launch survives the restart. The guard is what makes this function safe
  * against misuse from a periodic path, and it is the tested discriminator.

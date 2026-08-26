@@ -2162,7 +2162,7 @@ describe('diagnostics routes', () => {
 
         // launching: open task mid-launch (fresh reservation, no session attached yet).
         const launching = taskStore.createTask('Launching task', '/repo');
-        taskStore.beginLaunch(launching.id);
+        taskStore.beginLaunchWithToken(launching.id);
 
         // pending backlog: two tasks queued, no reservation. Oldest is 90s old
         // ("now" - createdAt), created before the other fixtures above.

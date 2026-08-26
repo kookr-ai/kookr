@@ -546,7 +546,8 @@ export async function recoverCrashedSessions(
             if (!launchReapGuard.reaped) {
               const adapter = launchAdapter ?? adapterRegistry.get(task.agentType);
               try {
-                await Promise.resolve(adapter.stop(failedSessionId));
+                await (launchReapGuard.reapPromise
+                  ?? Promise.resolve(adapter.stop(failedSessionId)));
                 launchReapGuard.reaped = true;
                 taskStore.updateSession(task.id, failedSessionId, { lastStatus: 'aborted' });
               } catch (stopErr) {
@@ -558,6 +559,12 @@ export async function recoverCrashedSessions(
         if (failedSessionReapError) {
           if (dependencyAdmission?.admit && dependencyAdmission.probe) {
             const current = taskStore.getTask(task.id);
+            if (admissionMarkerWrittenByOwner?.status === 'probing') {
+              options.launchDependencyAdmission?.retainProbeCleanup(
+                admissionMarkerWrittenByOwner.dependencies,
+                task.id,
+              );
+            }
             if (current && !isTerminalStatus(current.status)) {
               if (failedLaunchSessionId) {
                 taskStore.updateSession(task.id, failedLaunchSessionId, { lastStatus: undefined });
@@ -591,6 +598,10 @@ export async function recoverCrashedSessions(
             || currentAtFailure.status === 'cancelled'
           ) {
             options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+            if (currentAtFailure?.launchAdmission?.status === 'probing') {
+              taskStore.setLaunchAdmission(task.id, undefined);
+              taskStore.setLaunchHealthSummary(task.id, undefined);
+            }
           } else {
             options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, false);
           }

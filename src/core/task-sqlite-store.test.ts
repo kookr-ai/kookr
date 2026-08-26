@@ -416,10 +416,10 @@ describe('task-sqlite-store', () => {
         .toBe(storeA.findTaskBySession('sess-child')?.id);
       expect(storeB.listRelations()).toHaveLength(storeA.listRelations().length);
       expect(storeB.getLifetimeSpendUsd()).toBe(storeA.getLifetimeSpendUsd());
-      // beginLaunch CAS still works (in-memory, unaffected by persistence).
+      // Reservation CAS still works (in-memory, unaffected by persistence).
       const openTask = storeB.listTasks({ status: 'open' })[0]!;
-      expect(storeB.beginLaunch(openTask.id)).toBe(true);
-      expect(storeB.beginLaunch(openTask.id)).toBe(false);
+      expect(storeB.beginLaunchWithToken(openTask.id)).toBeDefined();
+      expect(storeB.beginLaunchWithToken(openTask.id)).toBeUndefined();
     } finally {
       opened.sqliteStore?.close();
     }
