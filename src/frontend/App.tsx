@@ -843,6 +843,22 @@ export function App() {
     openModal('launch');
   }, [clearRelaunchTask, openModal]);
 
+  // Launch a manual task scoped to an arbitrary project (e.g. one surfaced by
+  // command-palette search) without first navigating into its context. Reuses
+  // the project drawer's manual-launch setup; no-ops if the project can't be
+  // resolved to a summary so the launch dialog never opens context-less.
+  const handleLaunchProjectFromPalette = useCallback((projectId: string) => {
+    const projectSummary = projectSummaries.find((project) => project.project === projectId);
+    if (!projectSummary) return;
+    setLaunchProjectContext(projectSummary);
+    setLaunchProjectCwd(deriveLaunchProjectCwd(agents, projectSummary) ?? '');
+    setLaunchInitialTab('manual');
+    clearRelaunchTask();
+    setLaunchDialogGeneration((generation) => generation + 1);
+    track({ type: 'launch_dialog_opened', method: 'command_palette_project' });
+    openModal('launch');
+  }, [projectSummaries, agents, clearRelaunchTask, openModal]);
+
   // The bug-report and share-viewer modals swallow global shortcuts (only
   // Escape passes through). The diagnostics popover does too, but it stays a
   // separate boolean since it can co-exist with a modal.
@@ -1614,6 +1630,7 @@ export function App() {
           onSelectTask={(agentId, taskId) => selectAgent(agentId, taskId)}
           onSelectFinding={(agentId, taskId) => selectAgent(agentId, taskId)}
           onSelectProject={(projectId) => selectProject(projectId)}
+          onLaunchProject={handleLaunchProjectFromPalette}
           onClose={() => setShowCommandPalette(false)}
         />
       )}
