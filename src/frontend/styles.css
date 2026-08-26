@@ -4620,6 +4620,38 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-secondary);
   background: rgba(148, 163, 184, 0.08);
 }
+.outcome-finding-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.outcome-finding-breakdown-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.outcome-finding-breakdown-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.outcome-finding-breakdown-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+}
+.outcome-finding-breakdown-count {
+  font-weight: 700;
+  color: var(--text-bright);
+}
 .outcome-agent-scoreboard {
   display: flex;
   flex-direction: column;
