@@ -648,4 +648,72 @@ describe('UmbrellaChainAdvancer', () => {
     expect(legacyPhaseClaimKey(2711, 'P1')).toBe('chain:2711:phase:P1');
     expect(legacyPhaseClaimKey(42, 'Phase 3')).toBe('chain:42:phase:Phase 3');
   });
+
+  test('each tick emits the structured advancer-tick schema fields', async () => {
+    const harness = makeHarness(makeLedger(), { mode: 'observe' });
+    await harness.advancer.sweep();
+    const tick = harness.events
+      .map((line) => {
+        const start = line.indexOf('{');
+        if (start === -1) return undefined;
+        try {
+          return JSON.parse(line.slice(start)) as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
+      })
+      .find((event) => event !== undefined && 'decision' in event);
+    expect(tick).toBeDefined();
+    expect(Object.keys(tick!)).toEqual(
+      expect.arrayContaining(['issue', 'ledger', 'next', 'depSatisfied', 'inFlight', 'claim', 'decision', 'reason']),
+    );
+    expect(tick).toMatchObject({
+      issue: 2711,
+      ledger: 'ok',
+      next: 'P1',
+      depSatisfied: true,
+      inFlight: false,
+      decision: 'skip',
+    });
+    expect(typeof tick!.claim).toBe('string');
+    expect(typeof tick!.reason).toBe('string');
+  });
+
+  test('chain-health rollup reports a healthy chain with the stale threshold and unstick procedure', async () => {
+    const harness = makeHarness(makeLedger(), { mode: 'observe' });
+    await harness.advancer.sweep();
+    const rollup = harness.advancer.getHealthSnapshot();
+    expect(rollup.schemaVersion).toBe('umbrella-chain-advancer.v1');
+    expect(rollup.staleThresholdMs).toBeGreaterThan(0);
+    expect(rollup.unstickProcedure).toContain('ledger');
+    expect(rollup.chains[0]).toMatchObject({
+      status: 'eligible',
+      inFlight: false,
+      nextPhase: 'P1',
+    });
+    expect(rollup.chains[0]).not.toHaveProperty('blockedReason');
+  });
+
+  test('chain-health rollup reports a blocked chain with blockedReason and blockedSince', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], status: 'in-flight', prNumber: 10, taskId: 'owner-1' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set() });
+    await harness.advancer.sweep();
+    const chain = harness.advancer.getHealthSnapshot().chains[0];
+    expect(chain).toMatchObject({ status: 'blocked', blockedReason: 'dependency-unmerged' });
+    expect(typeof chain?.blockedSince).toBe('string');
+  });
+
+  test('chain-health rollup marks a chain stale once it exceeds the staleness threshold', async () => {
+    const base = new Date('2026-08-23T10:00:00.000Z');
+    const harness = makeHarness(makeLedger(), { mode: 'observe', now: () => base });
+    await harness.advancer.sweep();
+    const fresh = harness.advancer.getHealthSnapshot(base.getTime());
+    expect(fresh.chains[0]?.status).toBe('eligible');
+    const stale = harness.advancer.getHealthSnapshot(base.getTime() + fresh.staleThresholdMs + 1);
+    expect(stale.chains[0]?.status).toBe('stale');
+  });
 });
