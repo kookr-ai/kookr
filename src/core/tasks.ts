@@ -1057,6 +1057,12 @@ export class TaskStore {
       && this.launchReservations.get(taskId)?.token === token;
   }
 
+  /** True when another live async owner has replaced the caller's lease. */
+  hasForeignFreshLaunchReservation(taskId: string, token: string): boolean {
+    if (!this.hasFreshLaunchReservation(taskId)) return false;
+    return this.launchReservations.get(taskId)?.token !== token;
+  }
+
   /**
    * Read launch-reservation freshness (issue #1526 Phase B: made public so the
    * capacity ledger can classify an `open`/`pending` task as `launching`

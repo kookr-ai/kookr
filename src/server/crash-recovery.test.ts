@@ -372,7 +372,12 @@ describe('Crash Recovery', () => {
       error: 'ordinary adapter failure',
     })]);
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
-    expect(taskStore.getTask(task.id)?.sessions).toHaveLength(1);
+    expect(taskStore.getTask(task.id)?.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tmuxSession: 'ordinary-unattached-recovery',
+        lastStatus: 'aborted',
+      }),
+    ]));
     expect(stop).toHaveBeenCalledWith('ordinary-unattached-recovery');
   });
 
@@ -434,6 +439,54 @@ describe('Crash Recovery', () => {
     });
     expect(stop).toHaveBeenCalledWith(expectedSessionId);
     expect(flushTasks).toHaveBeenCalledOnce();
+  });
+
+  test('keeps an exact recovery probe fence when session cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-probe-cleanup-rejection');
+    const task = await setupCrashedTask('Probe cleanup rejection', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Probe cleanup rejection',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe launch rejected');
+    });
+    vi.spyOn(adapter, 'stop').mockRejectedValueOnce(new Error('probe cleanup rejected'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('probe cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: expectedSessionId,
+      },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+      })]),
+    });
+    expect(taskStore.getTask(task.id)?.sessions.find(
+      (session) => session.tmuxSession === expectedSessionId,
+    )?.lastStatus).toBeUndefined();
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
   });
 
   test('keeps a live recovered probe when post-attach persistence fails', async () => {
@@ -711,17 +764,10 @@ describe('Crash Recovery', () => {
       admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
       releaseFirst();
       await secondStarted;
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
       now += 10 * 60 * 1_000 + 1;
       const replacementToken = taskStore.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
-      const replacementMarker = {
-        status: 'probing' as const,
-        reason: 'half_open_probe_in_flight' as const,
-        dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
-        startedAt: 'replacement-owner',
-        sessionId: 'kookr-replacement-recovery',
-      };
-      taskStore.setLaunchAdmission(task.id, replacementMarker);
 
       rejectSecond(new Error('stale recovery re-park write failed'));
       const result = await recovery;
@@ -769,7 +815,13 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'cancelled',
       launchAdmission: undefined,
-      sessions: [expect.objectContaining({ tmuxSession: task.sessions[0]?.tmuxSession })],
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ tmuxSession: task.sessions[0]?.tmuxSession }),
+        expect.objectContaining({
+          tmuxSession: 'cancelled-probe-recovery',
+          lastStatus: 'aborted',
+        }),
+      ]),
     });
     expect(stop).toHaveBeenCalledWith('cancelled-probe-recovery');
     expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });

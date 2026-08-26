@@ -330,10 +330,8 @@ export async function recoverCrashedSessions(
           if (
             current
             && !isTerminalStatus(current.status)
-            && (
-              taskStore.ownsLaunchReservation(task.id, launchReservationToken)
-              || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-            )
+            && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
+            && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
           ) {
             taskStore.setLaunchAdmission(task.id, priorAdmission);
           }
@@ -503,10 +501,8 @@ export async function recoverCrashedSessions(
             && current.status !== 'completed'
             && current.status !== 'terminated'
             && current.status !== 'cancelled'
-            && (
-              taskStore.ownsLaunchReservation(task.id, launchReservationToken)
-              || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-            )
+            && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
+            && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
           ) {
             if (current.status === 'inProgress') taskStore.reopenTask(task.id);
             if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
@@ -525,22 +521,59 @@ export async function recoverCrashedSessions(
         // onSessionCreated fires as soon as the physical terminal exists, before
         // TaskStore attachment. Reap that session for every unsettled recovery
         // launch failure so healthy/no-probe recovery cannot leak an orphan.
+        let failedSessionReapError: unknown;
+        let failedLaunchSessionId: string | undefined;
         if (!adapterLaunchSettled) {
           const failedSessionId = launchReapGuard.sessionId ?? taskStore.getTask(task.id)?.sessions
             .filter((candidate) => !priorSessionIds.has(candidate.tmuxSession))
             .at(-1)?.tmuxSession;
           if (failedSessionId) {
+            failedLaunchSessionId = failedSessionId;
             try {
               taskStore.updateSession(task.id, failedSessionId, { lastStatus: 'aborted' });
             } catch {
-              // The adapter may report session creation before store attachment.
+              taskStore.recordAbandonedLaunchSession(task.id, {
+                tmuxSession: failedSessionId,
+                agentType: task.agentType,
+                cwd: originalCwd,
+                createdAt: new Date(),
+              });
             }
             if (!launchReapGuard.reaped) {
-              launchReapGuard.reaped = true;
               const adapter = launchAdapter ?? adapterRegistry.get(task.agentType);
-              await Promise.resolve(adapter.stop(failedSessionId)).catch(() => undefined);
+              try {
+                await Promise.resolve(adapter.stop(failedSessionId));
+                launchReapGuard.reaped = true;
+              } catch (stopErr) {
+                failedSessionReapError = stopErr;
+              }
             }
           }
+        }
+        if (failedSessionReapError) {
+          if (dependencyAdmission?.admit && dependencyAdmission.probe) {
+            const current = taskStore.getTask(task.id);
+            if (current && !isTerminalStatus(current.status)) {
+              if (failedLaunchSessionId) {
+                taskStore.updateSession(task.id, failedLaunchSessionId, { lastStatus: undefined });
+              }
+              if (current.status === 'pending' || current.status === 'open') {
+                taskStore.startTask(task.id);
+              }
+            }
+          } else {
+            const current = taskStore.getTask(task.id);
+            if (current && !isTerminalStatus(current.status)) taskStore.cancelTask(task.id);
+          }
+          result.failed.push({
+            taskId: task.id,
+            sessionId: tmuxName,
+            error: `failed launch session remains owned after cleanup rejection: ${failedSessionReapError instanceof Error ? failedSessionReapError.message : String(failedSessionReapError)}`,
+          });
+          // A probe retains its durable exact-session marker and busy circuit.
+          // Ordinary recovery is terminal so its linked session is eligible
+          // for the periodic terminal-leak reaper.
+          continue;
         }
         if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
           const currentAtFailure = taskStore.getTask(task.id);

@@ -2555,6 +2555,8 @@ describe('launch reservations (#700)', () => {
       expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
       store.endLaunch(task.id, stale);
       expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
+      expect(store.hasForeignFreshLaunchReservation(task.id, stale)).toBe(true);
+      expect(store.hasForeignFreshLaunchReservation(task.id, replacement)).toBe(false);
       store.endLaunch(task.id, replacement);
       expect(store.hasFreshLaunchReservation(task.id)).toBe(false);
     } finally {

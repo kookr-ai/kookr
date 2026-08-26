@@ -2450,6 +2450,62 @@ describe('promotePendingTasks (integration)', () => {
     expect(flushTasks).toHaveBeenCalledOnce();
   });
 
+  test('keeps an exact probe fence when promoted-session cleanup rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'probe cleanup rejection',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'probe cleanup rejection',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let expectedSessionId: string | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe launch rejected');
+    });
+    vi.mocked(adapter.stop).mockRejectedValueOnce(new Error('probe cleanup rejected'));
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(0);
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        launchAdmission: {
+          status: 'probing',
+          sessionId: expectedSessionId,
+        },
+        sessions: [expect.objectContaining({
+          tmuxSession: expectedSessionId,
+        })],
+      });
+      expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+      expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+        admit: false,
+        reason: 'half_open_probe_busy',
+      });
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   test('reaps an unattached promoted session when its probe is cancelled before rejection', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
@@ -2483,7 +2539,10 @@ describe('promotePendingTasks (integration)', () => {
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'cancelled',
       launchAdmission: undefined,
-      sessions: [],
+      sessions: [expect.objectContaining({
+        tmuxSession: 'cancelled-probe-promotion',
+        lastStatus: 'aborted',
+      })],
     });
     expect(adapter.stop).toHaveBeenCalledWith('cancelled-probe-promotion');
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
@@ -2546,7 +2605,13 @@ describe('promotePendingTasks (integration)', () => {
 
     try {
       expect(await promotePendingTasks(deps)).toBe(0);
-      expect(taskStore.getTask(task.id)).toMatchObject({ status: 'cancelled', sessions: [] });
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'cancelled',
+        sessions: [expect.objectContaining({
+          tmuxSession: 'ordinary-unattached-promotion',
+          lastStatus: 'aborted',
+        })],
+      });
       expect(adapter.stop).toHaveBeenCalledWith('ordinary-unattached-promotion');
     } finally {
       errorSpy.mockRestore();

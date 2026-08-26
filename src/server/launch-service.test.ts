@@ -793,6 +793,89 @@ describe('launchTask', () => {
     ]);
   });
 
+  it('does not cancel a replacement reservation when a stale dependency-denial barrier rejects', async () => {
+    let now = 3_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale dependency denial owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      const originalMarker = task.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectFlush(new Error('stale denial write failed'));
+      await expect(launch).rejects.toThrow('stale denial write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: originalMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not return a parked response after cancellation wins the denial barrier', async () => {
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel dependency denial owner',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('changed state while its dependency denial was persisted');
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+  });
+
   it('parks confirmed dependency degradation even when the ordinary pending queue is full', async () => {
     const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
     store.startTask(active.id);
@@ -1329,17 +1412,10 @@ describe('launchTask', () => {
       releaseFirst();
       await secondStarted;
       const task = store.listTasks()[0]!;
+      const replacementMarker = task.launchAdmission;
       now += 10 * 60 * 1_000 + 1;
       const replacementToken = store.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
-      const replacementMarker = {
-        status: 'probing' as const,
-        reason: 'half_open_probe_in_flight' as const,
-        dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
-        startedAt: 'replacement-owner',
-        sessionId: 'kookr-replacement-direct',
-      };
-      store.setLaunchAdmission(task.id, replacementMarker);
 
       rejectSecond(new Error('stale direct re-park write failed'));
       await expect(launch).rejects.toThrow('stale direct re-park write failed');

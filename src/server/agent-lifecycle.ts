@@ -1043,6 +1043,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           && current.launchAdmission?.status === 'parked'
           && current.launchAdmission.reason === deniedAdmission.reason
           && current.launchAdmission.parkedAt === deniedAdmission.parkedAt
+          && !taskStore.hasForeignFreshLaunchReservation(pending.id, launchReservationToken)
         ) {
           taskStore.setLaunchAdmission(pending.id, admissionBeforeDecision);
         }
@@ -1236,10 +1237,8 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         if (
           current
           && !isTerminalStatus(current.status)
-          && (
-            taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
-            || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-          )
+          && !taskStore.hasForeignFreshLaunchReservation(pending.id, launchReservationToken)
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
         ) {
           taskStore.setLaunchAdmission(
             pending.id,
@@ -1252,28 +1251,67 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // it to TaskStore. Clean that physical session up for every unsettled
       // launch failure, not only dependency probes; otherwise an ordinary
       // healthy launch rejection can leave an unowned process behind.
+      let failedSessionReapError: unknown;
+      let failedLaunchSessionId: string | undefined;
       if (!adapterLaunchSettled) {
         const failedSessionId = launchReapGuard.sessionId
           ?? taskStore.getTask(pending.id)?.sessions
             .filter((session) => !priorSessionIds.has(session.tmuxSession))
             .at(-1)?.tmuxSession;
         if (failedSessionId) {
+          failedLaunchSessionId = failedSessionId;
           try {
             taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
           } catch {
-            // The adapter may report session creation before store attachment.
+            taskStore.recordAbandonedLaunchSession(pending.id, {
+              tmuxSession: failedSessionId,
+              agentType: pending.agentType,
+              cwd: pending.cwd,
+              createdAt: new Date(),
+            });
           }
           if (!launchReapGuard.reaped) {
-            launchReapGuard.reaped = true;
             const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
-            await Promise.resolve(adapter.stop(failedSessionId)).catch((stopErr) => {
+            try {
+              await Promise.resolve(adapter.stop(failedSessionId));
+              launchReapGuard.reaped = true;
+            } catch (stopErr) {
+              failedSessionReapError = stopErr;
               console.warn(
                 `[promotion] Could not stop failed launch session ${failedSessionId}:`,
                 stopErr instanceof Error ? stopErr.message : stopErr,
               );
-            });
+            }
           }
         }
+      }
+      if (
+        failedSessionReapError
+        && dependencyAdmission?.admit
+        && dependencyAdmission.probe
+        && !adapterLaunchSettled
+      ) {
+        // Preserve the durable exact-session probe marker and its circuit
+        // token until absence is proven. Treat the possibly-live worker as
+        // active so later promotion cannot overwrite that marker; startup can
+        // reconcile it as live or retry the physical reap.
+        const current = taskStore.getTask(pending.id);
+        if (current && !isTerminalStatus(current.status)) {
+          if (failedLaunchSessionId) {
+            taskStore.updateSession(pending.id, failedLaunchSessionId, { lastStatus: undefined });
+          }
+          if (current.status === 'pending' || current.status === 'open') {
+            taskStore.startTask(pending.id);
+          }
+        }
+        blockedByDependency.add(pending.id);
+        console.error(
+          `[promotion] Failed probe session remains cleanup-fenced for task ${pending.id}:`,
+          failedSessionReapError instanceof Error
+            ? failedSessionReapError.message
+            : failedSessionReapError,
+        );
+        continue;
       }
       if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
         const current = taskStore.getTask(pending.id);

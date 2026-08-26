@@ -1688,26 +1688,60 @@ async function launchTaskCore(
   }
 
   if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
-    const parkedTask = taskStore.pendTask(task.id);
+    const denialReservationToken = taskStore.beginLaunchWithToken(task.id);
+    if (!denialReservationToken) {
+      const err = new Error(`Task ${task.id} could not reserve its dependency-denied launch`);
+      disposeUnacknowledgedTaskAfterPersistenceFailure(deps, task.id, err, resolvedClaimKey);
+      throw err;
+    }
+    const deniedAdmissionWrittenByOwner = task.launchAdmission;
+    taskStore.pendTask(task.id);
     // A successful parked response is a durability promise: persist the full
     // replay intent and denial reason before acknowledging queued work.
     try {
       await deps.flushTasks();
     } catch (err) {
-      disposeUnacknowledgedTaskAfterPersistenceFailure(
-        deps,
-        task.id,
-        err,
-        resolvedClaimKey,
-      );
+      const current = taskStore.getTask(task.id);
+      const mayCompensatePersistenceFailure = current
+        && !isTerminalStatus(current.status)
+        && !taskStore.hasForeignFreshLaunchReservation(task.id, denialReservationToken)
+        && isSameTaskLaunchAdmission(current.launchAdmission, deniedAdmissionWrittenByOwner);
+      taskStore.endLaunch(task.id, denialReservationToken);
+      if (mayCompensatePersistenceFailure) {
+        disposeUnacknowledgedTaskAfterPersistenceFailure(
+          deps,
+          task.id,
+          err,
+          resolvedClaimKey,
+        );
+      }
       throw err;
+    }
+    const current = taskStore.getTask(task.id);
+    const replacedByAnotherOwner = taskStore.hasForeignFreshLaunchReservation(
+      task.id,
+      denialReservationToken,
+    ) || !isSameTaskLaunchAdmission(current?.launchAdmission, deniedAdmissionWrittenByOwner);
+    taskStore.endLaunch(task.id, denialReservationToken);
+    if (!current || isTerminalStatus(current.status)) {
+      throw new Error(`Task ${task.id} changed state while its dependency denial was persisted`);
+    }
+    if (replacedByAnotherOwner) {
+      return {
+        task: current,
+        queued: current.status === 'pending',
+        ...(current.launchAdmission && isNoSlotDependencyAdmission(current.launchAdmission)
+          ? { parked: true }
+          : {}),
+        ...(current.launchAdmission ? { dependencyAdmission: current.launchAdmission } : {}),
+      };
     }
     if (isRoundRobin) deps.roundRobinCursor?.advance();
     return {
-      task: parkedTask,
+      task: current,
       queued: true,
       parked: true,
-      dependencyAdmission: parkedTask.launchAdmission,
+      dependencyAdmission: current.launchAdmission,
     };
   }
 
@@ -1967,10 +2001,8 @@ async function launchTaskCore(
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
         const mayCompensatePersistenceFailure = current
           && !isTerminalStatus(current.status)
-          && (
-            taskStore.ownsLaunchReservation(task.id, launchReservationToken)
-            || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
-          );
+          && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner);
         taskStore.endLaunch(task.id, launchReservationToken);
         phaseTracker.abort();
         const phaseTimings = phaseTracker.snapshot();
