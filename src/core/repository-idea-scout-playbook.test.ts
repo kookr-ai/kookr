@@ -435,6 +435,10 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).not.toContain('architecture-refactor-rfc:${REPO_SLUG}:${IDX}');
       expect(phase7).toContain('/api/tasks/$SAVED_RFC_TASK_ID');
       expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
+      expect(phase7).toMatch(/SAVED_RFC_TASK_ID[\s\S]*FILED=\$\(\(FILED \+ 1\)\)/);
+      expect(phase7).toContain('.publishDecision = "deferred-over-budget"');
+      expect(phase7).toContain('.publishDecision = "deferred-spend-cap"');
+      expect(phase7).toMatch(/Run this phase only when `PUBLISH = publish-safe`/);
       const rfcRoute = phase7.indexOf('RFC-first launch loop');
       const issueRoute = phase7.indexOf('> "$STATE_DIR/publishable.tsv"');
       expect(rfcRoute).toBeGreaterThan(-1);

@@ -34,7 +34,7 @@ checklist:
   - Verified the finding clears the large-refactor threshold and re-checked its evidence
   - Drafted and converged an RFC through rfc-iterative-review
   - Opened the RFC PR and obtained an exact-head independent PASS verdict
-  - Merged the RFC PR through the repository merge wrapper
+  - Merged the RFC PR through an exact-head reviewed merge command
   - Proved the RFC merge commit reachable from freshly fetched origin/main
   - Created or resumed exactly one umbrella issue with a valid sequential phase ledger
   - Launched Phase 1 exactly once with a durable idempotency key and recorded task id
@@ -47,7 +47,7 @@ Turn one verified large architecture-refactor finding into this ordered, durable
 ```
 converged RFC
   → exact-head independent review
-  → wrapper-only RFC merge
+  → exact-head reviewed RFC merge
   → fresh-origin/main reachability proof
   → one durable implementation umbrella
   → one idempotent Phase-1 self-advancing launch
@@ -133,12 +133,13 @@ match this run. A missing remote object, duplicate marker match, state mismatch,
 or malformed response is a blocker; never silently create a replacement.
 
 Before doing new work, search all RFC PR states and all open/closed issues for
-the exact markers. GitHub search indexing is not authoritative for idempotency:
-enumerate with `gh pr list --state all --limit 200 --json ...` and `gh issue
-list --state all --limit 1000 --json ...`, then filter the returned bodies
-locally. Zero matches means create; one matching reference means resume; more
-than one means stop and record `duplicate-rfc-reference` or
-`duplicate-umbrella-reference`.
+the exact markers. GitHub search indexing and fixed result limits are not
+authoritative for idempotency. Enumerate the REST collections with `gh api
+--paginate` and `per_page=100` until GitHub returns no next page, aggregate the
+pages locally, exclude pull requests from the issue collection, and then filter
+the bodies for exact marker matches. Any page error fails closed. Zero matches
+means create; one matching reference means resume; more than one means stop and
+record `duplicate-rfc-reference` or `duplicate-umbrella-reference`.
 
 ## Phase 1 — Verify Evidence and Freeze the Phase Plan
 
@@ -198,10 +199,24 @@ different head. A timeout label is telemetry only. Any correction changes the
 head: update `rfcHeadSha`, run the repository gates again, push, and obtain a
 new exact-head verdict.
 
-Merge only through the repository wrapper (`pnpm merge <RFC_PR_NUMBER>`). Do
-not use raw GitHub merge commands. After the wrapper returns, re-read the PR and
-require `state = MERGED` plus a non-empty merge commit. Persist that commit as
-`rfcMergeSha`. Missing review or merge evidence stops the flow before Phase 4.
+Use an exact-head reviewed merge command. In `kookr-ai/kookr`, use the enforced
+repository wrapper (`pnpm merge <RFC_PR_NUMBER> --repo <repo>`). In another
+repository, first confirm its allowed merge method and required checks, then
+call GitHub's pull-request merge REST endpoint with `sha: <rfcHeadSha>` and that
+allowed method; never use a merge command that omits the expected head SHA.
+Fail closed if the repository's merge policy cannot be resolved. After the
+command returns, re-read the PR and require `state = MERGED` plus a non-empty
+merge commit. Persist that commit as `rfcMergeSha`. Missing review or merge
+evidence stops the flow before Phase 4.
+
+```bash
+gh api --method PUT "repos/$REPO/pulls/$RFC_PR_NUMBER/merge" \
+  --field sha="$RFC_HEAD_SHA" \
+  --field merge_method="$MERGE_METHOD"
+```
+
+`MERGE_METHOD` must be an explicitly allowed repository method (`squash`,
+`merge`, or `rebase`), never free-form finding input.
 
 ## Phase 4 — Prove the Merge Is Reachable from Fresh Main
 
@@ -287,7 +302,7 @@ chain namespace: refactor/<findingKey>-<umbrellaIssueNumber>
 ```
 
 It must require the `self-continuation-task` self-advancing phase contract:
-fresh worktree, local gate, exact-head independent review, wrapper-only merge,
+fresh worktree, local gate, exact-head independent review, exact-head merge,
 append-only `kookr-phase-result`, next-phase spawn, and discoverable fail-closed
 blockers. Include only P1's scope plus durable references; do not paste the
 whole orchestration transcript.
@@ -319,8 +334,9 @@ front-end.
 1. The stable finding marker identifies exactly one RFC PR and one umbrella.
 2. Durable references are evidence pointers, never authority by themselves;
    revalidate every remote object before reuse.
-3. The RFC PR must have a PASS bound to its exact head and merge through the
-   wrapper. Missing or stale review evidence always fails closed.
+3. The RFC PR must have a PASS bound to its exact head and use either Kookr's
+   enforced wrapper or an expected-head GitHub merge API call. Missing or stale
+   review evidence always fails closed.
 4. Fresh `origin/main` reachability is the gate between RFC merge and umbrella
    creation. Never infer it from GitHub state alone.
 5. The umbrella issue number is captured before its final ledger is patched;

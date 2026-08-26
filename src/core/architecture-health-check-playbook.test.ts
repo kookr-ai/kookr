@@ -7,7 +7,7 @@ import { parsePlaybook } from './playbook-parser.js';
  * Contract tests for architecture-health-check emission-budget wiring (#1607)
  * and value-density governor (#1846).
  */
-describe('architecture-health-check playbook emission budget', () => {
+describe('architecture-health-check playbook', () => {
   const playbookPath = join(
     import.meta.dirname,
     '..',

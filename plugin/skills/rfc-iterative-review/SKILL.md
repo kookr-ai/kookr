@@ -262,9 +262,12 @@ a parallel flow.
    equals the current RFC PR head. A missing, BLOCK, unbound, or stale verdict
    fails closed. A correction changes the head and therefore requires a new
    verdict.
-3. **Merge through the wrapper.** Use the repository merge wrapper, never a raw
-   GitHub merge command. Persist the confirmed merge commit only after the PR
-   reports `MERGED` with a non-empty merge SHA.
+3. **Merge with an exact-head guard.** In `kookr-ai/kookr`, use `pnpm merge` so
+   the independent verdict is enforced by the repository wrapper. Elsewhere,
+   resolve the repository's allowed merge method and use the pull-request merge
+   REST endpoint with the reviewed head as its expected `sha`. Never merge
+   without an atomic expected-head guard. Persist the confirmed merge commit
+   only after the PR reports `MERGED` with a non-empty merge SHA.
 4. **Prove reachability from fresh main.** Run `git fetch origin main`, then
    `git merge-base --is-ancestor "$RFC_MERGE_SHA" origin/main`, and verify the
    RFC exists in a temporary checkout of that fetched base. Do not create or
@@ -290,7 +293,7 @@ backstop own subsequent progression.
 ## Anti-Patterns
 
 - **Don't rubber-stamp critic feedback.** Actually evaluate each finding — some will be wrong or inapplicable. Document why you rejected items.
-- **Don't implement before approval.** The entire point of this workflow is human review before action.
+- **Don't implement before approval outside the authorized architecture-refactor path.** Ordinary RFC work still stops for explicit approval. The `architecture-refactor-rfc.md` exception may continue only when all three activation fields validate and every Phase 4 fail-closed gate passes.
 - **Don't skip the worktree.** RFCs are written artifacts — they need a branch even if they're "just docs".
 - **Don't invent a new RFC format.** Match existing RFCs in the project.
 - **Don't run more than 5 critics without a recorded justification.** The Panel Selection Gate makes this a checked cap, not a suggestion: 3–5 per round, hard max 5, and `N > 5` requires a logged override line in "Critic feedback incorporated". Pick the most relevant lenses — more critics != better, it's diminishing returns and multiplied cost past 4–5. (The cap limits breadth; it never blocks a critic from re-verifying a suspicious claim, and never counts the mandatory empirical-check `design-experimenter`.)

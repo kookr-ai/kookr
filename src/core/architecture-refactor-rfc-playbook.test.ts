@@ -65,7 +65,8 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(mergePhase).toMatch(/missing|stale/i);
     expect(mergePhase).toMatch(/fail closed|stop/i);
     expect(mergePhase).toContain('pnpm merge');
-    expect(mergePhase).not.toMatch(/gh pr merge/);
+    expect(mergePhase).toContain('sha: <rfcHeadSha>');
+    expect(mergePhase).toMatch(/allowed merge method/i);
   });
 
   test('creates no umbrella until the RFC merge commit is reachable from fresh origin/main', () => {
@@ -88,6 +89,9 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(pb.body).toContain('phase1TaskId');
     expect(pb.body).toContain('kookr-architecture-refactor-rfc:{{findingKey}}');
     expect(pb.body).toContain('--idempotency-key');
+    expect(pb.body).toContain('gh api');
+    expect(pb.body).toContain('--paginate');
+    expect(pb.body).not.toMatch(/--limit (200|1000)/);
   });
 
   test('writes the self-advancing ledger and records launch only after a confirmed task id', () => {

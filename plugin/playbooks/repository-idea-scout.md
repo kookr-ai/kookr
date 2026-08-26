@@ -1681,6 +1681,7 @@ while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
     jq --arg idx "$IDX" --arg taskId "$SAVED_RFC_TASK_ID" \
       '(.[] | select(.idx == $idx)) |= (.rfcTaskId = $taskId)' \
       "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+    FILED=$((FILED + 1))
     continue
   fi
   if [ "$FILED" -ge "$ALLOWED" ]; then
@@ -1688,10 +1689,16 @@ while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
       --source repository-idea-scout \
       --reason "over emission budget (allowed=$ALLOWED openBacklog=$OPEN_BACKLOG)" \
       --json >> "$STATE_DIR/deferred.jsonl" || true
+    jq --arg idx "$IDX" \
+      '(.[] | select(.idx == $idx)) |= (.publishDecision = "deferred-over-budget")' \
+      "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
     continue
   fi
   if ! spend_gate; then
     echo "Spend cap reached (\$$SPEND_CAP_USD); stopping RFC-first launches before $IDEA_DIR." >> "$STATE_FILE"
+    jq 'map(if .publishDecision == "rfc-first" and .rfcTaskId == null
+      then .publishDecision = "deferred-spend-cap" else . end)' \
+      "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
     break
   fi
 
@@ -1927,6 +1934,8 @@ Before finishing, validate:
 - `<duplicateMatrixFile>` exists and references the portfolio.
 - Only candidates whose `publishDecision` is `publish` have an `issue-body.md`; that body contains none of `<stateDir>`, a local state path, or process boilerplate.
 - Every candidate whose `publishDecision` is `rfc-first` has an `rfc-handoff.md`, remains `authority: review-required`, has `issueUrl: null`, and — in `publish-safe` mode — has a non-null `rfcTaskId` backed by `rfc-task.json`. It never has an `issue-created.json`.
+- Every `deferred-over-budget` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and has a matching `kookr emission defer` record. It is not treated as a failed RFC-first launch.
+- Every `deferred-spend-cap` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and is covered by a breached spend ledger. It is not treated as a failed RFC-first launch.
 - When `PUBLISH = publish-safe`: every published entry has a non-null `issueUrl` and a valid `issue-created.json`; no entry whose `authority` is `review-required` or `protected` has a non-null `issueUrl` or an `issue-created.json`.
 - When `PUBLISH = report-only`: every entry has `issueUrl: null`, every `rfcTaskId` is null, no downstream task was launched, and no GitHub issue was created.
 - `<kbSeedsFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; every entry has a `groundedIn` array and a boolean `kbStale`.
