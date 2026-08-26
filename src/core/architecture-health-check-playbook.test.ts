@@ -77,6 +77,12 @@ describe('architecture-health-check playbook', () => {
     expect(routeContinue).toBeGreaterThan(routePredicate);
     expect(plainIssue).toBeGreaterThan(route);
     expect(plainIssue).toBeGreaterThan(routeContinue);
+
+    const rfcBranch = phase3.slice(routePredicate, plainIssue);
+    expect(rfcBranch).toContain('/api/tasks/$RFC_TASK_ID');
+    expect(rfcBranch).toMatch(/launch ambiguous[\s\S]*exit 0/);
+    expect(rfcBranch).not.toMatch(/launch (failed|ambiguous)[^\n]*continue/);
+    expect(rfcBranch).toMatch(/FILED=\$\(\(FILED \+ 1\)\)[\s\S]*REFACTOR_FILED=\$\(\(REFACTOR_FILED \+ 1\)\)/);
   });
 
   test('preserves plain issue creation below the large-refactor threshold', () => {

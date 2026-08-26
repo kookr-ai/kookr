@@ -433,6 +433,8 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).toContain('rfcTaskId');
       expect(phase7).toContain('architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}');
       expect(phase7).not.toContain('architecture-refactor-rfc:${REPO_SLUG}:${IDX}');
+      expect(phase7).toContain('kookr spawn -C "$LOCAL"');
+      expect(phase7).not.toContain('kookr spawn -C "$LOCAL_PATH"');
       expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
 
       const savedTaskBranch = phase7.slice(

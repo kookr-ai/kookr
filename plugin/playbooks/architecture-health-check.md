@@ -248,15 +248,24 @@ if [ "${FINDING_ROUTE:-plain-issue}" = "rfc-first" ]; then
     --criteria "RFC merged, umbrella created, and Phase 1 launched or a durable blocker recorded" \
     --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
     --unattended --json) \
-    || { echo "architecture-health-check: RFC-first launch failed; inspect idempotency state before retry"; continue; }
+    || { echo "architecture-health-check: RFC-first launch ambiguous; stop and inspect idempotency state before retry"; exit 0; }
   RFC_TASK_ID=$(printf '%s' "$RFC_SPAWN_JSON" | jq -r '.details.taskId // .task.id // .taskId // empty')
   if [ -z "$RFC_TASK_ID" ]; then
     echo "architecture-health-check: RFC-first launch returned no task id; refusing to record success"
-    continue
+    exit 0
+  fi
+  if ! curl -fsS --max-time 5 \
+    "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/tasks/$RFC_TASK_ID" \
+    | jq -e --arg taskId "$RFC_TASK_ID" '.taskId == $taskId' >/dev/null; then
+    echo "architecture-health-check: RFC-first task could not be authoritatively re-read; stopping"
+    exit 0
   fi
   # Record rfcTaskId beside this finding in {{reportPath}} (or its structured
   # sidecar) before advancing FILED. A retry reuses the exact idempotency key.
   FILED=$((FILED + 1))
+  if [ "$ADMIT_REFACTOR" = "true" ]; then
+    REFACTOR_FILED=$((REFACTOR_FILED + 1))
+  fi
   continue
 fi
 

@@ -1706,7 +1706,7 @@ while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
   # The handoff starts with the exact instruction to execute
   # plugin/playbooks/architecture-refactor-rfc.md and carries the six parameter
   # values as prose evidence. Generated evidence never appears in shell argv.
-  SPAWN_JSON=$(kookr spawn -C "$LOCAL_PATH" \
+  SPAWN_JSON=$(kookr spawn -C "$LOCAL" \
     --prompt-file "$RFC_HANDOFF_FILE" \
     --criteria "RFC merged, umbrella created, and Phase 1 launched or a durable blocker recorded" \
     --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
