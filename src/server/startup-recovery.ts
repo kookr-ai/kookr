@@ -179,6 +179,7 @@ export async function runStartupRecoveryPhase({
       launchDependencyAdmission: lifecycleDeps.launchDependencyAdmission,
       dependencyPreflightRunner: lifecycleDeps.dependencyPreflightRunner,
       getLaunchTimeoutMs: getLaunchTimeoutMs ?? lifecycleDeps.getLaunchTimeoutMs,
+      flushTasks: lifecycleDeps.flushTasks,
     });
     crashRecoveryResult = recoveryResult;
 

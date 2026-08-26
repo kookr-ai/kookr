@@ -83,6 +83,7 @@ function makeDeps(overrides: Partial<AgentLifecycleDeps> = {}): AgentLifecycleDe
     interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as any,
     githubScanner: { isActive: vi.fn().mockReturnValue(false), processTaskPrompt: vi.fn() } as any,
     autoNameTask: vi.fn(),
+    flushTasks: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -1407,12 +1408,14 @@ describe('promotePendingTasks (integration)', () => {
       } satisfies LaunchPreflightFinding])
       .mockResolvedValueOnce([]);
     const launchDependencyAdmission = new LaunchDependencyAdmission();
+    const flushTasks = vi.fn().mockResolvedValue(undefined);
     deps = {
       ...deps,
       lifecycleDeps: {
         ...deps.lifecycleDeps,
         launchDependencyAdmission,
         dependencyPreflightRunner,
+        flushTasks,
       },
     };
 
@@ -1458,11 +1461,13 @@ describe('promotePendingTasks (integration)', () => {
     });
     expect(taskStore.getActiveCount()).toBe(0);
     expect(adapter.launch).not.toHaveBeenCalled();
+    expect(flushTasks).toHaveBeenCalledOnce();
 
     expect(await promotePendingTasks(deps)).toBe(1);
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
     expect(taskStore.getTask(task.id)?.launchHealthSummary).toBeUndefined();
+    expect(flushTasks).toHaveBeenCalledTimes(2);
     expect(adapter.launch).toHaveBeenCalledWith(
       task.id,
       'use the knowledge base',
@@ -1699,7 +1704,13 @@ describe('promotePendingTasks (integration)', () => {
       },
     });
     taskStore.pendTask(task.id);
+    let probePersisted = false;
+    const flushTasks = vi.fn(async () => {
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({ status: 'probing' });
+      probePersisted = true;
+    });
     vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      expect(probePersisted).toBe(true);
       expect(taskStore.getTask(taskId)?.launchAdmission).toMatchObject({ status: 'probing' });
       options?.onSessionCreated?.('probe-partial-promotion');
       taskStore.addSession(taskId, {
@@ -1716,6 +1727,7 @@ describe('promotePendingTasks (integration)', () => {
         ...deps.lifecycleDeps,
         launchDependencyAdmission,
         dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
       },
     };
 
@@ -1729,6 +1741,7 @@ describe('promotePendingTasks (integration)', () => {
       })],
     });
     expect(adapter.stop).toHaveBeenCalledWith('probe-partial-promotion');
+    expect(flushTasks).toHaveBeenCalledOnce();
   });
 
   test('reaps an unattached promoted session when its probe is cancelled before rejection', async () => {

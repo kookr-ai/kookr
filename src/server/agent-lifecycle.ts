@@ -109,6 +109,8 @@ export interface AgentLifecycleDeps {
   getLaunchTimeoutMs?: () => number;
   /** Claim deferred orchestration ownership after a parked task gets a session. */
   onPendingTaskPromoted?: (task: Task) => void | Promise<void>;
+  /** Force durable task state at crash-sensitive pre-launch boundaries. */
+  flushTasks?: () => Promise<void>;
 }
 
 /**
@@ -1019,7 +1021,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         pending.id,
         taskAdmissionForDeniedDecision(dependencyAdmission, nowISO()),
       );
-      taskStore.endLaunch(pending.id);
+      // Preserve the latest confirmed degradation across a restart before
+      // releasing this reservation. Otherwise a clean boot could forget the
+      // denial and treat the pending task as ordinary work.
+      try {
+        await lifecycleDeps.flushTasks?.();
+      } finally {
+        taskStore.endLaunch(pending.id);
+      }
       continue;
     }
     const priorAdmission = taskStore.getTask(pending.id)?.launchAdmission;
@@ -1089,6 +1098,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       };
       if (dependencyAdmission?.admit && dependencyAdmission.probe) {
         taskStore.setLaunchAdmission(pending.id, taskAdmissionForProbe(dependencyAdmission, nowISO()));
+        // Persist the half-open ownership marker before the adapter can create
+        // a worker. A failed barrier follows the normal failed-probe path and
+        // therefore never consumes an active slot.
+        await lifecycleDeps.flushTasks?.();
       }
       const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, undefined, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();

@@ -339,9 +339,12 @@ export interface LaunchServiceDeps {
     repoFlag?: string;
   }) => Promise<{ ok: true; repo: string } | { ok: false; code: string; message: string }>;
   /**
-   * Force-flush task state after a successful grant (R5). Optional for tests.
+   * Force-flush task state at crash-sensitive launch boundaries. Production
+   * wiring must fail closed until the persistence scheduler is ready: a
+   * half-open probe marker has to reach durable storage before adapter launch,
+   * and dependency-parked work has to be durable before it is acknowledged.
    */
-  flushTasks?: () => Promise<void>;
+  flushTasks: () => Promise<void>;
   /**
    * Per-agent-type launch success/failure counters (issue #1808). When wired,
    * every non-queued adapter launch records one outcome so
@@ -1685,16 +1688,9 @@ async function launchTaskCore(
   if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
     const parkedTask = taskStore.pendTask(task.id);
     if (isRoundRobin) deps.roundRobinCursor?.advance();
-    if (resolvedClaimKey && deps.flushTasks) {
-      try {
-        await deps.flushTasks();
-      } catch (err) {
-        console.error(
-          `[issue-claims] flush after dependency parking failed for task ${task.id}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+    // A successful parked response is a durability promise: persist the full
+    // replay intent and denial reason before acknowledging queued work.
+    await deps.flushTasks();
     return {
       task: parkedTask,
       queued: true,
@@ -1718,16 +1714,9 @@ async function launchTaskCore(
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
-    if (resolvedClaimKey && deps.flushTasks) {
-      try {
-        await deps.flushTasks();
-      } catch (err) {
-        console.error(
-          `[issue-claims] flush after grant failed for task ${task.id}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+    // The released half-open token now lives only in this task marker. Make
+    // that ownership transfer durable before returning the queued response.
+    if (probeWaitAdmission) await deps.flushTasks();
     return {
       task: queuedTask,
       queued: true,
@@ -1860,6 +1849,7 @@ async function launchTaskCore(
   // in-flight launch against the cap (audit item 1, second launch site).
   phaseTracker.enter('reserve');
   taskStore.beginLaunch(task.id);
+  let adapterLaunchStarted = false;
   if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
     taskStore.setLaunchAdmission(task.id, taskAdmissionForProbe(dependencyAdmissionDecision, nowISO()));
   }
@@ -1868,12 +1858,19 @@ async function launchTaskCore(
   // append) runs AFTER this block, so a bookkeeping fault can never dispose a
   // task that already reached a live session (issue #1588 review).
   try {
+    if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+      // Crash-safety boundary: startup recovery can only distinguish an
+      // interrupted half-open attempt from ordinary queued work if the probe
+      // marker is durable before the adapter can create a terminal session.
+      await deps.flushTasks();
+    }
     // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
     // a launch that hangs (CPU saturation wedging the spawn path) fails fast
     // through the SAME catch/cleanup as any thrown launch instead of holding
     // its beginLaunch reservation — and its schedule's 'reserved' execution —
     // for hours. Late settlement of the abandoned promise is defused inside
     // the race helper.
+    adapterLaunchStarted = true;
     await raceLaunchAgainstTimeout(
       adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
       resolveLaunchTimeoutMs(deps),
@@ -1914,7 +1911,7 @@ async function launchTaskCore(
       });
       deps.recordLaunchBootLatency?.(agentType, phaseTimings);
       if (isRoundRobin) deps.roundRobinCursor?.advance();
-      if (resolvedClaimKey && deps.flushTasks) {
+      if (resolvedClaimKey) {
         await deps.flushTasks().catch((flushErr) => {
           console.error(
             `[issue-claims] flush after failed dependency probe failed for task ${task.id}: `
@@ -1926,6 +1923,10 @@ async function launchTaskCore(
       // task stays terminal with no retry marker, and the launch request
       // reports its original failure rather than claiming queued work exists.
       if (!parked) throw err;
+      // A persistence barrier failure happened before the adapter received the
+      // launch. The task is safely re-parked in memory, but do not acknowledge
+      // durable queued work when the required write itself failed.
+      if (!adapterLaunchStarted) throw err;
       return {
         task: parked,
         queued: true,
@@ -2048,7 +2049,7 @@ async function launchTaskCore(
   if (isRoundRobin) deps.roundRobinCursor?.advance();
   // R5: force-flush after grant so the claim survives a crash before the
   // next coalesced save.
-  if (resolvedClaimKey && deps.flushTasks) {
+  if (resolvedClaimKey) {
     try {
       await deps.flushTasks();
     } catch (err) {

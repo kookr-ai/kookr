@@ -47,6 +47,7 @@ describe('multi-agent launch', () => {
     deps = {
       taskStore,
       adapterRegistry: registry,
+      flushTasks: vi.fn().mockResolvedValue(undefined),
       lifecycleDeps: {
         monitor: { registerAgent: vi.fn(), getSnapshot: vi.fn().mockReturnValue([]) } as any,
         watchdog: { registerAgent: vi.fn() } as any,

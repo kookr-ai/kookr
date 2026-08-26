@@ -76,6 +76,8 @@ export interface CrashRecoveryOptions {
   dependencyPreflightRunner?: DependencyPreflightRunner;
   /** Live adapter-launch timeout used by startup recovery. */
   getLaunchTimeoutMs?: () => number;
+  /** Force durable task state at crash-sensitive pre-launch boundaries. */
+  flushTasks?: () => Promise<void>;
 }
 
 /** How recently a session must have been relaunched to be considered a rapid crash-loop (ms). */
@@ -299,6 +301,9 @@ export async function recoverCrashedSessions(
         taskAdmissionForDeniedDecision(dependencyAdmission, new Date().toISOString()),
       );
       taskStore.pendTask(task.id);
+      // The confirmed denial must survive the same restart that is performing
+      // recovery; acknowledge the skip only after the parked marker is durable.
+      await options.flushTasks?.();
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,
@@ -337,6 +342,9 @@ export async function recoverCrashedSessions(
           task.id,
           taskAdmissionForProbe(dependencyAdmission, new Date().toISOString()),
         );
+        // A restarted process must see that this task owned the half-open
+        // attempt before a replacement session can exist.
+        await options.flushTasks?.();
       }
       const launchPromise = adapter.launch(task.id, effectivePrompt, originalCwd, resumeContext, launchOptions);
       const configuredTimeout = options.getLaunchTimeoutMs?.();

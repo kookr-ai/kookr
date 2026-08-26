@@ -49,6 +49,7 @@ function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
   return {
     taskStore,
     adapterRegistry,
+    flushTasks: vi.fn().mockResolvedValue(undefined),
     lifecycleDeps: {
       monitor: { registerAgent: vi.fn() } as any,
       watchdog: { registerAgent: vi.fn() } as any,
@@ -755,6 +756,7 @@ describe('launchTask', () => {
       dependencies: [{ dependency: 'kb', state: 'degraded' }],
     });
     expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(gatedDeps.flushTasks).toHaveBeenCalledOnce();
     expect(store.getActiveCount()).toBe(0);
   });
 
@@ -1024,13 +1026,23 @@ describe('launchTask', () => {
   it('persists probing before launch and aborts a partial probe session before re-parking', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let probePersisted = false;
     const gatedDeps = {
       ...deps,
       dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
       launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        const probing = store.listTasks().find((task) => task.launchAdmission?.status === 'probing');
+        expect(probing?.launchAdmission).toMatchObject({
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+        });
+        probePersisted = true;
+      }),
     };
     const adapter = gatedDeps.adapterRegistry.get('claude-code');
     vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      expect(probePersisted).toBe(true);
       expect(store.getTask(taskId)?.launchAdmission).toMatchObject({
         status: 'probing',
         reason: 'half_open_probe_in_flight',
@@ -1064,6 +1076,36 @@ describe('launchTask', () => {
       },
     });
     expect(adapter.stop).toHaveBeenCalledWith('probe-partial-direct');
+    expect(gatedDeps.flushTasks).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed before direct probe launch when the persistence barrier fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn().mockRejectedValueOnce(new Error('probe marker write failed')),
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'do not launch without durable probe ownership',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('probe marker write failed');
+
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'pending',
+        launchAdmission: expect.objectContaining({
+          status: 'parked',
+          reason: 'dependency_degraded',
+        }),
+      }),
+    ]);
   });
 
   it('does not degrade the circuit when a direct probe task is cancelled before rejection', async () => {

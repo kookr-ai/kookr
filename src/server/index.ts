@@ -1557,6 +1557,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Shared post-launch registration deps — used by both WS handler and REST routes
   const launchDependencyAdmission = new LaunchDependencyAdmission();
+  // Filled after TaskStateSaveScheduler is constructed below. Launches fail
+  // closed before that point so a half-open worker can never start without a
+  // durable ownership marker. In normal startup no launch path is reachable
+  // until after the scheduler has been installed.
+  let flushTasksForLaunch: (() => Promise<void>) | undefined;
+  const flushLaunchTaskState = async (): Promise<void> => {
+    if (!flushTasksForLaunch) {
+      throw new Error('Task persistence is not ready for a crash-safe launch');
+    }
+    await flushTasksForLaunch();
+  };
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
@@ -1569,6 +1580,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
     launchDependencyAdmission,
     getLaunchTimeoutMs,
+    flushTasks: flushLaunchTaskState,
   };
 
   // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
@@ -1589,11 +1601,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       `exceeds ${hostLoadAdmissionThreshold.toFixed(2)}/core (KOOKR_MAX_HOST_LOAD_PER_CPU)`,
     );
   }
-
-  // Holder filled after TaskStateSaveScheduler is constructed below — R5
-  // force-flush on claim grant must go through the same scheduler the routes
-  // use. Until then flush is a no-op (no launch can complete before serve).
-  let flushTasksForClaims: (() => Promise<void>) | undefined;
 
   // Claim-repo resolver for the launch-path CAS (RFC PR 1b). Built once so
   // fork/upstream lookups share the process-lifetime cache with the HTTP
@@ -1672,6 +1679,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     bypassAllPermissions,
     idempotencyLedger,
     getLaunchTimeoutMs,
+    flushTasks: flushLaunchTaskState,
     launchOutcomeMetrics,
     // issue #1526 Phase C / C3: pending-queue depth limit + per-source spawn
     // budget, with the SAME watchdog-aware capacity-ledger builder /api/health
@@ -1714,7 +1722,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           upstreamOf: launchPathUpstreamOf,
         },
       ),
-      flushTasks: () => flushTasksForClaims?.() ?? Promise.resolve(),
     } : {}),
   };
 
@@ -2299,8 +2306,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     suppressionTracker,
     persistenceHealth,
   });
-  // Wire R5 force-flush for the launch-path claim CAS (holder filled above).
-  flushTasksForClaims = () => taskStateSaveScheduler.flush('flush', { force: true });
+  // Wire the shared crash-safety barrier for dependency admission and the
+  // existing issue-claim durability paths (holder declared above).
+  flushTasksForLaunch = () => taskStateSaveScheduler.flush('flush', { force: true });
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();

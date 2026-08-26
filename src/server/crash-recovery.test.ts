@@ -209,6 +209,12 @@ describe('Crash Recovery', () => {
     };
     const launch = vi.spyOn(adapter, 'launch');
     const admission = new LaunchDependencyAdmission();
+    const flushTasks = vi.fn(async () => {
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({
+        status: 'parked',
+        reason: 'dependency_degraded',
+      });
+    });
 
     const reconcileResult = await reconcile(taskStore, terminal);
     const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
@@ -220,6 +226,7 @@ describe('Crash Recovery', () => {
         summary: 'KB provider unavailable',
         recommendedAction: 'Restore the provider.',
       }]),
+      flushTasks,
     });
 
     expect(result.relaunched).toHaveLength(0);
@@ -232,6 +239,7 @@ describe('Crash Recovery', () => {
         reason: 'dependency_degraded',
       },
     });
+    expect(flushTasks).toHaveBeenCalledOnce();
   });
 
   test('cancellation during recovery dependency preflight prevents stale re-parking', async () => {
@@ -380,7 +388,13 @@ describe('Crash Recovery', () => {
     const admission = new LaunchDependencyAdmission();
     admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
     const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+    let probePersisted = false;
+    const flushTasks = vi.fn(async () => {
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({ status: 'probing' });
+      probePersisted = true;
+    });
     vi.spyOn(adapter, 'launch').mockImplementationOnce(async (taskId, _prompt, launchCwd, _resume, options) => {
+      expect(probePersisted).toBe(true);
       expect(taskStore.getTask(taskId)?.launchAdmission).toMatchObject({ status: 'probing' });
       options?.onSessionCreated?.('probe-partial-recovery');
       taskStore.addSession(taskId, {
@@ -396,6 +410,7 @@ describe('Crash Recovery', () => {
     const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
       launchDependencyAdmission: admission,
       dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks,
     });
 
     expect(result.failed).toHaveLength(0);
@@ -409,6 +424,7 @@ describe('Crash Recovery', () => {
       })]),
     });
     expect(stop).toHaveBeenCalledWith('probe-partial-recovery');
+    expect(flushTasks).toHaveBeenCalledOnce();
   });
 
   test('reaps an unattached recovery session when its probe is cancelled before rejection', async () => {
