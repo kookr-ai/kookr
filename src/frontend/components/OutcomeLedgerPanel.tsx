@@ -3,6 +3,7 @@ import type {
   OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
   OutcomeLedgerFindingKind,
+  OutcomeLedgerProjectScope,
   OutcomeLedgerResponse,
   OutcomeLedgerTaskRow,
 } from '../../shared/contracts/outcome-ledger.js';
@@ -28,18 +29,68 @@ const WINDOWS: { value: TimeWindow; label: string }[] = [
   { value: 'all', label: 'all' },
 ];
 
-export function OutcomeLedgerPanel(): React.ReactElement {
+/** A selectable tracked project: stable identity plus a friendly display label. */
+export interface OutcomeLedgerProjectOption {
+  id: string;
+  label: string;
+}
+
+/** Sentinel select values for the two non-project scopes. */
+const ALL_PROJECTS_CHOICE = 'all';
+const UNASSIGNED_CHOICE = 'unassigned';
+/**
+ * A tracked-project option is encoded as `assigned:<id>` in the <select>. The
+ * prefix is only a transport detail between the option value and
+ * {@link parseProjectChoice}; the project ID itself is never interpreted, so an
+ * ID that literally spells `all` or `unassigned` still round-trips as a project.
+ */
+const ASSIGNED_PREFIX = 'assigned:';
+
+function projectChoiceValue(option: OutcomeLedgerProjectOption): string {
+  return `${ASSIGNED_PREFIX}${option.id}`;
+}
+
+function parseProjectChoice(choice: string): OutcomeLedgerProjectScope {
+  if (choice === UNASSIGNED_CHOICE) return { kind: 'unassigned' };
+  if (choice.startsWith(ASSIGNED_PREFIX)) {
+    return { kind: 'assigned', projectId: choice.slice(ASSIGNED_PREFIX.length) };
+  }
+  return { kind: 'all' };
+}
+
+interface OutcomeLedgerPanelProps {
+  /**
+   * Tracked projects offered in the scope selector (issue #2850). Defaults to
+   * an empty list, so with no wiring the panel still offers `All projects` and
+   * `Unassigned`. Identity (`id`) and display (`label`) are kept separate so a
+   * historical project ID that no longer has a summary can never lose its
+   * identity behind a missing label.
+   */
+  projects?: OutcomeLedgerProjectOption[];
+}
+
+export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = {}): React.ReactElement {
   const [windowChoice, setWindowChoice] = useState<TimeWindow>('7d');
+  const [projectChoice, setProjectChoice] = useState<string>(ALL_PROJECTS_CHOICE);
   const [data, setData] = useState<OutcomeLedgerResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
 
+  // If the selected project disappears from the tracked list (e.g. it stops
+  // being tracked), fall back to All projects rather than keep querying a scope
+  // the operator can no longer see in the selector.
+  useEffect(() => {
+    if (projectChoice === ALL_PROJECTS_CHOICE || projectChoice === UNASSIGNED_CHOICE) return;
+    const stillPresent = projects.some((option) => projectChoiceValue(option) === projectChoice);
+    if (!stillPresent) setProjectChoice(ALL_PROJECTS_CHOICE);
+  }, [projects, projectChoice]);
+
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    getOutcomeLedger(windowChoice, controller.signal)
+    getOutcomeLedger(windowChoice, parseProjectChoice(projectChoice), controller.signal)
       .then((body) => {
         if (!isOutcomeLedgerResponse(body)) throw new Error('invalid outcome ledger response');
         return body;
@@ -54,7 +105,7 @@ export function OutcomeLedgerPanel(): React.ReactElement {
         setLoading(false);
       });
     return () => controller.abort();
-  }, [windowChoice]);
+  }, [windowChoice, projectChoice]);
 
   const findings = Array.isArray(data?.findings) ? data.findings : [];
   const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
@@ -75,16 +126,30 @@ export function OutcomeLedgerPanel(): React.ReactElement {
           <span className="section-chevron" aria-hidden>{expanded ? '▾' : '▸'}</span>
           <span id="outcome-ledger-title">Outcome Scoreboard</span>
         </button>
-        <select
-          className="outcome-window-select"
-          value={windowChoice}
-          onChange={(event) => setWindowChoice(event.target.value as TimeWindow)}
-          aria-label="Outcome scoreboard window"
-        >
-          {WINDOWS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
+        <div className="outcome-ledger-controls">
+          <select
+            className="outcome-project-select"
+            value={projectChoice}
+            onChange={(event) => setProjectChoice(event.target.value)}
+            aria-label="Outcome scoreboard project"
+          >
+            <option value={ALL_PROJECTS_CHOICE}>All projects</option>
+            <option value={UNASSIGNED_CHOICE}>Unassigned</option>
+            {projects.map((option) => (
+              <option key={option.id} value={projectChoiceValue(option)}>{option.label}</option>
+            ))}
+          </select>
+          <select
+            className="outcome-window-select"
+            value={windowChoice}
+            onChange={(event) => setWindowChoice(event.target.value as TimeWindow)}
+            aria-label="Outcome scoreboard window"
+          >
+            {WINDOWS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
       {expanded && (
         <div id="outcome-ledger-body" className="outcome-ledger-body">

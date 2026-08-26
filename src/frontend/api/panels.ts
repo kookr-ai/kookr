@@ -1,6 +1,9 @@
 import { fetchResult, getJson, apiFetch, type ApiResult } from './client.js';
 import type { CostComparisonResponse } from '../../shared/contracts/cost-comparison.js';
-import type { OutcomeLedgerResponse } from '../../shared/contracts/outcome-ledger.js';
+import type {
+  OutcomeLedgerProjectScope,
+  OutcomeLedgerResponse,
+} from '../../shared/contracts/outcome-ledger.js';
 import type { TimeToUnblockSnapshot } from '../../shared/contracts/time-to-unblock.js';
 
 export interface CostComparisonQuery {
@@ -23,14 +26,26 @@ export function getCostComparison(
 }
 
 /**
- * GET the outcome-ledger surface for a window. Throws `HTTP <status>` on a
- * non-2xx; the caller validates the body shape.
+ * GET the outcome-ledger surface for a window and project scope. Throws
+ * `HTTP <status>` on a non-2xx; the caller validates the body shape.
+ *
+ * The `all` scope omits the `projectScope` param entirely so an unscoped
+ * request stays byte-for-byte backward-compatible; `URLSearchParams` encodes
+ * project IDs containing URL-significant characters so they round-trip.
  */
 export function getOutcomeLedger(
   windowChoice: string,
+  scope: OutcomeLedgerProjectScope = { kind: 'all' },
   signal?: AbortSignal,
 ): Promise<OutcomeLedgerResponse> {
-  return getJson<OutcomeLedgerResponse>(`/api/outcome-ledger?window=${windowChoice}`, { signal });
+  const params = new URLSearchParams({ window: windowChoice });
+  if (scope.kind === 'assigned') {
+    params.set('projectScope', 'assigned');
+    params.set('projectId', scope.projectId);
+  } else if (scope.kind === 'unassigned') {
+    params.set('projectScope', 'unassigned');
+  }
+  return getJson<OutcomeLedgerResponse>(`/api/outcome-ledger?${params.toString()}`, { signal });
 }
 
 /** GET anomaly-detection stats. Throws `HTTP <status>` on a non-2xx. */

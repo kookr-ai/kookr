@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
+import type { OutcomeLedgerProjectOption } from './components/OutcomeLedgerPanel.js';
 import { resolveCleanupOverride } from './cleanup-override.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
@@ -700,6 +701,15 @@ export function App() {
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
+  // Tracked projects offered in the Outcome Scoreboard scope selector (issue
+  // #2850). Identity (`project`) and display (`displayName`) stay separate so a
+  // project with no friendly name still shows a usable raw-ID label.
+  const outcomeScoreboardProjects = useMemo<OutcomeLedgerProjectOption[]>(
+    () => projectSummaries
+      .filter((p) => p.tracked)
+      .map((p) => ({ id: p.project, label: p.displayName || p.project })),
+    [projectSummaries],
+  );
   const selectedAgent = selectedAgentId
     ? agents.find((a) => (
         a.agentId === selectedAgentId
@@ -1451,6 +1461,7 @@ export function App() {
               send={send}
               expandLiveFriction={operationsFocus === 'live-friction'}
               onClose={closeOperations}
+              outcomeProjects={outcomeScoreboardProjects}
             />
           </Suspense>
         </div>

@@ -4579,6 +4579,12 @@ a.playbook-empty-docs-link:visited:hover {
   gap: 8px;
   padding: 4px 6px;
 }
+.outcome-ledger-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
 .outcome-window-select {
   width: 72px;
   min-height: 26px;
@@ -4589,7 +4595,18 @@ a.playbook-empty-docs-link:visited:hover {
   font-size: 11px;
   padding: 2px 6px;
 }
-.outcome-window-select:focus {
+.outcome-project-select {
+  max-width: 160px;
+  min-height: 26px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.outcome-window-select:focus,
+.outcome-project-select:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
