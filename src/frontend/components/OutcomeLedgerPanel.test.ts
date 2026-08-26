@@ -447,6 +447,153 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-agent-table')).toBeNull();
   });
 
+  test('breaks review flags down by finding category while keeping the total', async () => {
+    // One finding of every kind (data_quality doubled) exercises the whole
+    // FINDING_KIND_ORDER end to end: the breakdown must group by kind and emit
+    // the full order (data quality → duration → cost → intervention → token)
+    // regardless of the shuffled input order, while "review flags" still totals 6.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        findings: [{
+          kind: 'token_extreme', severity: 'review', taskId: 'task-1',
+          label: 'Token outlier', metric: 'totalTokens', value: 42_000, message: 'Token outlier.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-2',
+          label: 'Zero cost', metric: 'cost', value: 0, message: 'Zero cost.',
+        }, {
+          kind: 'intervention_extreme', severity: 'review', taskId: 'task-3',
+          label: 'Intervention outlier', metric: 'interventionCount', value: 40, message: 'Intervention outlier.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-4',
+          label: 'Missing usage', metric: 'cost', value: null, message: 'Unknown cost.',
+        }, {
+          kind: 'cost_extreme', severity: 'review', taskId: 'task-5',
+          label: 'Cost outlier', metric: 'knownCostUsd', value: 12, message: 'Cost outlier.',
+        }, {
+          kind: 'duration_extreme', severity: 'review', taskId: 'task-6',
+          label: 'Duration outlier', metric: 'durationMs', value: 3_600_000, message: 'Duration outlier.',
+        }],
+      }))));
+    const el = mount();
+
+    await flush();
+
+    // Total review-flag metric remains visible and correct.
+    const flagsMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'review flags',
+    );
+    expect(flagsMetric?.querySelector('strong')?.textContent).toBe('6');
+
+    // Breakdown lists one item per present kind, in the full FINDING_KIND_ORDER.
+    const items = Array.from(el.querySelectorAll('.outcome-finding-breakdown-item'));
+    expect(items.map((item) => item.querySelector('.outcome-finding-breakdown-label')?.textContent))
+      .toEqual(['data quality', 'duration', 'cost', 'intervention', 'token']);
+    expect(items.map((item) => item.querySelector('.outcome-finding-breakdown-count')?.textContent))
+      .toEqual(['2', '1', '1', '1', '1']);
+
+    // Labeled so a reader knows the counts are findings, not unique tasks.
+    const list = el.querySelector('.outcome-finding-breakdown-list');
+    expect(list?.getAttribute('aria-label')).toContain('findings, not tasks');
+  });
+
+  test('renders unrecognized finding kinds under their raw slug after known kinds', async () => {
+    // Defensive coverage for a future backend kind not yet in FINDING_KIND_ORDER:
+    // two off-contract kinds must render under their raw slug, sort AFTER every
+    // known kind (POSITIVE_INFINITY rank), and break ties alphabetically by label.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        findings: [{
+          // Cast through unknown: these kinds are intentionally off-contract.
+          kind: 'future_kind_z', severity: 'review', taskId: 'task-z',
+          label: 'Future Z', metric: 'x', value: 1, message: 'Future Z.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-known',
+          label: 'Known', metric: 'cost', value: 0, message: 'Known.',
+        }, {
+          kind: 'future_kind_a', severity: 'review', taskId: 'task-a',
+          label: 'Future A', metric: 'x', value: 1, message: 'Future A.',
+        }] as unknown,
+      }))));
+    const el = mount();
+
+    await flush();
+
+    const items = Array.from(el.querySelectorAll('.outcome-finding-breakdown-item'));
+    // Known kind first; the two unknowns follow, ordered by their raw-slug label.
+    expect(items.map((item) => item.querySelector('.outcome-finding-breakdown-label')?.textContent))
+      .toEqual(['data quality', 'future_kind_a', 'future_kind_z']);
+    expect(items.map((item) => item.querySelector('.outcome-finding-breakdown-count')?.textContent))
+      .toEqual(['1', '1', '1']);
+  });
+
+  test('counts findings, not tasks, including beyond the visible-row cap', async () => {
+    // One task (task-multi) produces three findings of distinct kinds, plus three
+    // data_quality findings on separate tasks — six findings across four tasks.
+    // The visible list caps at five rows, so the breakdown total (6) proves it
+    // counts every finding, not the capped list and not the four unique tasks.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({
+        findings: [{
+          kind: 'duration_extreme', severity: 'review', taskId: 'task-multi',
+          label: 'Slow task', metric: 'durationMs', value: 3_600_000, message: 'Duration outlier.',
+        }, {
+          kind: 'cost_extreme', severity: 'review', taskId: 'task-multi',
+          label: 'Slow task', metric: 'knownCostUsd', value: 9, message: 'Cost outlier.',
+        }, {
+          kind: 'token_extreme', severity: 'review', taskId: 'task-multi',
+          label: 'Slow task', metric: 'totalTokens', value: 88_000, message: 'Token outlier.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-a',
+          label: 'A', metric: 'cost', value: 0, message: 'Zero cost.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-b',
+          label: 'B', metric: 'cost', value: 0, message: 'Zero cost.',
+        }, {
+          kind: 'data_quality', severity: 'review', taskId: 'task-c',
+          label: 'C', metric: 'cost', value: 0, message: 'Zero cost.',
+        }],
+      }))));
+    const el = mount();
+
+    await flush();
+
+    // Visible finding rows are capped at five, but the total counts all six.
+    expect(el.querySelectorAll('.outcome-finding').length).toBe(5);
+    const flagsMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'review flags',
+    );
+    expect(flagsMetric?.querySelector('strong')?.textContent).toBe('6');
+
+    const countOf = (label: string) =>
+      Array.from(el.querySelectorAll('.outcome-finding-breakdown-item'))
+        .find((item) => item.querySelector('.outcome-finding-breakdown-label')?.textContent === label)
+        ?.querySelector('.outcome-finding-breakdown-count')?.textContent;
+    // task-multi alone contributes three of the four kinds; data quality counts
+    // three findings across three tasks — the total (6) exceeds the 4 tasks.
+    expect(countOf('data quality')).toBe('3');
+    expect(countOf('duration')).toBe('1');
+    expect(countOf('cost')).toBe('1');
+    expect(countOf('token')).toBe('1');
+    const total = Array.from(el.querySelectorAll('.outcome-finding-breakdown-count'))
+      .reduce((sum, node) => sum + Number(node.textContent), 0);
+    expect(total).toBe(6);
+  });
+
+  test('omits the category breakdown and keeps the empty state when there are no findings', async () => {
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({ findings: [] }))));
+    const el = mount();
+
+    await flush();
+
+    expect(el.querySelector('.outcome-finding-breakdown')).toBeNull();
+    const flagsMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'review flags',
+    );
+    expect(flagsMetric?.querySelector('strong')?.textContent).toBe('0');
+    expect(el.textContent).toContain('No data-quality findings in this window.');
+  });
+
   test('refetches when the selected window changes', async () => {
     const el = mount();
     await flush();

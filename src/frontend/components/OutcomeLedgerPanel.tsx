@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type {
   OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
+  OutcomeLedgerFindingKind,
   OutcomeLedgerResponse,
   OutcomeLedgerTaskRow,
 } from '../../shared/contracts/outcome-ledger.js';
@@ -117,6 +118,7 @@ export function OutcomeLedgerPanel(): React.ReactElement {
                 <span>{pct(data.quality.interventionCoverage)} interventions known</span>
               </div>
               <AgentScoreboard rows={byAgent} />
+              {findings.length > 0 && <FindingBreakdown findings={findings} />}
               {visibleFindings.length > 0 ? (
                 <ul className="outcome-findings-list" aria-label="Outcome data quality findings">
                   {visibleFindings.map((finding) => <FindingRow key={`${finding.taskId}:${finding.kind}:${finding.metric}`} finding={finding} />)}
@@ -206,6 +208,74 @@ function AgentScoreboardRow({ row }: { row: OutcomeLedgerByAgentRow }): React.Re
       */}
       <td>{lowSample ? <span className="outcome-agent-detail">—</span> : formatRate(row.thumbsUpRate)}</td>
     </tr>
+  );
+}
+
+// Display order and lowercase labels for each typed finding kind emitted by the
+// backend (`OutcomeLedgerFindingKind`). A new kind added to the contract must
+// gain an entry here or it renders under its raw slug via findingKindLabel and
+// sorts after every known kind (see findingCountsByKind).
+const FINDING_KIND_ORDER: OutcomeLedgerFindingKind[] = [
+  'data_quality',
+  'duration_extreme',
+  'cost_extreme',
+  'intervention_extreme',
+  'token_extreme',
+];
+
+const FINDING_KIND_LABELS: Record<OutcomeLedgerFindingKind, string> = {
+  data_quality: 'data quality',
+  duration_extreme: 'duration',
+  cost_extreme: 'cost',
+  intervention_extreme: 'intervention',
+  token_extreme: 'token',
+};
+
+function findingKindLabel(kind: string): string {
+  return (FINDING_KIND_LABELS as Record<string, string>)[kind] ?? kind;
+}
+
+/**
+ * Group findings by their typed `kind` into a stable, ordered breakdown. Known
+ * kinds render in FINDING_KIND_ORDER; any unrecognized kind is appended after
+ * them (sorted by label) so a future backend kind still shows rather than
+ * silently vanishing. Counts are per finding, not per unique task.
+ */
+function findingCountsByKind(
+  findings: OutcomeLedgerFinding[],
+): { kind: string; label: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const finding of findings) {
+    counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
+  }
+  const rank = new Map(FINDING_KIND_ORDER.map((kind, index) => [kind as string, index]));
+  return Array.from(counts.entries())
+    .map(([kind, count]) => ({ kind, label: findingKindLabel(kind), count }))
+    .sort((a, b) => {
+      const rankA = rank.get(a.kind) ?? Number.POSITIVE_INFINITY;
+      const rankB = rank.get(b.kind) ?? Number.POSITIVE_INFINITY;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.label.localeCompare(b.label);
+    });
+}
+
+function FindingBreakdown({ findings }: { findings: OutcomeLedgerFinding[] }): React.ReactElement {
+  const groups = useMemo(() => findingCountsByKind(findings), [findings]);
+  return (
+    <div className="outcome-finding-breakdown">
+      <div className="outcome-finding-breakdown-title">Review flags by category</div>
+      <ul
+        className="outcome-finding-breakdown-list"
+        aria-label="Review flags by category (counts are findings, not tasks)"
+      >
+        {groups.map((group) => (
+          <li key={group.kind} className="outcome-finding-breakdown-item">
+            <span className="outcome-finding-breakdown-label">{group.label}</span>
+            <span className="outcome-finding-breakdown-count">{group.count}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
