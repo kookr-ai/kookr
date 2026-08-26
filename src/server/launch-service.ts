@@ -908,6 +908,11 @@ async function validateDuplicateCandidate(
 ): Promise<Task | undefined> {
   if (candidate.status !== 'inProgress') return candidate;
   if (isRalphLoopActive(candidate)) return candidate;
+  // A durable probe marker owns an adapter launch that may still create its
+  // preallocated terminal after the caller timed out. Until reconciliation
+  // proves cleanup and clears that marker, treating the zero-session row as a
+  // stale duplicate would admit a second task for the same work.
+  if (candidate.launchAdmission?.status === 'probing') return candidate;
   if (!deps.terminalBackend) return candidate;
   if (await hasLiveBackingSession(candidate, deps.terminalBackend)) return candidate;
 
@@ -2071,6 +2076,14 @@ async function launchTaskCore(
           && (current.status === 'open' || current.status === 'pending')
           && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
           && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner);
+        if (mayCompensatePersistenceFailure) {
+          // The adapter never started, so this exact owner cannot have an
+          // external worker to reap. Remove the durable cleanup fence before
+          // terminal disposal; otherwise the cancelled task can be neither
+          // reopened nor deleted until a restart repairs the stale marker.
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
         taskStore.endLaunch(task.id, launchReservationToken);
         phaseTracker.abort();
         const phaseTimings = phaseTracker.snapshot();

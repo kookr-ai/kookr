@@ -1391,6 +1391,46 @@ describe('launchTask', () => {
     });
   });
 
+  it('deduplicates a retry against a timed-out zero-session direct probe owner', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const terminalBackend = { isAlive: vi.fn().mockResolvedValue(false) };
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      terminalBackend,
+      getLaunchTimeoutMs: () => 5,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(
+      async () => new Promise<string>(() => undefined),
+    );
+    const opts = {
+      prompt: 'deduplicate ambiguous direct probe',
+      cwd: '/tmp',
+      dependencies: ['kb'] as const,
+    };
+
+    await expect(launchTask(gatedDeps, opts)).rejects.toBeInstanceOf(LaunchTimeoutError);
+    const [probeOwner] = store.listTasks();
+
+    const retry = await launchTask(gatedDeps, opts);
+
+    expect(retry).toMatchObject({
+      duplicate: true,
+      task: {
+        id: probeOwner.id,
+        status: 'inProgress',
+        launchAdmission: { status: 'probing' },
+        sessions: [],
+      },
+    });
+    expect(store.listTasks()).toHaveLength(1);
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(terminalBackend.isAlive).not.toHaveBeenCalled();
+  });
+
   it('fails closed before direct probe launch when the persistence barrier fails', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
@@ -1409,15 +1449,18 @@ describe('launchTask', () => {
     })).rejects.toThrow('probe marker write failed');
 
     expect(adapter.launch).not.toHaveBeenCalled();
-    expect(store.listTasks()).toEqual([
-      expect.objectContaining({
-        status: 'cancelled',
-        disposition: expect.objectContaining({
-          reason: 'launch_error',
-          detail: expect.stringContaining('probe marker write failed'),
-        }),
+    const [disposed] = store.listTasks();
+    expect(disposed).toMatchObject({
+      status: 'cancelled',
+      disposition: expect.objectContaining({
+        reason: 'launch_error',
+        detail: expect.stringContaining('probe marker write failed'),
       }),
-    ]);
+    });
+    expect(disposed.launchAdmission).toBeUndefined();
+    expect(disposed.launchHealthSummary).toBeUndefined();
+    expect(() => store.deleteTask(disposed.id)).not.toThrow();
+    expect(store.listTasks()).toEqual([]);
   });
 
   it('finalizes an idempotency key to the disposed task when the direct probe barrier fails', async () => {
