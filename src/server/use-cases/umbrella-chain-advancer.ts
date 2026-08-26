@@ -93,12 +93,23 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function phaseClaimKey(repo: string, issueNumber: number, phaseId: string): string {
+/**
+ * The deterministic idempotency key for an `(issue, phase)` spawn claim.
+ *
+ * The repository-qualified `chain:<repo>:<issue>:phase:<id>` form is the single
+ * source of truth shared between the advancer's claim store and the task launch.
+ * It is exported so other code that creates phase-spawn tasks (part of the #2711
+ * rollout) derives the same key rather than re-encoding the format — two
+ * encodings that drift would let a duplicate sweep or retry POST a second phase
+ * task. `legacyPhaseClaimKey` preserves the earlier unqualified form so chains
+ * claimed before the upgrade are still honored.
+ */
+export function phaseClaimKey(repo: string, issueNumber: number, phaseId: string): string {
   const normalizedRepo = repo.trim().toLowerCase();
   return `chain:${normalizedRepo}:${issueNumber}:phase:${phaseId}`;
 }
 
-function legacyPhaseClaimKey(issueNumber: number, phaseId: string): string {
+export function legacyPhaseClaimKey(issueNumber: number, phaseId: string): string {
   return `chain:${issueNumber}:phase:${phaseId}`;
 }
 
