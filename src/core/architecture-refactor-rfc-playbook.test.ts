@@ -68,6 +68,7 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(mergePhase).toContain('sha: <rfcHeadSha>');
     expect(mergePhase).toMatch(/allowed merge method/i);
     expect(mergePhase).toContain('gh api --method PUT');
+    expect(mergePhase).toContain('repos/$REPO/pulls/$RFC_PR_NUMBER/merge');
     expect(mergePhase).toContain('--field sha="$RFC_HEAD_SHA"');
     expect(mergePhase).toContain('--field merge_method="$MERGE_METHOD"');
   });

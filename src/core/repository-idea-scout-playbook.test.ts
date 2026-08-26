@@ -467,11 +467,13 @@ describe('repository-idea-scout playbook', () => {
         'if [ "$PUBLISH" = "publish-safe" ]; then',
         rfcPublishGuard + 1,
       );
+      const rfcLoopEnd = phase7.indexOf('done < "$STATE_DIR/rfc-first.tsv"', rfcLoop);
       const issueRoute = phase7.indexOf('> "$STATE_DIR/publishable.tsv"');
       expect(rfcPublishGuard).toBeGreaterThan(-1);
       expect(rfcRoute).toBeGreaterThan(-1);
       expect(rfcLoop).toBeGreaterThan(rfcPublishGuard);
-      expect(issuePublishGuard).toBeGreaterThan(rfcLoop);
+      expect(rfcLoopEnd).toBeGreaterThan(rfcLoop);
+      expect(issuePublishGuard).toBeGreaterThan(rfcLoopEnd);
       expect(issueRoute).toBeGreaterThan(issuePublishGuard);
     });
 

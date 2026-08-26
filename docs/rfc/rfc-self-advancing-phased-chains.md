@@ -61,10 +61,12 @@ exercises. Mismatch + missing re-arm = permanent silent stall.
 `self-continuation-task` skill already *warns* against dependent chains, but a prose warning
 prevents nothing — the chain still deadlocked. We need a **mechanical** guarantee.
 
-Adjacent gap: the intended workflow for a *big* architecture refactor —
+At the time this RFC was drafted, the adjacent intended workflow for a *big*
+architecture refactor —
 **draft RFC → iterate → merge RFC PR → open umbrella issue → orchestrate phased
-implementation** — has no automated path. #3272's umbrella was hand-authored once, which is not
-reproducible. Durable cross-phase context has no standard home.
+implementation** — had no automated path. #3272's umbrella was hand-authored once, which was not
+reproducible. Phase 3 now supplies that path and uses the GitHub umbrella issue as the standard
+durable cross-phase context store.
 
 ## Goals
 

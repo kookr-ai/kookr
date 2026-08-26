@@ -82,7 +82,9 @@ describe('architecture-health-check playbook', () => {
   test('preserves plain issue creation below the large-refactor threshold', () => {
     expect(phase3).toMatch(/below.*large-refactor threshold.*existing.*issue/i);
     expect(phase3).toContain('# ... gh issue create ...');
-    expect(phase3.indexOf('If `{{maxIssues}}` is `0`, skip this phase entirely'))
-      .toBeLessThan(phase3.indexOf('kookr spawn'));
+    const reportOnlyGuard = phase3.indexOf('If `{{maxIssues}}` is `0`, skip this phase entirely');
+    const rfcSpawn = phase3.indexOf('kookr spawn');
+    expect(reportOnlyGuard).toBeGreaterThan(-1);
+    expect(rfcSpawn).toBeGreaterThan(reportOnlyGuard);
   });
 });
