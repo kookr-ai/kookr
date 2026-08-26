@@ -752,6 +752,44 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
 
     expect(admission.snapshot()).toEqual([]);
   });
+
+  test('reaps a terminal cleanup-only probe marker before releasing half-open admission', async () => {
+    const deps = fakeDeps();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = {
+      ...deps.terminalBackend,
+      killSession,
+    } as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({ prompt: 'cancelled probe cleanup', cwd: '/repo' });
+    deps.taskStore.cancelTask(task.id);
+    deps.taskStore.setLaunchAdmission(task.id, {
+      status: 'probing',
+      reason: 'half_open_probe_in_flight',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      startedAt: '2026-01-01T00:00:00.000Z',
+      sessionId: 'kookr-terminal-cleanup-probe',
+    });
+    const admission = new LaunchDependencyAdmission();
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('kookr-terminal-cleanup-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
 });
 
 describe('runStartupRecoveryPhase — disposition ledger wiring (issue #1540)', () => {

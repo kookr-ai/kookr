@@ -822,6 +822,7 @@ describe('launchTask', () => {
       });
       await flushStarted;
       const task = store.listTasks()[0]!;
+      expect(store.getActiveCount()).toBe(0);
       const originalMarker = task.launchAdmission;
       now += 10 * 60 * 1_000 + 1;
       const replacementToken = store.beginLaunchWithToken(task.id);
@@ -1080,6 +1081,87 @@ describe('launchTask', () => {
     expect(duplicate.parked).toBeUndefined();
   });
 
+  it('does not cancel a replacement reservation when a stale capacity barrier rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    let now = 9_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale capacity wait owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      const originalMarker = task.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectFlush(new Error('stale capacity write failed'));
+      await expect(launch).rejects.toThrow('stale capacity write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: originalMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not return queued after cancellation wins a capacity barrier', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel capacity wait owner',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('changed state while its capacity wait was persisted');
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+  });
+
   it('releases a half-open probe when the ordinary capacity queue is full', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
@@ -1135,6 +1217,7 @@ describe('launchTask', () => {
         launchIntent: { idempotencyKey: 'stable-recovery-identity' },
       },
     });
+    expect(result.task.sessions).toEqual([]);
     expect(store.listTasks()).toHaveLength(1);
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
   });
@@ -1199,6 +1282,55 @@ describe('launchTask', () => {
     });
     expect(adapter.stop).toHaveBeenCalledWith(expectedSessionId);
     expect(gatedDeps.flushTasks).toHaveBeenCalledOnce();
+  });
+
+  it('retains exact direct-probe ownership when partial-session cleanup rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.(options.tmuxName!);
+      throw new Error('provider failed after terminal creation');
+    });
+    vi.mocked(adapter.stop).mockRejectedValueOnce(new Error('terminal cleanup rejected'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(launchTask(gatedDeps, {
+        prompt: 'retain ambiguous direct probe',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      })).rejects.toThrow('provider failed after terminal creation');
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const [retained] = store.listTasks();
+    const retainedSessionId = retained.launchAdmission?.status === 'probing'
+      ? retained.launchAdmission.sessionId
+      : undefined;
+    expect(retained).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        sessionId: expect.stringMatching(/^kookr-/),
+      },
+      sessions: [expect.objectContaining({
+        tmuxSession: retainedSessionId,
+        lastStatus: undefined,
+      })],
+    });
+    expect(adapter.stop).toHaveBeenCalledWith(retainedSessionId);
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
   });
 
   it('fails closed before direct probe launch when the persistence barrier fails', async () => {
@@ -4275,7 +4407,7 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         now: Date.now(),
         maxActiveTasks: 3,
         isHungSuspect: () => false,
-        isLaunching: (task) => store.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => store.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: 1,
         reservedSlotSources: ['kookr'],
       });

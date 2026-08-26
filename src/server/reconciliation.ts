@@ -1,11 +1,13 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { appendDispositionEntry } from '../core/disposition-ledger.js';
 import { deterministicTaskName } from '../core/task-naming.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import type { TaskLaunchAdmissionDependency } from '../shared/contracts/task.js';
 
 /**
  * Default on-disk existence probe for {@link reconcile}'s `pathExists`
@@ -61,6 +63,15 @@ export interface ReconciliationResult {
   worktreesStale: string[];
   /** Sessions whose git/worktree metadata changed */
   worktreesChanged: string[];
+  /**
+   * Dependency probe cleanup fences settled because their exact sessions are
+   * now absent. Runtime callers use this to settle the matching process-local
+   * circuit token; startup independently hydrates the rewritten task marker.
+   */
+  dependencyProbeCleanupSettled?: Array<{
+    dependencies: TaskLaunchAdmissionDependency[];
+    outcome: 'parked' | 'released';
+  }>;
 }
 
 /**
@@ -99,6 +110,7 @@ export async function reconcile(
     worktreesMissing: [],
     worktreesStale: [],
     worktreesChanged: [],
+    dependencyProbeCleanupSettled: [],
   };
 
   const liveSessions = new Set(await backend.listSessions());
@@ -216,6 +228,23 @@ export async function reconcile(
           reason: 'Recovery probe was interrupted by server restart',
         })),
         parkedAt: new Date().toISOString(),
+      });
+      result.dependencyProbeCleanupSettled?.push({
+        dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
+        outcome: 'parked',
+      });
+      continue;
+    }
+    if (
+      latestTask.launchAdmission?.status === 'probing'
+      && isTerminalStatus(latestTask.status)
+      && allSessionsDone
+    ) {
+      const probing = latestTask.launchAdmission;
+      taskStore.setLaunchAdmission(latestTask.id, undefined);
+      result.dependencyProbeCleanupSettled?.push({
+        dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
+        outcome: 'released',
       });
       continue;
     }

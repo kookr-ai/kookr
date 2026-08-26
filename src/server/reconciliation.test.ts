@@ -71,6 +71,10 @@ describe('Startup Reconciliation', () => {
 
     expect(result.markedCompleted).toContain('kookr-dead-probe');
     expect(result.tasksTerminated).not.toContain(task.id);
+    expect(result.dependencyProbeCleanupSettled).toEqual([{
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      outcome: 'parked',
+    }]);
     expect(taskStore.getTask(task.id)).toMatchObject({
       status: 'pending',
       launchAdmission: {
@@ -78,6 +82,42 @@ describe('Startup Reconciliation', () => {
         reason: 'dependency_degraded',
         dependencies: [{ dependency: 'kb', state: 'degraded' }],
       },
+    });
+  });
+
+  test('clears a terminal probe cleanup marker only after its exact session is absent', async () => {
+    const task = taskStore.createTask({
+      prompt: 'cancelled probe cleanup',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-terminal-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-terminal-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    taskStore.cancelTask(task.id);
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.dependencyProbeCleanupSettled).toEqual([{
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      outcome: 'released',
+    }]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-terminal-probe',
+        lastStatus: 'completed',
+      })],
     });
   });
 

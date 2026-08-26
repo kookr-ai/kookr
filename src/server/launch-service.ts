@@ -749,7 +749,7 @@ function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): Cap
     now: Date.now(),
     maxActiveTasks: maxActive,
     isHungSuspect: () => false,
-    isLaunching: (task) => deps.taskStore.hasFreshLaunchReservation(task.id),
+    isLaunching: (task) => deps.taskStore.hasFreshActiveLaunchReservation(task.id),
     // Issue #1564: reflect the reservation in the degraded snapshot too, so a
     // backpressure error body carries the same guarantee /api/health shows.
     ...(reservedActiveSlots !== undefined
@@ -1688,7 +1688,7 @@ async function launchTaskCore(
   }
 
   if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
-    const denialReservationToken = taskStore.beginLaunchWithToken(task.id);
+    const denialReservationToken = taskStore.beginLaunchPersistenceWithToken(task.id);
     if (!denialReservationToken) {
       const err = new Error(`Task ${task.id} could not reserve its dependency-denied launch`);
       disposeUnacknowledgedTaskAfterPersistenceFailure(deps, task.id, err, resolvedClaimKey);
@@ -1746,10 +1746,20 @@ async function launchTaskCore(
   }
 
   if (taskStore.getActiveCount() >= effectiveMaxActive) {
-    let queuedTask = taskStore.pendTask(task.id);
     const probeWaitAdmission = dependencyAdmissionDecision?.admit
       ? taskAdmissionForProbeCapacityWait(dependencyAdmissionDecision, nowISO())
       : undefined;
+    const requiresCapacityWaitBarrier = probeWaitAdmission !== undefined || resolvedClaimKey !== undefined;
+    const capacityWaitReservationToken = requiresCapacityWaitBarrier
+      ? taskStore.beginLaunchPersistenceWithToken(task.id)
+      : undefined;
+    if (requiresCapacityWaitBarrier && !capacityWaitReservationToken) {
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
+      const err = new Error(`Task ${task.id} could not reserve its capacity-wait launch`);
+      disposeUnacknowledgedTaskAfterPersistenceFailure(deps, task.id, err, resolvedClaimKey);
+      throw err;
+    }
+    let queuedTask = taskStore.pendTask(task.id);
     if (probeWaitAdmission) {
       // Keep the half-open recovery requirement durable while the task waits
       // for capacity. The in-memory probe token is released below, so this
@@ -1761,17 +1771,59 @@ async function launchTaskCore(
     // that ownership transfer durable before returning the queued response.
     // Preserve the pre-existing claim durability barrier for ordinary claimed
     // capacity waits as well.
-    if (probeWaitAdmission || resolvedClaimKey) {
+    if (requiresCapacityWaitBarrier) {
       try {
         await deps.flushTasks();
       } catch (err) {
-        disposeUnacknowledgedTaskAfterPersistenceFailure(
-          deps,
-          task.id,
-          err,
-          resolvedClaimKey,
-        );
+        const current = taskStore.getTask(task.id);
+        const mayCompensatePersistenceFailure = current
+          && !isTerminalStatus(current.status)
+          && !taskStore.hasForeignFreshLaunchReservation(task.id, capacityWaitReservationToken!)
+          && isSameTaskLaunchAdmission(current.launchAdmission, probeWaitAdmission);
+        taskStore.endLaunch(task.id, capacityWaitReservationToken);
+        if (mayCompensatePersistenceFailure) {
+          disposeUnacknowledgedTaskAfterPersistenceFailure(
+            deps,
+            task.id,
+            err,
+            resolvedClaimKey,
+          );
+        }
         throw err;
+      }
+      const current = taskStore.getTask(task.id);
+      const replacedByAnotherOwner = taskStore.hasForeignFreshLaunchReservation(
+        task.id,
+        capacityWaitReservationToken!,
+      ) || !isSameTaskLaunchAdmission(current?.launchAdmission, probeWaitAdmission);
+      taskStore.endLaunch(task.id, capacityWaitReservationToken);
+      if (!current || isTerminalStatus(current.status)) {
+        throw new Error(`Task ${task.id} changed state while its capacity wait was persisted`);
+      }
+      queuedTask = current;
+      if (replacedByAnotherOwner) {
+        return {
+          task: current,
+          queued: current.status === 'pending',
+          ...(current.launchAdmission && isNoSlotDependencyAdmission(current.launchAdmission)
+            ? { parked: true }
+            : {}),
+          ...(current.launchAdmission ? { dependencyAdmission: current.launchAdmission } : {}),
+          ...(planQuotaRotation
+            ? {
+                admission: 'rotated' as const,
+                reason: 'plan_quota' as const,
+                fromAgent: planQuotaRotation.fromAgent,
+                toAgent: planQuotaRotation.toAgent,
+                maxUtilization: planQuotaRotation.maxUtilization,
+                threshold: planQuotaRotation.threshold,
+                resetsAt: planQuotaRotation.resetsAt,
+              }
+            : {}),
+          ...(agentSubstitutionChain.length > 0
+            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+            : {}),
+        };
       }
     }
     // The task record is committed (queued for promotion), so the round-robin
@@ -2017,30 +2069,95 @@ async function launchTaskCore(
         }
         throw err;
       }
+      abandon.timedOut = true;
+      const failedProbeSessionId = abandon.sessionId ?? probeSessionId;
+      const failedProbeSessionWasReported = abandon.sessionId !== undefined;
+      let failedProbeCleanupError: unknown;
+      if (failedProbeSessionId) {
+        // The exact terminal id was persisted before launch. Link it as a
+        // reaper-owned session, but keep its status unknown until physical
+        // stop succeeds. A concurrent cancellation will therefore attempt the
+        // same idempotent stop instead of clearing the durable probe fence on
+        // unproven cleanup.
+        if (failedProbeSessionWasReported) {
+          try {
+            taskStore.recordAbandonedLaunchSession(task.id, {
+              tmuxSession: failedProbeSessionId,
+              agentType,
+              cwd: opts.cwd,
+              createdAt: new Date(),
+            });
+            taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: undefined });
+          } catch {
+            // The adapter may already have attached the exact session. The
+            // stop below remains the physical source of truth either way.
+          }
+        }
+        if (!abandon.reaped) {
+          try {
+            await Promise.resolve(adapter.stop(failedProbeSessionId));
+            abandon.reaped = true;
+            if (failedProbeSessionWasReported) {
+              taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: 'aborted' });
+            }
+          } catch (stopErr) {
+            failedProbeCleanupError = stopErr;
+            if (!failedProbeSessionWasReported) {
+              // No callback proved creation, but a rejected stop also could
+              // not prove absence. Persist the preallocated exact id as an
+              // unknown session so runtime reconciliation owns the ambiguity.
+              taskStore.recordAbandonedLaunchSession(task.id, {
+                tmuxSession: failedProbeSessionId,
+                agentType,
+                cwd: opts.cwd,
+                createdAt: new Date(),
+              });
+              taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: undefined });
+            }
+            console.warn(
+              `[launch] Could not stop failed dependency-probe session ${failedProbeSessionId} `
+              + `for task ${task.id}: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+            );
+          }
+        }
+      }
+      phaseTracker.abort();
+      const phaseTimings = phaseTracker.snapshot();
+      taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+      if (failedProbeCleanupError) {
+        // Retain both the exact durable probing marker and the in-memory
+        // circuit token. Represent the possibly-live process as active so a
+        // promoter cannot overwrite its marker; reconciliation/startup will
+        // prove the exact session live or absent before another probe starts.
+        const currentAfterCleanup = taskStore.getTask(task.id);
+        if (currentAfterCleanup && !isTerminalStatus(currentAfterCleanup.status)) {
+          if (currentAfterCleanup.status === 'pending' || currentAfterCleanup.status === 'open') {
+            taskStore.startTask(task.id);
+          }
+        } else if (currentAfterCleanup && admissionMarkerWrittenByOwner?.status === 'probing') {
+          taskStore.setLaunchAdmission(task.id, admissionMarkerWrittenByOwner);
+        }
+        taskStore.endLaunch(task.id, launchReservationToken);
+        deps.launchOutcomeMetrics?.record({
+          agentType,
+          outcome: 'failure',
+          reason: classifyLaunchFailureReason(err),
+        });
+        deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+        throw err;
+      }
+      const currentAfterCleanup = taskStore.getTask(task.id);
       if (
-        !current
-        || current.status === 'completed'
-        || current.status === 'terminated'
-        || current.status === 'cancelled'
+        !currentAfterCleanup
+        || currentAfterCleanup.status === 'completed'
+        || currentAfterCleanup.status === 'terminated'
+        || currentAfterCleanup.status === 'cancelled'
       ) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
       } else {
         deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, false);
       }
       taskStore.endLaunch(task.id, launchReservationToken);
-      abandon.timedOut = true;
-      if (abandon.sessionId) {
-        linkAndReapAbandonedSession(abandon.sessionId);
-        try {
-          taskStore.updateSession(task.id, abandon.sessionId, { lastStatus: 'aborted' });
-        } catch {
-          // The abandoned-session linker may already have recorded the same
-          // terminal status, or the adapter may have failed before attachment.
-        }
-      }
-      phaseTracker.abort();
-      const phaseTimings = phaseTracker.snapshot();
-      taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
       const parked = reparkAfterFailedProbe(taskStore, task.id, dependencyAdmissionDecision);
       deps.launchOutcomeMetrics?.record({
         agentType,

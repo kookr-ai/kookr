@@ -1270,11 +1270,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
               createdAt: new Date(),
             });
           }
+          // Cleanup is not proven until stop resolves. Keep the session live-
+          // looking so a concurrent terminal transition attempts the same
+          // idempotent stop rather than skipping it as already aborted.
+          taskStore.updateSession(pending.id, failedSessionId, { lastStatus: undefined });
           if (!launchReapGuard.reaped) {
             const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
             try {
               await Promise.resolve(adapter.stop(failedSessionId));
               launchReapGuard.reaped = true;
+              taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
             } catch (stopErr) {
               failedSessionReapError = stopErr;
               console.warn(
@@ -1303,6 +1308,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           if (current.status === 'pending' || current.status === 'open') {
             taskStore.startTask(pending.id);
           }
+        } else if (current && admissionMarkerWrittenByOwner?.status === 'probing') {
+          // Cancellation may have won after the physical session was linked
+          // but before stop rejected. Restore the exact cleanup-only marker on
+          // the terminal task so restart remains fail-closed until that
+          // session is proven absent.
+          taskStore.setLaunchAdmission(pending.id, admissionMarkerWrittenByOwner);
         }
         blockedByDependency.add(pending.id);
         console.error(

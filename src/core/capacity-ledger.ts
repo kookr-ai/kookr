@@ -26,7 +26,7 @@ export const TASK_CAPACITY_CLASSES: readonly TaskCapacityClass[] = [
 export interface CapacityClassifyDeps {
   /** Precomputed via `core/hung-task-reaper.ts#isTaskHungSuspect`. */
   isHungSuspect: boolean;
-  /** True when the task has a fresh in-flight launch reservation (`TaskStore.hasFreshLaunchReservation`). */
+  /** True when the task has a fresh slot-occupying launch reservation (`TaskStore.hasFreshActiveLaunchReservation`). */
   isLaunching: boolean;
 }
 

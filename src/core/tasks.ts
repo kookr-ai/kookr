@@ -147,6 +147,7 @@ const LAUNCH_RESERVATION_TTL_MS = 10 * 60 * 1000;
 interface LaunchReservation {
   reservedAt: number;
   token: string;
+  countsAsActive: boolean;
 }
 
 export class TaskStore {
@@ -854,6 +855,10 @@ export class TaskStore {
     }
     const now = new Date();
     const dependencyAdmission = task.launchAdmission !== undefined;
+    const dependencyCleanupFence = task.launchAdmission?.status === 'probing'
+      && task.sessions.some(
+        (session) => session.lastStatus !== 'completed' && session.lastStatus !== 'aborted',
+      );
     task.status = to;
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
@@ -861,10 +866,13 @@ export class TaskStore {
     } else {
       delete task.finishedAt;
     }
-    if (dependencyAdmission && isTerminalStatus(to)) {
+    if (dependencyAdmission && isTerminalStatus(to) && !dependencyCleanupFence) {
       // Terminal work is no longer retryable pending intent. Remove the
       // admission marker and its pre-launch health snapshot so diagnostics and
-      // the next startup cannot resurrect canceled/terminated parked work.
+      // the next startup cannot resurrect canceled/terminated parked work. A
+      // probing marker with an unproven physical session is cleanup ownership,
+      // not retry intent, and survives only until reconciliation proves that
+      // exact session absent.
       task.launchAdmission = undefined;
       task.launchHealthSummary = undefined;
     }
@@ -1036,12 +1044,32 @@ export class TaskStore {
    * still owns the task and cannot release a replacement owner's lease.
    */
   beginLaunchWithToken(taskId: string): string | undefined {
+    return this.beginReservationWithToken(taskId, true);
+  }
+
+  /**
+   * Fence a pre-launch durability barrier without claiming a worker slot.
+   *
+   * Persistence owners must exclude promoters just like launch owners: a
+   * stale rejected write must never dispose work that another owner started.
+   * They are not, however, physical or in-flight workers, so capacity must not
+   * count them. This matters most for confirmed-degraded parked work, whose
+   * admission invariant is zero slots.
+   */
+  beginLaunchPersistenceWithToken(taskId: string): string | undefined {
+    return this.beginReservationWithToken(taskId, false);
+  }
+
+  private beginReservationWithToken(
+    taskId: string,
+    countsAsActive: boolean,
+  ): string | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
     if (task.status !== 'open' && task.status !== 'pending') return undefined;
     if (this.hasFreshLaunchReservation(taskId)) return undefined;
     const token = `launch-reservation-${++this.launchReservationSequence}`;
-    this.launchReservations.set(taskId, { reservedAt: Date.now(), token });
+    this.launchReservations.set(taskId, { reservedAt: Date.now(), token, countsAsActive });
     return token;
   }
 
@@ -1064,10 +1092,8 @@ export class TaskStore {
   }
 
   /**
-   * Read launch-reservation freshness (issue #1526 Phase B: made public so the
-   * capacity ledger can classify an `open`/`pending` task as `launching`
-   * without duplicating this TTL logic — same predicate `getActiveCount`
-   * already uses to count a reserved task against the cap).
+   * Read reservation freshness for ownership/exclusion. Both physical-launch
+   * and persistence-only reservations block another promoter.
    */
   hasFreshLaunchReservation(taskId: string): boolean {
     const reservation = this.launchReservations.get(taskId);
@@ -1079,9 +1105,15 @@ export class TaskStore {
     return true;
   }
 
+  /** True only for a fresh reservation that occupies a worker slot. */
+  hasFreshActiveLaunchReservation(taskId: string): boolean {
+    return this.hasFreshLaunchReservation(taskId)
+      && this.launchReservations.get(taskId)?.countsAsActive === true;
+  }
+
   /**
    * Count tasks that occupy a concurrency slot: inProgress, plus tasks with a
-   * fresh in-flight launch reservation. Counting reservations closes the
+   * fresh slot-occupying launch reservation. Counting launch reservations closes the
    * second half of the #700 race — the old inProgress-only count let the
    * promotion loop over-launch past the cap while launches were mid-await.
    */
@@ -1089,7 +1121,10 @@ export class TaskStore {
     let count = 0;
     for (const task of this.tasks.values()) {
       if (task.status === 'inProgress') count++;
-      else if ((task.status === 'open' || task.status === 'pending') && this.hasFreshLaunchReservation(task.id)) count++;
+      else if (
+        (task.status === 'open' || task.status === 'pending')
+        && this.hasFreshActiveLaunchReservation(task.id)
+      ) count++;
     }
     return count;
   }

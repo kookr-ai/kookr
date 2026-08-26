@@ -1467,6 +1467,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
 
+      for (const settled of result.dependencyProbeCleanupSettled ?? []) {
+        deps.agentLifecycleDeps?.launchDependencyAdmission?.settleReconciledProbe(
+          settled.dependencies,
+          settled.outcome,
+        );
+      }
+
       if (deps.agentLifecycleDeps) {
         // Reconcile first so sessions that just died or were reaped free their
         // slots before parked dependency work is considered for promotion.

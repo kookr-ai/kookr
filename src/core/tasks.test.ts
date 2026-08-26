@@ -2583,6 +2583,49 @@ describe('launch reservations (#700)', () => {
     expect(store.getActiveCount()).toBe(0);
   });
 
+  test('persistence reservations exclude promotion without consuming capacity', () => {
+    const store = new TaskStore();
+    const first = store.createTask('first', '/repo');
+    const second = store.createTask('second', '/repo');
+    store.pendTask(first.id);
+    store.pendTask(second.id);
+
+    const token = store.beginLaunchPersistenceWithToken(first.id);
+    expect(token).toBeDefined();
+    expect(store.getNextPending()?.id).toBe(second.id);
+    expect(store.getActiveCount()).toBe(0);
+    expect(store.hasFreshLaunchReservation(first.id)).toBe(true);
+    expect(store.hasFreshActiveLaunchReservation(first.id)).toBe(false);
+
+    store.endLaunch(first.id, token);
+    expect(store.getNextPending()?.id).toBe(first.id);
+  });
+
+  test('terminal transition retains only an unproven probe cleanup fence', () => {
+    const store = new TaskStore();
+    const probing = {
+      status: 'probing' as const,
+      reason: 'half_open_probe_in_flight' as const,
+      dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
+      startedAt: new Date().toISOString(),
+      sessionId: 'kookr-probe-cleanup',
+    };
+    const task = store.createTask({ prompt: 'probe', cwd: '/repo', launchAdmission: probing });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-probe-cleanup',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    store.cancelTask(task.id);
+    expect(store.getTask(task.id)?.launchAdmission).toEqual(probing);
+
+    store.updateSession(task.id, 'kookr-probe-cleanup', { lastStatus: 'aborted' });
+    store.setLaunchAdmission(task.id, undefined);
+    expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
   test('addSession consumes the reservation (no double slot for launched tasks)', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');

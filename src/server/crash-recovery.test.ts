@@ -867,6 +867,62 @@ describe('Crash Recovery', () => {
     expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
+  test('terminal cancellation retains a recovery probe fence when concurrent cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-cancelled-rejecting-probe-cleanup');
+    const task = await setupCrashedTask('Cancel while rejecting recovery cleanup', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel while rejecting recovery cleanup',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let rejectStop!: (error: Error) => void;
+    let markStopStarted!: () => void;
+    let expectedSessionId: string | undefined;
+    const stopStarted = new Promise<void>((resolve) => { markStopStarted = resolve; });
+    vi.spyOn(adapter, 'stop').mockImplementationOnce(async () => {
+      markStopStarted();
+      await new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+    });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe rejected before attachment');
+    });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+    await stopStarted;
+    taskStore.cancelTask(task.id);
+    rejectStop(new Error('concurrent recovery cleanup rejected'));
+    const result = await recovery;
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('concurrent recovery cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: expectedSessionId,
+      },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: undefined,
+      })]),
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   test('does NOT relaunch a spawned task that finished its turn cleanly (#693)', async () => {
     // A self-continuation chain link (parentTaskId set) that ended on a clean
     // `completed_turn` is done, not crashed. reconcile auto-completes it; crash

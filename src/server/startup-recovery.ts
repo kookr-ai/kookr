@@ -130,10 +130,10 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           continue;
         }
-        if (task.status === 'completed' || task.status === 'terminated' || task.status === 'cancelled') {
-          taskStore.setLaunchAdmission(task.id, undefined);
-          continue;
-        }
+        // A terminal task can still carry a probing marker as a cleanup-only
+        // fence when cancellation won concurrently with a rejected physical
+        // stop. Keep it in the interrupted set until the exact session id is
+        // proven absent below; only then clear the marker.
         interruptedProbes.push(task);
         for (const dependency of task.launchAdmission.dependencies) {
           interruptedCountByDependency.set(

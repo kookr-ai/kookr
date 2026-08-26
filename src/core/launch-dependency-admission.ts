@@ -218,6 +218,30 @@ export class LaunchDependencyAdmission {
   }
 
   /**
+   * Settle a runtime cleanup fence after reconciliation proves the exact
+   * session absent. This is the durable-marker counterpart of completeProbe:
+   * the original token may no longer be available to the reconciler, but the
+   * physical ownership proof makes it safe to clear any in-process token.
+   */
+  settleReconciledProbe(
+    dependencies: readonly TaskLaunchAdmissionDependency[],
+    outcome: 'parked' | 'released',
+  ): void {
+    for (const dependency of dependencies) {
+      const entry = this.entry(dependency.dependency);
+      entry.probeToken = undefined;
+      entry.startupRecoveryOwners = undefined;
+      if (outcome === 'parked') {
+        entry.reason = dependency.reason ?? 'Recovery probe failed';
+        this.transition(entry, 'degraded');
+      } else {
+        entry.reason = undefined;
+        this.transition(entry, 'half_open');
+      }
+    }
+  }
+
+  /**
    * Restore success evidence for a recovery probe whose attached session was
    * reconciled as live after restart. Call this after replaying parked task
    * markers. A confirmed degradation at or after the probe began supersedes

@@ -209,10 +209,12 @@ The WebSocket alert uses the same information in compact form, for example
 `Dependencies: kb=degraded (KB provider is unavailable).` A half-open retry
 that is already occupied is reported as `half_open_probe_busy` instead of a
 new provider failure. After a server restart, this busy state also protects an
-interrupted probe while Kookr reaps its exact expected terminal. If terminal
-cleanup fails, startup remains fail-closed in `half_open_probe_busy`; resolve
-the backend cleanup error and restart or retry recovery before launching a
-replacement worker.
+interrupted probe while Kookr reaps its exact expected terminal. This also
+appears immediately when a failed direct, promoted, or crash-recovery probe
+created a session but physical stop rejected: Kookr retains the exact session
+marker and ownership instead of re-parking or starting a replacement. Resolve
+the backend cleanup error, or let reconciliation/restart prove that exact
+session absent; the gate then permits one new bounded probe.
 
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the

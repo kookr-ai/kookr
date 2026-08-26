@@ -539,11 +539,16 @@ export async function recoverCrashedSessions(
                 createdAt: new Date(),
               });
             }
+            // Do not claim cleanup before physical stop succeeds. Leaving the
+            // session unknown also makes a concurrent cancellation attempt
+            // the same idempotent stop instead of skipping it.
+            taskStore.updateSession(task.id, failedSessionId, { lastStatus: undefined });
             if (!launchReapGuard.reaped) {
               const adapter = launchAdapter ?? adapterRegistry.get(task.agentType);
               try {
                 await Promise.resolve(adapter.stop(failedSessionId));
                 launchReapGuard.reaped = true;
+                taskStore.updateSession(task.id, failedSessionId, { lastStatus: 'aborted' });
               } catch (stopErr) {
                 failedSessionReapError = stopErr;
               }
@@ -560,6 +565,8 @@ export async function recoverCrashedSessions(
               if (current.status === 'pending' || current.status === 'open') {
                 taskStore.startTask(task.id);
               }
+            } else if (current && admissionMarkerWrittenByOwner?.status === 'probing') {
+              taskStore.setLaunchAdmission(task.id, admissionMarkerWrittenByOwner);
             }
           } else {
             const current = taskStore.getTask(task.id);

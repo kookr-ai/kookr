@@ -171,7 +171,7 @@ export function collectCapacityLedger(deps: Pick<
         { queue: deps.queue, watchdog: deps.watchdog },
         capacitySampledAtMs,
       ).hungSuspect,
-    isLaunching: (task) => deps.taskStore?.hasFreshLaunchReservation(task.id) ?? false,
+    isLaunching: (task) => deps.taskStore?.hasFreshActiveLaunchReservation(task.id) ?? false,
     ...(reservationSettings
       ? {
           reservedActiveSlots: reservationSettings.reservedActiveSlots,

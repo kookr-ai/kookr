@@ -2594,6 +2594,73 @@ describe('promotePendingTasks (integration)', () => {
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
+  test('terminal cancellation retains a promoted probe fence when concurrent cleanup rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'cancel while promoted cleanup rejects',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel while promoted cleanup rejects',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let rejectStop!: (error: Error) => void;
+    let markStopStarted!: () => void;
+    let expectedSessionId: string | undefined;
+    const stopStarted = new Promise<void>((resolve) => { markStopStarted = resolve; });
+    vi.mocked(adapter.stop).mockImplementationOnce(async () => {
+      markStopStarted();
+      await new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+    });
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe rejected before attachment');
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const promotion = promotePendingTasks(deps);
+      await stopStarted;
+      taskStore.cancelTask(task.id);
+      rejectStop(new Error('concurrent cleanup rejected'));
+
+      expect(await promotion).toBe(0);
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: {
+          status: 'probing',
+          sessionId: expectedSessionId,
+        },
+        sessions: [expect.objectContaining({
+          tmuxSession: expectedSessionId,
+          lastStatus: undefined,
+        })],
+      });
+      expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+        admit: false,
+        reason: 'half_open_probe_busy',
+      });
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   test('reaps an unattached ordinary promoted session when adapter launch rejects', async () => {
     const task = taskStore.createTask('ordinary promoted failure', '/cwd');
     taskStore.pendTask(task.id);

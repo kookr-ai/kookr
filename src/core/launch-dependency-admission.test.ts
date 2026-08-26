@@ -184,6 +184,29 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('settles a reconciled live probe token only after physical absence', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    admission.observe(['kb'], []);
+    const active = admission.evaluate(['kb']);
+    expect(active).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    admission.settleReconciledProbe([{
+      dependency: 'kb',
+      state: 'degraded',
+      reason: 'Recovery probe was interrupted',
+    }], 'parked');
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+  });
+
   test('restores reconciled live-probe success after stale parked waiters', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreParked([{

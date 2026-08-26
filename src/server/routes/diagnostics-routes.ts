@@ -401,7 +401,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       maxActiveTasks: deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS,
       isHungSuspect: (task) =>
         resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
-      isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+      isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
       // FAA root-cause classification (issue #2142) must use the SAME live
       // thresholds the auto-close sweep uses, or a task the sweep already treats
       // as actionable would be miscounted as awaiting_poll. These are the same

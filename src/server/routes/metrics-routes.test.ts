@@ -270,7 +270,7 @@ describe('metrics routes', () => {
             sessions: [],
           },
         ],
-        hasFreshLaunchReservation: () => false,
+        hasFreshActiveLaunchReservation: () => false,
       } as never,
     }).request('/metrics');
 

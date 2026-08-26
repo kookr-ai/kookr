@@ -1694,7 +1694,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         now,
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
@@ -2123,7 +2123,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
           resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
@@ -2158,7 +2158,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
           resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });

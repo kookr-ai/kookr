@@ -240,11 +240,13 @@ attempt is persisted as `launchAdmission.status: "probing"`; probe failure, or
 restart without a live reconciled probe session, re-parks the same task and
 idempotency identity only while it remains non-terminal. During startup an
 interrupted marker remains `probing` and the circuit reports
-`half_open_probe_busy` until its exact expected terminal is reaped; a reap
-error leaves that observable gate fail-closed. Completion, cancellation, or
-termination during preflight/probe launch wins: the probe fence is released
-to an unclaimed half-open circuit, admission metadata is cleared, stale
-failure does not degrade the circuit, and no re-park or launch occurs. A live reconciled probe clears its
+`half_open_probe_busy` until its exact expected terminal is reaped. The same
+rule applies immediately when direct launch, promotion, or crash recovery
+creates a session but its cleanup rejects: the task does not re-park, the
+session remains owned and not falsely marked aborted, and the exact marker
+survives even if a concurrent terminal transition wins the work outcome.
+Runtime reconciliation or startup releases this cleanup-only fence only after
+physical absence is proven. A live reconciled probe clears its
 marker as successful unless confirmed degradation recorded at or after that
 probe began still controls the circuit. Capacity-only waits use
 `reason: "half_open_waiting_for_capacity"` and are queued, not reported as
