@@ -25,9 +25,11 @@ import {
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
+  taskAdmissionForProbeCapacityWait,
 } from '../core/launch-dependency-task-admission.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
+  allocateLaunchSessionId,
   noteLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
@@ -303,7 +305,16 @@ export async function recoverCrashedSessions(
       taskStore.pendTask(task.id);
       // The confirmed denial must survive the same restart that is performing
       // recovery; acknowledge the skip only after the parked marker is durable.
-      await options.flushTasks?.();
+      try {
+        await options.flushTasks?.();
+      } catch (err) {
+        result.failed.push({
+          taskId: task.id,
+          sessionId: tmuxName,
+          error: `dependency admission persistence failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        continue;
+      }
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,
@@ -311,9 +322,10 @@ export async function recoverCrashedSessions(
       });
       continue;
     }
-    if (dependencyAdmission && currentAfterAdmission.launchAdmission) {
+    const priorAdmission = currentAfterAdmission.launchAdmission;
+    if (dependencyAdmission && priorAdmission) {
       taskStore.setLaunchAdmission(task.id, undefined);
-      if (currentAfterAdmission.launchAdmission.status === 'parked') {
+      if (priorAdmission.status === 'parked') {
         taskStore.setLaunchHealthSummary(task.id, undefined);
         taskStore.setLaunchNote(task.id, undefined);
       }
@@ -325,27 +337,62 @@ export async function recoverCrashedSessions(
     // is provided AND the adapter supports resume (Claude Code), the launch
     // continues the prior conversation on a forked branch.
     let adapterLaunchSettled = false;
+    let adapterLaunchStarted = false;
     let launchAdapter: AgentAdapter | undefined;
     const launchReapGuard: LaunchReapGuard = { reaped: false };
     const priorSessionIds = new Set(task.sessions.map((candidate) => candidate.tmuxSession));
     try {
       const adapter = adapterRegistry.get(task.agentType);
       launchAdapter = adapter;
+      const probeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
+        ? allocateLaunchSessionId()
+        : undefined;
       const launchOptions = {
         ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
         onSessionCreated: (sessionId: string) => {
           noteLaunchSession(launchReapGuard, adapter, task.agentType, task.id, sessionId);
         },
+        ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
       };
       if (dependencyAdmission?.admit && dependencyAdmission.probe) {
         taskStore.setLaunchAdmission(
           task.id,
-          taskAdmissionForProbe(dependencyAdmission, new Date().toISOString()),
+          taskAdmissionForProbe(dependencyAdmission, new Date().toISOString(), probeSessionId),
         );
         // A restarted process must see that this task owned the half-open
         // attempt before a replacement session can exist.
         await options.flushTasks?.();
+        const currentAfterBarrier = taskStore.getTask(task.id);
+        if (!currentAfterBarrier || currentAfterBarrier.status !== 'open') {
+          options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          result.skipped.push({
+            taskId: task.id,
+            sessionId: tmuxName,
+            reason: 'task changed state while its probe marker was persisted',
+          });
+          continue;
+        }
+        if (!options.launchDependencyAdmission?.isProbeActive(dependencyAdmission.probe)) {
+          options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          const refreshed = options.launchDependencyAdmission?.evaluate(intent.intent.dependencies);
+          const refreshedAdmission = refreshed && !refreshed.admit
+            ? taskAdmissionForDeniedDecision(refreshed, new Date().toISOString())
+            : refreshed?.admit
+              ? taskAdmissionForProbeCapacityWait(refreshed, new Date().toISOString())
+              : undefined;
+          if (refreshed?.admit) options.launchDependencyAdmission?.releaseProbe(refreshed.probe);
+          taskStore.pendTask(task.id);
+          taskStore.setLaunchAdmission(task.id, refreshedAdmission);
+          await options.flushTasks?.();
+          result.skipped.push({
+            taskId: task.id,
+            sessionId: tmuxName,
+            reason: 'dependency probe ownership changed before adapter launch; task re-parked',
+          });
+          continue;
+        }
       }
+      adapterLaunchStarted = true;
       const launchPromise = adapter.launch(task.id, effectivePrompt, originalCwd, resumeContext, launchOptions);
       const configuredTimeout = options.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
@@ -360,6 +407,14 @@ export async function recoverCrashedSessions(
       });
       adapterLaunchSettled = true;
       if (dependencyAdmission?.admit) {
+        if (dependencyAdmission.probe) {
+          await options.flushTasks?.().catch((flushErr) => {
+            console.error(
+              `[crash-recovery] Post-attach probe persistence failed for task ${task.id}:`,
+              flushErr instanceof Error ? flushErr.message : flushErr,
+            );
+          });
+        }
         options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
         taskStore.setLaunchAdmission(task.id, undefined);
       }
@@ -395,6 +450,30 @@ export async function recoverCrashedSessions(
       }
       result.relaunched.push(entry);
     } catch (err) {
+      if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchStarted) {
+        options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+        const current = taskStore.getTask(task.id);
+        if (
+          current
+          && current.status !== 'completed'
+          && current.status !== 'terminated'
+          && current.status !== 'cancelled'
+          && current.launchAdmission?.status === 'probing'
+        ) {
+          if (current.status === 'inProgress') taskStore.reopenTask(task.id);
+          if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+          taskStore.setLaunchAdmission(
+            task.id,
+            priorAdmission ?? taskAdmissionForProbeCapacityWait(dependencyAdmission, new Date().toISOString()),
+          );
+        }
+        result.failed.push({
+          taskId: task.id,
+          sessionId: tmuxName,
+          error: `dependency probe persistence failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        continue;
+      }
       // onSessionCreated fires as soon as the physical terminal exists, before
       // TaskStore attachment. Reap that session for every unsettled recovery
       // launch failure so healthy/no-probe recovery cannot leak an orphan.

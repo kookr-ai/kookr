@@ -25,6 +25,7 @@ export function taskAdmissionForDeniedDecision(
 export function taskAdmissionForProbe(
   decision: AdmittedDecision,
   at: string,
+  sessionId?: string,
 ): TaskLaunchAdmission {
   const probe = requireProbe(decision);
   return {
@@ -36,6 +37,7 @@ export function taskAdmissionForProbe(
       reason: 'Bounded recovery probe is in flight',
     })),
     startedAt: at,
+    ...(sessionId ? { sessionId } : {}),
   };
 }
 

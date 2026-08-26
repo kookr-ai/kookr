@@ -1,8 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentType } from '../core/agent-types.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 
 /** Default hard ceiling on one adapter launch (180 seconds). */
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 180_000;
+
+/** Allocate the terminal id before a crash-sensitive launch is persisted. */
+export function allocateLaunchSessionId(): string {
+  return `kookr-${randomUUID().slice(0, 8)}`;
+}
 
 /** Error raised when an adapter launch does not settle before its hard bound. */
 export class LaunchTimeoutError extends Error {

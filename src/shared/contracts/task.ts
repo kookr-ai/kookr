@@ -161,6 +161,8 @@ export type TaskLaunchAdmission =
       reason: 'half_open_probe_in_flight';
       dependencies: TaskLaunchAdmissionDependency[];
       startedAt: string;
+      /** Preallocated terminal id used to reap a crash-window worker on boot. */
+      sessionId?: string;
     };
 
 export interface TaskCompletionFeedback {

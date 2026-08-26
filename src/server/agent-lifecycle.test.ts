@@ -1216,6 +1216,7 @@ function createPromotionDeps(taskStore: TaskStore, adapter: AgentAdapter): Promo
       interactionLog: { append: vi.fn() } as any,
       githubScanner: { isActive: vi.fn(() => false) } as any,
       autoNameTask: vi.fn(),
+      flushTasks: vi.fn().mockResolvedValue(undefined),
     },
     broadcastToAll: vi.fn(),
     serverCwd: '/tmp',
@@ -1467,7 +1468,10 @@ describe('promotePendingTasks (integration)', () => {
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
     expect(taskStore.getTask(task.id)?.launchHealthSummary).toBeUndefined();
-    expect(flushTasks).toHaveBeenCalledTimes(2);
+    // One flush persists the degraded marker, then the successful recovery
+    // probe flushes both its pre-launch ownership marker and its post-attach
+    // session association.
+    expect(flushTasks).toHaveBeenCalledTimes(3);
     expect(adapter.launch).toHaveBeenCalledWith(
       task.id,
       'use the knowledge base',
@@ -1485,6 +1489,135 @@ describe('promotePendingTasks (integration)', () => {
     expect(launchDependencyAdmission.snapshot()).toEqual([
       expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
     ]);
+  });
+
+  test('fails closed before promotion when the probe marker cannot be persisted', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'persist before promotion',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'persist before promotion',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn().mockRejectedValue(new Error('promotion marker write failed')),
+      },
+    };
+
+    await expect(promotePendingTasks(deps)).rejects.toThrow('promotion marker write failed');
+
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+    expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(false);
+  });
+
+  test('does not promote a task cancelled while its probe marker is being persisted', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'cancel during promotion persistence',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'cancel during promotion persistence',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        }),
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    releaseFlush();
+
+    expect(await promotion).toBe(0);
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({ status: 'cancelled', launchAdmission: undefined });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('re-parks a promotion when confirmed degradation invalidates its probe token', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'invalidate promotion probe',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'invalidate promotion probe',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn()
+          .mockImplementationOnce(async () => {
+            markFlushStarted();
+            await new Promise<void>((resolve) => { releaseFlush = resolve; });
+          })
+          .mockResolvedValue(undefined),
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await flushStarted;
+    launchDependencyAdmission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider degraded during barrier',
+    }]);
+    releaseFlush();
+
+    expect(await promotion).toBe(0);
+    expect(adapter.launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
   });
 
   test('releases a recovery probe when the launch reservation is lost', async () => {

@@ -899,6 +899,30 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
   });
 
+  test('leaves a preallocated probe marker for startup recovery to reap exactly', () => {
+    const task = taskStore.createTask({
+      prompt: 'probe with expected terminal identity',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+
+    expect(reconcileStaleOpenLaunches(taskStore)).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'open',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+    expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
+  });
+
   test('issue #1588: the terminated task carries a queryable stale_open_launch disposition', () => {
     const task = taskStore.createTask('Launcher died at boot', '/cwd');
 

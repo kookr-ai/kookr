@@ -427,6 +427,159 @@ describe('Crash Recovery', () => {
     expect(flushTasks).toHaveBeenCalledOnce();
   });
 
+  test('reports a failed recovery and starts no adapter when a denied marker cannot be persisted', async () => {
+    const cwd = join(tempDir, 'project-denied-marker-failure');
+    const task = await setupCrashedTask('Denied marker failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Denied marker failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+      }]),
+      flushTasks: vi.fn().mockRejectedValue(new Error('denied marker write failed')),
+    });
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('denied marker write failed'),
+    })]);
+    expect(result.skipped).toHaveLength(0);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+  });
+
+  test('reports a failed recovery without degrading the provider when the probe barrier fails', async () => {
+    const cwd = join(tempDir, 'project-probe-marker-failure');
+    const task = await setupCrashedTask('Probe marker failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Probe marker failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn().mockRejectedValue(new Error('probe marker write failed')),
+    });
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('probe marker write failed'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('does not recover a task cancelled while its probe marker is being persisted', async () => {
+    const cwd = join(tempDir, 'project-cancel-during-probe-persistence');
+    const task = await setupCrashedTask('Cancel during probe persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel during probe persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    });
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([expect.objectContaining({
+      taskId: task.id,
+      reason: 'task changed state while its probe marker was persisted',
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({ status: 'cancelled', launchAdmission: undefined });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('re-parks recovery when confirmed degradation invalidates its probe token', async () => {
+    const cwd = join(tempDir, 'project-invalidated-probe');
+    const task = await setupCrashedTask('Invalidate recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Invalidate recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockResolvedValue(undefined),
+    });
+    await flushStarted;
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider degraded during recovery barrier',
+    }]);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([expect.objectContaining({
+      taskId: task.id,
+      reason: 'dependency probe ownership changed before adapter launch; task re-parked',
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
   test('reaps an unattached recovery session when its probe is cancelled before rejection', async () => {
     const cwd = join(tempDir, 'project-cancelled-probe');
     const task = await setupCrashedTask('Cancelled recovery probe', cwd);

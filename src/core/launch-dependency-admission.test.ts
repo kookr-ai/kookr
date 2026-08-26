@@ -90,6 +90,25 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('recognizes only the current half-open probe token as active', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    admission.observe(['kb'], [failure]);
+    admission.observe(['kb'], []);
+    const decision = admission.evaluate(['kb']);
+    if (!decision.admit || !decision.probe) throw new Error('expected a recovery probe');
+
+    expect(admission.isProbeActive(decision.probe)).toBe(true);
+
+    admission.observe(['kb'], [failure]);
+    expect(admission.isProbeActive(decision.probe)).toBe(false);
+
+    admission.observe(['kb'], []);
+    const replacement = admission.evaluate(['kb']);
+    if (!replacement.admit || !replacement.probe) throw new Error('expected a replacement probe');
+    admission.releaseProbe(replacement.probe);
+    expect(admission.isProbeActive(replacement.probe)).toBe(false);
+  });
+
   test('keeps an active half-open probe claimed when a concurrent health check is unknown', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.observe(['kb'], [failure]);

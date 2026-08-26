@@ -296,6 +296,12 @@ export function reconcileStaleOpenLaunches(
     if (taskStore.hasFreshLaunchReservation(task.id)) continue;
     try {
       if (task.launchAdmission?.status === 'probing') {
+        // New probe markers preallocate and persist the exact terminal id.
+        // Leave those for runStartupRecoveryPhase, which can synchronously
+        // reap a worker created in the createSession→addSession crash window
+        // before re-parking the task. Legacy markers have no id and keep the
+        // original immediate re-park behavior below.
+        if (task.launchAdmission.sessionId) continue;
         taskStore.setLaunchAdmission(task.id, {
           status: 'parked',
           reason: 'dependency_degraded',

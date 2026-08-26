@@ -125,6 +125,27 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           continue;
         }
+        const expectedProbeSessionId = task.launchAdmission.sessionId;
+        if (expectedProbeSessionId) {
+          try {
+            // The marker was persisted before createSession. If the previous
+            // process died before addSession was flushed, this exact terminal
+            // is otherwise an age-gated orphan and a retry could overlap it.
+            // killSession is idempotent when creation never reached the backend.
+            await terminalBackend.killSession(expectedProbeSessionId);
+          } catch (err) {
+            const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
+              ...dependency,
+              state: 'degraded' as const,
+              reason: 'Interrupted recovery probe terminal could not be reaped during restart',
+            }));
+            lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
+            throw new Error(
+              `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
+              + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         const parked = {
           status: 'parked' as const,
           reason: 'dependency_degraded' as const,

@@ -1,5 +1,5 @@
 import type { Task, TaskStore } from '../core/tasks.js';
-import type { TerminationCause, TerminationReason } from '../core/task-status.js';
+import { isTerminalStatus, type TerminationCause, type TerminationReason } from '../core/task-status.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -28,6 +28,7 @@ import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
+  allocateLaunchSessionId,
   noteLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
@@ -37,6 +38,7 @@ import {
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
+  taskAdmissionForProbeCapacityWait,
 } from '../core/launch-dependency-task-admission.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
 import {
@@ -110,7 +112,7 @@ export interface AgentLifecycleDeps {
   /** Claim deferred orchestration ownership after a parked task gets a session. */
   onPendingTaskPromoted?: (task: Task) => void | Promise<void>;
   /** Force durable task state at crash-sensitive pre-launch boundaries. */
-  flushTasks?: () => Promise<void>;
+  flushTasks: () => Promise<void>;
 }
 
 /**
@@ -1025,7 +1027,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // releasing this reservation. Otherwise a clean boot could forget the
       // denial and treat the pending task as ordinary work.
       try {
-        await lifecycleDeps.flushTasks?.();
+        await lifecycleDeps.flushTasks();
       } finally {
         taskStore.endLaunch(pending.id);
       }
@@ -1055,6 +1057,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     seen.add(pending.id);
 
     let adapterLaunchSettled = false;
+    let adapterLaunchStarted = false;
     let launchAdapter: AgentAdapter | undefined;
     const launchReapGuard: LaunchReapGuard = { reaped: false };
     const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
@@ -1082,6 +1085,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         ? effectivePrompt
         : pending.launchNote ? `${pending.launchNote}\n\n${effectivePrompt}` : effectivePrompt;
       const pins = launchIntentPins(intent.intent);
+      const probeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
+        ? allocateLaunchSessionId()
+        : undefined;
       const adapterOpts = {
         ...pins,
         onSessionCreated: (sessionId: string) => {
@@ -1095,14 +1101,40 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
               },
             }
           : {}),
+        ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
       };
       if (dependencyAdmission?.admit && dependencyAdmission.probe) {
-        taskStore.setLaunchAdmission(pending.id, taskAdmissionForProbe(dependencyAdmission, nowISO()));
+        taskStore.setLaunchAdmission(
+          pending.id,
+          taskAdmissionForProbe(dependencyAdmission, nowISO(), probeSessionId),
+        );
         // Persist the half-open ownership marker before the adapter can create
         // a worker. A failed barrier follows the normal failed-probe path and
         // therefore never consumes an active slot.
-        await lifecycleDeps.flushTasks?.();
+        await lifecycleDeps.flushTasks();
+        const currentAfterBarrier = taskStore.getTask(pending.id);
+        if (!currentAfterBarrier || currentAfterBarrier.status !== 'pending') {
+          lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          continue;
+        }
+        if (!lifecycleDeps.launchDependencyAdmission?.isProbeActive(dependencyAdmission.probe)) {
+          lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          const refreshed = lifecycleDeps.launchDependencyAdmission?.evaluate(intent.intent.dependencies);
+          const refreshedAdmission = refreshed && !refreshed.admit
+            ? taskAdmissionForDeniedDecision(refreshed, nowISO())
+            : refreshed?.admit
+              ? taskAdmissionForProbeCapacityWait(refreshed, nowISO())
+              : undefined;
+          if (refreshed?.admit) {
+            lifecycleDeps.launchDependencyAdmission?.releaseProbe(refreshed.probe);
+          }
+          taskStore.setLaunchAdmission(pending.id, refreshedAdmission);
+          await lifecycleDeps.flushTasks();
+          blockedByDependency.add(pending.id);
+          continue;
+        }
       }
+      adapterLaunchStarted = true;
       const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, undefined, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
@@ -1117,6 +1149,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       });
       adapterLaunchSettled = true;
       if (dependencyAdmission?.admit) {
+        if (dependencyAdmission.probe) {
+          await lifecycleDeps.flushTasks().catch((flushErr) => {
+            console.error(
+              `[promotion] Post-attach probe persistence failed for task ${pending.id}:`,
+              flushErr instanceof Error ? flushErr.message : flushErr,
+            );
+          });
+        }
         lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
         taskStore.setLaunchAdmission(pending.id, undefined);
       }
@@ -1155,6 +1195,17 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       await notifyPendingTaskPromoted(lifecycleDeps, taskStore.getTask(pending.id) ?? launched);
       promoted++;
     } catch (err) {
+      if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchStarted) {
+        lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+        const current = taskStore.getTask(pending.id);
+        if (current && !isTerminalStatus(current.status) && current.launchAdmission?.status === 'probing') {
+          taskStore.setLaunchAdmission(
+            pending.id,
+            priorAdmission ?? taskAdmissionForProbeCapacityWait(dependencyAdmission, nowISO()),
+          );
+        }
+        throw err;
+      }
       // The adapter may create and report a terminal session before attaching
       // it to TaskStore. Clean that physical session up for every unsettled
       // launch failure, not only dependency probes; otherwise an ordinary

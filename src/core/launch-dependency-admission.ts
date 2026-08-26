@@ -137,6 +137,15 @@ export class LaunchDependencyAdmission {
     }
   }
 
+  /** True only while this exact probe still owns every dependency token. */
+  isProbeActive(probe: LaunchDependencyProbe | undefined): boolean {
+    if (!probe || probe.dependencies.length === 0) return false;
+    return probe.dependencies.every((dependency) => {
+      const entry = this.entries.get(dependency);
+      return entry?.state === 'half_open' && entry.probeToken === probe.token;
+    });
+  }
+
   /** Release a claimed probe when the task was queued or rejected pre-launch. */
   releaseProbe(probe: LaunchDependencyProbe | undefined): void {
     if (!probe) return;

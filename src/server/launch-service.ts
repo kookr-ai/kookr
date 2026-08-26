@@ -74,6 +74,7 @@ import {
 } from '../core/task-launch-intent.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
+  allocateLaunchSessionId,
   isLaunchTimeoutError,
   raceLaunchAgainstTimeout,
 } from './launch-timeout.js';
@@ -1687,10 +1688,20 @@ async function launchTaskCore(
 
   if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
     const parkedTask = taskStore.pendTask(task.id);
-    if (isRoundRobin) deps.roundRobinCursor?.advance();
     // A successful parked response is a durability promise: persist the full
     // replay intent and denial reason before acknowledging queued work.
-    await deps.flushTasks();
+    try {
+      await deps.flushTasks();
+    } catch (err) {
+      disposeUnacknowledgedTaskAfterPersistenceFailure(
+        deps,
+        task.id,
+        err,
+        resolvedClaimKey,
+      );
+      throw err;
+    }
+    if (isRoundRobin) deps.roundRobinCursor?.advance();
     return {
       task: parkedTask,
       queued: true,
@@ -1711,12 +1722,26 @@ async function launchTaskCore(
       queuedTask = taskStore.setLaunchAdmission(task.id, probeWaitAdmission);
     }
     deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
+    // The released half-open token now lives only in this task marker. Make
+    // that ownership transfer durable before returning the queued response.
+    // Preserve the pre-existing claim durability barrier for ordinary claimed
+    // capacity waits as well.
+    if (probeWaitAdmission || resolvedClaimKey) {
+      try {
+        await deps.flushTasks();
+      } catch (err) {
+        disposeUnacknowledgedTaskAfterPersistenceFailure(
+          deps,
+          task.id,
+          err,
+          resolvedClaimKey,
+        );
+        throw err;
+      }
+    }
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
-    // The released half-open token now lives only in this task marker. Make
-    // that ownership transfer durable before returning the queued response.
-    if (probeWaitAdmission) await deps.flushTasks();
     return {
       task: queuedTask,
       queued: true,
@@ -1823,6 +1848,10 @@ async function launchTaskCore(
       },
     );
   };
+  const probeSessionId = dependencyAdmissionDecision?.admit
+    && dependencyAdmissionDecision.probe
+    ? allocateLaunchSessionId()
+    : undefined;
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
     onSessionCreated: (sessionId) => {
@@ -1842,6 +1871,7 @@ async function launchTaskCore(
     ...(effectiveEffort !== undefined ? { effort: effectiveEffort } : {}),
     ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
+    ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
   };
 
   // #700 defense-in-depth: reserve the just-created task for this launch so a
@@ -1851,7 +1881,10 @@ async function launchTaskCore(
   taskStore.beginLaunch(task.id);
   let adapterLaunchStarted = false;
   if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
-    taskStore.setLaunchAdmission(task.id, taskAdmissionForProbe(dependencyAdmissionDecision, nowISO()));
+    taskStore.setLaunchAdmission(
+      task.id,
+      taskAdmissionForProbe(dependencyAdmissionDecision, nowISO(), probeSessionId),
+    );
   }
   // The disposition guard wraps ONLY the launch race — the point before which
   // no session has attached. Post-attach bookkeeping (posture stamping, audit
@@ -1863,6 +1896,37 @@ async function launchTaskCore(
       // interrupted half-open attempt from ordinary queued work if the probe
       // marker is durable before the adapter can create a terminal session.
       await deps.flushTasks();
+      const current = taskStore.getTask(task.id);
+      if (!current || isTerminalStatus(current.status)) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        taskStore.endLaunch(task.id);
+        throw new Error(`Task ${task.id} changed state while its probe marker was persisted`);
+      }
+      if (!deps.launchDependencyAdmission?.isProbeActive(dependencyAdmissionDecision.probe)) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        const refreshed = deps.launchDependencyAdmission?.evaluate(opts.dependencies);
+        const refreshedAdmission = refreshed && !refreshed.admit
+          ? taskAdmissionForDeniedDecision(refreshed, nowISO())
+          : refreshed?.admit
+            ? taskAdmissionForProbeCapacityWait(refreshed, nowISO())
+            : undefined;
+        if (refreshed?.admit) {
+          deps.launchDependencyAdmission?.releaseProbe(refreshed.probe);
+        }
+        taskStore.endLaunch(task.id);
+        taskStore.pendTask(task.id);
+        taskStore.setLaunchAdmission(task.id, refreshedAdmission);
+        await deps.flushTasks();
+        const parked = taskStore.getTask(task.id)!;
+        return {
+          task: parked,
+          queued: true,
+          ...(refreshedAdmission && isNoSlotDependencyAdmission(refreshedAdmission)
+            ? { parked: true }
+            : {}),
+          ...(refreshedAdmission ? { dependencyAdmission: refreshedAdmission } : {}),
+        };
+      }
     }
     // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
     // a launch that hangs (CPU saturation wedging the spawn path) fails fast
@@ -1879,6 +1943,22 @@ async function launchTaskCore(
   } catch (err) {
     if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
       const current = taskStore.getTask(task.id);
+      if (!adapterLaunchStarted) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        taskStore.endLaunch(task.id);
+        phaseTracker.abort();
+        const phaseTimings = phaseTracker.snapshot();
+        taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+        if (current && !isTerminalStatus(current.status)) {
+          disposeUnacknowledgedTaskAfterPersistenceFailure(
+            deps,
+            task.id,
+            err,
+            resolvedClaimKey,
+          );
+        }
+        throw err;
+      }
       if (
         !current
         || current.status === 'completed'
@@ -1923,10 +2003,6 @@ async function launchTaskCore(
       // task stays terminal with no retry marker, and the launch request
       // reports its original failure rather than claiming queued work exists.
       if (!parked) throw err;
-      // A persistence barrier failure happened before the adapter received the
-      // launch. The task is safely re-parked in memory, but do not acknowledge
-      // durable queued work when the required write itself failed.
-      if (!adapterLaunchStarted) throw err;
       return {
         task: parked,
         queued: true,
@@ -2007,8 +2083,18 @@ async function launchTaskCore(
     throw err;
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
-  deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision?.probe, true);
   if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    // Persist the session association while the durable probing marker still
+    // names the preallocated id. If this best-effort write fails, the older
+    // marker remains sufficient for boot to reap that exact terminal before a
+    // retry; never roll back a worker that is already live.
+    await deps.flushTasks().catch((flushErr) => {
+      console.error(
+        `[launch] post-attach probe persistence failed for task ${task.id}: `
+        + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+      );
+    });
+    deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, true);
     taskStore.setLaunchAdmission(task.id, undefined);
   }
   deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
@@ -2162,6 +2248,41 @@ function reparkAfterFailedProbe(
   if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
   taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
   return taskStore.getTask(taskId)!;
+}
+
+/**
+ * Dispose a task that could not cross its required persistence boundary.
+ * No worker was started, so retaining it as pending would let dedup acknowledge
+ * work whose durable row is still unproven. Binding the thrown error to the
+ * disposed record also keeps an idempotency reservation from being released as
+ * though task creation never happened.
+ */
+function disposeUnacknowledgedTaskAfterPersistenceFailure(
+  deps: LaunchServiceDeps,
+  taskId: string,
+  err: unknown,
+  claimKey: { repo: string; number: number } | undefined,
+): void {
+  if (claimKey) deps.relaunchArbiter?.release(claimKey, taskId);
+  deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
+  const task = deps.taskStore.getTask(taskId);
+  if (task && !isTerminalStatus(task.status)) {
+    deps.taskStore.setDisposition(taskId, {
+      reason: 'launch_error',
+      at: nowISO(),
+      source: 'launch-service',
+      detail: `Required task-state persistence failed before launch: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    try {
+      deps.taskStore.cancelTask(taskId);
+    } catch (cancelErr) {
+      console.error(
+        `[launch] failed to cancel task ${taskId} after persistence-barrier failure:`,
+        cancelErr instanceof Error ? cancelErr.message : cancelErr,
+      );
+    }
+  }
+  markDisposedTask(err, taskId);
 }
 
 async function collectAdvisoryDependencyFindings(

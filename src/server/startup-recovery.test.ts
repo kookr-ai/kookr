@@ -87,6 +87,7 @@ function fakeDeps() {
     hookWatcher: hookWatcher as unknown as HookFileWatcher,
     githubScanner: { isActive: () => false } as unknown as AgentLifecycleDeps['githubScanner'],
     autoNameTask: vi.fn(),
+    flushTasks: vi.fn().mockResolvedValue(undefined),
   };
 
   return {
@@ -161,6 +162,101 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
 });
 
 describe('runStartupRecoveryPhase — parked dependency hydration', () => {
+  test('reaps the preallocated terminal for an interrupted probe before re-parking it', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'interrupted preallocated probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'interrupted preallocated probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('kookr-expected-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+      },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('fails startup closed when an interrupted probe terminal cannot be reaped', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockRejectedValue(new Error('backend unavailable'));
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'unreapable preallocated probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-unreapable-probe',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await expect(runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    })).rejects.toThrow('Could not reap interrupted dependency probe session kookr-unreapable-probe');
+
+    expect(killSession).toHaveBeenCalledWith('kookr-unreapable-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'open',
+      launchAdmission: { status: 'probing', sessionId: 'kookr-unreapable-probe' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('forwards the production flush barrier into crash recovery', async () => {
+    const deps = fakeDeps();
+    const flushTasks = vi.fn().mockResolvedValue(undefined);
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, flushTasks };
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult());
+    const reconciled = reconciliationResult({ markedCompleted: ['dead-session'] });
+
+    await runStartupRecoveryPhase({ ...deps, reconcileResult: reconciled });
+
+    expect(mockRecoverCrashedSessions).toHaveBeenCalledWith(
+      deps.taskStore,
+      deps.adapterRegistry,
+      reconciled,
+      expect.objectContaining({ flushTasks }),
+    );
+  });
+
   test('live reconciled probe success overrides stale probe-busy waiters', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();
