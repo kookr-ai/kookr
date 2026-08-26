@@ -1419,6 +1419,21 @@ The system SHALL persist each orchestration pause as an explicit lifecycle recor
 
 **Evidence:** `src/core/orchestration-pause.ts`, `src/server/orchestration-pause-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/orchestration-pause.test.ts`, `src/server/orchestration-pause-service.test.ts`, `src/server/routes/orchestration-routes.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
 
+## R16: Issue Emission Bootstrap
+
+### R16.1: Default New Repositories to an Effective Zero-Drain Allowance — SHALL — `done`
+
+The system SHALL let a repository with no project-specific zero-drain setting emit issues before it has closed an issue in the drain window. The effective default SHALL be unlimited (`-1`) when the deployment has no configured ceiling, or the deployment ceiling when `KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT` is set.
+
+**Acceptance criteria:**
+- With no project-specific value and no deployment ceiling, project settings present `-1` as the inherited default, `kookr emission plan` reports `-1`, and a zero drain count does not reduce the budget produced by the other emission gates.
+- With no project-specific value and a deployment ceiling of `N`, project settings present `N` as the inherited default, `kookr emission plan` reports `N`, and a zero drain count caps issue emission at `N`.
+- An explicit per-project value from `0` through the deployment ceiling overrides the effective default; explicit `0` refuses zero-drain emission.
+- `-1` is accepted as the unlimited sentinel only when no deployment ceiling is configured.
+- Repositories with a positive drain count remain governed by the existing drain-ratio calculation.
+
+**Evidence:** `src/core/project-config-store.ts`, `src/core/emission-budget.ts`, `src/cli/kookr-emission.ts`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/core/project-config-store.test.ts` (`TS-EMISSION-001`), `src/core/emission-budget.test.ts` (`TS-EMISSION-002`), `src/cli/kookr-emission.test.ts` (`TS-EMISSION-003`), `src/frontend/components/ProjectDetailDrawer.tied.test.ts` (`TS-EMISSION-004`).
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1528,6 +1543,7 @@ The system SHALL persist each orchestration pause as an explicit lifecycle recor
 | R13.2 | F4.9 | SHALL | done | presentation formatCostRate, DetailPanel, FindingCard |
 | R14.1 | #1445 | SHALL | done | TTS server input validation |
 | R15.1 | #2782 | SHALL | done | orchestration-pause, orchestration-pause-service, diagnostics-routes |
+| R16.1 | emission bootstrap | SHALL | done | project-config-store, emission-budget, kookr-emission, ProjectDetailDrawer |
 
 ---
 

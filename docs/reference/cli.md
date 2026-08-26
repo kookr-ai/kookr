@@ -328,6 +328,10 @@ and CI-blind-merge debt cap how many new issues a run may file. Pure budget /
 dedupe math lives in `src/core/emission-budget.ts`; the CLI shells out to `gh`
 for live counts and writes deferred-ideas JSONL under `~/.kookr`.
 
+Repositories without an explicit zero-drain allowance default to `-1`
+(unlimited). If `KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT=N` is configured, an unset
+repository defaults to `N` instead. Explicit `0` keeps zero-drain emission off.
+
 ```bash
 kookr emission plan    --repo owner/repo --requested N [OPTIONS]
 kookr emission dedupe  --repo owner/repo --title "..." [OPTIONS]
@@ -357,12 +361,12 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 | `--constrained <N>` | plan | Budget when over the open-backlog threshold. |
 | `--drain-window <N>` | plan | Drain-rate window in days. |
 | `--drain-ratio <N>` | plan | New issues earned per drained issue. |
-| `--drain-floor <N>` | plan | Compatibility option; must remain `0`. Configure a repository's zero-drain allowance in Kookr project settings. |
+| `--drain-floor <N>` | plan | Compatibility option; must remain `-1`. Configure a repository's zero-drain allowance in Kookr project settings. |
 | `--retro-verify-threshold <N>` | plan | Queue depth at/above which emission is withheld (default `0` = any pending debt). |
 | `--no-retro-verify-coupling` | plan | Disable the `ci_blind_debt` gate (do not read the queue). |
 | `--tolerance-blocker <type:scope>` | plan | Refuse emission when that external blocker already has a tolerance regime (#1702). |
 | `--body-preview <text>` | defer | Optional body snippet stored on defer. |
-| `--kookr-dir <PATH>` | defer | State root for deferred-ideas (default `~/.kookr`). |
+| `--kookr-dir <PATH>` | plan, defer | State root for project configuration and deferred ideas (default `~/.kookr`). |
 | `--retro-verify-dir <PATH>` | plan, metrics | Override retro-verify queue dir (default `~/.kookr/playbook-state/retro-verify-queue` or `KOOKR_RETRO_VERIFY_QUEUE_DIR`). |
 | `--repo-dir <PATH>` | version | Local checkout to compare against `origin/main`. |
 | `--json` | all | Machine-readable envelope on stdout. |

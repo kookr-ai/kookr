@@ -46,6 +46,44 @@ describe('ProjectConfigStore', () => {
     expect(config.zeroDrainIssueLimit).toBe(1000);
   });
 
+  test('TS-EMISSION-001: resolves an unset zero-drain limit to unlimited or the deployment ceiling', async () => {
+    await store.load();
+    expect(store.getEffectiveZeroDrainIssueLimit('github.com/org/new-repo')).toBe(-1);
+
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 25 });
+    await capped.load();
+    expect(capped.getEffectiveZeroDrainIssueLimit('github.com/org/new-repo')).toBe(25);
+  });
+
+  test('TS-EMISSION-001: an explicit zero overrides the deployment ceiling', async () => {
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 25 });
+    await capped.load();
+    capped.setConfig('github.com/org/repo', { zeroDrainIssueLimit: 0 });
+    expect(capped.getEffectiveZeroDrainIssueLimit('github.com/org/repo')).toBe(0);
+  });
+
+  test('TS-EMISSION-001: persists -1 as unlimited only without a deployment ceiling', async () => {
+    await store.load();
+    expect(store.setConfig('github.com/org/repo', { zeroDrainIssueLimit: -1 }).zeroDrainIssueLimit)
+      .toBe(-1);
+
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 25 });
+    await capped.load();
+    expect(() => capped.setConfig('github.com/org/repo', { zeroDrainIssueLimit: -1 }))
+      .toThrow(ProjectConfigLimitError);
+  });
+
+  test('TS-EMISSION-001: a deployment ceiling replaces a persisted unlimited override on load', async () => {
+    await store.load();
+    store.setConfig('github.com/org/repo', { zeroDrainIssueLimit: -1 });
+    await store.save();
+
+    const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 25 });
+    await capped.load();
+    expect(capped.getConfig('github.com/org/repo')?.zeroDrainIssueLimit).toBeUndefined();
+    expect(capped.getEffectiveZeroDrainIssueLimit('github.com/org/repo')).toBe(25);
+  });
+
   test('enforces only the deployment-provided zero-drain ceiling', async () => {
     const capped = new ProjectConfigStore(tempDir, { maxZeroDrainIssueLimit: 1000 });
     await capped.load();

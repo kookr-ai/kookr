@@ -57,8 +57,11 @@ function renderDrawer(project: ProjectSummary, compact = false, send: (msg: Clie
   });
 }
 
-function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const prototype = input instanceof window.HTMLTextAreaElement
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')!.set!;
   setter.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
@@ -101,6 +104,66 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
       config: expect.objectContaining({ zeroDrainIssueLimit: 2500 }),
     }));
+  });
+
+  test('TS-EMISSION-004: renders and saves -1 as the unlimited zero-drain sentinel', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ zeroDrainIssueLimit: -1 }), false, send);
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    expect(input.value).toBe('-1');
+    expect(input.min).toBe('-1');
+    expect(container.textContent).toContain('inherit -1 (unlimited)');
+    act(() => setInputValue(input, '0'));
+    act(() => setInputValue(input, '-1'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ zeroDrainIssueLimit: -1 }),
+    }));
+  });
+
+  test('TS-EMISSION-004: saves zero as an explicit refusal', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ effectiveZeroDrainIssueLimit: -1 }), false, send);
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '0'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ zeroDrainIssueLimit: 0 }),
+    }));
+  });
+
+  test('keeps an unlimited sentinel dirty when the installation has a ceiling', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ zeroDrainIssueLimitMax: 1000 }), false, send);
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '-1'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('allows at most 1000');
+  });
+
+  test('leaves an inherited default unset when another setting is saved', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ effectiveZeroDrainIssueLimit: -1 }), false, send);
+    const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
+
+    act(() => setInputValue(notes, 'Updated note'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ zeroDrainIssueLimit: null }),
+    }));
+  });
+
+  test('shows the inherited default after clearing a project override', () => {
+    renderDrawer(baseProject({ zeroDrainIssueLimit: 5, effectiveZeroDrainIssueLimit: 5 }));
+    const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, ''));
+    expect(input.placeholder).toBe('-1 (unlimited)');
+    expect(container.textContent).toContain('Leave blank to inherit -1 (unlimited)');
   });
 
   test('keeps an over-cap value dirty and explains the deployment ceiling', () => {

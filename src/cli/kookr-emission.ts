@@ -54,6 +54,7 @@ import {
   PROJECT_ISSUE_EMISSION_LIMIT_ENV,
   readMaxZeroDrainIssueLimitFromEnv,
 } from '../core/project-config-store.js';
+import { UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT } from '../shared/contracts/project-config.js';
 
 export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
 
@@ -333,30 +334,54 @@ function readConfiguredZeroDrainIssueLimit(
   env: NodeJS.ProcessEnv,
 ): number {
   const path = join(kookrDir, 'project-configs.json');
-  let configured = 0;
+  let configured: number | undefined;
+  let raw: string;
   try {
-    const rows = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    if (Array.isArray(rows)) {
-      const row = rows.find((candidate) => {
-        if (!candidate || typeof candidate !== 'object') return false;
-        const project = (candidate as { project?: unknown }).project;
-        const normalizedRepo = repo.toLowerCase();
-        return project === `github.com/${normalizedRepo}` || project === normalizedRepo;
-      }) as { zeroDrainIssueLimit?: unknown } | undefined;
-      if (row && Number.isSafeInteger(row.zeroDrainIssueLimit) && (row.zeroDrainIssueLimit as number) >= 0) {
-        configured = row.zeroDrainIssueLimit as number;
-      }
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      raw = '[]';
+    } else {
+      throw new EmissionUsageError(`cannot read project settings at ${path}`);
     }
+  }
+  let rows: unknown;
+  try {
+    rows = JSON.parse(raw) as unknown;
   } catch {
-    // Missing/corrupt optional project settings keep the strict default.
+    throw new EmissionUsageError(`invalid JSON in project settings at ${path}`);
+  }
+  if (!Array.isArray(rows)) {
+    throw new EmissionUsageError(`project settings at ${path} must contain an array`);
+  }
+  const normalizedRepo = repo.toLowerCase();
+  const row = rows.find((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    const project = (candidate as { project?: unknown }).project;
+    if (typeof project !== 'string') return false;
+    const normalizedProject = project.toLowerCase();
+    return normalizedProject === `github.com/${normalizedRepo}` || normalizedProject === normalizedRepo;
+  }) as { zeroDrainIssueLimit?: unknown } | undefined;
+  if (row?.zeroDrainIssueLimit !== undefined) {
+    if (!Number.isSafeInteger(row.zeroDrainIssueLimit) || (row.zeroDrainIssueLimit as number) < -1) {
+      throw new EmissionUsageError(`invalid project zeroDrainIssueLimit in ${path}`);
+    }
+    configured = row.zeroDrainIssueLimit as number;
   }
   const maximum = readMaxZeroDrainIssueLimitFromEnv(env);
-  if (maximum !== undefined && configured > maximum) {
+  if (
+    maximum !== undefined
+    && configured !== undefined
+    && (
+      configured === UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT
+      || configured > maximum
+    )
+  ) {
     throw new EmissionUsageError(
       `project zeroDrainIssueLimit=${configured} exceeds ${maximum} (${PROJECT_ISSUE_EMISSION_LIMIT_ENV})`,
     );
   }
-  return configured;
+  return configured ?? maximum ?? UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
 }
 
 function searchTotalCount(runGh: (args: string[]) => string, query: string): number {

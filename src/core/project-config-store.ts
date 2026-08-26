@@ -3,6 +3,7 @@ import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
 import {
   sanitizeProjectConfig,
   type ProjectConfig,
+  UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT,
 } from '../shared/contracts/project-config.js';
 
 // --- Rate Limit Config (from oss-contribution-gate hook) ---
@@ -88,7 +89,10 @@ export class ProjectConfigStore {
         if (
           this.maxZeroDrainIssueLimit !== undefined
           && config.zeroDrainIssueLimit !== undefined
-          && config.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+          && (
+            config.zeroDrainIssueLimit === UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT
+            || config.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+          )
         ) {
           // A deployment cap may be lowered between restarts. Preserve the
           // project row but fail closed for this setting until it is corrected.
@@ -165,6 +169,13 @@ export class ProjectConfigStore {
     return this.maxZeroDrainIssueLimit;
   }
 
+  /** Resolve a project override, then the deployment ceiling, then unlimited. */
+  getEffectiveZeroDrainIssueLimit(project: string): number {
+    return this.configs.get(project)?.zeroDrainIssueLimit
+      ?? this.maxZeroDrainIssueLimit
+      ?? UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
+  }
+
   setConfig(project: string, patch: Partial<Omit<ProjectConfig, 'project'>>): ProjectConfig {
     const existing = this.configs.get(project) ?? { project };
     const updated = sanitizeProjectConfig({ ...existing, ...patch, project });
@@ -172,7 +183,10 @@ export class ProjectConfigStore {
     if (
       this.maxZeroDrainIssueLimit !== undefined
       && updated.zeroDrainIssueLimit !== undefined
-      && updated.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+      && (
+        updated.zeroDrainIssueLimit === UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT
+        || updated.zeroDrainIssueLimit > this.maxZeroDrainIssueLimit
+      )
     ) {
       throw new ProjectConfigLimitError(
         'zeroDrainIssueLimit',

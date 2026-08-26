@@ -79,7 +79,7 @@ describe('summarizeZodIssues', () => {
 
 describe('ClientMessageSchema — happy path sanity', () => {
   test('rejects invalid zero-drain issue limits at the WebSocket boundary', () => {
-    for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const value of [-2, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(ClientMessageSchema.safeParse({
         type: 'setProjectConfig',
         project: 'github.com/acme/project',
@@ -89,7 +89,17 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(ClientMessageSchema.safeParse({
       type: 'setProjectConfig',
       project: 'github.com/acme/project',
+      config: { zeroDrainIssueLimit: 0 },
+    }).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/acme/project',
       config: { zeroDrainIssueLimit: 1000 },
+    }).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/acme/project',
+      config: { zeroDrainIssueLimit: -1 },
     }).success).toBe(true);
   });
 

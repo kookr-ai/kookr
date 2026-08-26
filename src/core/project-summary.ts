@@ -4,6 +4,7 @@ import type { ProjectConfig, ProjectConfigStore } from './project-config-store.j
 import type { PrLessonsStateHolder } from './pr-lessons-discovery.js';
 import { defaultLocalPathChecker, type LocalPathHealthChecker } from './local-path-health.js';
 import { projectDisplayName, projectColorIndex, isSafeGithubProjectId } from './project-identity.js';
+import { UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT } from '../shared/contracts/project-config.js';
 
 export interface TaskSummary {
   taskId: string;
@@ -47,7 +48,10 @@ export interface ProjectSummary {
   dailyLimit?: number;
   /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
   budgetWarnUsd?: number;
+  /** Project-specific zero-drain issue allowance; -1 means unlimited. */
   zeroDrainIssueLimit?: number;
+  /** Resolved allowance after applying the project override and deployment default. */
+  effectiveZeroDrainIssueLimit?: number;
   zeroDrainIssueLimitMax?: number;
   /**
    * Accumulated agent spend for this project in USD, summed from each of the
@@ -332,6 +336,11 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
 
     // Use effective daily limit: manual config > rate-limits.json override > default
     const effectiveLimit = configStore.getEffectiveDailyLimit(projectId);
+    const zeroDrainIssueLimitMax = configStore.getMaxZeroDrainIssueLimit?.();
+    const effectiveZeroDrainIssueLimit = configStore.getEffectiveZeroDrainIssueLimit?.(projectId)
+      ?? config?.zeroDrainIssueLimit
+      ?? zeroDrainIssueLimitMax
+      ?? UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
 
     // PR lessons state (augment only — does not seed sidebar membership)
     const prLessons = prLessonsHolder?.getForProject(projectId);
@@ -350,7 +359,8 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       dailyLimit: effectiveLimit ?? config?.dailyPrLimit,
       budgetWarnUsd: config?.budgetWarnUsd,
       zeroDrainIssueLimit: config?.zeroDrainIssueLimit,
-      zeroDrainIssueLimitMax: configStore.getMaxZeroDrainIssueLimit?.(),
+      effectiveZeroDrainIssueLimit,
+      zeroDrainIssueLimitMax,
       costUsd: costUsd > 0 ? costUsd : undefined,
       openContributionAttempts,
       lastContribution: lastContrib,

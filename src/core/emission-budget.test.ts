@@ -290,17 +290,17 @@ describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
     expect(plan.deferredCount).toBe(5);
   });
 
-  it('retains strict refusal for a fresh repo by default', () => {
+  it('TS-EMISSION-002: leaves a fresh repository unlimited by default', () => {
+    expect(DEFAULT_DRAIN_FLOOR_BUDGET).toBe(-1);
     const plan = resolveEmissionBudget({
       openBacklogCount: 0,
       requestedBudget: 10,
       drainCount: 0,
     });
-    expect(plan.drainCap).toBe(0);
-    expect(plan.allowedBudget).toBe(0);
-    expect(plan.deferredCount).toBe(10);
-    expect(plan.action).toBe('refuse');
-    expect(plan.reason).toMatch(/not draining/i);
+    expect(plan.drainCap).toBeUndefined();
+    expect(plan.allowedBudget).toBe(10);
+    expect(plan.deferredCount).toBe(0);
+    expect(plan.action).toBe('allow');
   });
 
   it('honors an explicitly raised drain floor for a zero-drain target', () => {
