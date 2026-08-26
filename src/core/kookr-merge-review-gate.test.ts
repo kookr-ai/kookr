@@ -187,11 +187,12 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(mergeArgs).not.toMatch(/first000|middle00/);
   });
 
-  test('timeout label authorizes the merge when no verdict is present', () => {
+  test('timeout label blocks the merge when no verdict is present', () => {
     setView(gateView({ headOid: 'abc123', labels: [{ name: REVIEW_SKIPPED_TIMEOUT_LABEL }], comments: [] }));
     const res = run();
-    expect(res.status).toBe(0);
-    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    expect(res.status).toBe(4);
+    expect(res.stdout + res.stderr).toMatch(/timeout-label|no-verdict/i);
+    expect(res.stdout).not.toContain('FAKE-GH-MERGED');
   });
 
   test('a PASS bound to a stale head is refused (jq staleness guard)', () => {
@@ -202,7 +203,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).not.toContain('FAKE-GH-MERGED');
   });
 
-  test('a stale PASS plus the timeout label is allowed', () => {
+  test('a stale PASS plus the timeout label is still refused', () => {
     setView(
       gateView({
         headOid: 'newsha',
@@ -211,8 +212,9 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
       }),
     );
     const res = run();
-    expect(res.status).toBe(0);
-    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    expect(res.status).toBe(4);
+    expect(res.stdout + res.stderr).toMatch(/stale-verdict/i);
+    expect(res.stdout).not.toContain('FAKE-GH-MERGED');
   });
 
   test('KOOKR_MERGE_REQUIRE_REVIEW=0 disables the gate', () => {
@@ -325,18 +327,18 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     rmSync(binDir, { recursive: true, force: true });
   });
 
-  test('PASS verdict merges with gate enabled and no --match-head-commit', () => {
+  test('PASS verdict is blocked when gh cannot pin --match-head-commit', () => {
     writeFileSync(
       viewFile,
       JSON.stringify(gateView({ headOid: 'abc123', comments: [{ body: verdictBody('pass', 'abc123') }] })),
     );
     writeFileSync(mergeArgsFile, '');
     const res = runCombined();
-    expect(res.status).toBe(0);
-    expect(res.out).toContain('FAKE-GH-MERGED');
+    expect(res.status).toBe(4);
+    expect(res.out).not.toContain('FAKE-GH-MERGED');
     expect(res.out).toMatch(/lacks --match-head-commit/i);
     const mergeArgs = readFileSync(mergeArgsFile, 'utf-8');
-    expect(mergeArgs).not.toMatch(/--match-head-commit/);
+    expect(mergeArgs).toBe('');
   });
 
   test('BLOCK verdict still blocks on old gh', () => {

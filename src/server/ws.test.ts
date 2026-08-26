@@ -1481,6 +1481,29 @@ describe('WebSocket MessageRouter', () => {
     expect(updated.status).toBe('open');
   });
 
+  test('stop preserves a dependency-probe cleanup owner for reconciliation', async () => {
+    const task = taskStore.createTask('Recover dependency', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Recover dependency', '/cwd');
+    taskStore.setLaunchAdmission(task.id, {
+      status: 'probing',
+      reason: 'half_open_probe_in_flight',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      startedAt: new Date().toISOString(),
+      sessionId: tmuxName,
+    });
+
+    await router.handleMessage({ type: 'stop', agentId: tmuxName });
+
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: tmuxName },
+      sessions: [expect.objectContaining({
+        tmuxSession: tmuxName,
+        lastStatus: 'completed',
+      })],
+    });
+  });
+
   test('stop with multi-session task — only completes when all sessions done', async () => {
     const task = taskStore.createTask('Multi agent', '/cwd');
     const tmux1 = await adapter.launch(task.id, 'Part 1', '/cwd');

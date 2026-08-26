@@ -2077,11 +2077,98 @@ export const LUCY_1594_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
 ]);
 
 /**
+ * Kookr #1548's remaining concrete acceptance gap is the explicitly
+ * human-gated worktree cleanup. Keep the wave operationally narrow: reconcile
+ * the `main` binding and rescue snapshot first, remove only an exactly
+ * revalidated target after owner approval, then verify both dispositions.
+ * No leaf authorizes branch deletion or an unreviewed destructive operation.
+ */
+export const KOOKR_1548_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title: 'audit(worktrees): classify the stale main-bound worktree for #1548',
+    goal:
+      'Inspect the worktree currently binding branch `main` and the rescue snapshot, then publish a ' +
+      'durable evidence record of their identity, ignored files, staged/dirty state, and reachability.',
+    acceptanceCriteria: [
+      'The audit records fresh `git worktree list --porcelain`, repository identity, path, HEAD/branch, ahead/behind, status/diff summary, and ignored-file evidence for the exact `main` binding and `rescue/gitlab-enoent-staged-snapshot` candidate.',
+      'The result is posted on umbrella #1548 with an explicit disposition for both candidates: safe for owner-approved removal, retain/protect, or blocked because user work requires review.',
+      'The audit performs no worktree removal, branch deletion, force operation, or file overwrite.',
+    ],
+    fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['read-only shell evidence with the target path and branch identity captured'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+  Object.freeze({
+    title: 'chore(worktrees): remove the audited main-bound worktree after #1548 owner approval',
+    goal:
+      'Resolve the audited stale `main` worktree binding only after immediate identity revalidation ' +
+      'and explicit owner approval, while keeping the branch and all reachable commits intact.',
+    acceptanceCriteria: [
+      'Immediately before removal, fresh `git worktree list --porcelain` plus repository identity, path, HEAD, branch, primary-worktree, and ignored-file checks match the audited non-primary target; #1548 must contain explicit owner approval covering the staged/dirty/ignored-file disposition, otherwise the leaf records a blocker and makes no change.',
+      'After those guards pass, `git worktree remove --force` may target only that exact non-primary path; it never deletes the branch, and any identity change, primary binding, or missing rescue-snapshot disposition stops the operation.',
+      'The post-operation evidence confirms the `main` branch and its commits remain reachable and records the outcome plus the rescue-snapshot disposition on #1548.',
+    ],
+    fileHints: ['git worktree remove with keep-branch semantics', 'git status --ignored evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['command transcript proving immediate identity/HEAD/path revalidation, ignored-file review, exact-target, and owner-approval guards'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+  Object.freeze({
+    title: 'verify(worktrees): confirm the main checkout invariant after #1548 cleanup',
+    goal:
+      'Verify the delivery-debt cleanup outcome so no worktree still binds `main`, the rescue snapshot ' +
+      'has a recorded disposition, and the primary Kookr checkout remains on a named working branch.',
+    acceptanceCriteria: [
+      'A fresh `git worktree list --porcelain` shows no worktree on `refs/heads/main` after the approved cleanup, or records the exact remaining human blocker on #1548.',
+      'The primary Kookr checkout reports a named branch, the retained `main` ref remains reachable from the repository without changing tracked source, and the rescue/gitlab-enoent-staged-snapshot candidate has an explicit retain/protect, removed-after-approval, or blocked disposition.',
+      'The verification evidence, including ignored-file status where relevant, is posted on #1548 and is sufficient for the umbrella owner to close both residual acceptance items.',
+    ],
+    fileHints: ['git worktree list/status evidence', 'kookr#1548 residual acceptance item'],
+    testHints: ['post-cleanup invariant check against porcelain worktree output'],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+]);
+
+/**
+ * Kookr #1552 tracks the retro's eight umbrella campaigns. Its only
+ * unfinished residuals are already represented by the open #1549 and #1548
+ * leaves. Reuse those exact titles so queue-feeder emission is idempotent and
+ * never files a second issue for the same acceptance gap.
+ */
+export const KOOKR_1552_LEAF_PLAN: readonly LeafSpec[] = Object.freeze([
+  Object.freeze({
+    title: 'Define and test cost-attribution semantics for reaped tasks (#1549)',
+    goal:
+      'Reconcile the per-schedule ROI cost-attribution discrepancy for reaped tasks, including whether ' +
+      'final task cost truncates accrual and whether child costs are included, without claiming an ' +
+      'operator decision that has not been approved.',
+    acceptanceCriteria: [
+      'A durable decision record or linked documentation names the semantics for final task cost versus budget-burn peak, explains whether reaping truncates accrual, states whether child-task costs are included, and records the operator sign-off status.',
+      'A focused regression fixture reproduces the `757de464`-class discrepancy (`$8.05` final cost versus `$13.68` budget-burn peak) and pins the documented resolution or explicit pending-decision behavior.',
+      'The per-schedule ROI guidance links to the decision record so future rollups cannot silently mix final and peak cost semantics.',
+    ],
+    fileHints: [
+      'schedule execution-ledger and cost aggregation code',
+      'budget-burn diagnostics and per-schedule ROI documentation',
+      'focused schedule ROI / cost-attribution regression tests',
+    ],
+    testHints: [
+      'deterministic fixture for a reaped task with divergent final and peak cost',
+      'contract check for reaping and child-cost semantics',
+    ],
+    labels: ['enhancement', 'automation-blocked'],
+  }),
+  KOOKR_1548_LEAF_PLAN[1],
+  KOOKR_1548_LEAF_PLAN[2],
+]);
+
+/**
  * Vetted leaf plans keyed by repo-qualified umbrella ref (`owner/repo#number`).
  * Extend as more umbrellas get curated decompositions; unknown umbrellas return
  * undefined and are flagged `needsAuthoring` by {@link evaluateQueueFeeder}.
  */
 export const CURATED_LEAF_PLANS: Readonly<Record<string, readonly LeafSpec[]>> = Object.freeze({
+  'kookr-ai/kookr#1548': KOOKR_1548_LEAF_PLAN,
+  'kookr-ai/kookr#1552': KOOKR_1552_LEAF_PLAN,
   'jeanibarz/lucy#1588': LUCY_1588_LEAF_PLAN,
   'jeanibarz/lucy#1587': LUCY_1587_LEAF_PLAN,
   'jeanibarz/lucy#1590': LUCY_1590_LEAF_PLAN,

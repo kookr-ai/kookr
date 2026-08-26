@@ -568,6 +568,44 @@ Loop.
       expect(launchTask).not.toHaveBeenCalled();
     });
   });
+
+  it('starts the Ralph loop when launch is parked for dependency recovery', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+dependencies: [kb]
+---
+
+Loop.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Loop.', cwd, playbookId: 'workflow.md' });
+      const startLoop = vi.fn(async () => ({ ok: true, changed: true, value: undefined }));
+      const launchTask = vi.fn(async () => ({
+        task,
+        queued: true,
+        parked: true,
+      }));
+
+      const result = await launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: { startLoop } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      });
+
+      expect(result.parked).toBe(true);
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ dependencies: ['kb'] }),
+        { deliveryPolicy: 'pre-authorized' },
+      );
+      expect(startLoop).toHaveBeenCalledOnce();
+      expect(startLoop).toHaveBeenCalledWith(task, expect.objectContaining({ prompt: expect.any(String) }));
+    });
+  });
 });
 
 describe('replaceLoopedPlaybook', () => {

@@ -22,6 +22,7 @@ import type { HookIngestion } from './hook-ingestion.js';
 import type { ActivityLedger } from '../core/activity-ledger.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
+import { isTerminalStatus } from '../core/task-status.js';
 
 interface StartupRecoveryDeps {
   taskStore: TaskStore;
@@ -60,6 +61,8 @@ interface StartupRecoveryDeps {
    * audit directly.
    */
   staleOpenLaunchTaskIds?: string[];
+  /** Live adapter-launch timeout used by crash recovery. */
+  getLaunchTimeoutMs?: () => number;
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -91,8 +94,188 @@ export async function runStartupRecoveryPhase({
   restartEpoch,
   dispositionLedgerPath,
   staleOpenLaunchTaskIds = [],
+  getLaunchTimeoutMs,
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
+  // LaunchDependencyAdmission is process-local, while parked launch intents
+  // are durable. Rehydrate the degraded side before crash recovery or pending
+  // promotion so a clean first check after restart is a bounded half-open
+  // probe rather than an unguarded launch.
+  if (lifecycleDeps.launchDependencyAdmission) {
+    // Production reconciles terminal sessions before entering this phase.
+    // Reconciliation may therefore have cleared a cleanup-only marker after
+    // proving its exact session absent. Apply that settlement before scanning
+    // surviving markers so a fresh circuit becomes half-open/degraded rather
+    // than accidentally healthy.
+    for (const settled of reconcileResult.dependencyProbeCleanupSettled ?? []) {
+      lifecycleDeps.launchDependencyAdmission.settleReconciledProbe(
+        settled.dependencies,
+        settled.outcome,
+      );
+    }
+    const successfulProbes: Array<{ dependencies: string[]; startedAt: number }> = [];
+    const latestConfirmedAtByDependency = new Map<string, number>();
+    const persistedTasks = taskStore.listTasks();
+    const interruptedProbes: typeof persistedTasks = [];
+    const interruptedCountByDependency = new Map<string, number>();
+    const interruptedTaskIdsByDependency = new Map<string, Set<string>>();
+
+    // Pass 1 is deliberately synchronous: hydrate every durable dependency
+    // state before the first terminal-cleanup await. The HTTP listener may
+    // already be accepting requests during startup recovery.
+    for (const task of persistedTasks) {
+      if (task.launchAdmission?.status === 'probing') {
+        const expectedProbeSessionId = task.launchAdmission.sessionId;
+        const liveProbeSession = task.status === 'inProgress'
+          && task.sessions.some((session) =>
+            reconcileResult.resumed.includes(session.tmuxSession)
+            && (expectedProbeSessionId === undefined
+              || session.tmuxSession === expectedProbeSessionId),
+          );
+        if (liveProbeSession) {
+          // The adapter attached a worker before the previous process died.
+          // Reconciliation proved it is still live, which is sufficient probe
+          // success evidence; do not poison that running task as parked.
+          successfulProbes.push({
+            dependencies: task.launchAdmission.dependencies.map((dependency) => dependency.dependency),
+            // Invalid legacy timestamps cannot safely supersede any confirmed
+            // evidence, but a live probe with no competing confirmation still
+            // counts as success.
+            startedAt: parseEvidenceTime(task.launchAdmission.startedAt, Number.NEGATIVE_INFINITY),
+          });
+          taskStore.setLaunchAdmission(task.id, undefined);
+          continue;
+        }
+        // A terminal task can still carry a probing marker as a cleanup-only
+        // fence when cancellation won concurrently with a rejected physical
+        // stop. Keep it in the interrupted set until the exact session id is
+        // proven absent below; only then clear the marker.
+        interruptedProbes.push(task);
+        for (const dependency of task.launchAdmission.dependencies) {
+          interruptedCountByDependency.set(
+            dependency.dependency,
+            (interruptedCountByDependency.get(dependency.dependency) ?? 0) + 1,
+          );
+          const taskIds = interruptedTaskIdsByDependency.get(dependency.dependency) ?? new Set<string>();
+          taskIds.add(task.id);
+          interruptedTaskIdsByDependency.set(dependency.dependency, taskIds);
+        }
+        continue;
+      }
+      if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
+        lifecycleDeps.launchDependencyAdmission.restoreParked(task.launchAdmission.dependencies);
+        if (task.launchAdmission.reason === 'dependency_degraded') {
+          recordLatestConfirmedEvidence(
+            latestConfirmedAtByDependency,
+            task.launchAdmission.dependencies,
+            task.launchAdmission.parkedAt,
+          );
+        }
+      }
+    }
+
+    // Interrupted probes have stronger ownership than parked waiters for the
+    // same dependency. Install their busy sentinels only after every parked
+    // marker has been hydrated so task ordering cannot clear a sentinel.
+    for (const task of interruptedProbes) {
+      if (task.launchAdmission?.status !== 'probing') continue;
+      lifecycleDeps.launchDependencyAdmission.restoreInterruptedProbe(
+        task.launchAdmission.dependencies,
+        task.id,
+      );
+    }
+
+    // Pass 2 may await terminal cleanup because every dependency above is now
+    // either degraded or explicitly half-open/busy in the process-local gate.
+    for (const task of interruptedProbes) {
+      if (task.launchAdmission?.status !== 'probing') continue;
+      const interruptedDependencies = task.launchAdmission.dependencies.map((dependency) => ({
+        ...dependency,
+        state: 'degraded' as const,
+        reason: 'Recovery probe was interrupted by server restart',
+      }));
+      const expectedProbeSessionId = task.launchAdmission.sessionId;
+      if (expectedProbeSessionId) {
+        try {
+          // The marker was persisted before createSession. If the previous
+          // process died before addSession was flushed, this exact terminal
+          // is otherwise an age-gated orphan and a retry could overlap it.
+          // killSession is idempotent when creation never reached the backend.
+          await terminalBackend.killSession(expectedProbeSessionId);
+        } catch (err) {
+          throw new Error(
+            `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
+            + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        const afterReap = taskStore.getTask(task.id);
+        if (afterReap?.sessions.some((session) => session.tmuxSession === expectedProbeSessionId)) {
+          taskStore.updateSession(task.id, expectedProbeSessionId, { lastStatus: 'aborted' });
+        }
+      }
+      const currentTask = taskStore.getTask(task.id);
+      if (!currentTask || isTerminalStatus(currentTask.status)) {
+        if (currentTask) {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
+      } else if (currentTask.sessions.some(
+        (session) => session.tmuxSession !== expectedProbeSessionId
+          && session.lastStatus !== 'completed'
+          && session.lastStatus !== 'aborted',
+      )) {
+        // The persisted probe id is dead, but reconciliation found another
+        // live worker already attached to this task. Keep that worker active
+        // and capacity-counted; only clear the exact probe's cleanup marker.
+        // The shared circuit remains degraded below, so no new task can claim
+        // recovery until fresh provider evidence arrives.
+        taskStore.setLaunchAdmission(task.id, undefined);
+        taskStore.setLaunchHealthSummary(task.id, undefined);
+      } else {
+        const parked = {
+          status: 'parked' as const,
+          reason: 'dependency_degraded' as const,
+          dependencies: interruptedDependencies,
+          parkedAt: new Date().toISOString(),
+        };
+        taskStore.setLaunchAdmission(task.id, parked);
+        if (currentTask.status === 'inProgress') taskStore.reopenTask(task.id);
+        if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+        recordLatestConfirmedEvidence(
+          latestConfirmedAtByDependency,
+          parked.dependencies,
+          parked.parkedAt,
+        );
+      }
+      // Settle the shared circuit only after every persisted worker for that
+      // dependency is absent. Re-read all owners at that point: a terminal
+      // transition during another worker's cleanup must not become stale
+      // provider-failure evidence.
+      for (const dependency of interruptedDependencies) {
+        const remaining = (interruptedCountByDependency.get(dependency.dependency) ?? 1) - 1;
+        interruptedCountByDependency.set(dependency.dependency, remaining);
+        if (remaining !== 0) continue;
+        const hasReplayableOwner = Array.from(
+          interruptedTaskIdsByDependency.get(dependency.dependency) ?? [],
+        ).some((taskId) => {
+          const owner = taskStore.getTask(taskId);
+          return owner !== undefined && !isTerminalStatus(owner.status);
+        });
+        if (hasReplayableOwner) {
+          lifecycleDeps.launchDependencyAdmission.restoreParked([dependency]);
+        } else {
+          lifecycleDeps.launchDependencyAdmission.releaseInterruptedProbe([dependency]);
+        }
+      }
+    }
+    for (const probe of successfulProbes) {
+      lifecycleDeps.launchDependencyAdmission.restoreSuccessfulProbe(
+        probe.dependencies,
+        probe.startedAt,
+        latestConfirmedAtByDependency,
+      );
+    }
+  }
   // Tracks crash-recovery's own outcome so the post-recovery audit below can
   // see it even on a boot with nothing to relaunch/fail. Populated whenever
   // recoverCrashedSessions actually runs. `startupRecoverySummary` is now
@@ -103,7 +286,12 @@ export async function runStartupRecoveryPhase({
   if (process.env.KOOKR_AUTO_RELAUNCH === 'false') {
     console.log('[crash-recovery] Disabled (KOOKR_AUTO_RELAUNCH=false), skipping');
   } else if (reconcileResult.markedCompleted.length > 0) {
-    const recoveryResult = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+    const recoveryResult = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: lifecycleDeps.launchDependencyAdmission,
+      dependencyPreflightRunner: lifecycleDeps.dependencyPreflightRunner,
+      getLaunchTimeoutMs: getLaunchTimeoutMs ?? lifecycleDeps.getLaunchTimeoutMs,
+      flushTasks: lifecycleDeps.flushTasks,
+    });
     crashRecoveryResult = recoveryResult;
 
     for (const entry of recoveryResult.relaunched) {
@@ -294,6 +482,25 @@ export async function runStartupRecoveryPhase({
   }
 
   return startupRecoverySummary;
+}
+
+function parseEvidenceTime(value: string, fallback: number): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function recordLatestConfirmedEvidence(
+  latestByDependency: Map<string, number>,
+  dependencies: readonly { dependency: string }[],
+  evidenceAt: string,
+): void {
+  const confirmedAt = parseEvidenceTime(evidenceAt, Number.POSITIVE_INFINITY);
+  for (const dependency of dependencies) {
+    latestByDependency.set(
+      dependency.dependency,
+      Math.max(latestByDependency.get(dependency.dependency) ?? Number.NEGATIVE_INFINITY, confirmedAt),
+    );
+  }
 }
 
 /**

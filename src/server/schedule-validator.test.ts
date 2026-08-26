@@ -77,6 +77,19 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
       expect(launch.playbookId).toBe('proj.md');
     });
 
+    it('preserves playbook launch dependencies for scheduled fires', async () => {
+      await writeFile(
+        join(projectCwd, '.kookr', 'playbooks', 'dependent.md'),
+        PLAYBOOK('Dependent Playbook').replace('parameters: []', 'dependencies: [kb]\nparameters: []'),
+      );
+
+      const launch = await validator.resolveLaunch(makeSchedule({
+        playbook: { path: 'dependent.md', parameters: {}, scope: 'project' },
+      }));
+
+      expect(launch.dependencies).toEqual(['kb']);
+    });
+
     it('resolves a user-scoped playbook whose cwd lacks the file', async () => {
       const launch = await validator.resolveLaunch(makeSchedule({
         playbook: { path: 'usr.md', parameters: {}, scope: 'user' },

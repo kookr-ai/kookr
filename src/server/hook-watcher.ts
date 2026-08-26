@@ -8,6 +8,7 @@ import {
   readSync,
   renameSync,
   statSync,
+  unlinkSync,
   watch,
   writeFileSync,
   type FSWatcher,
@@ -881,9 +882,9 @@ export class HookFileWatcher {
    */
   private persistReplayCheckpoints(): void {
     if (!this.replayCheckpointPath) return;
+    const tmpPath = `${this.replayCheckpointPath}.tmp`;
     try {
       mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
-      const tmpPath = `${this.replayCheckpointPath}.tmp`;
       // Compact JSON (issue #2298): pretty-print multiplies bytes and stringify
       // time on the drain hot path when sessionCount is in the thousands.
       // Owner-only mode (issue #2365): checkpoints store raw hook JSONL tails
@@ -897,6 +898,7 @@ export class HookFileWatcher {
       chmodSync(tmpPath, 0o600);
       renameSync(tmpPath, this.replayCheckpointPath);
     } catch (err) {
+      try { unlinkSync(tmpPath); } catch { /* best-effort temp cleanup */ }
       console.warn('[hook-watcher] failed to persist replay checkpoints:', err);
     }
   }

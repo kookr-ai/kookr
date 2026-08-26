@@ -1,6 +1,6 @@
 export const COMPLETION_SHELLS = ['bash', 'zsh'] as const;
 const ROOT_FLAGS = ['-h', '--help', '-v', '--version'] as const;
-const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--dir', '--json'] as const;
+const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--atomic-temp-max-age-days', '--dir', '--json'] as const;
 const MAINTENANCE_BACKUP_FLAGS = ['--dir', '--out', '--json'] as const;
 const LESSON_STATUS_FLAGS = ['--json', '--dir', '-h', '--help'] as const;
 const LESSON_DRAIN_FLAGS = ['--json', '--dir', '--dry-run', '-h', '--help'] as const;

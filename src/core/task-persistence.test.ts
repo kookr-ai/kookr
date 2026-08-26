@@ -152,6 +152,55 @@ describe('Task Persistence', () => {
     expect(tasks[0].status).toBe('inProgress');
   });
 
+  test('round-trips parked launch intent and admission through JSON', async () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'Rendered prompt',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'Original caller prompt',
+        cwd: '/repo',
+        projectId: 'github.com/example/repo',
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+        idempotencyKey: 'stable-key',
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+    store.pendTask(task.id);
+
+    await saveTasks(store.getAllTasks(), filePath);
+    const { tasks } = await loadTasks(filePath);
+
+    expect(tasks[0]?.launchIntent).toEqual({
+      schemaVersion: 'task-launch-intent.v1',
+      prompt: 'Original caller prompt',
+      cwd: '/repo',
+      projectId: 'github.com/example/repo',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      ralphVerdictEnv: true,
+      dependencies: ['kb'],
+      idempotencyKey: 'stable-key',
+    });
+    expect(tasks[0]?.launchAdmission).toEqual({
+      status: 'parked',
+      reason: 'dependency_degraded',
+      dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+      parkedAt: '2026-08-25T10:00:00.000Z',
+    });
+  });
+
   test('legacy tasks without provenance read back with explicit unknown provenance (issue #1583)', async () => {
     // A tasks.json written before the provenance field existed: a v1 plain
     // array plus a v2 envelope, neither carrying `provenance`.
@@ -171,6 +220,7 @@ describe('Task Persistence', () => {
 
     expect(tasks).toHaveLength(1);
     expect(tasks[0].provenance).toEqual({ kind: 'unknown' });
+    expect(tasks[0].launchIntent).toBeUndefined();
   });
 
   test('load preserves provenance already present on persisted tasks (issue #1583)', async () => {

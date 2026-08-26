@@ -318,7 +318,7 @@ Do the durable thing.
     expect(pb.loop).toBeUndefined();
     expect(pb.loopValidationError).toBeUndefined();
     expect(pb.effectiveLoop).toEqual({
-      iterationCap: 6,
+      iterationCap: 10,
       costCapUsd: 25,
       sources: {
         iterationCap: 'default',
@@ -374,7 +374,7 @@ Body.
     const pb = parsePlaybook(content, 'tags.md', '/project');
 
     expect(pb.tags).toEqual(['workflow', 'loopable']);
-    expect(pb.effectiveLoop?.iterationCap).toBe(6);
+    expect(pb.effectiveLoop?.iterationCap).toBe(10);
   });
 
   test('preserves standard launch metadata when loop config is invalid', () => {
@@ -572,7 +572,7 @@ Body.
 name: Bad zero-diff
 tags: [workflow, loopable]
 loop:
-  zeroDiffConsecutiveIterations: 10
+  zeroDiffConsecutiveIterations: 11
 ---
 
 Body.

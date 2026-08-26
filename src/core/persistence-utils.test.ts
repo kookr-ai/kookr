@@ -51,6 +51,17 @@ describe('atomicWriteFile', () => {
     expect(mode).not.toBe(0o600);
     expect(mode & 0o400).toBe(0o400); // owner-readable at minimum
   });
+
+  test('removes the temporary file when the final rename fails', async () => {
+    const filePath = join(tempDir, 'target.json');
+    // A directory at the final path makes rename() fail after the temporary
+    // file has been written, which is the failure window that used to leak it.
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(filePath);
+
+    await expect(atomicWriteFile(filePath, '{"ok":true}')).rejects.toThrow();
+    expect(readdirSync(tempDir).filter((entry) => entry.startsWith('.tmp-'))).toEqual([]);
+  });
 });
 
 describe('readJsonFile', () => {

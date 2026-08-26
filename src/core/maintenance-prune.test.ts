@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile, readFile, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, unlink, writeFile, readFile, stat, utimes, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,6 +63,14 @@ describe('planAndPruneMaintenance', () => {
       const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
       await utimes(path, when, when);
     }
+    return path;
+  }
+
+  async function writeAtomicTemp(fileName: string, mtimeDaysAgo: number): Promise<string> {
+    const path = join(dataDir, fileName);
+    await writeFile(path, 'orphaned temp data\n', 'utf8');
+    const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
+    await utimes(path, when, when);
     return path;
   }
 
@@ -496,6 +504,218 @@ describe('planAndPruneMaintenance', () => {
   test('rejects a non-positive maxAgeDays', async () => {
     await writeTasks([]);
     await expect(planAndPruneMaintenance({ dataDir, maxAgeDays: 0, now })).rejects.toThrow(/positive/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Root-level atomic-write temporary-file reclamation (issue #2805)
+  // ---------------------------------------------------------------------------
+
+  test('reclaims stale allowlisted root temp files while preserving fresh and unknown names', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174000', 20);
+    const fresh = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174001', 2);
+    const unknown = await writeAtomicTemp('.tmp-not-an-atomic-writer', 90);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(1);
+    expect(result.removed.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(1);
+    expect(result.removed[0]).toMatchObject({
+      kind: 'atomic-write-temp',
+      reason: 'atomic-write-temp-aged',
+      bytes: expect.any(Number),
+    });
+    expect(result.atomicWriteTempSweep).toMatchObject({
+      plannedCount: 1,
+      removedCount: 1,
+      reclaimableBytes: expect.any(Number),
+      reclaimedBytes: expect.any(Number),
+    });
+    expect(await exists(stale)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
+    expect(await exists(unknown)).toBe(true);
+  });
+
+  test('recognizes each supported root atomic-write naming pattern', async () => {
+    await writeTasks([]);
+    const names = [
+      '.tmp-12345',
+      'effort-split.jsonl.tmp-12345-1700000000000',
+      'detection-stats.json.tmp-12345',
+      'last-good-health.json.tmp-12345',
+      'timer-health.state.json.tmp-12345',
+      'finding-evidence-review-queue.json.12345.1700000000000.tmp',
+      '.achievements-123e4567-e89b-12d3-a456-426614174000.tmp',
+      '.schedules-123e4567-e89b-12d3-a456-426614174000.tmp',
+      '.schedule-rollups-123e4567-e89b-12d3-a456-426614174000.tmp',
+      '.resource-watchdog-state.0123456789ab.tmp',
+      'hook-replay-checkpoints.json.tmp',
+      'audit.snapshot.json.12345.tmp',
+      'relay-connection.json.12345.1700000000000.tmp',
+      '.node-id.12345.1700000000000.tmp',
+      '.node-epoch.12345.1700000000000.tmp',
+    ];
+    for (const name of names) await writeAtomicTemp(name, 20);
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      now,
+      openFileChecker: async (paths) => new Map(paths.map((path) => [path, 'closed'] as const)),
+    });
+
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(names.length);
+    expect(result.removed.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(names.length);
+  });
+
+  test('dry-run reports stale root temp files without removing them', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174002', 20);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, dryRun: true, now });
+
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(1);
+    expect(result.removed).toHaveLength(0);
+    expect(result.atomicWriteTempSweep).toMatchObject({
+      plannedCount: 1,
+      removedCount: 0,
+      reclaimableBytes: expect.any(Number),
+      reclaimedBytes: 0,
+    });
+    expect(await exists(stale)).toBe(true);
+  });
+
+  test('does not treat case variants or near-miss names as Kookr temps', async () => {
+    await writeTasks([]);
+    const names = ['.tmp-write', '.tmp-prune', '.TMP-WRITE', '.tmp-WRITE', 'audit.SNAPSHOT.json.12345.tmp', '.tmp-operator-note'];
+    for (const name of names) await writeAtomicTemp(name, 20);
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      now,
+      openFileChecker: async (paths) => new Map(paths.map((path) => [path, 'closed'] as const)),
+    });
+
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+    for (const name of names) expect(await exists(join(dataDir, name))).toBe(true);
+  });
+
+  test('retains a stale root temp file held open by a live process', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174003', 20);
+    const handle = await open(stale, 'r');
+    try {
+      const result = await planAndPruneMaintenance({
+        dataDir,
+        maxAgeDays: 30,
+        now,
+      });
+
+      expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+      expect(result.atomicWriteTempSweep!.skippedOpenCount).toBe(1);
+      expect(result.atomicWriteTempSweep!.skippedSafetyCheckCount).toBe(0);
+      expect(await exists(stale)).toBe(true);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test('handles a mixed real open and closed lsof batch', async () => {
+    await writeTasks([]);
+    const openPath = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174008', 20);
+    const closedPath = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174009', 20);
+    const handle = await open(openPath, 'r');
+    try {
+      const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+      expect(result.atomicWriteTempSweep).toMatchObject({
+        skippedOpenCount: 1,
+        skippedSafetyCheckCount: 0,
+        removedCount: 1,
+      });
+      expect(await exists(openPath)).toBe(true);
+      expect(await exists(closedPath)).toBe(false);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test('fails closed when open-file verification is unavailable', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174005', 20);
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      now,
+      openFileChecker: async (paths) => new Map(paths.map((path) => [path, 'unknown'] as const)),
+    });
+
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+    expect(result.atomicWriteTempSweep).toMatchObject({ skippedOpenCount: 0, skippedSafetyCheckCount: 1 });
+    expect(result.warnings.join('\n')).toMatch(/open.*preserving/i);
+    expect(await exists(stale)).toBe(true);
+  });
+
+  test('rechecks each planned temp immediately before deletion', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174006', 20);
+    let checks = 0;
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      now,
+      openFileChecker: async (paths) => {
+        checks += 1;
+        const state = checks === 1 ? 'closed' : 'open';
+        return new Map(paths.map((path) => [path, state] as const));
+      },
+    });
+
+    expect(checks).toBe(2);
+    expect(result.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(1);
+    expect(result.removed.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+    expect(result.atomicWriteTempSweep!.skippedOpenCount).toBe(1);
+    expect(await exists(stale)).toBe(true);
+  });
+
+  test('does not audit a temp that disappeared before unlink as removed', async () => {
+    await writeTasks([]);
+    const stale = await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174007', 20);
+    let checks = 0;
+
+    const result = await planAndPruneMaintenance({
+      dataDir,
+      maxAgeDays: 30,
+      now,
+      openFileChecker: async (paths) => {
+        checks += 1;
+        if (checks === 2) await unlink(stale);
+        return new Map(paths.map((path) => [path, 'closed'] as const));
+      },
+    });
+
+    expect(checks).toBe(2);
+    expect(result.removed.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+    expect(result.atomicWriteTempSweep).toMatchObject({ removedCount: 0, reclaimedBytes: 0 });
+    expect(result.reclaimedBytes).toBe(0);
+  });
+
+  test('is repeatable after removing stale root temp files', async () => {
+    await writeTasks([]);
+    await writeAtomicTemp('.tmp-123e4567-e89b-12d3-a456-426614174004', 20);
+
+    const openFileChecker = async (paths: readonly string[]) =>
+      new Map(paths.map((path) => [path, 'closed'] as const));
+    const first = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now, openFileChecker });
+    const second = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now, openFileChecker });
+
+    expect(first.removed.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(1);
+    expect(second.planned.filter((p) => p.kind === 'atomic-write-temp')).toHaveLength(0);
+    expect(second.removed).toHaveLength(0);
+    expect(second.atomicWriteTempSweep).toMatchObject({ plannedCount: 0, removedCount: 0, reclaimedBytes: 0 });
   });
 
   test('tolerates a bare task array (legacy shape)', async () => {

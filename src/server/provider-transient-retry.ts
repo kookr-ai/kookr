@@ -4,6 +4,7 @@ import type {
   ProviderTransientRetryRequest,
   ProviderTransientAlertRequest,
 } from '../core/silent-failure-classifier.js';
+import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 
 /**
  * Bounded auto-retry + operator-alert handlers for `provider_transient` silent
@@ -19,7 +20,8 @@ import type {
  */
 
 export interface ProviderTransientRetryDeps {
-  taskStore: Pick<TaskStore, 'getTask' | 'setRetryLineage'>;
+  taskStore: Pick<TaskStore, 'getTask' | 'setRetryLineage'>
+    & Partial<Pick<TaskStore, 'setRelaunchDisposition'>>;
   /** Launch a fresh task. The composition root binds this to the real launch service. */
   launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
   /**
@@ -55,16 +57,35 @@ export function createProviderTransientRetryHandler(
     // Only schedule-provenance work is auto-retried (the classifier already
     // enforces this, but the launch shape depends on it, so re-check here).
     const scheduleId = original.provenance?.kind === 'schedule' ? original.provenance.sourceId : undefined;
+    const intent = validatePersistedLaunchIntent(original);
+    if (!intent.ok) {
+      deps.taskStore.setRelaunchDisposition?.(original.id, {
+        outcome: 'not_relaunched',
+        source: 'provider-transient-retry',
+        reason: intent.reason,
+        at: new Date().toISOString(),
+        detail: intent.detail,
+      });
+      logger.warn(`[provider-transient-retry] task ${original.id} has no replayable launch intent; skipping retry: ${intent.detail}`);
+      return;
+    }
+    const pins = launchIntentPins(intent.intent);
 
     const launchOpts: LaunchOpts = {
-      prompt: original.prompt,
-      cwd: original.cwd,
+      prompt: intent.intent.prompt ?? original.prompt,
+      cwd: intent.intent.cwd ?? original.cwd,
       ...(original.criteria ? { criteria: original.criteria } : {}),
       ...(original.name ? { name: original.name } : {}),
       ...(original.playbookId ? { playbookId: original.playbookId } : {}),
       ...(original.playbookParameterValues ? { playbookParameterValues: original.playbookParameterValues } : {}),
-      ...(original.projectId ? { projectId: original.projectId } : {}),
-      agentType: original.agentType,
+      ...((intent.intent.projectId ?? original.projectId)
+        ? { projectId: intent.intent.projectId ?? original.projectId }
+        : {}),
+      agentType: intent.intent.agentType,
+      ...(pins.model !== undefined ? { model: pins.model } : {}),
+      ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+      ...(intent.intent.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+      ...(intent.intent.dependencies ? { dependencies: [...intent.intent.dependencies] } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.
       disableDedup: true,
       launchSource: 'schedule',

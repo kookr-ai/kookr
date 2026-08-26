@@ -19,7 +19,7 @@
  *    secrets, best-effort durability.
  */
 
-import { mkdir, readFile, readdir, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, readdir, unlink, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -119,8 +119,16 @@ export async function writeOperatorSignal(
   const fileName = signalFileName(input.key);
   const path = join(dir, fileName);
   const tmp = `${path}.tmp-${Math.abs(hashString(signal.createdAt + fileName))}`;
-  await writeFile(tmp, JSON.stringify(signal, null, 2), 'utf8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, JSON.stringify(signal, null, 2), 'utf8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
   return { fileName, path, signal };
 }
 
@@ -185,8 +193,16 @@ export async function saveDeliveredMarker(dir: string, marker: DeliveredMarker):
   await mkdir(dir, { recursive: true });
   const path = join(dir, DELIVERED_MARKER_FILE);
   const tmp = `${path}.tmp-write`;
-  await writeFile(tmp, JSON.stringify(marker, null, 2), 'utf8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, JSON.stringify(marker, null, 2), 'utf8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 function hashString(value: string): number {

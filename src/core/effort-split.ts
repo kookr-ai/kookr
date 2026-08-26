@@ -11,7 +11,7 @@
  * `[target − deviationPts, target + deviationPts]` (default 5%–35%).
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -347,8 +347,18 @@ export async function persistEffortSplit(
   next.sort((a, b) => a.date.localeCompare(b.date));
   const body = next.map((row) => JSON.stringify(row)).join('\n') + (next.length > 0 ? '\n' : '');
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, body, 'utf8');
-  await rename(tmp, filePath);
+  let renamed = false;
+  try {
+    await writeFile(tmp, body, 'utf8');
+    await rename(tmp, filePath);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
   return { path: filePath, overwritten };
 }
 

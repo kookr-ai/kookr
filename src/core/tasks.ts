@@ -13,9 +13,12 @@ import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
 import type {
   TaskDependencyEdge,
   TaskDisposition,
+  TaskLaunchIntent,
   TaskLaunchPermissionPosture,
   TaskPriorityUpdate,
+  TaskRelaunchDisposition,
 } from '../shared/contracts/task.js';
+import { TASK_LAUNCH_INTENT_SCHEMA } from './task-launch-intent.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import { SessionRegistry } from './session-registry.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
@@ -67,6 +70,13 @@ export class InvalidTransitionError extends Error {
   constructor(from: TaskStatus, to: TaskStatus) {
     super(`Invalid transition: ${from} -> ${to}`);
     this.name = 'InvalidTransitionError';
+  }
+}
+
+export class TaskCleanupInProgressError extends Error {
+  constructor(taskId: string, operation: 'deleted' | 'reopened' = 'deleted') {
+    super(`Task ${taskId} cannot be ${operation} while dependency-probe cleanup is in progress`);
+    this.name = 'TaskCleanupInProgressError';
   }
 }
 
@@ -141,6 +151,12 @@ export function isAgedTerminalTask(
  */
 const LAUNCH_RESERVATION_TTL_MS = 10 * 60 * 1000;
 
+interface LaunchReservation {
+  reservedAt: number;
+  token: string;
+  countsAsActive: boolean;
+}
+
 export class TaskStore {
   private tasks = new Map<string, Task>();
   /**
@@ -148,11 +164,12 @@ export class TaskStore {
    * fix (docs/reports/issue-700-multi-session-attach-audit.md): concurrent
    * promotePendingTasks invocations could all pick the same pending task
    * because its status only flips to inProgress when the adapter calls
-   * addSession, seconds after the pick. beginLaunch() is the synchronous CAS
+   * addSession, seconds after the pick. beginLaunchWithToken() is the synchronous CAS
    * that closes that pick-to-launch window. Deliberately NOT persisted — a
    * reservation is meaningless across a restart (the launching process died).
    */
-  private launchReservations = new Map<string, number>();
+  private launchReservations = new Map<string, LaunchReservation>();
+  private launchReservationSequence = 0;
   /**
    * Typed task-relation graph (issue #599). Keyed by
    * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
@@ -303,10 +320,12 @@ export class TaskStore {
       launchSource,
       scheduleId,
       agentType,
+      launchIntent,
       name,
       playbookId,
       playbookParameterValues,
       launchHealthSummary,
+      launchAdmission,
       launchNote,
       projectId,
       metadata,
@@ -342,13 +361,18 @@ export class TaskStore {
       : parentForInherit?.unattended === true;
 
     const now = new Date();
+    const effectiveAgentType = agentType ?? DEFAULT_AGENT_TYPE;
     const task: Task = {
       id: randomUUID(),
       prompt,
       userPrompt,
       cwd,
       criteria,
-      agentType: agentType ?? DEFAULT_AGENT_TYPE,
+      agentType: effectiveAgentType,
+      launchIntent: structuredClone(launchIntent ?? {
+        schemaVersion: TASK_LAUNCH_INTENT_SCHEMA,
+        agentType: effectiveAgentType,
+      }) as TaskLaunchIntent,
       parentTaskId,
       // Immutable launch provenance (issue #1583). Derived once from the
       // launch signals present at creation; never mutated afterward.
@@ -386,6 +410,7 @@ export class TaskStore {
     if (launchHealthSummary) {
       task.launchHealthSummary = structuredClone(launchHealthSummary);
     }
+    if (launchAdmission) task.launchAdmission = structuredClone(launchAdmission);
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
     if (priority === 'high') task.priority = priority;
@@ -836,12 +861,29 @@ export class TaskStore {
       throw new InvalidTransitionError(task.status, to);
     }
     const now = new Date();
+    const dependencyAdmission = task.launchAdmission !== undefined;
+    // A probing marker is physical-cleanup ownership even before the adapter's
+    // create-before-attach callback adds its exact session to the task. Keep it
+    // through the terminal transition even when a stop just succeeded so the
+    // runtime reconciler can atomically release both the durable marker and
+    // process-local cleanup owner.
+    const dependencyCleanupFence = task.launchAdmission?.status === 'probing';
     task.status = to;
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
       task.finishedAt ??= now;
     } else {
       delete task.finishedAt;
+    }
+    if (dependencyAdmission && isTerminalStatus(to) && !dependencyCleanupFence) {
+      // Terminal work is no longer retryable pending intent. Remove the
+      // admission marker and its pre-launch health snapshot so diagnostics and
+      // the next startup cannot resurrect canceled/terminated parked work. A
+      // probing marker with an unproven physical session is cleanup ownership,
+      // not retry intent, and survives only until reconciliation proves that
+      // exact session absent.
+      task.launchAdmission = undefined;
+      task.launchHealthSummary = undefined;
     }
     this.markTaskDirty(id);
     return task;
@@ -899,6 +941,18 @@ export class TaskStore {
   }
 
   /**
+   * Persist a fail-closed automatic-relaunch outcome. First-write-wins keeps
+   * repeated recovery ticks from obscuring the original missing/malformed data.
+   */
+  setRelaunchDisposition(id: string, disposition: TaskRelaunchDisposition): void {
+    const task = this.tasks.get(id);
+    if (!task || task.relaunchDisposition || !disposition) return;
+    task.relaunchDisposition = structuredClone(disposition);
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+  }
+
+  /**
    * Record per-phase launch timings on a task (issue #1589). Written by the
    * launch service on every launch attempt that reaches the adapter — on
    * success (the full `preflight → … → ack` sequence) and on
@@ -920,13 +974,57 @@ export class TaskStore {
     return cloneTask(this.transition(id, 'pending'));
   }
 
+  /** Update the pre-worker dependency admission marker without changing status. */
+  setLaunchAdmission(id: string, admission: Task['launchAdmission'] | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchAdmission = admission ? structuredClone(admission) : undefined;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
+  /** Clear or replace the launch-time dependency health snapshot. */
+  setLaunchHealthSummary(id: string, summary: Task['launchHealthSummary'] | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchHealthSummary = summary ? structuredClone(summary) : undefined;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
+  /** Clear or replace the advisory text paired with launch-health findings. */
+  setLaunchNote(id: string, note: string | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.launchNote = note;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    // Reopening must not turn a terminal cleanup owner back into a launchable
+    // task while an exact probe stop/circuit settlement is still outstanding.
+    if (task.launchAdmission?.status === 'probing') {
+      throw new TaskCleanupInProgressError(id, 'reopened');
+    }
     return cloneTask(this.transition(id, 'open'));
   }
 
   deleteTask(id: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+    // A probing marker is the durable owner for an exact worker that may be
+    // between create and attach, or whose stop has not yet been proven. Never
+    // erase that owner; reconciliation clears it atomically with circuit
+    // settlement after physical absence is established.
+    if (task.launchAdmission?.status === 'probing') {
+      throw new TaskCleanupInProgressError(id);
+    }
     this.launchReservations.delete(id);
     this.completionRemediation.delete(id);
     // Unlink from parent
@@ -959,39 +1057,82 @@ export class TaskStore {
    * getNextPending() pick and this call — Node's single thread then makes the
    * pick-and-reserve atomic.
    */
-  beginLaunch(taskId: string): boolean {
-    const task = this.tasks.get(taskId);
-    if (!task) return false;
-    if (task.status !== 'open' && task.status !== 'pending') return false;
-    if (this.hasFreshLaunchReservation(taskId)) return false;
-    this.launchReservations.set(taskId, Date.now());
-    return true;
-  }
-
-  /** Release a launch reservation (launch failed or was abandoned). */
-  endLaunch(taskId: string): void {
-    this.launchReservations.delete(taskId);
+  /**
+   * Token-bearing reservation variant for async launch owners. A stale owner
+   * whose await outlives the reservation TTL can use the token to prove it
+   * still owns the task and cannot release a replacement owner's lease.
+   */
+  beginLaunchWithToken(taskId: string): string | undefined {
+    return this.beginReservationWithToken(taskId, true);
   }
 
   /**
-   * Read launch-reservation freshness (issue #1526 Phase B: made public so the
-   * capacity ledger can classify an `open`/`pending` task as `launching`
-   * without duplicating this TTL logic — same predicate `getActiveCount`
-   * already uses to count a reserved task against the cap).
+   * Fence a pre-launch durability barrier without claiming a worker slot.
+   *
+   * Persistence owners must exclude promoters just like launch owners: a
+   * stale rejected write must never dispose work that another owner started.
+   * They are not, however, physical or in-flight workers, so capacity must not
+   * count them. This matters most for confirmed-degraded parked work, whose
+   * admission invariant is zero slots.
+   */
+  beginLaunchPersistenceWithToken(taskId: string): string | undefined {
+    return this.beginReservationWithToken(taskId, false);
+  }
+
+  private beginReservationWithToken(
+    taskId: string,
+    countsAsActive: boolean,
+  ): string | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    if (task.status !== 'open' && task.status !== 'pending') return undefined;
+    if (this.hasFreshLaunchReservation(taskId)) return undefined;
+    const token = `launch-reservation-${++this.launchReservationSequence}`;
+    this.launchReservations.set(taskId, { reservedAt: Date.now(), token, countsAsActive });
+    return token;
+  }
+
+  /** Release a launch reservation, optionally only for its exact owner. */
+  endLaunch(taskId: string, token: string): void {
+    if (this.launchReservations.get(taskId)?.token !== token) return;
+    this.launchReservations.delete(taskId);
+  }
+
+  /** True only while the exact async owner still holds a fresh reservation. */
+  ownsLaunchReservation(taskId: string, token: string): boolean {
+    return this.hasFreshLaunchReservation(taskId)
+      && this.launchReservations.get(taskId)?.token === token;
+  }
+
+  /** True when another live async owner has replaced the caller's lease. */
+  hasForeignFreshLaunchReservation(taskId: string, token: string): boolean {
+    if (!this.hasFreshLaunchReservation(taskId)) return false;
+    return this.launchReservations.get(taskId)?.token !== token;
+  }
+
+  /**
+   * Read reservation freshness for ownership/exclusion. Both physical-launch
+   * and persistence-only reservations block another promoter.
    */
   hasFreshLaunchReservation(taskId: string): boolean {
-    const reservedAt = this.launchReservations.get(taskId);
-    if (reservedAt === undefined) return false;
-    if (Date.now() - reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
+    const reservation = this.launchReservations.get(taskId);
+    if (reservation === undefined) return false;
+    if (Date.now() - reservation.reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
       this.launchReservations.delete(taskId);
       return false;
     }
     return true;
   }
 
+  /** True only for a fresh reservation that occupies a worker slot. */
+  hasFreshActiveLaunchReservation(taskId: string): boolean {
+    return this.hasFreshLaunchReservation(taskId)
+      && this.launchReservations.get(taskId)?.countsAsActive === true;
+  }
+
   /**
    * Count tasks that occupy a concurrency slot: inProgress, plus tasks with a
-   * fresh in-flight launch reservation. Counting reservations closes the
+   * fresh slot-occupying launch reservation. Counting launch reservations closes the
    * second half of the #700 race — the old inProgress-only count let the
    * promotion loop over-launch past the cap while launches were mid-await.
    */
@@ -999,7 +1140,10 @@ export class TaskStore {
     let count = 0;
     for (const task of this.tasks.values()) {
       if (task.status === 'inProgress') count++;
-      else if ((task.status === 'open' || task.status === 'pending') && this.hasFreshLaunchReservation(task.id)) count++;
+      else if (
+        (task.status === 'open' || task.status === 'pending')
+        && this.hasFreshActiveLaunchReservation(task.id)
+      ) count++;
     }
     return count;
   }
@@ -1017,11 +1161,20 @@ export class TaskStore {
     return oldest ? cloneTask(oldest) : undefined;
   }
 
-  /** Count pending tasks. */
+  /**
+   * Count work in the capacity queue. Dependency-blocked parked work does not
+   * consume this limit; a half-open probe waiting for capacity does.
+   */
   getPendingCount(): number {
     let count = 0;
     for (const task of this.tasks.values()) {
-      if (task.status === 'pending') count++;
+      if (
+        task.status === 'pending'
+        && (
+          task.launchAdmission?.status !== 'parked'
+          || task.launchAdmission.reason === 'half_open_waiting_for_capacity'
+        )
+      ) count++;
     }
     return count;
   }

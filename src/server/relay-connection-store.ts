@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { validateRelayNodeUrl } from '../shared/contracts/relay-node-url.js';
@@ -112,8 +112,16 @@ export async function saveStoredRelayConnectionCredentials(
     updatedAt: new Date().toISOString(),
   };
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 export async function deleteStoredRelayConnectionCredentials(kookrDir: string): Promise<void> {

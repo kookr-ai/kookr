@@ -23,6 +23,8 @@
  * access at the call site and the selection/recovery logic fully unit-testable.
  */
 
+import { resolveAutonomousReviewIterationCap } from './autonomous-review-policy.js';
+
 /** Envelope schema version. Bump when the shape changes incompatibly. */
 export const CONTINUATION_ENVELOPE_VERSION = 1;
 
@@ -90,6 +92,11 @@ export interface ContinuationEnvelope {
   cursor: ContinuationCursor;
   parent: ParentRefs;
   authorization: AuthorizationToggles;
+}
+
+/** Resolve the durable per-unit cap without resetting an older envelope. */
+export function continuationAttemptCap(envelope: ContinuationEnvelope): number {
+  return resolveAutonomousReviewIterationCap(envelope.cursor.attemptCap).cap;
 }
 
 /** Snapshot of current durable state, produced by an injected {@link StateResolver}. */
@@ -211,8 +218,11 @@ export function parseContinuationEnvelope(raw: unknown): ContinuationEnvelope {
     cursor.remainingUnits = cursorObj.remainingUnits.filter((u): u is string => typeof u === 'string');
   }
   if (typeof cursorObj.sourceRevision === 'string') cursor.sourceRevision = cursorObj.sourceRevision;
-  if (typeof cursorObj.attemptCap === 'number' && Number.isFinite(cursorObj.attemptCap)) {
-    cursor.attemptCap = cursorObj.attemptCap;
+  if (cursorObj.attemptCap !== undefined) {
+    if (typeof cursorObj.attemptCap !== 'number' || !Number.isFinite(cursorObj.attemptCap)) {
+      throw new Error('continuation cursor attemptCap must be a finite integer within the shared review cap');
+    }
+    cursor.attemptCap = resolveAutonomousReviewIterationCap(cursorObj.attemptCap).cap;
   }
 
   const parent: ParentRefs = {};
@@ -341,7 +351,7 @@ export function advanceEnvelope(
   if (resolved.selectedUnit !== null) cursor.nextUnit = resolved.selectedUnit;
   cursor.remainingUnits = [...resolved.remainingUnits];
   if (resolved.sourceRevision !== undefined) cursor.sourceRevision = resolved.sourceRevision;
-  if (current.cursor.attemptCap !== undefined) cursor.attemptCap = current.cursor.attemptCap;
+  cursor.attemptCap = continuationAttemptCap(current);
 
   return {
     version: CONTINUATION_ENVELOPE_VERSION,
@@ -415,7 +425,7 @@ export function renderContinuationPrompt(envelope: ContinuationEnvelope): string
     lines.push(`- remaining eligible: ${shown.join(', ')}${extra > 0 ? ` (+${extra} more)` : ''}`);
   }
   if (c.sourceRevision) lines.push(`- source revision: ${c.sourceRevision}`);
-  if (c.attemptCap !== undefined) lines.push(`- attempt cap: ${c.attemptCap}`);
+  lines.push(`- attempt cap: ${continuationAttemptCap(envelope)}`);
 
   const parentBits: string[] = [];
   if (envelope.parent.taskId) parentBits.push(`task ${envelope.parent.taskId}`);

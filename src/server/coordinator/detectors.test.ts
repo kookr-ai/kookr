@@ -23,6 +23,7 @@ function task(overrides: Partial<CoordinatorTask> & Pick<CoordinatorTask, 'id'>)
     createdAt: overrides.createdAt ?? '2026-05-21T11:00:00.000Z',
     updatedAt: overrides.updatedAt ?? '2026-05-21T11:00:00.000Z',
     agentType: overrides.agentType ?? 'codex-cli',
+    launchIntent: overrides.launchIntent,
     sessions: overrides.sessions,
     cwd: overrides.cwd ?? '/tmp/kookr-coordinator-default',
     completionDigest: overrides.completionDigest,
@@ -246,6 +247,34 @@ describe('runDetectors', () => {
         task({ id: 'repo-a', prompt, cwd: '/tmp/repo-a', agentType: 'codex-cli' }),
         task({ id: 'repo-b', prompt, cwd: '/tmp/repo-b', agentType: 'codex-cli' }),
         task({ id: 'claude', prompt, cwd: '/tmp/repo-a', agentType: 'claude-code' }),
+      ] }, [], { now: NOW }),
+      'duplicate',
+    );
+
+    expect(outputs).toEqual([]);
+  });
+
+  test('does not group matching prompts when model or effort pins differ', () => {
+    const prompt = 'Run pinned work';
+    const launchIntent = {
+      schemaVersion: 'task-launch-intent.v1' as const,
+      agentType: 'codex-cli' as const,
+      model: 'model-a',
+      effort: 'effort-a',
+    };
+    const outputs = outputsByDetector(
+      runDetectors({ tasks: [
+        task({ id: 'model-a', prompt, launchIntent }),
+        task({
+          id: 'model-b',
+          prompt,
+          launchIntent: { ...launchIntent, model: 'model-b' },
+        }),
+        task({
+          id: 'effort-b',
+          prompt,
+          launchIntent: { ...launchIntent, effort: 'effort-b' },
+        }),
       ] }, [], { now: NOW }),
       'duplicate',
     );

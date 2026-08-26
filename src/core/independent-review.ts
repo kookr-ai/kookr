@@ -4,10 +4,8 @@
  * Before an autonomous self-merge, a fresh-context reviewer subagent reviews the
  * diff blind to the implementer's reasoning and posts a PR comment carrying a
  * machine-readable verdict. The merge wrapper (`scripts/kookr-merge.sh`) refuses
- * to merge unless the latest verdict is `pass` for the current head SHA, or the
- * PR carries the timeout label (the sanctioned "reviewer never answered inside
- * the latency budget" escape hatch). This makes zero-review autonomous merges
- * unreachable.
+ * to merge unless the latest verdict is `pass` explicitly bound to the current
+ * head SHA. Timeout labels remain useful telemetry, but never authorize a merge.
  *
  * This module is the single source of truth for the marker/label/verdict-line
  * literals. `scripts/kookr-merge.sh` and the `independent-merge-review` skill
@@ -29,7 +27,7 @@ export const REVIEW_LANE_LINE_PREFIX = 'review-lane:';
 
 /**
  * Label applied when the reviewer did not return a verdict inside the latency
- * budget. It authorizes the merge to proceed without deadlocking throughput.
+ * budget. It is telemetry only; it never authorizes an autonomous merge.
  */
 export const REVIEW_SKIPPED_TIMEOUT_LABEL = 'review-skipped-timeout';
 
@@ -109,6 +107,7 @@ export type MergeReviewGateCode =
   | 'timeout-label'
   | 'blocked-finding'
   | 'stale-verdict'
+  | 'unbound-verdict'
   | 'no-verdict';
 
 export interface MergeReviewGateInput {
@@ -135,17 +134,15 @@ export interface MergeReviewGateResult {
  * `scripts/kookr-merge.sh` (`require_review_verdict`) — bash cannot import this
  * module. This function is the executable *specification* of that decision
  * table: it is what the unit tests pin, and the two must agree branch-for-branch
- * (`pass` / `block` / `stale-verdict` / `timeout-label` / `no-verdict` /
+ * (`pass` / `block` / `stale-verdict` / `unbound-verdict` / `timeout-label` / `no-verdict` /
  * `disabled`). When you change one, change the other and update both suites.
  *
  * Precedence:
- * Precedence:
  *  1. Gate disabled → allow.
  *  2. Latest verdict is `block` → refuse (an explicit block is never overridden
- *     by the timeout label — the label is only for a *missing* verdict).
+ *     by the timeout label).
  *  3. Latest verdict is `pass` bound to the current head SHA → allow.
- *  4. Otherwise (no verdict, or a `pass` bound to a stale commit) → allow only
- *     if the timeout label is present, else refuse.
+ *  4. A missing head binding, stale verdict, timeout label, or no verdict → refuse.
  */
 export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeReviewGateResult {
   const requireReview = input.requireReview ?? true;
@@ -170,21 +167,20 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
 
   const headSha = input.headSha ? input.headSha.toLowerCase() : null;
   if (verdict && verdict.verdict === 'pass') {
-    const stale = Boolean(verdict.headSha && headSha && verdict.headSha !== headSha);
+    if (!headSha || !verdict.headSha) {
+      return {
+        allowed: false,
+        code: 'unbound-verdict',
+        reason: 'independent-review PASS is missing an exact current-head binding',
+        verdict,
+      };
+    }
+    const stale = verdict.headSha !== headSha;
     if (!stale) {
       return {
         allowed: true,
         code: 'pass',
         reason: 'independent-review verdict is PASS for the current head',
-        verdict,
-      };
-    }
-    // A pass bound to an older commit does not authorize the current diff.
-    if (hasTimeoutLabel) {
-      return {
-        allowed: true,
-        code: 'timeout-label',
-        reason: `pass verdict is stale (bound to ${verdict.headSha}); proceeding under ${REVIEW_SKIPPED_TIMEOUT_LABEL}`,
         verdict,
       };
     }
@@ -198,17 +194,17 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
 
   if (hasTimeoutLabel) {
     return {
-      allowed: true,
+      allowed: false,
       code: 'timeout-label',
-      reason: `no verdict within the latency budget; proceeding under ${REVIEW_SKIPPED_TIMEOUT_LABEL}`,
-      verdict: null,
+      reason: `no fresh exact-head verdict; ${REVIEW_SKIPPED_TIMEOUT_LABEL} is telemetry only — re-run the reviewer`,
+      verdict,
     };
   }
 
   return {
     allowed: false,
     code: 'no-verdict',
-    reason: `no independent-review verdict comment and no ${REVIEW_SKIPPED_TIMEOUT_LABEL} label — run the independent-merge-review reviewer first`,
+    reason: 'no independent-review verdict comment — run the independent-merge-review reviewer first',
     verdict: null,
   };
 }

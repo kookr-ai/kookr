@@ -1,5 +1,24 @@
 import type { RalphLoopState } from './ralph.js';
 import type { AgentType } from './agent-types.js';
+import type { LaunchDependency } from './playbook.js';
+
+export type AutomaticRelaunchSource =
+  | 'crash-recovery'
+  | 'provider-transient-retry'
+  | 'provider-reset'
+  | 'ralph'
+  | 'pending-promotion';
+
+export type TaskRelaunchDispositionReason = 'missing_launch_intent' | 'malformed_launch_intent';
+
+/** Durable evidence that an automatic relaunch was deliberately not attempted. */
+export interface TaskRelaunchDisposition {
+  outcome: 'not_relaunched';
+  reason: TaskRelaunchDispositionReason;
+  source: AutomaticRelaunchSource;
+  at: string;
+  detail: string;
+}
 
 export type TaskDependencyEdge = `task:${string}` | `milestone:${string}`;
 export type TaskMetadataIntent = 'keep_as_duplicate';
@@ -96,6 +115,55 @@ export interface TaskMetadata {
    */
   agentSubstitutionChain?: AgentSubstitutionHop[];
 }
+
+/**
+ * The immutable launch request retained while admission parks a task.
+ * Keeping this separate from the rendered task prompt means a parked task can
+ * be retried without losing operator intent or creating a new idempotency
+ * identity (issue #2841).
+ */
+export interface TaskLaunchIntent {
+  /** Versioned replay contract used by automatic relaunch paths. */
+  schemaVersion: 'task-launch-intent.v1';
+  /** Original caller-authored prompt, before Kookr guardrails are injected. */
+  prompt?: string;
+  /** Requested repository/work directory. */
+  cwd?: string;
+  /** Normalized repository identity, when one was available at launch time. */
+  projectId?: string;
+  agentType: AgentType;
+  effort?: string;
+  model?: string;
+  /** Preserve Ralph iteration-0 verdict wiring across deferred promotion. */
+  ralphVerdictEnv?: boolean;
+  dependencies?: LaunchDependency[];
+  idempotencyKey?: string;
+}
+
+export type LaunchDependencyState = 'healthy' | 'degraded' | 'unknown' | 'half_open';
+
+export interface TaskLaunchAdmissionDependency {
+  dependency: string;
+  state: LaunchDependencyState;
+  reason?: string;
+}
+
+/** Durable admission state for dependency-gated launches (issue #2841). */
+export type TaskLaunchAdmission =
+  | {
+      status: 'parked';
+      reason: 'dependency_degraded' | 'half_open_probe_busy' | 'half_open_waiting_for_capacity';
+      dependencies: TaskLaunchAdmissionDependency[];
+      parkedAt: string;
+    }
+  | {
+      status: 'probing';
+      reason: 'half_open_probe_in_flight';
+      dependencies: TaskLaunchAdmissionDependency[];
+      startedAt: string;
+      /** Preallocated terminal id used to reap a crash-window worker on boot. */
+      sessionId?: string;
+    };
 
 export interface TaskCompletionFeedback {
   rating: 'up' | 'down';

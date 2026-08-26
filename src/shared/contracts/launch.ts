@@ -1,6 +1,6 @@
 import type { AgentSelection, AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
-import type { AgentSubstitutionHop, TaskLaunchSource, TaskMetadataIntent } from './task.js';
+import type { AgentSubstitutionHop, TaskLaunchAdmission, TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
 /**
  * Upper bound on an accepted `idempotencyKey` (issue #1526 Phase B). Single
@@ -162,6 +162,10 @@ export type LaunchAdmissionReason = 'plan_quota';
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {
   task: TaskShape;
   queued: boolean;
+  /** True when dependency admission parked the task without starting a worker. */
+  parked?: boolean;
+  /** Machine-readable reason/state for a dependency-parked launch. */
+  dependencyAdmission?: TaskLaunchAdmission;
   /** True when an active task with the same prompt already exists. */
   duplicate?: boolean;
   /**

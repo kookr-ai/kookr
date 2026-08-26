@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentSignalKind } from '../shared/contracts/agent-signal.js';
@@ -205,8 +205,16 @@ async function rewritePending(spoolDir: string, entries: SignalOutboxEntry[]): P
   const body = entries.length === 0
     ? ''
     : `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
-  await writeFile(tmp, body, 'utf8');
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    await writeFile(tmp, body, 'utf8');
+    await rename(tmp, path);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 /**

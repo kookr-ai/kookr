@@ -42,6 +42,7 @@ import type { TokenTracker } from '../core/token-tracker.js';
 import type { AgentEvent, TokenUsage } from '../core/types.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { resolveAutonomousReviewIterationCap } from '../core/autonomous-review-policy.js';
 
 /**
  * Default cap on automatic terminal relaunches before a loop escalates to
@@ -225,8 +226,15 @@ export function validateRalphLoopRequest(body: {
   if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) {
     return { ok: false, error: 'prompt is required and must be a non-empty string' };
   }
-  if (typeof body.iterationCap !== 'number' || !Number.isInteger(body.iterationCap) || body.iterationCap <= 0) {
+  if (body.iterationCap !== undefined
+    && (typeof body.iterationCap !== 'number' || !Number.isInteger(body.iterationCap) || body.iterationCap <= 0)) {
     return { ok: false, error: 'iterationCap is required and must be a positive integer' };
+  }
+  let iterationCap: number;
+  try {
+    iterationCap = resolveAutonomousReviewIterationCap(typeof body.iterationCap === 'number' ? body.iterationCap : undefined).cap;
+  } catch {
+    return { ok: false, error: 'iterationCap must be within the shared autonomous review cap' };
   }
   if (body.stopPredicate !== undefined && typeof body.stopPredicate !== 'string') {
     return { ok: false, error: 'stopPredicate, when present, must be a string' };
@@ -272,7 +280,7 @@ export function validateRalphLoopRequest(body: {
     ok: true,
     value: {
       prompt: body.prompt,
-      iterationCap: body.iterationCap,
+      iterationCap,
       ...(body.stopPredicate !== undefined ? { stopPredicate: body.stopPredicate } : {}),
       ...(body.stallPredicate !== undefined ? { stallPredicate: body.stallPredicate } : {}),
       ...(body.zeroDiffConvergence !== undefined
@@ -372,7 +380,6 @@ export class RalphLoopService {
     await this.claimLatestLiveOwner(currentTask);
     currentTask.updatedAt = new Date();
 
-    await this.catchUpFromLatestStop(currentTask);
     return { ok: true, value: structuredClone(currentTask.ralphLoop!), changed: true };
   }
 
@@ -728,6 +735,20 @@ export class RalphLoopService {
         continue;
       }
 
+      // A dependency-gated loop is intentionally armed before it owns a
+      // worker. Promotion will claim the first live session through
+      // claimLatestLiveOwner; startup must not misclassify that durable wait
+      // as a crashed iteration.
+      if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
+        summary.preserved++;
+        summary.perTask.push({
+          taskId: task.id,
+          outcome: 'preserved',
+          iterationNumber: loop.currentIteration,
+        });
+        continue;
+      }
+
       // No live session: close the loop. Persist the crash record before
       // mutating loop state so a partial write still leaves an audit trail.
       const startedAt = loop.lastIterationStartedAt > 0 ? loop.lastIterationStartedAt : now;
@@ -836,12 +857,27 @@ export class RalphLoopService {
     return summary;
   }
 
-  private async claimLatestLiveOwner(task: Task): Promise<void> {
+  async claimLatestLiveOwner(task: Task): Promise<void> {
+    if (!task.ralphLoop || task.ralphLoop.status !== 'running') return;
     const ownerSessionId = await this.findLiveSession(task);
-    const ownerSession = ownerSessionId
-      ? task.sessions.find((s) => s.tmuxSession === ownerSessionId)
-      : undefined;
-    claimRalphLoopOwner(task, ownerSession);
+    if (!ownerSessionId) return;
+    const claimed = this.deps.taskStore.runRalphMutation(task.id, (currentTask) => {
+      if (!currentTask.ralphLoop || currentTask.ralphLoop.status !== 'running') return;
+      const ownerSession = currentTask.sessions.find((s) => s.tmuxSession === ownerSessionId);
+      claimRalphLoopOwner(currentTask, ownerSession, {
+        allowTransfer: currentTask.ralphLoop.ownerSessionId !== ownerSessionId,
+      });
+      currentTask.updatedAt = new Date();
+      return true;
+    });
+    if (!claimed) return;
+
+    // Hook replay starts before deferred-promotion ownership is claimed. A
+    // Stop can therefore arrive in that handoff window and be correctly
+    // rejected as ownerless. Re-read the latest event after persisting the
+    // owner so that already-replayed Stop is not lost.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (stored) => stored);
+    if (currentTask) await this.catchUpFromLatestStop(currentTask);
   }
 
   private async findLiveSession(task: Task): Promise<string | null> {

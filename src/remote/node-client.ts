@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import type { RelayHello, RemoteFeature } from './handshake.js';
@@ -147,10 +147,18 @@ async function writeAtomicFsynced(path: string, contents: string): Promise<void>
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
   const tmp = join(dir, `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  await writeFile(tmp, contents, 'utf8');
-  await fsyncFile(tmp);
-  await rename(tmp, path);
-  await fsyncDir(dir);
+  let renamed = false;
+  try {
+    await writeFile(tmp, contents, 'utf8');
+    await fsyncFile(tmp);
+    await rename(tmp, path);
+    renamed = true;
+    await fsyncDir(dir);
+  } finally {
+    if (!renamed) {
+      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
 }
 
 async function readTextIfPresent(path: string): Promise<string | null> {

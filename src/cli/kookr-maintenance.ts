@@ -8,6 +8,7 @@ import {
 } from '../core/maintenance-backup.js';
 import {
   planAndPruneMaintenance,
+  type AtomicWriteTempOpenFileChecker,
   type MaintenancePruneResult,
 } from '../core/maintenance-prune.js';
 
@@ -17,6 +18,7 @@ import {
  * during a maintenance window whether or not Kookr is up.
  *
  *   kookr maintenance prune [--dry-run] [--max-age-days N] [--dir PATH] [--json]
+ *     [--atomic-temp-max-age-days N]
  *   kookr maintenance backup [--dir PATH] [--out PATH] [--json]
  */
 
@@ -66,6 +68,7 @@ interface ParsedArgs {
   operatorSignalDeliveredMaxAgeDays?: number;
   operatorSignalUndeliveredMaxAgeDays?: number;
   operatorSignalMinAgeDays?: number;
+  atomicWriteTempMaxAgeDays?: number;
   dir?: string;
   outDir?: string;
 }
@@ -74,7 +77,7 @@ const USAGE = [
   'Usage:',
   '  kookr maintenance prune [--dry-run] [--max-age-days N] [--playbook-max-age-days N] [--playbook-keep-last K]',
   '    [--operator-signal-delivered-max-age-days N] [--operator-signal-undelivered-max-age-days N]',
-  '    [--operator-signal-min-age-days N] [--dir PATH] [--json]',
+  '    [--operator-signal-min-age-days N] [--atomic-temp-max-age-days N] [--dir PATH] [--json]',
   '  kookr maintenance backup [--dir PATH] [--out PATH] [--json]',
 ].join('\n');
 
@@ -184,6 +187,20 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.operatorSignalMinAgeDays = value;
         break;
       }
+      case '--atomic-temp-max-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--atomic-temp-max-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
+          parsed.error = `--atomic-temp-max-age-days requires a positive number (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.atomicWriteTempMaxAgeDays = value;
+        break;
+      }
       case '--dir': {
         const dir = argv[++i];
         if (!dir || dir.startsWith('--')) {
@@ -226,32 +243,51 @@ function formatHuman(result: MaintenancePruneResult): string {
   lines.push(`Kookr maintenance prune — ${result.dataDir}`);
   if (result.dryRun) lines.push('  dry-run — no changes made');
   lines.push(`  age threshold: ${result.maxAgeDays} days`);
+  if (result.atomicWriteTempSweep) {
+    const sweep = result.atomicWriteTempSweep;
+    lines.push(
+      `  atomic temp sweep: inspected ${sweep.examinedCount}, planned ${sweep.plannedCount}, ` +
+        `removed ${sweep.removedCount}, reclaimed ${formatBytes(sweep.reclaimedBytes)} ` +
+        `(reclaimable ${formatBytes(sweep.reclaimableBytes)}; fresh ${sweep.skippedFreshCount}, ` +
+        `open ${sweep.skippedOpenCount}, unverifiable ${sweep.skippedSafetyCheckCount})`,
+    );
+  }
   if (result.planned.length === 0) {
     lines.push('  Nothing to prune — already clean.');
   } else {
-    lines.push(`  ${verb} ${result.planned.length} artifact(s), ${formatBytes(result.reclaimedBytes)}:`);
+    const count = result.dryRun ? result.planned.length : result.removed.length;
+    const aggregateLabel = result.dryRun ? 'reclaimable' : 'reclaimed';
+    lines.push(
+      `  ${verb} ${count} of ${result.planned.length} planned artifact(s), ` +
+        `${formatBytes(result.reclaimedBytes)} ${aggregateLabel}:`,
+    );
     for (const r of result.planned) {
+      const action = result.dryRun
+        ? 'would remove'
+        : result.removed.some((removed) => removed.path === r.path)
+          ? 'removed'
+          : 'preserved';
       if (r.kind === 'hook-log') {
         const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
-        lines.push(`    - ${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        lines.push(`    - ${action} ${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
         continue;
       }
       if (r.kind === 'activity-ledger') {
         const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
-        lines.push(`    - activity/${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        lines.push(`    - ${action} activity/${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
         continue;
       }
       if (r.kind === 'playbook-state-run') {
-        lines.push(`    - playbook-state/${r.playbook}/${r.runKey}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        lines.push(`    - ${action} playbook-state/${r.playbook}/${r.runKey}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
         continue;
       }
       if (r.kind === 'operator-signal') {
         lines.push(
-          `    - playbook-state/operator-signals/${r.fileName}  (${r.deliveryStatus}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`,
+          `    - ${action} playbook-state/operator-signals/${r.fileName}  (${r.deliveryStatus}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`,
         );
         continue;
       }
-      lines.push(`    - ${basename(r.path)}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+      lines.push(`    - ${action} ${basename(r.path)}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
     }
   }
   lines.push(`  Preserved ${result.preserved.length} store(s) by design (crash-recovery / audit / ambiguous mapping).`);
@@ -283,7 +319,15 @@ function formatBackupHuman(result: MaintenanceBackupResult): string {
 
 export async function runMaintenanceCli(
   argv: string[] = process.argv.slice(2),
-  { out = console, env = process.env }: { out?: Pick<Console, 'log' | 'error'>; env?: NodeJS.ProcessEnv } = {},
+  {
+    out = console,
+    env = process.env,
+    openFileChecker,
+  }: {
+    out?: Pick<Console, 'log' | 'error'>;
+    env?: NodeJS.ProcessEnv;
+    openFileChecker?: AtomicWriteTempOpenFileChecker;
+  } = {},
 ): Promise<number> {
   const parsed = parseArgs(argv);
   if (parsed.error) {
@@ -317,6 +361,8 @@ export async function runMaintenanceCli(
       operatorSignalDeliveredMaxAgeDays: parsed.operatorSignalDeliveredMaxAgeDays,
       operatorSignalUndeliveredMaxAgeDays: parsed.operatorSignalUndeliveredMaxAgeDays,
       operatorSignalMinAgeDays: parsed.operatorSignalMinAgeDays,
+      atomicWriteTempMaxAgeDays: parsed.atomicWriteTempMaxAgeDays,
+      openFileChecker,
     });
     out.log(parsed.json ? JSON.stringify(result, null, 2) : formatHuman(result));
     return 0;

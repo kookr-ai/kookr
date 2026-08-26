@@ -36,7 +36,7 @@ const loopablePlaybook: Playbook = {
   checklist: [],
   tags: ['workflow', 'loopable'],
   effectiveLoop: {
-    iterationCap: 6,
+    iterationCap: 10,
     costCapUsd: 25,
     sources: {
       iterationCap: 'default',

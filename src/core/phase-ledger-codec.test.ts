@@ -76,6 +76,66 @@ describe('phase ledger codec', () => {
     expect(reconciled.phases[0]).toEqual(ledger.phases[0]);
   });
 
+  test('persists review attempts and exact reviewed head across reconciliation', () => {
+    const comments = [
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`,
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T11:00:00.000Z', reviewerTaskId: 'review-2', reviewAttempts: 2, reviewHeadSha: 'NEW' })} -->`,
+    ];
+    const phase = reconcilePhaseResultComments(ledger, comments).phases[1]!;
+    expect(phase).toMatchObject({
+      reviewAttempts: 2,
+      reviewHeadSha: 'new',
+      reviewVerdict: 'pass',
+    });
+  });
+
+  test('reconciliation is idempotent and an unbound latest verdict clears the old head', () => {
+    const comments = [
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`,
+      `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewVerdict: 'pass', reviewedAt: '2026-08-23T11:00:00.000Z', reviewerTaskId: 'review-2' })} -->`,
+    ];
+    const once = reconcilePhaseResultComments(ledger, comments);
+    const twice = reconcilePhaseResultComments(once, comments);
+    expect(once.phases[1]).toMatchObject({ reviewAttempts: 1, reviewVerdict: 'pass' });
+    expect(once.phases[1]?.reviewHeadSha).toBeUndefined();
+    expect(twice).toEqual(once);
+  });
+
+  test('does not replay an older BLOCK after a correction attempt is durable', () => {
+    const corrected = { ...ledger, phases: [ledger.phases[0]!, {
+      ...ledger.phases[1]!,
+      reviewAttempts: 2,
+      taskId: 'correction-task',
+    }] } satisfies PhaseLedger;
+    const oldBlock = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`;
+    const oldOwner = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, status: 'in-flight', taskId: 'old-owner' })} -->`;
+    expect(reconcilePhaseResultComments(corrected, [oldOwner, oldBlock])).toEqual(corrected);
+  });
+
+  test('never raises a durable lower cap from a later comment', () => {
+    const capped = { ...ledger, phases: [ledger.phases[0]!, { ...ledger.phases[1]!, reviewIterationCap: 3 }] } satisfies PhaseLedger;
+    const later = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', reviewIterationCap: 20 })} -->`;
+    expect(reconcilePhaseResultComments(capped, [later]).phases[1]?.reviewIterationCap).toBe(3);
+  });
+
+  test('rejects a per-phase cap above the canonical maximum', () => {
+    expect(() => parsePhaseLedgerFromIssueBody(
+      `\`\`\`kookr-phase-ledger\n${JSON.stringify({
+        ...ledger,
+        phases: [{ ...ledger.phases[0], reviewIterationCap: 21 }, ledger.phases[1]],
+      })}\n\`\`\``,
+    )).toThrow(/reviewIterationCap/);
+  });
+
+  test('rejects a non-positive durable review cap', () => {
+    expect(() => parsePhaseLedgerFromIssueBody(
+      `\`\`\`kookr-phase-ledger\n${JSON.stringify({
+        ...ledger,
+        phases: [{ ...ledger.phases[0], reviewIterationCap: 0 }, ledger.phases[1]],
+      })}\n\`\`\``,
+    )).toThrow(/reviewIterationCap/);
+  });
+
   test('parses invalid result comments as non-events', () => {
     expect(parsePhaseResultComment('ordinary comment')).toBeNull();
     expect(parsePhaseResultComment('<!-- kookr-phase-result {"version":1} -->')).toBeNull();

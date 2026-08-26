@@ -1,13 +1,17 @@
 import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookProbe, PlaybookScope } from './playbook.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
+import {
+  DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP,
+  MAX_AUTONOMOUS_REVIEW_ITERATION_CAP,
+} from './autonomous-review-policy.js';
 
 export const PLAYBOOK_LOOP_DEFAULTS = {
-  iterationCap: 6,
+  iterationCap: DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP,
   costCapUsd: 25,
 } as const;
 
 export const PLAYBOOK_LOOP_LIMITS = {
-  maxIterationCap: 20,
+  maxIterationCap: MAX_AUTONOMOUS_REVIEW_ITERATION_CAP,
   maxCostCapUsd: 25,
 } as const;
 

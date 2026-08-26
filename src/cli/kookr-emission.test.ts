@@ -278,6 +278,7 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
       ],
       { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
     );
+    rmSync(configDir, { recursive: true, force: true });
     expect(code).toBe(0);
     const payload = JSON.parse(io.logs[0]!);
     expect(payload.zeroDrainIssueLimit).toBe(-1);

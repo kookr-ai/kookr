@@ -359,7 +359,8 @@ The gates (pure predicates in `src/server/self-advancing-authority.ts`, verified
   from a task whose task-id differs from the implementer's lineage (verified
   against the task registry). The **merge wrapper is the only merge path** (any
   non-lucy fallback routes through it, never raw `gh pr merge`). Re-review
-  attempts are capped (2) then hard-block to a human. "Reviewer failed to run"
+  attempts use the shared default cap of 10 (or a deliberate lower configured
+  cap) then hard-block to a human. "Reviewer failed to run"
   (retry/alert) is distinguished from "reviewer returned BLOCK" (stop).
 - **Circuit breaker:** a per-chain cap of N self-merges per hour.
 - **Global kill switch:** the env flag `KOOKR_SELF_ADVANCING_DISABLED` halts all

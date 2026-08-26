@@ -423,12 +423,12 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 
 **Acceptance criteria:**
 - Launch dialog accepts: task prompt (required), working directory (required), completion criteria (optional)
-- Agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md))
+- When launch admission permits, the agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md)); confirmed degradation follows R4b.12 and starts no session
 - Claude Code launched with `--settings` flag pointing to Kookr-generated hook settings
 - Hook settings are additive to user's existing settings
 - Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`
 - WebSocket client and server schemas validate concrete agent types consistently with the shared `AgentType` contract
-- New task created with status `open`, transitions to `in_progress` on agent start
+- An admitted task is created as `open` and transitions to `inProgress` on agent start; a confirmed-degraded task is persisted as `pending` until R4b.12 recovery admission succeeds
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
@@ -524,7 +524,7 @@ The system SHALL allow relaunching a task with the same or modified prompt and w
 
 ### R4.4: Task Lifecycle Management [F4.4] — SHALL — `done`
 
-The system SHALL manage tasks through a full lifecycle: Open → InProgress → Completed/Cancelled.
+The system SHALL manage tasks across `open`, `pending`, `inProgress`, `completed`, `cancelled`, and `terminated`: launches may enter `pending` before a session exists, admitted sessions enter `inProgress`, failed recovery probes return to `pending`, and terminal/user transitions select the appropriate end state.
 
 **Acceptance criteria:**
 - Tasks are the unit of work (distinct from agent sessions)
@@ -576,6 +576,21 @@ The system SHOULD let the developer choose whether completing a task should clea
 **Evidence:** `src/adapters/git-worktree.ts` (`inspectWorktreeCleanup`, `inspectTaskWorktrees`), `src/shared/contracts/worktree-cleanup-verdict.ts`, `src/frontend/components/CleanupWorktreeOption.tsx`, `src/frontend/cleanup-override.ts`.
 
 **Linked tests:** `TS-CLEANUP-001` through `TS-CLEANUP-004`.
+
+### R4.8: Reclaim Orphaned Atomic-Write Temporary Files [F4.4] — SHALL — `done`
+
+The system SHALL reclaim abandoned root-level temporary files created by its
+atomic-write paths before data-directory disk admission is exhausted.
+
+**Acceptance criteria:**
+- Stale files are matched only by an explicit allowlist of Kookr atomic-write names and a conservative age threshold.
+- Fresh files and files held open by a live process are preserved; the sweep fails closed when open-file verification is unavailable.
+- Dry-run output reports candidates, counts, and reclaimable bytes, while live runs report each deletion and bytes actually reclaimed.
+- A failed atomic write removes its temporary file when cleanup is still safe to perform.
+
+**Evidence:** `src/core/maintenance-prune.ts`, `src/core/persistence-utils.ts`, `src/cli/kookr-maintenance.ts`.
+
+**Linked tests:** `maintenance-prune.test.ts`, `persistence-utils.test.ts`, `kookr-maintenance.test.ts`.
 
 ---
 
@@ -777,6 +792,24 @@ The system SHOULD let the operator fill the Launch dialog's working directory fr
 - Shape check only (`/` or `~/` after trim); no filesystem access
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (`looksLikeAbsoluteClipboardPath`, `handlePasteCwdFromClipboard`), `src/frontend/components/LaunchTaskDialog.paste.test.ts`.
+
+### R4b.12: Required Launch Dependency Admission [F4.12, F10.5] — SHALL — `done`
+
+The system SHALL preserve required work without consuming a worker when confirmed launch-dependency degradation makes that work non-viable.
+
+**Acceptance criteria:**
+- Confirmed degradation creates one durable pending task and starts no adapter session or worker slot
+- The original user prompt, cwd, project, agent/model/effort pins, Ralph verdict wiring, dependency list, and idempotency key survive every automatic replay path as intent identity, while the already worktree/delivery-guarded durable task prompt remains the adapter replay prompt
+- Unknown/timeout collection evidence stays distinct from confirmed degradation and cannot erase an already degraded or half-open gate
+- Recovery allows one half-open probe; concurrent promotion cannot duplicate it
+- Before dependency-denied work or a half-open capacity wait is acknowledged as queued or parked, and before a direct, promoted, or crash-recovery half-open probe invokes an adapter, the corresponding admission marker is force-persisted. A probe marker names its expected terminal session before creation so restart recovery can reap an interrupted launch before replay. If the pre-launch persistence barrier fails, no worker starts and no successful queued or parked response is returned
+- Probe failure, or restart without a live reconciled probe session, re-parks the same task and stops any partial session only after the exact session is proven absent. A created probe never re-parks merely because launch rejected: direct launch, pending promotion, and crash recovery retain the exact `probing` marker, busy circuit ownership, and active/terminal cleanup ownership when physical stop rejects. Timeout before creation may retain that exact marker with zero session rows until a late callback links/reaps the session. Concurrent completion, cancellation, or termination still wins the work outcome. When the owning failure path proves the exact session stopped, it settles the circuit and clears a terminal task's marker immediately; when cleanup, creation, or circuit settlement remains unresolved, the terminal task retains the marker until runtime reconciliation or startup atomically settles durable and process-local ownership. The marker alone therefore does not assert process liveness. Non-terminal work is then re-parked; a terminal fence releases to one unclaimed half-open probe only when no confirmed degradation (including evidence observed during cleanup) still controls the circuit. Reopen is refused while cleanup ownership remains. A live reconciled probe continues and clears its marker, but confirmed degradation recorded at or after that probe began still keeps the circuit degraded
+- Explicit deletion returns a stable retryable conflict while a `probing` cleanup owner remains; clear-finished and aged-prune sweeps skip the record. No deletion path may erase the durable exact-session owner before the owning failure path or reconciliation safely clears it
+- Scheduled, interactive, and looped playbook launches all forward dependency declarations
+- Generic pending TTL and scheduled-work staleness do not expire or duplicate dependency-parked work, and capacity/diagnostics report launchable pending, parked, degraded, and unknown populations separately
+- Duplicate and idempotent REST responses preserve admission metadata; compact task listings retain only safe legacy launch pins (`schemaVersion`, `agentType`, `model`, `effort`) and redact prompt-bearing/replay fields
+
+**Evidence:** `src/core/launch-dependency-admission.ts`, `src/core/launch-dependency-task-admission.ts`, `src/core/task-launch-intent.ts`, `src/core/pending-task-ttl.ts`, `src/core/capacity-ledger.ts`, `src/core/launch-dependency-diagnostics.ts`, `src/core/session-registry.ts`, `src/core/tasks.ts`, `src/server/launch-service.ts`, `src/server/agent-lifecycle.ts`, `src/server/crash-recovery.ts`, `src/server/provider-transient-retry.ts`, `src/server/reconciliation.ts`, `src/server/startup-recovery.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/server/ralph-loop-service.ts`, `src/server/use-cases/looped-playbook-launch.ts`, `src/server/use-cases/delete-task.ts`, `src/server/use-cases/task-lifecycle-commands.ts`, `src/server/use-cases/prune-aged-task-records.ts`, `src/server/routes/task-routes.ts`, and focused tests beside each module.
 
 ---
 
@@ -1262,9 +1295,11 @@ The system SHALL show a per-schedule scorecard on each Schedules dialog card fro
 - A card with a rollup row that has retained fires shows fire count, measured cost, and artifact count
 - A card with no rollup row, or a zero-fire row, omits the scorecard line
 - Unmeasured fires (those without token usage) never render as $0; the tooltip names the `measuredFires` denominator
+- Cost attribution follows the [per-schedule ROI guidance](reference/schedule-roi.md): for each measured fire, `costUsd` sums that fire task's recorded closeout snapshot `tokenUsage.costUsd`; later task-usage updates, diagnostic peaks, and descendant usage do not affect the already-closed rollup while the operator decision remains pending
+- The linked cost-attribution record explicitly marks operator sign-off as pending, records that reaping-truncation and child-cost inclusion are unresolved policy questions, and distinguishes those questions from the current closeout-only implementation behavior
 - The last-execution line and last-three ledger rows remain the detail tier
 
-**Evidence:** `src/frontend/components/SchedulesDialog.tsx`, `src/frontend/schedule-api.ts`, `src/frontend/schedule-format.ts`, `src/frontend/components/SchedulesDialog.test.ts`, `src/frontend/schedule-format.test.ts`, `src/frontend/schedule-api.test.ts`.
+**Evidence:** `src/frontend/components/SchedulesDialog.tsx`, `src/frontend/schedule-api.ts`, `src/frontend/schedule-format.ts`, `src/frontend/components/SchedulesDialog.test.ts`, `src/frontend/schedule-format.test.ts`, `src/frontend/schedule-api.test.ts`, `docs/reference/schedule-roi.md`, `docs/reports/cost-attribution-semantics-reaped-tasks.md`, `src/server/cost-attribution-semantics.test.ts`.
 
 ---
 
@@ -1449,6 +1484,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
 | R4.6 | F4.6 | SHOULD | done | local-dtach-backend (stable socket path), TerminalPanel (in-browser xterm.js) |
 | R4.7 | F4.4 | SHOULD | done | settings-store, App, SettingsDialog, agent-lifecycle, client-message-schema |
+| R4.8 | F4.4 | SHALL | done | maintenance-prune, persistence-utils, kookr-maintenance |
 | R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchTaskDialog |
 | R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |
@@ -1462,6 +1498,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R4b.9 | F4.1 | SHALL | done | LaunchTaskDialog, QuickLaunch, LaunchEffortModelPickers, messages, lifecycle-handler |
 | R4b.10 | F4.1 | SHALL | done | last-launch-pins, LaunchTaskDialog, QuickLaunch, launch-effort-model |
 | R4b.11 | F4.1 | SHOULD | done | LaunchTaskDialog (`looksLikeAbsoluteClipboardPath`), LaunchTaskDialog.paste.test.ts |
+| R4b.12 | F4.12, F10.5 | SHALL | done | launch-dependency-admission, task-launch-intent, launch-service, agent-lifecycle, crash-recovery, schedule-validator, task-routes |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

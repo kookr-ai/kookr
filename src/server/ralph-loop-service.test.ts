@@ -80,6 +80,70 @@ function mkService(deps: {
 }
 
 describe('RalphLoopService', () => {
+  test('claimLatestLiveOwner persists ownership when called with a task snapshot', async () => {
+    const { store, service, terminalBackend } = mkService();
+    const task = store.createTask('deferred Ralph work', '/repo');
+    setStoredLoop(store, task.id, baseLoop());
+    store.addSession(task.id, {
+      tmuxSession: 'ralph-promoted-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    await terminalBackend.createSession({
+      id: 'ralph-promoted-session',
+      command: 'claude',
+      args: [],
+      env: {},
+      cwd: '/repo',
+      size: { cols: 80, rows: 24 },
+    });
+
+    await service.claimLatestLiveOwner(store.getTask(task.id)!);
+
+    expect(store.getTask(task.id)?.ralphLoop?.ownerSessionId).toBe('ralph-promoted-session');
+  });
+
+  test('claimLatestLiveOwner catches up a Stop replayed before ownership was persisted', async () => {
+    const handleStop = vi.fn().mockResolvedValue({ kind: 'noop', events: [] });
+    const { store, service, terminalBackend, monitor } = mkService({
+      ralphCycler: { handleStop },
+    });
+    const task = store.createTask('deferred Ralph work', '/repo');
+    setStoredLoop(store, task.id, baseLoop());
+    store.addSession(task.id, {
+      tmuxSession: 'ralph-promoted-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+    await terminalBackend.createSession({
+      id: 'ralph-promoted-session',
+      command: 'claude',
+      args: [],
+      env: {},
+      cwd: '/repo',
+      size: { cols: 80, rows: 24 },
+    });
+    const stopEvent: AgentEvent = {
+      type: 'stop',
+      sessionId: 'runtime-promoted',
+      transcriptPath: '/tmp/promoted.jsonl',
+      turnId: 'turn-before-owner',
+      lastMessage: 'iteration complete',
+    };
+    monitor.processEvents('ralph-promoted-session', [stopEvent]);
+
+    await service.claimLatestLiveOwner(store.getTask(task.id)!);
+
+    expect(store.getTask(task.id)?.ralphLoop?.ownerSessionId).toBe('ralph-promoted-session');
+    expect(handleStop).toHaveBeenCalledWith(store, expect.objectContaining({
+      taskId: task.id,
+      sessionId: 'ralph-promoted-session',
+    }));
+  });
+
   test('Ralph routes delegate lifecycle ownership to the service', () => {
     const source = readFileSync(new URL('./ralph/routes.ts', import.meta.url), 'utf8');
     expect(source).toContain('ralphLoopService');
@@ -97,6 +161,13 @@ describe('RalphLoopService', () => {
     expect(source).not.toContain('claimRalphLoopOwner');
     expect(source).not.toContain('ralphStopFingerprint');
     expect(source).not.toContain('handlingStopFingerprint');
+  });
+
+  test('pending promotion composes deferred Ralph ownership through the service', () => {
+    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(
+      /lifecycleDeps\.onPendingTaskPromoted\s*=\s*async[\s\S]*ralphLoopService\.claimLatestLiveOwner\(task\)/,
+    );
   });
 
   test('startup recovery delegates Ralph crash reconciliation ownership to the service', () => {
@@ -129,6 +200,10 @@ describe('RalphLoopService', () => {
       ok: true,
       value: { prompt: 'go', iterationCap: 2 },
     });
+    expect(validateRalphLoopRequest({ prompt: 'go' })).toEqual({
+      ok: true,
+      value: { prompt: 'go', iterationCap: 10 },
+    });
     expect(validateRalphLoopRequest({ prompt: '', iterationCap: 2 })).toMatchObject({
       ok: false,
       error: 'prompt is required and must be a non-empty string',
@@ -136,6 +211,10 @@ describe('RalphLoopService', () => {
     expect(validateRalphLoopRequest({ prompt: 'go', iterationCap: 0 })).toMatchObject({
       ok: false,
       error: 'iterationCap is required and must be a positive integer',
+    });
+    expect(validateRalphLoopRequest({ prompt: 'go', iterationCap: 21 })).toMatchObject({
+      ok: false,
+      error: 'iterationCap must be within the shared autonomous review cap',
     });
   });
 

@@ -5,6 +5,8 @@ import {
   DEFAULT_MAX_INVENT_LEAVES,
   DEFAULT_MAX_LEAVES,
   DEFAULT_MAX_SECONDARY_PER_FIRE,
+  KOOKR_1548_LEAF_PLAN,
+  KOOKR_1552_LEAF_PLAN,
   LUCY_1586_LEAF_PLAN,
   LUCY_1587_LEAF_PLAN,
   LUCY_1588_LEAF_PLAN,
@@ -938,6 +940,94 @@ describe('lucy#1588 canonical decomposition (AC5) + idempotency (AC2)', () => {
     expect(decision.selected).toBeNull();
     expect(decision.skipped[0]!.ref).toBe('jeanibarz/lucy#1588');
     expect(decision.skipped[0]!.reason).toMatch(/already has 3 open child/);
+  });
+});
+
+describe('kookr#1548 frozen-campaign residual decomposition', () => {
+  it('registers three well-formed leaves that map only to the human-gated main-worktree residual', () => {
+    const plan = curatedLeafPlan('kookr-ai/kookr#1548');
+    expect(plan).toBe(KOOKR_1548_LEAF_PLAN);
+    expect(plan).toHaveLength(3);
+    expect(Object.keys(CURATED_LEAF_PLANS)).toContain('kookr-ai/kookr#1548');
+
+    const normalized = normalizeLeafPlan(plan);
+    expect(normalized.ok).toBe(true);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+      expect(leaf.title).toMatch(/1548|main|worktree/i);
+    }
+  });
+
+  it('preserves both residual dispositions and destructive-operation guards', () => {
+    const plan = KOOKR_1548_LEAF_PLAN;
+    const text = plan.flatMap((leaf) => [leaf.goal, ...leaf.acceptanceCriteria]).join(' ');
+    expect(text).toMatch(/rescue\/gitlab-enoent-staged-snapshot/);
+    expect(text).toMatch(/identity|HEAD|path/);
+    expect(text).toMatch(/ignored-file/);
+    expect(text).toMatch(/git worktree remove --force/);
+    expect(text).toMatch(/never deletes the branch/);
+    expect(text).toMatch(/owner approval/);
+  });
+
+  it('selects the residual plan when #1548 has no open children', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 6, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'kookr-ai/kookr',
+          number: 1548,
+          title: 'delivery-debt drain — stale-PR sweeper, dependabot adoption, worktree GC',
+          labels: ['enhancement', 'automation-blocked'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 2,
+    });
+
+    expect(decision.action).toBe('shred');
+    expect(decision.selected?.ref).toBe('kookr-ai/kookr#1548');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(3);
+  });
+});
+
+describe('kookr#1552 frozen-campaign residual decomposition', () => {
+  it('registers the three existing residual leaves without inventing duplicate titles', () => {
+    const plan = curatedLeafPlan('kookr-ai/kookr#1552');
+    expect(plan).toBe(KOOKR_1552_LEAF_PLAN);
+    expect(plan).toHaveLength(3);
+    expect(normalizeLeafPlan(plan).ok).toBe(true);
+    expect(plan?.map((leaf) => leaf.title)).toEqual([
+      'Define and test cost-attribution semantics for reaped tasks (#1549)',
+      'chore(worktrees): remove the audited main-bound worktree after #1548 owner approval',
+      'verify(worktrees): confirm the main checkout invariant after #1548 cleanup',
+    ]);
+    for (const leaf of plan!) {
+      expect(validateLeafSpec(leaf)).toEqual([]);
+      expect(leaf.acceptanceCriteria.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('selects the residual reuse plan while the campaign umbrella has no direct children', () => {
+    const decision = evaluateQueueFeeder({
+      capacity: { free: 8, pendingQueueDepth: 0 },
+      candidates: [
+        umbrella({
+          repo: 'kookr-ai/kookr',
+          number: 1552,
+          title: 'Tracking: 2026-07-26 two-day-retro umbrella batch (8 umbrellas, suggested spawn order)',
+          labels: ['enhancement', 'automation-blocked'],
+          openChildrenCount: 0,
+        }),
+      ],
+      openProductMetricIssues: 2,
+    });
+
+    expect(decision.action).toBe('shred');
+    expect(decision.selected?.ref).toBe('kookr-ai/kookr#1552');
+    expect(decision.selected?.needsAuthoring).toBe(false);
+    expect(decision.leafCount).toBe(3);
   });
 });
 

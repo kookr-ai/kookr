@@ -74,7 +74,7 @@ parameters:
       - label: "May close low-value issues"
         value: "true"
 loop:
-  iterationCap: 20
+  iterationCap: 10
   costCapUsd: 25
   stopPredicate: 'test -f .batch-stop && grep -qE "^STOP:" .batch-stop'
 checklist:
@@ -636,7 +636,7 @@ If `{{mergeAfterImplementation}}` is `true`:
 
    **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Never loop re-running CI hoping a flaky check goes green. Re-run a failing check at most twice per PR; after the **second** failed rerun, **report the CI state** (failing check names and their run links from `gh pr checks` / `gh run view`) and stop — **never loop** or sit at "waiting for CI" indefinitely. A `never-executed` classification (budget/quota/runner outage — the run never executed your code) is non-blocking (see #1198) and does not consume one of the 2 attempts. This bound exists because an unbounded rerun/merge loop once stranded a delivery task for ~3h (PR #1542 / task faf7902b).
 
-2.5. **Independent merge-review gate (required before every autonomous self-merge — issue #1717).** Before merging, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs instead — never degrade to zero review. The reviewer BLOCKs on any confirmed correctness/safety finding; fix each (then re-review for a fresh `pass`) or explicitly rebut it before the merge is allowed. Enforcement is deterministic: `pnpm merge` (below) refuses to merge (exit code 4) unless the latest verdict is `pass` for the current head, or the PR carries the `review-skipped-timeout` label. Latency budget: if no verdict lands within 10 minutes, add the `review-skipped-timeout` label so the merge proceeds without deadlocking throughput (the daily `pnpm review:coverage` metric then counts the PR as timed-out, not reviewed). Set `KOOKR_MERGE_REQUIRE_REVIEW=0` only for a human-driven manual merge, never for an autonomous one.
+2.5. **Independent merge-review gate (required before every autonomous self-merge — issue #1717).** Before merging, run the `independent-merge-review` skill: spawn a **fresh-context** reviewer (blind to your implementation reasoning) that reviews the diff and posts a machine-readable verdict PR comment bound to the exact current head. Codex is the primary reviewer lane; if Codex is unavailable or rate-limited, the Claude fallback lane runs instead — never degrade to zero review. The reviewer BLOCKs on any confirmed correctness/safety finding; fix each (then re-review for a fresh `pass`) or explicitly rebut it before the merge is allowed. Enforcement is deterministic: `pnpm merge` (below) refuses to merge (exit code 4) unless the latest verdict is `pass` with a matching `review-head-sha`. The `review-skipped-timeout` label is telemetry only and never bypasses review; retry until the default 10 correction/review attempts are exhausted, then record a concrete blocker. Set `KOOKR_MERGE_REQUIRE_REVIEW=0` only for a human-driven manual merge, never for an autonomous one.
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
 
    ```bash

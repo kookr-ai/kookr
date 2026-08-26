@@ -35,18 +35,30 @@ export async function atomicWriteFile(
 ): Promise<void> {
   const tempPath = join(dirname(filePath), `.tmp-${randomUUID()}`);
   const mode = options?.mode;
-  const fh = await open(tempPath, 'w', mode);
+  let renamed = false;
   try {
-    await fh.writeFile(data, 'utf-8');
-    // open() applies mode & ~umask; fchmod forces the exact requested bits.
-    if (mode !== undefined) {
-      await fh.chmod(mode);
+    const fh = await open(tempPath, 'w', mode);
+    try {
+      await fh.writeFile(data, 'utf-8');
+      // open() applies mode & ~umask; fchmod forces the exact requested bits.
+      if (mode !== undefined) {
+        await fh.chmod(mode);
+      }
+      await fh.sync();
+    } finally {
+      await fh.close();
     }
-    await fh.sync();
+    await rename(tempPath, filePath);
+    renamed = true;
   } finally {
-    await fh.close();
+    if (!renamed) {
+      try {
+        await unlink(tempPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
   }
-  await rename(tempPath, filePath);
 }
 
 export async function quarantineCorruptJsonFile(filePath: string): Promise<string> {

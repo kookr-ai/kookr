@@ -1,6 +1,8 @@
 import { readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import { isTerminalStatus, type TaskStatus } from './task-status.js';
 
@@ -106,6 +108,12 @@ const SERVER_LOG_GENERATION_RE = /^server\.log\.(\d+)$/;
  * `reports/*.md` match so hung-task and other sibling reports stay untouched.
  */
 const FIRST_HOOK_MISS_REPORT_RE = /^first-hook-miss-.+\.md$/;
+/**
+ * Root-level temporary names emitted by Kookr's atomic writers. Keep this
+ * allowlist explicit: a generic `.tmp-*` sweep could delete an operator's
+ * unrelated temporary file in the same directory.
+ */
+const ATOMIC_WRITE_TEMP_RE = /^(?:\.tmp-(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(?:effort-split\.jsonl|detection-stats\.json|last-good-health\.json|timer-health\.state\.json)\.tmp-\d+(?:-\d+)?|finding-evidence-review-queue\.json\.\d+\.\d+\.tmp|\.achievements-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp|(?:\.schedules|\.schedule-rollups)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp|\.resource-watchdog-state\.[0-9a-f]{12}\.tmp|hook-replay-checkpoints\.json\.tmp|audit\.snapshot\.json\.\d+\.tmp|relay-connection\.json\.\d+\.\d+\.tmp|\.(?:node-id|node-epoch)\.\d+\.\d+\.tmp)$/;
 /** Rotated JSONL segment: `<session>.jsonl.N`. Captures the owning session and
  *  the numeric generation. Shared by hook logs (issue #1433) and the activity
  *  ledger's rotated `.jsonl.1` companion. */
@@ -119,7 +127,10 @@ const DEFAULT_OPERATOR_SIGNAL_DELIVERED_MAX_AGE_DAYS = 7;
 const DEFAULT_OPERATOR_SIGNAL_UNDELIVERED_MAX_AGE_DAYS = 30;
 /** Absolute floor: never delete fire keys younger than this many days. */
 const DEFAULT_OPERATOR_SIGNAL_MIN_AGE_DAYS = 1;
+/** Seven days is long enough to outlive a deploy or transient disk-full retry. */
+const DEFAULT_ATOMIC_WRITE_TEMP_MAX_AGE_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const execFileAsync = promisify(execFile);
 
 export interface MaintenancePruneOptions {
   /** Absolute path to the Kookr data directory (e.g. `~/.kookr`). */
@@ -162,10 +173,14 @@ export interface MaintenancePruneOptions {
    * {@link DEFAULT_OPERATOR_SIGNAL_MIN_AGE_DAYS}. Values <= 0 rejected.
    */
   operatorSignalMinAgeDays?: number;
+  /** Age threshold for recognized root-level atomic-write temp files. Defaults to 7 days. */
+  atomicWriteTempMaxAgeDays?: number;
   /** When true, compute the plan but do not delete anything. Defaults to false. */
   dryRun?: boolean;
   /** Injectable clock (ms since epoch) for deterministic tests. Defaults to `Date.now`. */
   now?: () => number;
+  /** Injectable open-descriptor probe for deterministic safety tests. */
+  openFileChecker?: AtomicWriteTempOpenFileChecker;
 }
 
 interface PlannedRemovalBase {
@@ -242,13 +257,42 @@ export interface FirstHookMissReportPlannedRemoval extends PlannedRemovalBase {
   fileName: string;
 }
 
+export interface AtomicWriteTempPlannedRemoval extends PlannedRemovalBase {
+  kind: 'atomic-write-temp';
+  reason: 'atomic-write-temp-aged';
+  /** Allowlisted root-level temporary basename. */
+  fileName: string;
+}
+
 export type PlannedRemoval =
   | HookLogPlannedRemoval
   | ActivityLedgerPlannedRemoval
   | ServerLogGenerationPlannedRemoval
   | PlaybookStateRunPlannedRemoval
   | OperatorSignalPlannedRemoval
-  | FirstHookMissReportPlannedRemoval;
+  | FirstHookMissReportPlannedRemoval
+  | AtomicWriteTempPlannedRemoval;
+
+export interface AtomicWriteTempSweepReport {
+  /** Number of allowlisted regular files inspected. */
+  examinedCount: number;
+  /** Number of stale files included in the plan. */
+  plannedCount: number;
+  /** Number of planned files removed; zero for dry-run. */
+  removedCount: number;
+  /** Bytes represented by the dry-run plan. */
+  reclaimableBytes: number;
+  /** Bytes actually reclaimed; zero for dry-run. */
+  reclaimedBytes: number;
+  /** Stale files skipped because a live process holds them open. */
+  skippedOpenCount: number;
+  /** Bytes represented by stale files skipped because they are open. */
+  skippedOpenBytes: number;
+  /** Stale files skipped because open-file verification failed closed. */
+  skippedSafetyCheckCount: number;
+  /** Allowlisted files retained because they are younger than the threshold. */
+  skippedFreshCount: number;
+}
 
 export interface PreservedStore {
   /** Human-readable label of the store left intact. */
@@ -271,6 +315,8 @@ export interface MaintenancePruneResult {
   preserved: PreservedStore[];
   /** Non-fatal issues (unreadable task file, a file that vanished mid-sweep, …). */
   warnings: string[];
+  /** Structured audit for the root-level atomic-write temp sweep. */
+  atomicWriteTempSweep?: AtomicWriteTempSweepReport;
 }
 
 /**
@@ -728,6 +774,158 @@ async function planFirstHookMissReportRemovals({
   return planned;
 }
 
+interface AtomicWriteTempPlan {
+  planned: AtomicWriteTempPlannedRemoval[];
+  examinedCount: number;
+  skippedFreshCount: number;
+  skippedOpenCount: number;
+  skippedOpenBytes: number;
+  skippedSafetyCheckCount: number;
+}
+
+export type AtomicWriteTempOpenState = 'open' | 'closed' | 'unknown';
+export type AtomicWriteTempOpenFileChecker = (
+  filePaths: readonly string[],
+) => Promise<ReadonlyMap<string, AtomicWriteTempOpenState>>;
+
+/**
+ * Ask the host whether a live process currently has a candidate open. `lsof`
+ * exists on the required Linux and macOS platforms. Any inability to verify
+ * is treated as unknown so the caller can preserve the file rather than risk
+ * deleting a file that a process still needs.
+ */
+async function checkOpenFiles(filePaths: readonly string[]): Promise<Map<string, AtomicWriteTempOpenState>> {
+  const states = new Map<string, AtomicWriteTempOpenState>();
+  if (filePaths.length === 0) return states;
+  const markOpenPaths = (stdout: string): void => {
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('n')) {
+        const path = line.slice(1);
+        if (states.has(path)) states.set(path, 'open');
+      }
+    }
+  };
+  try {
+    const { stdout } = await execFileAsync('lsof', ['-Fpn', '--', ...filePaths], {
+      encoding: 'utf8',
+      maxBuffer: Math.max(16 * 1024, filePaths.length * 128),
+      timeout: 10_000,
+    });
+    for (const filePath of filePaths) states.set(filePath, 'closed');
+    markOpenPaths(stdout);
+  } catch (err) {
+    const code: unknown = (err as NodeJS.ErrnoException).code;
+    const stdout = typeof (err as { stdout?: unknown }).stdout === 'string'
+      ? (err as { stdout: string }).stdout
+      : '';
+    const stderr = typeof (err as { stderr?: unknown }).stderr === 'string'
+      ? (err as { stderr: string }).stderr
+      : '';
+    // lsof exits 1 when it found no matching open descriptor; with a mixed
+    // batch it may still emit the paths that are open. An empty stderr means
+    // the result is valid, so paths absent from stdout are closed. A status
+    // error can also use exit 1, so any stderr keeps the batch unknown.
+    const validNoMatch = (code === 1 || code === '1') && stderr.trim() === '';
+    for (const filePath of filePaths) states.set(filePath, validNoMatch ? 'closed' : 'unknown');
+    if (validNoMatch) markOpenPaths(stdout);
+  }
+  return states;
+}
+
+/**
+ * Plan stale root-level atomic-write temps. The planner performs the first
+ * descriptor check; the executor repeats it immediately before unlinking to
+ * narrow the check/delete race. There is no portable atomic "unlink only when
+ * unopened" syscall, so a process that opens a file after the final check can
+ * still race; writers should therefore use short-lived temps and the sweep
+ * remains conservative everywhere it can observe the race.
+ */
+async function planAtomicWriteTempRemovals({
+  dataDir,
+  maxAgeDays,
+  now,
+  warnings,
+  openFileChecker,
+}: {
+  dataDir: string;
+  maxAgeDays: number;
+  now: () => number;
+  warnings: string[];
+  openFileChecker: AtomicWriteTempOpenFileChecker;
+}): Promise<AtomicWriteTempPlan> {
+  const result: AtomicWriteTempPlan = {
+    planned: [],
+    examinedCount: 0,
+    skippedFreshCount: 0,
+    skippedOpenCount: 0,
+    skippedOpenBytes: 0,
+    skippedSafetyCheckCount: 0,
+  };
+  const thresholdMs = now() - maxAgeDays * MS_PER_DAY;
+  const staleCandidates: { path: string; fileName: string; bytes: number; mtimeMs: number }[] = [];
+  let entries: string[];
+  try {
+    entries = await readdir(dataDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      warnings.push(`Could not read root atomic-write temp files in ${dataDir}: ${(err as Error).message}`);
+    }
+    return result;
+  }
+
+  let safetyWarningAdded = false;
+  for (const fileName of entries) {
+    if (!ATOMIC_WRITE_TEMP_RE.test(fileName)) continue;
+    const filePath = join(dataDir, fileName);
+    let bytes: number;
+    let mtimeMs: number;
+    try {
+      const file = await stat(filePath);
+      if (!file.isFile()) continue;
+      bytes = file.size;
+      mtimeMs = file.mtimeMs;
+    } catch {
+      continue;
+    }
+    result.examinedCount += 1;
+    if (mtimeMs > thresholdMs) {
+      result.skippedFreshCount += 1;
+      continue;
+    }
+
+    staleCandidates.push({ path: filePath, fileName, bytes, mtimeMs });
+  }
+
+  const openStates = await openFileChecker(staleCandidates.map((candidate) => candidate.path));
+  for (const candidate of staleCandidates) {
+    const openState = openStates.get(candidate.path) ?? 'unknown';
+    if (openState === 'open') {
+      result.skippedOpenCount += 1;
+      result.skippedOpenBytes += candidate.bytes;
+      continue;
+    }
+    if (openState === 'unknown') {
+      result.skippedSafetyCheckCount += 1;
+      if (!safetyWarningAdded) {
+        warnings.push(
+          'Could not verify whether one or more atomic-write temp files are open; preserving those files.',
+        );
+        safetyWarningAdded = true;
+      }
+      continue;
+    }
+    result.planned.push({
+      path: candidate.path,
+      kind: 'atomic-write-temp',
+      reason: 'atomic-write-temp-aged',
+      fileName: candidate.fileName,
+      bytes: candidate.bytes,
+      ageDays: Math.floor((now() - candidate.mtimeMs) / MS_PER_DAY),
+    });
+  }
+  return result;
+}
+
 /** Recursive total byte size of a directory tree; best-effort (skips races). */
 async function directorySizeBytes(dir: string): Promise<number> {
   let total = 0;
@@ -982,15 +1180,49 @@ async function scrubOperatorSignalMarker(
     }
   }
   if (!changed) return;
+  const tmp = `${markerPath}.tmp-prune`;
+  let renamed = false;
   try {
-    const tmp = `${markerPath}.tmp-prune`;
     await writeFile(tmp, JSON.stringify(marker, null, 2), 'utf8');
     await rename(tmp, markerPath);
+    renamed = true;
   } catch (err) {
     warnings.push(
       `Failed to scrub operator-signal delivered marker after prune: ${(err as Error).message}`,
     );
+  } finally {
+    if (!renamed) {
+      try {
+        await unlink(tmp);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          warnings.push(
+            `Failed to remove operator-signal marker temp file after prune: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
   }
+}
+
+async function verifyAtomicWriteTempBeforeRemoval(
+  removal: AtomicWriteTempPlannedRemoval,
+  maxAgeDays: number,
+  now: () => number,
+  openState: AtomicWriteTempOpenState,
+): Promise<'safe' | 'fresh' | 'open' | 'unknown' | 'gone'> {
+  let file: Awaited<ReturnType<typeof stat>>;
+  try {
+    file = await stat(removal.path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gone';
+    return 'unknown';
+  }
+  if (!file.isFile()) return 'gone';
+  if (file.mtimeMs > now() - maxAgeDays * MS_PER_DAY) return 'fresh';
+  if (openState === 'open') return 'open';
+  if (openState === 'unknown') return 'unknown';
+  return 'safe';
 }
 
 async function removeArtifact(removal: PlannedRemoval): Promise<void> {
@@ -1012,6 +1244,7 @@ export async function planAndPruneMaintenance(
 ): Promise<MaintenancePruneResult> {
   const { dataDir, dryRun = false } = options;
   const now = options.now ?? Date.now;
+  const openFileChecker = options.openFileChecker ?? checkOpenFiles;
   const maxAgeDays = options.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS;
   if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
     throw new Error(`maxAgeDays must be a positive number (got ${String(options.maxAgeDays)})`);
@@ -1049,6 +1282,13 @@ export async function planAndPruneMaintenance(
       `operatorSignalMinAgeDays must be a positive number (got ${String(options.operatorSignalMinAgeDays)})`,
     );
   }
+  const atomicWriteTempMaxAgeDays =
+    options.atomicWriteTempMaxAgeDays ?? DEFAULT_ATOMIC_WRITE_TEMP_MAX_AGE_DAYS;
+  if (!Number.isFinite(atomicWriteTempMaxAgeDays) || atomicWriteTempMaxAgeDays <= 0) {
+    throw new Error(
+      `atomicWriteTempMaxAgeDays must be a positive number (got ${String(options.atomicWriteTempMaxAgeDays)})`,
+    );
+  }
 
   const warnings: string[] = [];
   const result: MaintenancePruneResult = {
@@ -1060,6 +1300,37 @@ export async function planAndPruneMaintenance(
     reclaimedBytes: 0,
     preserved: [...PRESERVED_STORES],
     warnings,
+    atomicWriteTempSweep: {
+      examinedCount: 0,
+      plannedCount: 0,
+      removedCount: 0,
+      reclaimableBytes: 0,
+      reclaimedBytes: 0,
+      skippedOpenCount: 0,
+      skippedOpenBytes: 0,
+      skippedSafetyCheckCount: 0,
+      skippedFreshCount: 0,
+    },
+  };
+
+  const atomicWriteTempPlan = await planAtomicWriteTempRemovals({
+    dataDir,
+    maxAgeDays: atomicWriteTempMaxAgeDays,
+    now,
+    warnings,
+    openFileChecker,
+  });
+  result.planned.push(...atomicWriteTempPlan.planned);
+  result.atomicWriteTempSweep = {
+    examinedCount: atomicWriteTempPlan.examinedCount,
+    plannedCount: atomicWriteTempPlan.planned.length,
+    removedCount: 0,
+    reclaimableBytes: atomicWriteTempPlan.planned.reduce((total, removal) => total + removal.bytes, 0),
+    reclaimedBytes: 0,
+    skippedOpenCount: atomicWriteTempPlan.skippedOpenCount,
+    skippedOpenBytes: atomicWriteTempPlan.skippedOpenBytes,
+    skippedSafetyCheckCount: atomicWriteTempPlan.skippedSafetyCheckCount,
+    skippedFreshCount: atomicWriteTempPlan.skippedFreshCount,
   };
 
   const tasks = await readTasks(dataDir);
@@ -1118,20 +1389,45 @@ export async function planAndPruneMaintenance(
       result.reclaimedBytes += removal.bytes; // reclaimable, not yet reclaimed
       continue;
     }
+    if (removal.kind === 'atomic-write-temp') {
+      const openStates = await openFileChecker([removal.path]);
+      const safety = await verifyAtomicWriteTempBeforeRemoval(
+        removal,
+        atomicWriteTempMaxAgeDays,
+        now,
+        openStates.get(removal.path) ?? 'unknown',
+      );
+      if (safety !== 'safe') {
+        if (safety === 'open') {
+          result.atomicWriteTempSweep!.skippedOpenCount += 1;
+          result.atomicWriteTempSweep!.skippedOpenBytes =
+            (result.atomicWriteTempSweep!.skippedOpenBytes ?? 0) + removal.bytes;
+          warnings.push(`Preserved open atomic-write temp file: ${removal.path}`);
+        } else if (safety === 'unknown') {
+          result.atomicWriteTempSweep!.skippedSafetyCheckCount += 1;
+          warnings.push(`Preserved atomic-write temp file because open-file verification failed: ${removal.path}`);
+        } else if (safety === 'fresh') {
+          result.atomicWriteTempSweep!.skippedFreshCount += 1;
+          warnings.push(`Preserved fresh atomic-write temp file after plan changed: ${removal.path}`);
+        }
+        continue;
+      }
+    }
     try {
       await removeArtifact(removal);
       result.removed.push(removal);
       result.reclaimedBytes += removal.bytes;
+      if (removal.kind === 'atomic-write-temp') {
+        result.atomicWriteTempSweep!.removedCount += 1;
+        result.atomicWriteTempSweep!.reclaimedBytes += removal.bytes;
+      }
       if (removal.kind === 'operator-signal') {
         removedOperatorSignalNames.push(removal.fileName);
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         // Already gone — idempotent success, but no bytes actually reclaimed now.
-        result.removed.push(removal);
-        if (removal.kind === 'operator-signal') {
-          removedOperatorSignalNames.push(removal.fileName);
-        }
+        // Keep it out of removed/audit counts: this run did not delete it.
         continue;
       }
       warnings.push(`Failed to remove ${removal.path}: ${(err as Error).message}`);

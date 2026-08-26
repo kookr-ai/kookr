@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import type { SessionId } from './terminal-backend.js';
 
 export interface DtachManifestEntry {
@@ -70,8 +70,16 @@ export class DtachManifestStore {
 
   writeAtomic(manifest: DtachManifestFile): void {
     const tmp = `${this.manifestPath}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.manifestPath);
+    let renamed = false;
+    try {
+      writeFileSync(tmp, JSON.stringify(manifest, null, 2), { mode: 0o600 });
+      renameSync(tmp, this.manifestPath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+      }
+    }
   }
 
   renameCorrupt(): void {

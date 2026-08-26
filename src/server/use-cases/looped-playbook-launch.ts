@@ -160,7 +160,7 @@ export async function launchLoopedPlaybook(
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
     }, { deliveryPolicy: prepared.deliveryPolicy });
-    if (result.queued) {
+    if (result.queued && !result.parked) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(
         'cannot start looped playbook while the task queue is full; wait for an active task to finish and try again',
@@ -309,7 +309,7 @@ export async function replaceLoopedPlaybook(
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
     }, { deliveryPolicy: prepared.deliveryPolicy });
-    if (result.queued) {
+    if (result.queued && !result.parked) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(
         'cannot start looped playbook while the task queue is full; wait for an active task to finish and try again',
