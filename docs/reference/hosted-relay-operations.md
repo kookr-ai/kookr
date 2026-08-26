@@ -40,7 +40,16 @@ Node relay. The deployment must provide:
   stay in URL fragments.
 
 The relay `/health` response reports the hosted status and TLS expiry so an
-external monitor can alert before certificate expiry.
+external monitor can alert before certificate expiry. `/health` is the
+liveness signal and always answers HTTP 200 while the process is up (its body
+carries `status: 'degraded'` when the state DB is unreachable or the relay is
+emergency-disabled), so restart-on-failure probes never bounce a live process.
+
+The relay `/readyz` route is the distinct readiness (cordon) signal: it
+returns HTTP 503 with `status: 'not-ready'` when the state DB is unreachable
+or the relay is emergency-disabled, and HTTP 200 with `status: 'ready'`
+otherwise. Point k8s readiness / ALB target-health probes at `/readyz` so a
+degraded instance is drained instead of being sent writes it cannot persist.
 
 ## Account And Device Authentication
 
