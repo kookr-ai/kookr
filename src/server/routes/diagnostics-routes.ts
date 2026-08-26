@@ -11,6 +11,7 @@ import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-c
 import { getDetectionStats } from '../../core/detection-stats.js';
 import { getStuckFlagPrecision } from '../../core/stuck-flag-precision.js';
 import { buildLaunchDependencyDiagnostics } from '../../core/launch-dependency-diagnostics.js';
+import { aggregateTerminalOutcomes } from '../../core/terminal-receipt.js';
 import {
   generateReportFromFile,
   formatReport,
@@ -1156,6 +1157,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     ))
   ));
 
+  // Terminal-outcome histogram over a bounded trailing window (issue #2847):
+  // classifies every terminal task's structured receipt by reason, source,
+  // status, and work-disposition so Layer-3 reflection can tell expected
+  // recovery from churn/force-reap/operator-cancel without reconstructing it
+  // from timestamps. Legacy rows (no receipt) count as `unknown_legacy`. Pure
+  // in-memory read over the already-bounded task view — never scans transcripts.
+  // `?windowMs=` (or `?hours=`) selects the window; default 24h, capped at 30d.
+  app.get('/api/diagnostics/terminal-outcomes', (c) => {
+    const nowMs = deps.nowMs?.() ?? Date.now();
+    const windowMs = parseTerminalOutcomeWindowMs(c.req.query('windowMs'), c.req.query('hours'));
+    return c.json({
+      schemaVersion: 'terminal-outcomes-diagnostics-route.v1',
+      ...aggregateTerminalOutcomes(taskStore.viewTasks(), { nowMs, windowMs }),
+    });
+  });
+
   // Median human-reply wait over the last 24 hours (issue #2583). Reads the
   // existing session interaction JSONL files; does not invent a store.
   // The StatusBar chip hides itself below five samples — this route still
@@ -1700,6 +1717,27 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: message, sessionId }, 404);
     }
   });
+}
+
+const TERMINAL_OUTCOME_DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const TERMINAL_OUTCOME_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the terminal-outcome aggregation window from `?windowMs=` (or the
+ * convenience `?hours=`), defaulting to 24h and clamping to [1 minute, 30 days]
+ * so the histogram stays a bounded read (issue #2847). Non-numeric input falls
+ * back to the default rather than erroring — this is a diagnostics glance.
+ */
+function parseTerminalOutcomeWindowMs(windowMsRaw?: string, hoursRaw?: string): number {
+  let ms = TERMINAL_OUTCOME_DEFAULT_WINDOW_MS;
+  if (windowMsRaw !== undefined) {
+    const parsed = Number(windowMsRaw);
+    if (Number.isFinite(parsed) && parsed > 0) ms = parsed;
+  } else if (hoursRaw !== undefined) {
+    const parsed = Number(hoursRaw);
+    if (Number.isFinite(parsed) && parsed > 0) ms = parsed * 60 * 60 * 1000;
+  }
+  return Math.min(Math.max(ms, 60 * 1000), TERMINAL_OUTCOME_MAX_WINDOW_MS);
 }
 
 /**

@@ -5256,4 +5256,42 @@ describe('diagnostics routes', () => {
     });
   });
 
+  describe('GET /api/diagnostics/terminal-outcomes (issue #2847)', () => {
+    test('aggregates terminal receipts by reason, source, status, and window', async () => {
+      const taskStore = new TaskStore();
+      // Watchdog reap.
+      const reaped = taskStore.createTask('Reaped', '/repo');
+      taskStore.startTask(reaped.id);
+      taskStore.terminateTask(reaped.id, { reason: 'timeout' });
+      // Operator cancel.
+      const cancelled = taskStore.createTask('Cancelled', '/repo');
+      taskStore.startTask(cancelled.id);
+      taskStore.cancelTask(cancelled.id, { source: 'user' });
+      // Non-terminal task is ignored.
+      const running = taskStore.createTask('Running', '/repo');
+      taskStore.startTask(running.id);
+
+      const nowMs = Date.now();
+      const res = await mkApp({ taskStore, nowMs: () => nowMs })
+        .request('/api/diagnostics/terminal-outcomes');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('terminal-outcomes-diagnostics-route.v1');
+      expect(body.total).toBe(2);
+      expect(body.byReason).toMatchObject({ timeout: 1, manual: 1 });
+      expect(body.bySource).toMatchObject({ watchdog: 1, user: 1 });
+      expect(body.byStatus).toMatchObject({ terminated: 1, cancelled: 1 });
+    });
+
+    test('clamps the window and honors ?hours=', async () => {
+      const taskStore = new TaskStore();
+      const nowMs = Date.now();
+      const res = await mkApp({ taskStore, nowMs: () => nowMs })
+        .request('/api/diagnostics/terminal-outcomes?hours=1');
+      const body = await res.json();
+      expect(body.windowMs).toBe(60 * 60 * 1000);
+      expect(body.total).toBe(0);
+    });
+  });
+
 });

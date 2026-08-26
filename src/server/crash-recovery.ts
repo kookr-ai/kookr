@@ -696,7 +696,12 @@ export async function recoverCrashedSessions(
               && !hasReplacementSession
               && (ownedLaunchAtFailure || (failedLaunchSessionId && !hasForeignLiveSession))
             ) {
-              taskStore.cancelTask(task.id);
+              taskStore.cancelTask(task.id, {
+                source: 'restart_recovery',
+                reason: 'manual',
+                workDisposition: 'superseded',
+                detail: 'crash-recovery unwound a failed relaunch superseded by a replacement',
+              });
             }
           }
           result.failed.push({

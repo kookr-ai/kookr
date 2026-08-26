@@ -39,7 +39,8 @@ import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js'
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
 import type { TaskStatus } from '../../core/task-status.js';
-import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
+import type { TaskDependencyEdge, TaskMetadataIntent, TaskTerminalReceipt } from '../../shared/contracts/task.js';
+import { projectTerminalReceipt } from '../../core/terminal-receipt.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
@@ -1431,6 +1432,8 @@ type CompactApiTask = Pick<
 > & {
   /** Alias of `id`, mirroring the full `ApiTask` surface. */
   taskId: string;
+  /** Structured terminal-transition receipt (issue #2847); legacy rows project to `unknown_legacy`. */
+  terminalReceipt?: TaskTerminalReceipt;
   /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
   aggregateTokenUsage?: TokenUsage;
   /** Backward-compatible, secret-free launch pins (prompt/cwd/key omitted). */
@@ -1492,6 +1495,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     terminationDetail: task.terminationDetail,
     disposition: task.disposition,
     relaunchDisposition: task.relaunchDisposition,
+    terminalReceipt: projectTerminalReceipt(task),
     sessions: task.sessions.map((session) => ({
       tmuxSession: session.tmuxSession,
       agentType: session.agentType,
@@ -1588,7 +1592,12 @@ function normalizeTaskForApi(task: Task): ApiTask {
     return { ...session, worktreeHealth };
   });
 
-  return changed ? { ...task, sessions, taskId: task.id } : { ...task, taskId: task.id };
+  const base = changed ? { ...task, sessions, taskId: task.id } : { ...task, taskId: task.id };
+  // Structured terminal-transition receipt (issue #2847). Projecting rather than
+  // relying on the raw spread lets a terminal task persisted before the field
+  // existed surface an explicit `unknown_legacy` receipt instead of nothing.
+  const terminalReceipt = projectTerminalReceipt(task);
+  return terminalReceipt ? { ...base, terminalReceipt } : base;
 }
 
 function withSuppressionFlag<

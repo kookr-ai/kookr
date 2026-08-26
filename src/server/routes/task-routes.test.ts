@@ -116,6 +116,60 @@ describe('GET /api/tasks worktree health', () => {
   });
 });
 
+describe('GET /api/tasks terminal receipt (issue #2847)', () => {
+  test('exposes the structured receipt on the full and compact views', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Reap me', '/repo');
+    taskStore.startTask(task.id);
+    taskStore.terminateTask(task.id, { reason: 'timeout' });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const full = (await (await app.request('/api/tasks')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(full.terminalReceipt).toMatchObject({
+      status: 'terminated',
+      reason: 'timeout',
+      source: 'watchdog',
+      priorState: 'inProgress',
+    });
+
+    const compact = (await (await app.request('/api/tasks?view=compact')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(compact.terminalReceipt).toMatchObject({ reason: 'timeout', source: 'watchdog' });
+  });
+
+  test('legacy terminal rows without a receipt project to unknown_legacy', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Old terminated task', '/repo');
+    taskStore.startTask(task.id);
+    taskStore.terminateTask(task.id, { reason: 'timeout' });
+    // Simulate a row persisted before the receipt field existed.
+    const mutable = taskStore.getTaskForMutation(task.id);
+    if (mutable) delete mutable.terminalReceipt;
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const row = (await (await app.request('/api/tasks')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(row.terminalReceipt).toMatchObject({
+      status: 'terminated',
+      reason: 'unknown_legacy',
+      source: 'unknown_legacy',
+      workDisposition: 'unknown',
+    });
+  });
+
+  test('non-terminal tasks carry no receipt', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Still running', '/repo');
+    taskStore.startTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const row = (await (await app.request('/api/tasks')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(row.terminalReceipt).toBeUndefined();
+  });
+});
+
 describe('GET /api/tasks aggregate token usage (issue #1307)', () => {
   const usage = (costUsd: number) => ({
     inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd,

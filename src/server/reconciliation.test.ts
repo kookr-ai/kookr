@@ -480,6 +480,13 @@ describe('Startup Reconciliation', () => {
     // (see rfc-task-loss-prevention D1 — user must acknowledge to reach 'completed').
     expect(updatedTask.status).toBe('terminated');
     expect(result.tasksTerminated).toContain(task.id);
+    // Boot reconcile records restart-recovery provenance on the receipt; the
+    // reason stays honest `unknown` (per-task crash cause is indistinguishable).
+    expect(updatedTask.terminalReceipt).toMatchObject({
+      status: 'terminated',
+      reason: 'unknown',
+      source: 'restart_recovery',
+    });
   });
 
   test('dead session that finished a clean turn (completed_turn) auto-completes, not terminated', async () => {
@@ -502,7 +509,15 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toContain('kookr-clean');
     expect(result.tasksCompleted).toContain(task.id);
     expect(result.tasksTerminated).not.toContain(task.id);
-    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+    const completed = taskStore.getTask(task.id)!;
+    expect(completed.status).toBe('completed');
+    // Clean-turn boot completion records the restart-recovery completion path.
+    expect(completed.terminalReceipt).toMatchObject({
+      status: 'completed',
+      reason: 'completed_recovery',
+      source: 'restart_recovery',
+      workDisposition: 'completed',
+    });
   });
 
   test('dead session that never reported a turn state (undefined) terminates — default-to-crash', async () => {
@@ -1048,6 +1063,18 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(taskStore.getActiveCount()).toBe(0);
   });
 
+  test('stamps a restart-recovery terminal receipt (issue #2847)', () => {
+    const task = taskStore.createTask('Wedged scheduled fire', '/cwd');
+    reconcileStaleOpenLaunches(taskStore);
+
+    const receipt = taskStore.getTask(task.id)?.terminalReceipt;
+    expect(receipt).toMatchObject({
+      status: 'terminated',
+      reason: 'server_restart',
+      source: 'restart_recovery',
+    });
+  });
+
   test('re-parks an interrupted durable recovery probe instead of terminating it', () => {
     const task = taskStore.createTask({
       prompt: 'probe provider',
@@ -1257,5 +1284,29 @@ describe('reconcileStaleOpenLaunches — disposition ledger (issue #1540 review 
 
     // Must not throw even though no path was supplied.
     expect(() => reconcileStaleOpenLaunches(taskStore)).not.toThrow();
+  });
+
+  // Issue #2847 AC: terminal-state persistence failures must not block physical
+  // cleanup; the receipt preserves the original cause and records the
+  // bookkeeping failure separately.
+  test('a ledger-write failure is recorded on the receipt, not fatal, cause preserved', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Wedged scheduled fire', '/cwd');
+    // Point the ledger at a DIRECTORY so appendDispositionEntry rejects (EISDIR).
+    const ledgerDir = await mkdtemp(join(tmpdir(), 'kookr-badledger-'));
+
+    // Physical termination still happens synchronously and does not throw.
+    expect(() => reconcileStaleOpenLaunches(taskStore, ledgerDir)).not.toThrow();
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+
+    // The fire-and-forget ledger write fails on a later microtask; poll for it.
+    const deadline = Date.now() + 2000;
+    let receipt = taskStore.getTask(task.id)?.terminalReceipt;
+    while (!receipt?.bookkeepingError && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      receipt = taskStore.getTask(task.id)?.terminalReceipt;
+    }
+    expect(receipt?.reason).toBe('server_restart'); // original cause preserved
+    expect(receipt?.bookkeepingError).toContain('disposition-ledger write failed');
   });
 });

@@ -121,6 +121,14 @@ describe('reapHungTask', () => {
     expect(adapterStop).toHaveBeenCalledWith(task.sessions[0].tmuxSession);
     // 'terminated' is not counted by getActiveCount — slot is freed.
     expect(taskStore.getActiveCount()).toBe(0);
+    // Issue #2847: the reaper terminates with reason `timeout`, which the store
+    // derives into a watchdog-sourced terminal receipt end-to-end (no explicit
+    // context threaded — the lifecycle wrapper forwards the cause unchanged).
+    expect(taskStore.getTask(task.id)?.terminalReceipt).toMatchObject({
+      status: 'terminated',
+      reason: 'timeout',
+      source: 'watchdog',
+    });
   });
 
   test('purges the attention-queue entry for the session', async () => {

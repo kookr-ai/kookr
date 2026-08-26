@@ -159,6 +159,66 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
     // Interaction log stays gated to relaunched/failed material outcomes.
     expect(deps.spies.interactionLog.append).not.toHaveBeenCalled();
   });
+
+  // Issue #2847: the terminal receipts of restart-terminated tasks record
+  // whether crash-recovery relaunched or deliberately skipped them, stamped with
+  // the restart epoch as the correlation id.
+  test('correlates recovery outcomes onto terminal receipts', async () => {
+    const deps = fakeDeps();
+    // Four restart-terminated tasks: relaunched, superseded (duplicate skip),
+    // abandoned-via-failure, and abandoned-via-needs-human-skip (crash-loop).
+    for (const id of ['relaunch', 'skip-dup', 'fail', 'skip-loop']) {
+      deps.taskStore.createTask({ prompt: `task ${id}`, cwd: '/repo' });
+    }
+    const [t1, t2, t3, t4] = deps.taskStore.listTasks();
+    for (const t of [t1, t2, t3, t4]) {
+      deps.taskStore.startTask(t.id);
+      deps.taskStore.terminateTask(t.id, { reason: 'server-restart' });
+    }
+
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult({
+      relaunched: [{ taskId: t1.id, oldSessionId: 'o', newSessionId: 'n', mode: 'fresh' }],
+      skipped: [
+        { taskId: t2.id, sessionId: 's', reason: 'duplicate prompt already running or relaunched' },
+        // A sibling session of the RELAUNCHED task (t1) — must NOT clobber its
+        // `relaunched` disposition down to `superseded` (blocking regression).
+        { taskId: t1.id, sessionId: 's2', reason: 'task already relaunched in this recovery pass' },
+        // Crash-loop skip classifies needs-human → abandoned.
+        { taskId: t4.id, sessionId: 's', reason: 'rapid crash-loop (relaunched 8s ago, window is 60s)' },
+      ],
+      failed: [{ taskId: t3.id, sessionId: 's', error: 'boom' }],
+    }));
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({
+        markedCompleted: ['n'],
+        tasksTerminated: [t1.id, t2.id, t3.id, t4.id],
+      }),
+      dispositionLedgerPath: ledgerPath,
+      staleOpenLaunchTaskIds: [],
+    });
+
+    const epoch = String(deps.restartEpoch);
+    // The relaunched task keeps `relaunched` despite the sibling "already
+    // relaunched" skip entry sharing its id.
+    expect(deps.taskStore.getTask(t1.id)?.terminalReceipt).toMatchObject({
+      workDisposition: 'relaunched',
+      recoveryCorrelationId: epoch,
+    });
+    expect(deps.taskStore.getTask(t2.id)?.terminalReceipt).toMatchObject({
+      workDisposition: 'superseded',
+      recoveryCorrelationId: epoch,
+    });
+    expect(deps.taskStore.getTask(t3.id)?.terminalReceipt).toMatchObject({
+      workDisposition: 'abandoned',
+      recoveryCorrelationId: epoch,
+    });
+    expect(deps.taskStore.getTask(t4.id)?.terminalReceipt).toMatchObject({
+      workDisposition: 'abandoned',
+      recoveryCorrelationId: epoch,
+    });
+  });
 });
 
 describe('runStartupRecoveryPhase — parked dependency hydration', () => {

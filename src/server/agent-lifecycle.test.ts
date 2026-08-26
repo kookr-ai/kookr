@@ -795,7 +795,8 @@ describe('cancelTask', () => {
 
     expect(deps.adapter.stop).toHaveBeenCalledWith('kookr-s1');
     expect(deps.taskStore.updateSession).toHaveBeenCalledWith('task-42', 'kookr-s1', { lastStatus: 'aborted' });
-    expect(deps.taskStore.cancelTask).toHaveBeenCalledWith('task-42');
+    // Operator-driven cancel records a `user` initiator on the terminal receipt (issue #2847).
+    expect(deps.taskStore.cancelTask).toHaveBeenCalledWith('task-42', { source: 'user', reason: 'manual' });
   });
 
   test('skips cleanup for sessions already in terminal state', async () => {

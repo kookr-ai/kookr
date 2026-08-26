@@ -629,6 +629,9 @@ export async function completeTask(
 
   completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
+  // The terminal receipt's initiator (issue #2847) is derived inside the store
+  // from the completion path stamped on the record just above — agent self vs
+  // operator vs recovery — so no extra argument is threaded here.
   deps.taskStore.completeTask(taskId);
   markCompletedMissingWorktreesCleanedUp(task, deps);
   scheduleNoEventCriteriaVerdict(task, completionEvents, deps);
@@ -841,7 +844,9 @@ export async function cancelTask(
   // Release issue-ownership claims (RFC R8; safeReleaseAllFor never throws, R9b)
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
 
-  deps.taskStore.cancelTask(taskId);
+  // Operator-driven cancel (API / UI / CLI / websocket route into this wrapper).
+  // Structured receipt records the `user` initiator (issue #2847).
+  deps.taskStore.cancelTask(taskId, { source: 'user', reason: 'manual' });
   notifyTaskOutcome(deps, taskId, { kind: 'cancelled' });
 
   await deps.interactionLog?.append({

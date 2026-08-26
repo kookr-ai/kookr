@@ -1107,6 +1107,168 @@ describe('TaskStore', () => {
     });
   });
 
+  // Structured terminal-transition receipt (issue #2847). Every terminal move
+  // stamps a typed reason + source + prior state at the chokepoint.
+  describe('Terminal-transition receipt (issue #2847)', () => {
+    test('completeTask stamps a receipt with prior state and completed defaults', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const completed = store.completeTask(task.id);
+
+      const receipt = completed.terminalReceipt;
+      expect(receipt).toBeDefined();
+      expect(receipt?.status).toBe('completed');
+      expect(receipt?.reason).toBe('completed_normal');
+      expect(receipt?.source).toBe('unknown');
+      expect(receipt?.workDisposition).toBe('completed');
+      expect(receipt?.priorState).toBe('inProgress');
+      expect(typeof receipt?.at).toBe('string');
+      expect(Number.isFinite(Date.parse(receipt!.at))).toBe(true);
+    });
+
+    test('completeTask honors an explicit context (task self-completion path)', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const completed = store.completeTask(task.id, { source: 'task_self' });
+
+      expect(completed.terminalReceipt?.source).toBe('task_self');
+      expect(completed.terminalReceipt?.reason).toBe('completed_normal');
+    });
+
+    // The completion initiator is derived from the completionPath already
+    // stamped on the record, so completeTask call sites need no extra argument.
+    test.each([
+      ['normal', 'task_self'],
+      ['outbox_drained', 'task_self'],
+      ['api_complete', 'user'],
+      ['ui_complete', 'user'],
+      ['recovery', 'restart_recovery'],
+    ] as const)('completeTask derives source %s -> %s from completionPath', (path, expectedSource) => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const mutable = store.getTaskForMutation(task.id);
+      if (mutable) mutable.completionPath = path;
+      const completed = store.completeTask(task.id);
+
+      expect(completed.terminalReceipt?.source).toBe(expectedSource);
+      expect(completed.terminalReceipt?.reason).toBe(
+        path === 'recovery' ? 'completed_recovery' : 'completed_normal',
+      );
+    });
+
+    test('terminateTask derives reason + source from the termination cause', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(task.id, { reason: 'timeout' });
+
+      // timeout → watchdog/reaper provenance, derived for free.
+      expect(terminated.terminalReceipt?.reason).toBe('timeout');
+      expect(terminated.terminalReceipt?.source).toBe('watchdog');
+      expect(terminated.terminalReceipt?.status).toBe('terminated');
+      expect(terminated.terminalReceipt?.priorState).toBe('inProgress');
+    });
+
+    test('terminateTask maps server-restart to restart-recovery provenance', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(task.id, { reason: 'server-restart' });
+
+      expect(terminated.terminalReceipt?.reason).toBe('server_restart');
+      expect(terminated.terminalReceipt?.source).toBe('restart_recovery');
+    });
+
+    test('terminateTask maps provider_transient to a provider-failure task-self receipt', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(task.id, { reason: 'provider_transient' });
+
+      expect(terminated.terminalReceipt?.reason).toBe('provider_failure');
+      expect(terminated.terminalReceipt?.source).toBe('task_self');
+    });
+
+    test('explicit receiptContext overrides the cause-derived source', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(
+        task.id,
+        { reason: 'unknown', detail: 'all sessions died' },
+        { source: 'restart_recovery' },
+      );
+
+      expect(terminated.terminalReceipt?.source).toBe('restart_recovery');
+      // reason stays honest (unknown) — restart reconcile cannot classify it.
+      expect(terminated.terminalReceipt?.reason).toBe('unknown');
+    });
+
+    test('cancelTask stamps a manual/abandoned receipt with the given source', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const cancelled = store.cancelTask(task.id, { source: 'user' });
+
+      expect(cancelled.terminalReceipt?.status).toBe('cancelled');
+      expect(cancelled.terminalReceipt?.reason).toBe('manual');
+      expect(cancelled.terminalReceipt?.source).toBe('user');
+      expect(cancelled.terminalReceipt?.workDisposition).toBe('abandoned');
+    });
+
+    test('re-terminalizing (terminated -> completed on ack) overwrites the receipt', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      store.terminateTask(task.id, { reason: 'timeout' });
+      const acked = store.completeTask(task.id, { source: 'user' });
+
+      expect(acked.terminalReceipt?.status).toBe('completed');
+      expect(acked.terminalReceipt?.priorState).toBe('terminated');
+      expect(acked.terminalReceipt?.source).toBe('user');
+    });
+
+    test('recordRecoveryDisposition patches work-disposition + correlation id', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      store.terminateTask(task.id, { reason: 'server-restart' });
+
+      store.recordRecoveryDisposition(task.id, {
+        workDisposition: 'relaunched',
+        recoveryCorrelationId: '1724693000000',
+      });
+
+      const after = store.getTask(task.id);
+      expect(after?.terminalReceipt?.workDisposition).toBe('relaunched');
+      expect(after?.terminalReceipt?.recoveryCorrelationId).toBe('1724693000000');
+    });
+
+    test('recordRecoveryDisposition is a no-op without a receipt', () => {
+      const task = store.createTask('Task', '/cwd');
+      // Non-terminal task has no receipt yet.
+      store.recordRecoveryDisposition(task.id, { workDisposition: 'relaunched' });
+      expect(store.getTask(task.id)?.terminalReceipt).toBeUndefined();
+    });
+
+    test('recordTerminalBookkeepingError preserves the cause, records failure separately', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      store.terminateTask(task.id, { reason: 'server-restart' });
+
+      store.recordTerminalBookkeepingError(task.id, 'ledger write failed: ENOSPC');
+
+      const after = store.getTask(task.id);
+      // Original cause is untouched; the bookkeeping failure is captured apart.
+      expect(after?.terminalReceipt?.reason).toBe('server_restart');
+      expect(after?.terminalReceipt?.bookkeepingError).toBe('ledger write failed: ENOSPC');
+    });
+
+    test('recordTerminalBookkeepingError is first-write-wins', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      store.terminateTask(task.id, { reason: 'server-restart' });
+
+      store.recordTerminalBookkeepingError(task.id, 'first');
+      store.recordTerminalBookkeepingError(task.id, 'second');
+
+      expect(store.getTask(task.id)?.terminalReceipt?.bookkeepingError).toBe('first');
+    });
+  });
+
   describe('Session metadata', () => {
     test('addSession adds session to task', () => {
       const task = store.createTask('Task', '/cwd');
@@ -1319,6 +1481,38 @@ describe('TaskStore', () => {
       expect(all).toHaveLength(2);
       expect(all[0].prompt).toBe('Task 1');
       expect(all[1].prompt).toBe('Task 2');
+    });
+
+    test('terminal receipt round-trips through the persistence envelope (issue #2847)', async () => {
+      const { saveTasks, loadTasks } = await import('./task-persistence.js');
+      const { mkdtempSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+
+      const task = store.createTask('Persist me', '/cwd');
+      store.startTask(task.id);
+      store.terminateTask(task.id, { reason: 'timeout' });
+      store.recordRecoveryDisposition(task.id, {
+        workDisposition: 'abandoned',
+        recoveryCorrelationId: 'epoch-9',
+      });
+
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-receipt-persist-'));
+      const file = join(dir, 'tasks.json');
+      await saveTasks(store.getAllTasks(), file);
+
+      const reloaded = await loadTasks(file);
+      const restored = reloaded.tasks.find((t) => t.id === task.id);
+      // Plain ISO/string fields survive JSON round-trip with no Date revival.
+      expect(restored?.terminalReceipt).toEqual({
+        status: 'terminated',
+        reason: 'timeout',
+        source: 'watchdog',
+        at: expect.any(String),
+        priorState: 'inProgress',
+        workDisposition: 'abandoned',
+        recoveryCorrelationId: 'epoch-9',
+      });
     });
 
     test('getAllTasks and loadTasks do not leak mutable task records', () => {
