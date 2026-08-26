@@ -35,6 +35,7 @@ import {
 } from './launch-timeout.js';
 import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
 import {
+  isSameTaskLaunchAdmission,
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
@@ -1237,7 +1238,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           && !isTerminalStatus(current.status)
           && (
             taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
-            || isSameLaunchAdmissionMarker(current.launchAdmission, admissionMarkerWrittenByOwner)
+            || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
           )
         ) {
           taskStore.setLaunchAdmission(
@@ -1331,21 +1332,6 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   }
 
   return promoted;
-}
-
-function isSameLaunchAdmissionMarker(
-  current: Task['launchAdmission'],
-  expected: Task['launchAdmission'],
-): boolean {
-  if (!current || !expected) return current === expected;
-  if (current.status !== expected.status) return false;
-  if (current.status === 'probing' && expected.status === 'probing') {
-    return current.sessionId === expected.sessionId && current.startedAt === expected.startedAt;
-  }
-  if (current.status === 'parked' && expected.status === 'parked') {
-    return current.reason === expected.reason && current.parkedAt === expected.parkedAt;
-  }
-  return false;
 }
 
 async function notifyPendingTaskPromoted(

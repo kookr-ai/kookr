@@ -151,15 +151,33 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
-  test('keeps an interrupted startup probe busy through concurrent clean evidence', () => {
+  test('keeps an interrupted startup probe busy through changing provider evidence', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreInterruptedProbe([{
       dependency: 'kb',
       state: 'half_open',
     }], 'task-1');
 
+    admission.observe(['kb'], [failure]);
     admission.observe(['kb'], []);
 
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('releases interrupted cleanup to one unclaimed half-open probe', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    const dependencies = [{ dependency: 'kb', state: 'half_open' as const }];
+    admission.restoreInterruptedProbe(dependencies, 'task-1');
+
+    admission.releaseInterruptedProbe(dependencies);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
     expect(admission.evaluate(['kb'])).toMatchObject({
       admit: false,
       reason: 'half_open_probe_busy',

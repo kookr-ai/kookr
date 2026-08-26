@@ -671,6 +671,75 @@ describe('Crash Recovery', () => {
     expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
   });
 
+  test('does not roll back replacement ownership when a stale recovery barrier rejects', async () => {
+    const cwd = join(tempDir, 'project-stale-recovery-owner');
+    const task = await setupCrashedTask('Stale recovery owner', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Stale recovery owner',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let now = 8_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let rejectSecond!: (err: Error) => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    try {
+      const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn()
+          .mockImplementationOnce(async () => {
+            markFirstStarted();
+            await new Promise<void>((resolve) => { releaseFirst = resolve; });
+          })
+          .mockImplementationOnce(async () => {
+            markSecondStarted();
+            await new Promise<void>((_resolve, reject) => { rejectSecond = reject; });
+          }),
+      });
+      await firstStarted;
+      admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = taskStore.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+      const replacementMarker = {
+        status: 'probing' as const,
+        reason: 'half_open_probe_in_flight' as const,
+        dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
+        startedAt: 'replacement-owner',
+        sessionId: 'kookr-replacement-recovery',
+      };
+      taskStore.setLaunchAdmission(task.id, replacementMarker);
+
+      rejectSecond(new Error('stale recovery re-park write failed'));
+      const result = await recovery;
+      expect(result.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale recovery re-park write failed'),
+      })]);
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: replacementMarker,
+      });
+      expect(taskStore.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+      expect(launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test('reaps an unattached recovery session when its probe is cancelled before rejection', async () => {
     const cwd = join(tempDir, 'project-cancelled-probe');
     const task = await setupCrashedTask('Cancelled recovery probe', cwd);

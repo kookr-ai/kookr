@@ -25,6 +25,7 @@ import type {
   LaunchDependencyAdmissionDecision,
 } from '../core/launch-dependency-admission.js';
 import {
+  isSameTaskLaunchAdmission,
   isNoSlotDependencyAdmission,
   probeFromAdmissionDecision,
   taskAdmissionForDeniedDecision,
@@ -1878,12 +1879,22 @@ async function launchTaskCore(
   // concurrent promoter can never race it, and so getActiveCount counts the
   // in-flight launch against the cap (audit item 1, second launch site).
   phaseTracker.enter('reserve');
-  taskStore.beginLaunch(task.id);
+  let launchReservationToken = taskStore.beginLaunchWithToken(task.id);
+  if (!launchReservationToken) {
+    throw new Error(`Task ${task.id} could not reserve its direct launch`);
+  }
   let adapterLaunchStarted = false;
+  let admissionMarkerWrittenByOwner: Task['launchAdmission'];
   if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    const probeAdmission = taskAdmissionForProbe(
+      dependencyAdmissionDecision,
+      nowISO(),
+      probeSessionId,
+    );
+    admissionMarkerWrittenByOwner = probeAdmission;
     taskStore.setLaunchAdmission(
       task.id,
-      taskAdmissionForProbe(dependencyAdmissionDecision, nowISO(), probeSessionId),
+      probeAdmission,
     );
   }
   // The disposition guard wraps ONLY the launch race — the point before which
@@ -1899,8 +1910,16 @@ async function launchTaskCore(
       const current = taskStore.getTask(task.id);
       if (!current || isTerminalStatus(current.status)) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
-        taskStore.endLaunch(task.id);
+        taskStore.endLaunch(task.id, launchReservationToken);
         throw new Error(`Task ${task.id} changed state while its probe marker was persisted`);
+      }
+      if (!taskStore.ownsLaunchReservation(task.id, launchReservationToken)) {
+        const renewedToken = taskStore.beginLaunchWithToken(task.id);
+        if (!renewedToken) {
+          deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+          throw new Error(`Task ${task.id} lost direct launch ownership while persisting its probe marker`);
+        }
+        launchReservationToken = renewedToken;
       }
       if (!deps.launchDependencyAdmission?.isProbeActive(dependencyAdmissionDecision.probe)) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
@@ -1913,10 +1932,11 @@ async function launchTaskCore(
         if (refreshed?.admit) {
           deps.launchDependencyAdmission?.releaseProbe(refreshed.probe);
         }
-        taskStore.endLaunch(task.id);
         taskStore.pendTask(task.id);
+        admissionMarkerWrittenByOwner = refreshedAdmission;
         taskStore.setLaunchAdmission(task.id, refreshedAdmission);
         await deps.flushTasks();
+        taskStore.endLaunch(task.id, launchReservationToken);
         const parked = taskStore.getTask(task.id)!;
         return {
           task: parked,
@@ -1945,11 +1965,17 @@ async function launchTaskCore(
       const current = taskStore.getTask(task.id);
       if (!adapterLaunchStarted) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
-        taskStore.endLaunch(task.id);
+        const mayCompensatePersistenceFailure = current
+          && !isTerminalStatus(current.status)
+          && (
+            taskStore.ownsLaunchReservation(task.id, launchReservationToken)
+            || isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
+          );
+        taskStore.endLaunch(task.id, launchReservationToken);
         phaseTracker.abort();
         const phaseTimings = phaseTracker.snapshot();
         taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
-        if (current && !isTerminalStatus(current.status)) {
+        if (mayCompensatePersistenceFailure) {
           disposeUnacknowledgedTaskAfterPersistenceFailure(
             deps,
             task.id,
@@ -1969,7 +1995,7 @@ async function launchTaskCore(
       } else {
         deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, false);
       }
-      taskStore.endLaunch(task.id);
+      taskStore.endLaunch(task.id, launchReservationToken);
       abandon.timedOut = true;
       if (abandon.sessionId) {
         linkAndReapAbandonedSession(abandon.sessionId);
@@ -2023,7 +2049,7 @@ async function launchTaskCore(
     // are not blocked (the original goal of the delete) — they simply replay.
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
-    taskStore.endLaunch(task.id);
+    taskStore.endLaunch(task.id, launchReservationToken);
     // Issue #2500: if a dtach master came up during `session-create` (or comes
     // up shortly after this abandon — the late `onSessionCreated` handles that
     // case), link it to the task BEFORE the terminal transition so the reaper

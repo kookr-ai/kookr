@@ -1292,6 +1292,69 @@ describe('launchTask', () => {
     ]);
   });
 
+  it('does not dispose replacement-owned work when a stale direct re-park barrier rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let now = 7_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let rejectSecond!: (err: Error) => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFirstStarted();
+          await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        })
+        .mockImplementationOnce(async () => {
+          markSecondStarted();
+          await new Promise<void>((_resolve, reject) => { rejectSecond = reject; });
+        }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale direct re-park owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await firstStarted;
+      launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      const task = store.listTasks()[0]!;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+      const replacementMarker = {
+        status: 'probing' as const,
+        reason: 'half_open_probe_in_flight' as const,
+        dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
+        startedAt: 'replacement-owner',
+        sessionId: 'kookr-replacement-direct',
+      };
+      store.setLaunchAdmission(task.id, replacementMarker);
+
+      rejectSecond(new Error('stale direct re-park write failed'));
+      await expect(launch).rejects.toThrow('stale direct re-park write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: replacementMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+      expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('keeps a live direct probe when post-attach persistence fails', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

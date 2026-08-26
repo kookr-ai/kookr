@@ -29,6 +29,7 @@ interface CircuitEntry {
   lastChangedAt: number;
   reason?: string;
   probeToken?: string;
+  startupRecoveryOwners?: Set<string>;
 }
 
 /**
@@ -61,6 +62,11 @@ export class LaunchDependencyAdmission {
     for (const dependency of uniqueDependencies(dependencies)) {
       const relevant = findings.filter((finding) => finding.dependency === dependency);
       const entry = this.entry(dependency);
+      // Startup recovery has persisted proof that an old probe may still own
+      // a physical worker. Health evidence describes the provider, not that
+      // worker's liveness, so it must not replace the fail-closed busy gate
+      // until terminal cleanup settles every interrupted owner.
+      if (entry.startupRecoveryOwners && entry.startupRecoveryOwners.size > 0) continue;
       if (relevant.length === 0) {
         if (entry.state === 'degraded') {
           this.transition(entry, 'half_open');
@@ -101,7 +107,10 @@ export class LaunchDependencyAdmission {
     }
 
     const halfOpen = states.filter((snapshot) => snapshot.state === 'half_open');
-    const busy = halfOpen.filter((snapshot) => this.entries.get(snapshot.dependency)?.probeToken !== undefined);
+    const busy = halfOpen.filter((snapshot) => {
+      const entry = this.entries.get(snapshot.dependency);
+      return entry?.probeToken !== undefined || (entry?.startupRecoveryOwners?.size ?? 0) > 0;
+    });
     if (busy.length > 0) {
       return {
         admit: false,
@@ -168,6 +177,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = dependency.reason ?? 'Dependency was parked before restart';
       entry.probeToken = undefined;
+      entry.startupRecoveryOwners = undefined;
     }
   }
 
@@ -185,7 +195,25 @@ export class LaunchDependencyAdmission {
       entry.state = 'half_open';
       entry.lastChangedAt = this.now();
       entry.reason = 'Interrupted recovery probe cleanup is in progress';
-      entry.probeToken = `startup-recovery:${ownerToken}`;
+      entry.probeToken = undefined;
+      entry.startupRecoveryOwners ??= new Set();
+      entry.startupRecoveryOwners.add(ownerToken);
+    }
+  }
+
+  /**
+   * Release startup's physical-worker fence without manufacturing provider
+   * failure evidence. The circuit remains unclaimed half-open so the next
+   * eligible launch is still the single bounded recovery probe.
+   */
+  releaseInterruptedProbe(dependencies: readonly TaskLaunchAdmissionDependency[]): void {
+    for (const dependency of dependencies) {
+      const entry = this.entry(dependency.dependency);
+      entry.state = 'half_open';
+      entry.lastChangedAt = this.now();
+      entry.reason = undefined;
+      entry.probeToken = undefined;
+      entry.startupRecoveryOwners = undefined;
     }
   }
 
@@ -209,6 +237,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = undefined;
       entry.probeToken = undefined;
+      entry.startupRecoveryOwners = undefined;
     }
   }
 

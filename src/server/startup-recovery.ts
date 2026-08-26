@@ -107,6 +107,7 @@ export async function runStartupRecoveryPhase({
     const persistedTasks = taskStore.listTasks();
     const interruptedProbes: typeof persistedTasks = [];
     const interruptedCountByDependency = new Map<string, number>();
+    const interruptedTaskIdsByDependency = new Map<string, Set<string>>();
 
     // Pass 1 is deliberately synchronous: hydrate every durable dependency
     // state before the first terminal-cleanup await. The HTTP listener may
@@ -139,6 +140,9 @@ export async function runStartupRecoveryPhase({
             dependency.dependency,
             (interruptedCountByDependency.get(dependency.dependency) ?? 0) + 1,
           );
+          const taskIds = interruptedTaskIdsByDependency.get(dependency.dependency) ?? new Set<string>();
+          taskIds.add(task.id);
+          interruptedTaskIdsByDependency.set(dependency.dependency, taskIds);
         }
         continue;
       }
@@ -189,36 +193,45 @@ export async function runStartupRecoveryPhase({
           );
         }
       }
-      // Convert a dependency from busy to degraded only after every persisted
-      // interrupted probe that required it has been reaped. This preserves the
-      // sentinel when multiple old workers share one dependency.
-      const fullyReapedDependencies = interruptedDependencies.filter((dependency) => {
-        const remaining = (interruptedCountByDependency.get(dependency.dependency) ?? 1) - 1;
-        interruptedCountByDependency.set(dependency.dependency, remaining);
-        return remaining === 0;
-      });
-      if (fullyReapedDependencies.length > 0) {
-        lifecycleDeps.launchDependencyAdmission.restoreParked(fullyReapedDependencies);
-      }
       const currentTask = taskStore.getTask(task.id);
       if (!currentTask || isTerminalStatus(currentTask.status)) {
         if (currentTask) taskStore.setLaunchAdmission(task.id, undefined);
-        continue;
+      } else {
+        const parked = {
+          status: 'parked' as const,
+          reason: 'dependency_degraded' as const,
+          dependencies: interruptedDependencies,
+          parkedAt: new Date().toISOString(),
+        };
+        if (currentTask.status === 'inProgress') taskStore.reopenTask(task.id);
+        if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
+        taskStore.setLaunchAdmission(task.id, parked);
+        recordLatestConfirmedEvidence(
+          latestConfirmedAtByDependency,
+          parked.dependencies,
+          parked.parkedAt,
+        );
       }
-      const parked = {
-        status: 'parked' as const,
-        reason: 'dependency_degraded' as const,
-        dependencies: interruptedDependencies,
-        parkedAt: new Date().toISOString(),
-      };
-      if (currentTask.status === 'inProgress') taskStore.reopenTask(task.id);
-      if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
-      taskStore.setLaunchAdmission(task.id, parked);
-      recordLatestConfirmedEvidence(
-        latestConfirmedAtByDependency,
-        parked.dependencies,
-        parked.parkedAt,
-      );
+      // Settle the shared circuit only after every persisted worker for that
+      // dependency is absent. Re-read all owners at that point: a terminal
+      // transition during another worker's cleanup must not become stale
+      // provider-failure evidence.
+      for (const dependency of interruptedDependencies) {
+        const remaining = (interruptedCountByDependency.get(dependency.dependency) ?? 1) - 1;
+        interruptedCountByDependency.set(dependency.dependency, remaining);
+        if (remaining !== 0) continue;
+        const hasReplayableOwner = Array.from(
+          interruptedTaskIdsByDependency.get(dependency.dependency) ?? [],
+        ).some((taskId) => {
+          const owner = taskStore.getTask(taskId);
+          return owner !== undefined && !isTerminalStatus(owner.status);
+        });
+        if (hasReplayableOwner) {
+          lifecycleDeps.launchDependencyAdmission.restoreParked([dependency]);
+        } else {
+          lifecycleDeps.launchDependencyAdmission.releaseInterruptedProbe([dependency]);
+        }
+      }
     }
     for (const probe of successfulProbes) {
       lifecycleDeps.launchDependencyAdmission.restoreSuccessfulProbe(

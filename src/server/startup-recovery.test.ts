@@ -264,6 +264,7 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
 
     // Even clean evidence cannot admit a replacement until the old expected
     // worker has been reaped.
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
     admission.observe(['kb'], []);
     expect(admission.evaluate(['kb'])).toMatchObject({
       admit: false,
@@ -363,6 +364,12 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     expect(deps.taskStore.getTask(task.id)).toMatchObject({
       status: 'cancelled',
       launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+    const replacement = admission.evaluate(['kb']);
+    expect(replacement).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
     });
   });
 

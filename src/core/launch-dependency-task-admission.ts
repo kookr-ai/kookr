@@ -88,6 +88,22 @@ export function probeFromAdmissionDecision(
   return decision?.admit ? decision.probe : undefined;
 }
 
+/** Compare the durable identity fields of an admission marker. */
+export function isSameTaskLaunchAdmission(
+  current: TaskLaunchAdmission | undefined,
+  expected: TaskLaunchAdmission | undefined,
+): boolean {
+  if (!current || !expected) return current === expected;
+  if (current.status !== expected.status) return false;
+  if (current.status === 'probing' && expected.status === 'probing') {
+    return current.sessionId === expected.sessionId && current.startedAt === expected.startedAt;
+  }
+  if (current.status === 'parked' && expected.status === 'parked') {
+    return current.reason === expected.reason && current.parkedAt === expected.parkedAt;
+  }
+  return false;
+}
+
 function requireProbe(decision: AdmittedDecision): LaunchDependencyProbe {
   if (!decision.probe) throw new Error('Cannot create probe admission state without a claimed probe');
   return decision.probe;
