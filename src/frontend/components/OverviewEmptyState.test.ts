@@ -826,6 +826,274 @@ describe('OverviewEmptyState', () => {
     });
   });
 
+  describe('recently completed evidence markers (#2851)', () => {
+    function evidence(agentId = 'done-1') {
+      const row = Array.from(container.querySelectorAll('.overview-completed-row')).find((el) =>
+        el.querySelector('[data-testid="overview-completed-open"]'),
+      );
+      return {
+        block: container.querySelector('[data-testid="overview-completed-evidence"]'),
+        testsTag: container.querySelector('[data-testid="overview-completed-evidence-tests"]'),
+        prBlock: container.querySelector('[data-testid="overview-completed-evidence-prs"]'),
+        prLinks: Array.from(
+          container.querySelectorAll<HTMLAnchorElement>('.overview-completed-pr-link'),
+        ),
+        row,
+      };
+    }
+
+    test('shows no evidence markers when the completed row has no digest', () => {
+      render({ completed: [makeCompletedAgent('done-1', 'Ship the fix')] });
+
+      expect(container.querySelector('[data-testid="overview-recent-completed"]')).not.toBeNull();
+      expect(evidence().block).toBeNull();
+      // The row itself (name + Open) is otherwise unchanged.
+      expect(container.querySelector('[data-testid="overview-completed-open"]')).not.toBeNull();
+    });
+
+    test('renders no evidence markers when the digest has only bullets/filesChanged', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: { bullets: ['did a thing'], filesChanged: ['a.ts'] },
+          }),
+        ],
+      });
+
+      expect(evidence().block).toBeNull();
+    });
+
+    test('a test summary produces a neutral Tests tag — never a pass/verified claim', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '42 passed, 0 failed',
+            },
+          }),
+        ],
+      });
+
+      const { testsTag, prBlock } = evidence();
+      expect(testsTag?.textContent).toBe('Tests');
+      // The full summary is available on hover but the visible label stays neutral.
+      expect(testsTag?.getAttribute('title')).toBe('42 passed, 0 failed');
+      expect(testsTag?.textContent).not.toMatch(/verified|passed|✓/i);
+      expect(prBlock).toBeNull();
+    });
+
+    test('failing test text still shows the neutral Tests tag, not a failure/success verdict', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '3 failed, 39 passed',
+            },
+          }),
+        ],
+      });
+
+      const { testsTag } = evidence();
+      // Presence of a summary — not its content — drives the neutral label.
+      expect(testsTag?.textContent).toBe('Tests');
+      expect(testsTag?.getAttribute('title')).toBe('3 failed, 39 passed');
+    });
+
+    test('a whitespace-only test summary falls through to the command-based Verification evidence tag', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '   ',
+              verificationCommands: ['pnpm test'],
+            },
+          }),
+        ],
+      });
+
+      // A blank summary is not evidence; the recorded command is, so the label
+      // reflects the command evidence rather than showing an empty Tests tag.
+      expect(evidence().testsTag?.textContent).toBe('Verification evidence');
+    });
+
+    test('a whitespace-only test summary with no other evidence renders nothing', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '   ',
+            },
+          }),
+        ],
+      });
+
+      expect(evidence().block).toBeNull();
+    });
+
+    test('command-only evidence (no test summary) shows a Verification evidence tag', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              verificationCommands: ['pnpm test', 'pnpm lint'],
+            },
+          }),
+        ],
+      });
+
+      const { testsTag, prBlock } = evidence();
+      expect(testsTag?.textContent).toBe('Verification evidence');
+      expect(prBlock).toBeNull();
+    });
+
+    test('a single PR renders one actionable, accessible link labelled by number', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              prUrls: ['https://github.com/kookr-ai/kookr/pull/2851'],
+            },
+          }),
+        ],
+      });
+
+      const { testsTag, prLinks } = evidence();
+      expect(testsTag).toBeNull();
+      expect(prLinks).toHaveLength(1);
+      expect(prLinks[0].textContent).toContain('PR #2851');
+      expect(prLinks[0].href).toBe('https://github.com/kookr-ai/kookr/pull/2851');
+      expect(prLinks[0].target).toBe('_blank');
+      expect(prLinks[0].rel).toBe('noopener noreferrer');
+      // Accessible label describes the action + destination, not color alone.
+      expect(prLinks[0].getAttribute('aria-label')).toBe(
+        'Open PR #2851 for Ship the fix (opens in new tab)',
+      );
+    });
+
+    test('multiple PRs each stay discoverable rather than collapsing to the first', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              prUrls: [
+                'https://github.com/kookr-ai/kookr/pull/2851',
+                'https://github.com/kookr-ai/kookr/pull/2862',
+              ],
+            },
+          }),
+        ],
+      });
+
+      const { prLinks } = evidence();
+      expect(prLinks).toHaveLength(2);
+      expect(prLinks.map((a) => a.href)).toEqual([
+        'https://github.com/kookr-ai/kookr/pull/2851',
+        'https://github.com/kookr-ai/kookr/pull/2862',
+      ]);
+      expect(prLinks.map((a) => a.textContent)).toEqual([
+        expect.stringContaining('PR #2851'),
+        expect.stringContaining('PR #2862'),
+      ]);
+    });
+
+    test('a non-GitHub-numbered PR url falls back to a generic View PR label', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              prUrls: ['https://example.com/review/abc'],
+            },
+          }),
+        ],
+      });
+
+      const { prLinks } = evidence();
+      expect(prLinks).toHaveLength(1);
+      expect(prLinks[0].textContent).toContain('View PR');
+    });
+
+    test('blank/whitespace PR urls are dropped so no dead link renders', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              prUrls: ['   '],
+            },
+          }),
+        ],
+      });
+
+      expect(evidence().block).toBeNull();
+    });
+
+    test('caps at two evidence types: a tests tag plus PR links, and nothing more', () => {
+      render({
+        completed: [
+          makeCompletedAgent('done-1', 'Ship the fix', {
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '10 passed',
+              verificationCommands: ['pnpm test'],
+              prUrls: ['https://github.com/kookr-ai/kookr/pull/2851'],
+            },
+          }),
+        ],
+      });
+
+      const { block, testsTag, prBlock } = evidence();
+      expect(testsTag?.textContent).toBe('Tests');
+      expect(prBlock).not.toBeNull();
+      // Exactly two evidence-type containers under the block: the tests tag and
+      // the PR block. A test summary + verification commands still collapse to
+      // one tests type, never two.
+      expect(block?.childElementCount).toBe(2);
+      expect(block?.querySelectorAll('[data-testid="overview-completed-evidence-tests"]')).toHaveLength(1);
+    });
+
+    test('terminal non-completed rows show neutral evidence with no success wording', () => {
+      render({
+        completed: [
+          makeCompletedAgent('cancelled-1', 'Abandoned task', {
+            taskStatus: 'cancelled',
+            completionDigest: {
+              bullets: [],
+              filesChanged: [],
+              testSummary: '2 failed',
+              prUrls: ['https://github.com/kookr-ai/kookr/pull/2851'],
+            },
+          }),
+        ],
+      });
+
+      const { block, testsTag, prLinks } = evidence();
+      expect(block).not.toBeNull();
+      // A cancelled task gains no success/delivery/merge semantics from markers.
+      expect(testsTag?.textContent).toBe('Tests');
+      expect(block?.textContent).not.toMatch(/verified|passed|merged|delivered/i);
+      expect(prLinks).toHaveLength(1);
+      expect(prLinks[0].getAttribute('aria-label')).not.toMatch(/merged|delivered/i);
+    });
+  });
+
   describe('runtime mix (#2670)', () => {
     test('tallies runtimes across every live bucket, omitting zero runtimes', () => {
       render({
