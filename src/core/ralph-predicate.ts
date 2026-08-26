@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 /**
  * Execute a user-supplied shell predicate to decide whether a Ralph iteration
@@ -14,9 +14,22 @@ import { spawn } from 'node:child_process';
  * here — the user-supplied string IS the program. The controller never composes
  * this string with untrusted input.
  *
- * Timeouts are enforced by SIGTERM after `timeoutMs`, then SIGKILL after a
- * 200 ms grace if the child is still alive. The default 5 s budget matches the
- * issue's stated mitigation for "predicate execution time bloat".
+ * Timeout cleanup (issue #2857): the predicate is spawned `detached`, so on
+ * Linux and macOS it leads its own process group (pgid == child.pid). On
+ * timeout we escalate against the whole *group* — SIGTERM the group after
+ * `timeoutMs`, then SIGKILL any survivors after a 200 ms grace — instead of the
+ * single child. This reaps a TERM-ignoring predicate and its same-group
+ * descendants that the old `child.kill()` + `child.killed` gate leaked:
+ * `child.killed` flips true when the signal is *sent*, not when the process
+ * dies, so a predicate that ignores SIGTERM never received the follow-up
+ * SIGKILL. The whole timeout path settles exactly once and, before it settles,
+ * confirms the group is actually gone rather than trusting that SIGKILL was
+ * delivered synchronously. The default 5 s budget matches the issue's stated
+ * mitigation for "predicate execution time bloat".
+ *
+ * Known limitation: a descendant that deliberately starts a *new* session
+ * (`setsid`) leaves the predicate's process group and is therefore outside the
+ * scope of this cleanup — the same boundary every process-group reaper has.
  */
 
 export interface PredicateOptions {
@@ -56,6 +69,14 @@ export interface PredicateResult {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const SIGKILL_GRACE_MS = 200;
+/** Poll cadence while confirming the killed group has actually drained. */
+const GROUP_DRAIN_POLL_MS = 20;
+/**
+ * Cap on drain-confirmation polls (~1 s total). A process stuck in
+ * uninterruptible sleep can survive even SIGKILL; we must never wedge the
+ * predicate promise waiting for it, so after this many polls we settle anyway.
+ */
+const GROUP_DRAIN_MAX_POLLS = 50;
 
 export async function runStopPredicate(
   command: string,
@@ -74,15 +95,94 @@ export async function runStopPredicate(
   }
 
   return new Promise<PredicateResult>((resolve) => {
-    let child;
+    let child: ChildProcess | undefined;
+    let settled = false;
+    let timedOut = false;
+    let rootExitCode: number | null = null;
+    let killTimer: NodeJS.Timeout | null = null;
+    let graceTimer: NodeJS.Timeout | null = null;
+    let drainPolls = 0;
+
+    const clearTimers = () => {
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
+    };
+
+    // Single settlement path: resolve at most once and never leave a timer live.
+    const settle = (result: PredicateResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve(result);
+    };
+
+    // Signal the predicate's process group. We MUST guard on a valid positive
+    // pid before negating it: `process.kill(-pid, ...)` with pid <= 1 (unset,
+    // or a spawn that never produced a pid) would target init or a bogus group.
+    const signalGroup = (sig: NodeJS.Signals): void => {
+      const pid = child?.pid;
+      if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1) return;
+      try {
+        process.kill(-pid, sig);
+      } catch {
+        // ESRCH (group already gone) and friends are the success case here —
+        // there is nothing left to kill.
+      }
+    };
+
+    // True while any member of the predicate's process group is still alive.
+    const groupAlive = (): boolean => {
+      const pid = child?.pid;
+      if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1) return false;
+      try {
+        process.kill(-pid, 0);
+        return true;
+      } catch (err) {
+        // ESRCH → the whole group is gone. Anything else (EPERM) → a member
+        // exists but we can't signal it; treat as alive so we don't claim a
+        // clean sweep we didn't achieve.
+        return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+
+    const timeoutResult = (): PredicateResult => ({
+      satisfied: false,
+      exitCode: rootExitCode,
+      timedOut: true,
+      errored: false,
+    });
+
+    // Resolve the timeout path only once the group has actually drained, so the
+    // acceptance guarantee ("descendants absent when the call settles") holds
+    // instead of resting on SIGKILL being delivered synchronously. Bounded so an
+    // unkillable process can never wedge the promise.
+    const settleWhenGroupDrained = () => {
+      if (settled) return;
+      if (!groupAlive() || drainPolls >= GROUP_DRAIN_MAX_POLLS) {
+        settle(timeoutResult());
+        return;
+      }
+      drainPolls += 1;
+      graceTimer = setTimeout(settleWhenGroupDrained, GROUP_DRAIN_POLL_MS);
+    };
+
     try {
       child = spawnImpl('/bin/sh', ['-c', command], {
         cwd: opts.cwd,
         env,
         stdio: ['ignore', 'ignore', 'ignore'],
+        // Own process group so timeout cleanup can reap the predicate together
+        // with everything it forks (issue #2857).
+        detached: true,
       });
     } catch (err) {
-      resolve({
+      settle({
         satisfied: false,
         exitCode: null,
         timedOut: false,
@@ -92,20 +192,21 @@ export async function runStopPredicate(
       return;
     }
 
-    let timedOut = false;
-    let killGraceTimer: NodeJS.Timeout | null = null;
-    const killTimer = setTimeout(() => {
+    killTimer = setTimeout(() => {
+      killTimer = null;
       timedOut = true;
-      child.kill('SIGTERM');
-      killGraceTimer = setTimeout(() => {
-        if (!child.killed) child.kill('SIGKILL');
+      signalGroup('SIGTERM');
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        signalGroup('SIGKILL');
+        settleWhenGroupDrained();
       }, SIGKILL_GRACE_MS);
     }, timeoutMs);
 
     child.on('error', (err) => {
-      clearTimeout(killTimer);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
-      resolve({
+      // Async spawn failure (e.g. shell missing): there is usually no pid, so
+      // the group signals above are no-ops. Report the error and settle.
+      settle({
         satisfied: false,
         exitCode: null,
         timedOut,
@@ -115,19 +216,24 @@ export async function runStopPredicate(
     });
 
     child.on('exit', (code, signal) => {
-      clearTimeout(killTimer);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
-      // A signal-killed exit (timeout path) is NOT satisfied even if code is 0
-      // because some shells coerce SIGTERM into a 0 exit on certain builtins.
-      const exitCode = code;
-      const wasSignaled = signal !== null;
-      const satisfied = !timedOut && !wasSignaled && exitCode === 0;
-      resolve({
-        satisfied,
-        exitCode,
-        timedOut,
-        errored: false,
-      });
+      rootExitCode = code;
+
+      if (!timedOut) {
+        // A signal-killed exit is NOT satisfied even if code is 0, because some
+        // shells coerce SIGTERM into a 0 exit on certain builtins.
+        const wasSignaled = signal !== null;
+        const satisfied = !wasSignaled && code === 0;
+        settle({ satisfied, exitCode: code, timedOut: false, errored: false });
+        return;
+      }
+
+      // Timed out: the group leader has exited (typically from our SIGTERM), but
+      // same-group descendants may still be alive. Root exit must NOT cancel
+      // descendant cleanup (issue #2857): only settle now if nothing remains;
+      // otherwise leave the grace timer running so the SIGKILL sweep still fires.
+      if (!groupAlive()) {
+        settle(timeoutResult());
+      }
     });
   });
 }
