@@ -36,11 +36,12 @@ const POST_TIMEOUT_MS = 10_000;
 // #1591: ambiguous-outcome reconciliation. A POST that times out (client abort
 // at POST_TIMEOUT_MS) or returns a 5xx leaves the task's existence unknown — it
 // may or may not have been created. When an idempotency key is in play a re-POST
-// with the SAME key is safe: the server ledger replays the earlier task if it was
-// created, or launches fresh if it was not (see docs/reference/spawn-contract.md).
-// So the client reconciles by re-POSTing with backoff instead of exiting
-// ambiguous. 429 backpressure is a definitive, task-not-created rejection and is
-// surfaced to the operator rather than silently retried.
+// with the SAME key is safe: the server ledger replays the earlier launch
+// outcome, including an active prompt duplicate, or launches fresh when no
+// lasting outcome exists (see docs/reference/spawn-contract.md). So the client
+// reconciles by re-POSTing with backoff instead of exiting ambiguous. 429
+// backpressure is a definitive, task-not-created rejection and is surfaced to
+// the operator rather than silently retried.
 const RECONCILE_MAX_RETRIES = 2;
 const RECONCILE_BASE_DELAY_MS = 500;
 const RECONCILE_MAX_DELAY_MS = 8_000;
@@ -109,26 +110,49 @@ function isTruthyEnv(value) {
  * entry is still live (a real midnight bug); the rolling TTL is the correct and
  * only sound window.
  *
- * SCOPE — read before relying on this: the key is derived from the prompt (plus
- * cwd/criteria/agent), so it only replays retries that re-issue the *identical*
- * spawn. A caller whose retry regenerates the prompt (an embedded random branch
- * suffix, a timestamp, etc.) computes a *different* key and will NOT replay — for
- * those, pass an explicit `--idempotency-key` that encodes the logical intent
- * (e.g. the issue number), which survives prompt entropy. The prompt cannot be
- * dropped from the identity either: without it, two different spawns in the same
- * cwd would collide. This is an opt-in convenience for stable-prompt spawns, not
- * a general orphan cure for entropy-prompt orchestrators.
+ * SCOPE — read before relying on this: the key hashes the prompt, cwd, criteria,
+ * agent, playbook path, and playbook scope. It does not hash playbook file
+ * contents. It only replays retries that re-issue the *identical* spawn. A
+ * caller whose retry regenerates the prompt
+ * (an embedded random branch suffix, a timestamp, etc.) computes a *different*
+ * key and will NOT replay — for those, pass an explicit `--idempotency-key`
+ * that encodes the logical intent (e.g. the issue number), which survives
+ * prompt entropy. The prompt cannot be dropped from the identity either:
+ * without it, two different spawns in the same cwd would collide. This is an
+ * opt-in convenience for stable-prompt spawns, not a general orphan cure for
+ * entropy-prompt orchestrators.
  *
- * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null }} input
+ * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, playbook?: string|null, playbookScope?: string|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
-function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null }) {
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, playbook = null, playbookScope = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
-  const identity = JSON.stringify([prompt ?? '', cwd ?? '', criteria ?? '', agent ?? '']);
+  const identity = JSON.stringify([
+    prompt ?? '',
+    cwd ?? '',
+    criteria ?? '',
+    agent ?? '',
+    ...(playbook ? [playbook, playbookScope ?? 'project'] : []),
+  ]);
   // 64-bit digest — collision-negligible at any realistic spawn rate.
   const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
   return `auto-${digest}`;
+}
+
+/**
+ * A confirmed duplicate is a new logical launch, so it cannot reuse the key
+ * that the server associated with the active task. Bind a short replacement
+ * key to both identities so repeating the same confirmation reconciles to the
+ * intentional duplicate instead of creating another one.
+ */
+function deriveConfirmedDuplicateIdempotencyKey(idempotencyKey, duplicateTaskId) {
+  if (!idempotencyKey) return null;
+  const digest = createHash('sha256')
+    .update(JSON.stringify([idempotencyKey, duplicateTaskId ?? '']), 'utf8')
+    .digest('hex')
+    .slice(0, 16);
+  return `duplicate-${digest}`;
 }
 
 // ---------- arg parsing ----------
@@ -160,21 +184,21 @@ Options:
       --dedupe <mode>      warn, block, or skip (default: warn).
       --idempotency-key <key>
                            Opaque retry key (issue #1526). Re-running with the
-                           SAME key returns the task an earlier attempt with
-                           that key already created instead of launching a
-                           second one — protects against retrying after a
-                           client-side timeout against an overloaded server.
+                           SAME key replays the earlier launch outcome instead
+                           of launching a second task. If that outcome was an
+                           active-prompt duplicate, Kookr repeats the duplicate
+                           warning and confirmation flow.
                            Distinct from --dedupe, which compares prompt+cwd;
                            an idempotency key survives prompt text that varies
                            between attempts (e.g. an embedded random suffix).
       --auto-idempotency   When no --idempotency-key is given, derive one
-                           (auto-<hash>) from prompt+cwd+criteria+agent so a
-                           client-timeout retry of the IDENTICAL spawn replays
-                           instead of stranding a duplicate (bounded by the
-                           server's 24h idempotency TTL). Only helps retries with
-                           a stable prompt — if your retry regenerates the prompt
-                           (random suffix, timestamp), pass an explicit
-                           --idempotency-key instead. Also enabled by
+                           (auto-<hash>) from prompt+cwd+criteria+agent and any
+                           playbook path/scope. A client-timeout retry replays
+                           only when prompt, cwd, criteria, agent, playbook path,
+                           and playbook scope are unchanged (bounded by the
+                           server's 24h idempotency TTL). If any input can change
+                           between retries, pass an explicit --idempotency-key
+                           instead. Also enabled by
                            KOOKR_SPAWN_AUTO_IDEMPOTENCY=1. No effect under
                            --dedupe=skip (intentional duplicate).
       --no-auto-idempotency  Force it off, overriding the env default.
@@ -191,6 +215,16 @@ Options:
                            (AskUserQuestion and equivalents) so a blocking call
                            fails fast and flags the task operator-needed instead
                            of hanging with nobody to answer.
+      --playbook <path>    Wrap the resolved prompt with a playbook before
+                           launch. The server reads delivery policy from the
+                           metadata block at the top of that playbook; the
+                           prompt is supplied as its required \`prompt\`
+                           parameter. Requires --idempotency-key or
+                           --auto-idempotency.
+      --playbook-scope <scope>
+                           Select the playbook collection to search: project,
+                           user, or installed plugin (default: project).
+                           Requires --playbook.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
       --claim-issue <n>    Atomically claim GitHub issue <n> as part of task
                            creation (RFC issue-ownership-lock PR 1b). When the
@@ -270,6 +304,8 @@ function parseArgs(argv) {
     noParentTask: false,
     autoCloseOnSignal: null,
     unattended: false,
+    playbook: null,
+    playbookScope: null,
     claimIssue: null,
     claimRepo: null,
     dryRun: false,
@@ -342,6 +378,14 @@ function parseArgs(argv) {
       out.autoCloseOnSignal = false;
     } else if (tok === '--unattended') {
       out.unattended = true;
+    } else if (tok === '--playbook') {
+      out.playbook = eat();
+    } else if (tok.startsWith('--playbook=')) {
+      out.playbook = tok.slice('--playbook='.length);
+    } else if (tok === '--playbook-scope') {
+      out.playbookScope = eat();
+    } else if (tok.startsWith('--playbook-scope=')) {
+      out.playbookScope = tok.slice('--playbook-scope='.length);
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--claim-issue') {
@@ -417,6 +461,17 @@ function parseArgs(argv) {
   }
   if (out.parentTaskId !== null && out.noParentTask) {
     throw new UsageError('--parent-task-id and --no-parent-task are mutually exclusive');
+  }
+  if (out.playbook !== null) {
+    const trimmed = out.playbook.trim();
+    if (trimmed === '') throw new UsageError('--playbook requires a non-empty value');
+    out.playbook = trimmed;
+  }
+  if (out.playbookScope !== null) {
+    if (out.playbook === null) throw new UsageError('--playbook-scope requires --playbook');
+    if (!['project', 'user', 'plugin'].includes(out.playbookScope)) {
+      throw new UsageError(`--playbook-scope must be project, user, or plugin (got: ${out.playbookScope})`);
+    }
   }
   return out;
 }
@@ -899,8 +954,16 @@ function buildTaskPostBody({
   idempotencyKey = null,
   claimIssue = null,
   claimRepo = null,
+  playbook = null,
+  playbookScope = null,
 }) {
   const body = { prompt, cwd };
+  if (playbook) {
+    body.playbook = {
+      path: playbook,
+      ...(playbookScope ? { scope: playbookScope } : {}),
+    };
+  }
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
   if (effort) body.effort = effort;
@@ -1101,7 +1164,7 @@ function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask
   return lines.join('\n');
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
   const body = buildTaskPostBody({
     prompt,
     cwd,
@@ -1117,6 +1180,8 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
     idempotencyKey,
     claimIssue,
     claimRepo,
+    playbook,
+    playbookScope,
   });
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -2067,7 +2132,26 @@ async function main({
       cwd: cwdAbs,
       criteria: args.criteria,
       agent: args.agent,
+      playbook: args.playbook,
+      playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
     });
+  }
+
+  if (args.playbook && effectiveIdempotencyKey === null) {
+    const message = '--playbook requires --idempotency-key or --auto-idempotency so an ambiguous launch can be reconciled safely';
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message,
+        details: { subcommand: 'spawn' },
+      });
+    }
+    err.error(`kookr-spawn: ${message}`);
+    return exit(EXIT_USER_ERROR);
   }
 
   // #1768: --dry-run runs discovery + prompt resolution + read-only dedupe,
@@ -2088,6 +2172,8 @@ async function main({
       autoCloseOnSignal: args.autoCloseOnSignal,
       unattended: args.unattended,
       idempotencyKey: effectiveIdempotencyKey,
+      playbook: args.playbook,
+      playbookScope: args.playbookScope,
     });
     return renderDryRun({
       args,
@@ -2123,6 +2209,8 @@ async function main({
         autoCloseOnSignal: args.autoCloseOnSignal,
         unattended: args.unattended,
         idempotencyKey: effectiveIdempotencyKey,
+        playbook: args.playbook,
+        playbookScope: args.playbookScope,
       },
       idempotencyKey: effectiveIdempotencyKey,
       sleep,
@@ -2296,22 +2384,33 @@ async function main({
     });
     if (!confirmed) return exit(EXIT_DUPLICATE_BLOCKED);
 
+    const duplicateIdempotencyKey = deriveConfirmedDuplicateIdempotencyKey(
+      effectiveIdempotencyKey,
+      result.task?.id,
+    );
     try {
-      result = await postTask({
-        baseUrl,
-        prompt,
-        cwd: cwdAbs,
-        agent: args.agent,
-        effort: args.effort,
-        model: args.model,
-        criteria: args.criteria,
-        disableDedup: true,
-        metadataIntent: 'keep_as_duplicate',
-        parentTaskId,
-        claimIssue: args.claimIssue,
-        claimRepo: args.claimRepo,
-        autoCloseOnSignal: args.autoCloseOnSignal,
-        unattended: args.unattended,
+      result = await postTaskWithReconcile({
+        postArgs: {
+          baseUrl,
+          prompt,
+          cwd: cwdAbs,
+          agent: args.agent,
+          effort: args.effort,
+          model: args.model,
+          criteria: args.criteria,
+          disableDedup: true,
+          metadataIntent: 'keep_as_duplicate',
+          parentTaskId,
+          claimIssue: args.claimIssue,
+          claimRepo: args.claimRepo,
+          autoCloseOnSignal: args.autoCloseOnSignal,
+          unattended: args.unattended,
+          idempotencyKey: duplicateIdempotencyKey,
+          playbook: args.playbook,
+          playbookScope: args.playbookScope,
+        },
+        idempotencyKey: duplicateIdempotencyKey,
+        sleep,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -869,6 +869,14 @@ describe('interpolateParameters', () => {
     expect(result).toBe('3.0 is 3.0');
   });
 
+  test('preserves replacement-token syntax in parameter prose literally', () => {
+    const body = 'before [{{version}}] after';
+    const value = '$& $$ $` $\'';
+    const result = interpolateParameters(body, params, { version: value });
+
+    expect(result).toBe(`before [${value}] after`);
+  });
+
   test('leaves unrecognized placeholders untouched', () => {
     const body = 'Hello {{unknown}}';
     const result = interpolateParameters(body, [], {});

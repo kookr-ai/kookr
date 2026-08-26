@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft (v2 — post round-1 restructure; D2 backstop implemented in #2758)**
+**Implemented (v3 — D1 #2716, D2 #2758, D3 #2854)**
 
 **Date:** 2026-08-19
 **Author:** Jean Ibarz (with Claude)
@@ -14,7 +14,7 @@
 > v2 therefore (a) splits delivery into three sequential, independently-shippable phases with
 > **D1 — the minimal real fix — first**; (b) ships the periodic advancer (D2) as a
 > default-off backstop once its pre-specified safety/observability criteria are covered, while
-> the RFC-first front-end (D3) remains deferred; and
+> the RFC-first front-end (D3) remained deferred at v2; and
 > (c) hardens the authority and satisfaction model against the verified defects.
 
 ---
@@ -61,10 +61,12 @@ exercises. Mismatch + missing re-arm = permanent silent stall.
 `self-continuation-task` skill already *warns* against dependent chains, but a prose warning
 prevents nothing — the chain still deadlocked. We need a **mechanical** guarantee.
 
-Adjacent gap: the intended workflow for a *big* architecture refactor —
+At the time this RFC was drafted, the adjacent intended workflow for a *big*
+architecture refactor —
 **draft RFC → iterate → merge RFC PR → open umbrella issue → orchestrate phased
-implementation** — has no automated path. #3272's umbrella was hand-authored once, which is not
-reproducible. Durable cross-phase context has no standard home.
+implementation** — had no automated path. #3272's umbrella was hand-authored once, which was not
+reproducible. Phase 3 now supplies that path and uses the GitHub umbrella issue as the standard
+durable cross-phase context store.
 
 ## Goals
 
@@ -74,7 +76,7 @@ reproducible. Durable cross-phase context has no standard home.
 3. **Merge safety preserved**: a phase self-merges only after a green local gate **and** a
    verifiably-independent review verdict, under an authority that is namespace-bound and
    rate-capped — not a blanket grant.
-4. **RFC-first front-end** for big refactors (deferred to Phase 3).
+4. **RFC-first front-end** for big refactors (delivered in Phase 3).
 5. **Durable context** lives in GitHub (umbrella issue body/comments); any cold task resumes
    from it.
 6. **Idempotent & safe under races**: never double-spawn, never work an already-merged phase,
@@ -146,7 +148,7 @@ behind a synthetic-canary/review rollout:
   existence, which can cross-satisfy sibling chains — F11).
 - **Spawner-side atomic claim + idempotency key (F5).** The **spawner** synchronously acquires
   the `(issue, phase)` claim *before* POSTing to `/api/tasks`, and every phase spawn carries a
-  deterministic `--idempotency-key = chain:<issue>:phase:<id>`, so concurrent spawns collapse in
+  deterministic `--idempotency-key = chain:<lowercase-owner/name>:<issue>:phase:<id>`, so concurrent spawns collapse in
   the atomic idempotency ledger rather than racing the seconds-long spawn→claim window.
 - **Drift-advance only when the owning task is terminal** + a grace window (F6): D2 never
   drift-ticks/advances a phase merged < N minutes ago whose claim is still live.
@@ -164,17 +166,17 @@ behind a synthetic-canary/review rollout:
   a post-merge gate that blocks the next spawn until a distinct reviewer task records a passing
   verdict. Merge-time timestamp auditing and paging remain future work.
 
-### Phase 3 (D3) — RFC-first refactor front-end *(deferred)*
+### Phase 3 (D3) — RFC-first refactor front-end *(implemented)*
 
 A playbook `plugin/playbooks/architecture-refactor-rfc.md` (invoked by `repository-idea-scout` /
 `architecture-health-check` on a "large refactor" finding, or directly) chains existing skills:
 draft+iterate the RFC via `rfc-iterative-review` → open+self-merge the RFC PR (docs-only, low
 blast radius, same independent-review guardrail) → open an **umbrella issue** with the phase
 checklist + `dependsOn` edges + reference commit → launch the Phase-1 self-advancing chain. The
-umbrella issue is the durable context store. Deferred until D1 (+ D2 backstop) are proven; noted
-here so the end-state is designed, not bolted on. **Bootstrap note:** the mechanism cannot build
-itself — this RFC's own umbrella (below) is driven by the *pre-existing* manual self-advancing
-contract until D1 lands.
+umbrella issue is the durable context store. D3 shipped only after D1 and the D2 backstop were
+proven, preserving the designed sequence. **Bootstrap note:** the mechanism could not build
+itself — this RFC's own umbrella (below) was driven by the *pre-existing* manual self-advancing
+contract until D1 landed.
 
 ## Authority & merge-safety model (F3/F4 — load-bearing)
 
@@ -276,7 +278,7 @@ tail (converge → self-merge RFC → open umbrella → launch chain).
    chain has no in-flight claim/open phase branch, or by first marking the running phase
    `in-flight` in the new ledger so D2's own in-flight check no-ops on it. Keep the old prose
    ledger as a fallback read path for N days (dual-read), no one-shot cutover.
-5. **Phase 3 (D3)** last.
+5. **Phase 3 (D3)** last — delivered by #2854 after D1 and D2.
 
 ## Alternatives considered
 

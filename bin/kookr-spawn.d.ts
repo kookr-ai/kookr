@@ -28,6 +28,9 @@ export interface ParsedArgs {
   parentTaskId: string | null;
   noParentTask: boolean;
   autoCloseOnSignal: boolean | null;
+  unattended: boolean;
+  playbook: string | null;
+  playbookScope: 'project' | 'user' | 'plugin' | null;
   json: boolean;
   wait: boolean;
   waitTimeoutSeconds: number | null;
@@ -106,6 +109,9 @@ export interface PostTaskArgs {
   parentTaskId?: string | null;
   autoCloseOnSignal?: boolean | null;
   idempotencyKey?: string | null;
+  unattended?: boolean;
+  playbook?: string | null;
+  playbookScope?: 'project' | 'user' | 'plugin' | null;
 }
 
 export interface TaskPayload {

@@ -300,15 +300,30 @@ describe('bash completion behavior', () => {
   });
 
   // #1858: spawn saturation / dry-run flags must be tab-completable
-  it('completes spawn --model --wait --idempotency-key --dry-run flags', async () => {
+  it('completes spawn model, wait, idempotency, playbook, and dry-run flags', async () => {
     await expect(completeBash(['kookr', 'spawn', ''])).resolves.toEqual(
       expect.arrayContaining([
         '--model',
         '--wait',
         '--idempotency-key',
+        '--playbook',
+        '--playbook-scope',
         '--dry-run',
       ]),
     );
+  });
+
+  it('completes --playbook-scope values', async () => {
+    await expect(completeBash(['kookr', 'spawn', '--playbook-scope', ''])).resolves.toEqual([
+      'project',
+      'user',
+      'plugin',
+    ]);
+    await expect(completeBash(['kookr', 'spawn', '--playbook-scope='])).resolves.toEqual([
+      '--playbook-scope=project',
+      '--playbook-scope=user',
+      '--playbook-scope=plugin',
+    ]);
   });
 
   it('completes --model values from the shared model allowlist', async () => {
@@ -660,15 +675,30 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   });
 
   // #1858: spawn saturation / dry-run flags must be tab-completable (zsh)
-  it('completes spawn --model --wait --idempotency-key --dry-run flags (zsh)', async () => {
+  it('completes spawn model, wait, idempotency, playbook, and dry-run flags (zsh)', async () => {
     await expect(completeZsh(['kookr', 'spawn', ''], 3)).resolves.toEqual(
       expect.arrayContaining([
         '--model',
         '--wait',
         '--idempotency-key',
+        '--playbook',
+        '--playbook-scope',
         '--dry-run',
       ]),
     );
+  });
+
+  it('completes --playbook-scope values (zsh)', async () => {
+    await expect(completeZsh(['kookr', 'spawn', '--playbook-scope', ''], 4)).resolves.toEqual([
+      'project',
+      'user',
+      'plugin',
+    ]);
+    await expect(completeZsh(['kookr', 'spawn', '--playbook-scope='], 3)).resolves.toEqual([
+      '--playbook-scope=project',
+      '--playbook-scope=user',
+      '--playbook-scope=plugin',
+    ]);
   });
 
   it('completes --model values from the shared model allowlist (zsh)', async () => {

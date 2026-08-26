@@ -192,13 +192,13 @@ describe('UmbrellaChainAdvancer cross-process sweep lock', () => {
     // drops the advance.
     releaseSweepLock(kookrDir);
     await harness.advancer.sweep();
-    expect(harness.calls).toContain('launch:chain:2711:phase:P1');
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P1');
     expect(harness.advancer.getHealthSnapshot().tickCount).toBe(1);
 
     // A later overlapping-but-unlocked tick finds the durable claim and running
     // owner, so no phase is ever advanced twice.
     await harness.advancer.sweep();
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(1);
-    expect(harness.claims.get('chain:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
+    expect(harness.claims.get('chain:kookr-ai/kookr:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
   });
 });

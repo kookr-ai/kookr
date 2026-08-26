@@ -178,6 +178,23 @@ string. Do not place the prompt body in shell argv: hook scanners often inspect
 command lines, and continuation prompts commonly contain strings that hooks may
 block.
 
+For a self-advancing chain, the successor launch must preserve the delivery
+policy through a playbook wrapper parsed by Kookr, or an equivalent trusted
+server path. Do not use a generic spawn: it does not carry the chain-specific
+contract to merge this phase and launch the next one. The architecture-refactor
+chain uses this exact shape after writing the next phase prompt file:
+
+```bash
+kookr spawn -C "$REPO_DIR" --prompt-file "$NEXT_PHASE_PROMPT_FILE" \
+  --playbook architecture-refactor-phase.md --playbook-scope plugin \
+  --idempotency-key "chain:${REPO_KEY}:${UMBRELLA_NUMBER}:phase:${NEXT_PHASE_ID}" \
+  --parent-task-id "$KOOKR_TASK_ID" --unattended --json
+```
+
+`REPO_KEY` is the validated `owner/name`, lowercased. Repository qualification
+prevents two chains with the same umbrella issue number from colliding in
+Kookr's shared idempotency ledger.
+
 For parent/child linkage, use whatever parent-task field the installed launcher
 or API documents. If the launcher cannot express parentage, keep the durable
 state sufficient for tracing the chain without transcript access.

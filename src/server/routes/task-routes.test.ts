@@ -1019,6 +1019,256 @@ describe('POST /api/tasks error paths', () => {
     }));
   });
 
+  test('preserves the prompt-dedup envelope on an idempotent replay', async () => {
+    const taskStore = new TaskStore();
+    const existing = taskStore.createTask('already active', '/cwd');
+    vi.mocked(launchTask).mockResolvedValue({
+      task: existing,
+      queued: false,
+      duplicate: true,
+      idempotentReplay: true,
+    });
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'already active',
+        cwd: '/cwd',
+        idempotencyKey: 'confirmable-duplicate',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      task: { id: existing.id },
+      duplicate: true,
+      idempotentReplay: true,
+    });
+  });
+
+  test('derives self-advancing delivery only from a parsed prompt-wrapper playbook', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'task-route-playbook-'));
+    const pluginDir = mkdtempSync(join(tmpdir(), 'task-route-plugin-'));
+    const previousPluginDir = process.env.KOOKR_PLUGIN_DIR;
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    mkdirSync(join(pluginDir, '.claude-plugin'), { recursive: true });
+    mkdirSync(join(pluginDir, 'playbooks'), { recursive: true });
+    writeFileSync(join(pluginDir, '.claude-plugin', 'plugin.json'), JSON.stringify({
+      name: 'test-plugin',
+      version: '0.0.0',
+    }));
+    writeFileSync(join(pluginDir, 'playbooks', 'phase.md'), `---
+name: Refactor Phase
+deliveryMode: self-advancing
+parameters:
+  - name: prompt
+    required: true
+---
+
+Trusted phase wrapper.\n\n{{prompt}}
+`);
+    process.env.KOOKR_PLUGIN_DIR = pluginDir;
+
+    try {
+      const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Implement P1',
+          cwd,
+          playbook: { path: 'phase.md', scope: 'plugin' },
+          idempotencyKey: 'chain:octocat/hello-world:42:phase:P1',
+          unattended: true,
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          prompt: expect.stringContaining('Trusted phase wrapper.\n\nImplement P1'),
+          playbookId: 'phase.md',
+          idempotencyKey: 'chain:octocat/hello-world:42:phase:P1',
+          unattended: true,
+        }),
+        { deliveryPolicy: 'self-advancing' },
+      );
+    } finally {
+      if (previousPluginDir === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+      else process.env.KOOKR_PLUGIN_DIR = previousPluginDir;
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(pluginDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not accept a raw client delivery-mode toggle', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Generic task',
+        cwd: '/cwd',
+        deliveryMode: 'self-advancing',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(launchTask).mock.calls[0]).toHaveLength(2);
+  });
+
+  test('rejects malformed prompt-wrapper playbook shapes before launch', async () => {
+    const taskStore = new TaskStore();
+    for (const playbook of [null, 'phase.md', {}, { path: '' }, { path: 'phase.md', scope: 'remote' }]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'P1', cwd: '/cwd', playbook }),
+      });
+      expect(res.status, JSON.stringify(playbook)).toBe(400);
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
+  test('fails closed when a well-shaped wrapper request names a missing or malformed playbook', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'task-route-invalid-playbook-'));
+    const taskStore = new TaskStore();
+    mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+    writeFileSync(join(cwd, '.kookr', 'playbooks', 'malformed.md'), `---
+name: Broken Wrapper
+deliveryMode: unrestricted
+parameters:
+  - name: prompt
+    required: true
+---
+
+{{prompt}}
+`);
+
+    try {
+      for (const path of ['missing.md', 'malformed.md']) {
+        vi.mocked(launchTask).mockClear();
+        const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: 'P1',
+            cwd,
+            playbook: { path, scope: 'project' },
+          }),
+        });
+
+        expect(res.status, path).toBe(400);
+        expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid playbook launch/i) });
+        expect(launchTask).not.toHaveBeenCalled();
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a playbook that does not declare the required prompt wrapper parameter', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'task-route-non-wrapper-'));
+    const taskStore = new TaskStore();
+    mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+    writeFileSync(join(cwd, '.kookr', 'playbooks', 'ordinary.md'), `---
+name: Ordinary Playbook
+---
+
+Static task body.
+`);
+
+    try {
+      const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'This must not be discarded',
+          cwd,
+          playbook: { path: 'ordinary.md', scope: 'project' },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/required.*prompt.*parameter/i) });
+      expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a required prompt parameter when the playbook body discards it', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'task-route-discarding-wrapper-'));
+    const taskStore = new TaskStore();
+    mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+    writeFileSync(join(cwd, '.kookr', 'playbooks', 'discarding.md'), `---
+name: Discarding Wrapper
+parameters:
+  - name: prompt
+    required: true
+---
+
+Static task body that forgets the supplied phase.
+`);
+
+    try {
+      const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'This must reach the task',
+          cwd,
+          playbook: { path: 'discarding.md', scope: 'project' },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/body.*\{\{prompt\}\}/i) });
+      expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('requires an idempotency key for a valid prompt-wrapper launch', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'task-route-keyless-wrapper-'));
+    const taskStore = new TaskStore();
+    mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+    writeFileSync(join(cwd, '.kookr', 'playbooks', 'phase.md'), `---
+name: Valid Wrapper
+parameters:
+  - name: prompt
+    required: true
+---
+
+{{prompt}}
+`);
+
+    try {
+      const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'P1',
+          cwd,
+          playbook: { path: 'phase.md', scope: 'project' },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/playbook.*idempotencyKey/i) });
+      expect(launchTask).not.toHaveBeenCalled();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('preserves dependency parking metadata on an idempotent replay', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask({

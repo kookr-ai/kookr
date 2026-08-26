@@ -320,6 +320,20 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/Product-policy changes, broad architecture changes, major persistence changes/);
       expect(pb.body).toMatch(/visibly blocked from autonomous implementation/);
     });
+
+    test('defines the RFC-first threshold without widening ordinary review-required work', () => {
+      const start = pb.body.indexOf('## RFC-First Large-Refactor Routing');
+      const end = pb.body.indexOf('## Preservation-First Simplification');
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const routing = pb.body.slice(start, end);
+      expect(routing).toMatch(/changeShape.*structural/i);
+      expect(routing).toMatch(/size.*large/i);
+      expect(routing).toMatch(/implementationReadiness.*needs-design/i);
+      expect(routing).toMatch(/at least two|2\+/i);
+      expect(routing).toMatch(/ordered.*depend/i);
+      expect(routing).toMatch(/below.*threshold.*unchanged/i);
+    });
   });
 
   describe('reductive ideas cannot become autonomous implementation issues', () => {
@@ -335,6 +349,17 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/publishDecision = local-proposal/);
       expect(pb.body).toMatch(/publishDecision = local-investigation/);
       expect(pb.body).toMatch(/proposalsDoc/);
+    });
+
+    test('large structural candidates route to RFC-first while other decisions stay unchanged', () => {
+      const decisions = pb.body.slice(
+        pb.body.indexOf('### 5.4 Assign publish decisions'),
+        pb.body.indexOf('### 5.5 Write the ideas log'),
+      );
+      expect(decisions).toMatch(/large-refactor threshold.*publishDecision = rfc-first/is);
+      expect(decisions).toMatch(/authority = autonomous.*publishDecision = publish/is);
+      expect(decisions).toMatch(/review-required.*publishDecision = local-proposal/is);
+      expect(decisions).toMatch(/protected.*publishDecision = local-investigation/is);
     });
 
     test('a user note cannot promote a gated candidate', () => {
@@ -398,6 +423,84 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).not.toMatch(/>>?\s*"\$ISSUE_BODY_FILE"/);
       // And no run-local state variable is echoed into the published body.
       expect(phase7).not.toMatch(/\$(STATE_DIR|RECS_DIR|IDEA_DIR)[^\n]*"\$ISSUE_BODY_FILE"/);
+    });
+
+    test('Phase 7 launches RFC-first candidates idempotently before the plain issue loop', () => {
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7: Selective GitHub Issue Creation'));
+      expect(phase7).toContain('architecture-refactor-rfc.md');
+      expect(phase7).toContain('rfc-first');
+      expect(phase7).toContain('--idempotency-key');
+      expect(phase7).toContain('rfcTaskId');
+      expect(phase7).toContain('architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}');
+      expect(phase7).not.toContain('architecture-refactor-rfc:${REPO_SLUG}:${IDX}');
+      expect(phase7).toContain('kookr spawn -C "$LOCAL"');
+      expect(phase7).not.toContain('kookr spawn -C "$LOCAL_PATH"');
+      expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
+
+      const launchCommand = phase7.slice(
+        phase7.indexOf('SPAWN_JSON=$(kookr spawn -C "$LOCAL"'),
+        phase7.indexOf('|| { block "RFC-first launch failed', phase7.indexOf('SPAWN_JSON=$(kookr spawn -C "$LOCAL"')),
+      );
+      expect(launchCommand).toContain('--prompt-file "$RFC_HANDOFF_FILE"');
+      expect(launchCommand).toContain('--playbook architecture-refactor-rfc.md --playbook-scope plugin');
+      expect(launchCommand).not.toContain('--criteria');
+
+      const handoffContract = pb.body.slice(
+        pb.body.indexOf('For every candidate whose `publishDecision` is `rfc-first`'),
+        pb.body.indexOf('Do not write `issue-body.md` for review-required'),
+      );
+      for (const label of [
+        'Repository:',
+        'Finding key:',
+        'Finding title:',
+        'Source reference:',
+        '## Verified evidence and affected boundaries',
+        '## Ordered phase plan',
+      ]) {
+        expect(handoffContract).toContain(label);
+      }
+
+      const savedTaskBranch = phase7.slice(
+        phase7.indexOf('if [ -s "$RFC_TASK_FILE" ]'),
+        phase7.indexOf('if [ "$FILED" -ge "$ALLOWED" ]'),
+      );
+      expect(savedTaskBranch).toContain('/api/tasks/$SAVED_RFC_TASK_ID');
+      expect(savedTaskBranch).toContain('FILED=$((FILED + 1))');
+      expect(savedTaskBranch).toMatch(/FILED=\$\(\(FILED \+ 1\)\)[\s\S]*continue/);
+
+      const budgetBranch = phase7.slice(
+        phase7.indexOf('if [ "$FILED" -ge "$ALLOWED" ]'),
+        phase7.indexOf('if ! spend_gate; then'),
+      );
+      expect(budgetBranch).toContain('.publishDecision = "deferred-over-budget"');
+      expect(budgetBranch).toContain('kookr emission defer');
+
+      const spendBranch = phase7.slice(
+        phase7.indexOf('if ! spend_gate; then'),
+        phase7.indexOf('# The server parses the bundled playbook'),
+      );
+      expect(phase7).toContain('# The server parses the bundled playbook');
+      expect(spendBranch).toContain('.publishDecision = "deferred-spend-cap"');
+      expect(spendBranch).toContain('.rfcTaskId == null');
+
+      const rfcRoute = phase7.indexOf('RFC-first launch loop');
+      const rfcPublishGuard = phase7.indexOf(
+        'if [ "$PUBLISH" = "publish-safe" ]; then',
+        rfcRoute,
+      );
+      const rfcLoop = phase7.indexOf('FILED=0', rfcRoute);
+      const issuePublishGuard = phase7.indexOf(
+        'if [ "$PUBLISH" = "publish-safe" ]; then',
+        rfcPublishGuard + 1,
+      );
+      const rfcLoopEnd = phase7.indexOf('done < "$STATE_DIR/rfc-first.tsv"', rfcLoop);
+      const issueRoute = phase7.indexOf('> "$STATE_DIR/publishable.tsv"');
+      expect(rfcPublishGuard).toBeGreaterThan(-1);
+      expect(rfcRoute).toBeGreaterThan(-1);
+      expect(rfcLoop).toBeGreaterThan(rfcPublishGuard);
+      expect(rfcLoopEnd).toBeGreaterThan(rfcLoop);
+      expect(issuePublishGuard).toBeGreaterThan(rfcLoopEnd);
+      expect(issueRoute).toBeGreaterThan(issuePublishGuard);
     });
 
     test('Phase 7 applies drain-coupled emission budget + logged dedupe (issue #1607)', () => {

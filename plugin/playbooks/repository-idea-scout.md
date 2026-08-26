@@ -94,6 +94,7 @@ checklist:
   - Publish target met, or a shortfall explicitly reported without fabricating marginal ideas
   - Reductive candidates recorded as protected local proposals, never autonomous issues
   - Review-required candidates gated from autonomous implementation
+  - Large behavior-preserving structural findings routed through Architecture Refactor RFC instead of plain implementation issues
   - Reader-first issue bodies omit local state paths and process boilerplate
   - When publishBehavior is publish-safe, only autonomous candidates become GitHub issues
   - Per-run spend recorded against the spend cap; run stopped or flagged when the cap is reached
@@ -115,9 +116,9 @@ The model is: **generate broadly, queue selectively, make destructive authority 
 Output behavior is controlled by `publishBehavior`:
 
 - When `publishBehavior` is `report-only`, write the local portfolio document and the local proposals document. Do not create GitHub issues.
-- When `publishBehavior` is `publish-safe`, additionally create exactly one GitHub issue per **autonomous-safe** candidate after duplicate checks and critic review pass. Review-required and protected candidates are never auto-published; they remain local proposals. Always write the full local run artifacts for auditability.
+- When `publishBehavior` is `publish-safe`, additionally create exactly one GitHub issue per **autonomous-safe** candidate after duplicate checks and critic review pass. A review-required candidate that clears the RFC-First Large-Refactor Routing threshold launches the architecture-refactor RFC flow instead of becoming a plain implementation issue. All other review-required candidates and every protected candidate remain local proposals. Always write the full local run artifacts for auditability.
 
-Do not create comments, branches, PRs, labels, or tracked-file changes in the target repository. The sole exception is the two **provenance labels** — `idea-scout` and `idea:<issue-number>` — that this playbook ensures exist and attaches to the idea issues it creates when `publishBehavior` is `publish-safe` (see Provenance Labels below). They are the only repository mutation beyond issue creation this playbook is allowed to make, and only in `publish-safe` mode; `report-only` runs never touch the target repository at all.
+Do not create comments, branches, PRs, labels, or tracked-file changes in the target repository. The sole exception is the two **provenance labels** — `idea-scout` and `idea:<issue-number>` — that this playbook ensures exist and attaches to the idea issues it creates when `publishBehavior` is `publish-safe` (see Provenance Labels below). In that mode it may also launch a Kookr task for an RFC-first candidate; that task owns all later RFC/PR/umbrella mutations under `architecture-refactor-rfc.md`. `report-only` runs never touch the target repository or launch downstream tasks.
 
 ## Launch Parameters
 
@@ -289,6 +290,8 @@ Required per-candidate fields:
 - **implementationReadiness**: `ready` | `needs-design` | `uncertain`.
 - **parallelConflictRisk**: `low` | `medium` | `high` — risk that implementing this in parallel with other portfolio items touches the same files/modules.
 - **filesTouched**: predicted file or module paths the change would edit (used to build the conflict matrix).
+- **orderedPhases**: an ordered `P1..Pn` list with a testable outcome and adjacent predecessor for every phase; `[]` unless the candidate has a verified phased-delivery plan.
+- **findingKey**: stable lowercase identifier for RFC-first idempotency. Derive it from the normalized candidate slug plus the first 12 hex characters of a SHA-256 over the canonical title and sorted `filesTouched`; validate it against `^[a-z0-9][a-z0-9-]{2,80}$`. Keep it stable across retries and reruns of the same finding.
 
 Absence of usage evidence is **unknown**, never proof that a capability is unnecessary. Never lower `confidence` in a capability's importance on the basis that you found no usage; treat missing usage evidence as a reason to gate, not to remove.
 
@@ -303,10 +306,35 @@ Authority is derived deterministically from `changeShape` and risk. It decides w
 Publication consequences:
 
 - `autonomous`: eligible for `gh issue create` when `publishBehavior` is `publish-safe`.
-- `review-required`: never auto-published. Recorded as a clearly labeled **proposal** in `<proposalsDoc>` requiring explicit human approval before any implementation.
+- `review-required`: never auto-published as a plain implementation issue. Candidates that clear the RFC-first threshold below may launch the design-first playbook; all others are recorded as a clearly labeled **proposal** in `<proposalsDoc>` requiring explicit human approval before any implementation.
 - `protected`: never auto-published and never framed as an implementation issue. Recorded as an **investigation/proposal** in `<proposalsDoc>` that asks a human to decide, with a capability-impact disclosure. Promotion to an executable issue requires a separate human-authorized workflow, out of scope for this playbook.
 
 The deterministic barrier is in Phase 7: the issue-creation loop selects **only** entries whose `authority` equals `autonomous`. Review-required and protected entries are never passed to `gh issue create`.
+
+## RFC-First Large-Refactor Routing
+
+A candidate clears the **large-refactor threshold** only when every condition is
+true:
+
+1. `authority = review-required` because of architectural size/design work, not
+   because confidence is low, product policy is unsettled, or evidence is weak.
+2. `changeShape = structural`: the intent is behavior-preserving architecture
+   improvement, never a reductive capability change.
+3. `size = large` and `implementationReadiness = needs-design`.
+4. `orderedPhases` contains at least two dependency-bearing phases; P1 has no
+   dependency and each later phase depends only on its adjacent predecessor.
+5. Evidence verification passed (a downgraded/low-confidence candidate does not
+   qualify) and every phase has a testable outcome.
+
+When all five hold, route the candidate through
+`plugin/playbooks/architecture-refactor-rfc.md`. This launches design and review,
+not autonomous implementation: the implementation chain cannot start until the
+RFC receives exact-head independent review, merges through the wrapper, and is
+reachable from fresh `main`.
+
+Behavior below the threshold is unchanged: bounded autonomous work keeps the
+plain issue path, ordinary review-required work stays a local proposal, and
+protected/reductive work stays a local investigation.
 
 ## Preservation-First Simplification
 
@@ -1371,8 +1399,13 @@ If the ranked, in-scope, non-duplicate portfolio is smaller than `PUBLISH_TARGET
 For each selected candidate, set `publishDecision`:
 
 - `authority = autonomous` ⇒ `publishDecision = publish`
-- `authority = review-required` ⇒ `publishDecision = local-proposal`
+- a `review-required` candidate that clears every large-refactor threshold condition ⇒ `publishDecision = rfc-first`
+- any other `authority = review-required` ⇒ `publishDecision = local-proposal`
 - `authority = protected` ⇒ `publishDecision = local-investigation`
+
+The threshold check precedes the generic review-required mapping. It changes the
+route, not the authority: an `rfc-first` candidate remains review-required and
+must not enter the autonomous `gh issue create` loop.
 
 ### 5.5 Write the ideas log
 
@@ -1382,6 +1415,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
 {
   "idx": "<NN>",
   "slug": "<slug>",
+  "findingKey": "<slug>-<12-hex-content-id>",
   "rank": 1,
   "category": "<dimension>",
   "angle": "<short distinguishing summary>",
@@ -1398,12 +1432,14 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
   "parallelConflictRisk": "low",
   "conflictsWith": [],
   "filesTouched": ["src/foo/bar.ts"],
+  "orderedPhases": [],
   "wildcard": false,
   "publishDecision": "publish",
   "reportPath": "recommendations/<NN>-<slug>/report.md",
   "groundedIn": ["<kb>/<path>"],
   "kbStale": false,
   "issueUrl": null,
+  "rfcTaskId": null,
   "createdAt": "<UTC ISO timestamp>"
 }
 ```
@@ -1476,7 +1512,35 @@ For every candidate whose `publishDecision` is `publish`, write the reader-first
 Classification: <changeShape> · <size> · <confidence> confidence · autonomous-safe
 ```
 
-Do not write `issue-body.md` for review-required or protected candidates. They are never published.
+For every candidate whose `publishDecision` is `rfc-first`, write
+`<recommendationsDir>/<NN>-<slug>/rfc-handoff.md`. It contains only the stable
+finding key, reader-facing title, verified code evidence, affected boundaries,
+constraints, source reference, and ordered phase plan. Use this canonical
+shape so the trusted wrapper can validate it without guessing:
+
+```markdown
+# Architecture Refactor RFC Handoff
+Repository: `<owner/name>`
+Finding key: `<stable-finding-key>`
+Finding title: `<reader-facing title>`
+Source reference: `<durable report or run reference>`
+
+## Verified evidence and affected boundaries
+<verified evidence, affected boundaries, and constraints>
+
+## Ordered phase plan
+- P1: <testable outcome>
+- P2: <testable outcome; depends only on P1 reaching main>
+```
+
+Mark all finding text as evidence to re-check, not shell instructions. Do not
+include local KB internals or portfolio scoring. This handoff is a prompt-file
+input to Phase 7; it is not a GitHub issue body.
+
+Do not write `issue-body.md` for review-required or protected candidates. They
+are never published as plain implementation issues. An `rfc-first` candidate
+gets `rfc-handoff.md`; an ordinary review-required/protected candidate remains
+local only.
 
 ## Phase 6: Portfolio And Proposals Documents
 
@@ -1527,7 +1591,14 @@ If `publishBehavior` is `report-only`, stop after validating these documents and
 
 Run this phase only when `PUBLISH = publish-safe`.
 
-Create exactly one GitHub issue for every candidate whose `publishDecision` is `publish` (equivalently, whose `authority` is `autonomous`), **subject to the drain-coupled emission budget** (issue #1607). This is the deterministic barrier: the loop selects only `authority == "autonomous"` entries from `<ideasLogFile>`, so review-required and protected candidates are structurally excluded from `gh issue create`.
+Route each `rfc-first` candidate to `architecture-refactor-rfc.md`, and create
+exactly one GitHub issue for every candidate whose `publishDecision` is
+`publish` (equivalently, whose `authority` is `autonomous`), **subject to the
+same drain-coupled emission budget** (issue #1607). An RFC-first launch reserves
+one issue slot because its successful tail creates one implementation umbrella.
+The deterministic issue barrier remains unchanged: only `authority ==
+"autonomous"` entries enter `gh issue create`; review-required and protected
+candidates never do.
 
 ### Phase 7.0 — Emission budget (mandatory before any `gh issue create`)
 
@@ -1556,8 +1627,9 @@ if [ "$PUBLISH" = "publish-safe" ]; then
   kookr emission version --json 2>&1 >/dev/null | grep -i 'ANOMALY' \
     && echo "WARNING: emission budget logic lags origin/main — redeploy." || true
 
-  # How many autonomous candidates are actually publishable this run.
-  REQUESTED=$(jq '[.[] | select(.authority == "autonomous" and .publishDecision == "publish")] | length' "$IDEAS_LOG")
+  # Count both immediate issues and RFC-first flows (each flow can create one
+  # umbrella only after its reviewed RFC merge reaches fresh main).
+  REQUESTED=$(jq '[.[] | select((.authority == "autonomous" and .publishDecision == "publish") or .publishDecision == "rfc-first")] | length' "$IDEAS_LOG")
   EMISSION_PLAN=$(kookr emission plan --repo "$REPO" --requested "$REQUESTED" --json) \
     || { block "kookr emission plan failed for $REPO"; exit 0; }
   ALLOWED=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.allowedBudget')
@@ -1587,6 +1659,101 @@ kookr emission metrics --repo "$REPO" --json \
 #   netBacklogDelta7d + ci_blind_debt (blindMergeCount, queueDepth).
 ```
 
+### RFC-first launch loop
+
+Run this loop before the plain issue loop. It launches a design-first task, not
+an implementation issue. Candidates below the large-refactor threshold never
+enter this loop and retain the existing path.
+
+```bash
+if [ "$PUBLISH" = "publish-safe" ]; then
+FILED=0
+jq -r '.[] | select(.publishDecision == "rfc-first") | [.idx, .slug, .findingKey] | @tsv' \
+  "$IDEAS_LOG" > "$STATE_DIR/rfc-first.tsv"
+
+while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
+  [ -n "$IDX" ] || continue
+  if ! printf '%s' "$FINDING_KEY" | grep -Eq '^[a-z0-9][a-z0-9-]{2,80}$'; then
+    block "invalid RFC-first finding key for $IDX-$SLUG"
+    exit 0
+  fi
+  IDEA_DIR="$RECS_DIR/$IDX-$SLUG"
+  RFC_HANDOFF_FILE="$IDEA_DIR/rfc-handoff.md"
+  RFC_TASK_FILE="$IDEA_DIR/rfc-task.json"
+
+  if [ ! -s "$RFC_HANDOFF_FILE" ]; then
+    block "missing RFC-first handoff for $IDEA_DIR"
+    exit 0
+  fi
+  if [ -s "$RFC_TASK_FILE" ] && jq -e '.taskId | strings | length > 0' "$RFC_TASK_FILE" >/dev/null; then
+    SAVED_RFC_TASK_ID=$(jq -r '.taskId' "$RFC_TASK_FILE")
+    if ! curl -fsS --max-time 5 \
+      "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/tasks/$SAVED_RFC_TASK_ID" \
+      | jq -e --arg taskId "$SAVED_RFC_TASK_ID" '.taskId == $taskId' >/dev/null; then
+      block "saved RFC-first task reference is missing or mismatched for $IDEA_DIR"
+      exit 0
+    fi
+    jq --arg idx "$IDX" --arg taskId "$SAVED_RFC_TASK_ID" \
+      '(.[] | select(.idx == $idx)) |= (.rfcTaskId = $taskId)' \
+      "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+    FILED=$((FILED + 1))
+    continue
+  fi
+  if [ "$FILED" -ge "$ALLOWED" ]; then
+    kookr emission defer --repo "$REPO" --title "RFC-first: $SLUG" \
+      --source repository-idea-scout \
+      --reason "over emission budget (allowed=$ALLOWED openBacklog=$OPEN_BACKLOG)" \
+      --json >> "$STATE_DIR/deferred.jsonl" || true
+    jq --arg idx "$IDX" \
+      '(.[] | select(.idx == $idx)) |= (.publishDecision = "deferred-over-budget")' \
+      "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+    continue
+  fi
+  if ! spend_gate; then
+    echo "Spend cap reached (\$$SPEND_CAP_USD); stopping RFC-first launches before $IDEA_DIR." >> "$STATE_FILE"
+    jq 'map(if .publishDecision == "rfc-first" and .rfcTaskId == null
+      then .publishDecision = "deferred-spend-cap" else . end)' \
+      "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+    break
+  fi
+
+  # The server parses the bundled playbook and injects its trusted workflow and
+  # delivery policy. The prompt file carries only canonical evidence; generated
+  # finding prose never appears in shell argv.
+  SPAWN_JSON=$(kookr spawn -C "$LOCAL" \
+    --prompt-file "$RFC_HANDOFF_FILE" \
+    --playbook architecture-refactor-rfc.md --playbook-scope plugin \
+    --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
+    --unattended --json) \
+    || { block "RFC-first launch failed for $IDEA_DIR; inspect the idempotency ledger before retrying"; exit 0; }
+  RFC_TASK_ID=$(printf '%s' "$SPAWN_JSON" | jq -r '.details.taskId // .task.id // .taskId // empty')
+  if [ -z "$RFC_TASK_ID" ]; then
+    block "RFC-first launch returned no task id for $IDEA_DIR"
+    exit 0
+  fi
+  if ! curl -fsS --max-time 5 \
+    "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/tasks/$RFC_TASK_ID" \
+    | jq -e --arg taskId "$RFC_TASK_ID" '.taskId == $taskId' >/dev/null; then
+    block "RFC-first launch task could not be authoritatively re-read for $IDEA_DIR"
+    exit 0
+  fi
+  jq -n --arg taskId "$RFC_TASK_ID" \
+    --arg key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
+    '{taskId:$taskId,idempotencyKey:$key}' > "$RFC_TASK_FILE.tmp" \
+    && mv "$RFC_TASK_FILE.tmp" "$RFC_TASK_FILE"
+  jq --arg idx "$IDX" --arg taskId "$RFC_TASK_ID" \
+    '(.[] | select(.idx == $idx)) |= (.rfcTaskId = $taskId)' \
+    "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+  FILED=$((FILED + 1))
+done < "$STATE_DIR/rfc-first.tsv"
+fi
+```
+
+If `kookr spawn` reports a client timeout, do not change the key and do not
+blindly relaunch. Query the Kookr idempotency/task state first; a confirmed task
+is written to `rfcTaskId`, while an ambiguous or missing reference blocks the
+run for safe retry.
+
 Use the reader-first `issue-body.md` as the body — never the local `report.md`, and never a state path. If `issue-created.json` already exists with a valid `url`, do not create another issue.
 
 ```bash
@@ -1595,7 +1762,6 @@ if [ "$PUBLISH" = "publish-safe" ]; then
   jq -r '.[] | select(.authority == "autonomous" and .publishDecision == "publish") | "\(.idx)\t\(.slug)"' \
     "$IDEAS_LOG" > "$STATE_DIR/publishable.tsv"
 
-  FILED=0
   while IFS="$(printf '\t')" read -r IDX SLUG; do
     [ -n "$IDX" ] || continue
     IDEA_DIR="$RECS_DIR/$IDX-$SLUG"
@@ -1783,8 +1949,11 @@ Before finishing, validate:
 - `<recommendationsDoc>` exists and references the ranked portfolio; `<proposalsDoc>` exists and lists every review-required and protected candidate.
 - `<duplicateMatrixFile>` exists and references the portfolio.
 - Only candidates whose `publishDecision` is `publish` have an `issue-body.md`; that body contains none of `<stateDir>`, a local state path, or process boilerplate.
+- Every candidate whose `publishDecision` is `rfc-first` has an `rfc-handoff.md`, remains `authority: review-required`, has `issueUrl: null`, and — in `publish-safe` mode — has a non-null `rfcTaskId` backed by `rfc-task.json`. It never has an `issue-created.json`.
+- Every `deferred-over-budget` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and has a matching `kookr emission defer` record. It is not treated as a failed RFC-first launch.
+- Every `deferred-spend-cap` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and is covered by a breached spend ledger. It is not treated as a failed RFC-first launch.
 - When `PUBLISH = publish-safe`: every published entry has a non-null `issueUrl` and a valid `issue-created.json`; no entry whose `authority` is `review-required` or `protected` has a non-null `issueUrl` or an `issue-created.json`.
-- When `PUBLISH = report-only`: every entry has `issueUrl: null` and no GitHub issue was created.
+- When `PUBLISH = report-only`: every entry has `issueUrl: null`, every `rfcTaskId` is null, no downstream task was launched, and no GitHub issue was created.
 - `<kbSeedsFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; every entry has a `groundedIn` array and a boolean `kbStale`.
 - `<opsEvidenceFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; when `status` is `ok`, it carries `incidentIssues`, `ciFailures`, and `runtimeProbes` objects/arrays (empty arrays are valid).
 - When `workProfile = simplification-preserving`, `<capabilityInventoryFile>` enumerates in-scope capabilities and no accepted candidate removes a documented/user-visible capability as an autonomous issue.
@@ -1821,7 +1990,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 1. State is scoped to `<repoSlug>/<runKey>`, not just the repository — with exactly two deliberate repo-level exceptions: `<dimensionCoverageFile>` (rotation coverage) and `<ideaOutcomeLedgerFile>` (published-idea outcomes / conversion). Both use per-`<runKey>` idempotence arrays (`appliedRuns` / `recordedRuns`+`refreshedRuns`), self-heal on schema-invalid files, and are safe to delete at any time. A scoped run (`extraInstruction` non-empty) still updates them; that bias is accepted because both are ordering/reporting heuristics, not correctness state.
 2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
 3. Do not post comments, create branches, PRs, or edit tracked files in the target repository. The only allowed mutation beyond issue creation is the two provenance labels (`idea-scout`, `idea:<issue-number>`) applied to the idea issues this run creates in `publish-safe` mode; label creation and application are idempotent (`gh label create --force`, `gh issue edit --add-label`).
-4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`).
+4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`). An `rfc-first` review-required candidate may launch only `architecture-refactor-rfc.md`; it does not enter `gh issue create`, and its eventual umbrella consumes the reserved slot.
 5. Do not duplicate issue API work unnecessarily; use saved snapshots from this run unless they are missing, invalid JSON, or older than 24 hours.
 6. Refresh feature inventory if the checkout `HEAD` changed from `<runManifest>`.
 7. Do not claim a candidate is novel until per-candidate all-state issue and PR searches plus adjacent comment fetches have been run for that candidate.
@@ -1832,6 +2001,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 12. When `USE_KB` is `auto`, run the Phase 3.5 survey once; reuse `<kbSeedsFile>` for every candidate instead of re-surveying.
 13. KB grounding is augmentation only: a missing, empty, or off-domain KB never blocks the run and never reduces the publish target.
 14. Run the Phase 3.6 operational-evidence sweep once; reuse `<opsEvidenceFile>` for every candidate instead of re-probing. Kookr-specific runtime probes are optional and never block the run.
+15. Use `architecture-refactor-rfc:<repoSlug>:<findingKey>` as the stable RFC-task idempotency key. Revalidate a saved task id against the task API before reuse. A timeout requires task/idempotency lookup before retry; never mint a new key for the same candidate.
 
 ## Anti-Patterns
 
@@ -1844,6 +2014,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not mutate the target repository by default. This playbook is for portfolio recommendations, with optional autonomous-only issue creation when `publishBehavior` is `publish-safe`.
 - Do not emit a reductive idea as an autonomous implementation issue. Reductive is always protected.
 - Do not promote a review-required or protected candidate to an autonomous issue on the strength of a user note.
+- Do not file a large structural, dependency-bearing refactor as a plain implementation issue. Route it through `architecture-refactor-rfc.md`; below that exact threshold, preserve the existing issue/proposal behavior.
 - Do not infer that low or absent usage means a capability is unnecessary; missing usage evidence is unknown.
 - Do not apply provenance labels to pre-existing issues, PRs, or any artifact this run did not create; label only the idea issues this run opens in `publish-safe` mode.
 - Do not treat a spend cap breach as a `BLOCKED` failure; it is a controlled early stop, and the run still finishes `DONE` with the breach recorded in the completion output.

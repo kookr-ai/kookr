@@ -132,7 +132,10 @@ export function interpolateParameters(
       throw new PlaybookParseError(`Required parameter "${param.name}" is missing`);
     }
     if (value !== undefined) {
-      result = result.replaceAll(`{{${param.name}}}`, value);
+      // A string replacement interprets JavaScript replacement tokens such as
+      // $&, $$, $`, and $'. Parameter values are user-controlled prose, so use
+      // a replacer function to preserve them literally.
+      result = result.replaceAll(`{{${param.name}}}`, () => value);
     }
   }
 
