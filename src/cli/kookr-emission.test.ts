@@ -390,6 +390,23 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     expect(io.errs.join('\n')).toMatch(/invalid JSON in project settings/);
   });
 
+  it('TS-EMISSION-003: refuses to plan when the project settings file is unreadable', async () => {
+    const io = mkIo();
+    const configDir = mkdtempSync(join(tmpdir(), 'emission-config-unreadable-'));
+    // A present-but-unreadable policy file (a directory triggers EISDIR on read)
+    // must abort, not fail open to the unlimited default.
+    mkdirSync(join(configDir, 'project-configs.json'));
+    const code = await runEmissionCli(
+      [
+        'plan', '--repo', 'jeanibarz/maison', '--requested', '10', '--json',
+        '--kookr-dir', configDir,
+      ],
+      { ...io, runGh: planGh(0, 0, [], 'jeanibarz/maison') },
+    );
+    expect(code).toBe(2);
+    expect(io.errs.join('\n')).toMatch(/cannot read project settings/);
+  });
+
   it.each([
     ['a non-array document', '{}', /must contain an array/],
     [
