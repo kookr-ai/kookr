@@ -5,6 +5,7 @@ import {
 } from '../../core/phase-ledger-codec.js';
 import {
   UmbrellaChainAdvancer,
+  phaseClaimKey,
   type UmbrellaChainAdvancerLogger,
 } from './umbrella-chain-advancer.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
@@ -33,11 +34,21 @@ function makeHarness(ledger: PhaseLedger, options: {
   launchFails?: boolean;
   finalizeFails?: boolean;
   headSha?: string | null;
+  /**
+   * Body returned by `getIssue` from its second call onward, simulating a
+   * concurrent writer that mutated the umbrella body between the sweep's read
+   * and the refetch the sweep does immediately before writing (so that only one
+   * writer's copy is ever applied).
+   */
+  concurrentRefetchBody?: string;
+  /** When set, `getIssue` returns null from its second call onward (persist-time refetch fails). */
+  refetchReturnsNull?: boolean;
 } = {}) {
   const events: string[] = [];
   const calls: string[] = [];
   const comments: Array<{ body: string }> = [];
   let launchSawClaim = false;
+  let getIssueCalls = 0;
   const issue: UmbrellaIssue = {
     number: options.issueNumber ?? ledger.issueNumber,
     body: `# Umbrella\n\n${serializePhaseLedgerBlock(ledger)}\n`,
@@ -51,6 +62,13 @@ function makeHarness(ledger: PhaseLedger, options: {
     },
     async getIssue(repo, number) {
       calls.push(`issue:${repo}#${number}`);
+      getIssueCalls += 1;
+      if (getIssueCalls > 1 && options.refetchReturnsNull) {
+        return null;
+      }
+      if (getIssueCalls > 1 && options.concurrentRefetchBody !== undefined) {
+        return { number: issue.number, body: options.concurrentRefetchBody, comments };
+      }
       return issue;
     },
     async updateIssueBody(repo, number, body) {
@@ -439,5 +457,78 @@ describe('UmbrellaChainAdvancer', () => {
     await Promise.all([first, second]);
     expect(harness.calls.filter((call) => call.startsWith('list:'))).toHaveLength(1);
     expect(harness.advancer.getHealthSnapshot().tickCount).toBe(1);
+  });
+
+  test('single-writer guard rejects a lost update when the umbrella body changed under the sweep', async () => {
+    // A concurrent writer added a phase between our read and our persist. The
+    // fenced ledger has a single writer: writing our stale copy back would
+    // clobber that change, so the guard must skip the update instead.
+    const concurrent = makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+        { id: 'P3', dependsOn: ['P2'], status: 'pending' },
+      ],
+    });
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), {
+      mode: 'spawn',
+      concurrentRefetchBody: `# Umbrella\n\n${serializePhaseLedgerBlock(concurrent)}\n`,
+    });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('update:'))).toHaveLength(0);
+    expect(harness.events.some((event) => event.includes('WARN') && event.includes('skipped stale'))).toBe(true);
+  });
+
+  test('single-writer guard rejects a write when the refetched umbrella body is malformed', async () => {
+    // The refetch parses the current remote body before writing. A body whose
+    // ledger block is corrupt must abort the write rather than overwrite it.
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), {
+      mode: 'spawn',
+      concurrentRefetchBody: '# Umbrella\n\n```kookr-phase-ledger\n{ not: valid json\n```\n',
+    });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('update:'))).toHaveLength(0);
+    expect(harness.events.some((event) => event.includes('WARN') && event.includes('failed to persist'))).toBe(true);
+  });
+
+  test('single-writer guard skips the write when the umbrella issue cannot be refetched', async () => {
+    // Without a fresh copy of the remote body there is nothing safe to write
+    // over, so the persist must abort rather than push a possibly-stale body.
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'in-flight' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', refetchReturnsNull: true });
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('update:'))).toHaveLength(0);
+    expect(harness.events.some((event) => event.includes('WARN') && event.includes('could not be refetched'))).toBe(true);
+  });
+
+  test('repeated sweeps launch at most one phase task (retry idempotency)', async () => {
+    const harness = makeHarness(makeLedger(), { mode: 'spawn', terminalTasks: new Set() });
+    await harness.advancer.sweep();
+    // A duplicate sweep (a retry, or the periodic safety-net tick) must find the
+    // persisted claim and the still-running owner task and refuse to POST a
+    // second task for the same phase.
+    await harness.advancer.sweep();
+    await harness.advancer.sweep();
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(1);
+    expect(harness.claims.get('chain:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
+  });
+
+  test('phaseClaimKey encodes the deterministic chain:<issue>:phase:<id> contract', () => {
+    expect(phaseClaimKey(2711, 'P1')).toBe('chain:2711:phase:P1');
+    expect(phaseClaimKey(42, 'Phase 3')).toBe('chain:42:phase:Phase 3');
   });
 });
