@@ -1049,6 +1049,7 @@ async function launchTaskIdempotent(
           task,
           queued: task.status === 'pending',
           idempotentReplay: true,
+          ...(reservation.duplicate ? { duplicate: true } : {}),
           ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
           ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
         };
@@ -1069,6 +1070,7 @@ async function launchTaskIdempotent(
             task,
             queued: task.status === 'pending',
             idempotentReplay: true,
+            ...(outcome.duplicate ? { duplicate: true } : {}),
             ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
             ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
           };
@@ -1106,7 +1108,7 @@ async function launchTaskIdempotent(
     // and its returned promise never rejects, so a ledger persist failure
     // can only cost cross-restart durability, never turn this success into
     // an error for the caller or drop same-process replay protection.
-    await reservation.finalize(result.task.id);
+    await reservation.finalize(result.task.id, result.duplicate === true);
     return result;
   }
 }

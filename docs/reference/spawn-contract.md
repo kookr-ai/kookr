@@ -36,7 +36,7 @@ A `POST /api/tasks` attempt resolves to exactly one of these classes. The class
 | Class | Wire signal | Task created? | Client action |
 | --- | --- | --- | --- |
 | **Created** | `201` (or `200` with `idempotentReplay: true`) | Yes | Success. Use `task.id`. |
-| **Prompt-dedup** | `200`, `{ "task", "duplicate": true }` | No (an active twin exists) | Reconcile to the existing task; do not re-launch. |
+| **Prompt-dedup** | `200`, `{ "task", "duplicate": true }` (plus `idempotentReplay: true` on a keyed replay) | No (an active twin exists) | Reconcile to the existing task, or explicitly confirm an intentional duplicate under a new logical key. |
 | **Client error** | `4xx` (e.g. `400 invalid_cwd`, `400 invalid_effort`) | No | Fix the request. **Never** retry unchanged. |
 | **Backpressure** | `429` (`pending_queue_full` / `spawn_burst_limit`) | **No** | Definitive rejection — honor `Retry-After`, back off, retry (below). |
 | **Saturation** | `503` (`event_loop_saturated`) | **No** ([backpressure.md INV1](./backpressure.md)) | Transient — honor `Retry-After`, back off, retry. |
@@ -47,11 +47,13 @@ A `POST /api/tasks` attempt resolves to exactly one of these classes. The class
 Send an `idempotencyKey` (≤200 chars) on **every** request you might retry. It is
 the load-bearing primitive for safe reconciliation:
 
-- The first POST carrying a key creates the task (`201`).
-- Any later POST with the **same** key returns `200` with the task shape plus
-  `"idempotentReplay": true`, referencing the **same** task — no duplicate, no
-  confirmation UX. This holds even for a request racing concurrently with the
-  first.
+- The first POST carrying a key runs normal launch handling: it may create the
+  task or find an active prompt duplicate.
+- Any later POST with the **same** key returns the same task and preserves that
+  outcome. Created-task replays use the flat task shape; prompt-duplicate
+  replays retain `{ "task", "duplicate": true }`. Both include
+  `"idempotentReplay": true`. This holds even for a request racing concurrently
+  with the first.
 - The key is a *different* mechanism from prompt+cwd+agentType dedup, which is
   defeated whenever the prompt text varies between attempts (e.g. a fresh random
   branch suffix). The key identifies the logical *request*, independent of
@@ -80,6 +82,9 @@ server returned a `5xx` after it might already have persisted the task record.
      task; you now hold its id. Done.
    - `Created` without the replay flag → the first attempt did *not* create it;
      this POST did. Done.
+   - `Prompt-dedup` → no task was created for this request. Reconcile to the
+     active task, or require explicit confirmation before launching an
+     intentional duplicate under a distinct, stable key.
    - Ambiguous again → repeat, up to the retry budget below.
    - `4xx` → a definitive client error; stop and surface it.
 3. On exhausting the budget, stop and surface the ambiguity to the operator
@@ -140,9 +145,15 @@ Guidance:
 
 - **Idempotency key.** `--idempotency-key <key>` sets it explicitly;
   `--auto-idempotency` (or `KOOKR_SPAWN_AUTO_IDEMPOTENCY`) derives a stable key
-  from the spawn's identity (prompt + cwd + criteria + agent) so a retry
-  replays. The CLI POST aborts at 10s while the server may take longer, so a key
-  is what turns that timeout from a duplicate risk into a safe replay.
+  from the spawn's identity (prompt, cwd, criteria, agent, playbook path, and
+  playbook scope) so a retry replays. The CLI POST aborts at 10s while the
+  server may take longer, so a key turns that timeout from a duplicate risk
+  into a safe replay.
+- **Confirmed duplicates.** When an operator confirms a prompt duplicate, the
+  CLI derives a distinct stable key from the original key and existing task id.
+  It reconciles the intentional launch under that replacement key. Because the
+  server durably replays the original prompt-duplicate outcome, restarting the
+  CLI repeats confirmation and reconstructs the same replacement key.
 - **Ambiguous-outcome reconciliation.** On a client timeout, a network error, or
   a `5xx` response, when a key is available the CLI re-POSTs with the **same
   key** (`postTaskWithReconcile`), honoring any `Retry-After` hint, up to 2

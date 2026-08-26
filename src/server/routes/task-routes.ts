@@ -36,7 +36,7 @@ import {
   readDiskAdmissionConfigFromEnv,
 } from '../task-admission.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
-import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
+import { LAUNCH_DEPENDENCIES, type LaunchDependency, type PlaybookScope } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
@@ -88,6 +88,7 @@ import {
   resolveMergeRequiredGate,
   shouldUseLiveMergeVerify,
 } from '../../core/merge-required.js';
+import { preparePlaybookLaunchWithMetadata } from '../use-cases/playbook-launch.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -515,6 +516,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         unattended?: unknown;
         idempotencyKey?: unknown;
         claimIssue?: unknown;
+        playbook?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -522,6 +524,23 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (!body.cwd || typeof body.cwd !== 'string') {
         return c.json({ error: 'cwd is required and must be a string' }, 400);
+      }
+      let playbookWrapper: { path: string; scope?: PlaybookScope } | undefined;
+      if (body.playbook !== undefined) {
+        if (typeof body.playbook !== 'object' || body.playbook === null || Array.isArray(body.playbook)) {
+          return c.json({ error: 'playbook must be an object with path and optional scope' }, 400);
+        }
+        const raw = body.playbook as { path?: unknown; scope?: unknown };
+        if (typeof raw.path !== 'string' || raw.path.trim().length === 0) {
+          return c.json({ error: 'playbook.path must be a non-empty string' }, 400);
+        }
+        if (raw.scope !== undefined && raw.scope !== 'project' && raw.scope !== 'user' && raw.scope !== 'plugin') {
+          return c.json({ error: 'playbook.scope must be project, user, or plugin' }, 400);
+        }
+        playbookWrapper = {
+          path: raw.path.trim(),
+          ...(raw.scope === undefined ? {} : { scope: raw.scope }),
+        };
       }
       if (body.parentTaskId !== undefined) {
         if (typeof body.parentTaskId !== 'string') {
@@ -596,31 +615,70 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // Phase B attribution header so 'lucy' burns her own burst budget
       // instead of sharing the anonymous `api` bucket.
       const launchActorId = c.req.header(ACTOR_HEADER)?.trim() || undefined;
+      const agentType = body.agentType ? normalizeAgentSelection(body.agentType) : undefined;
+      let preparedPlaybook: Awaited<ReturnType<typeof preparePlaybookLaunchWithMetadata>> | undefined;
+      if (playbookWrapper) {
+        try {
+          preparedPlaybook = await preparePlaybookLaunchWithMetadata({
+            cwd: body.cwd,
+            playbookSourceCwd: body.cwd,
+            taskTargetCwd: body.cwd,
+            taskTargetCwdExplicit: true,
+            playbookPath: playbookWrapper.path,
+            scope: playbookWrapper.scope,
+            parameterValues: { prompt: body.prompt },
+            agentType,
+          });
+          const promptParameter = preparedPlaybook.playbook.parameters.find(
+            (parameter) => parameter.name === 'prompt',
+          );
+          if (!promptParameter?.required) {
+            return c.json({ error: 'Prompt-wrapper playbook must declare a required prompt parameter' }, 400);
+          }
+          if (!preparedPlaybook.playbook.body.includes('{{prompt}}')) {
+            return c.json({ error: 'Prompt-wrapper playbook body must contain {{prompt}}' }, 400);
+          }
+          if (body.idempotencyKey === undefined) {
+            return c.json({ error: 'playbook launches require idempotencyKey' }, 400);
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return c.json({ error: `Invalid playbook launch: ${message}` }, 400);
+        }
+      }
       // #1556: a CLI caller that pastes a whole JSON spawn payload as the
       // prompt (a5a89a9a) carries its intended name in an embedded `name`
       // field — lift it so the task is named that instead of the payload's
       // opening brace. Ordinary prose prompts return undefined and are
       // unaffected; a set name skips AI naming (see LaunchOpts.name).
-      const embeddedName = extractEmbeddedTaskName(body.prompt);
-      const launchResult = await launchTask(deps.launchServiceDeps, {
-        prompt: body.prompt,
-        cwd: body.cwd,
-        name: embeddedName,
-        criteria: body.criteria,
+      const embeddedName = preparedPlaybook ? undefined : extractEmbeddedTaskName(body.prompt);
+      const launchOpts = {
+        ...(preparedPlaybook?.launchOpts ?? { prompt: body.prompt, cwd: body.cwd }),
+        name: preparedPlaybook?.launchOpts.name ?? embeddedName,
+        criteria: preparedPlaybook?.launchOpts.criteria ?? body.criteria,
         parentTaskId: body.parentTaskId,
-        agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
+        agentType,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
         model: typeof body.model === 'string' ? body.model : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
-        dependencies: parseLaunchDependencies(body.dependencies),
+        dependencies: preparedPlaybook?.launchOpts.dependencies ?? parseLaunchDependencies(body.dependencies),
         launchSource,
         launchActorId,
-        autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
+        autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean'
+          ? body.autoCloseOnSignal
+          : preparedPlaybook?.launchOpts.autoCloseOnSignal,
         unattended: typeof body.unattended === 'boolean' ? body.unattended : undefined,
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
         ...(claimIssue ? { claimIssue } : {}),
-      });
+      };
+      const launchResult = preparedPlaybook
+        ? await launchTask(
+            deps.launchServiceDeps,
+            launchOpts,
+            { deliveryPolicy: preparedPlaybook.deliveryPolicy },
+          )
+        : await launchTask(deps.launchServiceDeps, launchOpts);
       const { task, queued, duplicate, idempotentReplay, parked, dependencyAdmission } = launchResult;
       // Plan-quota rotation metadata (issue #1936) — flat fields on the spawn
       // JSON so supervisors/feeder log without parsing free-text errors.
@@ -642,6 +700,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({
           task,
           duplicate: true,
+          ...(idempotentReplay ? { idempotentReplay: true } : {}),
           ...(queued ? { queued: true } : {}),
           ...(parked ? { parked: true } : {}),
           ...(dependencyAdmission ? { dependencyAdmission } : {}),
@@ -649,11 +708,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         }, 200);
       }
 
-      // Idempotent replay (#1526 Phase B): the SAME task an earlier request
-      // with this idempotencyKey already created — flattened like the 201
-      // shape (not wrapped like prompt-dedup's `{task, duplicate:true}`) so
-      // callers that already parse a plain task object need no extra
-      // branching to notice the replay via `idempotentReplay`.
+      // Created-task replay (#1526 Phase B): flatten like the 201 shape so
+      // existing callers need no extra wrapper parsing. Replayed prompt-dedup
+      // outcomes returned through the duplicate branch above instead.
       if (idempotentReplay) {
         return c.json({
           ...task,

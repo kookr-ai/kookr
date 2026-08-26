@@ -62,6 +62,8 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--model',
       '--wait',
       '--idempotency-key',
+      '--playbook',
+      '--playbook-scope',
       '--dry-run',
       '--json',
       '-h',
@@ -71,6 +73,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--agent': ['claude-code', 'codex-cli', 'grok-build'],
       '--effort': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       '--dedupe': ['warn', 'block', 'skip'],
+      '--playbook-scope': ['project', 'user', 'plugin'],
       // Cross-agent allowlist (CLI fast-fail). Shared with bin/kookr-spawn.js MODEL_IDS.
       '--model': SPAWN_MODEL_IDS,
     },
@@ -387,9 +390,11 @@ function renderBashCompletion(): string {
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
   const effortValues = flagValuesFor('spawn', '--effort');
   const modelValues = flagValuesFor('spawn', '--model');
+  const playbookScopeValues = flagValuesFor('spawn', '--playbook-scope');
   const dedupeEqualsValues = equalsFlagValues('--dedupe', dedupeValues);
   const effortEqualsValues = equalsFlagValues('--effort', effortValues);
   const modelEqualsValues = equalsFlagValues('--model', modelValues);
+  const playbookScopeEqualsValues = equalsFlagValues('--playbook-scope', playbookScopeValues);
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
@@ -467,6 +472,10 @@ _kookr()
       COMPREPLY=( $(compgen -W "${modelValues}" -- "\${cur}") )
       return 0
       ;;
+    --playbook-scope)
+      COMPREPLY=( $(compgen -W "${playbookScopeValues}" -- "\${cur}") )
+      return 0
+      ;;
     --fail-on)
       if [[ "\${cmd}" == status ]]; then
         COMPREPLY=( $(compgen -W "${statusFailOnValues}" -- "\${cur}") )
@@ -489,6 +498,10 @@ _kookr()
   fi
   if [[ "\${cur}" == --model=* ]]; then
     COMPREPLY=( $(compgen -W "${modelEqualsValues}" -- "\${cur}") )
+    return 0
+  fi
+  if [[ "\${cur}" == --playbook-scope=* ]]; then
+    COMPREPLY=( $(compgen -W "${playbookScopeEqualsValues}" -- "\${cur}") )
     return 0
   fi
   if [[ "\${cmd}" == status && "\${cur}" == --fail-on=* ]]; then
@@ -699,9 +712,11 @@ function renderZshCompletion(): string {
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
   const effortValues = flagValuesFor('spawn', '--effort');
   const modelValues = flagValuesFor('spawn', '--model');
+  const playbookScopeValues = flagValuesFor('spawn', '--playbook-scope');
   const dedupeEqualsValues = equalsFlagValues('--dedupe', dedupeValues);
   const effortEqualsValues = equalsFlagValues('--effort', effortValues);
   const modelEqualsValues = equalsFlagValues('--model', modelValues);
+  const playbookScopeEqualsValues = equalsFlagValues('--playbook-scope', playbookScopeValues);
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
@@ -772,12 +787,14 @@ _kookr()
         --dedupe=*) compadd -- ${dedupeEqualsValues}; return ;;
         --effort=*) compadd -- ${effortEqualsValues}; return ;;
         --model=*) compadd -- ${modelEqualsValues}; return ;;
+        --playbook-scope=*) compadd -- ${playbookScopeEqualsValues}; return ;;
       esac
       case "$words[CURRENT-1]" in
         -a|--agent) compadd ${agentValues}; return ;;
         --effort) compadd ${effortValues}; return ;;
         --dedupe) compadd ${dedupeValues}; return ;;
         --model) compadd ${modelValues}; return ;;
+        --playbook-scope) compadd ${playbookScopeValues}; return ;;
       esac
       compadd -- ${spawnFlags}
       ;;

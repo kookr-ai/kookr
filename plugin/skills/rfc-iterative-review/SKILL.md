@@ -228,10 +228,77 @@ The user may want to:
 
 Wait for their explicit direction.
 
+The sole exception is an invocation from the shipped
+`architecture-refactor-rfc.md` playbook that carries all three activation
+fields below in its prompt and durable state:
+
+```yaml
+callerPlaybook: architecture-refactor-rfc.md
+rfcDeliveryAuthorized: true
+durableState: state.json
+```
+
+That playbook is delivery-pre-authorized specifically to turn one converged
+large-refactor RFC into a reviewed merge, a durable umbrella, and a Phase-1
+self-advancing launch. When (and only when) all three fields are present, do not
+ask for approval here; continue into Phase 4. A natural-language request to
+"keep going", an inherited delivery default, or a missing/unreadable state file
+does not activate the exception. All ordinary RFC work stops here unchanged.
+
+## Phase 4 — Authorized Architecture-Refactor Continuation Tail
+
+This continuation tail runs only when `rfcDeliveryAuthorized: true` is present
+in the caller contract.
+
+This tail is narrow and ordered. The full operational contract lives in
+`plugin/playbooks/architecture-refactor-rfc.md`; follow it rather than inventing
+a parallel flow.
+
+1. **Freeze and publish the converged RFC.** Record its path and exact head in
+   the durable state, create or resume the one marker-bound RFC PR, and run the
+   repository's pre-push/pre-PR gates.
+2. **Obtain independent exact-head review.** Run `independent-merge-review` in a
+   fresh context. Require a latest `pass` comment whose `review-head-sha`
+   equals the current RFC PR head. A missing, BLOCK, unbound, or stale verdict
+   fails closed. A correction changes the head and therefore requires a new
+   verdict.
+3. **Merge with an exact-head guard.** In `kookr-ai/kookr`, use `pnpm merge` so
+   the independent verdict is enforced by the repository wrapper. Elsewhere,
+   resolve the repository's allowed merge method and use the pull-request merge
+   REST endpoint with the reviewed head as its expected `sha`. Never merge
+   without an atomic expected-head guard. Persist the confirmed merge commit
+   only after the PR reports `MERGED` with a non-empty merge SHA.
+4. **Prove reachability from fresh main.** Run `git fetch origin main`, then
+   `git merge-base --is-ancestor "$RFC_MERGE_SHA" origin/main`, and verify the
+   RFC exists in a temporary checkout of that fetched base. Do not create or
+   modify an umbrella if any proof is missing.
+5. **Create or resume one durable umbrella.** Match by the stable finding
+   marker, persist its URL/number, and write the merged RFC reference plus one
+   valid sequential `kookr-phase-ledger`. P1 has no dependency; every later
+   phase depends only on its adjacent predecessor. Round-trip validate the
+   ledger before launch.
+6. **Launch Phase 1 once.** Use a prompt file and the bundled wrapper:
+   `kookr spawn --prompt-file <path> --playbook
+   architecture-refactor-phase.md --playbook-scope plugin --idempotency-key
+   "chain:<lowercase-owner/name>:<umbrella>:phase:P1" --unattended --json`.
+   The wrapper's parsed metadata authorizes self-advancing delivery. Use the same
+   repository-qualified key as Kookr's background umbrella-chain monitor so a
+   retry or crash recovery resolves to the original task. On timeout, look up
+   that key; never mint another. Persist the confirmed task id and append a
+   `kookr-phase-result` comment. A missing task id fails closed and must not be
+   recorded as a successful launch.
+
+The durable state carries the idempotent references `rfcPrUrl`, `rfcHeadSha`,
+`rfcMergeSha`, `umbrellaIssueUrl`, `umbrellaIssueNumber`, and `phase1TaskId`.
+Revalidate a reference before reusing it. Stop with a discoverable blocker when
+review, merge, reachability, ledger, or launch evidence is missing or stale.
+Never launch P2 from this tail; the Phase-1 self-advancing task and durable
+backstop own subsequent progression.
+
 ## Anti-Patterns
 
 - **Don't rubber-stamp critic feedback.** Actually evaluate each finding — some will be wrong or inapplicable. Document why you rejected items.
-- **Don't implement before approval.** The entire point of this workflow is human review before action.
+- **Don't implement before approval outside the authorized architecture-refactor path.** Ordinary RFC work still stops for explicit approval. The `architecture-refactor-rfc.md` exception may continue only when all three activation fields validate and every Phase 4 fail-closed gate passes.
 - **Don't skip the worktree.** RFCs are written artifacts — they need a branch even if they're "just docs".
 - **Don't invent a new RFC format.** Match existing RFCs in the project.
 - **Don't run more than 5 critics without a recorded justification.** The Panel Selection Gate makes this a checked cap, not a suggestion: 3–5 per round, hard max 5, and `N > 5` requires a logged override line in "Critic feedback incorporated". Pick the most relevant lenses — more critics != better, it's diminishing returns and multiplied cost past 4–5. (The cap limits breadth; it never blocks a critic from re-verifying a suspicious claim, and never counts the mandatory empirical-check `design-experimenter`.)

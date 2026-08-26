@@ -96,14 +96,25 @@ function messageOf(error: unknown): string {
 /**
  * The deterministic idempotency key for an `(issue, phase)` spawn claim.
  *
- * This is the single source of truth for the `chain:<issue>:phase:<id>` contract
- * shared between the advancer's claim store and the task launch. It is exported
- * so other code that creates phase-spawn tasks (part of the #2711 rollout)
- * derives the same key rather than re-encoding the format — two encodings that
- * drift would let a duplicate sweep or retry POST a second phase task.
+ * The repository-qualified `chain:<repo>:<issue>:phase:<id>` form is the single
+ * source of truth shared between the advancer's claim store and the task launch.
+ * It is exported so other code that creates phase-spawn tasks (part of the #2711
+ * rollout) derives the same key rather than re-encoding the format — two
+ * encodings that drift would let a duplicate sweep or retry POST a second phase
+ * task. `legacyPhaseClaimKey` preserves the earlier unqualified form so chains
+ * claimed before the upgrade are still honored.
  */
-export function phaseClaimKey(issueNumber: number, phaseId: string): string {
+export function phaseClaimKey(repo: string, issueNumber: number, phaseId: string): string {
+  const normalizedRepo = repo.trim().toLowerCase();
+  return `chain:${normalizedRepo}:${issueNumber}:phase:${phaseId}`;
+}
+
+export function legacyPhaseClaimKey(issueNumber: number, phaseId: string): string {
   return `chain:${issueNumber}:phase:${phaseId}`;
+}
+
+function reviewClaimKey(phaseKey: string, attempt: number): string {
+  return `${phaseKey}:review:${attempt}`;
 }
 
 function reviewAuditBlocker(
@@ -395,8 +406,15 @@ export class UmbrellaChainAdvancer {
       delete ledger.blockedSince;
       changed = true;
     }
-    const key = phaseClaimKey(ledger.issueNumber, phase.id);
-    const existingClaim = await this.claimStore.get(key);
+    const preferredKey = phaseClaimKey(this.deps.repo, ledger.issueNumber, phase.id);
+    const legacyKey = legacyPhaseClaimKey(ledger.issueNumber, phase.id);
+    const preferredClaim = await this.claimStore.get(preferredKey);
+    const legacyClaim = await this.claimStore.get(legacyKey);
+    const namespaceConflict = preferredClaim !== undefined && legacyClaim !== undefined;
+    // Continue through the legacy key when upgrading an in-flight chain. Its
+    // claim() call remains the durable CAS and safely reclaims it when stale.
+    const key = legacyClaim && !preferredClaim ? legacyKey : preferredKey;
+    const existingClaim = preferredClaim ?? legacyClaim;
     const existingInFlight = existingClaim !== undefined;
     const predecessor = ledger.phases[ledger.phases.indexOf(phase) - 1];
     const withinGrace = predecessor?.mergedAt !== undefined
@@ -414,26 +432,38 @@ export class UmbrellaChainAdvancer {
     // Do not gate on an existing claim here: claim() is the durable CAS and
     // owns stale-claim reclamation. Calling it is what lets a crashed owner's
     // expired claim be reclaimed without ever allowing two live spawns.
-    const safeToAdvance = !withinGrace && predecessorTerminal && !ownerActive && !claimOwnerActive;
+    const safeToAdvance = !namespaceConflict
+      && !withinGrace
+      && predecessorTerminal
+      && !ownerActive
+      && !claimOwnerActive;
 
     if (!safeToAdvance || this.mode !== 'spawn' || !this.deps.launch || isSelfAdvancingDisabled()) {
-      const reason = existingInFlight
-        ? 'in-flight-claim'
-        : withinGrace
-          ? 'grace-window'
-          : !predecessorTerminal
-            ? 'predecessor-owner-active'
-            : ownerActive
-              ? 'owner-active'
-              : claimOwnerActive
-                ? 'claim-owner-active'
-              : this.mode === 'observe'
-              ? 'observe-only'
-                : isSelfAdvancingDisabled()
-                  ? 'self-advancing-disabled'
-                  : 'spawning-disabled';
+      if (namespaceConflict
+        && (ledger.blockedReason !== 'stuck-claim' || ledger.blockedSince === undefined)) {
+        ledger.blockedReason = 'stuck-claim';
+        ledger.blockedSince ??= this.now().toISOString();
+        changed = true;
+      }
+      let reason: string;
+      if (namespaceConflict) reason = 'claim-namespace-conflict';
+      else if (existingInFlight) reason = 'in-flight-claim';
+      else if (withinGrace) reason = 'grace-window';
+      else if (!predecessorTerminal) reason = 'predecessor-owner-active';
+      else if (ownerActive) reason = 'owner-active';
+      else if (claimOwnerActive) reason = 'claim-owner-active';
+      else if (this.mode === 'observe') reason = 'observe-only';
+      else if (isSelfAdvancingDisabled()) reason = 'self-advancing-disabled';
+      else reason = 'spawning-disabled';
       await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'eligible', phase.id, existingInFlight, reason, predecessorPhases.length > 0 ? 'pass' : 'not-required');
+      this.recordHealth(
+        ledger,
+        namespaceConflict ? 'blocked' : 'eligible',
+        phase.id,
+        existingInFlight,
+        reason,
+        predecessorPhases.length > 0 ? 'pass' : 'not-required',
+      );
       this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: existingInFlight, claim: existingInFlight ? 'held' : 'not-attempted', decision: 'skip', reason }, issue.number);
       return;
     }
@@ -540,7 +570,28 @@ export class UmbrellaChainAdvancer {
       && !(await this.deps.isReviewTaskIndependent(phase.taskId, phase.reviewerTaskId))) return false;
 
     const attempt = (phase.reviewAttempts ?? 1) + 1;
-    const key = `${phaseClaimKey(ledger.issueNumber, phase.id)}:review:${attempt}`;
+    const preferredKey = reviewClaimKey(
+      phaseClaimKey(this.deps.repo, ledger.issueNumber, phase.id),
+      attempt,
+    );
+    const legacyKey = reviewClaimKey(
+      legacyPhaseClaimKey(ledger.issueNumber, phase.id),
+      attempt,
+    );
+    const preferredClaim = await this.claimStore.get(preferredKey);
+    const legacyClaim = await this.claimStore.get(legacyKey);
+    if (preferredClaim && legacyClaim) {
+      this.logger.warn?.(
+        `[umbrella-chain-advancer] both current and legacy review claims exist for ${phase.id} attempt ${attempt}`,
+      );
+      return false;
+    }
+    const existingClaim = preferredClaim ?? legacyClaim;
+    if (existingClaim?.taskId
+      && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(existingClaim.taskId)))) {
+      return false;
+    }
+    const key = legacyClaim ? legacyKey : preferredKey;
     const claim = await this.claimStore.claim(key);
     if (claim.kind !== 'claimed') return false;
     let launchedTaskId: string | undefined;

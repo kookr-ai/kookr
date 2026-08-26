@@ -6,6 +6,7 @@ import {
 import {
   UmbrellaChainAdvancer,
   phaseClaimKey,
+  legacyPhaseClaimKey,
   type UmbrellaChainAdvancerLogger,
 } from './umbrella-chain-advancer.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
@@ -43,6 +44,8 @@ function makeHarness(ledger: PhaseLedger, options: {
   concurrentRefetchBody?: string;
   /** When set, `getIssue` returns null from its second call onward (persist-time refetch fails). */
   refetchReturnsNull?: boolean;
+  repo?: string;
+  reclaimableClaims?: Set<string>;
 } = {}) {
   const events: string[] = [];
   const calls: string[] = [];
@@ -97,14 +100,16 @@ function makeHarness(ledger: PhaseLedger, options: {
   };
   const advancer = new UmbrellaChainAdvancer({
     kookrDir: '/tmp/kookr-chain-test',
-    repo: 'kookr-ai/kookr',
+    repo: options.repo ?? 'kookr-ai/kookr',
     repoPath: '/tmp/kookr-repo',
     remote,
     mode: options.mode ?? 'observe',
     claimStore: {
       async claim(key) {
         const existing = claims.get(key);
-        if (existing) return { kind: 'busy', claim: existing };
+        if (existing && !options.reclaimableClaims?.has(key)) {
+          return { kind: 'busy', claim: existing };
+        }
         const claim = { key, ownerToken: `owner:${key}`, claimedAt: '2026-08-23T10:00:00.000Z' };
         claims.set(key, claim);
         return { kind: 'claimed', claim };
@@ -150,7 +155,7 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.calls.indexOf('fetch:/tmp/kookr-repo:main')).toBeLessThan(
       harness.calls.findIndex((call) => call.startsWith('reach:')),
     );
-    expect(harness.calls).not.toContain('launch:chain:2711:phase:P2');
+    expect(harness.calls).not.toContain('launch:chain:kookr-ai/kookr:2711:phase:P2');
     expect(harness.issue.body).toContain('"blockedReason": "dependency-unmerged"');
     expect(harness.events.some((event) => event.includes('"decision":"skip"') && event.includes('dependency-unmerged'))).toBe(true);
   });
@@ -158,11 +163,69 @@ describe('UmbrellaChainAdvancer', () => {
   test('atomically claims before POST and sends the deterministic idempotency key', async () => {
     const harness = makeHarness(makeLedger(), { mode: 'spawn' });
     await harness.advancer.sweep();
-    expect(harness.calls).toContain('launch:chain:2711:phase:P1');
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P1');
     expect(harness.launchSawClaim).toBe(true);
-    expect(harness.claims.get('chain:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
+    expect(harness.claims.get('chain:kookr-ai/kookr:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
     expect(harness.issue.body).toContain('"status": "in-flight"');
     expect(harness.issue.body).toContain('"taskId": "task-next"');
+  });
+
+  test('repository-qualifies phase keys so equal issue numbers cannot collide', async () => {
+    const first = makeHarness(makeLedger(), { mode: 'spawn' });
+    const secondRepo = 'Example/Other';
+    const second = makeHarness(makeLedger({
+      chainId: `chain:${secondRepo}:2711`,
+      repo: secondRepo,
+    }), { mode: 'spawn', repo: secondRepo });
+
+    await first.advancer.sweep();
+    await second.advancer.sweep();
+
+    expect(first.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P1');
+    expect(second.calls).toContain('launch:chain:example/other:2711:phase:P1');
+  });
+
+  test('reclaims through a legacy phase key instead of creating a new-namespace claim', async () => {
+    const legacyKey = 'chain:2711:phase:P1';
+    const harness = makeHarness(makeLedger(), {
+      mode: 'spawn',
+      terminalTasks: new Set(['legacy-task']),
+      reclaimableClaims: new Set([legacyKey]),
+    });
+    harness.claims.set(legacyKey, {
+      key: legacyKey,
+      ownerToken: 'legacy-owner',
+      claimedAt: '2026-08-23T10:00:00.000Z',
+      taskId: 'legacy-task',
+    });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls).toContain(`launch:${legacyKey}`);
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'task-next' });
+    expect(harness.claims.has('chain:kookr-ai/kookr:2711:phase:P1')).toBe(false);
+  });
+
+  test('fails closed when current and legacy phase claims both exist', async () => {
+    const harness = makeHarness(makeLedger(), { mode: 'spawn' });
+    for (const key of ['chain:2711:phase:P1', 'chain:kookr-ai/kookr:2711:phase:P1']) {
+      harness.claims.set(key, {
+        key,
+        ownerToken: `owner:${key}`,
+        claimedAt: '2026-08-23T10:00:00.000Z',
+      });
+    }
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.events.some((event) => event.includes('claim-namespace-conflict'))).toBe(true);
+    expect(harness.issue.body).toContain('"blockedReason": "stuck-claim"');
+    expect(harness.issue.body).toContain('"blockedSince"');
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
+      reason: 'claim-namespace-conflict',
+    });
   });
 
   test('does not double-spawn a pre-existing claim', async () => {
@@ -172,7 +235,7 @@ describe('UmbrellaChainAdvancer', () => {
     ] });
     const harness = makeHarness(ledger, { mode: 'spawn', terminalTasks: new Set() });
     // A pre-existing claim represents the task that is still running.
-    harness.claims.set('chain:2711:phase:P1', { key: 'chain:2711:phase:P1', ownerToken: 'owner:chain:2711:phase:P1', claimedAt: '2026-08-23T10:00:00.000Z', taskId: 'task-live' });
+    harness.claims.set('chain:kookr-ai/kookr:2711:phase:P1', { key: 'chain:kookr-ai/kookr:2711:phase:P1', ownerToken: 'owner:chain:kookr-ai/kookr:2711:phase:P1', claimedAt: '2026-08-23T10:00:00.000Z', taskId: 'task-live' });
     await harness.advancer.sweep();
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
     expect(harness.events.some((event) => event.includes('in-flight-claim'))).toBe(true);
@@ -237,7 +300,7 @@ describe('UmbrellaChainAdvancer', () => {
       })} -->`,
     });
     await harness.advancer.sweep();
-    expect(harness.calls).toContain('launch:chain:2711:phase:P2');
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P2');
   });
 
   test('uses the remote merge time when a valid review arrives before the first sweep', async () => {
@@ -266,7 +329,7 @@ describe('UmbrellaChainAdvancer', () => {
     });
     await harness.advancer.sweep();
     expect(harness.issue.body).toContain('"mergedAt": "2026-08-23T09:00:00.000Z"');
-    expect(harness.calls).toContain('launch:chain:2711:phase:P2');
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P2');
   });
 
   test('does not advance on a review bound to a stale PR head', async () => {
@@ -290,10 +353,62 @@ describe('UmbrellaChainAdvancer', () => {
       ],
     }), { mode: 'spawn', reachable: new Set([10]) });
     await harness.advancer.sweep();
-    expect(harness.calls).toContain('launch:chain:2711:phase:P1:review:2');
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P1:review:2');
     expect(harness.issue.body).toContain('"status": "in-flight"');
     expect(harness.issue.body).toContain('"taskId": "task-next"');
     expect(harness.issue.body).not.toContain('"reviewVerdict": "block"');
+  });
+
+  test('reclaims a legacy review-correction claim without creating a new-namespace claim', async () => {
+    const legacyKey = 'chain:2711:phase:P1:review:2';
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'merged', taskId: 'owner-1', ownerTerminal: true, mergedAt: '2026-08-22T00:00:00.000Z', reviewVerdict: 'block', reviewedAt: '2026-08-23T09:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'test-head' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), {
+      mode: 'spawn',
+      reachable: new Set([10]),
+      terminalTasks: new Set(['legacy-review-task']),
+      reclaimableClaims: new Set([legacyKey]),
+    });
+    harness.claims.set(legacyKey, {
+      key: legacyKey,
+      ownerToken: 'legacy-review-owner',
+      claimedAt: '2026-08-23T10:00:00.000Z',
+      taskId: 'legacy-review-task',
+    });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls).toContain(`launch:${legacyKey}`);
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'task-next' });
+    expect(harness.claims.has('chain:kookr-ai/kookr:2711:phase:P1:review:2')).toBe(false);
+  });
+
+  test('fails closed when current and legacy review claims both exist', async () => {
+    const harness = makeHarness(makeLedger({
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'merged', taskId: 'owner-1', ownerTerminal: true, mergedAt: '2026-08-22T00:00:00.000Z', reviewVerdict: 'block', reviewedAt: '2026-08-23T09:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'test-head' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), { mode: 'spawn', reachable: new Set([10]) });
+    for (const key of [
+      'chain:2711:phase:P1:review:2',
+      'chain:kookr-ai/kookr:2711:phase:P1:review:2',
+    ]) {
+      harness.claims.set(key, {
+        key,
+        ownerToken: `owner:${key}`,
+        claimedAt: '2026-08-23T10:00:00.000Z',
+      });
+    }
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.events.some((event) => event.includes('both current and legacy review claims'))).toBe(true);
+    expect(harness.issue.body).toContain('"blockedReason": "review-block"');
   });
 
   test('holds the chain when the remote cannot provide a merge time', async () => {
@@ -326,9 +441,9 @@ describe('UmbrellaChainAdvancer', () => {
 
   test('does not reclaim a stale finalized claim while its task is still active', async () => {
     const harness = makeHarness(makeLedger(), { mode: 'spawn', terminalTasks: new Set() });
-    harness.claims.set('chain:2711:phase:P1', {
-      key: 'chain:2711:phase:P1',
-      ownerToken: 'owner:chain:2711:phase:P1',
+    harness.claims.set('chain:kookr-ai/kookr:2711:phase:P1', {
+      key: 'chain:kookr-ai/kookr:2711:phase:P1',
+      ownerToken: 'owner:chain:kookr-ai/kookr:2711:phase:P1',
       claimedAt: '2026-08-22T00:00:00.000Z',
       taskId: 'task-live',
     });
@@ -374,8 +489,8 @@ describe('UmbrellaChainAdvancer', () => {
   test('retains the owner claim when finalization fails after launch', async () => {
     const harness = makeHarness(makeLedger(), { mode: 'spawn', finalizeFails: true });
     await harness.advancer.sweep();
-    expect(harness.calls).toContain('launch:chain:2711:phase:P1');
-    expect(harness.claims.get('chain:2711:phase:P1')).toMatchObject({ ownerToken: 'owner:chain:2711:phase:P1' });
+    expect(harness.calls).toContain('launch:chain:kookr-ai/kookr:2711:phase:P1');
+    expect(harness.claims.get('chain:kookr-ai/kookr:2711:phase:P1')).toMatchObject({ ownerToken: 'owner:chain:kookr-ai/kookr:2711:phase:P1' });
     expect(harness.issue.body).toContain('"taskId": "task-next"');
     expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
       status: 'blocked',
@@ -524,11 +639,13 @@ describe('UmbrellaChainAdvancer', () => {
     await harness.advancer.sweep();
     await harness.advancer.sweep();
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(1);
-    expect(harness.claims.get('chain:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
+    expect(harness.claims.get('chain:kookr-ai/kookr:2711:phase:P1')).toMatchObject({ taskId: 'task-next' });
   });
 
-  test('phaseClaimKey encodes the deterministic chain:<issue>:phase:<id> contract', () => {
-    expect(phaseClaimKey(2711, 'P1')).toBe('chain:2711:phase:P1');
-    expect(phaseClaimKey(42, 'Phase 3')).toBe('chain:42:phase:Phase 3');
+  test('phaseClaimKey encodes the repo-qualified contract and legacyPhaseClaimKey the unqualified one', () => {
+    expect(phaseClaimKey('kookr-ai/kookr', 2711, 'P1')).toBe('chain:kookr-ai/kookr:2711:phase:P1');
+    expect(phaseClaimKey('Example/Other', 42, 'Phase 3')).toBe('chain:example/other:42:phase:Phase 3');
+    expect(legacyPhaseClaimKey(2711, 'P1')).toBe('chain:2711:phase:P1');
+    expect(legacyPhaseClaimKey(42, 'Phase 3')).toBe('chain:42:phase:Phase 3');
   });
 });
