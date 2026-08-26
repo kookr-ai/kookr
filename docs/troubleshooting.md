@@ -214,7 +214,9 @@ appears immediately when a failed direct, promoted, or crash-recovery probe
 created a session but physical stop rejected: Kookr retains the exact session
 marker and ownership instead of re-parking or starting a replacement. Resolve
 the backend cleanup error, or let reconciliation/restart prove that exact
-session absent; the gate then permits one new bounded probe.
+session absent. The gate then permits one new bounded probe only when no
+confirmed degradation remains; otherwise fresh clean evidence must first move
+the circuit back to half-open.
 
 A hard timeout can win before the adapter reports creation. In that state the
 task remains `probing` with the preallocated session id and may have no session
@@ -223,7 +225,8 @@ settles the marker. A terminal task clears the marker immediately when the
 owning failure path proves the exact session stopped and settles the circuit;
 it retains the fence only while cleanup, creation, or circuit ownership remains
 unresolved. Do not infer liveness from a retained marker or delete the record;
-explicit/bulk cleanup waits for reconciliation to clear unresolved ownership.
+explicit deletion returns `409 task_cleanup_in_progress`, and bulk cleanup
+skips the record. Retry after reconciliation clears unresolved ownership.
 
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the
