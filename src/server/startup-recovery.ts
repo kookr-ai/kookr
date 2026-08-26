@@ -22,6 +22,7 @@ import type { HookIngestion } from './hook-ingestion.js';
 import type { ActivityLedger } from '../core/activity-ledger.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
+import { isTerminalStatus } from '../core/task-status.js';
 
 interface StartupRecoveryDeps {
   taskStore: TaskStore;
@@ -105,6 +106,7 @@ export async function runStartupRecoveryPhase({
     const latestConfirmedAtByDependency = new Map<string, number>();
     const persistedTasks = taskStore.listTasks();
     const interruptedProbes: typeof persistedTasks = [];
+    const interruptedCountByDependency = new Map<string, number>();
 
     // Pass 1 is deliberately synchronous: hydrate every durable dependency
     // state before the first terminal-cleanup await. The HTTP listener may
@@ -131,11 +133,13 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           continue;
         }
-        lifecycleDeps.launchDependencyAdmission.restoreInterruptedProbe(
-          task.launchAdmission.dependencies,
-          task.id,
-        );
         interruptedProbes.push(task);
+        for (const dependency of task.launchAdmission.dependencies) {
+          interruptedCountByDependency.set(
+            dependency.dependency,
+            (interruptedCountByDependency.get(dependency.dependency) ?? 0) + 1,
+          );
+        }
         continue;
       }
       if (task.status === 'pending' && task.launchAdmission?.status === 'parked') {
@@ -148,6 +152,17 @@ export async function runStartupRecoveryPhase({
           );
         }
       }
+    }
+
+    // Interrupted probes have stronger ownership than parked waiters for the
+    // same dependency. Install their busy sentinels only after every parked
+    // marker has been hydrated so task ordering cannot clear a sentinel.
+    for (const task of interruptedProbes) {
+      if (task.launchAdmission?.status !== 'probing') continue;
+      lifecycleDeps.launchDependencyAdmission.restoreInterruptedProbe(
+        task.launchAdmission.dependencies,
+        task.id,
+      );
     }
 
     // Pass 2 may await terminal cleanup because every dependency above is now
@@ -168,23 +183,35 @@ export async function runStartupRecoveryPhase({
           // killSession is idempotent when creation never reached the backend.
           await terminalBackend.killSession(expectedProbeSessionId);
         } catch (err) {
-          lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
           throw new Error(
             `Could not reap interrupted dependency probe session ${expectedProbeSessionId} `
             + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
-      // The expected worker is now absent. Convert startup's busy sentinel
-      // into ordinary degraded state before the task becomes replayable.
-      lifecycleDeps.launchDependencyAdmission.restoreParked(interruptedDependencies);
+      // Convert a dependency from busy to degraded only after every persisted
+      // interrupted probe that required it has been reaped. This preserves the
+      // sentinel when multiple old workers share one dependency.
+      const fullyReapedDependencies = interruptedDependencies.filter((dependency) => {
+        const remaining = (interruptedCountByDependency.get(dependency.dependency) ?? 1) - 1;
+        interruptedCountByDependency.set(dependency.dependency, remaining);
+        return remaining === 0;
+      });
+      if (fullyReapedDependencies.length > 0) {
+        lifecycleDeps.launchDependencyAdmission.restoreParked(fullyReapedDependencies);
+      }
+      const currentTask = taskStore.getTask(task.id);
+      if (!currentTask || isTerminalStatus(currentTask.status)) {
+        if (currentTask) taskStore.setLaunchAdmission(task.id, undefined);
+        continue;
+      }
       const parked = {
         status: 'parked' as const,
         reason: 'dependency_degraded' as const,
         dependencies: interruptedDependencies,
         parkedAt: new Date().toISOString(),
       };
-      if (task.status === 'inProgress') taskStore.reopenTask(task.id);
+      if (currentTask.status === 'inProgress') taskStore.reopenTask(task.id);
       if (taskStore.getTask(task.id)?.status === 'open') taskStore.pendTask(task.id);
       taskStore.setLaunchAdmission(task.id, parked);
       recordLatestConfirmedEvidence(

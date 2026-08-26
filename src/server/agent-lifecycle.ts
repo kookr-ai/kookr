@@ -1077,6 +1077,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     let adapterLaunchSettled = false;
     let adapterLaunchStarted = false;
     let launchAdapter: AgentAdapter | undefined;
+    let admissionMarkerWrittenByOwner: Task['launchAdmission'];
     const launchReapGuard: LaunchReapGuard = { reaped: false };
     const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
     try {
@@ -1122,9 +1123,11 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
       };
       if (dependencyAdmission?.admit && dependencyAdmission.probe) {
+        const probeAdmission = taskAdmissionForProbe(dependencyAdmission, nowISO(), probeSessionId);
+        admissionMarkerWrittenByOwner = probeAdmission;
         taskStore.setLaunchAdmission(
           pending.id,
-          taskAdmissionForProbe(dependencyAdmission, nowISO(), probeSessionId),
+          probeAdmission,
         );
         // Persist the half-open ownership marker before the adapter can create
         // a worker. A failed barrier follows the normal failed-probe path and
@@ -1158,6 +1161,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           if (refreshed?.admit) {
             lifecycleDeps.launchDependencyAdmission?.releaseProbe(refreshed.probe);
           }
+          admissionMarkerWrittenByOwner = refreshedAdmission;
           taskStore.setLaunchAdmission(pending.id, refreshedAdmission);
           await lifecycleDeps.flushTasks();
           blockedByDependency.add(pending.id);
@@ -1228,7 +1232,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchStarted) {
         lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
         const current = taskStore.getTask(pending.id);
-        if (current && !isTerminalStatus(current.status)) {
+        if (
+          current
+          && !isTerminalStatus(current.status)
+          && (
+            taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
+            || isSameLaunchAdmissionMarker(current.launchAdmission, admissionMarkerWrittenByOwner)
+          )
+        ) {
           taskStore.setLaunchAdmission(
             pending.id,
             priorAdmission,
@@ -1320,6 +1331,21 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   }
 
   return promoted;
+}
+
+function isSameLaunchAdmissionMarker(
+  current: Task['launchAdmission'],
+  expected: Task['launchAdmission'],
+): boolean {
+  if (!current || !expected) return current === expected;
+  if (current.status !== expected.status) return false;
+  if (current.status === 'probing' && expected.status === 'probing') {
+    return current.sessionId === expected.sessionId && current.startedAt === expected.startedAt;
+  }
+  if (current.status === 'parked' && expected.status === 'parked') {
+    return current.reason === expected.reason && current.parkedAt === expected.parkedAt;
+  }
+  return false;
 }
 
 async function notifyPendingTaskPromoted(

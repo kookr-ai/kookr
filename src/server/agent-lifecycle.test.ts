@@ -1982,6 +1982,209 @@ describe('promotePendingTasks (integration)', () => {
     }
   });
 
+  test('a rejected stale first barrier cannot roll back a replacement marker', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'stale first barrier rejects after takeover',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'stale first barrier rejects after takeover',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 4_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectStale!: (err: Error) => void;
+    let releaseReplacement!: () => void;
+    let markStaleStarted!: () => void;
+    let markReplacementStarted!: () => void;
+    const staleStarted = new Promise<void>((resolve) => { markStaleStarted = resolve; });
+    const replacementStarted = new Promise<void>((resolve) => { markReplacementStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockImplementationOnce(async () => {
+        markStaleStarted();
+        await new Promise<void>((_resolve, reject) => { rejectStale = reject; });
+      })
+      .mockImplementationOnce(async () => {
+        markReplacementStarted();
+        await new Promise<void>((resolve) => { releaseReplacement = resolve; });
+      });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      },
+    };
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await staleStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementPromotion = promotePendingTasks(deps);
+      await replacementStarted;
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
+
+      rejectStale(new Error('stale first barrier failed'));
+      await expect(stalePromotion).rejects.toThrow('stale first barrier failed');
+      expect(taskStore.getTask(task.id)?.launchAdmission).toEqual(replacementMarker);
+      expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(true);
+
+      releaseReplacement();
+      expect(await replacementPromotion).toBe(0);
+      expect(adapter.launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('a rejected stale denial cannot roll back a replacement probe marker', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn()
+      .mockResolvedValueOnce([{ dependency: 'kb', category: 'provider_api' }])
+      .mockResolvedValue([]);
+    const task = taskStore.createTask({
+      prompt: 'stale denial rejects after takeover',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'stale denial rejects after takeover',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 5_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectStale!: (err: Error) => void;
+    let releaseReplacement!: () => void;
+    let markStaleStarted!: () => void;
+    let markReplacementStarted!: () => void;
+    const staleStarted = new Promise<void>((resolve) => { markStaleStarted = resolve; });
+    const replacementStarted = new Promise<void>((resolve) => { markReplacementStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockImplementationOnce(async () => {
+        markStaleStarted();
+        await new Promise<void>((_resolve, reject) => { rejectStale = reject; });
+      })
+      .mockImplementationOnce(async () => {
+        markReplacementStarted();
+        await new Promise<void>((resolve) => { releaseReplacement = resolve; });
+      })
+      .mockResolvedValue(undefined);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner,
+        flushTasks,
+      },
+    };
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await staleStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementPromotion = promotePendingTasks(deps);
+      await replacementStarted;
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
+
+      rejectStale(new Error('stale denial barrier failed'));
+      await expect(stalePromotion).rejects.toThrow('stale denial barrier failed');
+      expect(taskStore.getTask(task.id)?.launchAdmission).toEqual(replacementMarker);
+      expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(true);
+
+      releaseReplacement();
+      expect(await replacementPromotion).toBe(1);
+      expect(adapter.launch).toHaveBeenCalledOnce();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('a rejected stale second barrier cannot roll back a replacement probe marker', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'stale second barrier rejects after takeover',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'stale second barrier rejects after takeover',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 6_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let rejectSecond!: (err: Error) => void;
+    let releaseReplacement!: () => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    let markReplacementStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const replacementStarted = new Promise<void>((resolve) => { markReplacementStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockImplementationOnce(async () => {
+        markFirstStarted();
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      })
+      .mockImplementationOnce(async () => {
+        markSecondStarted();
+        await new Promise<void>((_resolve, reject) => { rejectSecond = reject; });
+      })
+      .mockImplementationOnce(async () => {
+        markReplacementStarted();
+        await new Promise<void>((resolve) => { releaseReplacement = resolve; });
+      })
+      .mockResolvedValue(undefined);
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      },
+    };
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await firstStarted;
+      launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementPromotion = promotePendingTasks(deps);
+      await replacementStarted;
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
+
+      rejectSecond(new Error('stale second barrier failed'));
+      await expect(stalePromotion).rejects.toThrow('stale second barrier failed');
+      expect(taskStore.getTask(task.id)?.launchAdmission).toEqual(replacementMarker);
+      expect(taskStore.hasFreshLaunchReservation(task.id)).toBe(true);
+
+      releaseReplacement();
+      expect(await replacementPromotion).toBe(1);
+      expect(adapter.launch).toHaveBeenCalledOnce();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test('releases a recovery probe when the launch reservation is lost', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{

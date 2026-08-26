@@ -229,6 +229,17 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
         sessionId: 'kookr-awaiting-reap',
       },
     });
+    const sameDependencyWaiter = deps.taskStore.createTask({
+      prompt: 'same dependency waiter parked later in task order',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(sameDependencyWaiter.id);
     const laterParked = deps.taskStore.createTask({
       prompt: 'different dependency parked later in task order',
       cwd: '/repo',
@@ -269,6 +280,92 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     await recovery;
   });
 
+  test('keeps a shared dependency busy until every interrupted probe is reaped', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseSecondKill!: () => void;
+    let markSecondKillStarted!: () => void;
+    const secondKillStarted = new Promise<void>((resolve) => { markSecondKillStarted = resolve; });
+    const killSession = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markSecondKillStarted();
+        await new Promise<void>((resolve) => { releaseSecondKill = resolve; });
+      });
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    for (const [name, sessionId] of [['first', 'kookr-first-old-probe'], ['second', 'kookr-second-old-probe']]) {
+      deps.taskStore.createTask({
+        prompt: `${name} interrupted probe`,
+        cwd: '/repo',
+        launchAdmission: {
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          startedAt: '2026-01-01T00:00:00.000Z',
+          sessionId,
+        },
+      });
+    }
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, launchDependencyAdmission: admission };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await secondKillStarted;
+
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    releaseSecondKill();
+    await recovery;
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('terminal task state wins when cancellation happens during startup probe cleanup', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseKill!: () => void;
+    let markKillStarted!: () => void;
+    const killStarted = new Promise<void>((resolve) => { markKillStarted = resolve; });
+    deps.terminalBackend = {
+      killSession: vi.fn(async () => {
+        markKillStarted();
+        await new Promise<void>((resolve) => { releaseKill = resolve; });
+      }),
+    } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'cancel while startup reaps probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-cancel-during-reap',
+      },
+    });
+    deps.taskStore.startTask(task.id);
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, launchDependencyAdmission: admission };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await killStarted;
+    deps.taskStore.cancelTask(task.id);
+    releaseKill();
+    await recovery;
+
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+  });
+
   test('fails startup closed when an interrupted probe terminal cannot be reaped', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();
@@ -300,7 +397,11 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
       status: 'open',
       launchAdmission: { status: 'probing', sessionId: 'kookr-unreapable-probe' },
     });
-    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
   });
 
   test('forwards the production flush barrier into crash recovery', async () => {
