@@ -121,8 +121,9 @@ See [Protecting A Worktree From Automatic Cleanup](../user-guide.md#protecting-a
 ## Snapshot Semantics
 
 `tasks.json` is written atomically: Kookr writes a temporary file, fsyncs it,
-and renames it into place. Snapshot files are copied only after a successful
-task save.
+renames it into place, and then fsyncs the parent directory so the renamed
+entry itself survives a crash (platforms that don't support directory fsync
+are tolerated). Snapshot files are copied only after a successful task save.
 
 Daily snapshots:
 

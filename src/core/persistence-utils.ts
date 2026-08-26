@@ -1,6 +1,63 @@
 import { access, open, readFile, rename, unlink } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+/**
+ * Error codes returned when the underlying platform or filesystem does not
+ * support fsync on a directory handle (or won't let us open the directory to
+ * fsync it). On such filesystems the directory-entry fsync is simply
+ * unavailable, so we treat these as non-fatal: the rename has already made the
+ * new file visible, and its directory-entry crash durability is best-effort.
+ *
+ * By contrast, any *other* error code is a genuine (supported) I/O failure and
+ * is propagated to the caller.
+ */
+const UNSUPPORTED_DIR_SYNC_CODES: ReadonlySet<string> = new Set([
+  'EINVAL', // some filesystems reject fsync on a directory fd
+  'EISDIR', // platform rejects the directory fd for fsync
+  'ENOTSUP',
+  'EOPNOTSUPP',
+  'ENOSYS', // fsync not implemented
+  'EPERM', // e.g. Windows, restricted mounts
+  'EACCES', // cannot open the directory for reading
+  // Deliberately NOT tolerated: EBADF (invalid fd) signals a programming bug
+  // such as a double close, not an unsupported-fsync platform; it must surface.
+]);
+
+function isUnsupportedDirSyncError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code != null && UNSUPPORTED_DIR_SYNC_CODES.has(code);
+}
+
+/**
+ * Fsync the directory entry so a preceding rename is durable across a crash.
+ * Follows the same temp-sync → rename → dir-sync ordering as the remote node
+ * client (`src/remote/node-client.ts`); unlike that sibling, it additionally
+ * tolerates platforms/filesystems where directory fsync is unsupported rather
+ * than propagating every error.
+ *
+ * Swallows errors that indicate directory fsync is unsupported on this
+ * platform/filesystem (see {@link UNSUPPORTED_DIR_SYNC_CODES}); rethrows any
+ * genuine I/O error so the caller can react to it.
+ */
+async function fsyncDirectory(dirPath: string): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(dirPath, 'r');
+  } catch (err) {
+    if (isUnsupportedDirSyncError(err)) return;
+    throw err;
+  }
+  try {
+    await handle.sync();
+  } catch (err) {
+    if (isUnsupportedDirSyncError(err)) return;
+    throw err;
+  } finally {
+    await handle.close();
+  }
+}
 
 export interface ReadJsonFileOptions {
   quarantineCorrupt?: boolean;
@@ -19,21 +76,42 @@ export interface AtomicWriteFileOptions {
 }
 
 /**
- * Atomically write `data` to `filePath` using write-to-temp + fsync + rename.
- * The fsync ensures data is durable on disk before the rename, preventing
- * data loss on power failure or kernel crash.
+ * Atomically write `data` to `filePath` using write-to-temp + fsync + rename +
+ * parent-directory fsync. The ordering matters for crash durability:
+ *
+ *   1. fsync the temp file — its contents are on disk before it is linked in.
+ *   2. rename the temp file over `filePath` — an atomic swap of the entry.
+ *   3. fsync the parent directory — the renamed entry itself is durable.
+ *
+ * Without step 3, a power loss after the rename can lose the renamed directory
+ * entry even though the file's contents were fsynced, leaving `filePath`
+ * missing or still pointing at the old inode.
  *
  * The temp file is created in the same directory as `filePath` with a random
  * suffix so concurrent writers don't collide. When `options.mode` is set, the
  * mode is passed to `open` and then forced with `fchmod` before rename so the
  * final path carries the requested bits even when umask would strip them.
+ *
+ * Error semantics of the directory fsync (step 3): filesystems/platforms that
+ * don't support fsync on a directory are tolerated silently — the write is
+ * considered successful. A *genuine* directory-fsync failure is ambiguous
+ * because the rename has already made the new file visible; it is surfaced as a
+ * rejection (wrapping the original error as `cause`) so callers learn the
+ * directory entry's durability isn't guaranteed, while the file at `filePath`
+ * is already present with the new contents.
+ *
+ * Platform caveat: `fsync` here is Node's `FileHandle.sync()`. On macOS this
+ * flushes to the drive but not necessarily to stable media (that needs
+ * `F_FULLFSYNC`, which Node does not expose), so durability is best-effort
+ * there — the same caveat already applies to the temp-file fsync in step 1.
  */
 export async function atomicWriteFile(
   filePath: string,
   data: string,
   options?: AtomicWriteFileOptions,
 ): Promise<void> {
-  const tempPath = join(dirname(filePath), `.tmp-${randomUUID()}`);
+  const dir = dirname(filePath);
+  const tempPath = join(dir, `.tmp-${randomUUID()}`);
   const mode = options?.mode;
   let renamed = false;
   try {
@@ -58,6 +136,16 @@ export async function atomicWriteFile(
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
     }
+  }
+  try {
+    await fsyncDirectory(dir);
+  } catch (err) {
+    throw new Error(
+      `atomicWriteFile: wrote and renamed ${filePath}, but failed to fsync its parent ` +
+        `directory ${dir}; the new file is already visible, but its directory entry may ` +
+        `not survive a crash`,
+      { cause: err },
+    );
   }
 }
 
