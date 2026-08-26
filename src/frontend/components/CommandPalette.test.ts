@@ -55,22 +55,26 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function render({
-  onSelectTask = vi.fn(),
-  onSelectFinding = vi.fn(),
-  onSelectProject = vi.fn(),
-  onClose = vi.fn(),
-}: {
+function render(opts: {
   onSelectTask?: ReturnType<typeof vi.fn>;
   onSelectFinding?: ReturnType<typeof vi.fn>;
   onSelectProject?: ReturnType<typeof vi.fn>;
+  onLaunchProject?: ReturnType<typeof vi.fn> | undefined;
   onClose?: ReturnType<typeof vi.fn>;
 } = {}): {
   onSelectTask: ReturnType<typeof vi.fn>;
   onSelectFinding: ReturnType<typeof vi.fn>;
   onSelectProject: ReturnType<typeof vi.fn>;
+  onLaunchProject: ReturnType<typeof vi.fn> | undefined;
   onClose: ReturnType<typeof vi.fn>;
 } {
+  const onSelectTask = opts.onSelectTask ?? vi.fn();
+  const onSelectFinding = opts.onSelectFinding ?? vi.fn();
+  const onSelectProject = opts.onSelectProject ?? vi.fn();
+  // Passing `onLaunchProject: undefined` explicitly omits the prop (hides the
+  // launch action); leaving the key out entirely wires a default mock.
+  const onLaunchProject = 'onLaunchProject' in opts ? opts.onLaunchProject : vi.fn();
+  const onClose = opts.onClose ?? vi.fn();
   act(() => {
     root.render(React.createElement(CommandPalette, {
       actions,
@@ -80,10 +84,11 @@ function render({
       onSelectTask,
       onSelectFinding,
       onSelectProject,
+      onLaunchProject,
       onClose,
     }));
   });
-  return { onSelectTask, onSelectFinding, onSelectProject, onClose };
+  return { onSelectTask, onSelectFinding, onSelectProject, onLaunchProject, onClose };
 }
 
 describe('CommandPalette', () => {
@@ -253,6 +258,57 @@ describe('CommandPalette', () => {
     const { onSelectProject } = render();
     const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
     act(() => setInputValue(input, 'kookr-ai'));
+    const projectRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-project"]')!;
+    act(() => projectRow.click());
+    expect(onSelectProject).toHaveBeenCalledWith('github.com/kookr-ai/kookr');
+  });
+
+  test('a matched project offers a distinct launch action alongside plain selection', () => {
+    render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'kookr-ai'));
+    const selectRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-project"]')!;
+    const launchRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-project-launch"]')!;
+    expect(selectRow).not.toBeNull();
+    expect(launchRow).not.toBeNull();
+    expect(launchRow.textContent).toContain('Launch task in kookr');
+    expect(launchRow.getAttribute('aria-label')).toBe('Launch task in kookr — opens the manual launch dialog');
+    // WCAG 2.5.3: visible primary text is a leading substring of the accessible name.
+    expect(launchRow.getAttribute('aria-label')).toContain('Launch task in kookr');
+    // The launch row is a separate selectable row immediately after the select row.
+    const rows = Array.from(container.querySelectorAll<HTMLButtonElement>('.cmd-row'));
+    expect(rows.indexOf(launchRow)).toBe(rows.indexOf(selectRow) + 1);
+  });
+
+  test('clicking the project launch row calls onLaunchProject and closes', () => {
+    const { onLaunchProject, onSelectProject, onClose } = render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'kookr-ai'));
+    const launchRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-project-launch"]')!;
+    act(() => launchRow.click());
+    expect(onLaunchProject).toHaveBeenCalledWith('github.com/kookr-ai/kookr');
+    expect(onSelectProject).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('the project launch row is reachable and activatable by keyboard', () => {
+    const { onLaunchProject } = render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'kookr-ai'));
+    // First selectable project row is the plain select; ArrowDown moves to the launch row.
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    const activeId = input.getAttribute('aria-activedescendant');
+    const activeRow = activeId ? document.getElementById(activeId) : null;
+    expect(activeRow?.getAttribute('data-testid')).toBe('command-palette-project-launch');
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onLaunchProject).toHaveBeenCalledWith('github.com/kookr-ai/kookr');
+  });
+
+  test('omitting onLaunchProject hides the launch action but keeps plain selection', () => {
+    const { onSelectProject } = render({ onLaunchProject: undefined });
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'kookr-ai'));
+    expect(container.querySelector('[data-testid="command-palette-project-launch"]')).toBeNull();
     const projectRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-project"]')!;
     act(() => projectRow.click());
     expect(onSelectProject).toHaveBeenCalledWith('github.com/kookr-ai/kookr');

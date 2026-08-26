@@ -22,6 +22,11 @@ interface CommandPaletteProps {
   onSelectTask: (agentId: string, taskId: string) => void;
   onSelectFinding: (agentId: string, taskId?: string | null) => void;
   onSelectProject: (projectId: string) => void;
+  /**
+   * Launch a manual task scoped to a project, reusing the project drawer's
+   * launch flow. When omitted, the palette hides the per-project launch action.
+   */
+  onLaunchProject?: (projectId: string) => void;
   onClose: () => void;
 }
 
@@ -29,7 +34,8 @@ type SelectableItem =
   | { kind: 'action'; action: CommandAction }
   | { kind: 'task'; task: CommandTaskItem }
   | { kind: 'finding'; finding: CommandFindingItem }
-  | { kind: 'project'; project: CommandProjectItem };
+  | { kind: 'project'; project: CommandProjectItem }
+  | { kind: 'projectLaunch'; project: CommandProjectItem };
 
 type RenderRow =
   | { kind: 'header'; key: string; label: string }
@@ -50,6 +56,7 @@ export function CommandPalette({
   onSelectTask,
   onSelectFinding,
   onSelectProject,
+  onLaunchProject,
   onClose,
 }: CommandPaletteProps): React.ReactElement {
   const [query, setQuery] = useState('');
@@ -107,14 +114,23 @@ export function CommandPalette({
       if (matchedProjects.length > 0) {
         rows.push({ kind: 'header', key: 'h-projects', label: 'Projects' });
         for (const project of matchedProjects) {
-          const index = selectable.length;
+          const selectIndex = selectable.length;
           selectable.push({ kind: 'project', project });
-          rows.push({ kind: 'item', key: `project-${project.projectId}`, index, item: { kind: 'project', project } });
+          rows.push({ kind: 'item', key: `project-${project.projectId}`, index: selectIndex, item: { kind: 'project', project } });
+          // A distinct, keyboard-navigable "launch" row sits under each project
+          // result so activating it launches work in that project instead of
+          // merely selecting it. Only offered when a launch handler is wired.
+          if (onLaunchProject) {
+            const launchIndex = selectable.length;
+            const launchItem: SelectableItem = { kind: 'projectLaunch', project };
+            selectable.push(launchItem);
+            rows.push({ kind: 'item', key: `project-launch-${project.projectId}`, index: launchIndex, item: launchItem });
+          }
         }
       }
     }
     return { rows, selectable };
-  }, [actions, findings, projects, tasks, query]);
+  }, [actions, findings, projects, tasks, query, onLaunchProject]);
 
   // Keep the selection in range as the result set shrinks/grows.
   useEffect(() => {
@@ -131,6 +147,8 @@ export function CommandPalette({
         onSelectTask(item.task.agentId, item.task.taskId);
       } else if (item.kind === 'finding') {
         onSelectFinding(item.finding.agentId, item.finding.taskId);
+      } else if (item.kind === 'projectLaunch') {
+        onLaunchProject?.(item.project.projectId);
       } else {
         onSelectProject(item.project.projectId);
       }
@@ -313,6 +331,32 @@ function CommandRow({ id, item, selected, onHover, onRun }: CommandRowProps): Re
           {finding.projectLabel && <span className="cmd-row-sub">{finding.projectLabel}</span>}
         </span>
         <span className="cmd-row-meta cmd-row-status">{finding.severity} · {finding.type}</span>
+      </button>
+    );
+  }
+  if (item.kind === 'projectLaunch') {
+    const { project } = item;
+    return (
+      <button
+        id={id}
+        type="button"
+        role="option"
+        tabIndex={-1}
+        aria-selected={selected}
+        // Keep the visible primary text ("Launch task in <label>") as a leading
+        // substring of the accessible name so speech-input activation matches
+        // (WCAG 2.5.3), while still naming the affordance for screen readers.
+        aria-label={`Launch task in ${project.label} — opens the manual launch dialog`}
+        className={`cmd-row${selected ? ' sel' : ''}`}
+        data-testid="command-palette-project-launch"
+        data-project-id={project.projectId}
+        onMouseMove={onHover}
+        onClick={onRun}
+      >
+        <span className="cmd-row-label">
+          Launch task in {project.label}
+          <span className="cmd-row-sub">Opens the manual launch dialog for this project</span>
+        </span>
       </button>
     );
   }
