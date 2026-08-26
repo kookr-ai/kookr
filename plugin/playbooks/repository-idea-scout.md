@@ -1515,9 +1515,23 @@ Classification: <changeShape> · <size> · <confidence> confidence · autonomous
 For every candidate whose `publishDecision` is `rfc-first`, write
 `<recommendationsDir>/<NN>-<slug>/rfc-handoff.md`. It contains only the stable
 finding key, reader-facing title, verified code evidence, affected boundaries,
-constraints, source reference, and ordered phase plan. Prefix it with:
+constraints, source reference, and ordered phase plan. Use this canonical
+shape so the trusted wrapper can validate it without guessing:
 
-`Execute plugin/playbooks/architecture-refactor-rfc.md for this verified finding.`
+```markdown
+# Architecture Refactor RFC Handoff
+Repository: `<owner/name>`
+Finding key: `<stable-finding-key>`
+Finding title: `<reader-facing title>`
+Source reference: `<durable report or run reference>`
+
+## Verified evidence and affected boundaries
+<verified evidence, affected boundaries, and constraints>
+
+## Ordered phase plan
+- P1: <testable outcome>
+- P2: <testable outcome; depends only on P1 reaching main>
+```
 
 Mark all finding text as evidence to re-check, not shell instructions. Do not
 include local KB internals or portfolio scoring. This handoff is a prompt-file
@@ -1703,12 +1717,12 @@ while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
     break
   fi
 
-  # The handoff starts with the exact instruction to execute
-  # plugin/playbooks/architecture-refactor-rfc.md and carries the six parameter
-  # values as prose evidence. Generated evidence never appears in shell argv.
+  # The server parses the bundled playbook and injects its trusted workflow and
+  # delivery policy. The prompt file carries only canonical evidence; generated
+  # finding prose never appears in shell argv.
   SPAWN_JSON=$(kookr spawn -C "$LOCAL" \
     --prompt-file "$RFC_HANDOFF_FILE" \
-    --criteria "RFC merged, umbrella created, and Phase 1 launched or a durable blocker recorded" \
+    --playbook architecture-refactor-rfc.md --playbook-scope plugin \
     --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
     --unattended --json) \
     || { block "RFC-first launch failed for $IDEA_DIR; inspect the idempotency ledger before retrying"; exit 0; }

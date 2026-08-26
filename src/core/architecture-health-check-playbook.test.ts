@@ -64,6 +64,17 @@ describe('architecture-health-check playbook', () => {
     expect(threshold).toMatch(/size.*large/i);
     expect(threshold).toMatch(/at least two|2\+/i);
     expect(threshold).toMatch(/ordered.*depend/i);
+    const normalizedThreshold = threshold.replace(/\s+/g, ' ');
+    for (const label of [
+      'Repository',
+      'Finding key',
+      'Finding title',
+      'Source reference',
+      'Verified evidence and affected boundaries',
+      'Ordered phase plan',
+    ]) {
+      expect(normalizedThreshold).toContain(label);
+    }
 
     expect(phase3).toContain('architecture-refactor-rfc.md');
     expect(phase3).toContain('rfc-first');
@@ -79,6 +90,13 @@ describe('architecture-health-check playbook', () => {
     expect(plainIssue).toBeGreaterThan(routeContinue);
 
     const rfcBranch = phase3.slice(routePredicate, plainIssue);
+    const launchCommand = rfcBranch.slice(
+      rfcBranch.indexOf('RFC_SPAWN_JSON=$(kookr spawn -C "$(pwd)"'),
+      rfcBranch.indexOf('|| { echo "architecture-health-check: RFC-first launch ambiguous'),
+    );
+    expect(launchCommand).toContain('--prompt-file "$RFC_HANDOFF_FILE"');
+    expect(launchCommand).toContain('--playbook architecture-refactor-rfc.md --playbook-scope plugin');
+    expect(launchCommand).not.toContain('--criteria');
     expect(rfcBranch).toContain(
       '|| { echo "architecture-health-check: RFC-first launch ambiguous; stop and inspect idempotency state before retry"; exit 0; }',
     );

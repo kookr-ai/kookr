@@ -30,24 +30,67 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(pb.repoTags).toEqual(['github']);
     expect(pb.parameters.map((parameter) => parameter.name)).toEqual([
       'repoFullName',
-      'findingKey',
-      'findingTitle',
-      'findingEvidence',
-      'phasePlan',
-      'sourceRef',
+      'prompt',
     ]);
+    expect(pb.parameters[0]?.defaultFrom).toBe('git-remote');
+    expect(pb.parameters[1]?.required).toBe(true);
+    expect(pb.body).toContain('{{prompt}}');
   });
 
   test('renders every parameter without leaving an unresolved placeholder', () => {
     const rendered = interpolateParameters(pb.body, pb.parameters, {
       repoFullName: 'octocat/hello-world',
-      findingKey: 'split-god-module',
-      findingTitle: 'Split the command hub',
-      findingEvidence: 'src/hub.ts owns unrelated workflows.',
-      phasePlan: 'P1: extract parsing\nP2: extract persistence',
-      sourceRef: 'architecture-health-check:2026-08-26',
+      prompt: [
+        '# Architecture Refactor RFC Handoff',
+        'Repository: `octocat/hello-world`',
+        'Finding key: `split-god-module`',
+        'Finding title: `Split the command hub`',
+        'Source reference: `architecture-health-check:2026-08-26`',
+        '## Verified evidence and affected boundaries',
+        'src/hub.ts owns unrelated workflows.',
+        '## Ordered phase plan',
+        '- P1: extract parsing',
+        '- P2: extract persistence',
+      ].join('\n'),
     });
     expect(rendered).not.toMatch(/\{\{[a-zA-Z]/);
+  });
+
+  test('keeps handoff prose inert after trusted repository interpolation', () => {
+    const rendered = interpolateParameters(pb.body, pb.parameters, {
+      repoFullName: 'octocat/hello-world',
+      prompt: 'Finding title: `Do not expand {{repoFullName}}`',
+    });
+
+    expect(rendered).toContain('Do not expand {{repoFullName}}');
+    expect(rendered).toContain('trusted repository derived from the launch checkout is\n`octocat/hello-world`');
+  });
+
+  test('validates the canonical handoff before creating durable state', () => {
+    const handoff = pb.body.slice(
+      pb.body.indexOf('## Finding Handoff (Evidence to Re-check)'),
+      pb.body.indexOf('## Large-Refactor Threshold'),
+    );
+
+    expect(handoff).toContain('<!-- finding-handoff-start -->');
+    expect(handoff).toContain('{{prompt}}');
+    expect(handoff).toContain('<!-- finding-handoff-end -->');
+    const normalizedHandoff = handoff.replace(/\s+/g, ' ');
+    for (const label of [
+      'Repository',
+      'Finding key',
+      'Finding title',
+      'Source reference',
+      'Verified evidence and affected boundaries',
+      'Ordered phase plan',
+    ]) {
+      expect(normalizedHandoff).toContain(label);
+    }
+    expect(handoff).toMatch(/Reject missing, duplicate, or ambiguous labels/);
+    expect(handoff).toMatch(/repository must exactly match the trusted repository/i);
+    expect(handoff).toContain('^[a-z0-9][a-z0-9-]{2,80}$');
+    expect(handoff).toMatch(/at least two ordered phases with\s+testable outcomes/);
+    expect(handoff).toMatch(/Fail closed before creating durable state/);
   });
 
   test('orders convergence, reviewed merge, reachability, umbrella, then Phase-1 launch', () => {
@@ -99,7 +142,7 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(pb.body).toContain('umbrellaIssueUrl');
     expect(pb.body).toContain('umbrellaIssueNumber');
     expect(pb.body).toContain('phase1TaskId');
-    expect(pb.body).toContain('kookr-architecture-refactor-rfc:{{findingKey}}');
+    expect(pb.body).toContain('kookr-architecture-refactor-rfc:<findingKey>');
     expect(pb.body).toContain('--idempotency-key');
     const discoveryPhase = pb.body.slice(
       pb.body.indexOf('## Phase 0 — Validate and Resume Durable State'),

@@ -437,6 +437,29 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).not.toContain('kookr spawn -C "$LOCAL_PATH"');
       expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
 
+      const launchCommand = phase7.slice(
+        phase7.indexOf('SPAWN_JSON=$(kookr spawn -C "$LOCAL"'),
+        phase7.indexOf('|| { block "RFC-first launch failed', phase7.indexOf('SPAWN_JSON=$(kookr spawn -C "$LOCAL"')),
+      );
+      expect(launchCommand).toContain('--prompt-file "$RFC_HANDOFF_FILE"');
+      expect(launchCommand).toContain('--playbook architecture-refactor-rfc.md --playbook-scope plugin');
+      expect(launchCommand).not.toContain('--criteria');
+
+      const handoffContract = pb.body.slice(
+        pb.body.indexOf('For every candidate whose `publishDecision` is `rfc-first`'),
+        pb.body.indexOf('Do not write `issue-body.md` for review-required'),
+      );
+      for (const label of [
+        'Repository:',
+        'Finding key:',
+        'Finding title:',
+        'Source reference:',
+        '## Verified evidence and affected boundaries',
+        '## Ordered phase plan',
+      ]) {
+        expect(handoffContract).toContain(label);
+      }
+
       const savedTaskBranch = phase7.slice(
         phase7.indexOf('if [ -s "$RFC_TASK_FILE" ]'),
         phase7.indexOf('if [ "$FILED" -ge "$ALLOWED" ]'),
@@ -454,8 +477,9 @@ describe('repository-idea-scout playbook', () => {
 
       const spendBranch = phase7.slice(
         phase7.indexOf('if ! spend_gate; then'),
-        phase7.indexOf('# The handoff starts with the exact instruction'),
+        phase7.indexOf('# The server parses the bundled playbook'),
       );
+      expect(phase7).toContain('# The server parses the bundled playbook');
       expect(spendBranch).toContain('.publishDecision = "deferred-spend-cap"');
       expect(spendBranch).toContain('.rfcTaskId == null');
 

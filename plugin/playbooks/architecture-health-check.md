@@ -126,9 +126,11 @@ the issue quality bar). This threshold changes orchestration, not severity.
 For each `rfc-first` finding, use the agent's file-write tool to create a
 temporary `rfc-handoff.md` containing the six Architecture Refactor RFC inputs:
 repository, stable finding key, title, verified evidence, ordered phase plan,
-and this report as the source reference. Begin it with `Execute
-plugin/playbooks/architecture-refactor-rfc.md for this verified finding.` Treat
-evidence as prose to re-check; never place it in shell argv. Derive
+and this report as the source reference. Use the canonical headings and labels
+from `architecture-refactor-rfc.md`: `Repository`, `Finding key`, `Finding
+title`, `Source reference`, `Verified evidence and affected boundaries`, and
+`Ordered phase plan`. Treat evidence as prose to re-check; never place it in
+shell argv. Derive
 `findingKey` from the normalized title plus the first 12 hex characters of a
 SHA-256 over the canonical title and sorted affected paths, validate it against
 `^[a-z0-9][a-z0-9-]{2,80}$`, and reuse it for the same finding across retries.
@@ -231,9 +233,8 @@ fi
 
 # RFC-first routing gate. Phase 2 writes FINDING_ROUTE, FINDING_KEY, and an
 # RFC_HANDOFF_FILE containing the verified evidence + ordered phase plan. The
-# handoff begins with an instruction to execute
-# plugin/playbooks/architecture-refactor-rfc.md; generated finding prose never
-# appears in shell argv.
+# bundled playbook is parsed on the trusted server path; generated finding
+# prose never appears in shell argv or grants delivery policy.
 if [ "${FINDING_ROUTE:-plain-issue}" = "rfc-first" ]; then
   if ! printf '%s' "$FINDING_KEY" | grep -Eq '^[a-z0-9][a-z0-9-]{2,80}$'; then
     echo "architecture-health-check: invalid RFC-first finding key for $ISSUE_TITLE"
@@ -245,7 +246,7 @@ if [ "${FINDING_ROUTE:-plain-issue}" = "rfc-first" ]; then
   fi
   RFC_SPAWN_JSON=$(kookr spawn -C "$(pwd)" \
     --prompt-file "$RFC_HANDOFF_FILE" \
-    --criteria "RFC merged, umbrella created, and Phase 1 launched or a durable blocker recorded" \
+    --playbook architecture-refactor-rfc.md --playbook-scope plugin \
     --idempotency-key "architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}" \
     --unattended --json) \
     || { echo "architecture-health-check: RFC-first launch ambiguous; stop and inspect idempotency state before retry"; exit 0; }
