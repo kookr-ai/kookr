@@ -114,11 +114,12 @@ export interface LaunchOpts {
    * Optional idempotency key (issue #1526 Phase B / FM2, FM3). A caller that
    * retries an identical launch request — e.g. after its own client timeout
    * fired against an overloaded server that had already created the task —
-   * passes the SAME key on every attempt. The first request for a key
-   * creates the task as normal; any later request for the same key
-   * (including one racing concurrently with the first) returns the same
-   * task with {@link LaunchResult.idempotentReplay} set instead of creating a
-   * duplicate. Distinct from the prompt+cwd+agentType dedup in
+   * passes the SAME key on every attempt. The first request runs normal launch
+   * handling, which may create a task or find an active prompt duplicate. Any
+   * later request for the same key (including one racing concurrently with the
+   * first) returns the same task and preserves that outcome, with
+   * {@link LaunchResult.idempotentReplay} set. Distinct from the
+   * prompt+cwd+agentType dedup in
    * `checkSubmission`: that dedup is defeated when the prompt varies between
    * attempts (e.g. an embedded random branch suffix); an idempotency key
    * protects retries of the exact same logical request regardless of prompt
@@ -165,11 +166,10 @@ export interface LaunchResult<TaskShape extends { id: string } = { id: string }>
   /** True when an active task with the same prompt already exists. */
   duplicate?: boolean;
   /**
-   * True when `task` was NOT created by this call — an earlier launch with
-   * the same `idempotencyKey` already produced it (issue #1526 Phase B).
-   * Distinct from `duplicate` (prompt+cwd+agentType dedup): a replay is a
-   * retry of the same logical request, not a coincidentally identical new
-   * one, so it never triggers the interactive/CLI duplicate-confirmation UX.
+   * True when this call replayed an earlier outcome under the same
+   * `idempotencyKey` (issue #1526 Phase B). A created-task replay has only this
+   * flag. If the earlier outcome was prompt dedup, `duplicate` is also true so
+   * clients can repeat their duplicate-confirmation flow after restarting.
    */
   idempotentReplay?: boolean;
   /**

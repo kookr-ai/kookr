@@ -228,7 +228,23 @@ GET /api/tasks?limit=50&offset=100
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
 `agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
-`autoCloseOnSignal`, `unattended`, and `idempotencyKey`.
+`autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
+
+`playbook` (optional) wraps the supplied prompt with a parsed playbook before
+launch. Its shape is `{ "path": "phase.md", "scope": "project" }`. `path` must
+be non-empty. `scope` may be `project`, `user`, or `plugin` and defaults to
+`project`. These select `<cwd>/.kookr/playbooks`, the user's configured playbook
+directory (normally `~/.kookr/playbooks`), or the installed plugin's `playbooks`
+directory, respectively. The selected playbook must exist, parse successfully,
+declare a required parameter named `prompt`, and contain `{{prompt}}` in its
+body; Kookr interpolates the request's `prompt` at that placeholder. A missing
+or out-of-scope path returns `400` without launching a task. Kookr also returns
+`400` when the playbook is malformed or lacks the required `prompt` parameter
+or `{{prompt}}` placeholder. Wrapped launches require `idempotencyKey`, which
+makes retrying an ambiguous request resolve to the original task. Delivery
+policy is derived only from the parsed playbook metadata, so a raw client
+`deliveryMode` or
+`deliveryPolicy` field cannot grant self-advancing delivery.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -295,14 +311,15 @@ attempts — for example a spawn helper that embeds a fresh random branch
 suffix in the prompt on every call. An idempotency key instead identifies the
 logical *request*, independent of its prompt content.
 
-- The first `POST /api/tasks` carrying a given key creates the task normally
-  (`201`).
-- Any later request with the SAME key — including one racing concurrently
-  with the first — returns `200` with the body flattened like the `201` shape
-  (not wrapped like the prompt-dedup `{"task", "duplicate": true}` response)
-  plus `"idempotentReplay": true`, referencing the SAME task, with `queued`
-  preserved if that task is still `pending`. No new task is created and no
-  duplicate-confirmation UX is triggered.
+- The first `POST /api/tasks` carrying a given key runs normal launch handling:
+  it either creates the task (`201`) or returns an active prompt duplicate
+  (`200` with `{ "task", "duplicate": true }`).
+- Any later request with the SAME key — including one racing concurrently with
+  the first — returns the same task and the same outcome. Created-task replays
+  use the flattened task shape plus `"idempotentReplay": true`. Prompt-duplicate
+  replays preserve the `{ "task", "duplicate": true }` shape and also include
+  `"idempotentReplay": true`, so an interactive client can repeat its duplicate
+  confirmation flow after restarting. No new task is created by the replay.
 - If the task the key resolved to is **terminal** (`completed` / `terminated`
   / `cancelled`) but has **zero sessions** — it was queued at the concurrency
   cap and then reaped, cancelled, or TTL-expired before ever launching an
@@ -324,8 +341,8 @@ logical *request*, independent of its prompt content.
   an idempotent replay rather than creating a sibling.
 - **Durability is best-effort, not absolute.** Reservations live in a ledger
   (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
-  its TTL is treated as never seen) that is written to disk once a launch has
-  actually produced a task. Three caveats:
+  its TTL is treated as never seen) that is written to disk once launch
+  handling has resolved to a task. Three caveats:
   1. A crash strictly inside the create→persist window (memory-only pending
      reservation, never yet written) loses that one in-flight reservation —
      a retry issued after that specific crash can create a duplicate.

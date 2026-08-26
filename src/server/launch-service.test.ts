@@ -2252,6 +2252,63 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(store.listTasks()).toHaveLength(1);
   });
 
+  it('persists duplicate outcomes so a restarted client can repeat confirmation', async () => {
+    const existing = await launchTask(deps, { prompt: 'already active', cwd: '/tmp' });
+
+    const duplicate = await launchTask(deps, {
+      prompt: 'already active',
+      cwd: '/tmp',
+      idempotencyKey: 'confirmable-duplicate',
+    });
+    expect(duplicate).toMatchObject({
+      duplicate: true,
+      task: { id: existing.task.id },
+    });
+
+    const reloadedLedger = new IdempotencyLedger(ledgerDir);
+    await reloadedLedger.load();
+    const replay = await launchTask(
+      { ...deps, idempotencyLedger: reloadedLedger },
+      {
+        prompt: 'already active',
+        cwd: '/tmp',
+        idempotencyKey: 'confirmable-duplicate',
+      },
+    );
+
+    expect(replay).toMatchObject({
+      duplicate: true,
+      idempotentReplay: true,
+      task: { id: existing.task.id },
+    });
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('propagates duplicate outcomes to concurrent same-key waiters', async () => {
+    const existing = await launchTask(deps, { prompt: 'concurrent duplicate', cwd: '/tmp' });
+
+    const [owner, waiter] = await Promise.all([
+      launchTask(deps, {
+        prompt: 'concurrent duplicate',
+        cwd: '/tmp',
+        idempotencyKey: 'concurrent-confirmation',
+      }),
+      launchTask(deps, {
+        prompt: 'concurrent duplicate',
+        cwd: '/tmp',
+        idempotencyKey: 'concurrent-confirmation',
+      }),
+    ]);
+
+    expect(owner).toMatchObject({ duplicate: true, task: { id: existing.task.id } });
+    expect(waiter).toMatchObject({
+      duplicate: true,
+      idempotentReplay: true,
+      task: { id: existing.task.id },
+    });
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
   it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {
     const [a, b] = await Promise.all([
       launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),

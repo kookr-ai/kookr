@@ -75,15 +75,26 @@ Options:
 | `--model` | known Claude model id (e.g. `claude-fable-5`) | Agent CLI / env default | Pin the model for this task (#1518). `claude-code` accepts known Claude ids and dated suffixes; `codex-cli` / `grok-build` reject `--model` (use `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Server returns 400 for invalid values — no silent fallback. |
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
-| `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key returns the task an earlier attempt with that key already created, instead of launching a second one. |
-| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt+cwd+criteria+agent so a client-timeout retry of the **identical** spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL — no calendar component). Only helps retries whose prompt is stable; if your retry regenerates the prompt (embedded random suffix, timestamp), pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
+| `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key replays the earlier launch outcome instead of launching a second task. A replayed active-prompt duplicate repeats the warning and confirmation flow. |
+| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, playbook path, and playbook scope. A client-timeout retry replays only when all six inputs are unchanged (bounded by the server's rolling 24h idempotency TTL — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
 | `--unattended` | none | false | Mark the task autonomous: the spawned agent's settings deny interactive tools (`AskUserQuestion` and equivalents) so a blocking call fails fast and flags the task **operator-needed** instead of hanging with nobody to answer (issue #1562). |
+| `--playbook` | playbook path | unset | Wrap the resolved prompt with a playbook before launch. The playbook must declare a required `prompt` parameter and use `{{prompt}}` in its body. Kookr reads delivery policy from the playbook's metadata rather than accepting a client-side delivery toggle. Requires either `--idempotency-key` or auto-idempotency so an ambiguous launch can be reconciled safely. |
+| `--playbook-scope` | `project`, `user`, or `plugin` | `project` | Select the playbook collection searched by `--playbook`: the current project's `.kookr/playbooks`, the user's playbooks, or the installed plugin. Requires `--playbook`. |
 | `-f`, `--prompt-file` | path | unset | Read the prompt from a file instead of positional argv or stdin. |
 | `--dry-run` | none | false | Validate discovery, resolve the prompt/cwd/idempotency key, run the read-only active-duplicate check, print the would-be `POST /api/tasks` body, and exit **without launching**. Exit codes match a real spawn for discovery failures and blocked duplicates (including exit 5). With `--json`, the envelope uses `code: "DRY_RUN"` on success. |
 | `-h`, `--help` | none | false | Print command help and exit. |
+
+For example, this reads the phase specification from a file, wraps it with the
+installed plugin's guarded delivery procedure, and launches the resulting task:
+
+```bash
+kookr spawn --prompt-file /tmp/phase.md \
+  --playbook architecture-refactor-phase.md --playbook-scope plugin \
+  --idempotency-key "chain:owner/repo:42:phase:P1" --unattended
+```
 
 Wait for readiness:
 
@@ -128,17 +139,23 @@ instead identifies the logical **request**: re-running the exact same
 `kookr spawn --idempotency-key <key> ...` invocation (e.g. after a client
 timeout against an overloaded server that had already created the task)
 returns the SAME task instead of creating a duplicate, regardless of prompt
-content. A terminal task that never actually ran (e.g. queued at capacity,
-then reaped before it ever launched) is not replayed — the retry launches
-fresh instead; a terminal task that did run (completed or was terminated
-after starting an agent) is still replayed. The response prints `↺ Task
-already exists (idempotent replay)` instead of `✓ Task created`, exits `0`,
-and (in `--json` mode) sets `details.idempotentReplay: true`. Reservations
-live in a TTL-bounded ledger on the server (24h). Durability is best-effort,
-not absolute: a crash strictly between task-creation and the ledger write can
-lose that one reservation, and a ledger persist failure is logged
-server-side without failing the request — see [`POST /api/tasks` body
-fields](./api.md#post-apitasks-body-fields) for the full server-side
+content. If the original request found an active prompt duplicate, a replay
+preserves that result so interactive confirmation can resume after a client
+restart. The confirmed launch uses its own stable key. A terminal task that
+never actually ran (e.g. queued at capacity, then reaped before it ever
+launched) is not replayed — the retry launches fresh instead; a terminal task
+that did run (completed or was terminated
+after starting an agent) is still replayed. A created-task replay prints `↺
+Task already exists (idempotent replay)` instead of `✓ Task created`, exits
+`0`, and (in `--json` mode) sets `details.idempotentReplay: true`. A replayed
+prompt duplicate repeats the warning; confirmation derives a separate stable
+key so a timeout during the intentional duplicate launch can be reconciled
+safely. Reservations live in a TTL-bounded ledger on the server (24h).
+Durability is best-effort, not absolute: a crash strictly between task creation
+and the ledger write can lose that one reservation, and a ledger persist
+failure is logged server-side without failing the request — see
+[`POST /api/tasks` body fields](./api.md#post-apitasks-body-fields) for the full
+server-side
 contract and caveats.
 
 Auto-close on completion signal:

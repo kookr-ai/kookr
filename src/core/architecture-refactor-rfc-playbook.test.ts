@@ -14,6 +14,14 @@ describe('architecture-refactor-rfc playbook', () => {
   );
   const content = readFileSync(playbookPath, 'utf-8');
   const pb = parsePlaybook(content, 'architecture-refactor-rfc.md', '/', 'plugin');
+  const phasePlaybookPath = join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'plugin',
+    'playbooks',
+    'architecture-refactor-phase.md',
+  );
 
   test('parses as a delivery-authorized GitHub playbook with an explicit finding handoff', () => {
     expect(pb.name).toBe('Architecture Refactor RFC');
@@ -117,11 +125,50 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(umbrellaPhase).toMatch(/validate.*ledger|round-trip/i);
 
     const launchPhase = pb.body.slice(pb.body.indexOf('## Phase 6 — Launch Phase 1'));
-    expect(launchPhase).toContain('deliveryMode: self-advancing');
     expect(launchPhase).toContain('kookr spawn');
+    expect(launchPhase).toContain('--playbook architecture-refactor-phase.md');
+    expect(launchPhase).toContain('--playbook-scope plugin');
+    expect(launchPhase).toContain('--idempotency-key "chain:${REPO_KEY}:${UMBRELLA_NUMBER}:phase:P1"');
+    expect(launchPhase).not.toContain('chain:${UMBRELLA_NUMBER}:phase:P1');
     expect(launchPhase).toContain('kookr-phase-result');
     expect(launchPhase).toMatch(/task id|taskId/i);
     expect(launchPhase).toMatch(/missing.*task id|without.*task id/i);
+  });
+
+  test('launches phase prompts through a real self-advancing wrapper playbook', () => {
+    const phaseContent = readFileSync(phasePlaybookPath, 'utf-8');
+    const phase = parsePlaybook(phaseContent, 'architecture-refactor-phase.md', '/', 'plugin');
+
+    expect(phase.deliveryMode).toBe('self-advancing');
+    expect(phase.parameters.map((parameter) => parameter.name)).toEqual(['prompt']);
+    expect(phase.body).toContain('{{prompt}}');
+    expect(phase.body).toContain('self-continuation-task');
+    expect(phase.body).toContain('--playbook architecture-refactor-phase.md');
+    expect(phase.body).toContain('--playbook-scope plugin');
+    expect(phase.body).toContain('chain:${REPO_KEY}:${UMBRELLA_NUMBER}:phase:${NEXT_PHASE_ID}');
+    expect(phase.body).toContain('--parent-task-id "$KOOKR_TASK_ID"');
+  });
+
+  test('keeps the front-end key identical to the background umbrella-chain monitor key', () => {
+    const advancer = readFileSync(join(
+      import.meta.dirname,
+      '..',
+      'server',
+      'use-cases',
+      'umbrella-chain-advancer.ts',
+    ), 'utf-8');
+    const d2Key = advancer.match(/function phaseClaimKey[\s\S]*?return `([^`]+)`;/)?.[1];
+    const frontEndKey = pb.body.match(/--idempotency-key "([^"]+)"/)?.[1];
+    const normalize = (value: string | undefined) => value
+      ?.replace('${normalizedRepo}', '${REPO_KEY}')
+      .replace('${issueNumber}', '${ISSUE_NUMBER}')
+      .replace('${UMBRELLA_NUMBER}', '${ISSUE_NUMBER}')
+      .replace('${phaseId}', '${PHASE_ID}')
+      .replace('P1', '${PHASE_ID}');
+
+    expect(d2Key).toBeDefined();
+    expect(frontEndKey).toBeDefined();
+    expect(normalize(frontEndKey)).toBe(normalize(d2Key));
   });
 
   test('extends rfc-iterative-review with a narrowly authorized continuation tail', () => {

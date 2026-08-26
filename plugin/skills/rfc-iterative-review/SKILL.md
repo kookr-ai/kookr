@@ -277,11 +277,16 @@ a parallel flow.
    valid sequential `kookr-phase-ledger`. P1 has no dependency; every later
    phase depends only on its adjacent predecessor. Round-trip validate the
    ledger before launch.
-6. **Launch Phase 1 once.** Use a prompt file and `kookr spawn
-   --idempotency-key "chain:<repo>:<umbrella>:phase:P1" --unattended --json`.
-   On timeout, look up the same key; never mint another. Persist the confirmed
-   task id and append a `kookr-phase-result` comment. A missing task id fails
-   closed and must not be recorded as a successful launch.
+6. **Launch Phase 1 once.** Use a prompt file and the bundled wrapper:
+   `kookr spawn --prompt-file <path> --playbook
+   architecture-refactor-phase.md --playbook-scope plugin --idempotency-key
+   "chain:<lowercase-owner/name>:<umbrella>:phase:P1" --unattended --json`.
+   The wrapper's parsed metadata authorizes self-advancing delivery. Use the same
+   repository-qualified key as Kookr's background umbrella-chain monitor so a
+   retry or crash recovery resolves to the original task. On timeout, look up
+   that key; never mint another. Persist the confirmed task id and append a
+   `kookr-phase-result` comment. A missing task id fails closed and must not be
+   recorded as a successful launch.
 
 The durable state carries the idempotent references `rfcPrUrl`, `rfcHeadSha`,
 `rfcMergeSha`, `umbrellaIssueUrl`, `umbrellaIssueNumber`, and `phase1TaskId`.

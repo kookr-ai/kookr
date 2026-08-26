@@ -1127,7 +1127,12 @@ async function launchTaskIdempotent(
     if (reservation.kind === 'replay') {
       const task = deps.taskStore.getTask(reservation.taskId);
       if (task && isReplayableTask(task)) {
-        return { task, queued: task.status === 'pending', idempotentReplay: true };
+        return {
+          task,
+          queued: task.status === 'pending',
+          idempotentReplay: true,
+          ...(reservation.duplicate ? { duplicate: true } : {}),
+        };
       }
       // Either the finalized task no longer exists (e.g. deleted), or it's
       // terminal-and-never-ran (issue #1526 Phase B review item 2) — the key
@@ -1141,7 +1146,12 @@ async function launchTaskIdempotent(
       if (outcome.ok) {
         const task = deps.taskStore.getTask(outcome.taskId);
         if (task && isReplayableTask(task)) {
-          return { task, queued: task.status === 'pending', idempotentReplay: true };
+          return {
+            task,
+            queued: task.status === 'pending',
+            idempotentReplay: true,
+            ...(outcome.duplicate ? { duplicate: true } : {}),
+          };
         }
         // Task missing, or terminal-and-never-ran. The owner already
         // finalized this key, so the next `reserveOrWait` call below returns
@@ -1176,7 +1186,7 @@ async function launchTaskIdempotent(
     // and its returned promise never rejects, so a ledger persist failure
     // can only cost cross-restart durability, never turn this success into
     // an error for the caller or drop same-process replay protection.
-    await reservation.finalize(result.task.id);
+    await reservation.finalize(result.task.id, result.duplicate === true);
     return result;
   }
 }

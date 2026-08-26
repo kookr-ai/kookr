@@ -148,7 +148,7 @@ behind a synthetic-canary/review rollout:
   existence, which can cross-satisfy sibling chains — F11).
 - **Spawner-side atomic claim + idempotency key (F5).** The **spawner** synchronously acquires
   the `(issue, phase)` claim *before* POSTing to `/api/tasks`, and every phase spawn carries a
-  deterministic `--idempotency-key = chain:<issue>:phase:<id>`, so concurrent spawns collapse in
+  deterministic `--idempotency-key = chain:<lowercase-owner/name>:<issue>:phase:<id>`, so concurrent spawns collapse in
   the atomic idempotency ledger rather than racing the seconds-long spawn→claim window.
 - **Drift-advance only when the owning task is terminal** + a grace window (F6): D2 never
   drift-ticks/advances a phase merged < N minutes ago whose claim is still live.

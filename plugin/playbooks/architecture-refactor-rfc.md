@@ -294,7 +294,6 @@ Otherwise write a prompt file with the agent's file-write tool (never inline
 generated prose in shell argv). The prompt must identify:
 
 ```
-deliveryMode: self-advancing
 umbrella: <umbrellaIssueUrl>
 phase: P1
 rfc reference commit: <rfcMergeSha>
@@ -307,12 +306,21 @@ append-only `kookr-phase-result`, next-phase spawn, and discoverable fail-closed
 blockers. Include only P1's scope plus durable references; do not paste the
 whole orchestration transcript.
 
-Launch unattended with the stable key (the literal command contract matters):
+Launch unattended through the bundled wrapper playbook. The metadata block at
+the top of that playbook, not prose in the prompt, supplies the actual
+`self-advancing` delivery policy.
+The stable key is also used by Kookr's background umbrella-chain monitor, which
+resumes a pending phase after a crash. Sharing the key makes a front-end retry
+and a background recovery resolve to the same task (the literal command
+contract matters):
+
+Set `REPO_KEY` to the validated `owner/name` lowercased. Kookr's background
+monitor applies the same normalization.
 
 ```bash
 kookr spawn -C "$REPO_DIR" --prompt-file "$PHASE1_PROMPT_FILE" \
-  --criteria "P1 merged, recorded on the umbrella, and the next eligible phase launched or a blocker recorded" \
-  --idempotency-key "chain:${REPO_SLUG}:${UMBRELLA_NUMBER}:phase:P1" \
+  --playbook architecture-refactor-phase.md --playbook-scope plugin \
+  --idempotency-key "chain:${REPO_KEY}:${UMBRELLA_NUMBER}:phase:P1" \
   --unattended --json
 ```
 
@@ -343,5 +351,5 @@ front-end.
    Phase 1 is gated on a successful round-trip parse of that ledger.
 6. Phase 1 uses one stable idempotency key. A timeout triggers lookup, not a new
    key or a second spawn.
-7. The front-end launches P1 only. The self-advancing phase task and D2 backstop
-   own subsequent progression.
+7. The front-end launches P1 only. The self-advancing phase task and Kookr's
+   background umbrella-chain monitor own subsequent progression.

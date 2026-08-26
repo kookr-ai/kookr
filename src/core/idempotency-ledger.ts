@@ -9,9 +9,9 @@
  * prompt+cwd+agentType dedup in `checkSubmission` (`launch-service.ts`).
  *
  * This ledger lets a caller attach an opaque `idempotencyKey` to a launch
- * request. The FIRST request for a key creates the task as normal; ANY LATER
- * request for the same key — including one racing concurrently with the
- * first — returns the same task instead of creating a duplicate.
+ * request. The FIRST request for a key runs normal launch handling. ANY LATER
+ * request for the same key — including one racing concurrently with the first
+ * — returns the same task and preserves whether normal prompt dedup found it.
  *
  * ## Atomicity (R4-style: no await between check and set)
  *
@@ -28,9 +28,10 @@
  * A reservation starts `pending` (in-memory only — a mid-flight launch is
  * meaningless after a crash, so it does not need to survive one). The owner
  * must call exactly one of:
- *   - `finalize(taskId)` — the launch produced this task; the in-memory entry
- *     flips to `finalized` and every waiter resolves with the same task id
- *     BEFORE the disk write is even attempted. Persisting to disk is
+ *   - `finalize(taskId, duplicate)` — launch handling resolved to this task;
+ *     `duplicate` records whether prompt dedup found an existing task. The
+ *     in-memory entry flips to `finalized` and every waiter resolves with the
+ *     same outcome BEFORE the disk write is even attempted. Persisting is
  *     best-effort past that point (see Durability below): `finalize` never
  *     rejects, so a caller that already has a real, launched task can never
  *     have that success turned into a thrown error by a failed ledger write.
@@ -79,6 +80,8 @@ export interface IdempotencyLedgerEntry {
   taskId: string;
   /** ISO-8601 timestamp of the launch request that finalized this key. */
   createdAt: string;
+  /** Preserve prompt-dedup results so a replay can repeat confirmation flow. */
+  duplicate?: true;
 }
 
 interface IdempotencyLedgerFile {
@@ -88,7 +91,7 @@ interface IdempotencyLedgerFile {
 
 /** Outcome delivered to callers that awaited a pending reservation. */
 export type IdempotencyWaitOutcome =
-  | { ok: true; taskId: string }
+  | { ok: true; taskId: string; duplicate?: true }
   | { ok: false };
 
 /** Return of {@link IdempotencyLedger.reserveOrWait}. */
@@ -96,13 +99,14 @@ export type IdempotencyReservation =
   | {
       kind: 'own';
       /**
-       * Record the winning task id and release every waiter with it. Updates
-       * in-memory state and resolves waiters synchronously before attempting
-       * to persist — the returned promise NEVER rejects (a disk failure is
-       * logged and swallowed), so callers can safely call this after a real
-       * launch without any risk of turning that success into a thrown error.
+       * Record the resolved task id and whether prompt dedup found it, then
+       * release every waiter with that outcome. Updates in-memory state and
+       * resolves waiters synchronously before attempting to persist — the
+       * returned promise NEVER rejects (a disk failure is logged and
+       * swallowed), so callers can safely call this after launch handling
+       * resolves without turning that result into a thrown error.
        */
-      finalize: (taskId: string) => Promise<void>;
+      finalize: (taskId: string, duplicate?: boolean) => Promise<void>;
       /**
        * Drop the reservation (the launch itself failed) so a retry is
        * treated as fresh. Only call this when no task was created — never
@@ -118,6 +122,7 @@ export type IdempotencyReservation =
   | {
       kind: 'replay';
       taskId: string;
+      duplicate?: true;
     };
 
 interface PendingState {
@@ -131,6 +136,7 @@ interface FinalizedState {
   status: 'finalized';
   createdAtMs: number;
   taskId: string;
+  duplicate: boolean;
 }
 
 type LedgerState = PendingState | FinalizedState;
@@ -142,7 +148,8 @@ function isValidEntry(value: unknown): value is IdempotencyLedgerEntry {
     typeof e.taskId === 'string' &&
     e.taskId.length > 0 &&
     typeof e.createdAt === 'string' &&
-    !Number.isNaN(Date.parse(e.createdAt))
+    !Number.isNaN(Date.parse(e.createdAt)) &&
+    (e.duplicate === undefined || e.duplicate === true)
   );
 }
 
@@ -188,7 +195,12 @@ export class IdempotencyLedger {
       }
       const createdAtMs = Date.parse(entry.createdAt);
       if (nowMs - createdAtMs > this.ttlMs) continue; // expired — compacted on load
-      this.state.set(key, { status: 'finalized', createdAtMs, taskId: entry.taskId });
+      this.state.set(key, {
+        status: 'finalized',
+        createdAtMs,
+        taskId: entry.taskId,
+        duplicate: entry.duplicate === true,
+      });
     }
   }
 
@@ -200,7 +212,11 @@ export class IdempotencyLedger {
     this.compactExpired();
     const existing = this.state.get(key);
     if (existing?.status === 'finalized') {
-      return { kind: 'replay', taskId: existing.taskId };
+      return {
+        kind: 'replay',
+        taskId: existing.taskId,
+        ...(existing.duplicate ? { duplicate: true as const } : {}),
+      };
     }
     if (existing?.status === 'pending') {
       return { kind: 'wait', wait: () => existing.promise };
@@ -215,15 +231,15 @@ export class IdempotencyLedger {
 
     return {
       kind: 'own',
-      finalize: async (taskId: string) => {
+      finalize: async (taskId: string, duplicate = false) => {
         // In-memory state flips to finalized — and every waiter resolves —
         // BEFORE the persist attempt below, so a disk failure here can only
         // cost cross-restart durability, never same-process replay
         // protection or the caller's launch result (issue #1526 Phase B
         // review item 1: a launch that already spawned an agent must never
         // become an HTTP error just because the ledger write failed).
-        this.state.set(key, { status: 'finalized', createdAtMs, taskId });
-        resolve({ ok: true, taskId });
+        this.state.set(key, { status: 'finalized', createdAtMs, taskId, duplicate });
+        resolve({ ok: true, taskId, ...(duplicate ? { duplicate: true as const } : {}) });
         await this.persistBestEffort('finalize', key);
       },
       release: async () => {
@@ -293,7 +309,11 @@ export class IdempotencyLedger {
       const entries: Record<string, IdempotencyLedgerEntry> = {};
       for (const [key, entry] of this.state) {
         if (entry.status !== 'finalized') continue;
-        entries[key] = { taskId: entry.taskId, createdAt: new Date(entry.createdAtMs).toISOString() };
+        entries[key] = {
+          taskId: entry.taskId,
+          createdAt: new Date(entry.createdAtMs).toISOString(),
+          ...(entry.duplicate ? { duplicate: true as const } : {}),
+        };
       }
       const file: IdempotencyLedgerFile = { schemaVersion: SCHEMA_VERSION, entries };
       // Compact JSON: finalize/clear rewrite the full finalized map; pretty-print

@@ -121,6 +121,23 @@ describe('parseArgs', () => {
     expect(p.promptFile).toBe('/tmp/p.md');
   });
 
+  it('parses a prompt-wrapper playbook and its explicit scope', () => {
+    const p = parseArgs([
+      '--playbook', 'architecture-refactor-phase.md',
+      '--playbook-scope', 'plugin',
+      '--prompt-file', '/tmp/phase.md',
+    ]);
+
+    expect(p.playbook).toBe('architecture-refactor-phase.md');
+    expect(p.playbookScope).toBe('plugin');
+  });
+
+  it('rejects a playbook scope without a playbook and unsupported scopes', () => {
+    expect(() => parseArgs(['--playbook-scope', 'plugin', 'prompt'])).toThrow(UsageError);
+    expect(() => parseArgs(['--playbook', 'phase.md', '--playbook-scope', 'remote', 'prompt']))
+      .toThrow(UsageError);
+  });
+
   it('parses --dedupe=<mode> and defaults to warn', () => {
     expect(parseArgs([]).dedupe).toBe('warn');
     expect(parseArgs(['--dedupe=skip']).dedupe).toBe('skip');
@@ -277,6 +294,24 @@ describe('deriveAutoIdempotencyKey', () => {
     for (const patch of [{ prompt: 'implement #43' }, { cwd: '/repo/two' }, { criteria: 'other' }, { agent: 'codex-cli' }]) {
       expect(deriveAutoIdempotencyKey({ ...base, ...patch })).not.toBe(ref);
     }
+  });
+
+  it('distinguishes playbook wrappers and their effective scopes', () => {
+    const ref = deriveAutoIdempotencyKey({
+      ...base,
+      playbook: 'architecture-refactor-phase.md',
+      playbookScope: 'plugin',
+    });
+    expect(deriveAutoIdempotencyKey({
+      ...base,
+      playbook: 'other-phase.md',
+      playbookScope: 'plugin',
+    })).not.toBe(ref);
+    expect(deriveAutoIdempotencyKey({
+      ...base,
+      playbook: 'architecture-refactor-phase.md',
+      playbookScope: 'project',
+    })).not.toBe(ref);
   });
 
   it('is insensitive to field-boundary reshuffling (JSON-delimited identity)', () => {
@@ -916,6 +951,34 @@ describe('probeDeployStatus', () => {
 // ---------- postTask ----------
 
 describe('postTask', () => {
+  it('sends a prompt-wrapper playbook without turning delivery mode into a client toggle', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 'phase-task' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: 'Implement P1',
+        cwd: '/tmp/x',
+        agent: null,
+        criteria: null,
+        playbook: 'architecture-refactor-phase.md',
+        playbookScope: 'plugin',
+      });
+
+      expect(bodySeen.playbook).toEqual({
+        path: 'architecture-refactor-phase.md',
+        scope: 'plugin',
+      });
+      expect(bodySeen).not.toHaveProperty('deliveryMode');
+      expect(bodySeen).not.toHaveProperty('deliveryPolicy');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('sends X-Kookr-Launch-Source: cli and receives the created task', async () => {
     let headerSeen: string | null = null;
     let bodySeen: any = null;
@@ -1830,6 +1893,122 @@ describe('main', () => {
     });
     expect(codes).toEqual([EXIT_OK]);
     expect(logs.join('\n')).toContain('Usage:');
+  });
+
+  it('launches a prompt file through the requested playbook wrapper end to end', async () => {
+    const promptFile = join(tmpCwd, 'phase.md');
+    await writeFile(promptFile, 'Implement P1 from the merged RFC.');
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 'phase-1', cwd: tmpCwd }) };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--json',
+          '--prompt-file', promptFile,
+          '--playbook', 'architecture-refactor-phase.md',
+          '--playbook-scope', 'plugin',
+          '--idempotency-key', 'chain:octocat/hello-world:42:phase:P1',
+          '--unattended',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(parseSingleJsonLog(logs)).toMatchObject({ ok: true, details: { taskId: 'phase-1' } });
+      expect(bodySeen).toMatchObject({
+        prompt: 'Implement P1 from the merged RFC.',
+        cwd: tmpCwd,
+        playbook: { path: 'architecture-refactor-phase.md', scope: 'plugin' },
+        idempotencyKey: 'chain:octocat/hello-world:42:phase:P1',
+        unattended: true,
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('fails fast when a wrapped launch has no explicit or automatic idempotency key', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      return { status: 201, body: JSON.stringify({ id: 'must-not-launch' }) };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', '--playbook', 'phase.md', 'P1'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_USER_ERROR]);
+      expect(posts).toBe(0);
+      expect(parseSingleJsonLog(logs)).toMatchObject({
+        ok: false,
+        message: expect.stringMatching(/playbook.*idempotency/i),
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('includes the playbook identity in the auto-derived launch key', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 'wrapped-auto', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--auto-idempotency',
+          '--playbook', 'phase.md',
+          '--playbook-scope', 'plugin',
+          'P1',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.idempotencyKey).toBe(deriveAutoIdempotencyKey({
+        prompt: 'P1',
+        cwd: tmpCwd,
+        criteria: null,
+        agent: null,
+        playbook: 'phase.md',
+        playbookScope: 'plugin',
+      }));
+    } finally {
+      await closeServer(server);
+    }
   });
 
   // ---- #1768: --dry-run preview (validate + resolve + dedupe, no POST) ----
@@ -3027,6 +3206,131 @@ describe('main', () => {
         metadata: { intent: 'keep_as_duplicate' },
       });
       expect(logs.join('\n')).toContain('task_id=dup-2');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('preserves a wrapped launch with a new retry-safe key after duplicate confirmation', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      bodies.push(body);
+      if (bodies.length === 1 || bodies.length === 4 || bodies.length === 6) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            duplicate: true,
+            task: {
+              id: bodies.length === 6 ? 'other-wrapper' : 'existing-wrapper',
+              status: 'inProgress',
+              cwd: tmpCwd,
+              prompt: 'phase prompt',
+            },
+          }),
+        };
+      }
+      if (bodies.length === 2) {
+        return { status: 503, body: JSON.stringify({ error: 'ambiguous launch' }) };
+      }
+      return {
+        status: 200,
+        body: JSON.stringify({
+          id: 'intentional-wrapper',
+          agentType: 'claude-code',
+          cwd: tmpCwd,
+          idempotentReplay: true,
+        }),
+      };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: [
+          '--playbook', 'architecture-refactor-phase.md',
+          '--playbook-scope', 'plugin',
+          '--idempotency-key', 'phase-key',
+          'phase prompt',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(3);
+      expect(bodies[0].idempotencyKey).toBe('phase-key');
+      expect(bodies[1]).toMatchObject({
+        disableDedup: true,
+        metadata: { intent: 'keep_as_duplicate' },
+        playbook: { path: 'architecture-refactor-phase.md', scope: 'plugin' },
+      });
+      expect(bodies[1].idempotencyKey).toMatch(/^duplicate-[0-9a-f]{16}$/);
+      expect(bodies[1].idempotencyKey).not.toBe(bodies[0].idempotencyKey);
+      expect(bodies[2]).toMatchObject({
+        disableDedup: true,
+        metadata: { intent: 'keep_as_duplicate' },
+        playbook: { path: 'architecture-refactor-phase.md', scope: 'plugin' },
+        idempotencyKey: bodies[1].idempotencyKey,
+      });
+
+      const secondConsole = makeConsoleCapture();
+      const secondErr = makeConsoleCapture();
+      const secondExit = makeExitCapture();
+      await main({
+        argv: [
+          '--playbook', 'architecture-refactor-phase.md',
+          '--playbook-scope', 'plugin',
+          '--idempotency-key', 'phase-key',
+          'phase prompt',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: secondConsole.io,
+        err: secondErr.io,
+        exit: secondExit.exit,
+        sleep: async () => {},
+      });
+
+      expect(secondExit.codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(5);
+      expect(bodies[3].idempotencyKey).toBe('phase-key');
+      expect(bodies[4]).toMatchObject({
+        disableDedup: true,
+        playbook: { path: 'architecture-refactor-phase.md', scope: 'plugin' },
+        idempotencyKey: bodies[1].idempotencyKey,
+      });
+
+      const thirdConsole = makeConsoleCapture();
+      const thirdErr = makeConsoleCapture();
+      const thirdExit = makeExitCapture();
+      await main({
+        argv: [
+          '--playbook', 'architecture-refactor-phase.md',
+          '--playbook-scope', 'plugin',
+          '--idempotency-key', 'phase-key',
+          'phase prompt',
+        ],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: interactiveStdin('y\n'),
+        cwd: tmpCwd,
+        out: thirdConsole.io,
+        err: thirdErr.io,
+        exit: thirdExit.exit,
+        sleep: async () => {},
+      });
+
+      expect(thirdExit.codes).toEqual([EXIT_OK]);
+      expect(bodies).toHaveLength(7);
+      expect(bodies[6].idempotencyKey).toMatch(/^duplicate-[0-9a-f]{16}$/);
+      expect(bodies[6].idempotencyKey).not.toBe(bodies[1].idempotencyKey);
     } finally {
       await closeServer(server);
     }
