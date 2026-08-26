@@ -223,6 +223,26 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('preserves confirmed degradation observed through cleanup settlement', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    const dependencies = [{ dependency: 'kb', state: 'half_open' as const }];
+    admission.observe(['kb'], [failure]);
+    admission.observe(['kb'], []);
+    const probe = admission.evaluate(['kb']);
+    if (!probe.admit || !probe.probe) throw new Error('expected recovery probe');
+
+    admission.observe(['kb'], [failure]);
+    admission.retainProbeCleanup(dependencies, 'task-1');
+    admission.observe(['kb'], [failure]);
+    admission.settleReconciledProbe(dependencies, 'released');
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'unknown' }]);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+  });
+
   test('restores reconciled live-probe success after stale parked waiters', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreParked([{

@@ -557,9 +557,10 @@ describe('completeTask', () => {
         startedAt: new Date().toISOString(),
         sessionId: 'kookr-probe-cleanup',
       },
-      sessions: [
-        { tmuxSession: 'kookr-probe-cleanup', lastStatus: 'inProgress' },
-      ] as any,
+      sessions: [aSession({
+        tmuxSession: 'kookr-probe-cleanup',
+        lastStatus: 'running',
+      })],
     });
     let rejectStop!: (error: Error) => void;
     const stop = vi.fn(() => new Promise<void>((_resolve, reject) => {
@@ -1030,8 +1031,9 @@ function createMockAdapter(taskStore: TaskStore): AgentAdapter {
   let counter = 0;
   return {
     agentType: 'claude-code',
-    launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
-      const tmuxName = `kookr-test-${++counter}`;
+    launch: vi.fn(async (taskId: string, _prompt: string, cwd: string, _resume, options) => {
+      const tmuxName = options?.tmuxName ?? `kookr-test-${++counter}`;
+      options?.onSessionCreated?.(tmuxName);
       taskStore.addSession(taskId, {
         tmuxSession: tmuxName,
         agentType: 'claude-code',
@@ -1667,6 +1669,67 @@ describe('promotePendingTasks (integration)', () => {
       launchAdmission: undefined,
     });
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'healthy' });
+  });
+
+  test('retains a terminal promoted-probe fence when completion wins during persistence', async () => {
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'completion races promoted probe persistence',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'completion races promoted probe persistence',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let releasePostAttach!: () => void;
+    let markPostAttachStarted!: () => void;
+    const postAttachStarted = new Promise<void>((resolve) => { markPostAttachStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markPostAttachStarted();
+        await new Promise<void>((resolve) => { releasePostAttach = resolve; });
+      });
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      const sessionId = options?.tmuxName!;
+      options?.onSessionCreated?.(sessionId);
+      taskStore.addSession(taskId, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return sessionId;
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      },
+    };
+
+    const promotion = promotePendingTasks(deps);
+    await postAttachStarted;
+    taskStore.completeTask(task.id);
+    releasePostAttach();
+    await promotion;
+
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'completed',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
   });
 
   test('does not promote a task cancelled while its probe marker is being persisted', async () => {
@@ -2535,7 +2598,9 @@ describe('promotePendingTasks (integration)', () => {
           tmuxSession: expectedSessionId,
         })],
       });
-      expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+      expect(taskStore.getTask(task.id)?.sessions.find(
+        (session) => session.tmuxSession === 'successor-session',
+      )?.lastStatus).toBeUndefined();
       expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
         admit: false,
         reason: 'half_open_probe_busy',
@@ -2661,7 +2726,7 @@ describe('promotePendingTasks (integration)', () => {
     });
   });
 
-  test('stale ordinary promoter neither stops nor cancels its attached successor', async () => {
+  test('stale ordinary promoter cannot cancel a successor between create and attach', async () => {
     const task = taskStore.createTask({
       prompt: 'promotion ownership replacement',
       cwd: '/cwd',
@@ -2673,15 +2738,28 @@ describe('promotePendingTasks (integration)', () => {
       },
     });
     taskStore.pendTask(task.id);
-    let now = 8_000_000;
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, getLaunchTimeoutMs: () => 1_000_000_000 },
+    };
+    let now = Date.now();
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    let releaseSuccessorAttach!: () => void;
+    let markSuccessorCreated!: () => void;
+    const successorCreated = new Promise<void>((resolve) => { markSuccessorCreated = resolve; });
     vi.mocked(adapter.launch)
-      .mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
-        rejectFirst = reject;
-      }))
+      .mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+        options?.onSessionCreated?.('stale-session');
+        markFirstStarted();
+        return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+      })
       .mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
         options?.onSessionCreated?.('successor-session');
+        markSuccessorCreated();
+        await new Promise<void>((resolve) => { releaseSuccessorAttach = resolve; });
         taskStore.addSession(taskId, {
           tmuxSession: 'successor-session',
           agentType: 'claude-code',
@@ -2693,20 +2771,27 @@ describe('promotePendingTasks (integration)', () => {
 
     try {
       const stalePromotion = promotePendingTasks(deps);
-      await vi.waitFor(() => expect(adapter.launch).toHaveBeenCalledTimes(1));
+      await firstStarted;
       now += 10 * 60 * 1_000 + 1;
-      expect(await promotePendingTasks(deps)).toBe(1);
+      const successorPromotion = promotePendingTasks(deps);
+      await successorCreated;
       rejectFirst(new Error('stale owner rejected'));
       expect(await stalePromotion).toBe(0);
 
+      expect(adapter.stop).toHaveBeenCalledWith('stale-session');
       expect(adapter.stop).not.toHaveBeenCalledWith('successor-session');
+      expect(taskStore.getTask(task.id)?.status).toBe('pending');
+      releaseSuccessorAttach();
+      expect(await successorPromotion).toBe(1);
       expect(taskStore.getTask(task.id)).toMatchObject({
         status: 'inProgress',
-        sessions: [expect.objectContaining({
+        sessions: expect.arrayContaining([expect.objectContaining({
           tmuxSession: 'successor-session',
-        })],
+        })]),
       });
-      expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+      expect(taskStore.getTask(task.id)?.sessions.find(
+        (session) => session.tmuxSession === 'successor-session',
+      )?.lastStatus).toBeUndefined();
     } finally {
       nowSpy.mockRestore();
     }
@@ -3244,10 +3329,11 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     let counter = 0;
     return {
       agentType: 'claude-code',
-      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string, _resume, options) => {
         launchedIds.push(taskId);
         await gate; // hold the launch mid-await, like a real adapter spawning a session
-        const tmuxName = `kookr-race-${++counter}`;
+        const tmuxName = options?.tmuxName ?? `kookr-race-${++counter}`;
+        options?.onSessionCreated?.(tmuxName);
         taskStore.addSession(taskId, {
           tmuxSession: tmuxName,
           agentType: 'claude-code',

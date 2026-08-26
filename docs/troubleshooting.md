@@ -216,6 +216,14 @@ marker and ownership instead of re-parking or starting a replacement. Resolve
 the backend cleanup error, or let reconciliation/restart prove that exact
 session absent; the gate then permits one new bounded probe.
 
+A hard timeout can win before the adapter reports creation. In that state the
+task remains `probing` with the preallocated session id and may have no session
+row yet. The late callback links and reaps that exact id; reconciliation then
+settles the marker. A terminal task can also retain the marker briefly after a
+successful stop solely to settle the in-memory circuit. Do not infer liveness
+from the marker alone or delete the record; explicit/bulk cleanup waits for
+reconciliation to clear it.
+
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the
 recovery tells you how to clear it.

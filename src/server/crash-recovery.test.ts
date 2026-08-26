@@ -639,6 +639,48 @@ describe('Crash Recovery', () => {
     expect(admission.snapshot()[0]).toMatchObject({ state: 'healthy' });
   });
 
+  test('retains a terminal recovery-probe fence when completion wins during persistence', async () => {
+    const cwd = join(tempDir, 'project-terminal-post-attach-race');
+    const task = await setupCrashedTask('Terminal recovery persistence race', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Terminal recovery persistence race',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releasePostAttach!: () => void;
+    let markPostAttachStarted!: () => void;
+    const postAttachStarted = new Promise<void>((resolve) => { markPostAttachStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markPostAttachStarted();
+        await new Promise<void>((resolve) => { releasePostAttach = resolve; });
+      });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks,
+    });
+    await postAttachStarted;
+    taskStore.completeTask(task.id);
+    releasePostAttach();
+    await recovery;
+
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'completed',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   test('reports a failed recovery and starts no adapter when a denied marker cannot be persisted', async () => {
     const cwd = join(tempDir, 'project-denied-marker-failure');
     const task = await setupCrashedTask('Denied marker failure', cwd);
@@ -893,6 +935,70 @@ describe('Crash Recovery', () => {
       });
       expect(taskStore.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
       expect(launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('stale ordinary recovery cannot cancel a successor between create and attach', async () => {
+    const cwd = join(tempDir, 'project-stale-recovery-successor');
+    const task = await setupCrashedTask('Stale recovery successor', cwd);
+    const reconcileResult = await reconcile(taskStore, terminal);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const launch = vi.spyOn(adapter, 'launch')
+      .mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+        options?.onSessionCreated?.('stale-recovery-session');
+        markFirstStarted();
+        return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+      });
+    const stop = vi.spyOn(adapter, 'stop').mockImplementation(async (sessionId) => {
+      if (sessionId === 'stale-recovery-session') {
+        throw new Error('stale recovery cleanup rejected');
+      }
+    });
+
+    try {
+      const recoveryOptions = { getLaunchTimeoutMs: () => 1_000_000_000 };
+      const staleRecovery = recoverCrashedSessions(
+        taskStore,
+        adapterRegistry,
+        reconcileResult,
+        recoveryOptions,
+      );
+      await firstStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = taskStore.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+
+      rejectFirst(new Error('stale recovery owner rejected'));
+      const staleResult = await staleRecovery;
+      expect(staleResult.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale recovery cleanup rejected'),
+      })]);
+      expect(stop).toHaveBeenCalledWith('stale-recovery-session');
+      expect(stop).not.toHaveBeenCalledWith('successor-recovery-session');
+      expect(taskStore.getTask(task.id)?.status).toBe('open');
+      expect(taskStore.ownsLaunchReservation(task.id, successorToken!)).toBe(true);
+
+      // The replacement reported physical creation but has not attached yet;
+      // once it does, the stale owner must not have made the task terminal.
+      taskStore.addSession(task.id, {
+        tmuxSession: 'successor-recovery-session',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: expect.arrayContaining([expect.objectContaining({
+          tmuxSession: 'successor-recovery-session',
+        })]),
+      });
     } finally {
       nowSpy.mockRestore();
     }

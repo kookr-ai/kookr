@@ -350,6 +350,34 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  test('keeps finished tasks that still own dependency-probe cleanup', async () => {
+    const taskStore = new TaskStore();
+    const fenced = taskStore.createTask({
+      prompt: 'cleanup fenced',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-cleanup-fenced',
+      },
+    });
+    taskStore.startTask(fenced.id);
+    taskStore.completeTask(fenced.id);
+    const { deps } = makeDeps(taskStore, {
+      takePredeleteSnapshot: vi.fn(async () => undefined),
+    });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toEqual({ outcome: 'cleared', deletedTaskIds: [] });
+    expect(taskStore.getTask(fenced.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-cleanup-fenced',
+    });
+  });
+
   test('drops GitHub store rows for each cleared finished task', async () => {
     const taskStore = new TaskStore();
     const completed = taskStore.createTask('Done', '/repo');

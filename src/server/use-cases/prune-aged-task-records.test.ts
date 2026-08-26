@@ -54,6 +54,21 @@ describe('selectPrunableTasks', () => {
     expect(prunable.map((t) => t.id)).toEqual([aged.id]);
   });
 
+  it('keeps an aged terminal task while dependency-probe cleanup is fenced', () => {
+    const store = new TaskStore();
+    const fenced = seedTask(store, { session: 'fenced-probe', finishedAt: AGED });
+    store.setLaunchAdmission(fenced.id, {
+      status: 'probing',
+      reason: 'half_open_probe_in_flight',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      startedAt: AGED.toISOString(),
+      sessionId: 'fenced-probe',
+    });
+
+    const cutoff = NOW.getTime() - DEFAULT_TASK_RECORD_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    expect(selectPrunableTasks(store.listTasks(), cutoff)).toEqual([]);
+  });
+
   it('issue #1588: protects a YOUNG pre-session disposed task, prunes an AGED one', () => {
     const store = new TaskStore();
 

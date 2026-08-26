@@ -3,6 +3,8 @@ import type {
   LaunchDependencyProbe,
 } from './launch-dependency-admission.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
+import type { Task } from './task-read-model.js';
+import { isTerminalStatus } from './task-status.js';
 
 type AdmittedDecision = Extract<LaunchDependencyAdmissionDecision, { admit: true }>;
 type DeniedDecision = Extract<LaunchDependencyAdmissionDecision, { admit: false }>;
@@ -102,6 +104,26 @@ export function isSameTaskLaunchAdmission(
     return current.reason === expected.reason && current.parkedAt === expected.parkedAt;
   }
   return false;
+}
+
+/**
+ * True when the task still owns the exact live worker created by a successful
+ * half-open probe. Callers re-check this after every persistence await before
+ * clearing the durable marker or closing the circuit: a concurrent terminal
+ * transition may have retained that marker as physical-cleanup ownership.
+ */
+export function taskOwnsLiveProbeSession(
+  task: Pick<Task, 'status' | 'launchAdmission' | 'sessions'> | undefined,
+  expected: TaskLaunchAdmission | undefined,
+): boolean {
+  if (!task || isTerminalStatus(task.status)) return false;
+  if (!isSameTaskLaunchAdmission(task.launchAdmission, expected)) return false;
+  if (expected?.status !== 'probing' || !expected.sessionId) return false;
+  return task.sessions.some(
+    (session) => session.tmuxSession === expected.sessionId
+      && session.lastStatus !== 'completed'
+      && session.lastStatus !== 'aborted',
+  );
 }
 
 function requireProbe(decision: AdmittedDecision): LaunchDependencyProbe {

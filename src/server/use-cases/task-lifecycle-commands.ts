@@ -393,6 +393,7 @@ export class TaskLifecycleCommands {
     // of event-loop block before the predelete export even started.
     const toClear = this.deps.taskStore.viewTasks().filter((task) => {
       if (projectId && task.projectId !== projectId) return false;
+      if (task.launchAdmission?.status === 'probing') return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
     });

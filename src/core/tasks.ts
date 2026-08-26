@@ -73,6 +73,13 @@ export class InvalidTransitionError extends Error {
   }
 }
 
+export class TaskCleanupInProgressError extends Error {
+  constructor(taskId: string) {
+    super(`Task ${taskId} cannot be deleted while dependency-probe cleanup is in progress`);
+    this.name = 'TaskCleanupInProgressError';
+  }
+}
+
 /**
  * Claim (or transfer) the Ralph loop owner session on `task`.
  *
@@ -1004,6 +1011,13 @@ export class TaskStore {
   deleteTask(id: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+    // A probing marker is the durable owner for an exact worker that may be
+    // between create and attach, or whose stop has not yet been proven. Never
+    // erase that owner; reconciliation clears it atomically with circuit
+    // settlement after physical absence is established.
+    if (task.launchAdmission?.status === 'probing') {
+      throw new TaskCleanupInProgressError(id);
+    }
     this.launchReservations.delete(id);
     this.completionRemediation.delete(id);
     // Unlink from parent

@@ -1665,6 +1665,58 @@ describe('launchTask', () => {
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'healthy' });
   });
 
+  it('retains a terminal probe fence when completion wins during post-attach persistence', async () => {
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releasePostAttach!: () => void;
+    let markPostAttachStarted!: () => void;
+    const postAttachStarted = new Promise<void>((resolve) => { markPostAttachStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markPostAttachStarted();
+        await new Promise<void>((resolve) => { releasePostAttach = resolve; });
+      });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission: admission,
+      flushTasks,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      const sessionId = options?.tmuxName!;
+      options?.onSessionCreated?.(sessionId);
+      store.addSession(taskId, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return sessionId;
+    });
+
+    const launched = launchTask(gatedDeps, {
+      prompt: 'completion races direct probe persistence',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await postAttachStarted;
+    const taskId = store.listTasks()[0]!.id;
+    store.completeTask(taskId);
+    releasePostAttach();
+    await launched;
+
+    expect(store.getTask(taskId)).toMatchObject({
+      status: 'completed',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   it('does not degrade the circuit when a direct probe task is cancelled before rejection', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

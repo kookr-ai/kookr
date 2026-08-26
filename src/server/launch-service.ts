@@ -28,6 +28,7 @@ import {
   isSameTaskLaunchAdmission,
   isNoSlotDependencyAdmission,
   probeFromAdmissionDecision,
+  taskOwnsLiveProbeSession,
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
@@ -2296,8 +2297,13 @@ async function launchTaskCore(
         + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
       );
     });
-    deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, true);
-    taskStore.setLaunchAdmission(task.id, undefined);
+    if (taskOwnsLiveProbeSession(
+      taskStore.getTask(task.id),
+      admissionMarkerWrittenByOwner,
+    )) {
+      deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, true);
+      taskStore.setLaunchAdmission(task.id, undefined);
+    }
   }
   deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
   // Instrumentation (issue #1589): finalize and persist the full

@@ -68,7 +68,18 @@ export class LaunchDependencyAdmission {
       // a physical worker. Health evidence describes the provider, not that
       // worker's liveness, so it must not replace the fail-closed busy gate
       // until terminal cleanup settles every interrupted owner.
-      if (entry.startupRecoveryOwners && entry.startupRecoveryOwners.size > 0) continue;
+      if (entry.startupRecoveryOwners && entry.startupRecoveryOwners.size > 0) {
+        // Cleanup ownership fences physical worker identity, but confirmed
+        // provider evidence must still survive until that owner settles. The
+        // next launch may only return to half-open when no degradation was
+        // observed while cleanup was in progress.
+        const confirmed = relevant.find((finding) => finding.category !== 'unknown');
+        if (confirmed) {
+          entry.probeInvalidated = true;
+          entry.reason = confirmed.summary;
+        }
+        continue;
+      }
       if (relevant.length === 0) {
         if (entry.state === 'degraded') {
           this.transition(entry, 'half_open');
@@ -225,7 +236,17 @@ export class LaunchDependencyAdmission {
     dependencies: readonly TaskLaunchAdmissionDependency[],
     ownerToken: string,
   ): void {
-    this.restoreInterruptedProbe(dependencies, ownerToken);
+    for (const dependency of dependencies) {
+      const entry = this.entry(dependency.dependency);
+      entry.state = 'half_open';
+      entry.lastChangedAt = this.now();
+      entry.reason ??= 'Interrupted recovery probe cleanup is in progress';
+      entry.probeToken = undefined;
+      // Preserve probeInvalidated: a confirmed failure observed during the
+      // probe remains stronger than later physical-cleanup settlement.
+      entry.startupRecoveryOwners ??= new Set();
+      entry.startupRecoveryOwners.add(ownerToken);
+    }
   }
 
   /**
@@ -236,9 +257,10 @@ export class LaunchDependencyAdmission {
   releaseInterruptedProbe(dependencies: readonly TaskLaunchAdmissionDependency[]): void {
     for (const dependency of dependencies) {
       const entry = this.entry(dependency.dependency);
-      entry.state = 'half_open';
+      const invalidated = entry.probeInvalidated === true;
+      entry.state = invalidated ? 'degraded' : 'half_open';
       entry.lastChangedAt = this.now();
-      entry.reason = undefined;
+      if (!invalidated) entry.reason = undefined;
       entry.probeToken = undefined;
       entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
@@ -257,11 +279,12 @@ export class LaunchDependencyAdmission {
   ): void {
     for (const dependency of dependencies) {
       const entry = this.entry(dependency.dependency);
+      const invalidated = entry.probeInvalidated === true;
       entry.probeToken = undefined;
       entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
-      if (outcome === 'parked') {
-        entry.reason = 'Recovery probe ended before successful admission';
+      if (outcome === 'parked' || invalidated) {
+        entry.reason ??= 'Recovery probe ended before successful admission';
         this.transition(entry, 'degraded');
       } else {
         entry.reason = undefined;

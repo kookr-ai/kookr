@@ -23,6 +23,7 @@ import {
 } from '../core/launch-dependency-admission.js';
 import {
   isSameTaskLaunchAdmission,
+  taskOwnsLiveProbeSession,
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
@@ -509,8 +510,13 @@ export async function recoverCrashedSessions(
               );
             });
           }
-          options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
-          taskStore.setLaunchAdmission(task.id, undefined);
+          if (taskOwnsLiveProbeSession(
+            taskStore.getTask(task.id),
+            admissionMarkerWrittenByOwner,
+          )) {
+            options.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
+            taskStore.setLaunchAdmission(task.id, undefined);
+          }
         }
 
         // Transfer relaunch metadata to the new session. Mark resumedFromCrash
@@ -673,9 +679,14 @@ export async function recoverCrashedSessions(
                 && session.lastStatus !== 'completed'
                 && session.lastStatus !== 'aborted',
             ) ?? false;
+            const hasReplacementOwner = taskStore.hasForeignFreshLaunchReservation?.(
+              task.id,
+              launchReservationToken,
+            ) ?? false;
             if (
               current
               && !isTerminalStatus(current.status)
+              && !hasReplacementOwner
               && (ownedLaunchAtFailure || (failedLaunchSessionId && !hasForeignLiveSession))
             ) {
               taskStore.cancelTask(task.id);

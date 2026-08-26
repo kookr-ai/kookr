@@ -19,6 +19,30 @@ describe('deleteTask use case', () => {
     expect(taskStore.deleteTask).not.toHaveBeenCalled();
   });
 
+  it('refuses deletion while an exact probe cleanup marker owns a possible session', async () => {
+    const taskStore = {
+      getTask: vi.fn().mockReturnValue({
+        id: 'task-1',
+        sessions: [],
+        launchAdmission: {
+          status: 'probing',
+          sessionId: 'kookr-create-before-attach',
+        },
+      }),
+      deleteTask: vi.fn(),
+    } as any;
+    const stop = vi.fn();
+
+    await expect(deleteTask({
+      taskStore,
+      adapter: { stop } as any,
+      monitor: { unregisterAgent: vi.fn() } as any,
+    }, 'task-1')).rejects.toThrow(/cleanup is in progress/);
+
+    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.deleteTask).not.toHaveBeenCalled();
+  });
+
   it('stops active sessions and deletes the task', async () => {
     const taskStore = {
       getTask: vi.fn().mockReturnValue({

@@ -245,10 +245,16 @@ rule applies immediately when direct launch, promotion, or crash recovery
 creates a session but its cleanup rejects: the task does not re-park, the
 session remains owned and not falsely marked aborted, and the exact marker
 survives even if a concurrent terminal transition wins the work outcome.
+If timeout wins before the creation callback, the same exact preallocated
+marker and busy circuit remain durable with zero session rows; a late callback
+links and reaps that session before reconciliation can settle the owner.
 Runtime reconciliation or startup releases this cleanup-only fence only after
-physical absence is proven. A live reconciled probe clears its
-marker as successful unless confirmed degradation recorded at or after that
-probe began still controls the circuit. Capacity-only waits use
+physical absence is proven. Terminal transitions also retain an exact marker
+briefly after a proven stop so reconciliation can atomically settle the
+process-local circuit, so `probing` alone does not mean a worker is live or
+uncertain. Explicit and bulk deletion skip/refuse these cleanup owners. A live
+reconciled probe clears its marker as successful unless confirmed degradation
+recorded at or after that probe began still controls the circuit. Capacity-only waits use
 `reason: "half_open_waiting_for_capacity"` and are queued, not reported as
 dependency-parked launch rejections.
 
@@ -360,10 +366,16 @@ logical *request*, independent of its prompt content.
   `400 {"error": "idempotencyKey must be ..."}`.
 - If a launch fails **before a task record is created** (validation error,
   backpressure rejection), the reservation is released so a retry with the same
-  key is treated as fresh. If it fails **after the task was created** (adapter
-  launch error or hard launch timeout), the task is disposed (issue #1588) and
-  the key is finalized to it, so a same-key retry returns that disposed task as
-  an idempotent replay rather than creating a sibling.
+  key is treated as fresh. If it fails **after the task was created** (ordinary
+  adapter launch error or hard launch timeout), the task is disposed (issue
+  #1588) and the key is finalized to it, so a same-key retry returns that
+  disposed task as an idempotent replay rather than creating a sibling. A
+  half-open dependency probe that times out before `onSessionCreated` is the
+  safety exception: it stays `inProgress` with its exact preallocated
+  `probing` marker (and may temporarily have no session row), because the
+  physical create can still complete late. That callback links and reaps the
+  exact session; runtime reconciliation settles the marker after absence is
+  proven.
 - **Durability is best-effort, not absolute.** Reservations live in a ledger
   (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
   its TTL is treated as never seen) that is written to disk once a launch has

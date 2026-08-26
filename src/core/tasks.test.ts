@@ -2663,6 +2663,28 @@ describe('launch reservations (#700)', () => {
     });
   });
 
+  test('refuses to delete a durable probe cleanup owner', () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'late probe creation',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-late-probe',
+      },
+    });
+    store.cancelTask(task.id);
+
+    expect(() => store.deleteTask(task.id)).toThrow(/cleanup is in progress/);
+    expect(store.getTask(task.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-late-probe',
+    });
+  });
+
   test('addSession consumes the reservation (no double slot for launched tasks)', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');

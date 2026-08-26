@@ -571,9 +571,14 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
 
     expect(killSession).toHaveBeenCalledWith('exact-dead-probe');
     expect(deps.taskStore.getTask(task.id)).toMatchObject({
-      status: 'pending',
-      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      status: 'inProgress',
+      launchAdmission: undefined,
+      sessions: [expect.objectContaining({
+        tmuxSession: 'unrelated-live-session',
+      })],
     });
+    expect(deps.taskStore.getActiveCount()).toBe(1);
+    expect(deps.taskStore.getNextPending()).toBeUndefined();
     expect(admission.evaluate(['kb'])).toMatchObject({
       admit: false,
       reason: 'dependency_degraded',
@@ -701,14 +706,16 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     const dependencyPreflightRunner = vi.fn().mockResolvedValue([]);
     const adapter: AgentAdapter = {
       agentType: 'claude-code',
-      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string, _resume, options) => {
+        const sessionId = options?.tmuxName ?? 'startup-recovery-session';
+        options?.onSessionCreated?.(sessionId);
         deps.taskStore.addSession(taskId, {
-          tmuxSession: 'startup-recovery-session',
+          tmuxSession: sessionId,
           agentType: 'claude-code',
           cwd,
           createdAt: new Date(),
         });
-        return 'startup-recovery-session';
+        return sessionId;
       }),
       sendInput: vi.fn(),
       sendKeystroke: vi.fn(),

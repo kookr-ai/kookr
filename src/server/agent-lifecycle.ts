@@ -38,6 +38,7 @@ import {
 import type { LaunchDependencyAdmission, LaunchDependencyAdmissionDecision } from '../core/launch-dependency-admission.js';
 import {
   isSameTaskLaunchAdmission,
+  taskOwnsLiveProbeSession,
   taskAdmissionForDeniedDecision,
   taskAdmissionForFailedProbe,
   taskAdmissionForProbe,
@@ -1259,8 +1260,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
             );
           });
         }
-        lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
-        taskStore.setLaunchAdmission(pending.id, undefined);
+        if (taskOwnsLiveProbeSession(
+          taskStore.getTask(pending.id),
+          admissionMarkerWrittenByOwner,
+        )) {
+          lifecycleDeps.launchDependencyAdmission?.completeProbe(dependencyAdmission.probe, true);
+          taskStore.setLaunchAdmission(pending.id, undefined);
+        }
       }
       if (deps.bypassAllPermissions === true) {
         const launchPermissionPosture = {
@@ -1487,7 +1493,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           && session.lastStatus !== 'completed'
           && session.lastStatus !== 'aborted',
       ) ?? false;
-      if (!ownedLaunchAtFailure && (!failedLaunchSessionId || hasForeignLiveSession)) {
+      const hasReplacementOwner = taskStore.hasForeignFreshLaunchReservation?.(
+        pending.id,
+        launchReservationToken,
+      ) ?? false;
+      if (
+        !ownedLaunchAtFailure
+        && (hasReplacementOwner || !failedLaunchSessionId || hasForeignLiveSession)
+      ) {
         console.warn(`[promotion] Ignoring stale failed launch owner for task ${pending.id}`);
         continue;
       }

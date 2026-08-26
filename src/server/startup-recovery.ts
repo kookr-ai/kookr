@@ -208,6 +208,10 @@ export async function runStartupRecoveryPhase({
             + `for task ${task.id}: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
+        const afterReap = taskStore.getTask(task.id);
+        if (afterReap?.sessions.some((session) => session.tmuxSession === expectedProbeSessionId)) {
+          taskStore.updateSession(task.id, expectedProbeSessionId, { lastStatus: 'aborted' });
+        }
       }
       const currentTask = taskStore.getTask(task.id);
       if (!currentTask || isTerminalStatus(currentTask.status)) {
@@ -215,6 +219,18 @@ export async function runStartupRecoveryPhase({
           taskStore.setLaunchAdmission(task.id, undefined);
           taskStore.setLaunchHealthSummary(task.id, undefined);
         }
+      } else if (currentTask.sessions.some(
+        (session) => session.tmuxSession !== expectedProbeSessionId
+          && session.lastStatus !== 'completed'
+          && session.lastStatus !== 'aborted',
+      )) {
+        // The persisted probe id is dead, but reconciliation found another
+        // live worker already attached to this task. Keep that worker active
+        // and capacity-counted; only clear the exact probe's cleanup marker.
+        // The shared circuit remains degraded below, so no new task can claim
+        // recovery until fresh provider evidence arrives.
+        taskStore.setLaunchAdmission(task.id, undefined);
+        taskStore.setLaunchHealthSummary(task.id, undefined);
       } else {
         const parked = {
           status: 'parked' as const,
