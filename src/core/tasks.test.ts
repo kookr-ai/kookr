@@ -758,7 +758,7 @@ describe('TaskStore', () => {
       expect(task.playbookParameterValues).toBeUndefined();
     });
 
-    test('terminal transitions clear parked launch admission and health', () => {
+    test('terminal transitions clear parked intent but retain probing cleanup ownership', () => {
       const parked = {
         status: 'parked' as const,
         reason: 'dependency_degraded' as const,
@@ -815,8 +815,8 @@ describe('TaskStore', () => {
       store.cancelTask(probing.id);
       expect(store.getTask(probing.id)).toMatchObject({
         status: 'cancelled',
-        launchAdmission: undefined,
-        launchHealthSummary: undefined,
+        launchAdmission: { status: 'probing' },
+        launchHealthSummary,
       });
     });
 
@@ -2628,7 +2628,7 @@ describe('launch reservations (#700)', () => {
     expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
   });
 
-  test('an unrelated live session does not retain an already-aborted exact probe marker', () => {
+  test('terminal transition retains an exact probe marker for circuit settlement', () => {
     const store = new TaskStore();
     const task = store.createTask({
       prompt: 'mixed sessions',
@@ -2657,7 +2657,10 @@ describe('launch reservations (#700)', () => {
 
     store.cancelTask(task.id);
 
-    expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(store.getTask(task.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-exact-probe',
+    });
   });
 
   test('addSession consumes the reservation (no double slot for launched tasks)', () => {

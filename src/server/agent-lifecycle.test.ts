@@ -546,6 +546,51 @@ describe('completeTask', () => {
     resolveStop();
   });
 
+  test('does not mark an exact probe session dead before background stop succeeds', async () => {
+    const task = lifecycleTask({
+      id: 'task-probe-cleanup',
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-probe-cleanup',
+      },
+      sessions: [
+        { tmuxSession: 'kookr-probe-cleanup', lastStatus: 'inProgress' },
+      ] as any,
+    });
+    let rejectStop!: (error: Error) => void;
+    const stop = vi.fn(() => new Promise<void>((_resolve, reject) => {
+      rejectStop = reject;
+    }));
+    const deps = makeLifecycleDeps({ adapter: { stop } });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await completeTask(task.id, deps);
+      expect(deps.taskStore.completeTask).toHaveBeenCalledWith(task.id);
+      expect(deps.taskStore.updateSession).not.toHaveBeenCalledWith(
+        task.id,
+        'kookr-probe-cleanup',
+        { lastStatus: 'completed' },
+      );
+
+      rejectStop(new Error('physical stop rejected'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(deps.taskStore.updateSession).not.toHaveBeenCalledWith(
+        task.id,
+        'kookr-probe-cleanup',
+        { lastStatus: 'completed' },
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test('records unknown criteria verdict when no completion event window exists', async () => {
     const task = lifecycleTask({
       id: 'task-42',
@@ -2554,6 +2599,116 @@ describe('promotePendingTasks (integration)', () => {
     } finally {
       errorSpy.mockRestore();
       warnSpy.mockRestore();
+    }
+  });
+
+  test('keeps a timed-out promoted probe fenced until its late session is reaped', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const task = taskStore.createTask({
+      prompt: 'late promoted probe',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'late promoted probe',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    taskStore.pendTask(task.id);
+    let reportLateSession!: () => void;
+    let expectedSessionId: string | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      reportLateSession = () => options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        launchDependencyAdmission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        getLaunchTimeoutMs: () => 5,
+      },
+    };
+
+    expect(await promotePendingTasks(deps)).toBe(0);
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [],
+    });
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    reportLateSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })],
+    });
+  });
+
+  test('stale ordinary promoter neither stops nor cancels its attached successor', async () => {
+    const task = taskStore.createTask({
+      prompt: 'promotion ownership replacement',
+      cwd: '/cwd',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'promotion ownership replacement',
+        cwd: '/cwd',
+        agentType: 'claude-code',
+      },
+    });
+    taskStore.pendTask(task.id);
+    let now = 8_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    vi.mocked(adapter.launch)
+      .mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+        options?.onSessionCreated?.('successor-session');
+        taskStore.addSession(taskId, {
+          tmuxSession: 'successor-session',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'successor-session';
+      });
+
+    try {
+      const stalePromotion = promotePendingTasks(deps);
+      await vi.waitFor(() => expect(adapter.launch).toHaveBeenCalledTimes(1));
+      now += 10 * 60 * 1_000 + 1;
+      expect(await promotePendingTasks(deps)).toBe(1);
+      rejectFirst(new Error('stale owner rejected'));
+      expect(await stalePromotion).toBe(0);
+
+      expect(adapter.stop).not.toHaveBeenCalledWith('successor-session');
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: [expect.objectContaining({
+          tmuxSession: 'successor-session',
+        })],
+      });
+      expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
     }
   });
 

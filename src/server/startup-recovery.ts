@@ -125,8 +125,13 @@ export async function runStartupRecoveryPhase({
     // already be accepting requests during startup recovery.
     for (const task of persistedTasks) {
       if (task.launchAdmission?.status === 'probing') {
+        const expectedProbeSessionId = task.launchAdmission.sessionId;
         const liveProbeSession = task.status === 'inProgress'
-          && task.sessions.some((session) => reconcileResult.resumed.includes(session.tmuxSession));
+          && task.sessions.some((session) =>
+            reconcileResult.resumed.includes(session.tmuxSession)
+            && (expectedProbeSessionId === undefined
+              || session.tmuxSession === expectedProbeSessionId),
+          );
         if (liveProbeSession) {
           // The adapter attached a worker before the previous process died.
           // Reconciliation proved it is still live, which is sufficient probe

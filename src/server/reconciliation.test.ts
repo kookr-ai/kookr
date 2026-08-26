@@ -171,6 +171,51 @@ describe('Startup Reconciliation', () => {
     expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
   });
 
+  test('retains an exact probe fence when its post-snapshot liveness check rejects', async () => {
+    const task = taskStore.createTask({
+      prompt: 'uncertain late probe',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-uncertain-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-uncertain-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    const snapshotBackend = {
+      listSessions: vi.fn().mockResolvedValue([]),
+      isAlive: vi.fn().mockRejectedValue(new Error('backend lookup unavailable')),
+    } as unknown as typeof backend;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await reconcile(taskStore, snapshotBackend);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(snapshotBackend.isAlive).toHaveBeenCalledWith('kookr-uncertain-probe');
+    expect(result.resumed).not.toContain('kookr-uncertain-probe');
+    expect(result.markedCompleted).not.toContain('kookr-uncertain-probe');
+    expect(result.dependencyProbeCleanupSettled).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: 'kookr-uncertain-probe' },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-uncertain-probe',
+      })],
+    });
+    expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+  });
+
   test('does not resume (SessionBridge-reattach) a launch-abandoned master linked to a terminated launch_timeout task (issue #2500)', async () => {
     // A launch that timed out: the task is terminated with a launch_timeout
     // disposition and the late dtach master was linked via

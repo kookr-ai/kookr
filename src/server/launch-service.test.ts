@@ -1335,6 +1335,62 @@ describe('launchTask', () => {
     });
   });
 
+  it('keeps a timed-out direct probe fenced until a late-created session is reaped', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      getLaunchTimeoutMs: () => 5,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    let reportLateSession!: () => void;
+    let expectedSessionId: string | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce(
+      async (_taskId, _prompt, _cwd, _resume, options) => {
+        expectedSessionId = options?.tmuxName;
+        reportLateSession = () => options?.onSessionCreated?.(expectedSessionId!);
+        return new Promise<string>(() => undefined);
+      },
+    );
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'late-created direct probe',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [],
+    });
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    reportLateSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })],
+    });
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
   it('fails closed before direct probe launch when the persistence barrier fails', async () => {
     const launchDependencyAdmission = new LaunchDependencyAdmission();
     launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);

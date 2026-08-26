@@ -529,6 +529,57 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     ]);
   });
 
+  test('does not treat an unrelated resumed session as the exact persisted probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'exact probe died while unrelated session survived',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'exact probe died while unrelated session survived',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'exact-dead-probe',
+      },
+    });
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: 'unrelated-live-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['unrelated-live-session'] }),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('exact-dead-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+  });
+
   test('newer confirmed degradation supersedes an older reconciled live probe', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();

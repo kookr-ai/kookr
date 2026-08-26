@@ -43,14 +43,21 @@ export function noteLaunchSession(
   agentType: AgentType,
   taskId: string,
   sessionId: string,
-): void {
+): Promise<void> | undefined {
   guard.sessionId = sessionId;
   if (guard.timedOut) {
-    void reapLateLaunchSession(guard, adapter, agentType, taskId, sessionId).catch(() => undefined);
+    return reapLaunchSession(guard, adapter, agentType, taskId, sessionId);
   }
+  return undefined;
 }
 
-function reapLateLaunchSession(
+/**
+ * Stop the physical session reported by this launch exactly once. Callers may
+ * await the shared promise; unlike a speculative stop of a preallocated id,
+ * resolution proves cleanup because `onSessionCreated` already proved the
+ * terminal exists.
+ */
+export function reapLaunchSession(
   guard: LaunchReapGuard,
   adapter: Pick<AgentAdapter, 'stop'>,
   agentType: AgentType,
@@ -73,9 +80,6 @@ function reapLateLaunchSession(
         `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
       );
       throw stopErr;
-    })
-    .finally(() => {
-      if (!guard.reaped) guard.reapPromise = undefined;
     });
   guard.reapPromise = attempt;
   return attempt;
@@ -116,7 +120,7 @@ export async function raceLaunchAgainstTimeout(
       if (ctx.reapGuard) {
         ctx.reapGuard.timedOut = true;
         if (ctx.reapKnownSessionOnTimeout && ctx.reapGuard.sessionId) {
-          void reapLateLaunchSession(
+          void reapLaunchSession(
             ctx.reapGuard,
             ctx.adapter,
             ctx.agentType,
@@ -128,7 +132,7 @@ export async function raceLaunchAgainstTimeout(
       launchPromise.then(
         (sessionId) => {
           if (ctx.reapGuard) {
-            void reapLateLaunchSession(
+            void reapLaunchSession(
               ctx.reapGuard,
               ctx.adapter,
               ctx.agentType,

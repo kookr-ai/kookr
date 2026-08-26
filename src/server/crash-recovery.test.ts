@@ -306,7 +306,7 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
   });
 
-  test('bounds a recovery launch and returns a failed probe to degraded', async () => {
+  test('bounds a recovery launch and retains ownership until late creation settles', async () => {
     const cwd = join(tempDir, 'project-timeout');
     const task = await setupCrashedTask('Provider recovery timeout', cwd);
     taskStore.getTaskForMutation(task.id)!.launchIntent = {
@@ -334,15 +334,75 @@ describe('Crash Recovery', () => {
 
     expect(launch).toHaveBeenCalledOnce();
     expect(result.relaunched).toHaveLength(0);
-    expect(result.failed).toHaveLength(0);
-    expect(result.skipped[0]?.reason).toContain('recovery probe failed and task was re-parked');
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timed out before session'),
+    })]);
+    expect(result.skipped).toHaveLength(0);
     expect(taskStore.getTask(task.id)).toMatchObject({
-      status: 'pending',
-      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      status: 'inProgress',
+      launchAdmission: { status: 'probing' },
     });
-    expect(admission.snapshot()).toEqual([
-      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
-    ]);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('reaps a recovery probe that creates its session after the timeout', async () => {
+    const cwd = join(tempDir, 'project-late-timeout-probe');
+    const task = await setupCrashedTask('Late recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Late recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let reportLateSession!: () => void;
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      reportLateSession = () => options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue(undefined);
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      getLaunchTimeoutMs: () => 5,
+      flushTasks: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timed out before session'),
+    })]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+    });
+
+    reportLateSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })]),
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
   });
 
   test('retains a timed-out recovery probe when physical cleanup rejects', async () => {

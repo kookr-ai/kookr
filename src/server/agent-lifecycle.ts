@@ -29,7 +29,9 @@ import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
+  isLaunchTimeoutError,
   noteLaunchSession,
+  reapLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
 } from './launch-timeout.js';
@@ -449,12 +451,23 @@ async function stopAllLiveSessions(
 function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void {
   for (const session of task.sessions) {
     if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
-      deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
+      const isProbeCleanupSession = task.launchAdmission?.status === 'probing'
+        && task.launchAdmission.sessionId === session.tmuxSession;
+      // An exact probe session carries cleanup ownership. Do not manufacture
+      // dead evidence before the background physical stop resolves: a rejected
+      // stop must leave both its durable marker and live-looking session for
+      // reconciliation/startup to fence.
+      if (!isProbeCleanupSession) {
+        deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
+      }
       unregisterTranscript(session.tmuxSession, deps);
       forgetSessionBookkeeping(session.tmuxSession, deps);
       void (async () => {
         await persistSessionTailBestEffort(task.id, session.tmuxSession, deps);
         await deps.adapter.stop(session.tmuxSession);
+        if (isProbeCleanupSession) {
+          deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
+        }
       })().catch((err) => {
         console.warn(
           `[lifecycle] background cleanup failed for ${session.tmuxSession}:`,
@@ -1080,6 +1093,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     let adapterLaunchStarted = false;
     let launchAdapter: AgentAdapter | undefined;
     let admissionMarkerWrittenByOwner: Task['launchAdmission'];
+    let expectedProbeSessionId: string | undefined;
     const launchReapGuard: LaunchReapGuard = { reaped: false };
     const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
     try {
@@ -1106,13 +1120,54 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         ? effectivePrompt
         : pending.launchNote ? `${pending.launchNote}\n\n${effectivePrompt}` : effectivePrompt;
       const pins = launchIntentPins(intent.intent);
-      const probeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
+      expectedProbeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
         ? allocateLaunchSessionId()
         : undefined;
       const adapterOpts = {
         ...pins,
         onSessionCreated: (sessionId: string) => {
-          noteLaunchSession(launchReapGuard, adapter, pending.agentType, pending.id, sessionId);
+          const lateCleanup = noteLaunchSession(
+            launchReapGuard,
+            adapter,
+            pending.agentType,
+            pending.id,
+            sessionId,
+          );
+          if (!lateCleanup) return;
+          try {
+            taskStore.recordAbandonedLaunchSession(pending.id, {
+              tmuxSession: sessionId,
+              agentType: pending.agentType,
+              cwd: pending.cwd,
+              createdAt: new Date(),
+            });
+            taskStore.updateSession(pending.id, sessionId, { lastStatus: undefined });
+          } catch {
+            // The adapter may attach immediately after reporting creation.
+          }
+          void lateCleanup.then(
+            async () => {
+              try {
+                taskStore.updateSession(pending.id, sessionId, { lastStatus: 'aborted' });
+              } catch {
+                // Task deletion after proven cleanup needs no bookkeeping.
+              }
+              await lifecycleDeps.flushTasks().catch(() => undefined);
+            },
+            async () => {
+              const current = taskStore.getTask(pending.id);
+              if (
+                admissionMarkerWrittenByOwner?.status === 'probing'
+                && isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)
+              ) {
+                lifecycleDeps.launchDependencyAdmission?.retainProbeCleanup(
+                  admissionMarkerWrittenByOwner.dependencies,
+                  pending.id,
+                );
+              }
+              await lifecycleDeps.flushTasks().catch(() => undefined);
+            },
+          );
         },
         ...(intent.intent.ralphVerdictEnv
           ? {
@@ -1122,10 +1177,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
               },
             }
           : {}),
-        ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
+        ...(expectedProbeSessionId ? { tmuxName: expectedProbeSessionId } : {}),
       };
       if (dependencyAdmission?.admit && dependencyAdmission.probe) {
-        const probeAdmission = taskAdmissionForProbe(dependencyAdmission, nowISO(), probeSessionId);
+        const probeAdmission = taskAdmissionForProbe(
+          dependencyAdmission,
+          nowISO(),
+          expectedProbeSessionId,
+        );
         admissionMarkerWrittenByOwner = probeAdmission;
         taskStore.setLaunchAdmission(
           pending.id,
@@ -1138,12 +1197,19 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         const currentAfterBarrier = taskStore.getTask(pending.id);
         if (!currentAfterBarrier || currentAfterBarrier.status !== 'pending') {
           lifecycleDeps.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+          if (isSameTaskLaunchAdmission(
+            currentAfterBarrier?.launchAdmission,
+            admissionMarkerWrittenByOwner,
+          )) {
+            taskStore.setLaunchAdmission(pending.id, undefined);
+            taskStore.setLaunchHealthSummary(pending.id, undefined);
+          }
           continue;
         }
         if (
           !taskStore.ownsLaunchReservation(pending.id, launchReservationToken)
           || currentAfterBarrier.launchAdmission?.status !== 'probing'
-          || currentAfterBarrier.launchAdmission.sessionId !== probeSessionId
+          || currentAfterBarrier.launchAdmission.sessionId !== expectedProbeSessionId
         ) {
           // A persistence wait may outlive the reservation TTL. A newer
           // promoter can then own this task and replace our marker. Never let
@@ -1253,11 +1319,17 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // healthy launch rejection can leave an unowned process behind.
       let failedSessionReapError: unknown;
       let failedLaunchSessionId: string | undefined;
+      const ownedLaunchAtFailure = taskStore.ownsLaunchReservation(
+        pending.id,
+        launchReservationToken,
+      );
       if (!adapterLaunchSettled) {
         const failedSessionId = launchReapGuard.sessionId
-          ?? taskStore.getTask(pending.id)?.sessions
-            .filter((session) => !priorSessionIds.has(session.tmuxSession))
-            .at(-1)?.tmuxSession;
+          ?? (ownedLaunchAtFailure
+            ? taskStore.getTask(pending.id)?.sessions
+              .filter((session) => !priorSessionIds.has(session.tmuxSession))
+              .at(-1)?.tmuxSession
+            : undefined);
         if (failedSessionId) {
           failedLaunchSessionId = failedSessionId;
           try {
@@ -1278,8 +1350,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
             const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
             try {
               await (launchReapGuard.reapPromise
-                ?? Promise.resolve(adapter.stop(failedSessionId)));
-              launchReapGuard.reaped = true;
+                ?? reapLaunchSession(
+                  launchReapGuard,
+                  adapter,
+                  pending.agentType,
+                  pending.id,
+                  failedSessionId,
+                ));
               taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
             } catch (stopErr) {
               failedSessionReapError = stopErr;
@@ -1289,6 +1366,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
               );
             }
           }
+        } else if (
+          dependencyAdmission?.admit
+          && dependencyAdmission.probe
+          && expectedProbeSessionId
+          && isLaunchTimeoutError(err)
+        ) {
+          failedLaunchSessionId = expectedProbeSessionId;
+          failedSessionReapError = new Error(
+            `dependency probe launch timed out before session ${expectedProbeSessionId} creation settled`,
+          );
         }
       }
       if (
@@ -1302,26 +1389,45 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         // active so later promotion cannot overwrite that marker; startup can
         // reconcile it as live or retry the physical reap.
         const current = taskStore.getTask(pending.id);
-        if (admissionMarkerWrittenByOwner?.status === 'probing') {
+        if (
+          admissionMarkerWrittenByOwner?.status === 'probing'
+          && isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)
+        ) {
           lifecycleDeps.launchDependencyAdmission?.retainProbeCleanup(
             admissionMarkerWrittenByOwner.dependencies,
             pending.id,
           );
         }
-        if (current && !isTerminalStatus(current.status)) {
-          if (failedLaunchSessionId) {
+        if (
+          current
+          && !isTerminalStatus(current.status)
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
+        ) {
+          if (failedLaunchSessionId && current.sessions.some(
+            (session) => session.tmuxSession === failedLaunchSessionId,
+          )) {
             taskStore.updateSession(pending.id, failedLaunchSessionId, { lastStatus: undefined });
           }
           if (current.status === 'pending' || current.status === 'open') {
             taskStore.startTask(pending.id);
           }
-        } else if (current && admissionMarkerWrittenByOwner?.status === 'probing') {
+        } else if (
+          current
+          && admissionMarkerWrittenByOwner?.status === 'probing'
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
+        ) {
           // Cancellation may have won after the physical session was linked
           // but before stop rejected. Restore the exact cleanup-only marker on
           // the terminal task so restart remains fail-closed until that
           // session is proven absent.
           taskStore.setLaunchAdmission(pending.id, admissionMarkerWrittenByOwner);
         }
+        await lifecycleDeps.flushTasks().catch((flushErr) => {
+          console.error(
+            `[promotion] Failed to persist retained cleanup fence for task ${pending.id}:`,
+            flushErr instanceof Error ? flushErr.message : flushErr,
+          );
+        });
         blockedByDependency.add(pending.id);
         console.error(
           `[promotion] Failed probe session remains cleanup-fenced for task ${pending.id}:`,
@@ -1333,6 +1439,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       }
       if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
         const current = taskStore.getTask(pending.id);
+        if (!isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)) {
+          console.warn(`[promotion] Ignoring stale failed probe owner for task ${pending.id}`);
+          continue;
+        }
         if (
           !current
           || current.status === 'completed'
@@ -1371,6 +1481,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       }
       // If launch fails, cancel the task rather than leaving it pending forever
       console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
+      const taskAtFailure = taskStore.getTask(pending.id);
+      const hasForeignLiveSession = taskAtFailure?.sessions.some(
+        (session) => session.tmuxSession !== failedLaunchSessionId
+          && session.lastStatus !== 'completed'
+          && session.lastStatus !== 'aborted',
+      ) ?? false;
+      if (!ownedLaunchAtFailure && (!failedLaunchSessionId || hasForeignLiveSession)) {
+        console.warn(`[promotion] Ignoring stale failed launch owner for task ${pending.id}`);
+        continue;
+      }
       try {
         taskStore.cancelTask(pending.id);
       } catch (cancelErr) {

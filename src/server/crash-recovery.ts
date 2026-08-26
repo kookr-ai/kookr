@@ -31,7 +31,9 @@ import {
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
+  isLaunchTimeoutError,
   noteLaunchSession,
+  reapLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
 } from './launch-timeout.js';
@@ -365,26 +367,68 @@ export async function recoverCrashedSessions(
       let adapterLaunchSettled = false;
       let adapterLaunchStarted = false;
       let launchAdapter: AgentAdapter | undefined;
+      let expectedProbeSessionId: string | undefined;
       const launchReapGuard: LaunchReapGuard = { reaped: false };
       const priorSessionIds = new Set(task.sessions.map((candidate) => candidate.tmuxSession));
       try {
         const adapter = adapterRegistry.get(task.agentType);
         launchAdapter = adapter;
-        const probeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
+        expectedProbeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
           ? allocateLaunchSessionId()
           : undefined;
         const launchOptions = {
           ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
           onSessionCreated: (sessionId: string) => {
-            noteLaunchSession(launchReapGuard, adapter, task.agentType, task.id, sessionId);
+            const lateCleanup = noteLaunchSession(
+              launchReapGuard,
+              adapter,
+              task.agentType,
+              task.id,
+              sessionId,
+            );
+            if (!lateCleanup) return;
+            try {
+              taskStore.recordAbandonedLaunchSession(task.id, {
+                tmuxSession: sessionId,
+                agentType: task.agentType,
+                cwd: originalCwd,
+                createdAt: new Date(),
+              });
+              taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
+            } catch {
+              // The adapter may attach immediately after reporting creation.
+            }
+            void lateCleanup.then(
+              async () => {
+                try {
+                  taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+                } catch {
+                  // Task deletion after proven cleanup needs no bookkeeping.
+                }
+                await options.flushTasks?.().catch(() => undefined);
+              },
+              async () => {
+                const current = taskStore.getTask(task.id);
+                if (
+                  admissionMarkerWrittenByOwner?.status === 'probing'
+                  && isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)
+                ) {
+                  options.launchDependencyAdmission?.retainProbeCleanup(
+                    admissionMarkerWrittenByOwner.dependencies,
+                    task.id,
+                  );
+                }
+                await options.flushTasks?.().catch(() => undefined);
+              },
+            );
           },
-          ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
+          ...(expectedProbeSessionId ? { tmuxName: expectedProbeSessionId } : {}),
         };
         if (dependencyAdmission?.admit && dependencyAdmission.probe) {
           const probeAdmission = taskAdmissionForProbe(
             dependencyAdmission,
             new Date().toISOString(),
-            probeSessionId,
+            expectedProbeSessionId,
           );
           admissionMarkerWrittenByOwner = probeAdmission;
           taskStore.setLaunchAdmission(task.id, probeAdmission);
@@ -394,6 +438,13 @@ export async function recoverCrashedSessions(
           const currentAfterBarrier = taskStore.getTask(task.id);
           if (!currentAfterBarrier || currentAfterBarrier.status !== 'open') {
             options.launchDependencyAdmission?.releaseProbe(dependencyAdmission.probe);
+            if (isSameTaskLaunchAdmission(
+              currentAfterBarrier?.launchAdmission,
+              admissionMarkerWrittenByOwner,
+            )) {
+              taskStore.setLaunchAdmission(task.id, undefined);
+              taskStore.setLaunchHealthSummary(task.id, undefined);
+            }
             result.skipped.push({
               taskId: task.id,
               sessionId: tmuxName,
@@ -523,10 +574,16 @@ export async function recoverCrashedSessions(
         // launch failure so healthy/no-probe recovery cannot leak an orphan.
         let failedSessionReapError: unknown;
         let failedLaunchSessionId: string | undefined;
+        const ownedLaunchAtFailure = taskStore.ownsLaunchReservation(
+          task.id,
+          launchReservationToken,
+        );
         if (!adapterLaunchSettled) {
-          const failedSessionId = launchReapGuard.sessionId ?? taskStore.getTask(task.id)?.sessions
-            .filter((candidate) => !priorSessionIds.has(candidate.tmuxSession))
-            .at(-1)?.tmuxSession;
+          const failedSessionId = launchReapGuard.sessionId ?? (ownedLaunchAtFailure
+            ? taskStore.getTask(task.id)?.sessions
+              .filter((candidate) => !priorSessionIds.has(candidate.tmuxSession))
+              .at(-1)?.tmuxSession
+            : undefined);
           if (failedSessionId) {
             failedLaunchSessionId = failedSessionId;
             try {
@@ -547,37 +604,82 @@ export async function recoverCrashedSessions(
               const adapter = launchAdapter ?? adapterRegistry.get(task.agentType);
               try {
                 await (launchReapGuard.reapPromise
-                  ?? Promise.resolve(adapter.stop(failedSessionId)));
-                launchReapGuard.reaped = true;
+                  ?? reapLaunchSession(
+                    launchReapGuard,
+                    adapter,
+                    task.agentType,
+                    task.id,
+                    failedSessionId,
+                  ));
                 taskStore.updateSession(task.id, failedSessionId, { lastStatus: 'aborted' });
               } catch (stopErr) {
                 failedSessionReapError = stopErr;
               }
             }
+          } else if (
+            dependencyAdmission?.admit
+            && dependencyAdmission.probe
+            && expectedProbeSessionId
+            && isLaunchTimeoutError(err)
+          ) {
+            failedLaunchSessionId = expectedProbeSessionId;
+            failedSessionReapError = new Error(
+              `dependency probe launch timed out before session ${expectedProbeSessionId} creation settled`,
+            );
           }
         }
         if (failedSessionReapError) {
           if (dependencyAdmission?.admit && dependencyAdmission.probe) {
             const current = taskStore.getTask(task.id);
-            if (admissionMarkerWrittenByOwner?.status === 'probing') {
+            if (
+              admissionMarkerWrittenByOwner?.status === 'probing'
+              && isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)
+            ) {
               options.launchDependencyAdmission?.retainProbeCleanup(
                 admissionMarkerWrittenByOwner.dependencies,
                 task.id,
               );
             }
-            if (current && !isTerminalStatus(current.status)) {
-              if (failedLaunchSessionId) {
+            if (
+              current
+              && !isTerminalStatus(current.status)
+              && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
+            ) {
+              if (failedLaunchSessionId && current.sessions.some(
+                (session) => session.tmuxSession === failedLaunchSessionId,
+              )) {
                 taskStore.updateSession(task.id, failedLaunchSessionId, { lastStatus: undefined });
               }
               if (current.status === 'pending' || current.status === 'open') {
                 taskStore.startTask(task.id);
               }
-            } else if (current && admissionMarkerWrittenByOwner?.status === 'probing') {
+            } else if (
+              current
+              && admissionMarkerWrittenByOwner?.status === 'probing'
+              && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner)
+            ) {
               taskStore.setLaunchAdmission(task.id, admissionMarkerWrittenByOwner);
             }
+            await options.flushTasks?.().catch((flushErr) => {
+              console.error(
+                `[crash-recovery] Failed to persist retained cleanup fence for task ${task.id}:`,
+                flushErr instanceof Error ? flushErr.message : flushErr,
+              );
+            });
           } else {
             const current = taskStore.getTask(task.id);
-            if (current && !isTerminalStatus(current.status)) taskStore.cancelTask(task.id);
+            const hasForeignLiveSession = current?.sessions.some(
+              (session) => session.tmuxSession !== failedLaunchSessionId
+                && session.lastStatus !== 'completed'
+                && session.lastStatus !== 'aborted',
+            ) ?? false;
+            if (
+              current
+              && !isTerminalStatus(current.status)
+              && (ownedLaunchAtFailure || (failedLaunchSessionId && !hasForeignLiveSession))
+            ) {
+              taskStore.cancelTask(task.id);
+            }
           }
           result.failed.push({
             taskId: task.id,
@@ -591,6 +693,17 @@ export async function recoverCrashedSessions(
         }
         if (dependencyAdmission?.admit && dependencyAdmission.probe && !adapterLaunchSettled) {
           const currentAtFailure = taskStore.getTask(task.id);
+          if (!isSameTaskLaunchAdmission(
+            currentAtFailure?.launchAdmission,
+            admissionMarkerWrittenByOwner,
+          )) {
+            result.failed.push({
+              taskId: task.id,
+              sessionId: tmuxName,
+              error: `stale failed dependency probe owner: ${err instanceof Error ? err.message : String(err)}`,
+            });
+            continue;
+          }
           if (
             !currentAtFailure
             || currentAtFailure.status === 'completed'

@@ -855,15 +855,12 @@ export class TaskStore {
     }
     const now = new Date();
     const dependencyAdmission = task.launchAdmission !== undefined;
-    const dependencyCleanupSessionId = task.launchAdmission?.status === 'probing'
-      ? task.launchAdmission.sessionId
-      : undefined;
-    const dependencyCleanupFence = dependencyCleanupSessionId !== undefined
-      && task.sessions.some(
-        (session) => session.tmuxSession === dependencyCleanupSessionId
-          && session.lastStatus !== 'completed'
-          && session.lastStatus !== 'aborted',
-      );
+    // A probing marker is physical-cleanup ownership even before the adapter's
+    // create-before-attach callback adds its exact session to the task. Keep it
+    // through the terminal transition even when a stop just succeeded so the
+    // runtime reconciler can atomically release both the durable marker and
+    // process-local cleanup owner.
+    const dependencyCleanupFence = task.launchAdmission?.status === 'probing';
     task.status = to;
     task.updatedAt = now;
     if (isTerminalStatus(to)) {

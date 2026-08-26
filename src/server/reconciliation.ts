@@ -229,8 +229,9 @@ export async function reconcile(
     // A durable probe marker means this was an admission attempt, not an
     // ordinary worker that should become terminal. If its session died with
     // the server, preserve the same launch intent for another bounded probe.
-    // This conversion happens before terminal transitions, whose invariant is
-    // that every admission marker is cleared.
+    // This conversion happens before ordinary terminal transitions. Cleanup-
+    // only probing markers deliberately survive terminal state until this
+    // reconciler proves their exact session absent.
     if (
       latestTask.launchAdmission?.status === 'probing'
       && (latestTask.status === 'inProgress' || latestTask.status === 'open')

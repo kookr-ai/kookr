@@ -29,6 +29,8 @@ interface CircuitEntry {
   lastChangedAt: number;
   reason?: string;
   probeToken?: string;
+  /** Confirmed provider failure observed after the current probe was claimed. */
+  probeInvalidated?: boolean;
   startupRecoveryOwners?: Set<string>;
 }
 
@@ -80,6 +82,7 @@ export class LaunchDependencyAdmission {
       const confirmed = relevant.find((finding) => finding.category !== 'unknown');
       if (confirmed) {
         entry.reason = confirmed.summary;
+        if (entry.probeToken !== undefined) entry.probeInvalidated = true;
         this.transition(entry, 'degraded');
       } else {
         entry.reason = relevant[0]?.summary;
@@ -126,7 +129,9 @@ export class LaunchDependencyAdmission {
 
     const token = `launch-dependency-probe-${++this.probeSequence}`;
     for (const snapshot of halfOpen) {
-      this.entries.get(snapshot.dependency)!.probeToken = token;
+      const entry = this.entries.get(snapshot.dependency)!;
+      entry.probeToken = token;
+      entry.probeInvalidated = false;
     }
     return {
       admit: true,
@@ -140,9 +145,11 @@ export class LaunchDependencyAdmission {
     for (const dependency of probe.dependencies) {
       const entry = this.entries.get(dependency);
       if (!entry || entry.probeToken !== probe.token) continue;
+      const invalidated = entry.probeInvalidated === true;
       entry.probeToken = undefined;
-      entry.reason = healthy ? undefined : 'Recovery probe failed';
-      this.transition(entry, healthy ? 'healthy' : 'degraded');
+      entry.probeInvalidated = undefined;
+      entry.reason = healthy && !invalidated ? undefined : entry.reason ?? 'Recovery probe failed';
+      this.transition(entry, healthy && !invalidated ? 'healthy' : 'degraded');
     }
   }
 
@@ -151,7 +158,9 @@ export class LaunchDependencyAdmission {
     if (!probe || probe.dependencies.length === 0) return false;
     return probe.dependencies.every((dependency) => {
       const entry = this.entries.get(dependency);
-      return entry?.state === 'half_open' && entry.probeToken === probe.token;
+      return entry?.state === 'half_open'
+        && entry.probeToken === probe.token
+        && entry.probeInvalidated !== true;
     });
   }
 
@@ -160,7 +169,11 @@ export class LaunchDependencyAdmission {
     if (!probe) return;
     for (const dependency of probe.dependencies) {
       const entry = this.entries.get(dependency);
-      if (entry?.probeToken === probe.token) entry.probeToken = undefined;
+      if (entry?.probeToken !== probe.token) continue;
+      const invalidated = entry.probeInvalidated === true;
+      entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
+      if (invalidated) this.transition(entry, 'degraded');
     }
   }
 
@@ -177,6 +190,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = dependency.reason ?? 'Dependency was parked before restart';
       entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
     }
   }
@@ -196,6 +210,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = 'Interrupted recovery probe cleanup is in progress';
       entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners ??= new Set();
       entry.startupRecoveryOwners.add(ownerToken);
     }
@@ -225,6 +240,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = undefined;
       entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
     }
   }
@@ -242,6 +258,7 @@ export class LaunchDependencyAdmission {
     for (const dependency of dependencies) {
       const entry = this.entry(dependency.dependency);
       entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
       if (outcome === 'parked') {
         entry.reason = 'Recovery probe ended before successful admission';
@@ -273,6 +290,7 @@ export class LaunchDependencyAdmission {
       entry.lastChangedAt = this.now();
       entry.reason = undefined;
       entry.probeToken = undefined;
+      entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
     }
   }
@@ -305,7 +323,6 @@ export class LaunchDependencyAdmission {
     if (entry.state === state) return;
     entry.state = state;
     entry.lastChangedAt = this.now();
-    if (state !== 'half_open') entry.probeToken = undefined;
   }
 }
 

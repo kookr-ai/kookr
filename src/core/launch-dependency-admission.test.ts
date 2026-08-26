@@ -90,7 +90,7 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
-  test('recognizes only the current half-open probe token as active', () => {
+  test('keeps a probe invalidated by confirmed failure fenced until its owner settles', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.observe(['kb'], [failure]);
     admission.observe(['kb'], []);
@@ -101,6 +101,22 @@ describe('LaunchDependencyAdmission', () => {
 
     admission.observe(['kb'], [failure]);
     expect(admission.isProbeActive(decision.probe)).toBe(false);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    admission.completeProbe(decision.probe, true);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
 
     admission.observe(['kb'], []);
     const replacement = admission.evaluate(['kb']);

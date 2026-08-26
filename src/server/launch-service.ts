@@ -77,7 +77,9 @@ import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
   isLaunchTimeoutError,
+  reapLaunchSession,
   raceLaunchAgainstTimeout,
+  type LaunchReapGuard,
 } from './launch-timeout.js';
 
 export {
@@ -1871,7 +1873,7 @@ async function launchTaskCore(
   // dtach pressure), which is exactly what tripped the soft bound. The adapter
   // reports the master id via `onSessionCreated` the moment it exists; we record
   // it here and, once (or if already) timed out, link + kill it.
-  const abandon: { timedOut: boolean; sessionId: string | undefined; reaped: boolean } = {
+  const abandon: LaunchReapGuard = {
     timedOut: false,
     sessionId: undefined,
     reaped: false,
@@ -1879,7 +1881,8 @@ async function launchTaskCore(
   const linkAndReapAbandonedSession = (sessionId: string): void => {
     // Link first (terminal-safe, idempotent) so the reaper owns the master as a
     // `terminal-task-leak` (60s) even if the async kill below races a sweep,
-    // and so a restart never re-attaches it (recorded `lastStatus: 'aborted'`).
+    // and so a restart never re-attaches it. Its status stays unknown until
+    // physical stop resolves, then becomes `aborted`.
     try {
       taskStore.recordAbandonedLaunchSession(task.id, {
         tmuxSession: sessionId,
@@ -1887,14 +1890,16 @@ async function launchTaskCore(
         cwd: opts.cwd,
         createdAt: new Date(),
       });
+      // `recordAbandonedLaunchSession` defaults to aborted for historical
+      // terminal leaks. This launch still has an in-flight physical stop, so
+      // keep it live-looking until that stop actually resolves.
+      taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
     } catch (linkErr) {
       console.warn(
         `[launch] failed to link abandoned session ${sessionId} to task ${task.id}: ` +
         `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
       );
     }
-    if (abandon.reaped) return;
-    abandon.reaped = true;
     // Operator signal (issue #2500): the incident that motivated this fix was
     // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
     // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
@@ -1912,8 +1917,14 @@ async function launchTaskCore(
     // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
     // #1528 race helper does the same on a late RESOLUTION; this covers the
     // common case where the launch never resolves at all).
-    void Promise.resolve(adapter.stop(sessionId)).then(
+    void reapLaunchSession(abandon, adapter, agentType, task.id, sessionId).then(
       () => {
+        try {
+          taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+        } catch {
+          // A concurrent task purge may remove the bookkeeping after the
+          // physical stop. Cleanup is already proven in that case.
+        }
         void appendAuditRow(deps.auditLogPath, {
           type: 'session.reap',
           timestamp: nowISO(),
@@ -1996,6 +2007,10 @@ async function launchTaskCore(
       const current = taskStore.getTask(task.id);
       if (!current || isTerminalStatus(current.status)) {
         deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        if (isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)) {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
         taskStore.endLaunch(task.id, launchReservationToken);
         throw new Error(`Task ${task.id} changed state while its probe marker was persisted`);
       }
@@ -2093,32 +2108,28 @@ async function launchTaskCore(
             // stop below remains the physical source of truth either way.
           }
         }
-        if (!abandon.reaped) {
+        if (failedProbeSessionWasReported && !abandon.reaped) {
           try {
-            await Promise.resolve(adapter.stop(failedProbeSessionId));
-            abandon.reaped = true;
-            if (failedProbeSessionWasReported) {
-              taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: 'aborted' });
-            }
+            await (abandon.reapPromise
+              ?? reapLaunchSession(abandon, adapter, agentType, task.id, failedProbeSessionId));
+            taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: 'aborted' });
           } catch (stopErr) {
             failedProbeCleanupError = stopErr;
-            if (!failedProbeSessionWasReported) {
-              // No callback proved creation, but a rejected stop also could
-              // not prove absence. Persist the preallocated exact id as an
-              // unknown session so runtime reconciliation owns the ambiguity.
-              taskStore.recordAbandonedLaunchSession(task.id, {
-                tmuxSession: failedProbeSessionId,
-                agentType,
-                cwd: opts.cwd,
-                createdAt: new Date(),
-              });
-              taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: undefined });
-            }
             console.warn(
               `[launch] Could not stop failed dependency-probe session ${failedProbeSessionId} `
               + `for task ${task.id}: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
             );
           }
+        } else if (!failedProbeSessionWasReported && isLaunchTimeoutError(err)) {
+          // The bounded await expired before createSession reported the exact
+          // preallocated id. A speculative stop can succeed merely because the
+          // socket does not exist *yet*; it cannot prove that the abandoned
+          // adapter will not create it later. Retain durable + in-process probe
+          // ownership until a late callback is physically reaped or startup
+          // kills the exact id.
+          failedProbeCleanupError = new Error(
+            `dependency probe launch timed out before session ${failedProbeSessionId} creation settled`,
+          );
         }
       }
       phaseTracker.abort();
@@ -2143,6 +2154,12 @@ async function launchTaskCore(
         } else if (currentAfterCleanup && admissionMarkerWrittenByOwner?.status === 'probing') {
           taskStore.setLaunchAdmission(task.id, admissionMarkerWrittenByOwner);
         }
+        await deps.flushTasks().catch((flushErr) => {
+          console.error(
+            `[launch] Failed to persist retained dependency-probe cleanup fence for task ${task.id}: `
+            + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+          );
+        });
         taskStore.endLaunch(task.id, launchReservationToken);
         deps.launchOutcomeMetrics?.record({
           agentType,
