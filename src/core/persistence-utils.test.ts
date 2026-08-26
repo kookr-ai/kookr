@@ -12,11 +12,54 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
 
+// The ESM namespace of node:fs/promises isn't configurable, so we can't spyOn
+// its exports. Instead mock the module once and drive the parent-directory
+// fsync's behavior (opened with flag 'r') from this hoisted, mutable state.
+// Temp-file opens (flag 'w') pass through untouched.
+const dirSyncControl = vi.hoisted(() => ({
+  // Errno to inject for the directory handle (flag 'r'). null = no failure.
+  failureCode: null as string | null,
+  // When true, the failure is raised by open(dir,'r') itself (outer branch);
+  // when false, it's raised by handle.sync() (inner branch).
+  failOnOpen: false,
+  paths: [] as string[],
+}));
+
+vi.mock('node:fs/promises', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: vi.fn(async (path: string, flags?: string | number, mode?: number) => {
+      if (flags === 'r') {
+        dirSyncControl.paths.push(String(path));
+        if (dirSyncControl.failureCode !== null && dirSyncControl.failOnOpen) {
+          const err = new Error('mock directory open failure') as NodeJS.ErrnoException;
+          err.code = dirSyncControl.failureCode;
+          throw err;
+        }
+      }
+      const handle = await actual.open(path, flags as never, mode);
+      if (flags === 'r' && dirSyncControl.failureCode !== null) {
+        const code = dirSyncControl.failureCode;
+        handle.sync = async () => {
+          const err = new Error('mock directory fsync failure') as NodeJS.ErrnoException;
+          err.code = code;
+          throw err;
+        };
+      }
+      return handle;
+    }),
+  };
+});
+
 describe('atomicWriteFile', () => {
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-atomic-write-'));
+    dirSyncControl.failureCode = null;
+    dirSyncControl.failOnOpen = false;
+    dirSyncControl.paths = [];
   });
 
   afterEach(() => {
@@ -61,6 +104,73 @@ describe('atomicWriteFile', () => {
 
     await expect(atomicWriteFile(filePath, '{"ok":true}')).rejects.toThrow();
     expect(readdirSync(tempDir).filter((entry) => entry.startsWith('.tmp-'))).toEqual([]);
+  });
+
+  test('fsyncs the parent directory after the rename on success', async () => {
+    const filePath = join(tempDir, 'durable.json');
+
+    await atomicWriteFile(filePath, '{"ok":true}');
+
+    // Step 3 ran against the parent directory, and the file landed intact.
+    expect(dirSyncControl.paths).toContain(tempDir);
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+  });
+
+  test('tolerates an unsupported directory fsync (EINVAL) as a successful write', async () => {
+    dirSyncControl.failureCode = 'EINVAL';
+    const filePath = join(tempDir, 'nofsyncdir.json');
+
+    // Filesystems that reject fsync on a directory fd must not fail the write.
+    await expect(atomicWriteFile(filePath, '{"ok":true}')).resolves.toBeUndefined();
+    expect(dirSyncControl.paths).toContain(tempDir);
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+  });
+
+  test('surfaces a genuine directory fsync failure while leaving the file visible', async () => {
+    dirSyncControl.failureCode = 'EIO';
+    const filePath = join(tempDir, 'ambiguous.json');
+
+    // A real I/O error on the directory fsync is ambiguous: the rename already
+    // made the file visible, so we reject (documenting the durability gap) but
+    // the new contents are already on the final path.
+    await expect(atomicWriteFile(filePath, '{"ok":true}')).rejects.toThrow(/parent[\s\S]*directory/i);
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+    expect(readdirSync(tempDir).filter((entry) => entry.startsWith('.tmp-'))).toEqual([]);
+  });
+
+  test('tolerates an unsupported failure opening the directory (EACCES) as success', async () => {
+    // The durability fsync must also open the directory; a filesystem/platform
+    // that won't let us open it read-only (EACCES) is treated as unsupported,
+    // not as a write failure. Exercises fsyncDirectory's open() branch.
+    dirSyncControl.failureCode = 'EACCES';
+    dirSyncControl.failOnOpen = true;
+    const filePath = join(tempDir, 'noopendir.json');
+
+    await expect(atomicWriteFile(filePath, '{"ok":true}')).resolves.toBeUndefined();
+    expect(dirSyncControl.paths).toContain(tempDir);
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+  });
+
+  test('surfaces a genuine failure opening the directory while leaving the file visible', async () => {
+    // A genuine I/O error opening the directory (EIO, not in the unsupported
+    // set) is surfaced, but the rename already made the file visible.
+    dirSyncControl.failureCode = 'EIO';
+    dirSyncControl.failOnOpen = true;
+    const filePath = join(tempDir, 'openfail.json');
+
+    const error = await atomicWriteFile(filePath, '{"ok":true}').catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error & { cause?: NodeJS.ErrnoException }).cause?.code).toBe('EIO');
+    expect(readFileSync(filePath, 'utf-8')).toBe('{"ok":true}');
+  });
+
+  test('wraps the underlying directory fsync error as the cause', async () => {
+    dirSyncControl.failureCode = 'EIO';
+    const filePath = join(tempDir, 'cause.json');
+
+    const error = await atomicWriteFile(filePath, '{"ok":true}').catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error & { cause?: NodeJS.ErrnoException }).cause?.code).toBe('EIO');
   });
 });
 
