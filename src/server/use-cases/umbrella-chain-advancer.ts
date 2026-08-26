@@ -13,6 +13,12 @@ import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../../core/autonomous-r
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
 import { withCrossProcessLock } from '../cross-process-lock.js';
 import { evaluateIndependentReview, isSelfAdvancingDisabled } from '../self-advancing-authority.js';
+import {
+  auditReviewGate,
+  phaseIndependentReviewInput,
+  phaseReviewGateAuditInput,
+  type ReviewGateAuditStatus,
+} from '../review-gate-audit.js';
 import { UmbrellaChainClaimStore } from '../umbrella-chain-claim-store.js';
 
 export type UmbrellaChainAdvancerMode = 'off' | 'observe' | 'spawn';
@@ -117,42 +123,29 @@ function reviewClaimKey(phaseKey: string, attempt: number): string {
   return `${phaseKey}:review:${attempt}`;
 }
 
+// The post-merge review-gate audit itself is a pure predicate that lives in
+// `../review-gate-audit.ts` (the single source of truth for "did this auto-merge
+// have a passing independent verdict from a distinct task id?"). These helpers
+// adapt it to ledger phases; the registry-backed independence check that needs
+// the live task graph stays on the advancer (`findReviewAuditBlocker`).
 function reviewAuditBlocker(
   phases: readonly PhaseLedgerPhase[],
   currentHeadByPr: ReadonlyMap<number, string> = new Map(),
 ): PhaseLedgerPhase | undefined {
-  return phases.find((candidate) => {
-    if (candidate.prNumber === undefined) return false;
-    if (candidate.mergedAt !== undefined && candidate.reviewedAt !== undefined
-      && Date.parse(candidate.reviewedAt) <= Date.parse(candidate.mergedAt)) return true;
-    if (candidate.taskId === undefined || candidate.reviewedAt === undefined) return true;
-    const currentHeadSha = currentHeadByPr.get(candidate.prNumber);
-    const decision = evaluatePhaseReview(candidate, currentHeadSha);
-    return decision.decision !== 'merge-allowed';
-  });
+  return phases.find((candidate) =>
+    auditReviewGate(phaseReviewGateAuditInput(candidate, currentHeadByPr.get(candidate.prNumber ?? -1))).flagged);
 }
 
 function evaluatePhaseReview(phase: PhaseLedgerPhase, currentHeadSha?: string) {
   if (phase.taskId === undefined || phase.reviewedAt === undefined) {
     return { decision: 'retry-review' as const, reason: 'review is missing' };
   }
-  return evaluateIndependentReview({
-    implementerLineage: [phase.taskId],
-    reviewerTaskId: phase.reviewerTaskId,
-    reviewerRan: phase.reviewerTaskId !== undefined || phase.reviewVerdict !== undefined,
-    ...(phase.reviewVerdict !== undefined
-      ? { verdict: phase.reviewVerdict === 'pass' ? 'PASS' as const : 'BLOCK' as const }
-      : {}),
-    reviewAttempts: phase.reviewAttempts ?? (phase.reviewerTaskId !== undefined || phase.reviewVerdict !== undefined ? 1 : 0),
-    ...(phase.reviewIterationCap !== undefined ? { maxReviewAttempts: phase.reviewIterationCap } : {}),
-    ...(phase.reviewHeadSha !== undefined ? { reviewHeadSha: phase.reviewHeadSha } : {}),
-    ...(currentHeadSha !== undefined ? { currentHeadSha } : {}),
-  });
+  return evaluateIndependentReview(phaseIndependentReviewInput(phase, currentHeadSha));
 }
 
-function reviewAuditKind(phase: PhaseLedgerPhase): 'block' | 'missing' {
-  if (phase.reviewVerdict === 'block') return 'block';
-  return 'missing';
+/** The audit label for a phase already known to be a review blocker. */
+function reviewAuditKind(phase: PhaseLedgerPhase, currentHeadSha?: string): ReviewGateAuditStatus {
+  return auditReviewGate(phaseReviewGateAuditInput(phase, currentHeadSha)).status;
 }
 
 function phasePrompt(issue: UmbrellaIssue, phase: PhaseLedgerPhase, chainId: string): string {
@@ -364,7 +357,7 @@ export class UmbrellaChainAdvancer {
       const reviewBlocker = await this.findReviewAuditBlocker(ledger.phases, currentHeadByPr);
       if (reviewBlocker) {
         if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
-        const reviewAudit = reviewAuditKind(reviewBlocker);
+        const reviewAudit = reviewAuditKind(reviewBlocker, currentHeadByPr.get(reviewBlocker.prNumber ?? -1));
         const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
         ledger.blockedReason = 'review-block';
         ledger.blockedSince ??= this.now().toISOString();
@@ -389,7 +382,7 @@ export class UmbrellaChainAdvancer {
     const reviewBlocker = await this.findReviewAuditBlocker(predecessorPhases, currentHeadByPr);
     if (reviewBlocker) {
       if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
-      const reviewAudit = reviewAuditKind(reviewBlocker);
+      const reviewAudit = reviewAuditKind(reviewBlocker, currentHeadByPr.get(reviewBlocker.prNumber ?? -1));
       const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
       if (ledger.blockedReason !== 'review-block' || ledger.blockedSince === undefined) {
         ledger.blockedReason = 'review-block';
