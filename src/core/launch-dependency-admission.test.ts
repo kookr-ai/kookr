@@ -167,6 +167,38 @@ describe('LaunchDependencyAdmission', () => {
     });
   });
 
+  test('restores a persisted probe-busy waiter without inventing degradation', () => {
+    const admission = new LaunchDependencyAdmission(() => 100);
+    const dependencies = [{
+      dependency: 'kb',
+      state: 'half_open' as const,
+      reason: 'A recovery probe was already in flight',
+    }];
+    admission.restoreParked(dependencies);
+    admission.restoreInterruptedProbe(dependencies, 'terminal-owner');
+    admission.releaseInterruptedProbe(dependencies);
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'unknown' }]);
+
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
+  test('confirmed parked degradation dominates probe-busy waiters regardless of restore order', () => {
+    const degraded = [{ dependency: 'kb', state: 'degraded' as const, reason: 'Provider unavailable' }];
+    const busy = [{ dependency: 'kb', state: 'half_open' as const, reason: 'Probe already in flight' }];
+
+    for (const dependencies of [[degraded, busy], [busy, degraded]]) {
+      const admission = new LaunchDependencyAdmission(() => 100);
+      for (const parked of dependencies) admission.restoreParked(parked);
+      expect(admission.evaluate(['kb'])).toMatchObject({
+        admit: false,
+        reason: 'dependency_degraded',
+      });
+    }
+  });
+
   test('keeps an interrupted startup probe busy through changing provider evidence', () => {
     const admission = new LaunchDependencyAdmission(() => 100);
     admission.restoreInterruptedProbe([{

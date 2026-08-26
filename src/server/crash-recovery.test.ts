@@ -1013,11 +1013,16 @@ describe('Crash Recovery', () => {
     let rejectFirst!: (error: Error) => void;
     let markFirstStarted!: () => void;
     const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
-    vi.spyOn(adapter, 'launch').mockImplementationOnce(() => {
+    vi.spyOn(adapter, 'launch').mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('stale-ended-recovery-session');
       markFirstStarted();
       return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
     });
-    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+    const stop = vi.spyOn(adapter, 'stop').mockImplementation(async (sessionId) => {
+      if (sessionId === 'stale-ended-recovery-session') {
+        throw new Error('stale ended recovery cleanup rejected');
+      }
+    });
 
     try {
       const staleRecovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
@@ -1035,10 +1040,16 @@ describe('Crash Recovery', () => {
       });
       taskStore.updateSession(task.id, 'ended-recovery-successor', { lastStatus: 'completed' });
       taskStore.reopenTask(task.id);
+      expect(taskStore.ownsLaunchReservation(task.id, successorToken!)).toBe(false);
 
       rejectFirst(new Error('stale recovery rejected after successor ended'));
-      await staleRecovery;
+      const staleResult = await staleRecovery;
 
+      expect(staleResult.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale ended recovery cleanup rejected'),
+      })]);
+      expect(stop).toHaveBeenCalledWith('stale-ended-recovery-session');
       expect(stop).not.toHaveBeenCalledWith('ended-recovery-successor');
       expect(taskStore.getTask(task.id)).toMatchObject({
         status: 'open',

@@ -633,6 +633,53 @@ describe('runStartupRecoveryPhase — parked dependency hydration', () => {
     });
   });
 
+  test('terminal probe settlement does not turn a persisted busy waiter into degradation', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const waiter = deps.taskStore.createTask({
+      prompt: 'persisted probe-busy waiter',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open', reason: 'Probe already in flight' }],
+        parkedAt: '2026-01-01T00:00:01.000Z',
+      },
+    });
+    deps.taskStore.pendTask(waiter.id);
+    const terminalProbe = deps.taskStore.createTask({
+      prompt: 'terminal probe owner',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'terminal-busy-probe',
+      },
+    });
+    deps.taskStore.cancelTask(terminalProbe.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('terminal-busy-probe');
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'unknown' }]);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
   test('newer confirmed degradation supersedes an older reconciled live probe', async () => {
     const deps = fakeDeps();
     const admission = new LaunchDependencyAdmission();

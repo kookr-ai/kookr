@@ -2819,7 +2819,8 @@ describe('promotePendingTasks (integration)', () => {
     let markFirstStarted!: () => void;
     const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
     vi.mocked(adapter.launch)
-      .mockImplementationOnce(() => {
+      .mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+        options?.onSessionCreated?.('stale-ended-promotion-session');
         markFirstStarted();
         return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
       })
@@ -2833,6 +2834,11 @@ describe('promotePendingTasks (integration)', () => {
         });
         return 'ended-successor-session';
       });
+    vi.mocked(adapter.stop).mockImplementation(async (sessionId) => {
+      if (sessionId === 'stale-ended-promotion-session') {
+        throw new Error('stale promotion cleanup rejected');
+      }
+    });
 
     try {
       const stalePromotion = promotePendingTasks(deps);
@@ -2845,13 +2851,14 @@ describe('promotePendingTasks (integration)', () => {
       rejectFirst(new Error('stale owner rejected after successor ended'));
       expect(await stalePromotion).toBe(0);
 
+      expect(adapter.stop).toHaveBeenCalledWith('stale-ended-promotion-session');
       expect(adapter.stop).not.toHaveBeenCalledWith('ended-successor-session');
       expect(taskStore.getTask(task.id)).toMatchObject({
         status: 'open',
-        sessions: [expect.objectContaining({
+        sessions: expect.arrayContaining([expect.objectContaining({
           tmuxSession: 'ended-successor-session',
           lastStatus: 'completed',
-        })],
+        })]),
       });
     } finally {
       nowSpy.mockRestore();

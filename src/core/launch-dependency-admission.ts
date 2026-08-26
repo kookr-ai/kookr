@@ -197,9 +197,17 @@ export class LaunchDependencyAdmission {
   restoreParked(dependencies: readonly TaskLaunchAdmissionDependency[]): void {
     for (const dependency of dependencies) {
       const entry = this.entry(dependency.dependency);
-      entry.state = 'degraded';
+      // A persisted probe-busy/capacity waiter is half-open recovery evidence,
+      // not confirmed provider degradation. Preserve that distinction across
+      // restart, while making confirmed degradation dominant regardless of
+      // persisted task iteration order. Other states are not valid parked
+      // markers, so fail closed as degraded if an older/malformed row appears.
+      const restoredState = dependency.state === 'half_open' ? 'half_open' : 'degraded';
+      if (entry.state !== 'degraded' || restoredState === 'degraded') {
+        entry.state = restoredState;
+        entry.reason = dependency.reason ?? 'Dependency was parked before restart';
+      }
       entry.lastChangedAt = this.now();
-      entry.reason = dependency.reason ?? 'Dependency was parked before restart';
       entry.probeToken = undefined;
       entry.probeInvalidated = undefined;
       entry.startupRecoveryOwners = undefined;
