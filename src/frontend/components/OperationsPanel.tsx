@@ -6,7 +6,7 @@ import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
 import { LiveFrictionCalibrationPanel } from './LiveFrictionCalibrationPanel.js';
-import { OutcomeLedgerPanel } from './OutcomeLedgerPanel.js';
+import { OutcomeLedgerPanel, type OutcomeLedgerProjectOption } from './OutcomeLedgerPanel.js';
 import { PipelineStarvationPanel } from './PipelineStarvationPanel.js';
 import { LessonYieldPanel } from './LessonYieldPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
@@ -17,9 +17,11 @@ interface Props {
   onClose: () => void;
   /** Expand the live-friction section (status-bar chip deep-link, issue #2596). */
   expandLiveFriction?: boolean;
+  /** Tracked projects offered in the Outcome Scoreboard scope selector (issue #2850). */
+  outcomeProjects?: OutcomeLedgerProjectOption[];
 }
 
-export function OperationsPanel({ send, onClose, expandLiveFriction = false }: Props) {
+export function OperationsPanel({ send, onClose, expandLiveFriction = false, outcomeProjects }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const liveFrictionHeaderRef = useRef<HTMLButtonElement>(null);
@@ -55,7 +57,7 @@ export function OperationsPanel({ send, onClose, expandLiveFriction = false }: P
           </button>
         </div>
         <div className="operations-panel-body">
-          <OutcomeLedgerPanel />
+          <OutcomeLedgerPanel projects={outcomeProjects} />
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
           <SessionHealthPanel />

@@ -126,12 +126,12 @@ function response(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mount() {
+function mount(props: React.ComponentProps<typeof OutcomeLedgerPanel> = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   act(() => {
     root = createRoot(container);
-    root.render(React.createElement(OutcomeLedgerPanel));
+    root.render(React.createElement(OutcomeLedgerPanel, props));
   });
   return container;
 }
@@ -607,6 +607,86 @@ describe('OutcomeLedgerPanel', () => {
     await flush();
 
     expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=30d', expect.any(Object));
+  });
+
+  test('offers All projects, Unassigned, and tracked-project options with friendly labels', async () => {
+    const el = mount({
+      projects: [
+        { id: 'kookr-ai/kookr', label: 'Kookr' },
+        // No friendly label available → raw ID is the safe fallback.
+        { id: 'legacy-repo', label: 'legacy-repo' },
+      ],
+    });
+    await flush();
+
+    const select = el.querySelector<HTMLSelectElement>('.outcome-project-select');
+    expect(select).toBeTruthy();
+    const optionText = Array.from(select!.options).map((o) => o.textContent);
+    expect(optionText).toEqual(['All projects', 'Unassigned', 'Kookr', 'legacy-repo']);
+    // Default fetch stays byte-for-byte backward compatible (no scope params).
+    expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=7d', expect.any(Object));
+  });
+
+  test('refetches with an assigned scope when a tracked project is selected', async () => {
+    const el = mount({ projects: [{ id: 'org/repo?x=1', label: 'Fancy' }] });
+    await flush();
+
+    const select = el.querySelector<HTMLSelectElement>('.outcome-project-select');
+    await act(async () => {
+      select!.value = 'assigned:org/repo?x=1';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    // The project ID is URL-encoded so its `?`/`=` round-trip as data, not query
+    // structure.
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=7d&projectScope=assigned&projectId=org%2Frepo%3Fx%3D1',
+      expect.any(Object),
+    );
+  });
+
+  test('refetches with the unassigned scope', async () => {
+    const el = mount();
+    await flush();
+
+    const select = el.querySelector<HTMLSelectElement>('.outcome-project-select');
+    await act(async () => {
+      select!.value = 'unassigned';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=7d&projectScope=unassigned',
+      expect.any(Object),
+    );
+  });
+
+  test('falls back to All projects when the selected project stops being tracked', async () => {
+    const el = mount({ projects: [{ id: 'org/repo', label: 'Repo' }] });
+    await flush();
+
+    const select = () => el.querySelector<HTMLSelectElement>('.outcome-project-select')!;
+    await act(async () => {
+      select().value = 'assigned:org/repo';
+      select().dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=7d&projectScope=assigned&projectId=org%2Frepo',
+      expect.any(Object),
+    );
+
+    vi.mocked(fetch).mockClear();
+    // The project disappears from the tracked list → panel reverts to all-projects.
+    act(() => {
+      root!.render(React.createElement(OutcomeLedgerPanel, { projects: [] }));
+    });
+    await flush();
+
+    expect(select().value).toBe('all');
+    expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=7d', expect.any(Object));
   });
 
   test('renders an error for invalid response payloads', async () => {

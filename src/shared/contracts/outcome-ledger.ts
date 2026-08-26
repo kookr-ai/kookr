@@ -4,6 +4,21 @@ import type { TimeWindow } from './cost-comparison.js';
 
 export type OutcomeLedgerReadiness = 'ready' | 'caution' | 'blocked';
 
+/**
+ * Population the Outcome Scoreboard aggregates over (issue #2850). Identity and
+ * scope kind are kept in separate discriminated fields so `Unassigned` never
+ * needs a magic project ID and an assigned scope never collides with a real
+ * project whose ID happens to spell a reserved word.
+ *
+ * - `all`        — every task in the window (the backward-compatible default).
+ * - `assigned`   — only tasks whose `projectId` exactly equals `projectId`.
+ * - `unassigned` — only tasks with no `projectId`.
+ */
+export type OutcomeLedgerProjectScope =
+  | { kind: 'all' }
+  | { kind: 'assigned'; projectId: string }
+  | { kind: 'unassigned' };
+
 export type OutcomeLedgerQualityFlag =
   | 'active_task'
   | 'invalid_timestamps'
@@ -113,6 +128,8 @@ export interface OutcomeLedgerResponse {
   schemaVersion: 'outcome-ledger.v1';
   generatedAt: string;
   window: OutcomeLedgerWindow;
+  /** Project population this response was aggregated over (issue #2850). */
+  scope: OutcomeLedgerProjectScope;
   readiness: OutcomeLedgerReadiness;
   summary: OutcomeLedgerSummary;
   quality: OutcomeLedgerQualitySummary;

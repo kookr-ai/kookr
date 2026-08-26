@@ -169,6 +169,98 @@ describe('buildOutcomeLedger', () => {
     expect(response.quality.interventionCoverage).toBe(1);
   });
 
+  test('defaults to every project and echoes the all scope', () => {
+    const tasks = [
+      ledgerTask({ id: 'assigned-a', projectId: 'alpha', tokenUsage: usage() }),
+      ledgerTask({ id: 'unassigned-a', tokenUsage: usage() }),
+    ];
+    const response = ledger(tasks);
+
+    expect(response.scope).toEqual({ kind: 'all' });
+    expect(response.summary.taskCount).toBe(2);
+  });
+
+  test('assigned scope filters to one project before aggregation', () => {
+    const tasks = [
+      ledgerTask({ id: 'alpha-1', projectId: 'alpha', tokenUsage: usage({ costUsd: 0.10 }) }),
+      ledgerTask({ id: 'alpha-2', projectId: 'alpha', tokenUsage: usage({ costUsd: 0.20 }) }),
+      ledgerTask({ id: 'beta-1', projectId: 'beta', tokenUsage: usage({ costUsd: 5 }) }),
+      ledgerTask({ id: 'none-1', tokenUsage: usage({ costUsd: 9 }) }),
+    ];
+    const response = buildOutcomeLedger({
+      tasks,
+      window: '7d',
+      windowStartMs: NOW - 7 * 24 * HOUR,
+      windowEndMs: NOW,
+      projectScope: { kind: 'assigned', projectId: 'alpha' },
+    });
+
+    expect(response.scope).toEqual({ kind: 'assigned', projectId: 'alpha' });
+    expect(response.summary.taskCount).toBe(2);
+    // Cost aggregates only over the scoped population — beta/unassigned excluded.
+    expect(response.summary.totalKnownCostUsd).toBeCloseTo(0.30, 10);
+    expect(response.tasks.map((row) => row.taskId).sort()).toEqual(['alpha-1', 'alpha-2']);
+    expect(response.tasks.every((row) => row.projectId === 'alpha')).toBe(true);
+  });
+
+  test('unassigned scope keeps only tasks with no project', () => {
+    const tasks = [
+      ledgerTask({ id: 'alpha-1', projectId: 'alpha', tokenUsage: usage() }),
+      ledgerTask({ id: 'none-1', tokenUsage: usage() }),
+      ledgerTask({ id: 'none-2', tokenUsage: usage() }),
+    ];
+    const response = buildOutcomeLedger({
+      tasks,
+      window: '7d',
+      windowStartMs: NOW - 7 * 24 * HOUR,
+      windowEndMs: NOW,
+      projectScope: { kind: 'unassigned' },
+    });
+
+    expect(response.scope).toEqual({ kind: 'unassigned' });
+    expect(response.summary.taskCount).toBe(2);
+    expect(response.tasks.every((row) => row.projectId === null)).toBe(true);
+  });
+
+  test('unknown project ID yields a valid empty scoreboard, not a broadened query', () => {
+    const tasks = [
+      ledgerTask({ id: 'alpha-1', projectId: 'alpha', tokenUsage: usage() }),
+      ledgerTask({ id: 'none-1', tokenUsage: usage() }),
+    ];
+    const response = buildOutcomeLedger({
+      tasks,
+      window: '7d',
+      windowStartMs: NOW - 7 * 24 * HOUR,
+      windowEndMs: NOW,
+      projectScope: { kind: 'assigned', projectId: 'does-not-exist' },
+    });
+
+    expect(response.summary.taskCount).toBe(0);
+    expect(response.tasks).toEqual([]);
+    expect(response.byAgent).toEqual([]);
+    // An empty window is blocked, not ready — the panel should not read a
+    // confident verdict from zero rows.
+    expect(response.readiness).toBe('blocked');
+  });
+
+  test('treats a project ID with URL-significant characters as an opaque literal', () => {
+    const literal = 'org/repo?x=1&y=2';
+    const tasks = [
+      ledgerTask({ id: 'match', projectId: literal, tokenUsage: usage() }),
+      ledgerTask({ id: 'other', projectId: 'org/repo', tokenUsage: usage() }),
+    ];
+    const response = buildOutcomeLedger({
+      tasks,
+      window: '7d',
+      windowStartMs: NOW - 7 * 24 * HOUR,
+      windowEndMs: NOW,
+      projectScope: { kind: 'assigned', projectId: literal },
+    });
+
+    expect(response.summary.taskCount).toBe(1);
+    expect(response.tasks[0].taskId).toBe('match');
+  });
+
   test('redacts historical labels and leaves historical interventions unknown', () => {
     const live = ledgerTask({
       id: 'live-task',

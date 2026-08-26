@@ -6,6 +6,7 @@ import type { TimeWindow } from '../shared/contracts/cost-comparison.js';
 import type {
   OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
+  OutcomeLedgerProjectScope,
   OutcomeLedgerQualityFlag,
   OutcomeLedgerQualitySummary,
   OutcomeLedgerReadiness,
@@ -19,6 +20,11 @@ export interface OutcomeLedgerInput {
   window: TimeWindow;
   windowStartMs: number;
   windowEndMs: number;
+  /**
+   * Project population to aggregate over (issue #2850). Absent is treated as
+   * `{ kind: 'all' }`, preserving the pre-scope all-project behavior.
+   */
+  projectScope?: OutcomeLedgerProjectScope;
   liveUsage?: Map<string, TokenUsage>;
   liveTaskIds?: ReadonlySet<string>;
   interactionEvents?: InteractionEvent[];
@@ -41,7 +47,14 @@ const MAX_FINDINGS = 12;
 export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResponse {
   const generatedAt = new Date(input.windowEndMs).toISOString();
   const windowStart = input.window === 'all' ? null : new Date(input.windowStartMs).toISOString();
+  const scope = input.projectScope ?? { kind: 'all' };
+  // Filter to the requested project population BEFORE any aggregation so that
+  // summary, readiness, quality coverage, findings, per-agent rows, and task
+  // rows all recompute over the same task set (issue #2850). An unknown project
+  // ID simply matches nothing here and yields a valid empty scoreboard rather
+  // than broadening the query.
   const taskRows = input.tasks
+    .filter((task) => taskMatchesScope(task, scope))
     .filter((task) => isTaskInWindow(task, input.windowStartMs, input.windowEndMs))
     .map((task) => projectTask(task, input));
 
@@ -59,6 +72,7 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
       start: windowStart,
       end: generatedAt,
     },
+    scope,
     readiness,
     summary,
     quality,
@@ -72,6 +86,19 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
 function isTaskInWindow(task: Task, startMs: number, endMs: number): boolean {
   const createdMs = toMs(task.createdAt);
   return createdMs >= startMs && createdMs <= endMs;
+}
+
+function taskMatchesScope(task: Task, scope: OutcomeLedgerProjectScope): boolean {
+  switch (scope.kind) {
+    case 'all':
+      return true;
+    case 'unassigned':
+      // A task counts as unassigned when it carries no project identity at all;
+      // `undefined` and `null` are treated alike.
+      return (task.projectId ?? null) === null;
+    case 'assigned':
+      return task.projectId === scope.projectId;
+  }
 }
 
 function projectTask(task: Task, input: OutcomeLedgerInput): OutcomeLedgerTaskRow {
