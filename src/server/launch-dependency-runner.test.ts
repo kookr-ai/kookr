@@ -107,4 +107,20 @@ describe('launch dependency runner', () => {
     await expect(runLaunchDependencyPreflights(['kb'])).resolves.toEqual([]);
     expect(mockExecFile).toHaveBeenCalledTimes(2);
   });
+
+  test('classifies a real child-process timeout as unknown health', async () => {
+    mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: Function) => {
+      const error = Object.assign(new Error('Command timed out'), {
+        code: 'ETIMEDOUT',
+        killed: true,
+      });
+      cb(error, '', 'timed out after 5000ms');
+    });
+
+    const findings = await runLaunchDependencyPreflights(['kb']);
+
+    expect(findings).toEqual([
+      expect.objectContaining({ dependency: 'kb', category: 'unknown' }),
+    ]);
+  });
 });

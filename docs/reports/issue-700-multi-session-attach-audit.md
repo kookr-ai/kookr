@@ -218,7 +218,7 @@ Delegates to the injected `launcher` = `launchTask` (`schedule-runner.ts:200-207
 ## 4. Recommendation per RFC R18
 
 > **Status (2026-07-02): implemented** (RFC PR 1c). Item 1 landed as the in-flight-flag
-> variant (`TaskStore.beginLaunch`/`endLaunch`, in-memory map + 10-minute TTL, not a
+> variant (`TaskStore.beginLaunchWithToken`/`endLaunch`, in-memory map + 10-minute TTL, not a
 > persisted `launching` status) at both launch sites; `getNextPending` skips reserved
 > tasks and `getActiveCount` counts fresh reservations. Item 2 landed as detect-and-log
 > in `addSession` (attach-flagged, not refuse), with re-attach allowed when prior
@@ -232,11 +232,11 @@ launched", and it must be **synchronous** (no `await` between reading the task's
 reserving it — Node's single thread then makes it a free CAS):
 
 1. **Primary guard — synchronous launch reservation in `TaskStore`,** consumed at both
-   launch sites: `taskStore.beginLaunch(taskId)` flips `pending → launching` (or sets an
-   in-flight flag) and returns false if already launching/inProgress. Call it in
+   launch sites: `taskStore.beginLaunchWithToken(taskId)` sets an in-flight flag and
+   returns `undefined` if already launching/inProgress. Call it in
    `promotePendingTasks` immediately after `getNextPending()` and **before**
    `await adapter.launch(...)` (`src/server/agent-lifecycle.ts:459`), skipping the task on
-   false; and in `launchTask` before `adapterRegistry.get(...).launch(...)`
+   `undefined`; and in `launchTask` before `adapterRegistry.get(...).launch(...)`
    (`src/server/launch-service.ts:407`). `getNextPending` (tasks.ts:354) must not return
    `launching` tasks; `getActiveCount` (tasks.ts:344) must count them (its current
    `inProgress`-only count is a second latent over-launch bug at the cap). Launch failure

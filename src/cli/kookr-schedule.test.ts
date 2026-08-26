@@ -247,6 +247,48 @@ describe('kookr schedule run', () => {
     expect(io.logs.join('\n')).toContain('(queued)');
   });
 
+  it('reports dependency parking without calling it a capacity queue', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: true,
+      taskId: 't-parked',
+      queued: true,
+      parked: true,
+      outcome: 'parked_dependency',
+      reasonCode: 'dependency_degraded',
+    }, 200)));
+    const io = mkIO();
+    const exit = mkExit();
+
+    await main({ argv: ['run', 'sched-a'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs.join('\n')).toContain('(parked — launch dependency degraded)');
+    expect(io.logs.join('\n')).not.toContain('(queued)');
+  });
+
+  it('preserves dependency parking classification in JSON output', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: true,
+      taskId: 't-parked',
+      queued: true,
+      parked: true,
+      outcome: 'parked_dependency',
+      reasonCode: 'dependency_degraded',
+    }, 200)));
+    const io = mkIO();
+    const exit = mkExit();
+
+    await main({ argv: ['run', 'sched-a', '--json'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+
+    const payload = JSON.parse(io.logs[0]);
+    expect(payload.details).toMatchObject({
+      queued: true,
+      parked: true,
+      outcome: 'parked_dependency',
+      reasonCode: 'dependency_degraded',
+    });
+  });
+
   it('exits 4 and surfaces the code when the server rejects (capacity)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'Max active tasks reached', code: 'capacity' }, 409)));
     const io = mkIO();

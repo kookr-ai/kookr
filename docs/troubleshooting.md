@@ -184,24 +184,49 @@ KOOKR_CODEX_BIN=/path/to/codex
 
 Kookr's Codex adapter defaults to `codex` on `PATH`; the local fork is maintained separately at `~/git/codex`.
 
-## Task Launch Blocked By A Dependency Preflight
+## Task Launch Parked By A Dependency Preflight
 
 Some tasks declare runtime **dependencies** — for example, a knowledge-base
 lookup needs the `kb` CLI and a healthy index. Before such a task starts, Kookr
 runs a **dependency preflight** ([`src/core/launch-dependency-preflight.ts`](../src/core/launch-dependency-preflight.ts))
-and **blocks the launch** if a dependency is not ready. This is deliberate:
+and parks the task if a dependency is confirmed degraded. This is deliberate:
 starting a KB-dependent agent against a broken or empty index wastes a run and
-produces misleading output.
+produces misleading output, while preserving the original launch intent for
+automatic recovery.
 
-A blocked launch shows a **critical alert** in the dashboard:
+A parked launch remains `pending`, consumes no worker slot, and shows the
+dependency reason in the dashboard diagnostics:
 
 ```text
-Error starting "<prompt excerpt>": <summary> (<category>). <detail> Recommended action: <action>
+Parked "<prompt excerpt>" — required dependency is degraded; no worker slot was consumed.
 Dependency: kb
 Failure mode: <category>
 Detail: <what kb doctor reported>
 Recommended action: <what to do>
 ```
+
+The WebSocket alert uses the same information in compact form, for example
+`Dependencies: kb=degraded (KB provider is unavailable).` A half-open retry
+that is already occupied is reported as `half_open_probe_busy` instead of a
+new provider failure. After a server restart, this busy state also protects an
+interrupted probe while Kookr reaps its exact expected terminal. This also
+appears immediately when a failed direct, promoted, or crash-recovery probe
+created a session but physical stop rejected: Kookr retains the exact session
+marker and ownership instead of re-parking or starting a replacement. Resolve
+the backend cleanup error, or let reconciliation/restart prove that exact
+session absent. The gate then permits one new bounded probe only when no
+confirmed degradation remains; otherwise fresh clean evidence must first move
+the circuit back to half-open.
+
+A hard timeout can win before the adapter reports creation. In that state the
+task remains `probing` with the preallocated session id and may have no session
+row yet. The late callback links and reaps that exact id; reconciliation then
+settles the marker. A terminal task clears the marker immediately when the
+owning failure path proves the exact session stopped and settles the circuit;
+it retains the fence only while cleanup, creation, or circuit ownership remains
+unresolved. Do not infer liveness from a retained marker or delete the record;
+explicit deletion returns `409 task_cleanup_in_progress`, and bulk cleanup
+skips the record. Retry after reconciliation clears unresolved ownership.
 
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the
@@ -213,19 +238,27 @@ recovery tells you how to clear it.
 | `provider_api` | The embedding **provider** or its API is misconfigured or unavailable — missing API key, provider/model not running. | Start or reconfigure the embedding provider/API the KB index uses (pull the model, set the API key, point at the right endpoint). |
 | `empty_index_data` | The CLI is healthy but there is **nothing to search** — no ingested chunks, an empty index, or no knowledge bases registered. | Ingest or refresh the knowledge-base index before launching the KB-dependent task. |
 | `configuration` | The `kb` CLI itself is misconfigured — missing from `PATH`, no active model selected, bad config. | Fix the KB CLI configuration, model selection, or `PATH`, then re-run `kb doctor --format=json`. |
+| `query_runtime_failure` | The doctor check passed, but the bounded search smoke test failed in the query path. | Run a small `kb search`, then repair the query/index runtime before launching the KB-dependent task. |
 | `unknown` | The preflight failed but the output didn't match a known signature, or `kb doctor` returned unparseable JSON. | Run `kb doctor --format=json` manually and address the reported failure, or check the CLI version. |
 
 ### Continue now, or fix first?
 
-The preflight is a **hard gate**, not an advisory warning — a failing dependency
-blocks the launch, so there is no "continue anyway" button. Your two options:
+Confirmed dependency degradation is an **admission gate**, not an advisory
+warning — the task is created and queued, but there is no "continue anyway"
+button that starts a worker against the unhealthy dependency. Your two options:
 
 1. **Fix the dependency** (recommended): apply the recovery for the reported
-   failure mode, confirm with `kb doctor --format=json` (clean exit, no
-   `error`/`failed` checks), then re-launch the task.
+   failure mode; Kookr will re-run the bounded preflight and promote the parked
+   task after recovery evidence.
 2. **Launch a task that doesn't declare the dependency**: the preflight only runs
    for dependencies the task actually declares, so an unrelated `kb` outage won't
    block tasks that don't use the knowledge base.
+
+If health collection itself times out or cannot be classified, the dependency
+state is `unknown` and Kookr fails open only when no stronger degraded or
+half-open evidence exists. This state is distinct from confirmed degradation
+so a transient diagnostic outage neither pauses the fleet by itself nor erases
+an existing gate.
 
 `kb doctor --format=json` is the same probe the preflight runs — use it to
 reproduce a failure and confirm a fix:

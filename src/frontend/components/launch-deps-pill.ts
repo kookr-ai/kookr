@@ -1,6 +1,6 @@
 /**
  * Label + tooltip helpers for the launch-dependencies status-bar pill
- * (issue #2364). Elevated-only when totalDegradedTasks > 0.
+ * (issue #2364 / #2841). Elevated when degraded launches or parked work exists.
  */
 
 import type { LaunchDependenciesStatus } from '../store/store-types.js';
@@ -13,7 +13,10 @@ export function shouldShowLaunchDepsPill(
 ): boolean {
   if (status == null) return false;
   const total = status.totalDegradedTasks;
-  return typeof total === 'number' && Number.isFinite(total) && total > 0;
+  const parked = status.parkedTaskCount ?? 0;
+  return (
+    typeof total === 'number' && Number.isFinite(total) && total > 0
+  ) || parked > 0;
 }
 
 /**
@@ -26,15 +29,30 @@ export function formatLaunchDepsLabel(status: LaunchDependenciesStatus): string 
     .filter((row) => row.degradedTaskCount > 0 && row.dependency.length > 0)
     .slice(0, LAUNCH_DEPS_PILL_MAX_SEGMENTS)
     .map((row) => `${row.dependency}×${Math.floor(row.degradedTaskCount)}`);
+  const parked = (status.parkedByDependency ?? [])
+    .filter((row) => row.taskCount > 0 && row.dependency.length > 0)
+    .slice(0, LAUNCH_DEPS_PILL_MAX_SEGMENTS)
+    .map((row) => `${row.dependency}×${Math.floor(row.taskCount)}`);
 
-  if (elevated.length === 0) return `Deps: ${total}`;
-
-  const remaining =
-    status.dependencies.filter((row) => row.degradedTaskCount > 0).length - elevated.length;
-  if (remaining > 0) {
-    return `Deps: ${elevated.join(' · ')} +${remaining}`;
+  const label = elevated.length === 0
+    ? `Deps: ${total}`
+    : `Deps: ${elevated.join(' · ')}`;
+  if (parked.length === 0) {
+    if (elevated.length === 0) {
+      return parkedCountLabel(status, label);
+    }
+    const remaining =
+      status.dependencies.filter((row) => row.degradedTaskCount > 0).length - elevated.length;
+    const elevatedLabel = remaining > 0 ? `${label} +${remaining}` : label;
+    return parkedCountLabel(status, elevatedLabel);
   }
-  return `Deps: ${elevated.join(' · ')}`;
+
+  return `${label} · Parked: ${parked.join(' · ')}`;
+}
+
+function parkedCountLabel(status: LaunchDependenciesStatus, label: string): string {
+  const parkedCount = Math.max(0, Math.floor(status.parkedTaskCount ?? 0));
+  return parkedCount > 0 ? `${label} · Parked: ${parkedCount}` : label;
 }
 
 /**
@@ -42,9 +60,22 @@ export function formatLaunchDepsLabel(status: LaunchDependenciesStatus): string 
  */
 export function formatLaunchDepsTitle(status: LaunchDependenciesStatus): string {
   const total = Math.max(0, Math.floor(status.totalDegradedTasks));
-  const parts: string[] = [
-    `${total} task${total === 1 ? '' : 's'} launched with degraded dependencies`,
-  ];
+  const parts: string[] = total > 0
+    ? [`${total} task${total === 1 ? '' : 's'} launched with degraded dependencies`]
+    : [];
+
+  if ((status.parkedTaskCount ?? 0) > 0) {
+    const parkedParts = (status.parkedByDependency ?? [])
+      .filter((row) => row.taskCount > 0)
+      .map((row) => {
+        const reasons = row.reasons.length > 0 ? ` (${row.reasons.join(', ')})` : '';
+        return `${row.dependency}=${row.taskCount}${reasons}`;
+      });
+    parts.push(
+      `${status.parkedTaskCount} task${status.parkedTaskCount === 1 ? '' : 's'} parked awaiting dependency recovery`,
+      ...parkedParts,
+    );
+  }
 
   if (typeof status.totalFindings === 'number' && Number.isFinite(status.totalFindings)) {
     parts.push(`findings=${Math.floor(status.totalFindings)}`);

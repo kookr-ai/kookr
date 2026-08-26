@@ -418,6 +418,30 @@ Do not schedule.
       expect(body.queued).toBe(true);
     });
 
+    test('surfaces dependency parking separately from capacity queueing', async () => {
+      const scheduleRunner = {
+        runNow: async () => ({
+          taskId: 'task-parked',
+          queued: true,
+          parked: true,
+          outcome: 'parked_dependency',
+          reasonCode: 'dependency_degraded',
+        }),
+      };
+      const res = await mkApp({ scheduleRunner: scheduleRunner as never })
+        .request('/api/schedules/sched-1/run', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        taskId: 'task-parked',
+        queued: true,
+        parked: true,
+        outcome: 'parked_dependency',
+        reasonCode: 'dependency_degraded',
+      });
+    });
+
     test('returns 400 when the runner reports an error', async () => {
       const scheduleRunner = {
         runNow: async () => ({ error: 'Schedule not found' }),

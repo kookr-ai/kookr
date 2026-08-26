@@ -319,6 +319,49 @@ describe('TaskLifecycleCommands.deleteTask', () => {
       await rm(auditDir, { recursive: true, force: true });
     }
   });
+
+  test('audits and returns a stable conflict when cleanup ownership blocks deletion', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-delete-conflict-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({
+        prompt: 'Cleanup fenced',
+        cwd: '/repo',
+        projectId: 'github.com/org/repo',
+        launchAdmission: {
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          startedAt: new Date().toISOString(),
+          sessionId: 'kookr-cleanup-fenced',
+        },
+      });
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+
+      const result = await new TaskLifecycleCommands(deps).deleteTask(task.id, {
+        actor: { source: 'api' },
+      });
+
+      expect(result).toMatchObject({
+        outcome: 'invalid',
+        code: 'task_cleanup_in_progress',
+      });
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({
+          type: 'task.deleteTask',
+          actor: { source: 'api' },
+          scope: { kind: 'project', projectId: 'github.com/org/repo' },
+          count: 0,
+          deletedTaskIds: [],
+          taskId: task.id,
+          outcome: 'cleanup_in_progress',
+        }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('TaskLifecycleCommands.clearFinishedTasks', () => {
@@ -348,6 +391,34 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(cancelled.id)).toBeUndefined();
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('keeps finished tasks that still own dependency-probe cleanup', async () => {
+    const taskStore = new TaskStore();
+    const fenced = taskStore.createTask({
+      prompt: 'cleanup fenced',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-cleanup-fenced',
+      },
+    });
+    taskStore.startTask(fenced.id);
+    taskStore.completeTask(fenced.id);
+    const { deps } = makeDeps(taskStore, {
+      takePredeleteSnapshot: vi.fn(async () => undefined),
+    });
+
+    const result = await new TaskLifecycleCommands(deps).clearFinishedTasks();
+
+    expect(result).toEqual({ outcome: 'cleared', deletedTaskIds: [] });
+    expect(taskStore.getTask(fenced.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-cleanup-fenced',
+    });
   });
 
   test('drops GitHub store rows for each cleared finished task', async () => {

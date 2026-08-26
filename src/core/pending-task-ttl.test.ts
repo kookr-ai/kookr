@@ -58,6 +58,37 @@ describe('listExpiredPendingTasks (issue #1526 Phase C / C3)', () => {
     expect(expired).toEqual([]);
   });
 
+  it('does not expire dependency-parked intent during a long outage', () => {
+    const parked = pendingTask({
+      id: 'parked',
+      createdAt: new Date(NOW.getTime() - 10 * ttlMs),
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: new Date(NOW.getTime() - 10 * ttlMs).toISOString(),
+      },
+    });
+
+    expect(listExpiredPendingTasks([parked], { now: NOW, ttlMs })).toEqual([]);
+  });
+
+  it('expires a half-open probe that is only waiting for capacity', () => {
+    const waiting = pendingTask({
+      id: 'capacity-wait',
+      createdAt: new Date(NOW.getTime() - 2 * ttlMs),
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_waiting_for_capacity',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: new Date(NOW.getTime() - 2 * ttlMs).toISOString(),
+      },
+    });
+
+    expect(listExpiredPendingTasks([waiting], { now: NOW, ttlMs }).map((entry) => entry.task.id))
+      .toEqual(['capacity-wait']);
+  });
+
   it('skips a pending task that somehow has sessions (launched once)', () => {
     const withSession = pendingTask({
       id: 'has-session',

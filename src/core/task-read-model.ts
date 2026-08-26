@@ -8,7 +8,7 @@ import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -78,6 +78,8 @@ export interface CreateTaskOptions {
   agentType?: AgentType;
   /** Explicitly persisted launch settings. Omitted means a new unpinned intent is created. */
   launchIntent?: TaskLaunchIntent;
+  /** Pre-worker admission state, present while a dependency parks the task. */
+  launchAdmission?: TaskLaunchAdmission;
   name?: string;
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
@@ -152,6 +154,8 @@ export interface Task {
   agentType: AgentType;
   /** Optional for backward compatibility; legacy records have no replay contract. */
   launchIntent?: TaskLaunchIntent;
+  /** Pre-worker admission state, present while a dependency parks the task. */
+  launchAdmission?: TaskLaunchAdmission;
   playbookId?: string;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;

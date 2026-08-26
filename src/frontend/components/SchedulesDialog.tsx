@@ -116,6 +116,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
     case 'queued':
     case 'queued_capacity':
       return 'queued';
+    case 'parked_dependency':
+      return 'parked: dependency';
     case 'running':
       return 'running';
     case 'completed':
@@ -157,6 +159,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'none';
     case 'capacity':
       return 'capacity';
+    case 'dependency_degraded':
+      return 'dependency degraded';
     case 'draining':
       return 'draining';
     case 'server_restarting':

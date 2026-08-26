@@ -353,6 +353,9 @@ async function handleRun({ args, env, out, err, exit }) {
 
   const taskId = json?.taskId ?? null;
   const queued = json?.queued === true;
+  const parked = json?.parked === true || json?.outcome === 'parked_dependency';
+  const outcomeName = typeof json?.outcome === 'string' ? json.outcome : null;
+  const reasonCode = typeof json?.reasonCode === 'string' ? json.reasonCode : null;
   if (args.json) {
     return exitJson({
       out,
@@ -361,12 +364,13 @@ async function handleRun({ args, env, out, err, exit }) {
       ok: true,
       code: 'OK',
       message: 'Triggered.',
-      details: { id, taskId, queued },
+      details: { id, taskId, queued, parked, outcome: outcomeName, reasonCode },
     });
   }
   let line = `✓ Triggered schedule ${id}`;
   if (taskId) line += ` — task ${taskId}`;
-  if (queued) line += ' (queued)';
+  if (parked) line += ' (parked — launch dependency degraded)';
+  else if (queued) line += ' (queued)';
   out.log(line);
   return exit(EXIT_OK);
 }

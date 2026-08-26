@@ -125,7 +125,7 @@ describe('expirePendingTasks (issue #1526 Phase C / C3)', () => {
 
   it('skips a stale pending that a promoter has reserved mid-launch', async () => {
     const staleId = seedPending(store, TTL_MS + 60_000);
-    expect(store.beginLaunch(staleId)).toBe(true);
+    expect(store.beginLaunchWithToken(staleId)).toBeDefined();
     const result = await expirePendingTasks(
       { taskStore: store, lifecycleDeps: makeLifecycleDeps(), auditLogPath },
       { ttlMs: TTL_MS },

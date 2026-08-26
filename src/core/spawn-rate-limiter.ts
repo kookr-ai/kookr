@@ -67,7 +67,7 @@ export class SpawnRateLimiter {
   /**
    * Check the budget for `key` and, when allowed, record this creation
    * against it in the same synchronous step (no await may separate check from
-   * record, mirroring the `beginLaunch` CAS convention). A rejected attempt
+   * record, mirroring the launch-reservation CAS convention). A rejected attempt
    * is NOT recorded — being told "no" must not itself burn budget, or a
    * retrying caller could never recover.
    */

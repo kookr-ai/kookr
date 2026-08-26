@@ -76,6 +76,7 @@ export const DEFAULT_DEAD_MAN_SCHEDULE_MS = 120 * 60_000;
 const STARVATION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'dispatch_failed',
   'queued_capacity',
+  'parked_dependency',
   'skipped_coalesced',
 ]);
 

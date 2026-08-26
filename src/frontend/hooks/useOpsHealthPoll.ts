@@ -4,6 +4,7 @@ import type {
   CapacityResidualStatus,
   LaunchDependenciesStatus,
   LaunchDependencyStatusRow,
+  ParkedLaunchDependencyStatusRow,
   LessonYieldStatus,
   PausedScheduleStatusRow,
   PipelineStarvationRepoStatus,
@@ -133,10 +134,34 @@ export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatu
       ? Math.floor(findingsRaw)
       : undefined;
 
+  const parked = asRecord(rec.parkedTasks);
+  const parkedTotalRaw = parked?.total;
+  const parkedTaskCount =
+    typeof parkedTotalRaw === 'number' && Number.isFinite(parkedTotalRaw) && parkedTotalRaw >= 0
+      ? Math.floor(parkedTotalRaw)
+      : undefined;
+  const parkedByDependency: ParkedLaunchDependencyStatusRow[] = [];
+  if (parked && Array.isArray(parked.byDependency)) {
+    for (const rowValue of parked.byDependency) {
+      const row = asRecord(rowValue);
+      if (!row) continue;
+      const name = row.dependency;
+      const countRaw = row.taskCount;
+      if (typeof name !== 'string' || name.length === 0) continue;
+      if (typeof countRaw !== 'number' || !Number.isFinite(countRaw) || countRaw < 0) continue;
+      const reasons = Array.isArray(row.reasons)
+        ? row.reasons.filter((reason): reason is string => typeof reason === 'string' && reason.length > 0)
+        : [];
+      parkedByDependency.push({ dependency: name, taskCount: Math.floor(countRaw), reasons });
+    }
+  }
+
   return {
     totalDegradedTasks: Math.floor(totalRaw),
     ...(totalFindings !== undefined ? { totalFindings } : {}),
     dependencies,
+    ...(parkedTaskCount !== undefined ? { parkedTaskCount } : {}),
+    ...(parkedByDependency.length > 0 ? { parkedByDependency } : {}),
   };
 }
 

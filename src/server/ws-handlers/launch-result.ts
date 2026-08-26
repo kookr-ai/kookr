@@ -144,6 +144,42 @@ export function handleLaunchResult(
     return { duplicate: false };
   }
   if (!result) return { duplicate: false };
+  if (result.queued) {
+    if (result.parked) {
+      const dependencies = result.dependencyAdmission?.dependencies
+        .map((dependency) => {
+          const reason = dependency.reason ? ` (${dependency.reason})` : '';
+          return `${dependency.dependency}=${dependency.state}${reason}`;
+        })
+        .join(', ');
+      const admissionReason = result.dependencyAdmission?.reason;
+      const admissionMessage = admissionReason === 'half_open_probe_busy'
+        ? 'A dependency recovery probe is already in flight; no worker slot was consumed.'
+        : admissionReason === 'half_open_waiting_for_capacity'
+          ? 'A dependency recovery probe is ready but is waiting for capacity.'
+          : 'One or more required launch dependencies are degraded; no worker slot was consumed.';
+      send({
+        type: 'alert',
+        agentId: '',
+        summary: `Parked: ${promptExcerpt}`,
+        details: [
+          admissionMessage,
+          dependencies ? `Dependencies: ${dependencies}.` : undefined,
+          'Kookr will retry the preserved launch intent after recovery evidence.',
+        ].filter(Boolean).join('\n'),
+        severity: 'warning',
+      });
+      return { duplicate: result.duplicate === true };
+    }
+    send({
+      type: 'alert',
+      agentId: '',
+      summary: `Queued: ${promptExcerpt}`,
+      details: 'Concurrency limit reached — will start when a slot opens.',
+      severity: 'info',
+    });
+    return { duplicate: result.duplicate === true };
+  }
   if (result.duplicate) {
     send({
       type: 'alert',
@@ -153,15 +189,6 @@ export function handleLaunchResult(
       severity: 'info',
     });
     return { duplicate: true };
-  }
-  if (result.queued) {
-    send({
-      type: 'alert',
-      agentId: '',
-      summary: `Queued: ${promptExcerpt}`,
-      details: 'Concurrency limit reached — will start when a slot opens.',
-      severity: 'info',
-    });
   }
   return { duplicate: false };
 }

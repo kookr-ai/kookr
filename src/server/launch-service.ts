@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
-import type { DeliveryAuthorization, TaskDispositionReason } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -20,6 +20,20 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { LaunchDependency } from '../core/playbook.js';
+import type {
+  LaunchDependencyAdmission,
+  LaunchDependencyAdmissionDecision,
+} from '../core/launch-dependency-admission.js';
+import {
+  isSameTaskLaunchAdmission,
+  isNoSlotDependencyAdmission,
+  probeFromAdmissionDecision,
+  taskOwnsLiveProbeSession,
+  taskAdmissionForDeniedDecision,
+  taskAdmissionForFailedProbe,
+  taskAdmissionForProbe,
+  taskAdmissionForProbeCapacityWait,
+} from '../core/launch-dependency-task-admission.js';
 import {
   redactDiagnosticText,
   type DependencyPreflightRunner,
@@ -60,6 +74,21 @@ import {
   sameLaunchIntent,
   validatePersistedLaunchIntent,
 } from '../core/task-launch-intent.js';
+import {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  allocateLaunchSessionId,
+  isLaunchTimeoutError,
+  reapLaunchSession,
+  raceLaunchAgainstTimeout,
+  type LaunchReapGuard,
+} from './launch-timeout.js';
+
+export {
+  DEFAULT_LAUNCH_TIMEOUT_MS,
+  isLaunchTimeoutError,
+  LaunchTimeoutError,
+  raceLaunchAgainstTimeout,
+} from './launch-timeout.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -146,6 +175,8 @@ export interface LaunchServiceDeps {
    */
   auditLogPath?: string;
   dependencyPreflightRunner?: DependencyPreflightRunner;
+  /** Provider-aware circuit that parks launches requiring confirmed-degraded dependencies. */
+  launchDependencyAdmission?: LaunchDependencyAdmission;
   /**
    * Operator drain gate (issue #659). When provided and returning false, the
    * node is draining and {@link launchTask} refuses new launches by throwing
@@ -313,9 +344,12 @@ export interface LaunchServiceDeps {
     repoFlag?: string;
   }) => Promise<{ ok: true; repo: string } | { ok: false; code: string; message: string }>;
   /**
-   * Force-flush task state after a successful grant (R5). Optional for tests.
+   * Force-flush task state at crash-sensitive launch boundaries. Production
+   * wiring must fail closed until the persistence scheduler is ready: a
+   * half-open probe marker has to reach durable storage before adapter launch,
+   * and dependency-parked work has to be durable before it is acknowledged.
    */
-  flushTasks?: () => Promise<void>;
+  flushTasks: () => Promise<void>;
   /**
    * Per-agent-type launch success/failure counters (issue #1808). When wired,
    * every non-queued adapter launch records one outcome so
@@ -330,13 +364,6 @@ export interface LaunchServiceDeps {
  * default (24); the settings range is 4–200.
  */
 export const DEFAULT_MAX_PENDING_TASKS = 24;
-
-/**
- * Default hard ceiling on one `adapter.launch()` await (issue #1528). Mirrors
- * the `launchTimeoutSeconds` settings default (180s); the settings range is
- * 30–900s.
- */
-export const DEFAULT_LAUNCH_TIMEOUT_MS = 180_000;
 
 /**
  * Default `Retry-After` (seconds) advertised when a launch is refused because
@@ -567,34 +594,6 @@ export function isCwdValidationError(err: unknown): err is CwdValidationError {
 }
 
 /**
- * Thrown by {@link launchTask} when `adapter.launch()` does not settle within
- * the configured `launchTimeoutSeconds` (issue #1526 Phase C / #1528). By the
- * time this propagates, the launch has already been cleaned up exactly like a
- * thrown launch: reservation released (`endLaunch`) and the task DISPOSED —
- * marked terminal with a `launch_timeout` {@link Task.disposition} rather than
- * deleted (issue #1588), so the record stays queryable, a terminal task can't
- * block dedup, no capacity slot stays held, and a retry with the same
- * idempotency key replays this task instead of creating a sibling. A
- * schedule-fired launch that hits this records `dispatch_failed`
- * (reasonCode `launch_error`) through the runner's normal error path.
- */
-export class LaunchTimeoutError extends Error {
-  readonly code = 'launch_timeout';
-  constructor(agentType: string, taskId: string, timeoutMs: number) {
-    super(
-      `Agent launch timed out after ${Math.round(timeoutMs / 1000)}s ` +
-      `(agent ${agentType}, task ${taskId}) — launch abandoned and task cleaned up`,
-    );
-    this.name = 'LaunchTimeoutError';
-  }
-}
-
-/** Type guard for {@link LaunchTimeoutError}. */
-export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
-  return err instanceof LaunchTimeoutError;
-}
-
-/**
  * Thrown by {@link launchTask} when a launch would pend at capacity but the
  * pending queue is already at its depth limit (issue #1526 Phase C / C3,
  * FM3). Carries the capacity-ledger snapshot so every surface can render WHY:
@@ -753,7 +752,7 @@ function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): Cap
     now: Date.now(),
     maxActiveTasks: maxActive,
     isHungSuspect: () => false,
-    isLaunching: (task) => deps.taskStore.hasFreshLaunchReservation(task.id),
+    isLaunching: (task) => deps.taskStore.hasFreshActiveLaunchReservation(task.id),
     // Issue #1564: reflect the reservation in the degraded snapshot too, so a
     // backpressure error body carries the same guarantee /api/health shows.
     ...(reservedActiveSlots !== undefined
@@ -780,98 +779,6 @@ function effectiveMaxActiveForLaunch(
   const reservedSources = deps.getReservedSlotSources?.() ?? [];
   if (isReservedSlotLaunch(launchSource, launchActorId, reservedSources)) return maxActive;
   return Math.max(0, maxActive - reserved);
-}
-
-/**
- * Race one adapter launch against the hard timeout (issue #1528).
- *
- * On timeout, the caller cleans up (endLaunch, then DISPOSES the task terminal
- * with a `launch_timeout` disposition rather than deleting it — issue #1588)
- * and moves on; the underlying promise is NOT cancelled — adapters expose no
- * abort hook for an in-flight launch — so this helper pins down what a LATE
- * settlement can do:
- *
- * - Late REJECTION is swallowed (logged). The common case: the task is now
- *   terminal, so the adapter's own `taskStore.addSession` throws ("Cannot
- *   attach session to terminal task") and the launch rejects on its own — the
- *   same self-clean the old `deleteTask` produced via "Task not found", now via
- *   the terminal guard (issue #1588) so the disposed record stays session-free.
- *   NOTE the honest caveat: if the adapter created a terminal session before
- *   that throw, the session process leaks until reconcile reports it — boot and
- *   periodic `reconcile()` list sessions with no owning task as `orphans`
- *   (logged, not killed). In the #1528 incident the hang was *before* session
- *   creation (buildAgentLaunchContext), so the typical timeout leaks nothing.
- * - Late RESOLUTION (a session id came back after we gave up) is neutralized
- *   with the one cleanup hook adapters do expose: `adapter.stop(sessionId)`
- *   kills the orphaned terminal session, best-effort. State cannot be
- *   corrupted either way — the success path (posture stamping, round-robin
- *   advance, registerNewAgent) only runs when the race resolves in time, and a
- *   late `addSession` onto the terminated disposed task is refused outright, so
- *   the record never gains a phantom session.
- */
-async function raceLaunchAgainstTimeout(
-  launchPromise: Promise<string>,
-  timeoutMs: number,
-  ctx: {
-    taskId: string;
-    agentType: AgentType;
-    adapter: Pick<import('../adapters/agent-adapter.js').AgentAdapter, 'stop'>;
-    /**
-     * Shared reap guard (issue #2500). When the caller already links + reaps the
-     * abandoned session via `onSessionCreated` (the common case), a late
-     * RESOLUTION of the same promise must NOT `stop()` the same id a second time
-     * and log a misleading "orphaned session" warning. If provided and already
-     * `reaped`, the late-settle stop is skipped; otherwise this handler claims it.
-     */
-    reapGuard?: { reaped: boolean };
-  },
-): Promise<string> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  try {
-    return await Promise.race([
-      launchPromise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          reject(new LaunchTimeoutError(ctx.agentType, ctx.taskId, timeoutMs));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (timedOut) {
-      // Settle-once: whatever the abandoned launch does later is observed,
-      // logged, and defused — never allowed back into launch state.
-      launchPromise.then(
-        (sessionId) => {
-          // Issue #2500: the abandon path may already have linked + reaped this
-          // exact session via `onSessionCreated`. Skip a redundant second stop()
-          // (and its misleading "orphaned session" warning) when it did.
-          if (ctx.reapGuard) {
-            if (ctx.reapGuard.reaped) return;
-            ctx.reapGuard.reaped = true;
-          }
-          console.warn(
-            `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
-            `(session ${sessionId}) — stopping orphaned session`,
-          );
-          void Promise.resolve(ctx.adapter.stop(sessionId)).catch((stopErr) => {
-            console.warn(
-              `[launch] failed to stop late-settled session ${sessionId}: ` +
-              `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
-            );
-          });
-        },
-        (err) => {
-          console.warn(
-            `[launch] abandoned launch for task ${ctx.taskId} rejected after timeout (ignored): ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-          );
-        },
-      );
-    }
-  }
 }
 
 /** Resolve the effective launch timeout from the live getter, defensively. */
@@ -902,22 +809,28 @@ function allowRemoteChatCodex(): boolean {
 }
 
 /**
- * Check if an active task with the same prompt hash and canonical cwd already
- * exists. Uses the live-task view so a large completed-task pile is not cloned
- * on every spawn. Returns the existing task if found, undefined otherwise.
+ * Check if an active task with the same launch identity already exists. Uses
+ * the live-task view so a large completed-task pile is not cloned on every
+ * spawn. Returns the existing task if found, undefined otherwise.
  *
- * Dedup key is (promptHash, agentType, canonicalCwd). Two launches with the
- * same prompt in different directories are different tasks; two launches with
- * the same prompt in the same directory — even reached via symlink, trailing
- * slash, relative path, or case-aliased path on case-insensitive FS — dedup
- * to the first.
+ * Dedup key is (promptHash, agentType, canonicalCwd, model, effort,
+ * dependencies, ralphVerdictEnv). Two
+ * launches with the same prompt in different directories are different tasks;
+ * two launches with different model/effort pins are also different tasks. The
+ * cwd comparison canonicalizes symlinks, trailing slashes, relative paths, and
+ * case aliases on case-insensitive filesystems.
  */
 export function checkSubmission(
   taskStore: TaskStore,
   prompt: string,
   agentType: AgentType,
   cwd: string,
-  pins: { model?: string; effort?: string } = {},
+  intent: {
+    model?: string;
+    effort?: string;
+    dependencies?: readonly LaunchDependency[];
+    ralphVerdictEnv?: boolean;
+  } = {},
 ): Task | undefined {
   const hash = hashPrompt(prompt);
   const canonicalIncoming = canonicalizeCwd(cwd);
@@ -931,7 +844,7 @@ export function checkSubmission(
     // Legacy tasks without a persisted intent must not silently dedup a new
     // launch: the two records may have different provider pins. New tasks
     // created by TaskStore carry an explicit unpinned intent.
-    if (!sameLaunchIntent(task.launchIntent, agentType, pins)) continue;
+    if (!sameLaunchIntent(task.launchIntent, agentType, intent)) continue;
     // Verify live status — don't rely on cached state
     const liveTask = taskStore.getTask(task.id);
     if (liveTask && liveTask.agentType === agentType && ACTIVE_STATUSES.has(liveTask.status)) {
@@ -995,6 +908,11 @@ async function validateDuplicateCandidate(
 ): Promise<Task | undefined> {
   if (candidate.status !== 'inProgress') return candidate;
   if (isRalphLoopActive(candidate)) return candidate;
+  // A durable probe marker owns an adapter launch that may still create its
+  // preallocated terminal after the caller timed out. Until reconciliation
+  // proves cleanup and clears that marker, treating the zero-session row as a
+  // stale duplicate would admit a second task for the same work.
+  if (candidate.launchAdmission?.status === 'probing') return candidate;
   if (!deps.terminalBackend) return candidate;
   if (await hasLiveBackingSession(candidate, deps.terminalBackend)) return candidate;
 
@@ -1127,7 +1045,13 @@ async function launchTaskIdempotent(
     if (reservation.kind === 'replay') {
       const task = deps.taskStore.getTask(reservation.taskId);
       if (task && isReplayableTask(task)) {
-        return { task, queued: task.status === 'pending', idempotentReplay: true };
+        return {
+          task,
+          queued: task.status === 'pending',
+          idempotentReplay: true,
+          ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
+          ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
+        };
       }
       // Either the finalized task no longer exists (e.g. deleted), or it's
       // terminal-and-never-ran (issue #1526 Phase B review item 2) — the key
@@ -1141,7 +1065,13 @@ async function launchTaskIdempotent(
       if (outcome.ok) {
         const task = deps.taskStore.getTask(outcome.taskId);
         if (task && isReplayableTask(task)) {
-          return { task, queued: task.status === 'pending', idempotentReplay: true };
+          return {
+            task,
+            queued: task.status === 'pending',
+            idempotentReplay: true,
+            ...(isNoSlotDependencyAdmission(task.launchAdmission) ? { parked: true } : {}),
+            ...(task.launchAdmission ? { dependencyAdmission: task.launchAdmission } : {}),
+          };
         }
         // Task missing, or terminal-and-never-ran. The owner already
         // finalized this key, so the next `reserveOrWait` call below returns
@@ -1323,7 +1253,7 @@ async function launchTaskCore(
     opts.dependencies,
   ));
   const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
-  const launchNote = formatLaunchNote(dependencyFindings);
+  let launchNote = formatLaunchNote(dependencyFindings);
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
@@ -1339,6 +1269,8 @@ async function launchTaskCore(
     while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd, {
       model: effectiveModel,
       effort: effectiveEffort,
+      dependencies: opts.dependencies,
+      ralphVerdictEnv: opts.ralphVerdictEnv,
     }))) {
       const activeDuplicate = await validateDuplicateCandidate(deps, existing);
       if (activeDuplicate) {
@@ -1351,13 +1283,29 @@ async function launchTaskCore(
           canonicalCwd,
           timestamp: nowISO(),
         });
-        return { task: activeDuplicate, queued: false, duplicate: true };
+        return {
+          task: activeDuplicate,
+          queued: activeDuplicate.status === 'pending',
+          duplicate: true,
+          ...(isNoSlotDependencyAdmission(activeDuplicate.launchAdmission) ? { parked: true } : {}),
+          ...(activeDuplicate.launchAdmission
+            ? { dependencyAdmission: activeDuplicate.launchAdmission }
+            : {}),
+        };
       }
       staleDuplicate = existing;
     }
     if (staleDuplicate) {
       console.log(`[dedup] Ignored stale duplicate prompt (existing task ${staleDuplicate.id}, status=${staleDuplicate.status}, cwd=${canonicalizeCwd(opts.cwd)})`);
     }
+  }
+
+  // Observe after dedup so a retry of an already parked task cannot affect
+  // admission twice. The half-open probe token is claimed later, immediately
+  // before task creation, after all reject-before-create admission checks.
+  let dependencyAdmissionDecision: LaunchDependencyAdmissionDecision | undefined;
+  if (deps.launchDependencyAdmission && opts.dependencies && opts.dependencies.length > 0) {
+    deps.launchDependencyAdmission.observe(opts.dependencies, dependencyFindings);
   }
 
   // --- Issue-claim key resolution (RFC PR 1b, R4 phase a; #1711 arbiter) ---
@@ -1584,19 +1532,6 @@ async function launchTaskCore(
     }
   }
 
-  // 3) Pending-queue depth limit (FM3). Only bites when the launch would
-  //    actually pend (node at capacity): below capacity the task launches
-  //    immediately and queue depth is irrelevant, so behavior is unchanged.
-  if (taskStore.getActiveCount() >= effectiveMaxActive) {
-    const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
-    if (taskStore.getPendingCount() >= maxPending) {
-      console.warn(
-        `[backpressure] pending queue full (${taskStore.getPendingCount()}/${maxPending}) at capacity — rejecting launch`,
-      );
-      throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
-    }
-  }
-
   // --- Issue-claim / relaunch-lease CAS (RFC PR 1b, R4 phase b; #1711) ---
   // Fully synchronous: check maps → createTask → acquire/claim. No await
   // between check and set. Denied → throw with NO task created.
@@ -1626,51 +1561,97 @@ async function launchTaskCore(
     }
   }
 
-  const task = taskStore.createTask({
-    prompt: effectivePrompt,
-    userPrompt,
-    cwd: opts.cwd,
-    criteria: opts.criteria,
-    parentTaskId: opts.parentTaskId,
-    // Launch provenance signals (issue #1583). createTask derives the immutable
-    // Task.provenance from these plus parentTaskId; the metadata.launchSource
-    // stamp below stays for the backpressure/promotion-guard consumers.
-    launchSource: opts.launchSource,
-    scheduleId: opts.scheduleId,
-    agentType,
-    launchIntent: buildTaskLaunchIntent(agentType, {
-      model: effectiveModel,
-      effort: effectiveEffort,
-    }),
-    name: opts.name,
-    playbookId: opts.playbookId,
-    projectId: opts.projectId,
-    playbookParameterValues: opts.playbookParameterValues,
-    // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
-    // the record so the promotion posture guard can recognize schedule-fired
-    // pendings as self-releasing. Additive — absent when no source was given.
-    // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
-    // hops so receipts match the final agentType after multi-hop cascade.
-    metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
-      ? {
-          ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
-          ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
-          ...(agentSubstitutionChain.length > 0
-            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
-            : {}),
-        }
-      : undefined,
-    launchHealthSummary,
-    launchNote,
-    deliveryAuthorization,
-    autoCloseOnSignal: opts.autoCloseOnSignal,
-    unattended: opts.unattended,
-    migratedFromTaskId: opts.migratedFromTaskId,
-  });
+  // Claim a half-open probe only after every pre-create rejection path has
+  // passed. If capacity is unavailable below, the probe is released and the
+  // pending task will claim it again when promotion has a real worker slot.
+  if (deps.launchDependencyAdmission && opts.dependencies && opts.dependencies.length > 0) {
+    dependencyAdmissionDecision = deps.launchDependencyAdmission.evaluate(opts.dependencies);
+    if (!dependencyAdmissionDecision.admit) {
+      launchNote = formatParkedLaunchNote(dependencyFindings, dependencyAdmissionDecision);
+    }
+  }
+
+  // 3) Pending-queue depth limit (FM3). Apply it only after dependency
+  //    admission is known: a confirmed dependency denial creates durable
+  //    no-slot work that is intentionally excluded from the ordinary pending
+  //    cap. Healthy launches and half-open probes waiting for capacity still
+  //    consume that cap. If the latter claimed a probe above, release it
+  //    before rejecting because no task will own the token.
+  if (
+    taskStore.getActiveCount() >= effectiveMaxActive
+    && (!dependencyAdmissionDecision || dependencyAdmissionDecision.admit)
+  ) {
+    const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
+    if (taskStore.getPendingCount() >= maxPending) {
+      deps.launchDependencyAdmission?.releaseProbe(
+        probeFromAdmissionDecision(dependencyAdmissionDecision),
+      );
+      console.warn(
+        `[backpressure] pending queue full (${taskStore.getPendingCount()}/${maxPending}) at capacity — rejecting launch`,
+      );
+      throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
+    }
+  }
+
+  let task: Task;
+  try {
+    task = taskStore.createTask({
+      prompt: effectivePrompt,
+      userPrompt,
+      cwd: opts.cwd,
+      criteria: opts.criteria,
+      parentTaskId: opts.parentTaskId,
+      // Launch provenance signals (issue #1583). createTask derives the immutable
+      // Task.provenance from these plus parentTaskId; the metadata.launchSource
+      // stamp below stays for the backpressure/promotion-guard consumers.
+      launchSource: opts.launchSource,
+      scheduleId: opts.scheduleId,
+      agentType,
+      name: opts.name,
+      playbookId: opts.playbookId,
+      projectId: opts.projectId,
+      playbookParameterValues: opts.playbookParameterValues,
+      launchIntent: buildLaunchIntent(opts, {
+        agentType,
+        effort: effectiveEffort,
+        model: effectiveModel,
+      }),
+      ...(dependencyAdmissionDecision && !dependencyAdmissionDecision.admit
+        ? { launchAdmission: taskAdmissionForDeniedDecision(dependencyAdmissionDecision, nowISO()) }
+        : {}),
+      // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
+      // the record so the promotion posture guard can recognize schedule-fired
+      // pendings as self-releasing. Additive — absent when no source was given.
+      // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
+      // hops so receipts match the final agentType after multi-hop cascade.
+      metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
+        ? {
+            ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
+            ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+            ...(agentSubstitutionChain.length > 0
+              ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+              : {}),
+          }
+        : undefined,
+      launchHealthSummary,
+      launchNote,
+      deliveryAuthorization,
+      autoCloseOnSignal: opts.autoCloseOnSignal,
+      unattended: opts.unattended,
+      migratedFromTaskId: opts.migratedFromTaskId,
+    });
+  } catch (err) {
+    // createTask can still reject after the probe is claimed (for example when
+    // a supplied parent task disappeared). Never strand the circuit in
+    // half_open_probe_busy when no task was persisted.
+    deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
+    throw err;
+  }
 
   if (resolvedClaimKey && deps.relaunchArbiter) {
     const acquire = deps.relaunchArbiter.tryAcquire(resolvedClaimKey, task.id);
     if (!acquire.ok) {
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       taskStore.deleteTask(task.id);
       if (acquire.reason === 'backoff') {
         throw new RelaunchDeniedError('backoff', resolvedClaimKey, {
@@ -1684,6 +1665,7 @@ async function launchTaskCore(
   if (resolvedClaimKey && deps.issueClaimRegistry) {
     const claimResult = deps.issueClaimRegistry.claim(resolvedClaimKey, { taskId: task.id });
     if (!claimResult.ok) {
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       // Single-threaded so this should be unreachable after the pre-check;
       // keep it as a self-healing backstop: no orphaned task without a claim.
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
@@ -1705,6 +1687,7 @@ async function launchTaskCore(
       !deps.issueClaimRegistry ||
       deps.issueClaimRegistry.ownerRecord(resolvedClaimKey)?.taskId === task.id;
     if (!arbiterHeld || !claimHeld) {
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
       deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
       deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
       taskStore.deleteTask(task.id);
@@ -1712,24 +1695,154 @@ async function launchTaskCore(
     }
   }
 
-  if (taskStore.getActiveCount() >= effectiveMaxActive) {
-    const queuedTask = taskStore.pendTask(task.id);
-    // The task record is committed (queued for promotion), so the round-robin
-    // launch consumed its slot — advance the rotation.
+  if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
+    const denialReservationToken = taskStore.beginLaunchPersistenceWithToken(task.id);
+    if (!denialReservationToken) {
+      const err = new Error(`Task ${task.id} could not reserve its dependency-denied launch`);
+      disposeUnacknowledgedTaskAfterPersistenceFailure(deps, task.id, err, resolvedClaimKey);
+      throw err;
+    }
+    const deniedAdmissionWrittenByOwner = task.launchAdmission;
+    taskStore.pendTask(task.id);
+    // A successful parked response is a durability promise: persist the full
+    // replay intent and denial reason before acknowledging queued work.
+    try {
+      await deps.flushTasks();
+    } catch (err) {
+      const current = taskStore.getTask(task.id);
+      const mayCompensatePersistenceFailure = current
+        && (current.status === 'open' || current.status === 'pending')
+        && !taskStore.hasForeignFreshLaunchReservation(task.id, denialReservationToken)
+        && isSameTaskLaunchAdmission(current.launchAdmission, deniedAdmissionWrittenByOwner);
+      taskStore.endLaunch(task.id, denialReservationToken);
+      if (mayCompensatePersistenceFailure) {
+        disposeUnacknowledgedTaskAfterPersistenceFailure(
+          deps,
+          task.id,
+          err,
+          resolvedClaimKey,
+        );
+      }
+      throw err;
+    }
+    const current = taskStore.getTask(task.id);
+    const replacedByAnotherOwner = taskStore.hasForeignFreshLaunchReservation(
+      task.id,
+      denialReservationToken,
+    ) || !isSameTaskLaunchAdmission(current?.launchAdmission, deniedAdmissionWrittenByOwner);
+    taskStore.endLaunch(task.id, denialReservationToken);
+    if (!current || isTerminalStatus(current.status)) {
+      throw new Error(`Task ${task.id} changed state while its dependency denial was persisted`);
+    }
+    if (replacedByAnotherOwner) {
+      return {
+        task: current,
+        queued: current.status === 'pending',
+        ...(current.launchAdmission && isNoSlotDependencyAdmission(current.launchAdmission)
+          ? { parked: true }
+          : {}),
+        ...(current.launchAdmission ? { dependencyAdmission: current.launchAdmission } : {}),
+      };
+    }
     if (isRoundRobin) deps.roundRobinCursor?.advance();
-    if (resolvedClaimKey && deps.flushTasks) {
+    return {
+      task: current,
+      queued: true,
+      parked: true,
+      dependencyAdmission: current.launchAdmission,
+    };
+  }
+
+  if (taskStore.getActiveCount() >= effectiveMaxActive) {
+    const probeWaitAdmission = dependencyAdmissionDecision?.admit
+      ? taskAdmissionForProbeCapacityWait(dependencyAdmissionDecision, nowISO())
+      : undefined;
+    const requiresCapacityWaitBarrier = probeWaitAdmission !== undefined || resolvedClaimKey !== undefined;
+    const capacityWaitReservationToken = requiresCapacityWaitBarrier
+      ? taskStore.beginLaunchPersistenceWithToken(task.id)
+      : undefined;
+    if (requiresCapacityWaitBarrier && !capacityWaitReservationToken) {
+      deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
+      const err = new Error(`Task ${task.id} could not reserve its capacity-wait launch`);
+      disposeUnacknowledgedTaskAfterPersistenceFailure(deps, task.id, err, resolvedClaimKey);
+      throw err;
+    }
+    let queuedTask = taskStore.pendTask(task.id);
+    if (probeWaitAdmission) {
+      // Keep the half-open recovery requirement durable while the task waits
+      // for capacity. The in-memory probe token is released below, so this
+      // marker is what makes promotion and restart re-enter half-open safely.
+      queuedTask = taskStore.setLaunchAdmission(task.id, probeWaitAdmission);
+    }
+    deps.launchDependencyAdmission?.releaseProbe(probeFromAdmissionDecision(dependencyAdmissionDecision));
+    // The released half-open token now lives only in this task marker. Make
+    // that ownership transfer durable before returning the queued response.
+    // Preserve the pre-existing claim durability barrier for ordinary claimed
+    // capacity waits as well.
+    if (requiresCapacityWaitBarrier) {
       try {
         await deps.flushTasks();
       } catch (err) {
-        console.error(
-          `[issue-claims] flush after grant failed for task ${task.id}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-        );
+        const current = taskStore.getTask(task.id);
+        const mayCompensatePersistenceFailure = current
+          && (current.status === 'open' || current.status === 'pending')
+          && !taskStore.hasForeignFreshLaunchReservation(task.id, capacityWaitReservationToken!)
+          && isSameTaskLaunchAdmission(current.launchAdmission, probeWaitAdmission);
+        taskStore.endLaunch(task.id, capacityWaitReservationToken!);
+        if (mayCompensatePersistenceFailure) {
+          disposeUnacknowledgedTaskAfterPersistenceFailure(
+            deps,
+            task.id,
+            err,
+            resolvedClaimKey,
+          );
+        }
+        throw err;
+      }
+      const current = taskStore.getTask(task.id);
+      const replacedByAnotherOwner = taskStore.hasForeignFreshLaunchReservation(
+        task.id,
+        capacityWaitReservationToken!,
+      ) || !isSameTaskLaunchAdmission(current?.launchAdmission, probeWaitAdmission);
+      taskStore.endLaunch(task.id, capacityWaitReservationToken!);
+      if (!current || isTerminalStatus(current.status)) {
+        throw new Error(`Task ${task.id} changed state while its capacity wait was persisted`);
+      }
+      queuedTask = current;
+      if (replacedByAnotherOwner) {
+        return {
+          task: current,
+          queued: current.status === 'pending',
+          ...(current.launchAdmission && isNoSlotDependencyAdmission(current.launchAdmission)
+            ? { parked: true }
+            : {}),
+          ...(current.launchAdmission ? { dependencyAdmission: current.launchAdmission } : {}),
+          ...(planQuotaRotation
+            ? {
+                admission: 'rotated' as const,
+                reason: 'plan_quota' as const,
+                fromAgent: planQuotaRotation.fromAgent,
+                toAgent: planQuotaRotation.toAgent,
+                maxUtilization: planQuotaRotation.maxUtilization,
+                threshold: planQuotaRotation.threshold,
+                resetsAt: planQuotaRotation.resetsAt,
+              }
+            : {}),
+          ...(agentSubstitutionChain.length > 0
+            ? { agentSubstitutionChain: [...agentSubstitutionChain] }
+            : {}),
+        };
       }
     }
+    // The task record is committed (queued for promotion), so the round-robin
+    // launch consumed its slot — advance the rotation.
+    if (isRoundRobin) deps.roundRobinCursor?.advance();
     return {
       task: queuedTask,
       queued: true,
+      ...(probeWaitAdmission
+        ? { dependencyAdmission: probeWaitAdmission }
+        : {}),
       ...(planQuotaRotation
         ? {
             admission: 'rotated' as const,
@@ -1766,7 +1879,7 @@ async function launchTaskCore(
   // dtach pressure), which is exactly what tripped the soft bound. The adapter
   // reports the master id via `onSessionCreated` the moment it exists; we record
   // it here and, once (or if already) timed out, link + kill it.
-  const abandon: { timedOut: boolean; sessionId: string | undefined; reaped: boolean } = {
+  const abandon: LaunchReapGuard = {
     timedOut: false,
     sessionId: undefined,
     reaped: false,
@@ -1774,7 +1887,8 @@ async function launchTaskCore(
   const linkAndReapAbandonedSession = (sessionId: string): void => {
     // Link first (terminal-safe, idempotent) so the reaper owns the master as a
     // `terminal-task-leak` (60s) even if the async kill below races a sweep,
-    // and so a restart never re-attaches it (recorded `lastStatus: 'aborted'`).
+    // and so a restart never re-attaches it. Its status stays unknown until
+    // physical stop resolves, then becomes `aborted`.
     try {
       taskStore.recordAbandonedLaunchSession(task.id, {
         tmuxSession: sessionId,
@@ -1782,14 +1896,16 @@ async function launchTaskCore(
         cwd: opts.cwd,
         createdAt: new Date(),
       });
+      // `recordAbandonedLaunchSession` defaults to aborted for historical
+      // terminal leaks. This launch still has an in-flight physical stop, so
+      // keep it live-looking until that stop actually resolves.
+      taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
     } catch (linkErr) {
       console.warn(
         `[launch] failed to link abandoned session ${sessionId} to task ${task.id}: ` +
         `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
       );
     }
-    if (abandon.reaped) return;
-    abandon.reaped = true;
     // Operator signal (issue #2500): the incident that motivated this fix was
     // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
     // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
@@ -1807,8 +1923,14 @@ async function launchTaskCore(
     // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
     // #1528 race helper does the same on a late RESOLUTION; this covers the
     // common case where the launch never resolves at all).
-    void Promise.resolve(adapter.stop(sessionId)).then(
+    void reapLaunchSession(abandon, adapter, agentType, task.id, sessionId).then(
       () => {
+        try {
+          taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+        } catch {
+          // A concurrent task purge may remove the bookkeeping after the
+          // physical stop. Cleanup is already proven in that case.
+        }
         void appendAuditRow(deps.auditLogPath, {
           type: 'session.reap',
           timestamp: nowISO(),
@@ -1830,6 +1952,10 @@ async function launchTaskCore(
       },
     );
   };
+  const probeSessionId = dependencyAdmissionDecision?.admit
+    && dependencyAdmissionDecision.probe
+    ? allocateLaunchSessionId()
+    : undefined;
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
     onSessionCreated: (sessionId) => {
@@ -1849,30 +1975,260 @@ async function launchTaskCore(
     ...(effectiveEffort !== undefined ? { effort: effectiveEffort } : {}),
     ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
+    ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
   };
 
   // #700 defense-in-depth: reserve the just-created task for this launch so a
   // concurrent promoter can never race it, and so getActiveCount counts the
   // in-flight launch against the cap (audit item 1, second launch site).
   phaseTracker.enter('reserve');
-  taskStore.beginLaunch(task.id);
+  let launchReservationToken = taskStore.beginLaunchWithToken(task.id);
+  if (!launchReservationToken) {
+    throw new Error(`Task ${task.id} could not reserve its direct launch`);
+  }
+  let adapterLaunchStarted = false;
+  let admissionMarkerWrittenByOwner: Task['launchAdmission'];
+  if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    const probeAdmission = taskAdmissionForProbe(
+      dependencyAdmissionDecision,
+      nowISO(),
+      probeSessionId,
+    );
+    admissionMarkerWrittenByOwner = probeAdmission;
+    taskStore.setLaunchAdmission(
+      task.id,
+      probeAdmission,
+    );
+  }
   // The disposition guard wraps ONLY the launch race — the point before which
   // no session has attached. Post-attach bookkeeping (posture stamping, audit
   // append) runs AFTER this block, so a bookkeeping fault can never dispose a
   // task that already reached a live session (issue #1588 review).
   try {
+    if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+      // Crash-safety boundary: startup recovery can only distinguish an
+      // interrupted half-open attempt from ordinary queued work if the probe
+      // marker is durable before the adapter can create a terminal session.
+      await deps.flushTasks();
+      const current = taskStore.getTask(task.id);
+      if (!current || isTerminalStatus(current.status)) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        if (isSameTaskLaunchAdmission(current?.launchAdmission, admissionMarkerWrittenByOwner)) {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
+        taskStore.endLaunch(task.id, launchReservationToken);
+        throw new Error(`Task ${task.id} changed state while its probe marker was persisted`);
+      }
+      if (!taskStore.ownsLaunchReservation(task.id, launchReservationToken)) {
+        const renewedToken = taskStore.beginLaunchWithToken(task.id);
+        if (!renewedToken) {
+          deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+          throw new Error(`Task ${task.id} lost direct launch ownership while persisting its probe marker`);
+        }
+        launchReservationToken = renewedToken;
+      }
+      if (!deps.launchDependencyAdmission?.isProbeActive(dependencyAdmissionDecision.probe)) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        const refreshed = deps.launchDependencyAdmission?.evaluate(opts.dependencies);
+        const refreshedAdmission = refreshed && !refreshed.admit
+          ? taskAdmissionForDeniedDecision(refreshed, nowISO())
+          : refreshed?.admit
+            ? taskAdmissionForProbeCapacityWait(refreshed, nowISO())
+            : undefined;
+        if (refreshed?.admit) {
+          deps.launchDependencyAdmission?.releaseProbe(refreshed.probe);
+        }
+        taskStore.pendTask(task.id);
+        admissionMarkerWrittenByOwner = refreshedAdmission;
+        taskStore.setLaunchAdmission(task.id, refreshedAdmission);
+        await deps.flushTasks();
+        taskStore.endLaunch(task.id, launchReservationToken);
+        const parked = taskStore.getTask(task.id)!;
+        return {
+          task: parked,
+          queued: true,
+          ...(refreshedAdmission && isNoSlotDependencyAdmission(refreshedAdmission)
+            ? { parked: true }
+            : {}),
+          ...(refreshedAdmission ? { dependencyAdmission: refreshedAdmission } : {}),
+        };
+      }
+    }
     // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
     // a launch that hangs (CPU saturation wedging the spawn path) fails fast
     // through the SAME catch/cleanup as any thrown launch instead of holding
-    // its beginLaunch reservation — and its schedule's 'reserved' execution —
+    // its token-owned launch reservation — and its schedule's 'reserved' execution —
     // for hours. Late settlement of the abandoned promise is defused inside
     // the race helper.
+    adapterLaunchStarted = true;
     await raceLaunchAgainstTimeout(
       adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
       resolveLaunchTimeoutMs(deps),
       { taskId: task.id, agentType, adapter, reapGuard: abandon },
     );
   } catch (err) {
+    if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+      const current = taskStore.getTask(task.id);
+      if (!adapterLaunchStarted) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        const ownsFailedProbeMarker = Boolean(current
+          && !taskStore.hasForeignFreshLaunchReservation(task.id, launchReservationToken)
+          && isSameTaskLaunchAdmission(current.launchAdmission, admissionMarkerWrittenByOwner));
+        const mayCompensatePersistenceFailure = ownsFailedProbeMarker
+          && current !== undefined
+          && (current.status === 'open' || current.status === 'pending');
+        if (ownsFailedProbeMarker) {
+          // The adapter never started, so this exact owner cannot have an
+          // external worker to reap. Remove the durable cleanup fence before
+          // any terminal disposal. A cancellation may already have won while
+          // the failing flush was pending; retaining its marker would block
+          // deletion or reopening until restart despite no possible worker.
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
+        taskStore.endLaunch(task.id, launchReservationToken);
+        phaseTracker.abort();
+        const phaseTimings = phaseTracker.snapshot();
+        taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+        if (mayCompensatePersistenceFailure) {
+          disposeUnacknowledgedTaskAfterPersistenceFailure(
+            deps,
+            task.id,
+            err,
+            resolvedClaimKey,
+          );
+        }
+        throw err;
+      }
+      abandon.timedOut = true;
+      const failedProbeSessionId = abandon.sessionId ?? probeSessionId;
+      const failedProbeSessionWasReported = abandon.sessionId !== undefined;
+      let failedProbeCleanupError: unknown;
+      if (failedProbeSessionId) {
+        // The exact terminal id was persisted before launch. Link it as a
+        // reaper-owned session, but keep its status unknown until physical
+        // stop succeeds. A concurrent cancellation will therefore attempt the
+        // same idempotent stop instead of clearing the durable probe fence on
+        // unproven cleanup.
+        if (failedProbeSessionWasReported) {
+          try {
+            taskStore.recordAbandonedLaunchSession(task.id, {
+              tmuxSession: failedProbeSessionId,
+              agentType,
+              cwd: opts.cwd,
+              createdAt: new Date(),
+            });
+            taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: undefined });
+          } catch {
+            // The adapter may already have attached the exact session. The
+            // stop below remains the physical source of truth either way.
+          }
+        }
+        if (failedProbeSessionWasReported && !abandon.reaped) {
+          try {
+            await (abandon.reapPromise
+              ?? reapLaunchSession(abandon, adapter, agentType, task.id, failedProbeSessionId));
+            taskStore.updateSession(task.id, failedProbeSessionId, { lastStatus: 'aborted' });
+          } catch (stopErr) {
+            failedProbeCleanupError = stopErr;
+            console.warn(
+              `[launch] Could not stop failed dependency-probe session ${failedProbeSessionId} `
+              + `for task ${task.id}: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+            );
+          }
+        } else if (!failedProbeSessionWasReported && isLaunchTimeoutError(err)) {
+          // The bounded await expired before createSession reported the exact
+          // preallocated id. A speculative stop can succeed merely because the
+          // socket does not exist *yet*; it cannot prove that the abandoned
+          // adapter will not create it later. Retain durable + in-process probe
+          // ownership until a late callback is physically reaped or startup
+          // kills the exact id.
+          failedProbeCleanupError = new Error(
+            `dependency probe launch timed out before session ${failedProbeSessionId} creation settled`,
+          );
+        }
+      }
+      phaseTracker.abort();
+      const phaseTimings = phaseTracker.snapshot();
+      taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+      if (failedProbeCleanupError) {
+        // Retain both the exact durable probing marker and the in-memory
+        // circuit token. Represent the possibly-live process as active so a
+        // promoter cannot overwrite its marker; reconciliation/startup will
+        // prove the exact session live or absent before another probe starts.
+        const currentAfterCleanup = taskStore.getTask(task.id);
+        if (admissionMarkerWrittenByOwner?.status === 'probing') {
+          deps.launchDependencyAdmission?.retainProbeCleanup(
+            admissionMarkerWrittenByOwner.dependencies,
+            task.id,
+          );
+        }
+        if (currentAfterCleanup && !isTerminalStatus(currentAfterCleanup.status)) {
+          if (currentAfterCleanup.status === 'pending' || currentAfterCleanup.status === 'open') {
+            taskStore.startTask(task.id);
+          }
+        } else if (currentAfterCleanup && admissionMarkerWrittenByOwner?.status === 'probing') {
+          taskStore.setLaunchAdmission(task.id, admissionMarkerWrittenByOwner);
+        }
+        await deps.flushTasks().catch((flushErr) => {
+          console.error(
+            `[launch] Failed to persist retained dependency-probe cleanup fence for task ${task.id}: `
+            + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+          );
+        });
+        taskStore.endLaunch(task.id, launchReservationToken);
+        deps.launchOutcomeMetrics?.record({
+          agentType,
+          outcome: 'failure',
+          reason: classifyLaunchFailureReason(err),
+        });
+        deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+        throw err;
+      }
+      const currentAfterCleanup = taskStore.getTask(task.id);
+      if (
+        !currentAfterCleanup
+        || currentAfterCleanup.status === 'completed'
+        || currentAfterCleanup.status === 'terminated'
+        || currentAfterCleanup.status === 'cancelled'
+      ) {
+        deps.launchDependencyAdmission?.releaseProbe(dependencyAdmissionDecision.probe);
+        if (currentAfterCleanup?.launchAdmission?.status === 'probing') {
+          taskStore.setLaunchAdmission(task.id, undefined);
+          taskStore.setLaunchHealthSummary(task.id, undefined);
+        }
+      } else {
+        deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, false);
+      }
+      taskStore.endLaunch(task.id, launchReservationToken);
+      const parked = reparkAfterFailedProbe(taskStore, task.id, dependencyAdmissionDecision);
+      deps.launchOutcomeMetrics?.record({
+        agentType,
+        outcome: 'failure',
+        reason: classifyLaunchFailureReason(err),
+      });
+      deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+      if (isRoundRobin) deps.roundRobinCursor?.advance();
+      if (resolvedClaimKey) {
+        await deps.flushTasks().catch((flushErr) => {
+          console.error(
+            `[issue-claims] flush after failed dependency probe failed for task ${task.id}: `
+            + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+          );
+        });
+      }
+      // Explicit cancellation/termination wins over a late failed probe. The
+      // task stays terminal with no retry marker, and the launch request
+      // reports its original failure rather than claiming queued work exists.
+      if (!parked) throw err;
+      return {
+        task: parked,
+        queued: true,
+        parked: true,
+        dependencyAdmission: parked.launchAdmission,
+      };
+    }
     // Never silently delete a persisted task (issue #1588). A launch that
     // timed out or threw before any session attached still left a real record;
     // deleting it (the old behaviour) erased the evidence AND let a retried
@@ -1886,7 +2242,7 @@ async function launchTaskCore(
     // are not blocked (the original goal of the delete) — they simply replay.
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
-    taskStore.endLaunch(task.id);
+    taskStore.endLaunch(task.id, launchReservationToken);
     // Issue #2500: if a dtach master came up during `session-create` (or comes
     // up shortly after this abandon — the late `onSessionCreated` handles that
     // case), link it to the task BEFORE the terminal transition so the reaper
@@ -1946,6 +2302,25 @@ async function launchTaskCore(
     throw err;
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
+  if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
+    // Persist the session association while the durable probing marker still
+    // names the preallocated id. If this best-effort write fails, the older
+    // marker remains sufficient for boot to reap that exact terminal before a
+    // retry; never roll back a worker that is already live.
+    await deps.flushTasks().catch((flushErr) => {
+      console.error(
+        `[launch] post-attach probe persistence failed for task ${task.id}: `
+        + `${flushErr instanceof Error ? flushErr.message : String(flushErr)}`,
+      );
+    });
+    if (taskOwnsLiveProbeSession(
+      taskStore.getTask(task.id),
+      admissionMarkerWrittenByOwner,
+    )) {
+      deps.launchDependencyAdmission?.completeProbe(dependencyAdmissionDecision.probe, true);
+      taskStore.setLaunchAdmission(task.id, undefined);
+    }
+  }
   deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
   // Instrumentation (issue #1589): finalize and persist the full
   // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
@@ -1984,7 +2359,7 @@ async function launchTaskCore(
   if (isRoundRobin) deps.roundRobinCursor?.advance();
   // R5: force-flush after grant so the claim survives a crash before the
   // next coalesced save.
-  if (resolvedClaimKey && deps.flushTasks) {
+  if (resolvedClaimKey) {
     try {
       await deps.flushTasks();
     } catch (err) {
@@ -2024,8 +2399,9 @@ export function promptWithLaunchNote(task: Pick<Task, 'prompt' | 'launchNote'>):
 
 function summarizeLaunchHealth(findings: LaunchPreflightFinding[]): TaskLaunchHealthSummary | undefined {
   if (findings.length === 0) return undefined;
+  const confirmed = findings.filter((finding) => finding.category !== 'unknown');
   return {
-    degradedDependencies: [...new Set(findings.map((finding) => finding.dependency))],
+    degradedDependencies: [...new Set(confirmed.map((finding) => finding.dependency))],
     findings,
   };
 }
@@ -2044,9 +2420,93 @@ function formatLaunchNote(findings: LaunchPreflightFinding[]): string | undefine
     return `- ${finding.summary} (${finding.category}).${detail} Recommended action: ${finding.recommendedAction}`;
   });
   return [
-    '[Kookr launch warning] One or more advisory launch dependencies are degraded. Continue the task without assuming those services are available.',
+    '[Kookr launch warning] One or more advisory launch dependencies are degraded or their health is unknown. Continue the task without assuming those services are available.',
     ...lines,
   ].join('\n');
+}
+
+function formatParkedLaunchNote(
+  findings: LaunchPreflightFinding[],
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: false }>,
+): string {
+  const lines = findings.map((finding) => {
+    const detail = finding.detail ? ` Detail: ${finding.detail}` : '';
+    return `- ${finding.summary} (${finding.category}).${detail} Recommended action: ${finding.recommendedAction}`;
+  });
+  const dependencies = decision.dependencies.map((dependency) => dependency.dependency).join(', ');
+  return [
+    `[Kookr launch parked] Required launch dependency is ${decision.reason === 'dependency_degraded' ? 'degraded' : 'awaiting a bounded recovery probe'} (${dependencies}). No worker slot was consumed; Kookr will retry this pending intent when recovery evidence is available.`,
+    ...lines,
+  ].join('\n');
+}
+
+function buildLaunchIntent(
+  opts: LaunchOpts,
+  resolved: { agentType: AgentType; effort?: string; model?: string },
+): TaskLaunchIntent {
+  return buildTaskLaunchIntent(resolved.agentType, {
+    prompt: opts.prompt,
+    cwd: opts.cwd,
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
+    ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
+    ...(resolved.model !== undefined ? { model: resolved.model } : {}),
+    ...(opts.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+    ...(opts.dependencies ? { dependencies: [...opts.dependencies] } : {}),
+    ...(opts.idempotencyKey !== undefined ? { idempotencyKey: opts.idempotencyKey } : {}),
+  });
+}
+
+function reparkAfterFailedProbe(
+  taskStore: TaskStore,
+  taskId: string,
+  decision: Extract<LaunchDependencyAdmissionDecision, { admit: true }>,
+): Task | undefined {
+  if (!decision.probe) throw new Error('Cannot repark a launch without a recovery probe');
+  const live = taskStore.getTask(taskId);
+  if (!live) throw new Error(`Task not found: ${taskId}`);
+  if (live.status === 'completed' || live.status === 'terminated' || live.status === 'cancelled') {
+    taskStore.setLaunchAdmission(taskId, undefined);
+    return undefined;
+  }
+  taskStore.setLaunchAdmission(taskId, taskAdmissionForFailedProbe(decision, nowISO()));
+  if (live.status === 'inProgress') taskStore.reopenTask(taskId);
+  if (taskStore.getTask(taskId)?.status === 'open') taskStore.pendTask(taskId);
+  return taskStore.getTask(taskId)!;
+}
+
+/**
+ * Dispose a task that could not cross its required persistence boundary.
+ * No worker was started, so retaining it as pending would let dedup acknowledge
+ * work whose durable row is still unproven. Binding the thrown error to the
+ * disposed record also keeps an idempotency reservation from being released as
+ * though task creation never happened.
+ */
+function disposeUnacknowledgedTaskAfterPersistenceFailure(
+  deps: LaunchServiceDeps,
+  taskId: string,
+  err: unknown,
+  claimKey: { repo: string; number: number } | undefined,
+): void {
+  if (claimKey) deps.relaunchArbiter?.release(claimKey, taskId);
+  deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
+  const task = deps.taskStore.getTask(taskId);
+  if (task && !isTerminalStatus(task.status)) {
+    deps.taskStore.setDisposition(taskId, {
+      reason: 'launch_error',
+      at: nowISO(),
+      source: 'launch-service',
+      detail: `Required task-state persistence failed before launch: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    try {
+      deps.taskStore.cancelTask(taskId);
+    } catch (cancelErr) {
+      console.error(
+        `[launch] failed to cancel task ${taskId} after persistence-barrier failure:`,
+        cancelErr instanceof Error ? cancelErr.message : cancelErr,
+      );
+    }
+  }
+  markDisposedTask(err, taskId);
 }
 
 async function collectAdvisoryDependencyFindings(

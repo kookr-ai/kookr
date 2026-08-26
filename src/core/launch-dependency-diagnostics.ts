@@ -1,4 +1,5 @@
 import type { Task } from './tasks.js';
+import type { LaunchDependencyCircuitSnapshot } from './launch-dependency-admission.js';
 
 export interface LaunchDependencyDiagnosticsDependency {
   dependency: string;
@@ -22,8 +23,27 @@ export interface LaunchDependencyDiagnosticsSnapshot {
   schemaVersion: 'launch-dependency-diagnostics.v1';
   totalDegradedTasks: number;
   totalFindings: number;
+  /** Confirmed (non-unknown) degradation, additive to legacy v1 totals. */
+  totalConfirmedDegradedTasks?: number;
+  /** Confirmed (non-unknown) findings, additive to legacy v1 totals. */
+  totalConfirmedFindings?: number;
+  totalUnknownTasks?: number;
+  totalUnknownFindings?: number;
   dependencies: LaunchDependencyDiagnosticsDependency[];
   categories: LaunchDependencyDiagnosticsCategory[];
+  /** Live circuit state, including unknown and half-open states. */
+  dependencyStates?: LaunchDependencyCircuitSnapshot[];
+  /** Pending work parked before a worker slot was consumed. */
+  parkedTasks?: {
+    total: number;
+    taskIds: string[];
+    byDependency: Array<{
+      dependency: string;
+      taskCount: number;
+      taskIds: string[];
+      reasons: string[];
+    }>;
+  };
 }
 
 interface MutableAggregate {
@@ -35,32 +55,95 @@ interface MutableAggregate {
 }
 
 export function buildLaunchDependencyDiagnostics(
-  tasks: readonly Pick<Task, 'id' | 'createdAt' | 'launchHealthSummary'>[],
+  tasks: readonly Pick<Task, 'id' | 'status' | 'createdAt' | 'launchHealthSummary' | 'launchAdmission'>[],
+  dependencyStates?: readonly LaunchDependencyCircuitSnapshot[],
 ): LaunchDependencyDiagnosticsSnapshot {
   const degradedTaskIds = new Set<string>();
+  const confirmedDegradedTaskIds = new Set<string>();
+  const unknownTaskIds = new Set<string>();
   const byDependency = new Map<string, MutableAggregate>();
   const byCategory = new Map<string, MutableAggregate>();
+  const parkedTaskIds = new Set<string>();
+  const parkedByDependency = new Map<string, { taskIds: Set<string>; reasons: Set<string> }>();
   let totalFindings = 0;
+  let totalConfirmedFindings = 0;
+  let totalUnknownFindings = 0;
 
   for (const task of tasks) {
+    const parkedAdmission = task.status === 'pending'
+      && task.launchAdmission?.status === 'parked'
+      && task.launchAdmission.reason !== 'half_open_waiting_for_capacity'
+      ? task.launchAdmission
+      : undefined;
+    if (parkedAdmission) {
+      parkedTaskIds.add(task.id);
+      for (const parked of parkedAdmission.dependencies) {
+        const aggregate = parkedByDependency.get(parked.dependency) ?? {
+          taskIds: new Set<string>(),
+          reasons: new Set<string>(),
+        };
+        aggregate.taskIds.add(task.id);
+        if (parked.reason) aggregate.reasons.add(parked.reason);
+        parkedByDependency.set(parked.dependency, aggregate);
+      }
+    }
+    // A parked task has not launched and must not inflate the historical
+    // "launched with degraded dependencies" rollup. Its admission marker is
+    // the separate parked-work diagnostic above.
+    if (parkedAdmission) continue;
     const findings = task.launchHealthSummary?.findings ?? [];
     if (findings.length === 0) continue;
 
-    degradedTaskIds.add(task.id);
     const occurredAt = task.createdAt.toISOString();
     for (const finding of findings) {
+      // Keep the v1 totals/rollups byte-compatible: they historically counted
+      // every finding, including `unknown`. Add explicit confirmed totals
+      // rather than silently changing a versioned field's meaning.
+      degradedTaskIds.add(task.id);
       totalFindings += 1;
       recordFinding(byDependency, finding.dependency, task.id, finding.category, occurredAt);
       recordFinding(byCategory, finding.category, task.id, finding.dependency, occurredAt);
+      if (finding.category === 'unknown') {
+        unknownTaskIds.add(task.id);
+        totalUnknownFindings += 1;
+        continue;
+      }
+      confirmedDegradedTaskIds.add(task.id);
+      totalConfirmedFindings += 1;
     }
   }
+
+  const parkedTasks = parkedTaskIds.size > 0
+    ? {
+        total: parkedTaskIds.size,
+        taskIds: Array.from(parkedTaskIds).sort(),
+        byDependency: Array.from(parkedByDependency.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([dependency, aggregate]) => ({
+            dependency,
+            taskCount: aggregate.taskIds.size,
+            taskIds: Array.from(aggregate.taskIds).sort(),
+            reasons: Array.from(aggregate.reasons).sort(),
+          })),
+      }
+    : undefined;
 
   return {
     schemaVersion: 'launch-dependency-diagnostics.v1',
     totalDegradedTasks: degradedTaskIds.size,
     totalFindings,
+    ...(confirmedDegradedTaskIds.size > 0
+      ? { totalConfirmedDegradedTasks: confirmedDegradedTaskIds.size }
+      : {}),
+    ...(totalConfirmedFindings > 0 ? { totalConfirmedFindings } : {}),
+    ...(unknownTaskIds.size > 0 ? { totalUnknownTasks: unknownTaskIds.size } : {}),
+    ...(totalUnknownFindings > 0 ? { totalUnknownFindings } : {}),
     dependencies: toSortedRows(byDependency, 'categories'),
     categories: toSortedRows(byCategory, 'dependencies'),
+    ...(dependencyStates && dependencyStates.length > 0
+      ? { dependencyStates: dependencyStates.map((state) => ({ ...state })) }
+      : {}),
+    ...(parkedTasks ? { parkedTasks } : {}),
   };
 }
 

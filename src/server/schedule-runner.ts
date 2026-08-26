@@ -35,6 +35,8 @@ import {
 } from './schedule-resolution-alert.js';
 import type { ScheduleDeadManStats } from './schedule-dead-man.js';
 import type { TaskStatus } from '../core/types.js';
+import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
+import { isNoSlotDependencyAdmission } from '../core/launch-dependency-task-admission.js';
 import type { ClaimKey } from '../core/issue-claim-types.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
@@ -105,6 +107,17 @@ export const FIRE_WALL_CLOCK_CAP_MS = 45_000;
 // will tolerate up to 12h of "previous run still active" before recovery.
 export const SCHEDULE_GATE_MAX_TASK_AGE_MS = 12 * 60 * 60 * 1000;
 
+export interface ScheduleRunResult {
+  taskId?: string;
+  error?: string;
+  queued?: boolean;
+  /** True when admission parked the task without consuming a worker slot. */
+  parked?: boolean;
+  /** Safe scheduled-execution classification for API and CLI consumers. */
+  outcome?: 'parked_dependency';
+  reasonCode?: 'dependency_degraded';
+}
+
 const SCHEDULE_GATE_ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set([
   'open',
   'pending',
@@ -121,11 +134,16 @@ const SCHEDULE_GATE_ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set([
  * `now` and `staleAfterMs` are parameterized for tests.
  */
 export function isTaskBlockingSchedule(
-  task: { status: TaskStatus; updatedAt: Date } | undefined,
+  task: { status: TaskStatus; updatedAt: Date; launchAdmission?: TaskLaunchAdmission } | undefined,
   now: Date = new Date(),
   staleAfterMs: number = SCHEDULE_GATE_MAX_TASK_AGE_MS,
 ): boolean {
   if (!task || !SCHEDULE_GATE_ACTIVE_STATUSES.has(task.status)) return false;
+  // Dependency-blocked tasks are intentionally durable until recovery; age
+  // does not make the original scheduled work obsolete. Letting this marker
+  // fall through the generic 12h abandonment gate would create a second task
+  // because schedule launches intentionally disable submission dedup.
+  if (isNoSlotDependencyAdmission(task.launchAdmission)) return true;
   const ageMs = Math.max(0, now.getTime() - task.updatedAt.getTime());
   return ageMs < staleAfterMs;
 }
@@ -585,7 +603,7 @@ export class ScheduleRunner {
     }
   }
 
-  async runNow(id: string): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+  async runNow(id: string): Promise<ScheduleRunResult> {
     const schedule = this.deps.store.get(id);
     if (!schedule) return { error: 'Schedule not found' };
     return this.fire(schedule, 'manual');
@@ -716,7 +734,7 @@ export class ScheduleRunner {
     trigger: 'cron' | 'manual',
     scheduledNextRun?: Date,
     decision: 'cron_due' | 'manual_run' | 'catch_up' = trigger === 'manual' ? 'manual_run' : 'cron_due',
-  ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+  ): Promise<ScheduleRunResult> {
     if (trigger === 'cron' && isTriggerLimitExhausted(schedule)) {
       await this.deps.service.markCronLimitExhausted(schedule.id);
       return { error: 'Schedule trigger limit reached' };
@@ -902,6 +920,7 @@ export class ScheduleRunner {
         name: launch.name,
         playbookId: launch.playbookId,
         projectId: launch.projectId,
+        ...(launch.dependencies ? { dependencies: [...launch.dependencies] } : {}),
         agentType,
         // #1518: forward schedule-level effort/model pins into the spawned
         // task. launchTask still validates them against the resolved agent.
@@ -957,13 +976,23 @@ export class ScheduleRunner {
         receipt.id,
         result.task.id,
         result.queued,
-        acceptDetails,
+        { ...acceptDetails, ...(result.parked ? { dependencyParked: true } : {}) },
       );
       console.log(
         `[schedule] Fired "${schedule.name}" → task ${result.task.id}`
-        + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
+        + `${result.parked
+          ? ' (parked — launch dependency unavailable)'
+          : result.queued
+            ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})`
+            : ''}`,
       );
-      return { taskId: result.task.id, queued: result.queued };
+      return {
+        taskId: result.task.id,
+        queued: result.queued,
+        ...(result.parked
+          ? { parked: true, outcome: 'parked_dependency' as const, reasonCode: 'dependency_degraded' as const }
+          : {}),
+      };
     } catch (err) {
       return this.recordFireFailure(schedule, receipt, err);
     }
@@ -983,7 +1012,7 @@ export class ScheduleRunner {
   private async fireLooped(
     schedule: Schedule,
     receipt: { id: string },
-  ): Promise<{ taskId?: string; error?: string; queued?: boolean }> {
+  ): Promise<ScheduleRunResult> {
     const arbiter = this.deps.relaunchArbiter;
     const claimKey = scheduleRelaunchClaimKey(schedule);
 
@@ -1068,11 +1097,15 @@ export class ScheduleRunner {
         receipt.id,
         result.task.id,
         result.queued,
-        acceptDetails,
+        { ...acceptDetails, ...(result.parked ? { dependencyParked: true } : {}) },
       );
       console.log(
         `[schedule] Armed loop for "${schedule.name}" → task ${result.task.id}`
-        + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
+        + `${result.parked
+          ? ' (parked — launch dependency unavailable)'
+          : result.queued
+            ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})`
+            : ''}`,
       );
 
       // Hold the relaunch lease under the fired task so a concurrent actuator
@@ -1091,7 +1124,13 @@ export class ScheduleRunner {
         }
       }
 
-      return { taskId: result.task.id, queued: result.queued };
+      return {
+        taskId: result.task.id,
+        queued: result.queued,
+        ...(result.parked
+          ? { parked: true, outcome: 'parked_dependency' as const, reasonCode: 'dependency_degraded' as const }
+          : {}),
+      };
     } catch (err) {
       return this.recordFireFailure(schedule, receipt, err);
     }

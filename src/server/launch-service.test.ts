@@ -17,6 +17,7 @@ import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -48,10 +49,11 @@ function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
   return {
     taskStore,
     adapterRegistry,
+    flushTasks: vi.fn().mockResolvedValue(undefined),
     lifecycleDeps: {
       monitor: { registerAgent: vi.fn() } as any,
       watchdog: { registerAgent: vi.fn() } as any,
-      hookWatcher: { watch: vi.fn() } as any,
+      hookWatcher: { isWatching: vi.fn().mockReturnValue(false), watch: vi.fn() } as any,
       githubScanner: { scanTask: vi.fn(), isActive: vi.fn().mockReturnValue(false), processTaskPrompt: vi.fn() } as any,
       autoNameTask: vi.fn(),
     } as any,
@@ -318,6 +320,8 @@ describe('launchTask', () => {
     expect(result.task.launchIntent).toEqual({
       schemaVersion: 'task-launch-intent.v1',
       agentType: 'claude-code',
+      prompt: 'preserve pins',
+      cwd: '/tmp',
       model: 'claude-fable-5',
       effort: 'max',
     });
@@ -707,6 +711,1126 @@ describe('launchTask', () => {
     expect(result.task.prompt).toBe('needs kb');
     expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('parks a launch on confirmed dependency degradation without consuming a worker slot', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB provider is unavailable',
+      recommendedAction: 'Restore the KB provider.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'needs the knowledge base',
+      cwd: '/tmp',
+      projectId: 'github.com/example/project',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-kb-task',
+    });
+
+    expect(result).toMatchObject({ queued: true, parked: true });
+    expect(result.task.status).toBe('pending');
+    expect(result.task.launchIntent).toMatchObject({
+      prompt: 'needs the knowledge base',
+      cwd: '/tmp',
+      projectId: 'github.com/example/project',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-kb-task',
+    });
+    expect(result.task.launchAdmission).toMatchObject({
+      status: 'parked',
+      reason: 'dependency_degraded',
+      dependencies: [{ dependency: 'kb', state: 'degraded' }],
+    });
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(gatedDeps.flushTasks).toHaveBeenCalledOnce();
+    expect(store.getActiveCount()).toBe(0);
+  });
+
+  it('does not acknowledge or retain dependency-denied work when its persistence barrier fails', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+        recommendedAction: 'Restore the KB provider.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn().mockRejectedValue(new Error('denied marker write failed')),
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'dependency denied durability failure',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('denied marker write failed');
+
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        disposition: expect.objectContaining({
+          reason: 'launch_error',
+          detail: expect.stringContaining('denied marker write failed'),
+        }),
+      }),
+    ]);
+  });
+
+  it('does not cancel a replacement reservation when a stale dependency-denial barrier rejects', async () => {
+    let now = 3_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale dependency denial owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      expect(store.getActiveCount()).toBe(0);
+      const originalMarker = task.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectFlush(new Error('stale denial write failed'));
+      await expect(launch).rejects.toThrow('stale denial write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: originalMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not return a parked response after cancellation wins the denial barrier', async () => {
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel dependency denial owner',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('changed state while its dependency denial was persisted');
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+  });
+
+  it('parks confirmed dependency degradation even when the ordinary pending queue is full', async () => {
+    const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
+    store.startTask(active.id);
+    const ordinaryPending = store.createTask({ prompt: 'capacity wait', cwd: '/tmp' });
+    store.pendTask(ordinaryPending.id);
+    const gatedDeps: LaunchServiceDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 1,
+      getMaxPendingTasks: () => 1,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider is unavailable',
+        recommendedAction: 'Restore the KB provider.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    expect(store.getPendingCount()).toBe(1);
+    const result = await launchTask(gatedDeps, {
+      prompt: 'must survive the provider outage',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      },
+    });
+    expect(store.listTasks().filter((task) => task.status === 'pending')).toHaveLength(2);
+    expect(store.getPendingCount()).toBe(1);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('returns parked admission metadata when a duplicate matches an existing parked task', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB is unavailable',
+      recommendedAction: 'Restore KB.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+    const first = await launchTask(gatedDeps, {
+      prompt: 'parked duplicate',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    });
+    const duplicate = await launchTask(gatedDeps, {
+      prompt: 'parked duplicate',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    });
+
+    expect(first.parked).toBe(true);
+    expect(duplicate).toMatchObject({
+      task: { id: first.task.id },
+      queued: true,
+      duplicate: true,
+      parked: true,
+      dependencyAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+  });
+
+  it('releases a half-open probe when task creation rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'missing parent',
+      cwd: '/tmp',
+      parentTaskId: 'missing-parent',
+      dependencies: ['kb'],
+    })).rejects.toThrow('Parent task not found: missing-parent');
+
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
+  it('fails open when dependency health is unknown', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'unknown',
+        summary: 'KB health probe timed out',
+        recommendedAction: 'Retry the health probe.',
+      } satisfies LaunchPreflightFinding]),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'best effort without health data',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.parked).toBeUndefined();
+    expect(result.task.launchAdmission).toBeUndefined();
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('fails open when health collection times out', async () => {
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockRejectedValue(new Error('health probe timeout')),
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'continue while health collection is unavailable',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result.parked).toBeUndefined();
+    expect(result.task.launchAdmission).toBeUndefined();
+    expect(gatedDeps.launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
+    ]);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('does not hold a half-open probe while recovery work waits for capacity', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      idempotencyLedger: new IdempotencyLedger(repoDir),
+    };
+    await gatedDeps.idempotencyLedger.load();
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'capacity-wait-probe',
+    });
+
+    expect(result.queued).toBe(true);
+    expect(result.parked).toBeUndefined();
+    expect(result.task.status).toBe('pending');
+    expect(result.task.launchAdmission).toMatchObject({
+      status: 'parked',
+      reason: 'half_open_waiting_for_capacity',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+    });
+    expect(launchDependencyAdmission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'half_open' }),
+    ]);
+    const nextProbe = launchDependencyAdmission.evaluate(['kb']);
+    expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    if (nextProbe.admit) launchDependencyAdmission.releaseProbe(nextProbe.probe);
+
+    const replay = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'capacity-wait-probe',
+    });
+    expect(replay).toMatchObject({
+      idempotentReplay: true,
+      queued: true,
+      dependencyAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(replay.parked).toBeUndefined();
+
+    const duplicate = await launchTask(gatedDeps, {
+      prompt: 'wait for a recovery slot',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    expect(duplicate).toMatchObject({
+      duplicate: true,
+      queued: true,
+      dependencyAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(duplicate.parked).toBeUndefined();
+  });
+
+  it('does not cancel a replacement reservation when a stale capacity barrier rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    let now = 9_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale capacity wait owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      const originalMarker = task.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectFlush(new Error('stale capacity write failed'));
+      await expect(launch).rejects.toThrow('stale capacity write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: originalMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not return queued after cancellation wins a capacity barrier', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel capacity wait owner',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('changed state while its capacity wait was persisted');
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+  });
+
+  it('releases a half-open probe when the ordinary capacity queue is full', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    const active = store.createTask({ prompt: 'active worker', cwd: '/tmp' });
+    store.startTask(active.id);
+    const pending = store.createTask({ prompt: 'ordinary capacity wait', cwd: '/tmp' });
+    store.pendTask(pending.id);
+    const gatedDeps: LaunchServiceDeps = {
+      ...deps,
+      getMaxActiveTasks: () => 1,
+      getMaxPendingTasks: () => 1,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'recovery probe with no queue room',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toSatisfy(isPendingQueueFullError);
+
+    const nextProbe = launchDependencyAdmission.evaluate(['kb']);
+    expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    if (nextProbe.admit) launchDependencyAdmission.releaseProbe(nextProbe.probe);
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('re-parks the same task when a half-open provider launch fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    vi.mocked(gatedDeps.adapterRegistry.get('claude-code').launch)
+      .mockRejectedValueOnce(new Error('provider rejected recovery probe'));
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'preserve this recovery work',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'stable-recovery-identity',
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+        launchIntent: { idempotencyKey: 'stable-recovery-identity' },
+      },
+    });
+    expect(result.task.sessions).toEqual([]);
+    expect(store.listTasks()).toHaveLength(1);
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  it('persists probing before launch and aborts a partial probe session before re-parking', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let probePersisted = false;
+    let expectedSessionId: string | undefined;
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        const probing = store.listTasks().find((task) => task.launchAdmission?.status === 'probing');
+        expect(probing?.launchAdmission).toMatchObject({
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          sessionId: expect.stringMatching(/^kookr-/),
+        });
+        expectedSessionId = probing?.launchAdmission?.status === 'probing'
+          ? probing.launchAdmission.sessionId
+          : undefined;
+        probePersisted = true;
+      }),
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      expect(probePersisted).toBe(true);
+      expect(store.getTask(taskId)?.launchAdmission).toMatchObject({
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+      });
+      expect(options?.tmuxName).toBe(expectedSessionId);
+      options?.onSessionCreated?.(expectedSessionId!);
+      store.addSession(taskId, {
+        tmuxSession: expectedSessionId!,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      throw new Error('provider failed after session creation');
+    });
+
+    const result = await launchTask(gatedDeps, {
+      prompt: 'preserve partially launched recovery work',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+
+    expect(result).toMatchObject({
+      queued: true,
+      parked: true,
+      task: {
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+        sessions: [expect.objectContaining({
+          tmuxSession: expectedSessionId,
+          lastStatus: 'aborted',
+        })],
+      },
+    });
+    expect(adapter.stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(gatedDeps.flushTasks).toHaveBeenCalledOnce();
+  });
+
+  it('retains exact direct-probe ownership when partial-session cleanup rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.(options.tmuxName!);
+      throw new Error('provider failed after terminal creation');
+    });
+    vi.mocked(adapter.stop).mockRejectedValueOnce(new Error('terminal cleanup rejected'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(launchTask(gatedDeps, {
+        prompt: 'retain ambiguous direct probe',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      })).rejects.toThrow('provider failed after terminal creation');
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const [retained] = store.listTasks();
+    const retainedSessionId = retained.launchAdmission?.status === 'probing'
+      ? retained.launchAdmission.sessionId
+      : undefined;
+    expect(retained).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        sessionId: expect.stringMatching(/^kookr-/),
+      },
+      sessions: [expect.objectContaining({
+        tmuxSession: retainedSessionId,
+        lastStatus: undefined,
+      })],
+    });
+    expect(adapter.stop).toHaveBeenCalledWith(retainedSessionId);
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    launchDependencyAdmission.observe(['kb'], []);
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  it('keeps a timed-out direct probe fenced until a late-created session is reaped', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      getLaunchTimeoutMs: () => 5,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    let reportLateSession!: () => void;
+    let expectedSessionId: string | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce(
+      async (_taskId, _prompt, _cwd, _resume, options) => {
+        expectedSessionId = options?.tmuxName;
+        reportLateSession = () => options?.onSessionCreated?.(expectedSessionId!);
+        return new Promise<string>(() => undefined);
+      },
+    );
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'late-created direct probe',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [],
+    });
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    reportLateSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: [expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })],
+    });
+    expect(launchDependencyAdmission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  it('deduplicates a retry against a timed-out zero-session direct probe owner', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const terminalBackend = { isAlive: vi.fn().mockResolvedValue(false) };
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      terminalBackend,
+      getLaunchTimeoutMs: () => 5,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(
+      async () => new Promise<string>(() => undefined),
+    );
+    const opts = {
+      prompt: 'deduplicate ambiguous direct probe',
+      cwd: '/tmp',
+      dependencies: ['kb'] as const,
+    };
+
+    await expect(launchTask(gatedDeps, opts)).rejects.toBeInstanceOf(LaunchTimeoutError);
+    const [probeOwner] = store.listTasks();
+
+    const retry = await launchTask(gatedDeps, opts);
+
+    expect(retry).toMatchObject({
+      duplicate: true,
+      task: {
+        id: probeOwner.id,
+        status: 'inProgress',
+        launchAdmission: { status: 'probing' },
+        sessions: [],
+      },
+    });
+    expect(store.listTasks()).toHaveLength(1);
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(terminalBackend.isAlive).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before direct probe launch when the persistence barrier fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn().mockRejectedValueOnce(new Error('probe marker write failed')),
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'do not launch without durable probe ownership',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('probe marker write failed');
+
+    expect(adapter.launch).not.toHaveBeenCalled();
+    const [disposed] = store.listTasks();
+    expect(disposed).toMatchObject({
+      status: 'cancelled',
+      disposition: expect.objectContaining({
+        reason: 'launch_error',
+        detail: expect.stringContaining('probe marker write failed'),
+      }),
+    });
+    expect(disposed.launchAdmission).toBeUndefined();
+    expect(disposed.launchHealthSummary).toBeUndefined();
+    expect(() => store.deleteTask(disposed.id)).not.toThrow();
+    expect(store.listTasks()).toEqual([]);
+  });
+
+  it('finalizes an idempotency key to the disposed task when the direct probe barrier fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const ledger = new IdempotencyLedger(repoDir);
+    await ledger.load();
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      idempotencyLedger: ledger,
+      flushTasks: vi.fn().mockRejectedValueOnce(new Error('durability unavailable')),
+    };
+    const opts = {
+      prompt: 'stable failed durability identity',
+      cwd: '/tmp',
+      dependencies: ['kb'] as const,
+      idempotencyKey: 'failed-probe-barrier',
+    };
+
+    await expect(launchTask(gatedDeps, opts)).rejects.toThrow('durability unavailable');
+    const disposed = store.listTasks()[0]!;
+
+    const replay = await launchTask(gatedDeps, opts);
+    expect(replay).toMatchObject({
+      idempotentReplay: true,
+      task: {
+        id: disposed.id,
+        status: 'cancelled',
+        disposition: { reason: 'launch_error' },
+      },
+    });
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('does not start a direct probe cancelled while its marker is being persisted', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel during direct probe persistence',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('changed state while its probe marker was persisted');
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)).toMatchObject({ status: 'cancelled', launchAdmission: undefined });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  it('clears a cancelled direct-probe fence when its pending marker flush rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'cancel before rejected direct probe persistence',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    const task = store.listTasks()[0]!;
+    store.cancelTask(task.id);
+    rejectFlush(new Error('probe marker write failed after cancellation'));
+
+    await expect(launch).rejects.toThrow('probe marker write failed after cancellation');
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      launchHealthSummary: undefined,
+      sessions: [],
+    });
+    expect(() => store.deleteTask(task.id)).not.toThrow();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  it('re-parks a direct probe when confirmed degradation invalidates its token during persistence', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockResolvedValue(undefined),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'invalidate direct probe token',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    launchDependencyAdmission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider degraded again',
+    }]);
+    releaseFlush();
+
+    await expect(launch).resolves.toMatchObject({
+      queued: true,
+      parked: true,
+      task: { status: 'pending', launchAdmission: { reason: 'dependency_degraded' } },
+    });
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  it('disposes a direct probe when its re-park persistence barrier fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockRejectedValueOnce(new Error('direct re-park write failed')),
+    };
+
+    const launch = launchTask(gatedDeps, {
+      prompt: 'failed direct re-park barrier',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await flushStarted;
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    releaseFlush();
+
+    await expect(launch).rejects.toThrow('direct re-park write failed');
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        disposition: expect.objectContaining({ reason: 'launch_error' }),
+      }),
+    ]);
+  });
+
+  it('does not dispose replacement-owned work when a stale direct re-park barrier rejects', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let now = 7_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let rejectSecond!: (err: Error) => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFirstStarted();
+          await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        })
+        .mockImplementationOnce(async () => {
+          markSecondStarted();
+          await new Promise<void>((_resolve, reject) => { rejectSecond = reject; });
+        }),
+    };
+
+    try {
+      const launch = launchTask(gatedDeps, {
+        prompt: 'stale direct re-park owner',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+      await firstStarted;
+      launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      const task = store.listTasks()[0]!;
+      const replacementMarker = task.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = store.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectSecond(new Error('stale direct re-park write failed'));
+      await expect(launch).rejects.toThrow('stale direct re-park write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: replacementMarker,
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(store.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+      expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('keeps a live direct probe when post-attach persistence fails', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('post-attach write failed'));
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+      flushTasks,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      const sessionId = options?.tmuxName;
+      expect(sessionId).toMatch(/^kookr-/);
+      options?.onSessionCreated?.(sessionId!);
+      store.addSession(taskId, {
+        tmuxSession: sessionId!,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return sessionId!;
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await launchTask(gatedDeps, {
+        prompt: 'live direct probe survives post-attach flush failure',
+        cwd: '/tmp',
+        dependencies: ['kb'],
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({ queued: false, task: { status: 'inProgress', launchAdmission: undefined } });
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'healthy' });
+  });
+
+  it('retains a terminal probe fence when completion wins during post-attach persistence', async () => {
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releasePostAttach!: () => void;
+    let markPostAttachStarted!: () => void;
+    const postAttachStarted = new Promise<void>((resolve) => { markPostAttachStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markPostAttachStarted();
+        await new Promise<void>((resolve) => { releasePostAttach = resolve; });
+      });
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission: admission,
+      flushTasks,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      const sessionId = options?.tmuxName!;
+      options?.onSessionCreated?.(sessionId);
+      store.addSession(taskId, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      return sessionId;
+    });
+
+    const launched = launchTask(gatedDeps, {
+      prompt: 'completion races direct probe persistence',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    });
+    await postAttachStarted;
+    const taskId = store.listTasks()[0]!.id;
+    store.completeTask(taskId);
+    expect(() => store.reopenTask(taskId)).toThrow(/cleanup is in progress/);
+    releasePostAttach();
+    await launched;
+
+    expect(store.getTask(taskId)).toMatchObject({
+      status: 'completed',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  it('does not degrade the circuit when a direct probe task is cancelled before rejection', async () => {
+    const launchDependencyAdmission = new LaunchDependencyAdmission();
+    launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      launchDependencyAdmission,
+    };
+    const adapter = gatedDeps.adapterRegistry.get('claude-code');
+    vi.mocked(adapter.launch).mockImplementationOnce(async (taskId, _prompt, cwd, _resume, options) => {
+      options?.onSessionCreated?.('cancelled-probe-direct');
+      store.addSession(taskId, {
+        tmuxSession: 'cancelled-probe-direct',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      store.cancelTask(taskId);
+      throw new Error('adapter rejected after cancellation');
+    });
+
+    await expect(launchTask(gatedDeps, {
+      prompt: 'cancel this direct recovery probe',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+    })).rejects.toThrow('adapter rejected after cancellation');
+
+    expect(store.listTasks()[0]).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+    expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'half_open' });
   });
 
   it('returns duplicate:true for an identical active prompt', async () => {
@@ -2252,6 +3376,41 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(store.listTasks()).toHaveLength(1);
   });
 
+  it('retries a dependency-parked launch by replaying the same intent', async () => {
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      status: 'failed',
+      category: 'provider_api',
+      summary: 'KB provider is unavailable',
+      recommendedAction: 'Restore the KB provider.',
+    } satisfies LaunchPreflightFinding]);
+    const gatedDeps = {
+      ...deps,
+      dependencyPreflightRunner,
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+    };
+
+    const first = await launchTask(gatedDeps, {
+      prompt: 'retry me after KB recovers',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-retry',
+    });
+    const second = await launchTask(gatedDeps, {
+      prompt: 'retry me after KB recovers',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-retry',
+    });
+
+    expect(first.parked).toBe(true);
+    expect(second.parked).toBe(true);
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+    expect(store.listTasks()).toHaveLength(1);
+    expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
   it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {
     const [a, b] = await Promise.all([
       launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),
@@ -2372,6 +3531,49 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(second.idempotentReplay).toBeUndefined();
     expect(second.task.id).not.toBe(first.task.id);
     expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('an expired idempotency entry still converges on the same active parked intent', async () => {
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const ttlLedger = new IdempotencyLedger(ledgerDir, { ttlMs: 1000, now: () => nowMs });
+    await ttlLedger.load();
+    const admission = new LaunchDependencyAdmission();
+    const parkedDeps: LaunchServiceDeps = {
+      ...makeDeps(store),
+      idempotencyLedger: ttlLedger,
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+        recommendedAction: 'restore provider',
+      }]),
+    };
+
+    const first = await launchTask(parkedDeps, {
+      prompt: 'durable parked intent',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-key',
+    });
+    nowMs += 1001;
+    const retry = await launchTask(parkedDeps, {
+      prompt: 'durable parked intent',
+      cwd: '/tmp',
+      dependencies: ['kb'],
+      idempotencyKey: 'parked-key',
+    });
+
+    expect(first).toMatchObject({ queued: true, parked: true });
+    expect(retry).toMatchObject({
+      task: { id: first.task.id },
+      duplicate: true,
+      queued: true,
+      parked: true,
+    });
+    expect(store.listTasks()).toHaveLength(1);
+    expect(parkedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 
   it('restart: ledger reloaded from disk still detects a replay', async () => {
@@ -3397,7 +4599,7 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         now: Date.now(),
         maxActiveTasks: 3,
         isHungSuspect: () => false,
-        isLaunching: (task) => store.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => store.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: 1,
         reservedSlotSources: ['kookr'],
       });
@@ -3514,6 +4716,108 @@ describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
     expect(events.map((e) => e.decision)).toContain('granted');
     expect(deps.flushTasks).toHaveBeenCalled();
     expect(deps.resolveClaimRepo).toHaveBeenCalledWith({ cwd: '/tmp' });
+  });
+
+  it('persists an ordinary claimed task before acknowledging a capacity wait', async () => {
+    deps.getMaxActiveTasks = () => 0;
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps.flushTasks = vi.fn(async () => {
+      markFlushStarted();
+      await new Promise<void>((resolve) => { releaseFlush = resolve; });
+    });
+
+    let settled = false;
+    const launch = launchTask(deps, {
+      prompt: 'claimed task waiting for capacity',
+      cwd: '/tmp',
+      claimIssue: { number: 43 },
+    });
+    void launch.finally(() => { settled = true; });
+    await flushStarted;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseFlush();
+    const result = await launch;
+
+    expect(result).toMatchObject({
+      queued: true,
+      task: { status: 'pending', issueClaim: { number: 43 } },
+    });
+    expect(deps.flushTasks).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim and disposes capacity-wait work when persistence fails', async () => {
+    deps.getMaxActiveTasks = () => 0;
+    deps.flushTasks = vi.fn().mockRejectedValue(new Error('claimed queue write failed'));
+
+    await expect(launchTask(deps, {
+      prompt: 'claimed capacity persistence failure',
+      cwd: '/tmp',
+      claimIssue: { number: 44 },
+    })).rejects.toThrow('claimed queue write failed');
+
+    expect(deps.issueClaimRegistry?.ownerRecord({
+      repo: 'github.com/kookr-ai/kookr',
+      number: 44,
+    })).toBeNull();
+    expect(store.listTasks()).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        disposition: expect.objectContaining({ reason: 'launch_error' }),
+      }),
+    ]);
+    expect(store.listTasks()[0]?.issueClaim).toBeUndefined();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('does not dispose a successor that attaches after a claimed capacity fence expires', async () => {
+    deps.getMaxActiveTasks = () => 0;
+    let now = 11_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFlush!: (error: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    deps.flushTasks = vi.fn(async () => {
+      markFlushStarted();
+      await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+    });
+
+    try {
+      const launch = launchTask(deps, {
+        prompt: 'claimed capacity successor',
+        cwd: '/tmp',
+        claimIssue: { number: 45 },
+      });
+      await flushStarted;
+      const task = store.listTasks()[0]!;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = store.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-capacity-successor',
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date(),
+      });
+
+      rejectFlush(new Error('stale claimed capacity write failed'));
+      await expect(launch).rejects.toThrow('stale claimed capacity write failed');
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        issueClaim: { number: 45 },
+        sessions: [expect.objectContaining({ tmuxSession: 'kookr-capacity-successor' })],
+      });
+      expect(store.getTask(task.id)?.disposition).toBeUndefined();
+      expect(deps.issueClaimRegistry?.ownerRecord({
+        repo: 'github.com/kookr-ai/kookr',
+        number: 45,
+      })?.taskId).toBe(task.id);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('refuses with IssueClaimHeldError and creates no task when held', async () => {

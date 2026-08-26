@@ -471,6 +471,17 @@ describe('ProviderResetScheduler', () => {
       autoCloseOnSignal: true,
       issueClaim: { repo: REPO, number: 42 },
       provenance: { kind: 'schedule', sourceId: 'sched-9' },
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'original caller prompt',
+        cwd: '/repo/kookr',
+        projectId: 'github.com/kookr-ai/kookr',
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+      },
     };
 
     it('replays the launch shape with lease-keyed dedup fields', () => {
@@ -480,7 +491,7 @@ describe('ProviderResetScheduler', () => {
       expect(opts.disableDedup).toBe(true);
       expect(opts.launchSource).toBe('schedule');
       // Faithful replay of the original launch shape:
-      expect(opts.prompt).toBe('do issue 42');
+      expect(opts.prompt).toBe('original caller prompt');
       expect(opts.cwd).toBe('/repo/kookr');
       expect(opts.criteria).toBe('PR merged');
       expect(opts.name).toBe('Fix 42');
@@ -488,9 +499,11 @@ describe('ProviderResetScheduler', () => {
       expect(opts.playbookParameterValues).toEqual({ issue: '42' });
       expect(opts.projectId).toBe('github.com/kookr-ai/kookr');
       expect(opts.agentType).toBe('claude-code');
-      expect(opts.model).toBe('model-a');
-      expect(opts.effort).toBe('effort-b');
+      expect(opts.model).toBe('claude-fable-5');
       expect(opts.autoCloseOnSignal).toBe(true);
+      expect(opts.effort).toBe('max');
+      expect(opts.ralphVerdictEnv).toBe(true);
+      expect(opts.dependencies).toEqual(['kb']);
       // scheduleId is carried only from schedule provenance:
       expect(opts.scheduleId).toBe('sched-9');
     });

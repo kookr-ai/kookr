@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskStore } from '../../core/tasks.js';
+import { TaskCleanupInProgressError, TaskStore } from '../../core/tasks.js';
 import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
@@ -176,6 +176,13 @@ describe('GET /api/tasks?view=compact', () => {
           summary: 'not logged in', recommendedAction: 'run gh auth login',
         }],
       },
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        agentType: 'claude-code',
+        prompt: bigPrompt,
+        cwd: '/repo',
+        idempotencyKey: 'sensitive-replay-key',
+      },
     });
     taskStore.setCompletionDigest(task.id, {
       bullets: ['Did the thing', 'Verified the thing'],
@@ -207,12 +214,20 @@ describe('GET /api/tasks?view=compact', () => {
     expect(row.completionDigest).toBeUndefined();
     expect(row.launchHealthSummary).toBeUndefined();
     expect(row.launchNote).toBeUndefined();
+    expect(row.launchIntent).toEqual({
+      schemaVersion: 'task-launch-intent.v1',
+      agentType: 'claude-code',
+    });
+    expect(row.launchIntent.prompt).toBeUndefined();
+    expect(row.launchIntent.cwd).toBeUndefined();
+    expect(row.launchIntent.idempotencyKey).toBeUndefined();
     // The full view carries these seeded bodies — proving the omission above is
     // the projection dropping them, not a task that never had them.
     const fullRow = (await (await app.request('/api/tasks')).json())
       .find((t: { id: string }) => t.id === task.id);
     expect(fullRow.launchHealthSummary).toBeDefined();
     expect(fullRow.launchNote).toBeDefined();
+    expect(fullRow.launchIntent.prompt).toBe(bigPrompt);
     expect(Object.keys(row)).not.toContain('prompt');
     expect(Object.keys(row)).not.toContain('userPrompt');
 
@@ -1004,6 +1019,121 @@ describe('POST /api/tasks error paths', () => {
     }));
   });
 
+  test('preserves dependency parking metadata on an idempotent replay', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'wait for KB',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: new Date().toISOString(),
+      },
+    });
+    taskStore.pendTask(task.id);
+    const parked = taskStore.getTask(task.id)!;
+    vi.mocked(launchTask).mockResolvedValueOnce({
+      task: parked,
+      queued: true,
+      parked: true,
+      dependencyAdmission: parked.launchAdmission,
+      idempotentReplay: true,
+    });
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'wait for KB', cwd: '/repo', idempotencyKey: 'same-launch' }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      id: task.id,
+      queued: true,
+      parked: true,
+      idempotentReplay: true,
+      dependencyAdmission: { reason: 'dependency_degraded' },
+    });
+  });
+
+  test('preserves dependency parking metadata on a prompt duplicate response', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'duplicate parked work',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: new Date().toISOString(),
+      },
+    });
+    taskStore.pendTask(task.id);
+    const parked = taskStore.getTask(task.id)!;
+    vi.mocked(launchTask).mockResolvedValueOnce({
+      task: parked,
+      queued: true,
+      parked: true,
+      dependencyAdmission: parked.launchAdmission,
+      duplicate: true,
+    });
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'duplicate parked work', cwd: '/repo' }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      task: { id: task.id },
+      duplicate: true,
+      queued: true,
+      parked: true,
+      dependencyAdmission: { reason: 'dependency_degraded' },
+    });
+  });
+
+  test('preserves capacity-wait admission on replay without calling it dependency-parked', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'wait for probe capacity',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_waiting_for_capacity',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: new Date().toISOString(),
+      },
+    });
+    taskStore.pendTask(task.id);
+    const waiting = taskStore.getTask(task.id)!;
+    vi.mocked(launchTask).mockResolvedValueOnce({
+      task: waiting,
+      queued: true,
+      dependencyAdmission: waiting.launchAdmission,
+      idempotentReplay: true,
+    });
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'wait for probe capacity', cwd: '/repo', idempotencyKey: 'probe-wait' }),
+    });
+    const body = await res.json();
+
+    expect(body).toMatchObject({
+      id: task.id,
+      queued: true,
+      idempotentReplay: true,
+      dependencyAdmission: { reason: 'half_open_waiting_for_capacity' },
+    });
+    expect(body.parked).toBeUndefined();
+  });
+
   test('persists autoCloseOnSignal when creating a task', async () => {
     const taskStore = new TaskStore();
     mockRouteLaunchTask(taskStore);
@@ -1722,6 +1852,26 @@ describe('DELETE /api/tasks/:id error paths', () => {
     expect(body.error).toBe('session kill failed');
   });
 
+  test('returns a stable 409 while dependency-probe cleanup owns the task', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Cleanup fenced', '/cwd');
+    vi.mocked(deleteTask).mockRejectedValueOnce(new TaskCleanupInProgressError(task.id));
+    const monitor = new Monitor(taskStore, new AttentionQueue());
+
+    const res = await mkApp({
+      taskStore,
+      monitor,
+      broadcastToAll: broadcastNoop,
+      serverCwd: '/cwd',
+    }).request(`/api/tasks/${task.id}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      code: 'task_cleanup_in_progress',
+      error: `Task ${task.id} cannot be deleted while dependency-probe cleanup is in progress`,
+    });
+  });
+
   test('still 404s when the task is unknown even with mocks wired', async () => {
     const taskStore = new TaskStore();
     const monitor = new Monitor(taskStore, new AttentionQueue());
@@ -2010,7 +2160,13 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     const res = await mkApp(deps).request(`/api/tasks/${active.id}/complete`, { method: 'POST' });
 
     expect(res.status).toBe(200);
-    expect(launch).toHaveBeenCalledWith(pending.id, 'Queued work', '/repo');
+    expect(launch).toHaveBeenCalledWith(
+      pending.id,
+      'Queued work',
+      '/repo',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
     expect(taskStore.getTask(pending.id)?.status).toBe('inProgress');
   });
 });

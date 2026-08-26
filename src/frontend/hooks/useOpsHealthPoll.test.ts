@@ -501,6 +501,25 @@ describe('parseLaunchDependencies (issue #2364)', () => {
       dependencies: [],
     });
   });
+
+  test('parses parked work and recovery reasons separately from degraded rows', () => {
+    expect(parseLaunchDependencies({
+      totalDegradedTasks: 0,
+      dependencies: [],
+      parkedTasks: {
+        total: 2.8,
+        byDependency: [
+          { dependency: 'kb', taskCount: 2.4, reasons: ['provider down', 7] },
+          { dependency: 'bad', taskCount: 'x', reasons: ['ignored'] },
+        ],
+      },
+    })).toEqual({
+      totalDegradedTasks: 0,
+      dependencies: [],
+      parkedTaskCount: 2,
+      parkedByDependency: [{ dependency: 'kb', taskCount: 2, reasons: ['provider down'] }],
+    });
+  });
 });
 
 describe('parseTimerHealth (issue #2643)', () => {

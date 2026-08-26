@@ -60,13 +60,24 @@ async function runKbAvailabilityPreflight(): Promise<LaunchPreflightFinding | nu
 function execFileBounded(file: string, args: string[], timeoutMs: number): Promise<DependencyCommandResult> {
   return new Promise((resolve, reject) => {
     execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      const nodeError = error as NodeJS.ErrnoException | null;
+      const nodeError = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       if (nodeError?.code === 'ENOENT') {
         reject(error);
         return;
       }
       const exitCode = typeof nodeError?.code === 'number' ? nodeError.code : error ? 1 : 0;
-      resolve({ stdout: String(stdout), stderr: String(stderr), exitCode });
+      const code = String(nodeError?.code ?? '');
+      const collectionFailure = nodeError?.killed || code === 'ETIMEDOUT'
+        ? 'timeout' as const
+        : code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+          ? 'max_buffer' as const
+          : undefined;
+      resolve({
+        stdout: String(stdout),
+        stderr: String(stderr),
+        exitCode,
+        ...(collectionFailure ? { collectionFailure } : {}),
+      });
     });
   });
 }

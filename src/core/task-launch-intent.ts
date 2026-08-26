@@ -1,4 +1,5 @@
 import { isAgentType, type AgentType } from '../shared/contracts/agent-types.js';
+import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../shared/contracts/playbook.js';
 import type { TaskLaunchIntent } from '../shared/contracts/task.js';
 
 /** The persisted shape used to replay a task without guessing its launch settings. */
@@ -11,17 +12,32 @@ export interface LaunchIntentPins {
   effort?: string;
 }
 
+export interface LaunchIntentOptions extends LaunchIntentPins {
+  prompt?: string;
+  cwd?: string;
+  projectId?: string;
+  ralphVerdictEnv?: boolean;
+  dependencies?: readonly LaunchDependency[];
+  idempotencyKey?: string;
+}
+
 export type PersistedLaunchIntentValidation =
   | { ok: true; intent: TaskLaunchIntent }
   | { ok: false; reason: 'missing_launch_intent' | 'malformed_launch_intent'; detail: string };
 
 /** Build an explicit intent, including the unpinned case. */
-export function buildTaskLaunchIntent(agentType: AgentType, pins: LaunchIntentPins = {}): TaskLaunchIntent {
+export function buildTaskLaunchIntent(agentType: AgentType, options: LaunchIntentOptions = {}): TaskLaunchIntent {
   return {
     schemaVersion: TASK_LAUNCH_INTENT_SCHEMA,
     agentType,
-    ...(pins.model !== undefined ? { model: pins.model } : {}),
-    ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+    ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
+    ...(options.ralphVerdictEnv !== undefined ? { ralphVerdictEnv: options.ralphVerdictEnv } : {}),
+    ...(options.dependencies !== undefined ? { dependencies: [...new Set(options.dependencies)] } : {}),
+    ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
   };
 }
 
@@ -81,15 +97,54 @@ export function validatePersistedLaunchIntent(
       detail: 'launch intent model and effort pins must be non-empty strings when present',
     };
   }
+  for (const [field, value] of [
+    ['prompt', candidate.prompt],
+    ['cwd', candidate.cwd],
+    ['projectId', candidate.projectId],
+    ['idempotencyKey', candidate.idempotencyKey],
+  ] as const) {
+    if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) {
+      return {
+        ok: false,
+        reason: 'malformed_launch_intent',
+        detail: `launch intent ${field} must be a non-empty string when present`,
+      };
+    }
+  }
+  if (candidate.ralphVerdictEnv !== undefined && typeof candidate.ralphVerdictEnv !== 'boolean') {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: 'launch intent ralphVerdictEnv must be a boolean when present',
+    };
+  }
+  if (
+    candidate.dependencies !== undefined
+    && (!Array.isArray(candidate.dependencies)
+      || candidate.dependencies.some((dependency) => (
+        typeof dependency !== 'string'
+        || !(LAUNCH_DEPENDENCIES as readonly string[]).includes(dependency)
+      )))
+  ) {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: 'launch intent dependencies contain an unsupported dependency',
+    };
+  }
 
   return {
     ok: true,
-    intent: {
-      schemaVersion: TASK_LAUNCH_INTENT_SCHEMA,
-      agentType: candidate.agentType,
+    intent: buildTaskLaunchIntent(candidate.agentType, {
+      ...(candidate.prompt !== undefined ? { prompt: candidate.prompt } : {}),
+      ...(candidate.cwd !== undefined ? { cwd: candidate.cwd } : {}),
+      ...(candidate.projectId !== undefined ? { projectId: candidate.projectId } : {}),
       ...(candidate.model !== undefined ? { model: candidate.model } : {}),
       ...(candidate.effort !== undefined ? { effort: candidate.effort } : {}),
-    },
+      ...(candidate.ralphVerdictEnv !== undefined ? { ralphVerdictEnv: candidate.ralphVerdictEnv } : {}),
+      ...(candidate.dependencies !== undefined ? { dependencies: candidate.dependencies } : {}),
+      ...(candidate.idempotencyKey !== undefined ? { idempotencyKey: candidate.idempotencyKey } : {}),
+    }),
   };
 }
 
@@ -114,11 +169,16 @@ export function launchIntentFingerprint(intent: unknown): string | undefined {
   const effort = Object.prototype.hasOwnProperty.call(raw, 'effort')
     ? ['present', raw.effort]
     : ['absent'];
+  const dependencies = Array.isArray(raw.dependencies)
+    ? [...new Set(raw.dependencies)].sort()
+    : raw.dependencies === undefined ? [] : ['malformed', raw.dependencies];
   return JSON.stringify([
     raw.schemaVersion,
     raw.agentType,
     model,
     effort,
+    dependencies,
+    raw.ralphVerdictEnv === true,
   ]);
 }
 
@@ -126,8 +186,8 @@ export function launchIntentFingerprint(intent: unknown): string | undefined {
 export function sameLaunchIntent(
   intent: TaskLaunchIntent | undefined,
   agentType: AgentType,
-  pins: LaunchIntentPins = {},
+  options: LaunchIntentOptions = {},
 ): boolean {
   if (!intent) return false;
-  return launchIntentFingerprint(intent) === launchIntentFingerprint(buildTaskLaunchIntent(agentType, pins));
+  return launchIntentFingerprint(intent) === launchIntentFingerprint(buildTaskLaunchIntent(agentType, options));
 }

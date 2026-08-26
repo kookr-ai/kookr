@@ -14,6 +14,7 @@ import {
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 import { PendingQueueFullError } from './launch-service.js';
+import { aTask } from '../core/__fixtures__/task-builders.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
@@ -32,6 +33,7 @@ describe('ScheduleRunner', () => {
     effort?: string;
     model?: string;
     launchSource?: string;
+    dependencies?: string[];
   }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
@@ -93,6 +95,7 @@ Do the test thing.
           effort: opts.effort,
           model: opts.model,
           launchSource: opts.launchSource,
+          dependencies: opts.dependencies,
           priorAgentSubstitutions: opts.priorAgentSubstitutions,
         });
         const queued = activeCount >= maxActive;
@@ -102,7 +105,7 @@ Do the test thing.
           activeTaskIds.add(taskId);
           activeCount += 1;
         }
-        return { task: { id: taskId } as any, queued };
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued };
       },
       getActiveCount: () => activeCount,
       getMaxActiveTasks: () => maxActive,
@@ -176,6 +179,83 @@ Do the test thing.
       // issue #1526 Phase C / C3: schedule provenance — exempts the fire from
       // the spawn burst budget and stamps metadata.launchSource.
       launchSource: 'schedule',
+    });
+  });
+
+  it('forwards playbook launch dependencies into one-shot scheduled launches', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'dependent.md'), `---
+name: Dependent Playbook
+description: A dependency-gated playbook
+dependencies: [kb]
+parameters: []
+checklist: []
+---
+
+Do dependency-gated work.
+`);
+    const schedule = store.create({
+      name: 'Dependent',
+      cron: '* * * * *',
+      playbook: { path: 'dependent.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched[0]?.dependencies).toEqual(['kb']);
+  });
+
+  it('records a dependency-parked one-shot separately from a capacity queue', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'dependent-parked.md'), `---
+name: Parked Dependency Playbook
+description: A dependency-gated playbook
+dependencies: [kb]
+parameters: []
+checklist: []
+---
+
+Do dependency-gated work.
+`);
+    const schedule = store.create({
+      name: 'Dependency parked',
+      cron: '* * * * *',
+      playbook: { path: 'dependent-parked.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    const runner = createRunner({
+      launcher: vi.fn(async () => ({
+        task: aTask({ id: 'task-dependency-parked', prompt: 'Do dependency-gated work.', cwd: dir }),
+        queued: true,
+        parked: true,
+        dependencyAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: new Date().toISOString(),
+        },
+      })),
+    });
+
+    const result = await runner.runNow(schedule.id);
+
+    expect(result).toMatchObject({
+      taskId: 'task-dependency-parked',
+      queued: true,
+      parked: true,
+      outcome: 'parked_dependency',
+      reasonCode: 'dependency_degraded',
+    });
+    expect(store.get(schedule.id)?.latestExecution).toMatchObject({
+      taskId: 'task-dependency-parked',
+      outcome: 'parked_dependency',
+      reasonCode: 'dependency_degraded',
     });
   });
 
@@ -2054,6 +2134,47 @@ Do the plugin thing.
       }));
     });
 
+    it('classifies a manually armed dependency-parked loop separately from capacity', async () => {
+      const schedule = store.create({
+        name: 'DependencyParkedLoop',
+        cron: '0 0 1 1 *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+      });
+      const runner = createRunner({
+        launcher: async () => {
+          throw new Error('one-shot launcher must not be used for loop-configured schedules');
+        },
+        loopedLauncher: async () => ({
+          task: aTask({ id: 'loop-task-parked', prompt: 'parked loop', cwd: dir }),
+          queued: true,
+          parked: true,
+          dependencyAdmission: {
+            status: 'parked',
+            reason: 'dependency_degraded',
+            dependencies: [{ dependency: 'kb', state: 'degraded' }],
+            parkedAt: new Date().toISOString(),
+          },
+        }),
+      });
+
+      const result = await runner.runNow(schedule.id);
+
+      expect(result).toEqual({
+        taskId: 'loop-task-parked',
+        queued: true,
+        parked: true,
+        outcome: 'parked_dependency',
+        reasonCode: 'dependency_degraded',
+      });
+      expect(store.get(schedule.id)?.latestExecution).toMatchObject({
+        taskId: 'loop-task-parked',
+        outcome: 'parked_dependency',
+        reasonCode: 'dependency_degraded',
+      });
+    });
+
     it('substitutes an unavailable pin on loop arm and drops effort/model pins (#1895)', async () => {
       const schedule = store.create({
         name: 'LoopSubstitute',
@@ -2323,6 +2444,21 @@ describe('isTaskBlockingSchedule', () => {
       updatedAt: new Date(now.getTime() - SCHEDULE_GATE_MAX_TASK_AGE_MS - 1),
     };
     expect(isTaskBlockingSchedule(task, now)).toBe(false);
+  });
+
+  it('keeps dependency-parked scheduled work blocking beyond the staleness threshold', () => {
+    const task = {
+      status: 'pending' as const,
+      updatedAt: new Date(now.getTime() - SCHEDULE_GATE_MAX_TASK_AGE_MS - 1),
+      launchAdmission: {
+        status: 'parked' as const,
+        reason: 'dependency_degraded' as const,
+        dependencies: [{ dependency: 'kb', state: 'degraded' as const }],
+        parkedAt: '2026-05-07T00:00:00.000Z',
+      },
+    };
+
+    expect(isTaskBlockingSchedule(task, now)).toBe(true);
   });
 
   it('treats the boundary (age === threshold) as stale', () => {
