@@ -219,7 +219,10 @@ export class LifecycleHandler {
         const stopTask = this.deps.taskStore.findTaskBySession(msg.agentId);
         if (stopTask && stopTask.status === 'inProgress') {
           const updated = this.deps.taskStore.updateSession(stopTask.id, msg.agentId, { lastStatus: 'completed' });
-          if (updated.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')) {
+          if (
+            updated.launchAdmission?.status !== 'probing'
+            && updated.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
+          ) {
             this.deps.taskStore.reopenTask(stopTask.id);
           }
         }

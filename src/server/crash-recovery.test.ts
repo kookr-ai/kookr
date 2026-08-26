@@ -9,6 +9,7 @@ import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
 import { recoverCrashedSessions } from './crash-recovery.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 describe('Crash Recovery', () => {
   let taskStore: TaskStore;
@@ -92,6 +93,33 @@ describe('Crash Recovery', () => {
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
   });
 
+  test('replays the durable guarded prompt while retaining raw intent identity', async () => {
+    const cwd = join(tempDir, 'guarded-prompt-recovery');
+    const task = await setupCrashedTask('raw user request', cwd);
+    const mutable = taskStore.getTaskForMutation(task.id)!;
+    mutable.prompt = '[Kookr delivery guard]\nCreate a worktree before editing.\n\nraw user request';
+    mutable.userPrompt = 'raw user request';
+    mutable.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'raw user request',
+      cwd,
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(1);
+    expect(launch).toHaveBeenCalledWith(
+      task.id,
+      mutable.prompt,
+      cwd,
+      undefined,
+      expect.any(Object),
+    );
+    expect(taskStore.getTask(task.id)?.launchIntent?.prompt).toBe('raw user request');
+  });
+
   test('fails closed and records a durable reason when persisted intent is missing', async () => {
     const cwd = join(tempDir, 'missing-intent');
     const task = await setupCrashedTask('Do not guess', cwd);
@@ -132,6 +160,1088 @@ describe('Crash Recovery', () => {
     expect(launchSpy.mock.calls[0]?.[4]).toMatchObject({
       model: 'claude-fable-5',
       effort: 'max',
+    });
+  });
+
+  test('reuses persisted replay fields while preserving the durable guarded prompt', async () => {
+    const cwd = join(tempDir, 'project-intent');
+    const task = await setupCrashedTask('Rendered prompt', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Original caller prompt',
+      cwd,
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      ralphVerdictEnv: true,
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(launch).toHaveBeenCalledWith(
+      task.id,
+      'Rendered prompt',
+      cwd,
+      undefined,
+      expect.objectContaining({
+        effort: 'max',
+        model: 'claude-fable-5',
+        extraEnv: {
+          RALPH_VERDICT_FILE: expect.stringMatching(/\.ralph-verdict-/),
+          RALPH_ITERATION: '0',
+        },
+      }),
+    );
+  });
+
+  test('parks crash recovery when a required dependency is confirmed degraded', async () => {
+    const cwd = join(tempDir, 'project-degraded');
+    const task = await setupCrashedTask('Needs the provider', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Needs the provider',
+      cwd,
+      agentType: 'claude-code',
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+    const admission = new LaunchDependencyAdmission();
+    const flushTasks = vi.fn(async () => {
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({
+        status: 'parked',
+        reason: 'dependency_degraded',
+      });
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        status: 'failed',
+        category: 'provider_api',
+        summary: 'KB provider unavailable',
+        recommendedAction: 'Restore the provider.',
+      }]),
+      flushTasks,
+    });
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toContain('dependency_degraded');
+    expect(launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+      },
+    });
+    expect(flushTasks).toHaveBeenCalledOnce();
+  });
+
+  test('cancellation during recovery dependency preflight prevents stale re-parking', async () => {
+    const cwd = join(tempDir, 'project-cancelled-preflight');
+    const task = await setupCrashedTask('Cancel during provider check', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel during provider check',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+    const admission = new LaunchDependencyAdmission();
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockImplementation(async () => {
+        taskStore.cancelTask(task.id);
+        return [{
+          dependency: 'kb',
+          status: 'failed',
+          category: 'provider_api',
+          summary: 'KB provider unavailable',
+          recommendedAction: 'Restore the provider.',
+        }];
+      }),
+    });
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe(
+      'task changed state while recovery dependency admission was in flight',
+    );
+    expect(launch).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
+  test('cancellation during recovery preflight releases a newly claimed half-open probe', async () => {
+    const cwd = join(tempDir, 'project-cancelled-half-open-preflight');
+    const task = await setupCrashedTask('Cancel a recovery probe claim', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel a recovery probe claim',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockImplementation(async () => {
+        taskStore.cancelTask(task.id);
+        return [];
+      }),
+    });
+
+    const nextProbe = admission.evaluate(['kb']);
+    expect(nextProbe).toMatchObject({ admit: true, probe: { dependencies: ['kb'] } });
+    if (nextProbe.admit) admission.releaseProbe(nextProbe.probe);
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
+  test('bounds a recovery launch and retains ownership until late creation settles', async () => {
+    const cwd = join(tempDir, 'project-timeout');
+    const task = await setupCrashedTask('Provider recovery timeout', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Provider recovery timeout',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider unavailable',
+    }]);
+    const launch = vi.spyOn(adapter, 'launch').mockImplementation(
+      () => new Promise<string>(() => {}),
+    );
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      getLaunchTimeoutMs: () => 5,
+    });
+
+    expect(launch).toHaveBeenCalledOnce();
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timed out before session'),
+    })]);
+    expect(result.skipped).toHaveLength(0);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('reaps a recovery probe that creates its session after the timeout', async () => {
+    const cwd = join(tempDir, 'project-late-timeout-probe');
+    const task = await setupCrashedTask('Late recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Late recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let reportLateSession!: () => void;
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      reportLateSession = () => options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue(undefined);
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      getLaunchTimeoutMs: () => 5,
+      flushTasks: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timed out before session'),
+    })]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+    });
+
+    reportLateSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })]),
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('retains a timed-out recovery probe when physical cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-timeout-cleanup-rejection');
+    const task = await setupCrashedTask('Timed out probe cleanup rejection', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Timed out probe cleanup rejection',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      return new Promise<string>(() => undefined);
+    });
+    vi.spyOn(adapter, 'stop').mockRejectedValue(new Error('timeout cleanup rejected'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        getLaunchTimeoutMs: () => 5,
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('timeout cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: expectedSessionId },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: undefined,
+      })]),
+    });
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('reaps an unattached ordinary healthy recovery launch that rejects', async () => {
+    const cwd = join(tempDir, 'project-healthy-launch-failure');
+    const task = await setupCrashedTask('Healthy dependency relaunch', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Healthy dependency relaunch',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('ordinary-unattached-recovery');
+      throw new Error('ordinary adapter failure');
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: 'ordinary adapter failure',
+    })]);
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tmuxSession: 'ordinary-unattached-recovery',
+        lastStatus: 'aborted',
+      }),
+    ]));
+    expect(stop).toHaveBeenCalledWith('ordinary-unattached-recovery');
+  });
+
+  test('persists probing and aborts a partial recovery session before re-parking', async () => {
+    const cwd = join(tempDir, 'project-partial-probe');
+    const task = await setupCrashedTask('Partial recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Partial recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+    let probePersisted = false;
+    let expectedSessionId: string | undefined;
+    const flushTasks = vi.fn(async () => {
+      expect(taskStore.getTask(task.id)?.launchAdmission).toMatchObject({
+        status: 'probing',
+        sessionId: expect.stringMatching(/^kookr-/),
+      });
+      const launchAdmission = taskStore.getTask(task.id)?.launchAdmission;
+      expectedSessionId = launchAdmission?.status === 'probing'
+        ? launchAdmission.sessionId
+        : undefined;
+      probePersisted = true;
+    });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (taskId, _prompt, launchCwd, _resume, options) => {
+      expect(probePersisted).toBe(true);
+      expect(taskStore.getTask(taskId)?.launchAdmission).toMatchObject({ status: 'probing' });
+      expect(options?.tmuxName).toBe(expectedSessionId);
+      options?.onSessionCreated?.(expectedSessionId!);
+      taskStore.addSession(taskId, {
+        tmuxSession: expectedSessionId!,
+        agentType: 'claude-code',
+        cwd: launchCwd,
+        createdAt: new Date(),
+      });
+      throw new Error('provider failed after recovery attach');
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks,
+    });
+
+    expect(result.failed).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toContain('recovery probe failed and task was re-parked');
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: 'aborted',
+      })]),
+    });
+    expect(stop).toHaveBeenCalledWith(expectedSessionId);
+    expect(flushTasks).toHaveBeenCalledOnce();
+  });
+
+  test('keeps an exact recovery probe fence when session cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-probe-cleanup-rejection');
+    const task = await setupCrashedTask('Probe cleanup rejection', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Probe cleanup rejection',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let expectedSessionId: string | undefined;
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe launch rejected');
+    });
+    vi.spyOn(adapter, 'stop').mockRejectedValueOnce(new Error('probe cleanup rejected'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('probe cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: expectedSessionId,
+      },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+      })]),
+    });
+    expect(taskStore.getTask(task.id)?.sessions.find(
+      (session) => session.tmuxSession === expectedSessionId,
+    )?.lastStatus).toBeUndefined();
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('keeps a live recovered probe when post-attach persistence fails', async () => {
+    const cwd = join(tempDir, 'project-live-post-attach-failure');
+    const task = await setupCrashedTask('Live recovery post-attach failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Live recovery post-attach failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('post-attach recovery write failed'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    let result;
+    try {
+      result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(result?.relaunched).toEqual([expect.objectContaining({ taskId: task.id })]);
+    expect(result?.failed).toHaveLength(0);
+    expect(flushTasks).toHaveBeenCalledTimes(2);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'healthy' });
+  });
+
+  test('retains a terminal recovery-probe fence when completion wins during persistence', async () => {
+    const cwd = join(tempDir, 'project-terminal-post-attach-race');
+    const task = await setupCrashedTask('Terminal recovery persistence race', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Terminal recovery persistence race',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let releasePostAttach!: () => void;
+    let markPostAttachStarted!: () => void;
+    const postAttachStarted = new Promise<void>((resolve) => { markPostAttachStarted = resolve; });
+    const flushTasks = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markPostAttachStarted();
+        await new Promise<void>((resolve) => { releasePostAttach = resolve; });
+      });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks,
+    });
+    await postAttachStarted;
+    taskStore.completeTask(task.id);
+    releasePostAttach();
+    await recovery;
+
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'completed',
+      launchAdmission: { status: 'probing' },
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('reports a failed recovery and starts no adapter when a denied marker cannot be persisted', async () => {
+    const cwd = join(tempDir, 'project-denied-marker-failure');
+    const task = await setupCrashedTask('Denied marker failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Denied marker failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const launch = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: new LaunchDependencyAdmission(),
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([{
+        dependency: 'kb',
+        category: 'provider_api',
+        summary: 'provider unavailable',
+      }]),
+      flushTasks: vi.fn().mockRejectedValue(new Error('denied marker write failed')),
+    });
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('denied marker write failed'),
+    })]);
+    expect(result.skipped).toHaveLength(0);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: undefined,
+    });
+  });
+
+  test('reports a failed recovery without degrading the provider when the probe barrier fails', async () => {
+    const cwd = join(tempDir, 'project-probe-marker-failure');
+    const task = await setupCrashedTask('Probe marker failure', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Probe marker failure',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn().mockRejectedValue(new Error('probe marker write failed')),
+    });
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('probe marker write failed'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('does not recover a task cancelled while its probe marker is being persisted', async () => {
+    const cwd = join(tempDir, 'project-cancel-during-probe-persistence');
+    const task = await setupCrashedTask('Cancel during probe persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel during probe persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((resolve) => { releaseFlush = resolve; });
+      }),
+    });
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([expect.objectContaining({
+      taskId: task.id,
+      reason: 'task changed state while its probe marker was persisted',
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({ status: 'cancelled', launchAdmission: undefined });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('clears a cancelled recovery fence when its pending marker flush rejects', async () => {
+    const cwd = join(tempDir, 'project-cancel-before-rejected-probe-persistence');
+    const task = await setupCrashedTask('Cancel before rejected probe persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel before rejected probe persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let rejectFlush!: (err: Error) => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn(async () => {
+        markFlushStarted();
+        await new Promise<void>((_resolve, reject) => { rejectFlush = reject; });
+      }),
+    });
+    await flushStarted;
+    taskStore.cancelTask(task.id);
+    rejectFlush(new Error('recovery marker write failed after cancellation'));
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('recovery marker write failed after cancellation'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      launchHealthSummary: undefined,
+      sessions: [expect.objectContaining({ lastStatus: 'completed' })],
+    });
+    expect(() => taskStore.deleteTask(task.id)).not.toThrow();
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('re-parks recovery when confirmed degradation invalidates its probe token', async () => {
+    const cwd = join(tempDir, 'project-invalidated-probe');
+    const task = await setupCrashedTask('Invalidate recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Invalidate recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockResolvedValue(undefined),
+    });
+    await flushStarted;
+    admission.observe(['kb'], [{
+      dependency: 'kb',
+      category: 'provider_api',
+      summary: 'provider degraded during recovery barrier',
+    }]);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([expect.objectContaining({
+      taskId: task.id,
+      reason: 'dependency probe ownership changed before adapter launch; task re-parked',
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('rolls back a re-park marker when its second recovery persistence barrier fails', async () => {
+    const cwd = join(tempDir, 'project-failed-invalidated-probe-persistence');
+    const task = await setupCrashedTask('Failed invalidated recovery persistence', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Failed invalidated recovery persistence',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let releaseFlush!: () => void;
+    let markFlushStarted!: () => void;
+    const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+      flushTasks: vi.fn()
+        .mockImplementationOnce(async () => {
+          markFlushStarted();
+          await new Promise<void>((resolve) => { releaseFlush = resolve; });
+        })
+        .mockRejectedValueOnce(new Error('recovery re-park write failed')),
+    });
+    await flushStarted;
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    releaseFlush();
+    const result = await recovery;
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('recovery re-park write failed'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('does not roll back replacement ownership when a stale recovery barrier rejects', async () => {
+    const cwd = join(tempDir, 'project-stale-recovery-owner');
+    const task = await setupCrashedTask('Stale recovery owner', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Stale recovery owner',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const launch = vi.spyOn(adapter, 'launch');
+    let now = 8_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseFirst!: () => void;
+    let rejectSecond!: (err: Error) => void;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    try {
+      const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        launchDependencyAdmission: admission,
+        dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+        flushTasks: vi.fn()
+          .mockImplementationOnce(async () => {
+            markFirstStarted();
+            await new Promise<void>((resolve) => { releaseFirst = resolve; });
+          })
+          .mockImplementationOnce(async () => {
+            markSecondStarted();
+            await new Promise<void>((_resolve, reject) => { rejectSecond = reject; });
+          }),
+      });
+      await firstStarted;
+      admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+      releaseFirst();
+      await secondStarted;
+      const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
+      now += 10 * 60 * 1_000 + 1;
+      const replacementToken = taskStore.beginLaunchWithToken(task.id);
+      expect(replacementToken).toBeDefined();
+
+      rejectSecond(new Error('stale recovery re-park write failed'));
+      const result = await recovery;
+      expect(result.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale recovery re-park write failed'),
+      })]);
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: replacementMarker,
+      });
+      expect(taskStore.ownsLaunchReservation(task.id, replacementToken!)).toBe(true);
+      expect(launch).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('stale ordinary recovery cannot cancel a successor between create and attach', async () => {
+    const cwd = join(tempDir, 'project-stale-recovery-successor');
+    const task = await setupCrashedTask('Stale recovery successor', cwd);
+    const reconcileResult = await reconcile(taskStore, terminal);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const launch = vi.spyOn(adapter, 'launch')
+      .mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+        options?.onSessionCreated?.('stale-recovery-session');
+        markFirstStarted();
+        return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+      });
+    const stop = vi.spyOn(adapter, 'stop').mockImplementation(async (sessionId) => {
+      if (sessionId === 'stale-recovery-session') {
+        throw new Error('stale recovery cleanup rejected');
+      }
+    });
+
+    try {
+      const recoveryOptions = { getLaunchTimeoutMs: () => 1_000_000_000 };
+      const staleRecovery = recoverCrashedSessions(
+        taskStore,
+        adapterRegistry,
+        reconcileResult,
+        recoveryOptions,
+      );
+      await firstStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = taskStore.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+
+      rejectFirst(new Error('stale recovery owner rejected'));
+      const staleResult = await staleRecovery;
+      expect(staleResult.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale recovery cleanup rejected'),
+      })]);
+      expect(stop).toHaveBeenCalledWith('stale-recovery-session');
+      expect(stop).not.toHaveBeenCalledWith('successor-recovery-session');
+      expect(taskStore.getTask(task.id)?.status).toBe('open');
+      expect(taskStore.ownsLaunchReservation(task.id, successorToken!)).toBe(true);
+
+      // The replacement reported physical creation but has not attached yet;
+      // once it does, the stale owner must not have made the task terminal.
+      taskStore.addSession(task.id, {
+        tmuxSession: 'successor-recovery-session',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: expect.arrayContaining([expect.objectContaining({
+          tmuxSession: 'successor-recovery-session',
+        })]),
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('stale recovery does not select an attached ended successor as its failed session', async () => {
+    const cwd = join(tempDir, 'project-ended-recovery-successor');
+    const task = await setupCrashedTask('Ended recovery successor', cwd);
+    const reconcileResult = await reconcile(taskStore, terminal);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let rejectFirst!: (error: Error) => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('stale-ended-recovery-session');
+      markFirstStarted();
+      return new Promise<string>((_resolve, reject) => { rejectFirst = reject; });
+    });
+    const stop = vi.spyOn(adapter, 'stop').mockImplementation(async (sessionId) => {
+      if (sessionId === 'stale-ended-recovery-session') {
+        throw new Error('stale ended recovery cleanup rejected');
+      }
+    });
+
+    try {
+      const staleRecovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+        getLaunchTimeoutMs: () => 1_000_000_000,
+      });
+      await firstStarted;
+      now += 10 * 60 * 1_000 + 1;
+      const successorToken = taskStore.beginLaunchWithToken(task.id);
+      expect(successorToken).toBeDefined();
+      taskStore.addSession(task.id, {
+        tmuxSession: 'ended-recovery-successor',
+        agentType: 'claude-code',
+        cwd,
+        createdAt: new Date(),
+      });
+      taskStore.updateSession(task.id, 'ended-recovery-successor', { lastStatus: 'completed' });
+      taskStore.reopenTask(task.id);
+      expect(taskStore.ownsLaunchReservation(task.id, successorToken!)).toBe(false);
+
+      rejectFirst(new Error('stale recovery rejected after successor ended'));
+      const staleResult = await staleRecovery;
+
+      expect(staleResult.failed).toEqual([expect.objectContaining({
+        taskId: task.id,
+        error: expect.stringContaining('stale ended recovery cleanup rejected'),
+      })]);
+      expect(stop).toHaveBeenCalledWith('stale-ended-recovery-session');
+      expect(stop).not.toHaveBeenCalledWith('ended-recovery-successor');
+      expect(taskStore.getTask(task.id)).toMatchObject({
+        status: 'open',
+        sessions: expect.arrayContaining([expect.objectContaining({
+          tmuxSession: 'ended-recovery-successor',
+          lastStatus: 'completed',
+        })]),
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('reaps an unattached recovery session when its probe is cancelled before rejection', async () => {
+    const cwd = join(tempDir, 'project-cancelled-probe');
+    const task = await setupCrashedTask('Cancelled recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancelled recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    const stop = vi.spyOn(adapter, 'stop').mockResolvedValue();
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (taskId, _prompt, _launchCwd, _resume, options) => {
+      options?.onSessionCreated?.('cancelled-probe-recovery');
+      taskStore.cancelTask(taskId);
+      throw new Error('adapter rejected after cancellation');
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+
+    expect(result.failed).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe('task became terminal while its recovery probe was in flight');
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ tmuxSession: task.sessions[0]?.tmuxSession }),
+        expect.objectContaining({
+          tmuxSession: 'cancelled-probe-recovery',
+          lastStatus: 'aborted',
+        }),
+      ]),
+    });
+    expect(stop).toHaveBeenCalledWith('cancelled-probe-recovery');
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('terminal state during recovery-session cleanup wins before circuit degradation', async () => {
+    const cwd = join(tempDir, 'project-cancelled-during-probe-cleanup');
+    const task = await setupCrashedTask('Cancel while stopping recovery probe', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel while stopping recovery probe',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let finishStop!: () => void;
+    let markStopStarted!: () => void;
+    const stopStarted = new Promise<void>((resolve) => { markStopStarted = resolve; });
+    vi.spyOn(adapter, 'stop').mockImplementationOnce(async () => {
+      markStopStarted();
+      await new Promise<void>((resolve) => { finishStop = resolve; });
+    });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('probe-cleanup-recovery');
+      throw new Error('probe rejected before attachment');
+    });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+    await stopStarted;
+    taskStore.cancelTask(task.id);
+    finishStop();
+    const result = await recovery;
+
+    expect(result.failed).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe('task became terminal while its recovery probe was in flight');
+    expect(taskStore.getTask(task.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+  });
+
+  test('terminal cancellation retains a recovery probe fence when concurrent cleanup rejects', async () => {
+    const cwd = join(tempDir, 'project-cancelled-rejecting-probe-cleanup');
+    const task = await setupCrashedTask('Cancel while rejecting recovery cleanup', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'Cancel while rejecting recovery cleanup',
+      cwd,
+      dependencies: ['kb'],
+    };
+    const admission = new LaunchDependencyAdmission();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    let rejectStop!: (error: Error) => void;
+    let markStopStarted!: () => void;
+    let expectedSessionId: string | undefined;
+    const stopStarted = new Promise<void>((resolve) => { markStopStarted = resolve; });
+    vi.spyOn(adapter, 'stop').mockImplementationOnce(async () => {
+      markStopStarted();
+      await new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+    });
+    vi.spyOn(adapter, 'launch').mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      expectedSessionId = options?.tmuxName;
+      options?.onSessionCreated?.(expectedSessionId!);
+      throw new Error('probe rejected before attachment');
+    });
+    const reconcileResult = await reconcile(taskStore, terminal);
+
+    const recovery = recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, {
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
+    });
+    await stopStarted;
+    taskStore.cancelTask(task.id);
+    rejectStop(new Error('concurrent recovery cleanup rejected'));
+    const result = await recovery;
+
+    expect(result.failed).toEqual([expect.objectContaining({
+      taskId: task.id,
+      error: expect.stringContaining('concurrent recovery cleanup rejected'),
+    })]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: expectedSessionId,
+      },
+      sessions: expect.arrayContaining([expect.objectContaining({
+        tmuxSession: expectedSessionId,
+        lastStatus: undefined,
+      })]),
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
     });
   });
 

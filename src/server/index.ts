@@ -157,7 +157,7 @@ import {
 } from './use-cases/umbrella-chain-advancer.js';
 import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { ProviderResetScheduler, resolveProviderResetMs, buildProviderResumeLaunch } from './provider-reset-scheduler.js';
-import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
+import { validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -189,6 +189,7 @@ import {
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TimerHealthTracker, timerHealthStatePath } from '../core/timer-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
 import {
@@ -1555,6 +1556,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // --- HTTP (Hono) ---
 
   // Shared post-launch registration deps — used by both WS handler and REST routes
+  const launchDependencyAdmission = new LaunchDependencyAdmission();
+  // Filled after TaskStateSaveScheduler is constructed below. Launches fail
+  // closed before that point so a half-open worker can never start without a
+  // durable ownership marker. In normal startup no launch path is reachable
+  // until after the scheduler has been installed.
+  let flushTasksForLaunch: (() => Promise<void>) | undefined;
+  const flushLaunchTaskState = async (): Promise<void> => {
+    if (!flushTasksForLaunch) {
+      throw new Error('Task persistence is not ready for a crash-safe launch');
+    }
+    await flushTasksForLaunch();
+  };
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
@@ -1565,6 +1578,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       onTaskOutcomeHolder?.(taskId, outcome);
     },
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
+    launchDependencyAdmission,
+    getLaunchTimeoutMs,
+    flushTasks: flushLaunchTaskState,
   };
 
   // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
@@ -1585,11 +1601,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       `exceeds ${hostLoadAdmissionThreshold.toFixed(2)}/core (KOOKR_MAX_HOST_LOAD_PER_CPU)`,
     );
   }
-
-  // Holder filled after TaskStateSaveScheduler is constructed below — R5
-  // force-flush on claim grant must go through the same scheduler the routes
-  // use. Until then flush is a no-op (no launch can complete before serve).
-  let flushTasksForClaims: (() => Promise<void>) | undefined;
 
   // Claim-repo resolver for the launch-path CAS (RFC PR 1b). Built once so
   // fork/upstream lookups share the process-lifetime cache with the HTTP
@@ -1638,6 +1649,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore,
     adapterRegistry,
     lifecycleDeps,
+    launchDependencyAdmission,
     getMaxActiveTasks,
     getDefaultAgentType,
     roundRobinCursor,
@@ -1667,6 +1679,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     bypassAllPermissions,
     idempotencyLedger,
     getLaunchTimeoutMs,
+    flushTasks: flushLaunchTaskState,
     launchOutcomeMetrics,
     // issue #1526 Phase C / C3: pending-queue depth limit + per-source spawn
     // budget, with the SAME watchdog-aware capacity-ledger builder /api/health
@@ -1681,7 +1694,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         now,
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
@@ -1709,7 +1722,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           upstreamOf: launchPathUpstreamOf,
         },
       ),
-      flushTasks: () => flushTasksForClaims?.() ?? Promise.resolve(),
     } : {}),
   };
 
@@ -1874,6 +1886,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       reflectWorktreesDir,
     }),
   });
+  lifecycleDeps.onPendingTaskPromoted = async (task) => {
+    await ralphLoopService.claimLatestLiveOwner(task);
+  };
 
   // --- Event pipeline ---
 
@@ -2108,7 +2123,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
           resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
@@ -2143,7 +2158,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) =>
           resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
-        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
         reservedActiveSlots: getReservedActiveSlots(),
         reservedSlotSources: getReservedSlotSources(),
       });
@@ -2291,8 +2306,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     suppressionTracker,
     persistenceHealth,
   });
-  // Wire R5 force-flush for the launch-path claim CAS (holder filled above).
-  flushTasksForClaims = () => taskStateSaveScheduler.flush('flush', { force: true });
+  // Wire the shared crash-safety barrier for dependency admission and the
+  // existing issue-claim durability paths (holder declared above).
+  flushTasksForLaunch = () => taskStateSaveScheduler.flush('flush', { force: true });
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();
@@ -3185,7 +3201,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           console.warn(`[provider-reset] task ${task.id} cannot be resumed safely: ${intent.detail}`);
           return { holdForResume: false };
         }
-        const pins = launchIntentPins(intent.intent);
         const now = Date.now();
         // `record` LATCHES the reset time at first observation and returns it, so
         // this comparison flips to false once the latched reset elapses (unlike a
@@ -3196,18 +3211,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           resetsAt: resolveProviderResetMs(quotaAdapter.getLatest(), now),
           relaunch: buildProviderResumeLaunch({
             id: task.id,
-            prompt: task.prompt,
-            cwd: task.cwd,
+            prompt: intent.intent.prompt ?? task.prompt,
+            cwd: intent.intent.cwd ?? task.cwd,
             criteria: task.criteria,
             name: task.name,
             playbookId: task.playbookId,
             playbookParameterValues: task.playbookParameterValues,
-            projectId: task.projectId,
-            agentType: task.agentType,
-            ...pins,
+            projectId: intent.intent.projectId ?? task.projectId,
+            agentType: intent.intent.agentType,
             autoCloseOnSignal: task.autoCloseOnSignal,
             issueClaim: { repo: claim.repo, number: claim.number },
             provenance: task.provenance,
+            launchIntent: intent.intent,
           }),
         });
         return { holdForResume: now < latchedResetsAt };
@@ -3425,6 +3440,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       restartEpoch,
       dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       staleOpenLaunchTaskIds,
+      getLaunchTimeoutMs,
     });
     await promotePendingStartupTasks({
       taskStore,

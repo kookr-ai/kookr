@@ -20,8 +20,18 @@ describe('createProviderTransientRetryHandler', () => {
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
-      launchIntent: buildTaskLaunchIntent('claude-code'),
       provenance: { kind: 'schedule', sourceId: 'sched-lucy' },
+      launchIntent: {
+        ...buildTaskLaunchIntent('claude-code'),
+        prompt: 'original caller prompt',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        ralphVerdictEnv: true,
+        dependencies: ['kb'],
+        idempotencyKey: 'stable-key',
+      },
     });
     const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
     const launchTask = vi.fn().mockResolvedValue({ task: aTask({ id: 'retry-1' }) });
@@ -37,10 +47,14 @@ describe('createProviderTransientRetryHandler', () => {
     await vi.waitFor(() => expect(launchTask).toHaveBeenCalled());
 
     expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: 'scout ideas',
+      prompt: 'original caller prompt',
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+      ralphVerdictEnv: true,
+      dependencies: ['kb'],
       disableDedup: true,
       launchSource: 'schedule',
       scheduleId: 'sched-lucy',

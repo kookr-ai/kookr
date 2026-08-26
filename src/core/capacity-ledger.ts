@@ -26,7 +26,7 @@ export const TASK_CAPACITY_CLASSES: readonly TaskCapacityClass[] = [
 export interface CapacityClassifyDeps {
   /** Precomputed via `core/hung-task-reaper.ts#isTaskHungSuspect`. */
   isHungSuspect: boolean;
-  /** True when the task has a fresh in-flight launch reservation (`TaskStore.hasFreshLaunchReservation`). */
+  /** True when the task has a fresh slot-occupying launch reservation (`TaskStore.hasFreshActiveLaunchReservation`). */
   isLaunching: boolean;
 }
 
@@ -94,6 +94,7 @@ export interface CapacityLedger {
    * on this, never on {@link utilizationPct}.
    */
   effectiveUtilizationPct: number;
+  /** Launchable pending work; dependency-parked tasks are reported separately. */
   pendingQueueDepth: number;
   oldestPendingAgeMs: number | null;
   oldestFinishedAwaitingAckAgeMs: number | null;
@@ -129,6 +130,16 @@ export interface CapacityLedger {
    * against genuine productive load (not just phantom hold).
    */
   freeForGeneralSources?: number;
+  /** Dependency-parked backlog, kept separate from slot-occupying classes. */
+  parked?: {
+    taskCount: number;
+    taskIds: string[];
+    byDependency: Array<{
+      dependency: string;
+      taskCount: number;
+      taskIds: string[];
+    }>;
+  };
 }
 
 /**
@@ -199,6 +210,8 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
   let pendingQueueDepth = 0;
   let oldestPendingAt: number | undefined;
   let oldestFinishedAwaitingAckAt: number | undefined;
+  const parkedTaskIds: string[] = [];
+  const parkedByDependency = new Map<string, Set<string>>();
 
   for (const task of tasks) {
     const taskClass = classifyTaskCapacity(task, {
@@ -221,11 +234,22 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
       }
     }
 
-    if (task.status === 'pending') {
+    const dependencyParked = task.status === 'pending'
+      && task.launchAdmission?.status === 'parked'
+      && task.launchAdmission.reason !== 'half_open_waiting_for_capacity';
+    if (task.status === 'pending' && !dependencyParked) {
       pendingQueueDepth++;
       const createdAt = task.createdAt.getTime();
       if (oldestPendingAt === undefined || createdAt < oldestPendingAt) {
         oldestPendingAt = createdAt;
+      }
+    }
+    if (dependencyParked) {
+      parkedTaskIds.push(task.id);
+      for (const dependency of task.launchAdmission!.dependencies) {
+        const ids = parkedByDependency.get(dependency.dependency) ?? new Set<string>();
+        ids.add(task.id);
+        parkedByDependency.set(dependency.dependency, ids);
       }
     }
   }
@@ -265,6 +289,20 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
         }
       : undefined;
 
+  const parked = parkedTaskIds.length > 0
+    ? {
+        taskCount: parkedTaskIds.length,
+        taskIds: [...parkedTaskIds].sort(),
+        byDependency: Array.from(parkedByDependency.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([dependency, ids]) => ({
+            dependency,
+            taskCount: ids.size,
+            taskIds: Array.from(ids).sort(),
+          })),
+      }
+    : undefined;
+
   return {
     maxActiveTasks: deps.maxActiveTasks,
     active,
@@ -279,6 +317,7 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
     oldestPendingAgeMs: oldestPendingAt !== undefined ? deps.now - oldestPendingAt : null,
     oldestFinishedAwaitingAckAgeMs: oldestFinishedAwaitingAckAt !== undefined ? deps.now - oldestFinishedAwaitingAckAt : null,
     ...(reservation ?? {}),
+    ...(parked ? { parked } : {}),
   };
 }
 

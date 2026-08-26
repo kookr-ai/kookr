@@ -60,6 +60,12 @@ export function listExpiredPendingTasks(
   const out: ExpiredPendingEntry[] = [];
   for (const task of tasks) {
     if (task.status !== 'pending') continue;
+    // Dependency parking is recovery-driven, not age-driven. Expiring the
+    // preserved intent after four hours would turn an outage into lost work.
+    if (
+      task.launchAdmission?.status === 'parked'
+      && task.launchAdmission.reason !== 'half_open_waiting_for_capacity'
+    ) continue;
     if (task.sessions.length > 0) continue;
     if (opts.hasFreshLaunchReservation?.(task.id)) continue;
     const pendingForMs = nowMs - task.createdAt.getTime();

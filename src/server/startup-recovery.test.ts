@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
-import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import { AdapterRegistry, type AgentAdapter } from '../adapters/agent-adapter.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
-import type { ReconciliationResult } from './reconciliation.js';
+import { reconcile, type ReconciliationResult } from './reconciliation.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import type { Monitor } from '../core/monitor.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -15,6 +15,7 @@ import type { HookFileWatcher } from './hook-watcher.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { CrashRecoveryResult } from './crash-recovery.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 // Env key accessed via bracket indirection so the literal `process.env.<NAME>`
 // dot form never appears in source — the PR-checklist env rule flags any such
@@ -41,7 +42,7 @@ vi.mock('./crash-recovery.js', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted above imports by
 // vitest, but keep the import here for readability of the dependency order).
-const { runStartupRecoveryPhase } = await import('./startup-recovery.js');
+const { promotePendingStartupTasks, runStartupRecoveryPhase } = await import('./startup-recovery.js');
 
 function reconciliationResult(overrides: Partial<ReconciliationResult> = {}): ReconciliationResult {
   return {
@@ -67,9 +68,14 @@ function crashRecoveryResult(overrides: Partial<CrashRecoveryResult> = {}): Cras
 }
 
 function fakeDeps() {
-  const monitor = { registerAgent: vi.fn(), unregisterAgent: vi.fn() };
+  const monitor = { registerAgent: vi.fn(), unregisterAgent: vi.fn(), getSnapshot: vi.fn(() => []) };
   const watchdog = { registerAgent: vi.fn(), unregisterAgent: vi.fn() };
-  const hookWatcher = { watch: vi.fn(), isWatching: vi.fn(() => false), stop: vi.fn() };
+  const hookWatcher = {
+    watch: vi.fn(),
+    isWatching: vi.fn(() => false),
+    stop: vi.fn(),
+    pruneStaleReplayCheckpoints: vi.fn(() => 0),
+  };
   const suppressionTracker = { import: vi.fn() };
   const interactionLog = { append: vi.fn(async () => undefined) };
   const ralphLoopService = {
@@ -81,6 +87,7 @@ function fakeDeps() {
     hookWatcher: hookWatcher as unknown as HookFileWatcher,
     githubScanner: { isActive: () => false } as unknown as AgentLifecycleDeps['githubScanner'],
     autoNameTask: vi.fn(),
+    flushTasks: vi.fn().mockResolvedValue(undefined),
   };
 
   return {
@@ -151,6 +158,805 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
     expect(returned).toEqual(skipOnly);
     // Interaction log stays gated to relaunched/failed material outcomes.
     expect(deps.spies.interactionLog.append).not.toHaveBeenCalled();
+  });
+});
+
+describe('runStartupRecoveryPhase — parked dependency hydration', () => {
+  test('reaps the preallocated terminal for an interrupted probe before re-parking it', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'interrupted preallocated probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'interrupted preallocated probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('kookr-expected-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+      },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('restores degraded admission before awaiting interrupted-terminal cleanup', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseKill!: () => void;
+    let markKillStarted!: () => void;
+    const killStarted = new Promise<void>((resolve) => { markKillStarted = resolve; });
+    deps.terminalBackend = {
+      killSession: vi.fn(async () => {
+        markKillStarted();
+        await new Promise<void>((resolve) => { releaseKill = resolve; });
+      }),
+    } as unknown as typeof deps.terminalBackend;
+    deps.taskStore.createTask({
+      prompt: 'probe awaiting startup reap',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-awaiting-reap',
+      },
+    });
+    const sameDependencyWaiter = deps.taskStore.createTask({
+      prompt: 'same dependency waiter parked later in task order',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(sameDependencyWaiter.id);
+    const laterParked = deps.taskStore.createTask({
+      prompt: 'different dependency parked later in task order',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'evolution-config', state: 'degraded' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(laterParked.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await killStarted;
+
+    // Even clean evidence cannot admit a replacement until the old expected
+    // worker has been reaped.
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+    // The synchronous hydration pass also covered markers that appeared later
+    // in persisted task order before the first cleanup await.
+    expect(admission.evaluate(['evolution-config'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+
+    releaseKill();
+    await recovery;
+  });
+
+  test('keeps a shared dependency busy until every interrupted probe is reaped', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseSecondKill!: () => void;
+    let markSecondKillStarted!: () => void;
+    const secondKillStarted = new Promise<void>((resolve) => { markSecondKillStarted = resolve; });
+    const killSession = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        markSecondKillStarted();
+        await new Promise<void>((resolve) => { releaseSecondKill = resolve; });
+      });
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    for (const [name, sessionId] of [['first', 'kookr-first-old-probe'], ['second', 'kookr-second-old-probe']]) {
+      deps.taskStore.createTask({
+        prompt: `${name} interrupted probe`,
+        cwd: '/repo',
+        launchAdmission: {
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          startedAt: '2026-01-01T00:00:00.000Z',
+          sessionId,
+        },
+      });
+    }
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, launchDependencyAdmission: admission };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await secondKillStarted;
+
+    admission.observe(['kb'], []);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+
+    releaseSecondKill();
+    await recovery;
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+  });
+
+  test('terminal task state wins when cancellation happens during startup probe cleanup', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    let releaseKill!: () => void;
+    let markKillStarted!: () => void;
+    const killStarted = new Promise<void>((resolve) => { markKillStarted = resolve; });
+    deps.terminalBackend = {
+      killSession: vi.fn(async () => {
+        markKillStarted();
+        await new Promise<void>((resolve) => { releaseKill = resolve; });
+      }),
+    } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'cancel while startup reaps probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-cancel-during-reap',
+      },
+    });
+    deps.taskStore.startTask(task.id);
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, launchDependencyAdmission: admission };
+
+    const recovery = runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+    await killStarted;
+    deps.taskStore.cancelTask(task.id);
+    releaseKill();
+    await recovery;
+
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+    const replacement = admission.evaluate(['kb']);
+    expect(replacement).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
+  test('fails startup closed when an interrupted probe terminal cannot be reaped', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockRejectedValue(new Error('backend unavailable'));
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'unreapable preallocated probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'kookr-unreapable-probe',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await expect(runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    })).rejects.toThrow('Could not reap interrupted dependency probe session kookr-unreapable-probe');
+
+    expect(killSession).toHaveBeenCalledWith('kookr-unreapable-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'open',
+      launchAdmission: { status: 'probing', sessionId: 'kookr-unreapable-probe' },
+    });
+    expect(admission.snapshot()[0]).toMatchObject({ state: 'half_open' });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'half_open_probe_busy',
+    });
+  });
+
+  test('forwards the production flush barrier into crash recovery', async () => {
+    const deps = fakeDeps();
+    const flushTasks = vi.fn().mockResolvedValue(undefined);
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, flushTasks };
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult());
+    const reconciled = reconciliationResult({ markedCompleted: ['dead-session'] });
+
+    await runStartupRecoveryPhase({ ...deps, reconcileResult: reconciled });
+
+    expect(mockRecoverCrashedSessions).toHaveBeenCalledWith(
+      deps.taskStore,
+      deps.adapterRegistry,
+      reconciled,
+      expect.objectContaining({ flushTasks }),
+    );
+  });
+
+  test('live reconciled probe success overrides stale probe-busy waiters', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([{
+      dependency: 'kb',
+      category: 'unknown',
+      summary: 'health collection timed out',
+    }]);
+    const adapter: AgentAdapter = {
+      agentType: 'claude-code',
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+        deps.taskStore.addSession(taskId, {
+          tmuxSession: 'waiter-session',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'waiter-session';
+      }),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+    deps.adapterRegistry.register(adapter);
+    const task = deps.taskStore.createTask({
+      prompt: 'live recovery probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: 'live-probe-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const waiter = deps.taskStore.createTask({
+      prompt: 'wait for the live probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'wait for the live probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(waiter.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['live-probe-session'] }),
+    });
+
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
+
+    await promotePendingStartupTasks({
+      taskStore: deps.taskStore,
+      adapterRegistry: deps.adapterRegistry,
+      lifecycleDeps: deps.lifecycleDeps,
+      broadcastToAll: deps.broadcastToAll,
+      serverCwd: deps.serverCwd,
+    });
+
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(deps.taskStore.getTask(waiter.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'unknown' }),
+    ]);
+  });
+
+  test('does not treat an unrelated resumed session as the exact persisted probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({
+      prompt: 'exact probe died while unrelated session survived',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'exact probe died while unrelated session survived',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'exact-dead-probe',
+      },
+    });
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: 'unrelated-live-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['unrelated-live-session'] }),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('exact-dead-probe');
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: undefined,
+      sessions: [expect.objectContaining({
+        tmuxSession: 'unrelated-live-session',
+      })],
+    });
+    expect(deps.taskStore.getActiveCount()).toBe(1);
+    expect(deps.taskStore.getNextPending()).toBeUndefined();
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+  });
+
+  test('terminal probe settlement cannot erase a separate persisted degradation', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const waiter = deps.taskStore.createTask({
+      prompt: 'persisted degraded waiter',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded', reason: 'provider unavailable' }],
+        parkedAt: '2026-01-01T00:00:01.000Z',
+      },
+    });
+    deps.taskStore.pendTask(waiter.id);
+    const terminalProbe = deps.taskStore.createTask({
+      prompt: 'terminal create-before-attach probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'terminal-probe-without-session-row',
+      },
+    });
+    deps.taskStore.cancelTask(terminalProbe.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('terminal-probe-without-session-row');
+    expect(deps.taskStore.getTask(terminalProbe.id)?.launchAdmission).toBeUndefined();
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'unknown' }]);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: false,
+      reason: 'dependency_degraded',
+    });
+  });
+
+  test('terminal probe settlement does not turn a persisted busy waiter into degradation', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const killSession = vi.fn().mockResolvedValue(undefined);
+    deps.terminalBackend = { killSession } as unknown as typeof deps.terminalBackend;
+    const waiter = deps.taskStore.createTask({
+      prompt: 'persisted probe-busy waiter',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open', reason: 'Probe already in flight' }],
+        parkedAt: '2026-01-01T00:00:01.000Z',
+      },
+    });
+    deps.taskStore.pendTask(waiter.id);
+    const terminalProbe = deps.taskStore.createTask({
+      prompt: 'terminal probe owner',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+        sessionId: 'terminal-busy-probe',
+      },
+    });
+    deps.taskStore.cancelTask(terminalProbe.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(killSession).toHaveBeenCalledWith('terminal-busy-probe');
+    admission.observe(['kb'], [{ dependency: 'kb', category: 'unknown' }]);
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
+  });
+
+  test('newer confirmed degradation supersedes an older reconciled live probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const probeTask = deps.taskStore.createTask({
+      prompt: 'older live recovery probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(probeTask.id, {
+      tmuxSession: 'older-live-probe-session',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const confirmedTask = deps.taskStore.createTask({
+      prompt: 'newer confirmed outage',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-01-02T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(confirmedTask.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['older-live-probe-session'] }),
+    });
+
+    expect(deps.taskStore.getTask(probeTask.id)?.launchAdmission).toBeUndefined();
+    expect(deps.taskStore.getTask(confirmedTask.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+  });
+
+  test('a newer interrupted probe supersedes an older reconciled live probe', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const oldProbe = deps.taskStore.createTask({
+      prompt: 'old attached probe',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.addSession(oldProbe.id, {
+      tmuxSession: 'old-attached-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const interruptedProbe = deps.taskStore.createTask({
+      prompt: 'new interrupted probe',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'new interrupted probe',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: '2026-01-02T00:00:00.000Z',
+      },
+    });
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['old-attached-probe'] }),
+    });
+
+    expect(deps.taskStore.getTask(oldProbe.id)?.launchAdmission).toBeUndefined();
+    expect(deps.taskStore.getTask(interruptedProbe.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [expect.objectContaining({
+          dependency: 'kb',
+          reason: 'Recovery probe was interrupted by server restart',
+        })],
+      },
+    });
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+  });
+
+  test('restores persisted parked dependencies before recovery promotion', async () => {
+    const deps = fakeDeps();
+    const admission = new LaunchDependencyAdmission();
+    const dependencyPreflightRunner = vi.fn().mockResolvedValue([]);
+    const adapter: AgentAdapter = {
+      agentType: 'claude-code',
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string, _resume, options) => {
+        const sessionId = options?.tmuxName ?? 'startup-recovery-session';
+        options?.onSessionCreated?.(sessionId);
+        deps.taskStore.addSession(taskId, {
+          tmuxSession: sessionId,
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return sessionId;
+      }),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+    deps.adapterRegistry.register(adapter);
+    const task = deps.taskStore.createTask({
+      prompt: 'use the knowledge base',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'use the knowledge base',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    deps.taskStore.pendTask(task.id);
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+      dependencyPreflightRunner,
+      taskStore: deps.taskStore,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'degraded' }),
+    ]);
+
+    await promotePendingStartupTasks({
+      taskStore: deps.taskStore,
+      adapterRegistry: deps.adapterRegistry,
+      lifecycleDeps: deps.lifecycleDeps,
+      broadcastToAll: deps.broadcastToAll,
+      serverCwd: deps.serverCwd,
+    });
+
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(dependencyPreflightRunner).toHaveBeenCalledWith(['kb']);
+    expect(admission.snapshot()).toEqual([
+      expect.objectContaining({ dependency: 'kb', state: 'healthy' }),
+    ]);
+  });
+
+  test('does not hydrate a terminal task with a legacy parked marker', async () => {
+    const deps = fakeDeps();
+    const task = deps.taskStore.createTask({
+      prompt: 'canceled work',
+      cwd: '/repo',
+      launchIntent: {
+        schemaVersion: 'task-launch-intent.v1',
+        prompt: 'canceled work',
+        cwd: '/repo',
+        agentType: 'claude-code',
+        dependencies: ['kb'],
+      },
+    });
+    deps.taskStore.cancelTask(task.id);
+    // Simulate a legacy persisted record written before terminal cleanup.
+    deps.taskStore.setLaunchAdmission(task.id, {
+      status: 'parked',
+      reason: 'dependency_degraded',
+      dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      parkedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const admission = new LaunchDependencyAdmission();
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult(),
+    });
+
+    expect(admission.snapshot()).toEqual([]);
+  });
+
+  test('reaps a terminal cleanup-only probe marker before releasing half-open admission', async () => {
+    const deps = fakeDeps();
+    deps.terminalBackend = {
+      ...deps.terminalBackend,
+      listSessions: vi.fn().mockResolvedValue([]),
+      isAlive: vi.fn().mockResolvedValue(false),
+    } as typeof deps.terminalBackend;
+    const task = deps.taskStore.createTask({ prompt: 'cancelled probe cleanup', cwd: '/repo' });
+    deps.taskStore.setLaunchAdmission(task.id, {
+      status: 'probing',
+      reason: 'half_open_probe_in_flight',
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      startedAt: '2026-01-01T00:00:00.000Z',
+      sessionId: 'kookr-terminal-cleanup-probe',
+    });
+    deps.taskStore.recordAbandonedLaunchSession(task.id, {
+      tmuxSession: 'kookr-terminal-cleanup-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    deps.taskStore.updateSession(task.id, 'kookr-terminal-cleanup-probe', {
+      lastStatus: undefined,
+    });
+    deps.taskStore.cancelTask(task.id);
+    const admission = new LaunchDependencyAdmission();
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      launchDependencyAdmission: admission,
+    };
+
+    const reconcileResult = await reconcile(deps.taskStore, deps.terminalBackend);
+    expect(reconcileResult.dependencyProbeCleanupSettled).toEqual([expect.objectContaining({
+      outcome: 'released',
+    })]);
+    expect(deps.taskStore.getTask(task.id)?.launchAdmission).toBeUndefined();
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult());
+
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult,
+    });
+
+    expect(deps.taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+    });
+    expect(admission.evaluate(['kb'])).toMatchObject({
+      admit: true,
+      probe: { dependencies: ['kb'] },
+    });
   });
 });
 

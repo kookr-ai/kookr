@@ -757,6 +757,96 @@ describe('TaskStore', () => {
 
       expect(task.playbookParameterValues).toBeUndefined();
     });
+
+    test('terminal transitions clear parked intent but retain probing cleanup ownership', () => {
+      const parked = {
+        status: 'parked' as const,
+        reason: 'dependency_degraded' as const,
+        dependencies: [{ dependency: 'kb', state: 'degraded' as const }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      };
+      const launchHealthSummary = {
+        degradedDependencies: ['kb'],
+        findings: [{
+          dependency: 'kb',
+          status: 'failed' as const,
+          category: 'provider_api',
+          summary: 'provider unavailable',
+          recommendedAction: 'retry',
+        }],
+      };
+      const cancelled = store.createTask({
+        prompt: 'cancel me',
+        cwd: '/cwd',
+        launchAdmission: parked,
+        launchHealthSummary,
+      });
+      store.cancelTask(cancelled.id);
+      expect(store.getTask(cancelled.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: undefined,
+        launchHealthSummary: undefined,
+      });
+
+      const terminated = store.createTask({
+        prompt: 'terminate me',
+        cwd: '/cwd',
+        launchAdmission: parked,
+        launchHealthSummary,
+      });
+      store.terminateTask(terminated.id);
+      expect(store.getTask(terminated.id)).toMatchObject({
+        status: 'terminated',
+        launchAdmission: undefined,
+        launchHealthSummary: undefined,
+      });
+
+      const probing = store.createTask({
+        prompt: 'cancel in-flight probe',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'probing',
+          reason: 'half_open_probe_in_flight',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          startedAt: '2026-08-25T10:01:00.000Z',
+        },
+        launchHealthSummary,
+      });
+      store.cancelTask(probing.id);
+      expect(store.getTask(probing.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: { status: 'probing' },
+        launchHealthSummary,
+      });
+    });
+
+    test('pending capacity count excludes dependency parking but includes a half-open capacity wait', () => {
+      const degraded = store.createTask({
+        prompt: 'dependency parked',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(degraded.id);
+      expect(store.getPendingCount()).toBe(0);
+
+      const capacityWait = store.createTask({
+        prompt: 'capacity wait',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'half_open_waiting_for_capacity',
+          dependencies: [{ dependency: 'kb', state: 'half_open' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(capacityWait.id);
+      expect(store.getPendingCount()).toBe(1);
+    });
   });
 
   // Issue #1554: every task is named from birth so no code path can reach a
@@ -1713,6 +1803,28 @@ describe('TaskStore', () => {
       expect(store.getTask(task.id)!.sessions).toHaveLength(0);
       expect(store.getTask(task.id)!.status).toBe('terminated');
     });
+
+    test('addSession refuses a late attachment after a failed probe was re-parked', () => {
+      const task = store.createTask({
+        prompt: 'retry after provider recovery',
+        cwd: '/cwd',
+        launchAdmission: {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: [{ dependency: 'kb', state: 'degraded' }],
+          parkedAt: new Date().toISOString(),
+        },
+      });
+      store.pendTask(task.id);
+
+      expect(() => store.addSession(task.id, {
+        tmuxSession: 'kookr-late-probe',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      })).toThrow(/dependency-parked task/);
+      expect(store.getTask(task.id)).toMatchObject({ status: 'pending', sessions: [] });
+    });
   });
 
   describe('getAggregateTokenUsage (issue #1307)', () => {
@@ -2386,33 +2498,34 @@ describe('TaskStore.evaluateCompletionSignal', () => {
 // ---------------------------------------------------------------------------
 
 describe('launch reservations (#700)', () => {
-  test('beginLaunch is a CAS: second reserve on the same task fails', () => {
+  test('beginLaunchWithToken is a CAS: second reserve on the same task fails', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
-    expect(store.beginLaunch(task.id)).toBe(false);
+    expect(store.beginLaunchWithToken(task.id)).toBeDefined();
+    expect(store.beginLaunchWithToken(task.id)).toBeUndefined();
   });
 
   test('endLaunch frees the reservation', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
-    store.endLaunch(task.id);
-    expect(store.beginLaunch(task.id)).toBe(true);
+    const token = store.beginLaunchWithToken(task.id);
+    expect(token).toBeDefined();
+    store.endLaunch(task.id, token!);
+    expect(store.beginLaunchWithToken(task.id)).toBeDefined();
   });
 
   test('refuses to reserve inProgress, terminal, or missing tasks', () => {
     const store = new TaskStore();
     const running = store.createTask('r', '/repo');
     store.startTask(running.id);
-    expect(store.beginLaunch(running.id)).toBe(false);
+    expect(store.beginLaunchWithToken(running.id)).toBeUndefined();
     const done = store.createTask('d', '/repo');
     store.startTask(done.id);
     store.completeTask(done.id);
-    expect(store.beginLaunch(done.id)).toBe(false);
-    expect(store.beginLaunch('nope')).toBe(false);
+    expect(store.beginLaunchWithToken(done.id)).toBeUndefined();
+    expect(store.beginLaunchWithToken('nope')).toBeUndefined();
   });
 
   test('a stale reservation expires and can be taken over (self-healing)', () => {
@@ -2421,9 +2534,32 @@ describe('launch reservations (#700)', () => {
       const store = new TaskStore();
       const task = store.createTask('t', '/repo');
       store.pendTask(task.id);
-      expect(store.beginLaunch(task.id)).toBe(true);
+      expect(store.beginLaunchWithToken(task.id)).toBeDefined();
       vi.advanceTimersByTime(10 * 60 * 1000 + 1); // past LAUNCH_RESERVATION_TTL_MS
-      expect(store.beginLaunch(task.id)).toBe(true); // wedged launch lost its hold
+      expect(store.beginLaunchWithToken(task.id)).toBeDefined(); // wedged launch lost its hold
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a stale token cannot release a replacement reservation', () => {
+    vi.useFakeTimers();
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      store.pendTask(task.id);
+      const stale = store.beginLaunchWithToken(task.id)!;
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      const replacement = store.beginLaunchWithToken(task.id)!;
+
+      expect(store.ownsLaunchReservation(task.id, stale)).toBe(false);
+      expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
+      store.endLaunch(task.id, stale);
+      expect(store.ownsLaunchReservation(task.id, replacement)).toBe(true);
+      expect(store.hasForeignFreshLaunchReservation(task.id, stale)).toBe(true);
+      expect(store.hasForeignFreshLaunchReservation(task.id, replacement)).toBe(false);
+      store.endLaunch(task.id, replacement);
+      expect(store.hasFreshLaunchReservation(task.id)).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -2439,20 +2575,122 @@ describe('launch reservations (#700)', () => {
     expect(store.getActiveCount()).toBe(0);
     expect(store.getNextPending()?.id).toBe(first.id);
 
-    expect(store.beginLaunch(first.id)).toBe(true);
+    const token = store.beginLaunchWithToken(first.id);
+    expect(token).toBeDefined();
     expect(store.getNextPending()?.id).toBe(second.id); // skips the reserved one
     expect(store.getActiveCount()).toBe(1); // the in-flight launch holds a slot
 
-    store.endLaunch(first.id);
+    store.endLaunch(first.id, token!);
     expect(store.getNextPending()?.id).toBe(first.id);
     expect(store.getActiveCount()).toBe(0);
+  });
+
+  test('persistence reservations exclude promotion without consuming capacity', () => {
+    const store = new TaskStore();
+    const first = store.createTask('first', '/repo');
+    const second = store.createTask('second', '/repo');
+    store.pendTask(first.id);
+    store.pendTask(second.id);
+
+    const token = store.beginLaunchPersistenceWithToken(first.id);
+    expect(token).toBeDefined();
+    expect(store.getNextPending()?.id).toBe(second.id);
+    expect(store.getActiveCount()).toBe(0);
+    expect(store.hasFreshLaunchReservation(first.id)).toBe(true);
+    expect(store.hasFreshActiveLaunchReservation(first.id)).toBe(false);
+
+    store.endLaunch(first.id, token);
+    expect(store.getNextPending()?.id).toBe(first.id);
+  });
+
+  test('terminal transition retains only an unproven probe cleanup fence', () => {
+    const store = new TaskStore();
+    const probing = {
+      status: 'probing' as const,
+      reason: 'half_open_probe_in_flight' as const,
+      dependencies: [{ dependency: 'kb', state: 'half_open' as const }],
+      startedAt: new Date().toISOString(),
+      sessionId: 'kookr-probe-cleanup',
+    };
+    const task = store.createTask({ prompt: 'probe', cwd: '/repo', launchAdmission: probing });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-probe-cleanup',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    store.cancelTask(task.id);
+    expect(store.getTask(task.id)?.launchAdmission).toEqual(probing);
+
+    store.updateSession(task.id, 'kookr-probe-cleanup', { lastStatus: 'aborted' });
+    store.setLaunchAdmission(task.id, undefined);
+    expect(store.getTask(task.id)?.launchAdmission).toBeUndefined();
+  });
+
+  test('terminal transition retains an exact probe marker for circuit settlement', () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'mixed sessions',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-exact-probe',
+      },
+    });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-exact-probe',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'aborted',
+    });
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-unrelated-live',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    store.cancelTask(task.id);
+
+    expect(store.getTask(task.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-exact-probe',
+    });
+  });
+
+  test('refuses to delete a durable probe cleanup owner', () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'late probe creation',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-late-probe',
+      },
+    });
+    store.cancelTask(task.id);
+
+    expect(() => store.deleteTask(task.id)).toThrow(/cleanup is in progress/);
+    expect(() => store.reopenTask(task.id)).toThrow(/cleanup is in progress/);
+    expect(store.getTask(task.id)?.launchAdmission).toMatchObject({
+      status: 'probing',
+      sessionId: 'kookr-late-probe',
+    });
   });
 
   test('addSession consumes the reservation (no double slot for launched tasks)', () => {
     const store = new TaskStore();
     const task = store.createTask('t', '/repo');
     store.pendTask(task.id);
-    store.beginLaunch(task.id);
+    store.beginLaunchWithToken(task.id);
     store.addSession(task.id, {
       tmuxSession: 'kookr-x',
       agentType: 'claude-code',
@@ -2464,7 +2702,7 @@ describe('launch reservations (#700)', () => {
     // Pin the consumption itself: once inProgress, a lingering reservation is
     // invisible to getActiveCount/getNextPending, so assert the private map
     // directly (mutation guard for the addSession delete).
-    const reservations = (store as unknown as { launchReservations: Map<string, number> }).launchReservations;
+    const reservations = (store as unknown as { launchReservations: Map<string, unknown> }).launchReservations;
     expect(reservations.has(task.id)).toBe(false);
   });
 

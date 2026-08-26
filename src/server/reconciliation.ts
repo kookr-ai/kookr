@@ -1,11 +1,13 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { appendDispositionEntry } from '../core/disposition-ledger.js';
 import { deterministicTaskName } from '../core/task-naming.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import type { TaskLaunchAdmissionDependency } from '../shared/contracts/task.js';
 
 /**
  * Default on-disk existence probe for {@link reconcile}'s `pathExists`
@@ -61,6 +63,15 @@ export interface ReconciliationResult {
   worktreesStale: string[];
   /** Sessions whose git/worktree metadata changed */
   worktreesChanged: string[];
+  /**
+   * Dependency probe cleanup fences settled because their exact sessions are
+   * now absent. Runtime callers use this to settle the matching process-local
+   * circuit token; startup independently hydrates the rewritten task marker.
+   */
+  dependencyProbeCleanupSettled?: Array<{
+    dependencies: TaskLaunchAdmissionDependency[];
+    outcome: 'parked' | 'released';
+  }>;
 }
 
 /**
@@ -99,6 +110,7 @@ export async function reconcile(
     worktreesMissing: [],
     worktreesStale: [],
     worktreesChanged: [],
+    dependencyProbeCleanupSettled: [],
   };
 
   const liveSessions = new Set(await backend.listSessions());
@@ -106,6 +118,17 @@ export async function reconcile(
   const accountedFor = new Set<string>();
 
   for (const task of taskStore.listTasks()) {
+    const exactProbeSessionId = task.launchAdmission?.status === 'probing'
+      ? task.launchAdmission.sessionId
+      : undefined;
+    const exactProbeSessionAttached = exactProbeSessionId === undefined
+      || task.sessions.some((session) => session.tmuxSession === exactProbeSessionId);
+    if (exactProbeSessionId) {
+      // The persisted marker owns this preallocated terminal even in the
+      // create-before-attach window. Do not report it as an orphan merely
+      // because the adapter has not attached the SessionInfo row yet.
+      accountedFor.add(exactProbeSessionId);
+    }
     for (const session of task.sessions) {
       if (session.lastStatus === 'completed' || session.lastStatus === 'aborted') {
         continue;
@@ -113,7 +136,27 @@ export async function reconcile(
 
       accountedFor.add(session.tmuxSession);
 
-      if (liveSessions.has(session.tmuxSession)) {
+      let sessionIsLive = liveSessions.has(session.tmuxSession);
+      const exactProbeSession = task.launchAdmission?.status === 'probing'
+        && task.launchAdmission.sessionId === session.tmuxSession;
+      if (!sessionIsLive && exactProbeSession) {
+        // listSessions is a point-in-time snapshot. A probe can attach after
+        // that await but before task iteration, consuming its reservation; a
+        // blind "missing" verdict here would re-park it and admit a duplicate.
+        // Recheck the exact probe id at the decision boundary. Failure to
+        // probe liveness is not proof of absence, so retain the busy fence.
+        try {
+          sessionIsLive = await backend.isAlive(session.tmuxSession);
+        } catch (err) {
+          console.warn(
+            `[reconciliation] could not verify exact dependency probe ${session.tmuxSession}; `
+            + `retaining cleanup fence: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          continue;
+        }
+      }
+
+      if (sessionIsLive) {
         result.resumed.push(session.tmuxSession);
         const registryEntry = worktreeRegistry?.byPath(session.cwd);
         const registrySnapshot = worktreeRegistry?.snapshot();
@@ -191,11 +234,59 @@ export async function reconcile(
     const latestTask = taskStore.getTask(task.id) ?? task;
     const ralphActive =
       latestTask.ralphLoop?.status === 'running' || latestTask.ralphLoop?.status === 'paused';
+    const allSessionsDone = latestTask.sessions.length > 0
+      && latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted');
+    const exactProbeCleanupDone = allSessionsDone && exactProbeSessionAttached;
+
+    // A durable probe marker means this was an admission attempt, not an
+    // ordinary worker that should become terminal. If its session died with
+    // the server, preserve the same launch intent for another bounded probe.
+    // This conversion happens before ordinary terminal transitions. Cleanup-
+    // only probing markers deliberately survive terminal state until this
+    // reconciler proves their exact session absent.
+    if (
+      latestTask.launchAdmission?.status === 'probing'
+      && (latestTask.status === 'inProgress' || latestTask.status === 'open')
+      && exactProbeCleanupDone
+    ) {
+      const probing = latestTask.launchAdmission;
+      taskStore.setLaunchAdmission(latestTask.id, {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: probing.dependencies.map((dependency) => ({
+          ...dependency,
+          state: 'degraded',
+          reason: 'Recovery probe was interrupted by server restart',
+        })),
+        parkedAt: new Date().toISOString(),
+      });
+      if (latestTask.status === 'inProgress') taskStore.reopenTask(latestTask.id);
+      if (taskStore.getTask(latestTask.id)?.status === 'open') taskStore.pendTask(latestTask.id);
+      result.dependencyProbeCleanupSettled?.push({
+        dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
+        outcome: 'parked',
+      });
+      continue;
+    }
+    if (
+      latestTask.launchAdmission?.status === 'probing'
+      && isTerminalStatus(latestTask.status)
+      && exactProbeCleanupDone
+    ) {
+      const probing = latestTask.launchAdmission;
+      taskStore.setLaunchAdmission(latestTask.id, undefined);
+      taskStore.setLaunchHealthSummary(latestTask.id, undefined);
+      result.dependencyProbeCleanupSettled?.push({
+        dependencies: probing.dependencies.map((dependency) => ({ ...dependency })),
+        outcome: 'released',
+      });
+      continue;
+    }
     if (
       !ralphActive &&
+      latestTask.launchAdmission?.status !== 'probing' &&
       (latestTask.status === 'inProgress' || latestTask.status === 'open') &&
-      latestTask.sessions.length > 0 &&
-      latestTask.sessions.every((s) => s.lastStatus === 'completed' || s.lastStatus === 'aborted')
+      allSessionsDone
     ) {
       if (latestTask.status === 'open') {
         taskStore.startTask(latestTask.id);
@@ -232,7 +323,7 @@ export async function reconcile(
  * #1526 Phase C / #1528). A task in `open` status with ZERO sessions exists
  * only while a launch is in flight (`launchTaskCore` creates it, then awaits
  * `adapter.launch`, which attaches the first session). A launch cannot
- * survive a process restart — `beginLaunch` reservations are deliberately
+ * survive a process restart — launch reservations are deliberately
  * in-memory only — so at boot every open/zero-session task without a fresh
  * reservation is stale by construction: its launcher is gone, no session will
  * ever attach, and `reconcile()`'s dead-session logic never touches it
@@ -248,7 +339,7 @@ export async function reconcile(
  * follows (it disposes rather than deletes).
  *
  * What distinguishes a legitimately mid-flight launch: a FRESH
- * `beginLaunch` reservation (`taskStore.hasFreshLaunchReservation`). At boot
+ * launch reservation (`taskStore.hasFreshLaunchReservation`). At boot
  * the reservation map is empty, so nothing is protected — correct, because
  * no launch survives the restart. The guard is what makes this function safe
  * against misuse from a periodic path, and it is the tested discriminator.
@@ -268,6 +359,29 @@ export function reconcileStaleOpenLaunches(
     if (task.sessions.length > 0) continue;
     if (taskStore.hasFreshLaunchReservation(task.id)) continue;
     try {
+      if (task.launchAdmission?.status === 'probing') {
+        // New probe markers preallocate and persist the exact terminal id.
+        // Leave those for runStartupRecoveryPhase, which can synchronously
+        // reap a worker created in the createSession→addSession crash window
+        // before re-parking the task. Legacy markers have no id and keep the
+        // original immediate re-park behavior below.
+        if (task.launchAdmission.sessionId) continue;
+        taskStore.setLaunchAdmission(task.id, {
+          status: 'parked',
+          reason: 'dependency_degraded',
+          dependencies: task.launchAdmission.dependencies.map((dependency) => ({
+            ...dependency,
+            state: 'degraded',
+            reason: 'Recovery probe was interrupted by server restart',
+          })),
+          parkedAt: new Date().toISOString(),
+        });
+        taskStore.pendTask(task.id);
+        console.warn(
+          `[startup-reconcile] re-parked interrupted dependency probe for task ${task.id}`,
+        );
+        continue;
+      }
       // Belt-and-braces backstop (issue #1554): tasks created after the
       // creation-time naming change already carry a name, but a legacy task
       // persisted before it may still be nameless here. Give it the

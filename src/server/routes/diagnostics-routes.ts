@@ -379,7 +379,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // full store on every /api/health poll was a hot-path tax linear in
     // completed-task history and starved terminal input under load.
     const tasks = taskStore.viewTasks();
-    const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
+    const launchDependencies = buildLaunchDependencyDiagnostics(
+      tasks,
+      deps.launchServiceDeps?.launchDependencyAdmission?.snapshot(),
+    );
     const attentionQueueSampledAtMs = Date.now();
     // Capacity ledger (issue #1526 Phase B / FM9): during the 2026-07-24
     // deadlock every status surface showed "12 running" while the truth was
@@ -398,7 +401,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       maxActiveTasks: deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS,
       isHungSuspect: (task) =>
         resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
-      isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+      isLaunching: (task) => taskStore.hasFreshActiveLaunchReservation(task.id),
       // FAA root-cause classification (issue #2142) must use the SAME live
       // thresholds the auto-close sweep uses, or a task the sweep already treats
       // as actionable would be miscounted as awaiting_poll. These are the same
@@ -1147,7 +1150,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   }));
 
   app.get('/api/diagnostics/launch-dependencies', (c) => (
-    c.json(buildLaunchDependencyDiagnostics(taskStore.viewTasks()))
+    c.json(buildLaunchDependencyDiagnostics(
+      taskStore.viewTasks(),
+      deps.launchServiceDeps?.launchDependencyAdmission?.snapshot(),
+    ))
   ));
 
   // Median human-reply wait over the last 24 hours (issue #2583). Reads the

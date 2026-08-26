@@ -1456,6 +1456,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     livenessTickRunning = true;
     timerHealth?.recordFire('liveness', livenessIntervalMs);
     try {
+      let promotedPending = 0;
+
       if (
         deps.worktreeRegistry
         && deps.worktreeRegistryRepoPath
@@ -1464,6 +1466,27 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+
+      for (const settled of result.dependencyProbeCleanupSettled ?? []) {
+        deps.agentLifecycleDeps?.launchDependencyAdmission?.settleReconciledProbe(
+          settled.dependencies,
+          settled.outcome,
+        );
+      }
+
+      if (deps.agentLifecycleDeps) {
+        // Reconcile first so sessions that just died or were reaped free their
+        // slots before parked dependency work is considered for promotion.
+        promotedPending = await promotePendingTasks({
+          taskStore,
+          adapterRegistry: deps.adapterRegistry,
+          lifecycleDeps: deps.agentLifecycleDeps,
+          broadcastToAll: deps.broadcastToAll,
+          serverCwd: deps.serverCwd,
+          getMaxActiveTasks: deps.getMaxActiveTasks,
+          bypassAllPermissions: deps.bypassAllPermissions,
+        });
+      }
 
       // Prune delivery-watchdog entries for loops no longer active (issue
       // #1902). The registry is sampled per-iteration in ralph-loop-service;
@@ -2055,19 +2078,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || hungSuspectTtlResult.reclaimedTaskIds.length > 0
         || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
         || orphanLoopsFailed > 0
+        || promotedPending > 0
       ) {
-        // Promote pending tasks when slots open from auto-transitioned sessions
-        // (completed via backfill, or terminated via the new dead-session path).
-        if (deps.agentLifecycleDeps) {
-          await promotePendingTasks({
-            taskStore,
-            adapterRegistry: deps.adapterRegistry,
-            lifecycleDeps: deps.agentLifecycleDeps,
-            broadcastToAll, serverCwd,
-            getMaxActiveTasks: deps.getMaxActiveTasks,
-            bypassAllPermissions: deps.bypassAllPermissions,
-          });
-        }
         broadcastDashboardSnapshot(deps);
       }
     } catch (err) {

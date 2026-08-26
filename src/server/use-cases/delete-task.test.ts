@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubStateStore } from '../../core/github-state-store.js';
+import { TaskStore } from '../../core/tasks.js';
 import { deleteTask } from './delete-task.js';
 
 describe('deleteTask use case', () => {
@@ -17,6 +18,31 @@ describe('deleteTask use case', () => {
 
     expect(result).toBe(false);
     expect(taskStore.deleteTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses deletion while an exact probe cleanup marker owns a possible session', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'create-before-attach cleanup',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-create-before-attach',
+      },
+    });
+    const stop = vi.fn(async () => undefined);
+
+    await expect(deleteTask({
+      taskStore,
+      adapter: { stop },
+      monitor: { unregisterAgent: vi.fn() },
+    }, task.id)).rejects.toThrow(/cleanup is in progress/);
+
+    expect(stop).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)).toBeDefined();
   });
 
   it('stops active sessions and deletes the task', async () => {

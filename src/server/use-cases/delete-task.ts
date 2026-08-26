@@ -1,4 +1,4 @@
-import type { TaskStore } from '../../core/tasks.js';
+import { TaskCleanupInProgressError, type TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { AgentAdapter } from '../../adapters/agent-adapter.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
@@ -41,6 +41,12 @@ export interface DeleteTaskDeps {
 export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<boolean> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) return false;
+  // The exact session may not have reached task.sessions yet. Refuse deletion
+  // before touching resources so the durable create-before-attach/stop fence
+  // survives until reconciliation proves physical absence.
+  if (task.launchAdmission?.status === 'probing') {
+    throw new TaskCleanupInProgressError(taskId);
+  }
 
   for (const session of task.sessions) {
     if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {

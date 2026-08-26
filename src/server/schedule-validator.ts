@@ -6,6 +6,7 @@ import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js
 import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
 import type { PlaybookScope } from '../core/playbook.js';
+import type { LaunchDependency } from '../shared/contracts/playbook.js';
 import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import {
@@ -28,6 +29,7 @@ export interface ResolvedScheduleLaunch {
   name: string;
   playbookId: string;
   projectId?: string;
+  dependencies?: LaunchDependency[];
 }
 
 const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
@@ -162,6 +164,7 @@ export class ScheduleValidator {
         name: playbook.name ?? schedule.name,
         playbookId: schedule.playbook.path,
         projectId,
+        ...(playbook.dependencies ? { dependencies: [...playbook.dependencies] } : {}),
       };
     } catch (err) {
       if (err instanceof ScheduleValidationError) throw err;

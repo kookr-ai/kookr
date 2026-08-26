@@ -94,7 +94,10 @@ export interface PruneAgedTaskRecordsResult {
 export function selectPrunableTasks(tasks: readonly Task[], cutoffMs: number): Task[] {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const prunable = new Set(
-    tasks.filter((task) => isAgedTerminalTask(task, cutoffMs)).map((task) => task.id),
+    tasks
+      .filter((task) => task.launchAdmission?.status !== 'probing')
+      .filter((task) => isAgedTerminalTask(task, cutoffMs))
+      .map((task) => task.id),
   );
 
   // Children per task: the declared childTaskIds union the parentTaskId

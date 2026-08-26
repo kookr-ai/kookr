@@ -30,7 +30,7 @@
 export const LAUNCH_PHASES = [
   /** launch-service work before the reservation: cwd check, advisory preflight, guardrails, dedup, backpressure, createTask. */
   'preflight',
-  /** The synchronous `beginLaunch` reservation (issue #700 CAS). */
+  /** The synchronous token-owned launch reservation (issue #700 CAS). */
   'reserve',
   /** Adapter: launch-context build, settings/home composition, and terminal `createSession`. */
   'session-create',

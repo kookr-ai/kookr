@@ -3,6 +3,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
 import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
+import { aTask } from '../../core/__fixtures__/task-builders.js';
 
 function collect(): { send: (msg: ServerMessage) => void; sent: ServerMessage[] } {
   const sent: ServerMessage[] = [];
@@ -54,6 +55,78 @@ describe('handleLaunchResult', () => {
     expect(alert.details).toContain('before a terminal session was created');
     expect(alert.details).toContain('grok login --device-code');
     expect(alert.summary).toContain('Grok authentication expired');
+  });
+
+  it('distinguishes a dependency-parked launch from a capacity queue', () => {
+    const { send, sent } = collect();
+
+    const { duplicate } = handleLaunchResult(send, 'use the knowledge base', {
+      task: aTask({ id: 'task-parked', prompt: 'use the knowledge base' }),
+      queued: true,
+      parked: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(duplicate).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'alert',
+      severity: 'warning',
+      summary: 'Parked: use the knowledge base',
+      details: expect.stringContaining('no worker slot was consumed'),
+    });
+    expect((sent[0] as Extract<ServerMessage, { type: 'alert' }>).details).toContain('kb=degraded');
+  });
+
+  it('reports a parked prompt duplicate as parked rather than already running', () => {
+    const { send, sent } = collect();
+
+    const result = handleLaunchResult(send, 'duplicate blocked work', {
+      task: aTask({ id: 'task-parked-duplicate', prompt: 'duplicate blocked work', sessions: [] }),
+      queued: true,
+      parked: true,
+      duplicate: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(result.duplicate).toBe(true);
+    expect(sent[0]).toMatchObject({
+      summary: 'Parked: duplicate blocked work',
+      severity: 'warning',
+    });
+  });
+
+  it('explains when a half-open recovery probe is already in flight', () => {
+    const { send, sent } = collect();
+
+    handleLaunchResult(send, 'use the knowledge base', {
+      task: aTask({ id: 'task-probe-busy', prompt: 'use the knowledge base' }),
+      queued: true,
+      parked: true,
+      dependencyAdmission: {
+        status: 'parked',
+        reason: 'half_open_probe_busy',
+        dependencies: [{ dependency: 'kb', state: 'half_open', reason: 'A recovery probe is already in flight' }],
+        parkedAt: '2026-08-25T10:00:00.000Z',
+      },
+    });
+
+    expect(sent[0]).toMatchObject({
+      type: 'alert',
+      severity: 'warning',
+      summary: 'Parked: use the knowledge base',
+      details: expect.stringContaining('recovery probe is already in flight'),
+    });
   });
 
   // --- Server-side backpressure (issue #1526 Phase C / C3) ---

@@ -49,6 +49,7 @@ import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
+import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -820,7 +821,13 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       now,
     );
 
-    expect(launch).toHaveBeenCalledWith(pending.id, pending.prompt, '/tmp');
+    expect(launch).toHaveBeenCalledWith(
+      pending.id,
+      pending.prompt,
+      '/tmp',
+      undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
   });
 });
 
@@ -1496,6 +1503,91 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
     try {
       await vi.advanceTimersByTimeAsync(60);
       expect(evaluate).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('liveness reconciliation settles parked and terminal probe cleanup fences', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const admission = new LaunchDependencyAdmission();
+    const failure = { category: 'provider_api', summary: 'provider unavailable' };
+    for (const dependency of ['kb', 'evolution-config'] as const) {
+      admission.observe([dependency], [{ dependency, ...failure }]);
+      admission.observe([dependency], []);
+      expect(admission.evaluate([dependency])).toMatchObject({
+        admit: true,
+        probe: { dependencies: [dependency] },
+      });
+    }
+
+    const retryable = taskStore.createTask({
+      prompt: 'retryable cleanup',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-retryable-cleanup',
+      },
+    });
+    taskStore.addSession(retryable.id, {
+      tmuxSession: 'kookr-retryable-cleanup',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    const terminal = taskStore.createTask({
+      prompt: 'terminal cleanup',
+      cwd: '/repo',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'evolution-config', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-terminal-cleanup',
+      },
+    });
+    taskStore.addSession(terminal.id, {
+      tmuxSession: 'kookr-terminal-cleanup',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    taskStore.cancelTask(terminal.id);
+
+    const handles = startLifecycleTimers(wiringDeps({
+      taskStore,
+      terminalBackend: {
+        listSessions: vi.fn(async () => []),
+        isAlive: vi.fn(async () => false),
+      } as TimerDeps['terminalBackend'],
+      getMaxActiveTasks: () => 0,
+      agentLifecycleDeps: {
+        launchDependencyAdmission: admission,
+      } as TimerDeps['agentLifecycleDeps'],
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(taskStore.getTask(retryable.id)).toMatchObject({
+        status: 'pending',
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' },
+      });
+      expect(admission.evaluate(['kb'])).toMatchObject({
+        admit: false,
+        reason: 'dependency_degraded',
+      });
+      expect(taskStore.getTask(terminal.id)).toMatchObject({
+        status: 'cancelled',
+        launchAdmission: undefined,
+      });
+      expect(admission.evaluate(['evolution-config'])).toMatchObject({
+        admit: true,
+        probe: { dependencies: ['evolution-config'] },
+      });
     } finally {
       clearAllTimers(handles);
     }

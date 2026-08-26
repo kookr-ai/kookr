@@ -381,6 +381,7 @@ function OpsHealthPills({
           className="ops-health-pill ops-health-launch-deps"
           data-testid="ops-health-launch-deps-pill"
           title={launchDepsTitle}
+          aria-label={launchDepsTitle}
           role="status"
         >
           {launchDepsLabel}

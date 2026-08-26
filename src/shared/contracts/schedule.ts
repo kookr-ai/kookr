@@ -43,6 +43,8 @@ export type ScheduleExecutionOutcome =
    * / FM8), instead of being dropped as `skipped_capacity`.
    */
   | 'queued_capacity'
+  /** Preserved launch intent waiting for a required dependency to recover. */
+  | 'parked_dependency'
   | 'running'
   | 'completed'
   | 'cancelled'
@@ -91,6 +93,8 @@ export type ScheduleExecutionOutcome =
 export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
+  /** Required launch dependency is confirmed degraded or probe-busy. */
+  | 'dependency_degraded'
   | 'draining'
   /**
    * Reason code for `skipped_server_restarting` (issue #1983). Mirrors

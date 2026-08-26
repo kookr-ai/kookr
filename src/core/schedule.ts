@@ -132,6 +132,8 @@ export type ScheduleExecutionOutcome =
    * loop launches it once a slot frees.
    */
   | 'queued_capacity'
+  /** Preserved launch intent waiting for a required dependency to recover. */
+  | 'parked_dependency'
   | 'running'
   | 'completed'
   | 'cancelled'
@@ -186,6 +188,8 @@ export type ScheduleExecutionOutcome =
 export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
+  /** Required launch dependency is confirmed degraded or probe-busy. */
+  | 'dependency_degraded'
   | 'draining'
   /**
    * Reason code for {@link ScheduleExecutionOutcome.skipped_server_restarting}
@@ -326,6 +330,7 @@ const PENDING_LEDGER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
   'running',
   'queued',
   'queued_capacity',
+  'parked_dependency',
 ]);
 
 /**

@@ -22,6 +22,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
     case 'queued':
     case 'queued_capacity':
       return 'queued';
+    case 'parked_dependency':
+      return 'parked: dependency';
     case 'running':
       return 'running';
     case 'completed':
@@ -68,6 +70,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'completed':
       return 'schedule-status-ok';
     case 'cancelled':
+    case 'parked_dependency':
     case 'dispatch_failed':
     case 'skipped_active':
     case 'skipped_capacity':

@@ -11,6 +11,7 @@ describe('launch-deps-pill helpers (issue #2364)', () => {
     expect(shouldShowLaunchDepsPill(undefined)).toBe(false);
     expect(shouldShowLaunchDepsPill({ totalDegradedTasks: 0, dependencies: [] })).toBe(false);
     expect(shouldShowLaunchDepsPill({ totalDegradedTasks: 1, dependencies: [] })).toBe(true);
+    expect(shouldShowLaunchDepsPill({ totalDegradedTasks: 0, dependencies: [], parkedTaskCount: 2 })).toBe(true);
   });
 
   test('formatLaunchDepsLabel prefers dependency×count segments', () => {
@@ -47,5 +48,27 @@ describe('launch-deps-pill helpers (issue #2364)', () => {
     expect(title).toContain('findings=9');
     expect(title).toContain('kb=8 (provider_api)');
     expect(title).toContain('GET /api/health.launchDependencies');
+  });
+
+  test('formats parked work separately from launched degraded work', () => {
+    const status = {
+      totalDegradedTasks: 0,
+      dependencies: [],
+      parkedTaskCount: 2,
+      parkedByDependency: [{ dependency: 'kb', taskCount: 2, reasons: ['provider down'] }],
+    };
+
+    expect(formatLaunchDepsLabel(status)).toBe('Deps: 0 · Parked: kb×2');
+    const title = formatLaunchDepsTitle(status);
+    expect(title).toContain('2 tasks parked awaiting dependency recovery');
+    expect(title).toContain('kb=2 (provider down)');
+  });
+
+  test('keeps parked-only status visible when dependency rows are unavailable', () => {
+    expect(formatLaunchDepsLabel({
+      totalDegradedTasks: 0,
+      dependencies: [],
+      parkedTaskCount: 3,
+    })).toBe('Deps: 0 · Parked: 3');
   });
 });

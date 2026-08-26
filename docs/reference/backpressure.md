@@ -36,9 +36,13 @@ without a restart. The section 5 and 6 thresholds are environment variables
 
 ## 1. Pending-queue depth limit (`maxPendingTasks`)
 
-When a launch would pend at capacity (active count ≥ `maxActiveTasks`) AND the
-pending count is already ≥ `maxPendingTasks`, the launch is **rejected before
-any task record is created**:
+When an otherwise admissible launch would pend at capacity (active count ≥
+`maxActiveTasks`) AND the launchable pending count is already ≥
+`maxPendingTasks`, the launch is **rejected before any task record is created**.
+Half-open probes waiting for capacity are launchable and remain subject to this
+limit. Confirmed dependency-denied work is a durable no-slot wait: it is
+excluded from launchable pending depth and bypasses this guard so the original
+intent survives the outage.
 
 - **REST** (`POST /api/tasks`): HTTP **429**, body
   `{ error, code: "pending_queue_full", capacity, maxPendingTasks }`. The

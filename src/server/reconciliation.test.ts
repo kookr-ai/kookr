@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'vitest';
+import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,6 +46,212 @@ describe('Startup Reconciliation', () => {
     expect(result.resumed).toHaveLength(1);
     expect(result.resumed[0]).toBe('kookr-abc');
     expect(result.markedCompleted).toHaveLength(0);
+  });
+
+  test('re-parks an in-progress probe whose attached session died during restart', async () => {
+    const task = taskStore.createTask({
+      prompt: 'probe dependency',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-dead-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'running',
+    });
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.markedCompleted).toContain('kookr-dead-probe');
+    expect(result.tasksTerminated).not.toContain(task.id);
+    expect(result.dependencyProbeCleanupSettled).toEqual([{
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      outcome: 'parked',
+    }]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      },
+    });
+  });
+
+  test('clears a terminal probe cleanup marker only after its exact session is absent', async () => {
+    const task = taskStore.createTask({
+      prompt: 'cancelled probe cleanup',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-terminal-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-terminal-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    taskStore.cancelTask(task.id);
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.dependencyProbeCleanupSettled).toEqual([{
+      dependencies: [{ dependency: 'kb', state: 'half_open' }],
+      outcome: 'released',
+    }]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'cancelled',
+      launchAdmission: undefined,
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-terminal-probe',
+        lastStatus: 'completed',
+      })],
+    });
+  });
+
+  test('rechecks an exact probe that attaches after the backend session snapshot', async () => {
+    const task = taskStore.createTask({
+      prompt: 'late snapshot probe',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-late-snapshot-probe',
+      },
+    });
+    let releaseList!: () => void;
+    let markListStarted!: () => void;
+    const listStarted = new Promise<void>((resolve) => { markListStarted = resolve; });
+    const isAlive = vi.fn().mockResolvedValue(true);
+    const snapshotBackend = {
+      listSessions: vi.fn(async () => {
+        markListStarted();
+        await new Promise<void>((resolve) => { releaseList = resolve; });
+        return [];
+      }),
+      isAlive,
+    } as unknown as typeof backend;
+
+    const reconciliation = reconcile(taskStore, snapshotBackend);
+    await listStarted;
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-late-snapshot-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    releaseList();
+    const result = await reconciliation;
+
+    expect(isAlive).toHaveBeenCalledWith('kookr-late-snapshot-probe');
+    expect(result.resumed).toContain('kookr-late-snapshot-probe');
+    expect(result.markedCompleted).not.toContain('kookr-late-snapshot-probe');
+    expect(result.dependencyProbeCleanupSettled).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: 'kookr-late-snapshot-probe' },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-late-snapshot-probe',
+      })],
+    });
+    expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+  });
+
+  test('retains an exact probe fence when its post-snapshot liveness check rejects', async () => {
+    const task = taskStore.createTask({
+      prompt: 'uncertain late probe',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-uncertain-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-uncertain-probe',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    const snapshotBackend = {
+      listSessions: vi.fn().mockResolvedValue([]),
+      isAlive: vi.fn().mockRejectedValue(new Error('backend lookup unavailable')),
+    } as unknown as typeof backend;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    let result;
+    try {
+      result = await reconcile(taskStore, snapshotBackend);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(snapshotBackend.isAlive).toHaveBeenCalledWith('kookr-uncertain-probe');
+    expect(result.resumed).not.toContain('kookr-uncertain-probe');
+    expect(result.markedCompleted).not.toContain('kookr-uncertain-probe');
+    expect(result.dependencyProbeCleanupSettled).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: { status: 'probing', sessionId: 'kookr-uncertain-probe' },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-uncertain-probe',
+      })],
+    });
+    expect(taskStore.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+  });
+
+  test('does not settle an unattached exact probe based on terminal historical sessions', async () => {
+    const task = taskStore.createTask({
+      prompt: 'probe after historical session',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-unattached-probe',
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-historical-session',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+      lastStatus: 'aborted',
+    });
+    await backend.createSession(spec('kookr-unattached-probe'));
+
+    const result = await reconcile(taskStore, backend);
+
+    expect(result.dependencyProbeCleanupSettled).toEqual([]);
+    expect(result.orphans).not.toContain('kookr-unattached-probe');
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'inProgress',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: 'kookr-unattached-probe',
+      },
+      sessions: [expect.objectContaining({
+        tmuxSession: 'kookr-historical-session',
+        lastStatus: 'aborted',
+      })],
+    });
   });
 
   test('does not resume (SessionBridge-reattach) a launch-abandoned master linked to a terminated launch_timeout task (issue #2500)', async () => {
@@ -842,6 +1048,54 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(taskStore.getActiveCount()).toBe(0);
   });
 
+  test('re-parks an interrupted durable recovery probe instead of terminating it', () => {
+    const task = taskStore.createTask({
+      prompt: 'probe provider',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    expect(reconcileStaleOpenLaunches(taskStore)).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'pending',
+      launchAdmission: {
+        status: 'parked',
+        reason: 'dependency_degraded',
+        dependencies: [{ dependency: 'kb', state: 'degraded' }],
+      },
+    });
+    expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
+  });
+
+  test('leaves a preallocated probe marker for startup recovery to reap exactly', () => {
+    const task = taskStore.createTask({
+      prompt: 'probe with expected terminal identity',
+      cwd: '/cwd',
+      launchAdmission: {
+        status: 'probing',
+        reason: 'half_open_probe_in_flight',
+        dependencies: [{ dependency: 'kb', state: 'half_open' }],
+        startedAt: new Date().toISOString(),
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+
+    expect(reconcileStaleOpenLaunches(taskStore)).toEqual([]);
+    expect(taskStore.getTask(task.id)).toMatchObject({
+      status: 'open',
+      launchAdmission: {
+        status: 'probing',
+        sessionId: 'kookr-expected-probe',
+      },
+    });
+    expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
+  });
+
   test('issue #1588: the terminated task carries a queryable stale_open_launch disposition', () => {
     const task = taskStore.createTask('Launcher died at boot', '/cwd');
 
@@ -876,12 +1130,12 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(after.disposition?.reason).toBe('launch_error');
   });
 
-  test('a legitimately mid-flight launch (fresh beginLaunch reservation) is NOT touched', () => {
+  test('a legitimately mid-flight launch (fresh reservation) is NOT touched', () => {
     // The discriminator: a live launch holds a fresh in-memory reservation.
     // At boot the reservation map is empty by construction (it is never
     // persisted), so nothing is protected then — which is exactly right.
     const task = taskStore.createTask('Launch in flight', '/cwd');
-    expect(taskStore.beginLaunch(task.id)).toBe(true);
+    expect(taskStore.beginLaunchWithToken(task.id)).toBeDefined();
 
     const terminated = reconcileStaleOpenLaunches(taskStore);
 

@@ -48,11 +48,23 @@ export class SessionRegistry {
     if (isTerminalStatus(task.status)) {
       throw new Error(`Cannot attach session to terminal task ${taskId} (status=${task.status})`);
     }
+    // A failed or timed-out recovery probe is re-parked before the adapter's
+    // launch promise necessarily settles. Refuse a late attachment to that
+    // preserved intent; the launch timeout reaper owns stopping the process.
+    // Capacity-wait markers are different: promotion deliberately attaches
+    // the first probe session after a worker slot opens.
+    if (
+      task.status === 'pending'
+      && task.launchAdmission?.status === 'parked'
+      && task.launchAdmission.reason !== 'half_open_waiting_for_capacity'
+    ) {
+      throw new Error(`Cannot attach session to dependency-parked task ${taskId}`);
+    }
     // The launch this reservation guarded has landed.
     this.host.onSessionAttached(taskId);
     // Detection funnel (#700 audit item 2): every attach path crosses here.
     // A second not-known-dead session cannot be *prevented* at this point
-    // (the process already exists — prevention is beginLaunch upstream), but
+    // (the process already exists — prevention is the token reservation upstream), but
     // it must be a loud, attributable event instead of a supervisor
     // discovery. Exclusions, matching the other live-session predicates in
     // the codebase: crash-recovered siblings (reconcile stamped the dead

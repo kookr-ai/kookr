@@ -679,7 +679,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
             { deliveryPolicy: preparedPlaybook.deliveryPolicy },
           )
         : await launchTask(deps.launchServiceDeps, launchOpts);
-      const { task, queued, duplicate, idempotentReplay } = launchResult;
+      const { task, queued, duplicate, idempotentReplay, parked, dependencyAdmission } = launchResult;
       // Plan-quota rotation metadata (issue #1936) — flat fields on the spawn
       // JSON so supervisors/feeder log without parsing free-text errors.
       const planQuotaMeta = launchResult.admission
@@ -701,6 +701,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           task,
           duplicate: true,
           ...(idempotentReplay ? { idempotentReplay: true } : {}),
+          ...(queued ? { queued: true } : {}),
+          ...(parked ? { parked: true } : {}),
+          ...(dependencyAdmission ? { dependencyAdmission } : {}),
           ...planQuotaMeta,
         }, 200);
       }
@@ -709,13 +712,22 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // existing callers need no extra wrapper parsing. Replayed prompt-dedup
       // outcomes returned through the duplicate branch above instead.
       if (idempotentReplay) {
-        return c.json({ ...task, idempotentReplay: true, ...planQuotaMeta }, 200);
+        return c.json({
+          ...task,
+          idempotentReplay: true,
+          ...(queued ? { queued: true } : {}),
+          ...(parked ? { parked: true } : {}),
+          ...(dependencyAdmission ? { dependencyAdmission } : {}),
+          ...planQuotaMeta,
+        }, 200);
       }
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({
         ...task,
         ...(queued ? { queued: true } : {}),
+        ...(parked ? { parked: true } : {}),
+        ...(dependencyAdmission ? { dependencyAdmission } : {}),
         ...planQuotaMeta,
       }, 201);
     } catch (err) {
@@ -824,7 +836,10 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
+      const result = await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
+      if (result.outcome === 'invalid' && result.code === 'task_cleanup_in_progress') {
+        return c.json({ error: result.error, code: result.code }, 409);
+      }
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
@@ -1445,7 +1460,6 @@ type CompactApiTask = Pick<
   | 'status'
   | 'cwd'
   | 'agentType'
-  | 'launchIntent'
   | 'playbookId'
   | 'projectId'
   | 'priority'
@@ -1476,6 +1490,8 @@ type CompactApiTask = Pick<
   taskId: string;
   /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
   aggregateTokenUsage?: TokenUsage;
+  /** Backward-compatible, secret-free launch pins (prompt/cwd/key omitted). */
+  launchIntent?: Pick<NonNullable<Task['launchIntent']>, 'schemaVersion' | 'agentType' | 'model' | 'effort'>;
   sessions: CompactApiTaskSession[];
   /** Why an `inProgress` task is occupying a slot without visible work (issue #1526 Phase B). */
   stuckReason?: TaskStuckReason;
@@ -1499,7 +1515,6 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     status: task.status,
     cwd: task.cwd,
     agentType: task.agentType,
-    launchIntent: task.launchIntent,
     playbookId: task.playbookId,
     projectId: task.projectId,
     priority: task.priority,
@@ -1517,6 +1532,14 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     pendingSignal: task.pendingSignal,
     issueClaim: task.issueClaim,
     ralphLoop: task.ralphLoop,
+    launchIntent: task.launchIntent
+      ? {
+          schemaVersion: task.launchIntent.schemaVersion,
+          agentType: task.launchIntent.agentType,
+          ...(task.launchIntent.model !== undefined ? { model: task.launchIntent.model } : {}),
+          ...(task.launchIntent.effort !== undefined ? { effort: task.launchIntent.effort } : {}),
+        }
+      : undefined,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,

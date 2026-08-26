@@ -122,7 +122,7 @@ capacity).
 | `GET /api/tasks/migratable` | Preview cross-agent migration candidates for a `?targetAgent=`. Optional `fromAgent` / `includeCancelled` / `onlyIsolated` / `taskIds` (comma-separated) filters. Returns `{ targetAgent, candidates: [{taskId, eligible, reason?, worktreeShared, …}] }` |
 | `POST /api/tasks/migrate` | Continue interrupted tasks under a **different** agent by launching linked continuation tasks. Body `{ targetAgent, scope: {kind:'ids', taskIds} \| {kind:'all', fromAgent?, includeCancelled?}, effort?, setAsDefault?, onlyIsolated? }`. Per-task `migrated` / `queued` / `blocked` results; `200` even on mixed outcomes; `400` malformed. Behind the same `/api` auth + CSRF middleware as `POST /api/tasks` (a task-creation path) — **not** supervisor-gated, unlike `POST /api/tasks/abort` |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
-| `DELETE /api/tasks/:id` | Stop and remove a task |
+| `DELETE /api/tasks/:id` | Stop and remove a task. Returns `409 {code: "task_cleanup_in_progress", error}` while an exact dependency-probe cleanup marker owns the record; retry after reconciliation clears it |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
@@ -246,6 +246,57 @@ policy is derived only from the parsed playbook metadata, so a raw client
 `deliveryMode` or
 `deliveryPolicy` field cannot grant self-advancing delivery.
 
+When a declared dependency is confirmed degraded, `POST /api/tasks` still
+creates the task and returns `queued: true`, but the task carries
+`launchAdmission.status: "parked"` and no worker is started or counted as
+active. The original launch intent is retained so promotion can retry it after
+recovery evidence. An `unknown` health result remains fail-open, but cannot
+erase a previously confirmed degraded or half-open circuit. A recovery worker
+attempt is persisted as `launchAdmission.status: "probing"`; probe failure, or
+restart without a live reconciled probe session, re-parks the same task and
+idempotency identity only while it remains non-terminal. During startup an
+interrupted marker remains `probing` and the circuit reports
+`half_open_probe_busy` until its exact expected terminal is reaped. The same
+rule applies immediately when direct launch, promotion, or crash recovery
+creates a session but its cleanup rejects: the task does not re-park, the
+session remains owned and not falsely marked aborted, and the exact marker
+survives even if a concurrent terminal transition wins the work outcome.
+If timeout wins before the creation callback, the same exact preallocated
+marker and busy circuit remain durable with zero session rows; a late callback
+links and reaps that session before reconciliation can settle the owner.
+When owner-controlled cleanup proves physical absence, it settles the circuit
+and clears a terminal task's marker immediately. If cleanup, creation, or
+circuit settlement remains unresolved, runtime reconciliation or startup
+releases the retained fence only after physical absence is proven. Thus
+`probing` alone does not mean a worker is live or uncertain. Explicit deletion
+returns `409 task_cleanup_in_progress`, bulk
+deletion/pruning skip these cleanup owners, and reopen is refused until
+settlement. A live
+reconciled probe clears its marker as successful unless confirmed degradation
+recorded at or after that probe began still controls the circuit. Capacity-only waits use
+`reason: "half_open_waiting_for_capacity"` and are queued, not reported as
+dependency-parked launch rejections.
+
+Prompt-dedup and idempotent replay responses preserve `queued`, `parked`, and
+`dependencyAdmission` metadata. Root `parked: true` is present only for
+dependency-blocked/no-slot admission; a half-open capacity wait keeps
+`queued: true` plus `dependencyAdmission` without root `parked`. The compact
+task list preserves the backward-compatible safe `launchIntent` pins
+(`schemaVersion`, `agentType`, `model`, `effort`) while redacting prompt, cwd,
+project, dependency, Ralph, and idempotency fields; fetch `GET /api/tasks/:id`
+for the full intent. In `GET /api/health`,
+`capacity.pendingQueueDepth` counts launchable pending work while
+`capacity.parked` reports dependency-blocked/no-slot work separately; a
+`half_open_waiting_for_capacity` task is counted only in the launchable queue.
+The same health payload exposes the diagnostic snapshot under
+`launchDependencies`: legacy totals/rollups plus
+optional `totalConfirmedDegradedTasks`, `totalConfirmedFindings`,
+`totalUnknownTasks`, and `totalUnknownFindings` (each omitted when zero), optional
+`dependencyStates`, and optional
+`parkedTasks`. `capacity.parked` is the compact capacity-oriented parked
+backlog; `launchDependencies.parkedTasks` carries dependency reasons and live
+circuit context.
+
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
 Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30
@@ -335,10 +386,16 @@ logical *request*, independent of its prompt content.
   `400 {"error": "idempotencyKey must be ..."}`.
 - If a launch fails **before a task record is created** (validation error,
   backpressure rejection), the reservation is released so a retry with the same
-  key is treated as fresh. If it fails **after the task was created** (adapter
-  launch error or hard launch timeout), the task is disposed (issue #1588) and
-  the key is finalized to it, so a same-key retry returns that disposed task as
-  an idempotent replay rather than creating a sibling.
+  key is treated as fresh. If it fails **after the task was created** (ordinary
+  adapter launch error or hard launch timeout), the task is disposed (issue
+  #1588) and the key is finalized to it, so a same-key retry returns that
+  disposed task as an idempotent replay rather than creating a sibling. A
+  half-open dependency probe that times out before `onSessionCreated` is the
+  safety exception: it stays `inProgress` with its exact preallocated
+  `probing` marker (and may temporarily have no session row), because the
+  physical create can still complete late. That callback links and reaps the
+  exact session; runtime reconciliation settles the marker after absence is
+  proven.
 - **Durability is best-effort, not absolute.** Reservations live in a ledger
   (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
   its TTL is treated as never seen) that is written to disk once launch
@@ -607,6 +664,10 @@ actor is recorded in `audit.jsonl` rows (`task.deleteTask`, `task.batchAbort`,
 the interaction log's `user_input` event. The WebSocket transport attributes
 the same way using its per-connection id instead of a header.
 
+An expected `DELETE` conflict while dependency-probe cleanup owns the task is
+also recorded as a `task.deleteTask` row with
+`outcome: "cleanup_in_progress"`, `count: 0`, and no deleted ids.
+
 The header is **optional and never rejects the request** — an absent or blank
 value records the actor as `"unattributed"` and logs one deprecation-style
 warning per source (`api` / `websocket`) per process boot, not per request.
@@ -750,7 +811,7 @@ Returns the full sanitized config object for that project.
 | `POST /api/schedules/preview` | Preview next-run timestamps for a candidate schedule |
 | `PATCH /api/schedules/:id` | Update a schedule |
 | `DELETE /api/schedules/:id` | Delete a schedule |
-| `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
+| `POST /api/schedules/:id/run` | Trigger a scheduled task immediately. A capacity wait returns `queued: true`; a required-dependency wait additionally returns `parked: true`, `outcome: "parked_dependency"`, and `reasonCode: "dependency_degraded"` so consumers do not misdiagnose it as capacity exhaustion. |
 | `POST /api/schedules/recover` | Bulk re-enable schedules parked by the fail-closed `consecutive_failures` auto-pause (issue #2520). Body `{ "stopReason": "consecutive_failures", "heldBefore"?: "<ISO>" }`; `heldBefore` scopes recovery to holds established before a fix-commit / deploy watermark. Returns `{ ok, recovered[], skipped[] }`. Backs `kookr schedule enable --stop-reason consecutive_failures`. |
 | `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
 
@@ -863,7 +924,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/orchestration/status` | Orchestration pause state (SAFE MODE) + pause record + default-agent quota sample |
 | `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
 | `POST /api/orchestration/resume` | Disengage SAFE MODE and close the current pause record |
-| `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
+| `GET /api/diagnostics/launch-dependencies` | Returns `launch-dependency-diagnostics.v1`. Legacy `totalDegradedTasks`, `totalFindings`, `dependencies`, and `categories` retain their original all-finding semantics (including `unknown`); additive `totalConfirmedDegradedTasks` / `totalConfirmedFindings` distinguish confirmed degradation, while `totalUnknownTasks` / `totalUnknownFindings` distinguish collection uncertainty. Optional `dependencyStates` exposes live `healthy`/`degraded`/`unknown`/`half_open` circuit state, and `parkedTasks` lists dependency-blocked pending task IDs, dependencies, counts, and reasons. |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |

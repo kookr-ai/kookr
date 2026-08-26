@@ -235,7 +235,14 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       const { code, status } = scheduleRunErrorResponse(result.error);
       return c.json({ error: result.error, code }, status);
     }
-    return c.json({ ok: true, taskId: result.taskId, ...(result.queued ? { queued: true } : {}) });
+    return c.json({
+      ok: true,
+      taskId: result.taskId,
+      ...(result.queued ? { queued: true } : {}),
+      ...(result.parked ? { parked: true } : {}),
+      ...(result.outcome ? { outcome: result.outcome } : {}),
+      ...(result.reasonCode ? { reasonCode: result.reasonCode } : {}),
+    });
   });
 
   app.post("/api/schedules/preview", async (c) => {
