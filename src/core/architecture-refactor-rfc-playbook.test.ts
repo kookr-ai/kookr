@@ -67,6 +67,9 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(mergePhase).toContain('pnpm merge');
     expect(mergePhase).toContain('sha: <rfcHeadSha>');
     expect(mergePhase).toMatch(/allowed merge method/i);
+    expect(mergePhase).toContain('gh api --method PUT');
+    expect(mergePhase).toContain('--field sha="$RFC_HEAD_SHA"');
+    expect(mergePhase).toContain('--field merge_method="$MERGE_METHOD"');
   });
 
   test('creates no umbrella until the RFC merge commit is reachable from fresh origin/main', () => {
@@ -89,9 +92,17 @@ describe('architecture-refactor-rfc playbook', () => {
     expect(pb.body).toContain('phase1TaskId');
     expect(pb.body).toContain('kookr-architecture-refactor-rfc:{{findingKey}}');
     expect(pb.body).toContain('--idempotency-key');
-    expect(pb.body).toContain('gh api');
-    expect(pb.body).toContain('--paginate');
-    expect(pb.body).not.toMatch(/--limit (200|1000)/);
+    const discoveryPhase = pb.body.slice(
+      pb.body.indexOf('## Phase 0 — Validate and Resume Durable State'),
+      pb.body.indexOf('## Phase 1 — Verify Evidence and Freeze the Phase Plan'),
+    );
+    expect(discoveryPhase).toContain('gh api');
+    expect(discoveryPhase).toContain('--paginate');
+    expect(discoveryPhase).toContain('per_page=100');
+    expect(discoveryPhase).toMatch(/all RFC PR states.*all open\/closed issues/is);
+    expect(discoveryPhase).toMatch(/exclude pull requests from the issue collection/i);
+    expect(discoveryPhase).toMatch(/filter.*bodies.*exact marker/is);
+    expect(discoveryPhase).not.toMatch(/--limit (200|1000)/);
   });
 
   test('writes the self-advancing ledger and records launch only after a confirmed task id', () => {

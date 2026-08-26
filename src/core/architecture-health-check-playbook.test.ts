@@ -69,13 +69,20 @@ describe('architecture-health-check playbook', () => {
     expect(phase3).toContain('rfc-first');
     expect(phase3).toContain('--idempotency-key');
     const route = phase3.indexOf('RFC-first routing gate');
+    const routePredicate = phase3.indexOf('if [ "${FINDING_ROUTE:-plain-issue}" = "rfc-first" ]; then');
+    const routeContinue = phase3.indexOf('continue', routePredicate);
     const plainIssue = phase3.indexOf('# ... gh issue create ...');
     expect(route).toBeGreaterThan(-1);
+    expect(routePredicate).toBeGreaterThan(route);
+    expect(routeContinue).toBeGreaterThan(routePredicate);
     expect(plainIssue).toBeGreaterThan(route);
+    expect(plainIssue).toBeGreaterThan(routeContinue);
   });
 
   test('preserves plain issue creation below the large-refactor threshold', () => {
     expect(phase3).toMatch(/below.*large-refactor threshold.*existing.*issue/i);
     expect(phase3).toContain('# ... gh issue create ...');
+    expect(phase3.indexOf('If `{{maxIssues}}` is `0`, skip this phase entirely'))
+      .toBeLessThan(phase3.indexOf('kookr spawn'));
   });
 });

@@ -1652,6 +1652,7 @@ an implementation issue. Candidates below the large-refactor threshold never
 enter this loop and retain the existing path.
 
 ```bash
+if [ "$PUBLISH" = "publish-safe" ]; then
 FILED=0
 jq -r '.[] | select(.publishDecision == "rfc-first") | [.idx, .slug, .findingKey] | @tsv' \
   "$IDEAS_LOG" > "$STATE_DIR/rfc-first.tsv"
@@ -1731,6 +1732,7 @@ while IFS="$(printf '\t')" read -r IDX SLUG FINDING_KEY; do
     "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
   FILED=$((FILED + 1))
 done < "$STATE_DIR/rfc-first.tsv"
+fi
 ```
 
 If `kookr spawn` reports a client timeout, do not change the key and do not

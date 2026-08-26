@@ -433,16 +433,46 @@ describe('repository-idea-scout playbook', () => {
       expect(phase7).toContain('rfcTaskId');
       expect(phase7).toContain('architecture-refactor-rfc:${REPO_SLUG}:${FINDING_KEY}');
       expect(phase7).not.toContain('architecture-refactor-rfc:${REPO_SLUG}:${IDX}');
-      expect(phase7).toContain('/api/tasks/$SAVED_RFC_TASK_ID');
       expect(phase7).toContain('/api/tasks/$RFC_TASK_ID');
-      expect(phase7).toMatch(/SAVED_RFC_TASK_ID[\s\S]*FILED=\$\(\(FILED \+ 1\)\)/);
-      expect(phase7).toContain('.publishDecision = "deferred-over-budget"');
-      expect(phase7).toContain('.publishDecision = "deferred-spend-cap"');
-      expect(phase7).toMatch(/Run this phase only when `PUBLISH = publish-safe`/);
+
+      const savedTaskBranch = phase7.slice(
+        phase7.indexOf('if [ -s "$RFC_TASK_FILE" ]'),
+        phase7.indexOf('if [ "$FILED" -ge "$ALLOWED" ]'),
+      );
+      expect(savedTaskBranch).toContain('/api/tasks/$SAVED_RFC_TASK_ID');
+      expect(savedTaskBranch).toContain('FILED=$((FILED + 1))');
+      expect(savedTaskBranch).toMatch(/FILED=\$\(\(FILED \+ 1\)\)[\s\S]*continue/);
+
+      const budgetBranch = phase7.slice(
+        phase7.indexOf('if [ "$FILED" -ge "$ALLOWED" ]'),
+        phase7.indexOf('if ! spend_gate; then'),
+      );
+      expect(budgetBranch).toContain('.publishDecision = "deferred-over-budget"');
+      expect(budgetBranch).toContain('kookr emission defer');
+
+      const spendBranch = phase7.slice(
+        phase7.indexOf('if ! spend_gate; then'),
+        phase7.indexOf('# The handoff starts with the exact instruction'),
+      );
+      expect(spendBranch).toContain('.publishDecision = "deferred-spend-cap"');
+      expect(spendBranch).toContain('.rfcTaskId == null');
+
       const rfcRoute = phase7.indexOf('RFC-first launch loop');
+      const rfcPublishGuard = phase7.indexOf(
+        'if [ "$PUBLISH" = "publish-safe" ]; then',
+        rfcRoute,
+      );
+      const rfcLoop = phase7.indexOf('FILED=0', rfcRoute);
+      const issuePublishGuard = phase7.indexOf(
+        'if [ "$PUBLISH" = "publish-safe" ]; then',
+        rfcPublishGuard + 1,
+      );
       const issueRoute = phase7.indexOf('> "$STATE_DIR/publishable.tsv"');
+      expect(rfcPublishGuard).toBeGreaterThan(-1);
       expect(rfcRoute).toBeGreaterThan(-1);
-      expect(issueRoute).toBeGreaterThan(rfcRoute);
+      expect(rfcLoop).toBeGreaterThan(rfcPublishGuard);
+      expect(issuePublishGuard).toBeGreaterThan(rfcLoop);
+      expect(issueRoute).toBeGreaterThan(issuePublishGuard);
     });
 
     test('Phase 7 applies drain-coupled emission budget + logged dedupe (issue #1607)', () => {
