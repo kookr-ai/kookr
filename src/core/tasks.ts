@@ -17,7 +17,15 @@ import type {
   TaskLaunchPermissionPosture,
   TaskPriorityUpdate,
   TaskRelaunchDisposition,
+  TerminalTransitionContext,
+  TerminalWorkDisposition,
 } from '../shared/contracts/task.js';
+import {
+  buildTerminalReceipt,
+  reasonCategoryFromTermination,
+  sourceFromTermination,
+  terminalContextFromCompletionPath,
+} from './terminal-receipt.js';
 import { TASK_LAUNCH_INTENT_SCHEMA } from './task-launch-intent.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import { SessionRegistry } from './session-registry.js';
@@ -852,7 +860,7 @@ export class TaskStore {
     return [...always, ...terminals].map((task) => cloneTask(task));
   }
 
-  private transition(id: string, to: TaskStatus): Task {
+  private transition(id: string, to: TaskStatus, receiptContext?: TerminalTransitionContext): Task {
     const task = this.tasks.get(id);
     if (!task) {
       throw new Error(`Task not found: ${id}`);
@@ -861,6 +869,7 @@ export class TaskStore {
       throw new InvalidTransitionError(task.status, to);
     }
     const now = new Date();
+    const priorState = task.status;
     const dependencyAdmission = task.launchAdmission !== undefined;
     // A probing marker is physical-cleanup ownership even before the adapter's
     // create-before-attach callback adds its exact session to the task. Keep it
@@ -872,6 +881,26 @@ export class TaskStore {
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
       task.finishedAt ??= now;
+      // Structured terminal-transition receipt (issue #2847). Stamped here, at
+      // the single chokepoint every terminal move funnels through, so no path
+      // can reach a terminal state without a typed reason + source. Purely an
+      // in-memory field assignment — it cannot throw, so it never blocks the
+      // physical cleanup the caller performs after this returns.
+      //
+      // For a completion with no explicit context, derive the initiator from the
+      // `completionPath` already stamped on the record (agent self vs operator
+      // vs recovery — issue #1608), so `completeTask` call sites need no new
+      // argument. An explicit context (e.g. boot reconcile) still wins.
+      const effectiveContext =
+        to === 'completed'
+          ? { ...terminalContextFromCompletionPath(task.completionPath), ...receiptContext }
+          : receiptContext;
+      task.terminalReceipt = buildTerminalReceipt(
+        to as 'completed' | 'terminated' | 'cancelled',
+        priorState,
+        now.toISOString(),
+        effectiveContext,
+      );
     } else {
       delete task.finishedAt;
     }
@@ -893,8 +922,8 @@ export class TaskStore {
     return cloneTask(this.transition(id, 'inProgress'));
   }
 
-  completeTask(id: string): Task {
-    return cloneTask(this.transition(id, 'completed'));
+  completeTask(id: string, receiptContext?: TerminalTransitionContext): Task {
+    return cloneTask(this.transition(id, 'completed', receiptContext));
   }
 
   /**
@@ -906,17 +935,28 @@ export class TaskStore {
    * deliberate one. When omitted the reason defaults to `unknown` — a
    * terminated task always has a non-empty `terminationReason`.
    */
-  terminateTask(id: string, cause?: TerminationCause): Task {
-    const task = this.transition(id, 'terminated');
+  terminateTask(id: string, cause?: TerminationCause, receiptContext?: TerminalTransitionContext): Task {
+    // Derive receipt reason/source from the termination cause so every existing
+    // `terminateTask` call site classifies for free (server-restart → restart
+    // recovery, timeout → watchdog, …). An explicit `receiptContext` from a
+    // caller with better knowledge (boot reconcile, provider admission) wins.
+    const reason = cause?.reason ?? 'unknown';
+    const derived: TerminalTransitionContext = {
+      reason: reasonCategoryFromTermination(reason),
+      source: sourceFromTermination(reason),
+      detail: cause?.detail,
+      ...receiptContext,
+    };
+    const task = this.transition(id, 'terminated', derived);
     task.terminatedAt = new Date();
-    task.terminationReason = cause?.reason ?? 'unknown';
+    task.terminationReason = reason;
     if (cause?.signal) task.terminationSignal = cause.signal;
     if (cause?.detail) task.terminationDetail = cause.detail;
     return cloneTask(task);
   }
 
-  cancelTask(id: string): Task {
-    return cloneTask(this.transition(id, 'cancelled'));
+  cancelTask(id: string, receiptContext?: TerminalTransitionContext): Task {
+    return cloneTask(this.transition(id, 'cancelled', receiptContext));
   }
 
   /**
@@ -948,6 +988,48 @@ export class TaskStore {
     const task = this.tasks.get(id);
     if (!task || task.relaunchDisposition || !disposition) return;
     task.relaunchDisposition = structuredClone(disposition);
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+  }
+
+  /**
+   * Correlate a terminal receipt with a restart/crash-recovery outcome (issue
+   * #2847). Called by the crash-recovery pass once it decides what became of a
+   * terminated task: `relaunched` (re-spawned), `superseded` (covered by a live
+   * duplicate), or `abandoned` (deliberately not resumed). Patches the existing
+   * receipt's {@link TaskTerminalReceipt.workDisposition} and stamps the restart
+   * epoch as {@link TaskTerminalReceipt.recoveryCorrelationId} so a restart
+   * cohort is groupable. No-op for a task without a receipt (nothing to
+   * correlate). Applies regardless of current status because a relaunched task
+   * is already active again — the annotation is a durable record of the prior
+   * terminal transition, not a claim about the live state.
+   */
+  recordRecoveryDisposition(
+    id: string,
+    outcome: { workDisposition: TerminalWorkDisposition; recoveryCorrelationId?: string },
+  ): void {
+    const task = this.tasks.get(id);
+    if (!task?.terminalReceipt) return;
+    task.terminalReceipt.workDisposition = outcome.workDisposition;
+    if (outcome.recoveryCorrelationId !== undefined) {
+      task.terminalReceipt.recoveryCorrelationId = outcome.recoveryCorrelationId;
+    }
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+  }
+
+  /**
+   * Record that a paired terminal-bookkeeping step failed AFTER the transition
+   * (issue #2847 AC). Physical cleanup is never blocked on bookkeeping, so the
+   * caller catches the failure and preserves it here, separately from the
+   * receipt's original {@link TaskTerminalReceipt.reason}, rather than letting a
+   * write hiccup overwrite or masquerade as the cause of termination.
+   * First-write-wins; no-op for a task without a receipt.
+   */
+  recordTerminalBookkeepingError(id: string, message: string): void {
+    const task = this.tasks.get(id);
+    if (!task?.terminalReceipt || task.terminalReceipt.bookkeepingError) return;
+    task.terminalReceipt.bookkeepingError = message;
     task.updatedAt = new Date();
     this.markTaskDirty(id);
   }

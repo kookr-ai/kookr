@@ -294,15 +294,25 @@ export async function reconcile(
       // Clean finish → complete directly; likely crash → terminate for ack.
       // See `endedOnCleanTurn` for the distinction (#693).
       if (endedOnCleanTurn(latestTask)) {
-        taskStore.completeTask(latestTask.id);
+        // Boot reconcile completing a task that ended on a clean turn — its
+        // provenance is the restart-recovery path (issue #2847).
+        taskStore.completeTask(latestTask.id, {
+          source: 'restart_recovery',
+          reason: 'completed_recovery',
+          workDisposition: 'completed',
+        });
         result.tasksCompleted.push(latestTask.id);
       } else {
         // No clean-finish evidence: a likely crash whose precise cause (OOM,
         // restart, killed) reconcile cannot distinguish per-task. Record
         // `unknown` — recoverable, so crash-recovery may relaunch it (#1664).
+        // The receipt keeps reason `unknown` (honest) but records the
+        // restart-recovery source (issue #2847).
         taskStore.terminateTask(latestTask.id, {
           reason: 'unknown',
           detail: 'all sessions died without a clean turn',
+        }, {
+          source: 'restart_recovery',
         });
         result.tasksTerminated.push(latestTask.id);
       }
@@ -433,6 +443,15 @@ export function reconcileStaleOpenLaunches(
           at: new Date().toISOString(),
         }).catch((err) => {
           console.error(`[disposition-ledger] failed to record entry for task ${task.id}:`, err);
+          // Terminal-state persistence failures must not block physical cleanup
+          // (issue #2847 AC): the task is already terminated with reason
+          // `server_restart`; record the ledger-write failure separately on the
+          // receipt so the original cause is preserved and the bookkeeping
+          // failure is auditable, not silently swallowed.
+          taskStore.recordTerminalBookkeepingError(
+            task.id,
+            `disposition-ledger write failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         });
       }
     } catch (err) {

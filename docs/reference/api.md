@@ -180,7 +180,10 @@ fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
 before its first session (issue #1588) or reaped while hung (issue #1559 — a
 `hung_reap` disposition whose `outcome` is `delivered_then_hung` when the reaped
-task had already merged its PR), a `suppressed` flag when applicable, and a
+task had already merged its PR), a `terminalReceipt` structured
+terminal-transition record on terminal tasks (issue #2847; typed reason +
+initiator + prior state + work disposition — legacy rows without one project to
+`unknown_legacy`), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
 `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
@@ -925,6 +928,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `POST /api/orchestration/pause` | Engage SAFE MODE and write the pause record (human or soft-quota) |
 | `POST /api/orchestration/resume` | Disengage SAFE MODE and close the current pause record |
 | `GET /api/diagnostics/launch-dependencies` | Returns `launch-dependency-diagnostics.v1`. Legacy `totalDegradedTasks`, `totalFindings`, `dependencies`, and `categories` retain their original all-finding semantics (including `unknown`); additive `totalConfirmedDegradedTasks` / `totalConfirmedFindings` distinguish confirmed degradation, while `totalUnknownTasks` / `totalUnknownFindings` distinguish collection uncertainty. Optional `dependencyStates` exposes live `healthy`/`degraded`/`unknown`/`half_open` circuit state, and `parkedTasks` lists dependency-blocked pending task IDs, dependencies, counts, and reasons. |
+| `GET /api/diagnostics/terminal-outcomes` | Returns `terminal-outcomes-diagnostics-route.v1` (issue #2847): a histogram of terminal-task outcomes over a bounded trailing window, from each task's structured terminal-transition receipt. `byReason` / `bySource` / `byStatus` / `byWorkDisposition` bucket the counts; legacy rows without a receipt count as `unknown_legacy`. `?windowMs=` or `?hours=` selects the window (default 24h, clamped to [1 minute, 30 days]). Pure in-memory read over the bounded task view — never scans transcripts. |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |

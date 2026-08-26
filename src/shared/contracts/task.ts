@@ -1,6 +1,7 @@
 import type { RalphLoopState } from './ralph.js';
 import type { AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
+import type { TaskStatus } from './task-status.js';
 
 export type AutomaticRelaunchSource =
   | 'crash-recovery'
@@ -296,6 +297,124 @@ export function isTerminatedAtLaunch(task: {
   const reason = task.disposition?.reason;
   if (reason === undefined) return false;
   return (PRE_SESSION_DISPOSITION_REASONS as readonly TaskDispositionReason[]).includes(reason);
+}
+
+/**
+ * Structured terminal-transition receipt (issue #2847).
+ *
+ * Before this, a task that ended non-successfully exposed only scattered,
+ * path-specific fields — `terminationReason` (terminated-only),
+ * `completionPath` (completed-only), `disposition` (prune/reap-only) — so an
+ * operator could not answer "who ended this task, why, and what became of the
+ * work?" from one read. Layer-3 reflection had to reconstruct that from
+ * timestamps and task names. The receipt records that answer once, at the
+ * lifecycle chokepoint (`TaskStore.transition`), for EVERY terminal move
+ * (completed / terminated / cancelled).
+ *
+ * It is additive and backward-compatible: a task persisted before this field
+ * existed reads back with no receipt, and the API/diagnostics classify such
+ * rows as {@link TerminalReasonCategory} `unknown_legacy` rather than inventing
+ * a cause. See {@link projectTerminalReceipt}.
+ */
+export interface TaskTerminalReceipt {
+  /** Terminal status this receipt was stamped for. */
+  status: 'completed' | 'terminated' | 'cancelled';
+  /**
+   * Typed WHY category. Never empty for a new receipt (`unknown` when the path
+   * genuinely could not classify it). `unknown_legacy` is reserved for rows
+   * synthesized at read time from a task that predates this field.
+   */
+  reason: TerminalReasonCategory;
+  /**
+   * WHO/WHAT drove the transition (initiator/path). `unknown` for a new
+   * transition whose caller supplied no source; `unknown_legacy` only for the
+   * synthesized legacy projection.
+   */
+  source: TerminalTransitionSource;
+  /** ISO-8601 timestamp of the terminal transition. */
+  at: string;
+  /**
+   * Lifecycle state immediately before this terminal transition. Absent only
+   * on the synthesized legacy projection, which cannot know the prior state.
+   */
+  priorState?: TaskStatus;
+  /**
+   * Correlated restart/recovery identifier when this transition belongs to a
+   * restart or crash-recovery batch (the server restart epoch). Lets a cohort
+   * of restart-terminated tasks be grouped and told apart from unrelated churn.
+   */
+  recoveryCorrelationId?: string;
+  /**
+   * What became of the work. `relaunched`/`recovered`/`superseded`/`abandoned`
+   * are set by the crash-recovery correlation pass; `completed` marks
+   * terminal-complete; `unknown` when not yet determined.
+   */
+  workDisposition: TerminalWorkDisposition;
+  /** Short operator-facing detail about the transition. */
+  detail?: string;
+  /**
+   * Set when a paired terminal-bookkeeping step (persistence flush, ledger or
+   * interaction-log append) failed AFTER the transition. Physical cleanup is
+   * never blocked on bookkeeping (issue #2847 AC): the original {@link reason}
+   * is preserved and the bookkeeping failure is recorded here, separately, so a
+   * write hiccup can never masquerade as the cause of termination.
+   */
+  bookkeepingError?: string;
+}
+
+/**
+ * Typed category of why a task reached a terminal status. Spans all three
+ * terminal outcomes (completed / terminated / cancelled), unlike
+ * {@link TerminationReason} which only classifies `terminated`.
+ */
+export type TerminalReasonCategory =
+  | 'completed_normal' // finished through the normal completion path
+  | 'completed_recovery' // completed by boot reconcile (clean-finish evidence)
+  | 'server_restart' // launcher died with the previous process (boot sweep)
+  | 'timeout' // reaped for exceeding a silence/hang threshold
+  | 'oom' // killed by the out-of-memory killer
+  | 'provider_failure' // provider/transport terminal error (provider_transient)
+  | 'launch_failure' // died before a session attached (launch_timeout/error)
+  | 'manual' // deliberately cancelled/terminated by an operator
+  | 'supervisor' // swept by a supervisor/batch/schedule controller
+  | 'unknown' // terminal, cause not classifiable by the transition
+  | 'unknown_legacy'; // synthesized for a row that predates the receipt
+
+/**
+ * Who/what drove a terminal transition (the initiator/path from issue #2847).
+ */
+export type TerminalTransitionSource =
+  | 'user' // operator via API / UI / CLI / websocket
+  | 'watchdog' // hung/silence reaper, TTL reclaim, force-reap
+  | 'restart_recovery' // boot reconcile / crash-recovery
+  | 'provider_admission' // provider admission gate rejected/killed the launch
+  | 'schedule' // schedule/sentinel runner
+  | 'task_self' // the task's own agent (self-signal, outbox drain, session death)
+  | 'supervisor' // supervisor/batch controller
+  | 'unknown' // new transition with no declared source
+  | 'unknown_legacy'; // synthesized for a row that predates the receipt
+
+/** What became of a task's work after it went terminal. */
+export type TerminalWorkDisposition =
+  | 'completed' // the work finished (terminal-complete)
+  | 'relaunched' // re-spawned by crash-recovery
+  | 'recovered' // resumed/continued elsewhere
+  | 'superseded' // demonstrably covered by another live/duplicate task
+  | 'abandoned' // no continuation; work not conserved
+  | 'unknown'; // not yet determined
+
+/**
+ * Caller-supplied provenance for a terminal transition. Every field is
+ * optional; {@link TaskStore.transition} fills sensible per-status defaults for
+ * anything omitted so a legacy call site still yields a non-empty typed
+ * receipt.
+ */
+export interface TerminalTransitionContext {
+  source?: TerminalTransitionSource;
+  reason?: TerminalReasonCategory;
+  recoveryCorrelationId?: string;
+  workDisposition?: TerminalWorkDisposition;
+  detail?: string;
 }
 
 export interface TaskLaunchHealthSummary {

@@ -317,6 +317,12 @@ export async function runStartupRecoveryPhase({
       console.error(`[crash-recovery] Failed ${sessionId}: ${error}`);
     }
 
+    // Correlate the terminal receipts of restart-terminated tasks with what
+    // crash-recovery decided (issue #2847): relaunched vs deliberately skipped,
+    // stamped with the restart epoch so a cohort is groupable. Runs regardless
+    // of whether the disposition ledger is configured.
+    correlateRecoveryReceipts(taskStore, recoveryResult, restartEpoch);
+
     await writeCrashRecoveryDispositions(recoveryResult, restartEpoch, dispositionLedgerPath);
 
     // Always retain the structured result so /api/health can project skip
@@ -500,6 +506,48 @@ function recordLatestConfirmedEvidence(
       dependency.dependency,
       Math.max(latestByDependency.get(dependency.dependency) ?? Number.NEGATIVE_INFINITY, confirmedAt),
     );
+  }
+}
+
+/**
+ * Patch the terminal receipt of every restart-terminated task with its
+ * crash-recovery outcome (issue #2847). `relaunched` for a re-spawned task,
+ * `superseded` for one covered by a live/duplicate/sibling session, `abandoned`
+ * for a deliberate non-resume (crash-loop, missing cwd, relaunch failure). The
+ * restart epoch is stamped as the recovery correlation id so a whole restart
+ * cohort can be grouped in diagnostics. No-op for a task without a receipt.
+ */
+function correlateRecoveryReceipts(
+  taskStore: TaskStore,
+  recoveryResult: CrashRecoveryResult,
+  restartEpoch: number,
+): void {
+  const recoveryCorrelationId = String(restartEpoch);
+  for (const relaunch of recoveryResult.relaunched) {
+    taskStore.recordRecoveryDisposition(relaunch.taskId, {
+      workDisposition: 'relaunched',
+      recoveryCorrelationId,
+    });
+  }
+  for (const skip of recoveryResult.skipped) {
+    const classification = classifyCrashRecoverySkip(skip.reason);
+    // A null classification means a SIBLING session already relaunched this
+    // same task in the relaunched loop above (a multi-session crash cohort
+    // produces one relaunch + one "already relaunched" skip for the same id).
+    // Skip it — same as the disposition-ledger writer — so we do not clobber
+    // the `relaunched` disposition with `superseded`.
+    if (!classification) continue;
+    const workDisposition = classification.kind === 'needs-human' ? 'abandoned' : 'superseded';
+    taskStore.recordRecoveryDisposition(skip.taskId, {
+      workDisposition,
+      recoveryCorrelationId,
+    });
+  }
+  for (const failure of recoveryResult.failed) {
+    taskStore.recordRecoveryDisposition(failure.taskId, {
+      workDisposition: 'abandoned',
+      recoveryCorrelationId,
+    });
   }
 }
 

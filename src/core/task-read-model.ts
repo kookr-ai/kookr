@@ -8,7 +8,7 @@ import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition, TaskTerminalReceipt } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -278,6 +278,21 @@ export interface Task {
    * Absent on tasks terminated before this field existed (treated as `unknown`).
    */
   terminationReason?: TerminationReason;
+  /**
+   * Structured terminal-transition receipt (issue #2847). Stamped at the
+   * lifecycle chokepoint ({@link TaskStore.transition}) on EVERY terminal move —
+   * completed, terminated, or cancelled — capturing typed reason + initiator,
+   * prior state, transition time, restart/recovery correlation, and what became
+   * of the work. Unifies the previously scattered `terminationReason` /
+   * `completionPath` / `disposition` signals into one queryable record.
+   *
+   * Absent on tasks persisted before this field existed; the API and diagnostics
+   * synthesize an explicit `unknown_legacy` receipt for those rather than
+   * guessing a cause (see `projectTerminalReceipt`). Kept as a durable historical
+   * record: a reopened task carries its last terminal receipt until it either
+   * re-terminates (overwrite) or is exposed (projection gates on current status).
+   */
+  terminalReceipt?: TaskTerminalReceipt;
   /** Killing OS signal when known (e.g. `SIGKILL`). See issue #1664. */
   terminationSignal?: string;
   /** Short free-text detail about the termination. See issue #1664. */

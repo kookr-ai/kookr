@@ -55,7 +55,11 @@ export async function expirePendingTasks(
   const expiredTaskIds: string[] = [];
   for (const { task, pendingForMs } of entries) {
     try {
-      deps.taskStore.cancelTask(task.id);
+      deps.taskStore.cancelTask(task.id, {
+        source: 'watchdog',
+        reason: 'timeout',
+        detail: 'pending-queue TTL reclaim',
+      });
     } catch (err) {
       // Raced a promoter or a user cancel — skip; the task is no longer
       // (only) pending, so it is somebody else's to finish.

@@ -2500,7 +2500,11 @@ function disposeUnacknowledgedTaskAfterPersistenceFailure(
       detail: `Required task-state persistence failed before launch: ${err instanceof Error ? err.message : String(err)}`,
     });
     try {
-      deps.taskStore.cancelTask(taskId);
+      deps.taskStore.cancelTask(taskId, {
+        source: 'provider_admission',
+        reason: 'launch_failure',
+        detail: 'task-state persistence failed before launch',
+      });
     } catch (cancelErr) {
       console.error(
         `[launch] failed to cancel task ${taskId} after persistence-barrier failure:`,

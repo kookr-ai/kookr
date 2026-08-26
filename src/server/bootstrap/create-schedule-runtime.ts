@@ -146,12 +146,20 @@ export function unwindCatchUpDuplicate(
     const task = taskStore.getTask(taskId);
     if (!task) return;
     if (task.status === 'pending') {
-      taskStore.cancelTask(taskId);
+      taskStore.cancelTask(taskId, {
+        source: 'schedule',
+        reason: 'supervisor',
+        workDisposition: 'superseded',
+        detail: `catch-up duplicate unwound — ${detail}`,
+      });
       return;
     }
     taskStore.terminateTask(taskId, {
       reason: 'supervisor',
       detail: `catch-up duplicate unwound — ${detail}`,
+    }, {
+      source: 'schedule',
+      workDisposition: 'superseded',
     });
   } catch (err) {
     console.error(`[schedule] Failed to unwind catch-up duplicate ${taskId}:`, err);
