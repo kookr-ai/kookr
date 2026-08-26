@@ -248,11 +248,12 @@ survives even if a concurrent terminal transition wins the work outcome.
 If timeout wins before the creation callback, the same exact preallocated
 marker and busy circuit remain durable with zero session rows; a late callback
 links and reaps that session before reconciliation can settle the owner.
-Runtime reconciliation or startup releases this cleanup-only fence only after
-physical absence is proven. Terminal transitions also retain an exact marker
-briefly after a proven stop so reconciliation can atomically settle the
-process-local circuit, so `probing` alone does not mean a worker is live or
-uncertain. Explicit deletion returns `409 task_cleanup_in_progress`, bulk
+When owner-controlled cleanup proves physical absence, it settles the circuit
+and clears a terminal task's marker immediately. If cleanup, creation, or
+circuit settlement remains unresolved, runtime reconciliation or startup
+releases the retained fence only after physical absence is proven. Thus
+`probing` alone does not mean a worker is live or uncertain. Explicit deletion
+returns `409 task_cleanup_in_progress`, bulk
 deletion/pruning skip these cleanup owners, and reopen is refused until
 settlement. A live
 reconciled probe clears its marker as successful unless confirmed degradation
