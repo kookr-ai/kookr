@@ -51,6 +51,17 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args).toContain('--settings');
   });
 
+  test('aborted launch signal after session create skips addSession and kills the session', async () => {
+    const abort = new AbortController();
+    const task = taskStore.createTask('Fix auth bug', '/home/user/project');
+    await expect(adapter.launch(task.id, 'Fix auth bug', '/home/user/project', undefined, {
+      onSessionCreated: () => abort.abort(),
+      signal: abort.signal,
+    })).rejects.toThrow(/Launch cancelled after session/);
+    expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
+    expect(await backend.isAlive([...backend.sessions.keys()][0]!)).toBe(false);
+  });
+
   test('launch delivers a large initial prompt through stdin instead of argv', async () => {
     const largePrompt = 'x'.repeat(200_000);
     const task = taskStore.createTask(largePrompt, '/workspace/project');

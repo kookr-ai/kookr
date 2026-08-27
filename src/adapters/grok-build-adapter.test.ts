@@ -125,6 +125,18 @@ describe('GrokBuildAdapter', () => {
     expect(timeline.indexOf('session-created')).toBeLessThan(timeline.indexOf('phase:agent-boot'));
   });
 
+  test('aborted launch signal after session create skips addSession and kills the session', async () => {
+    const adapter = makeAdapter();
+    const abort = new AbortController();
+    const task = taskStore.createTask('do it', '/workspace');
+    await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, {
+      onSessionCreated: () => abort.abort(),
+      signal: abort.signal,
+    })).rejects.toThrow(/Launch cancelled after session/);
+    expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
+    expect(await backend.isAlive([...backend.sessions.keys()][0]!)).toBe(false);
+  });
+
   test('launch env is allowlisted: GROK_HOME set, shared GROK_AUTH_PATH, server secrets excluded', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');

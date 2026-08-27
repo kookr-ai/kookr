@@ -60,6 +60,18 @@ export class SessionRegistry {
     ) {
       throw new Error(`Cannot attach session to dependency-parked task ${taskId}`);
     }
+    // A timed-out launch may record the session as aborted (or live-looking
+    // while stop is in flight) before the adapter reaches `addSession`.
+    // Refusing the same id prevents a late ack from attaching a live duplicate
+    // onto a still-non-terminal task (Ralph / fresh-session relaunch).
+    const existing = task.sessions.find((s) => s.tmuxSession === session.tmuxSession);
+    if (existing) {
+      throw new Error(
+        existing.lastStatus === 'aborted'
+          ? `Cannot attach aborted session ${session.tmuxSession} to task ${taskId}`
+          : `Session ${session.tmuxSession} is already attached to task ${taskId}`,
+      );
+    }
     // The launch this reservation guarded has landed.
     this.host.onSessionAttached(taskId);
     // Detection funnel (#700 audit item 2): every attach path crosses here.

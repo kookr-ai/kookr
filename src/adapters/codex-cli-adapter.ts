@@ -38,6 +38,7 @@ import {
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { LaunchAbortedError, throwIfLaunchAborted } from './launch-abort.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
@@ -552,6 +553,7 @@ export class CodexCliAdapter implements AgentAdapter {
       // the last argv entry (codex treats a trailing bare arg as the prompt).
       args.push(prompt);
     }
+    throwIfLaunchAborted(opts?.signal);
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,
@@ -564,6 +566,14 @@ export class CodexCliAdapter implements AgentAdapter {
     // launch (top-level launch timeout) can link and reap it instead of leaving
     // it unowned for up to 24h. `addSession` below only runs at `ack`.
     opts?.onSessionCreated?.(tmuxName);
+    if (opts?.signal?.aborted) {
+      try {
+        await this.backend.killSession(tmuxName);
+      } catch {
+        // Preserve the abort as the launch failure; backend errors are secondary.
+      }
+      throw new LaunchAbortedError(tmuxName);
+    }
     // Phase instrumentation (issue #1589): Codex folds the initial prompt into
     // its startup argv (--prompt-file / positional), so there is no separate
     // terminal delivery loop — agent-boot and ack collapse onto session start.

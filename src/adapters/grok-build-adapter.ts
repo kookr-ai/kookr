@@ -23,6 +23,7 @@ import type {
   PreflightResult,
   ResumeContext,
 } from './agent-adapter.js';
+import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import {
   childSessionStorageKey,
@@ -606,6 +607,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     const sessionStarted = this.armSessionStartSignal(tmuxName);
     const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
 
+    throwIfLaunchAborted(opts?.signal);
     await this.backend.createSession({
       id: tmuxName,
       command: state.identity.canonicalPath,
@@ -621,6 +623,10 @@ export class GrokBuildAdapter implements AgentAdapter {
     // reap this master instead of leaving it unowned for up to 24h. Reported
     // before agent-boot because that phase is exactly where the leak happened.
     opts?.onSessionCreated?.(tmuxName);
+    if (opts?.signal?.aborted) {
+      await this.cleanupFailedLaunch(tmuxName);
+      throw new LaunchAbortedError(tmuxName);
+    }
 
     // Phase instrumentation (issue #1589): agent-boot covers Grok's TUI
     // readiness wait (waitForReadyOrAbort polls up to promptReadyTimeoutMs) and
@@ -630,12 +636,17 @@ export class GrokBuildAdapter implements AgentAdapter {
     // delivery — raced against agentBootTimeoutMs (issue #1642) so a
     // hung/blocked launch (blocking startup UI, or a wedged terminal
     // capture) fails fast instead of holding POST /api/tasks open for up to
-    // the 180s top-level launch timeout.
+    // the 180s top-level launch timeout. Also bound to the top-level launch
+    // AbortSignal so a launch timeout cancels prompt delivery immediately.
     try {
-      await raceWithDeadline(
-        this.runAgentBootSequence(tmuxName, prompt, submitConfirmed, sessionStarted),
-        this.agentBootTimeoutMs,
-        () => new GrokAgentBootTimeoutError(taskId, tmuxName, this.agentBootTimeoutMs),
+      await raceAgainstLaunchAbort(
+        raceWithDeadline(
+          this.runAgentBootSequence(tmuxName, prompt, submitConfirmed, sessionStarted),
+          this.agentBootTimeoutMs,
+          () => new GrokAgentBootTimeoutError(taskId, tmuxName, this.agentBootTimeoutMs),
+        ),
+        opts?.signal,
+        tmuxName,
       );
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
@@ -645,6 +656,10 @@ export class GrokBuildAdapter implements AgentAdapter {
       this.sessionStartResolvers.delete(tmuxName);
     }
 
+    if (opts?.signal?.aborted) {
+      await this.cleanupFailedLaunch(tmuxName);
+      throw new LaunchAbortedError(tmuxName);
+    }
     // Phase instrumentation (issue #1589): ack — Grok acknowledged the prompt.
     opts?.onPhase?.('ack');
     this.taskStore.addSession(taskId, {

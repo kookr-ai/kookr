@@ -115,6 +115,13 @@ export interface AdapterLaunchOptions {
    * as before. The launch service's callback never throws back into the adapter.
    */
   onSessionCreated?: (sessionId: string) => void;
+  /**
+   * Cooperative cancellation for this launch (issue #2766). The launch-timeout
+   * race aborts the signal when the configured ceiling expires. Adapters MUST
+   * check it around `createSession` and prompt delivery, and MUST NOT call
+   * `addSession` after it has fired — stop/cleanup the terminal instead.
+   */
+  signal?: AbortSignal;
 }
 
 /**

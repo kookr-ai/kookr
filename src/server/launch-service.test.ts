@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -5121,5 +5121,154 @@ describe('launchTask relaunch arbiter + hard lease gate (issue #1711)', () => {
     expect(isIssueClaimLeaseRequiredError(denied)).toBe(false);
     expect(denied.code).toBe('relaunch_denied');
     expect(lease.code).toBe('issue_claim_lease_required');
+  });
+});
+
+describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    deps = makeDeps(store);
+  });
+
+  function existingTask(prompt = 'iterate') {
+    const task = store.createTask(prompt, '/tmp');
+    store.startTask(task.id);
+    return store.getTask(task.id)!;
+  }
+
+  it('resolves a healthy relaunch and registers the agent', async () => {
+    const task = existingTask();
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (taskId: string, _prompt: string, cwd: string, _resume: unknown, opts: { onSessionCreated?: (id: string) => void }) => {
+        opts.onSessionCreated?.('tmux-claude');
+        store.addSession(taskId, {
+          tmuxSession: 'tmux-claude',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'tmux-claude';
+      },
+    );
+    const sessionId = await launchFreshTaskSession(deps, task, 'continue');
+    expect(sessionId).toBe('tmux-claude');
+    expect(deps.lifecycleDeps.monitor.registerAgent).toHaveBeenCalledWith('tmux-claude');
+    expect(store.getTask(task.id)?.status).toBe('inProgress');
+    expect(adapter.stop).not.toHaveBeenCalled();
+  });
+
+  it('passes caller tmuxName/extraEnv and a launch abort signal to the adapter', async () => {
+    const task = existingTask();
+    await launchFreshTaskSession(deps, task, 'continue', {
+      tmuxName: 'kookr-ralph-iter',
+      extraEnv: { RALPH_ITERATION: '2' },
+    });
+    const adapter = deps.adapterRegistry.get('claude-code');
+    expect(adapter.launch).toHaveBeenCalledWith(
+      task.id,
+      'continue',
+      '/tmp',
+      undefined,
+      expect.objectContaining({
+        tmuxName: 'kookr-ralph-iter',
+        extraEnv: { RALPH_ITERATION: '2' },
+        signal: expect.any(AbortSignal),
+        onSessionCreated: expect.any(Function),
+      }),
+    );
+  });
+
+  it('a never-settling relaunch rejects with LaunchTimeoutError and leaves the existing task in place', async () => {
+    const task = existingTask();
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>(() => undefined),
+    );
+    deps.getLaunchTimeoutMs = () => 20;
+
+    await expect(launchFreshTaskSession(deps, task, 'continue'))
+      .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    const live = store.getTask(task.id);
+    expect(live?.status).toBe('inProgress');
+    expect(live?.disposition).toBeUndefined();
+    expect(adapter.stop).not.toHaveBeenCalled();
+  });
+
+  it('reaps a session created before the timeout and records it aborted (not live)', async () => {
+    const task = existingTask();
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: { onSessionCreated?: (id: string) => void; signal?: AbortSignal }) => {
+        opts.onSessionCreated?.('kookr-fresh-created');
+        expect(opts.signal?.aborted).toBe(false);
+        return new Promise<string>(() => undefined);
+      },
+    );
+    deps.getLaunchTimeoutMs = () => 20;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(launchFreshTaskSession(deps, task, 'continue'))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('kookr-fresh-created');
+      });
+      const live = store.getTask(task.id)!;
+      expect(live.status).toBe('inProgress');
+      const recorded = live.sessions.find((s) => s.tmuxSession === 'kookr-fresh-created');
+      expect(recorded).toBeDefined();
+      expect(recorded?.lastStatus).toBe('aborted');
+      expect(() => store.addSession(task.id, {
+        tmuxSession: 'kookr-fresh-created',
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date(),
+      })).toThrow(/aborted session|already attached/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('late completion after timeout stops the session and does not leave a live owned session', async () => {
+    const task = existingTask();
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let resolveLate!: (sessionId: string) => void;
+    let launchOpts: { onSessionCreated?: (id: string) => void; signal?: AbortSignal } | undefined;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: { onSessionCreated?: (id: string) => void; signal?: AbortSignal }) => {
+        launchOpts = opts;
+        return new Promise<string>((resolve) => { resolveLate = resolve; });
+      },
+    );
+    deps.getLaunchTimeoutMs = () => 20;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(launchFreshTaskSession(deps, task, 'continue'))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      expect(launchOpts?.signal?.aborted).toBe(true);
+
+      launchOpts?.onSessionCreated?.('kookr-fresh-late');
+      resolveLate('kookr-fresh-late');
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('kookr-fresh-late');
+        expect(store.getTask(task.id)?.sessions.find((s) => s.tmuxSession === 'kookr-fresh-late')?.lastStatus)
+          .toBe('aborted');
+      });
+
+      const live = store.getTask(task.id)!;
+      expect(live.status).toBe('inProgress');
+      const recorded = live.sessions.find((s) => s.tmuxSession === 'kookr-fresh-late');
+      expect(recorded?.lastStatus).toBe('aborted');
+      expect(live.sessions.filter((s) => s.lastStatus !== 'aborted' && s.lastStatus !== 'completed')).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

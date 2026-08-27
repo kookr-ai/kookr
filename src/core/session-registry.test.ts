@@ -103,6 +103,26 @@ describe('SessionRegistry', () => {
     );
   });
 
+  test('addSession refuses a session id already recorded as aborted', () => {
+    host.put(makeTask({ id: 't1', status: 'inProgress' }));
+    registry.recordAbandonedLaunchSession('t1', makeSession('kookr-abandoned'));
+    expect(() => registry.addSession('t1', makeSession('kookr-abandoned'))).toThrow(
+      /Cannot attach aborted session kookr-abandoned/,
+    );
+    expect(host.getTask('t1')!.sessions).toHaveLength(1);
+    expect(host.getTask('t1')!.sessions[0]!.lastStatus).toBe('aborted');
+    expect(host.attached).toEqual([]);
+  });
+
+  test('addSession refuses a duplicate live session id', () => {
+    host.put(makeTask({ id: 't1', status: 'inProgress' }));
+    registry.addSession('t1', makeSession('kookr-live'));
+    expect(() => registry.addSession('t1', makeSession('kookr-live'))).toThrow(
+      /Session kookr-live is already attached/,
+    );
+    expect(host.getTask('t1')!.sessions).toHaveLength(1);
+  });
+
   test('addSession logs duplicate not-known-dead sessions but still attaches', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     host.put(makeTask({ id: 't1', status: 'inProgress' }));

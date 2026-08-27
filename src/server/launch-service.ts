@@ -1886,6 +1886,7 @@ async function launchTaskCore(
     sessionId: undefined,
     reaped: false,
   };
+  const launchAbort = new AbortController();
   const linkAndReapAbandonedSession = (sessionId: string): void => {
     // Link first (terminal-safe, idempotent) so the reaper owns the master as a
     // `terminal-task-leak` (60s) even if the async kill below races a sweep,
@@ -1960,6 +1961,7 @@ async function launchTaskCore(
     : undefined;
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
+    signal: launchAbort.signal,
     onSessionCreated: (sessionId) => {
       abandon.sessionId = sessionId;
       // Late creation: the launch was already abandoned when the master came up
@@ -2067,7 +2069,7 @@ async function launchTaskCore(
     await raceLaunchAgainstTimeout(
       adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
       resolveLaunchTimeoutMs(deps),
-      { taskId: task.id, agentType, adapter, reapGuard: abandon },
+      { taskId: task.id, agentType, adapter, reapGuard: abandon, abort: launchAbort },
     );
   } catch (err) {
     if (dependencyAdmissionDecision?.admit && dependencyAdmissionDecision.probe) {
@@ -2545,6 +2547,11 @@ async function collectAdvisoryDependencyFindings(
  * drain's contract is that already-running agents and in-flight work run to
  * completion. The cordon is enforced on {@link launchTask} (new-task creation)
  * and on the scheduler, not here.
+ *
+ * Bounded by the same `launchTimeoutSeconds` race as a fresh launch (issue
+ * #2766). A timeout aborts adapter session-create/prompt-delivery, reaps any
+ * session already created, and refuses a late `addSession` — the existing task
+ * is left in place so Ralph retry semantics stay unchanged.
  */
 export async function launchFreshTaskSession(
   deps: LaunchServiceDeps,
@@ -2564,19 +2571,95 @@ export async function launchFreshTaskSession(
     throw new Error(`Automatic Ralph relaunch refused for task ${task.id}: ${intent.detail}`);
   }
   const pins = launchIntentPins(intent.intent);
-  const { effort: _ignoredEffort, model: _ignoredModel, ...callerOpts } = opts ?? {};
-  const sessionId = await deps.adapterRegistry.get(task.agentType).launch(
-    task.id,
-    prompt,
-    task.cwd,
-    undefined,
-    {
-      ...callerOpts,
-      ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
-      ...(pins.model !== undefined ? { model: pins.model } : {}),
-    },
-  );
-  const launchedTask = deps.taskStore.getTask(task.id) ?? task;
-  await registerNewAgent(launchedTask, deps.lifecycleDeps);
-  return sessionId;
+  const {
+    effort: _ignoredEffort,
+    model: _ignoredModel,
+    onSessionCreated: callerOnSessionCreated,
+    signal: callerSignal,
+    ...callerOpts
+  } = opts ?? {};
+  const adapter = deps.adapterRegistry.get(task.agentType);
+  const launchAbort = new AbortController();
+  const abandon: LaunchReapGuard = { reaped: false };
+  const signal = callerSignal
+    ? AbortSignal.any([launchAbort.signal, callerSignal])
+    : launchAbort.signal;
+
+  const linkAndReapAbandonedSession = (sessionId: string): void => {
+    try {
+      deps.taskStore.recordAbandonedLaunchSession(task.id, {
+        tmuxSession: sessionId,
+        agentType: task.agentType,
+        cwd: task.cwd,
+        createdAt: new Date(),
+      });
+      deps.taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
+    } catch (linkErr) {
+      console.warn(
+        `[launch] failed to link abandoned fresh-session ${sessionId} to task ${task.id}: ` +
+        `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
+      );
+    }
+    void reapLaunchSession(abandon, adapter, task.agentType, task.id, sessionId).then(
+      () => {
+        try {
+          deps.taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+        } catch {
+          // Bookkeeping may race a concurrent task purge after proven stop.
+        }
+      },
+      (stopErr) => {
+        console.warn(
+          `[launch] failed to reap abandoned fresh-session ${sessionId} for task ${task.id}: ` +
+          `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+        );
+      },
+    );
+  };
+
+  try {
+    const sessionId = await raceLaunchAgainstTimeout(
+      adapter.launch(
+        task.id,
+        prompt,
+        task.cwd,
+        undefined,
+        {
+          ...callerOpts,
+          ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+          ...(pins.model !== undefined ? { model: pins.model } : {}),
+          signal,
+          onSessionCreated: (sessionId) => {
+            try {
+              callerOnSessionCreated?.(sessionId);
+            } catch (err) {
+              console.warn(
+                `[launch] caller onSessionCreated failed for fresh-session ${sessionId}: ` +
+                `${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            abandon.sessionId = sessionId;
+            if (abandon.timedOut) linkAndReapAbandonedSession(sessionId);
+          },
+        },
+      ),
+      resolveLaunchTimeoutMs(deps),
+      {
+        taskId: task.id,
+        agentType: task.agentType,
+        adapter,
+        reapGuard: abandon,
+        reapKnownSessionOnTimeout: true,
+        abort: launchAbort,
+      },
+    );
+    const launchedTask = deps.taskStore.getTask(task.id) ?? task;
+    await registerNewAgent(launchedTask, deps.lifecycleDeps);
+    return sessionId;
+  } catch (err) {
+    if (!launchAbort.signal.aborted) launchAbort.abort();
+    abandon.timedOut = true;
+    if (abandon.sessionId) linkAndReapAbandonedSession(abandon.sessionId);
+    throw err;
+  }
 }
