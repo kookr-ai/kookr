@@ -33,7 +33,6 @@ const STATUS_JSON_MAX_STRING_BYTES = 4 * 1024;
 /** Named collections that may be shortened so the envelope stays under budget. */
 const STATUS_JSON_COLLECTIONS = [
   { name: 'agents', path: ['agents'] },
-  { name: 'snapshot', path: ['snapshot'] },
   { name: 'findings', path: ['summary', 'findings'] },
 ];
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
@@ -43,13 +42,16 @@ Usage:
   kookr-status [--json] [--fail-on <critical|warning|info|none>]        Deprecated compatibility alias.
 
 Options:
-  --json                    Print one machine-readable JSON envelope to stdout.
+  --json                    Print one complete machine-readable JSON envelope to stdout.
+                            Large fleets are bounded structurally at 80 KiB.
   --fail-on <severity>      Exit ${FINDINGS_EXIT_CODE} when active findings meet or exceed
                             critical, warning, info, or none.
   -h, --help                Show this help.
 
 Environment:
-  KOOKR_PORT          Specific port on 127.0.0.1.
+  KOOKR_PORT                     Specific port on 127.0.0.1.
+  KOOKR_STATUS_JSON_MAX_BYTES    Max serialized size of --json output
+                                 (default: 81920 / 80 KiB).
 `;
 
 // Issue #708: a non-loopback server requires a bearer token. kookr-status only

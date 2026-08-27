@@ -3909,6 +3909,9 @@ describe('kookr-status main (integration-style)', () => {
     const envelope = JSON.parse(raw);
     expect(Buffer.byteLength(raw, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_BYTES);
     expect(envelope.ok).toBe(true);
+    expect(envelope.code).toBe('OK');
+    expect(typeof envelope.message).toBe('string');
+    expect(envelope.message.length).toBeGreaterThan(0);
     expect(envelope.details.summary.statusCounts).toEqual({ inProgress: 100, completed: 300 });
     expect(envelope.details.health.capacity.pendingQueueDepth).toBe(7);
     expect(envelope.details.health.attentionQueue.activeFindingDepth).toBe(4);
@@ -4451,8 +4454,11 @@ describe('kookr-status boundStatusJson (issue #2846)', () => {
     expect(() => JSON.parse(serialized)).not.toThrow();
     expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_BYTES);
     const description = (bounded.details as { agents: Array<{ description: string }> }).agents[0].description;
+    expect(description.startsWith('huge-')).toBe(true);
+    expect(Buffer.byteLength(description, 'utf8')).toBeGreaterThan(STATUS_JSON_MAX_STRING_BYTES - 8);
     expect(Buffer.byteLength(description, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_STRING_BYTES);
     expect(description.includes('\uFFFD')).toBe(false);
+    expect((bounded.details as { agents: unknown[] }).agents).toHaveLength(1);
   });
 
   it('reports findings truncation with original and returned counts', () => {
@@ -4484,7 +4490,21 @@ describe('kookr-status boundStatusJson (issue #2846)', () => {
 
   it('defaults KOOKR_STATUS_JSON_MAX_BYTES to 80 KiB and accepts a positive override', () => {
     expect(resolveStatusJsonMaxBytes({})).toBe(STATUS_JSON_MAX_BYTES);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '' })).toBe(STATUS_JSON_MAX_BYTES);
     expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '4096' })).toBe(4096);
     expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: 'nope' })).toBe(STATUS_JSON_MAX_BYTES);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '0' })).toBe(STATUS_JSON_MAX_BYTES);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '-1' })).toBe(STATUS_JSON_MAX_BYTES);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '80.5' })).toBe(STATUS_JSON_MAX_BYTES);
+  });
+
+  it('does not emit truncation metadata for an empty agents collection', () => {
+    const bounded = boundStatusJson(statusEnvelope([]), { maxBytes: 8 * 1024 });
+    expect(bounded.details?.truncation).toBeUndefined();
+    expect(bounded.details?.agents).toEqual([]);
+    expect(bounded.details).toMatchObject({
+      summary: { statusCounts: { inProgress: 0, completed: 0 }, totalCost: 12.5 },
+      health: { capacity: { pendingQueueDepth: 7 } },
+    });
   });
 });
