@@ -19,9 +19,10 @@
  * audit rows, and launches (reusing starvation scout/batch helpers).
  */
 
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { atomicWriteFile } from '../core/persistence-utils.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import {
   decideCriticalScheduleRearm,
@@ -573,15 +574,7 @@ async function saveKickState(
 ): Promise<void> {
   const path = kickStatePath(stateDir, state.repo);
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  let renamed = false;
-  try {
-    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
-    await rename(tmp, path);
-    renamed = true;
-  } finally {
-    if (!renamed) {
-      try { await unlink(tmp); } catch { /* best-effort temp cleanup */ }
-    }
-  }
+  // lastKickScoutTaskId is operator-private — match sibling secret stores
+  // (settings.json, share-grants) with owner-only mode via fchmod after umask.
+  await atomicWriteFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
 }
