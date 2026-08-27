@@ -26,4 +26,20 @@ describe('launch abort helpers', () => {
     abort.abort();
     await expect(raced).rejects.toBeInstanceOf(LaunchAbortedError);
   });
+
+  test('raceAgainstLaunchAbort swallows an already-started work promise when the signal is already aborted', async () => {
+    const abort = new AbortController();
+    abort.abort();
+    let rejected = false;
+    const work = Promise.reject(new Error('delivery failed after abort'));
+    work.catch(() => { rejected = true; });
+    await expect(raceAgainstLaunchAbort(work, abort.signal, 'kookr-z'))
+      .rejects.toBeInstanceOf(LaunchAbortedError);
+    await Promise.resolve();
+    expect(rejected).toBe(true);
+  });
+
+  test('raceAgainstLaunchAbort returns the work unchanged when no signal is provided', async () => {
+    await expect(raceAgainstLaunchAbort(Promise.resolve('ok'), undefined)).resolves.toBe('ok');
+  });
 });

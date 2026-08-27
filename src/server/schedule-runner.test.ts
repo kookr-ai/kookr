@@ -2532,7 +2532,7 @@ Do the thing.
     });
 
     const timeoutError = Object.assign(
-      new Error('Agent launch timed out after 180s (agent claude-code, task t1) — launch abandoned and task cleaned up'),
+      new Error('Agent launch timed out after 180s (agent claude-code, task t1) — launch abandoned'),
       { name: 'LaunchTimeoutError', code: 'launch_timeout' },
     );
     const runner = new ScheduleRunner({

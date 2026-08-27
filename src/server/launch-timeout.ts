@@ -17,7 +17,7 @@ export class LaunchTimeoutError extends Error {
   constructor(agentType: string, taskId: string, timeoutMs: number) {
     super(
       `Agent launch timed out after ${Math.round(timeoutMs / 1000)}s ` +
-      `(agent ${agentType}, task ${taskId}) — launch abandoned and task cleaned up`,
+      `(agent ${agentType}, task ${taskId}) — launch abandoned`,
     );
     this.name = 'LaunchTimeoutError';
   }

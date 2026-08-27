@@ -203,6 +203,24 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
     }
   });
 
+  test('an aborted launch signal after session create skips addSession and kills the session', async () => {
+    const { registry, backends, stores } = buildRegistry(adapterCases());
+    for (const adapter of registry.getAll()) {
+      const backend = backends.get(adapter.agentType)!;
+      const taskStore = stores.get(adapter.agentType)!;
+      const task = taskStore.createTask('do it', '/workspace');
+      const abort = new AbortController();
+      let createdId = '';
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, {
+        onSessionCreated: (id) => { createdId = id; abort.abort(); },
+        signal: abort.signal,
+      }), `${adapter.agentType} must honor opts.signal`).rejects.toThrow(/Launch cancelled after session/);
+      expect(taskStore.getTask(task.id)!.sessions, `${adapter.agentType} must not addSession after abort`).toHaveLength(0);
+      expect(createdId).toMatch(/^kookr-/);
+      expect(await backend.isAlive(createdId), `${adapter.agentType} must kill the created session`).toBe(false);
+    }
+  });
+
   test('a per-call bypassPermissions override reaches the launch argv', async () => {
     const cases = adapterCases();
     const { registry, backends, stores } = buildRegistry(cases);

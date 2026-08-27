@@ -567,11 +567,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // it unowned for up to 24h. `addSession` below only runs at `ack`.
     opts?.onSessionCreated?.(tmuxName);
     if (opts?.signal?.aborted) {
-      try {
-        await this.backend.killSession(tmuxName);
-      } catch {
-        // Preserve the abort as the launch failure; backend errors are secondary.
-      }
+      await this.stop(tmuxName).catch(() => undefined);
       throw new LaunchAbortedError(tmuxName);
     }
     // Phase instrumentation (issue #1589): Codex folds the initial prompt into

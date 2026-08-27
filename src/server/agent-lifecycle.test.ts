@@ -2833,6 +2833,13 @@ describe('promotePendingTasks (integration)', () => {
           .toBe('aborted');
       });
 
+      expect(() => taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-promo-late',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      })).toThrow(/Cannot attach aborted session kookr-promo-late|terminal task/);
+
       const cancelled = taskStore.getTask(task.id);
       expect(cancelled?.status).toBe('cancelled');
       expect(cancelled?.sessions.find((session) => session.tmuxSession === 'kookr-promo-late')?.lastStatus)

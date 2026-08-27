@@ -38,7 +38,10 @@ export async function raceAgainstLaunchAbort<T>(
   sessionId?: string,
 ): Promise<T> {
   if (!signal) return work;
-  throwIfLaunchAborted(signal, sessionId);
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    throw new LaunchAbortedError(sessionId);
+  }
   return await new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new LaunchAbortedError(sessionId));
     signal.addEventListener('abort', onAbort, { once: true });

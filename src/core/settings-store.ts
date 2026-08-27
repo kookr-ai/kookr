@@ -173,13 +173,13 @@ export interface KookrSettings {
   hungTaskReapGraceSeconds: number;
   /**
    * Hard ceiling (seconds) on a single adapter launch (issue #1526 Phase C /
-   * #1528). `launchTaskCore` races `adapter.launch()` against this timeout;
-   * on expiry the launch is failed with `LaunchTimeoutError`, the task record
-   * is deleted and its launch reservation released — so a wedged
-   * launcher (e.g. the 2026-07-25 CPU-saturation hang) can never hold a
-   * capacity slot and a schedule's `reserved` execution for hours. Read via a
-   * live getter, so a settings change applies to the next launch without a
-   * restart.
+   * #1528, #2766). Fresh launches, pending promotion, and Ralph
+   * `launchFreshTaskSession` relaunches race `adapter.launch()` against this
+   * timeout and abort a shared AbortSignal so adapters stop session-create
+   * and prompt delivery. On expiry the launch fails with `LaunchTimeoutError`.
+   * New-task launches dispose the task and release its reservation; a Ralph
+   * relaunch leaves the existing task in place. Read via a live getter, so a
+   * settings change applies to the next launch without a restart.
    */
   launchTimeoutSeconds: number;
   /**

@@ -5229,7 +5229,7 @@ describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => 
         agentType: 'claude-code',
         cwd: '/tmp',
         createdAt: new Date(),
-      })).toThrow(/aborted session|already attached/);
+      })).toThrow(/Cannot attach aborted session kookr-fresh-created/);
     } finally {
       warnSpy.mockRestore();
     }
@@ -5262,6 +5262,13 @@ describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => 
           .toBe('aborted');
       });
 
+      expect(() => store.addSession(task.id, {
+        tmuxSession: 'kookr-fresh-late',
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date(),
+      })).toThrow(/Cannot attach aborted session kookr-fresh-late/);
+
       const live = store.getTask(task.id)!;
       expect(live.status).toBe('inProgress');
       const recorded = live.sessions.find((s) => s.tmuxSession === 'kookr-fresh-late');
@@ -5269,6 +5276,40 @@ describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => 
       expect(live.sessions.filter((s) => s.lastStatus !== 'aborted' && s.lastStatus !== 'completed')).toHaveLength(0);
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  it('a post-attach registration failure does not reap a live fresh-session', async () => {
+    const task = existingTask();
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (taskId: string, _prompt: string, cwd: string, _resume: unknown, opts: { onSessionCreated?: (id: string) => void }) => {
+        opts.onSessionCreated?.('tmux-claude');
+        store.addSession(taskId, {
+          tmuxSession: 'tmux-claude',
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return 'tmux-claude';
+      },
+    );
+    deps.lifecycleDeps = {
+      ...deps.lifecycleDeps,
+      interactionLog: { append: vi.fn().mockRejectedValue(new Error('audit disk full')) } as any,
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      await expect(launchFreshTaskSession(deps, task, 'continue')).resolves.toBe('tmux-claude');
+      expect(adapter.stop).not.toHaveBeenCalled();
+      expect(store.getTask(task.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: [expect.objectContaining({ tmuxSession: 'tmux-claude' })],
+      });
+      expect(store.getTask(task.id)?.sessions[0]?.lastStatus).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 });

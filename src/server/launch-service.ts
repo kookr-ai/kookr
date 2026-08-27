@@ -2654,7 +2654,14 @@ export async function launchFreshTaskSession(
       },
     );
     const launchedTask = deps.taskStore.getTask(task.id) ?? task;
-    await registerNewAgent(launchedTask, deps.lifecycleDeps);
+    try {
+      await registerNewAgent(launchedTask, deps.lifecycleDeps);
+    } catch (registrationErr) {
+      console.error(
+        `[launch] Post-launch registration failed for live fresh-session task ${task.id}:`,
+        registrationErr instanceof Error ? registrationErr.message : registrationErr,
+      );
+    }
     return sessionId;
   } catch (err) {
     if (!launchAbort.signal.aborted) launchAbort.abort();
