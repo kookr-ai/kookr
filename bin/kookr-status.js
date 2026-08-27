@@ -1552,30 +1552,50 @@ function boundStatusJson(envelope, options = {}) {
 
   /** @type {Record<string, { truncated: true, originalCount: number, returnedCount: number }>} */
   const truncation = {};
+  /** @type {Map<string, unknown[]>} */
+  const originals = new Map();
+  const bindCollection = (spec, originalCount) => (sliced) => {
+    setPath(details, spec.path, sliced);
+    if (sliced.length < originalCount) {
+      truncation[spec.name] = {
+        truncated: true,
+        originalCount,
+        returnedCount: sliced.length,
+      };
+      details.truncation = truncation;
+    } else {
+      delete truncation[spec.name];
+      if (Object.keys(truncation).length === 0) delete details.truncation;
+      else details.truncation = truncation;
+    }
+    return next;
+  };
+
+  const present = [];
   for (const spec of STATUS_JSON_COLLECTIONS) {
-    if (jsonBytes(next) <= maxBytes) break;
     const items = getPath(details, spec.path);
     if (!Array.isArray(items) || items.length === 0) continue;
-    const originalCount = items.length;
-    const apply = (sliced) => {
-      setPath(details, spec.path, sliced);
-      if (sliced.length < originalCount) {
-        truncation[spec.name] = {
-          truncated: true,
-          originalCount,
-          returnedCount: sliced.length,
-        };
-        details.truncation = truncation;
-      } else {
-        delete truncation[spec.name];
-        if (Object.keys(truncation).length === 0) delete details.truncation;
-        else details.truncation = truncation;
-      }
-      return next;
-    };
-    truncation[spec.name] = { truncated: true, originalCount, returnedCount: 0 };
+    originals.set(spec.name, items);
+    present.push({ spec, items, size: jsonBytes(items) });
+  }
+  present.sort((a, b) => b.size - a.size);
+
+  // Shrink the currently largest collection first so a findings overflow
+  // cannot wipe a small agents list (or vice versa).
+  for (const { spec, items } of present) {
+    if (jsonBytes(next) <= maxBytes) break;
+    const apply = bindCollection(spec, items.length);
+    truncation[spec.name] = { truncated: true, originalCount: items.length, returnedCount: 0 };
     details.truncation = truncation;
     apply(shrinkArrayToFit(items, apply, maxBytes));
+  }
+
+  // Give leftover budget back in declared preference order (agents, then findings).
+  for (const spec of STATUS_JSON_COLLECTIONS) {
+    const original = originals.get(spec.name);
+    if (!original) continue;
+    const apply = bindCollection(spec, original.length);
+    apply(shrinkArrayToFit(original, apply, maxBytes));
   }
   return next;
 }

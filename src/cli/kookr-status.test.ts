@@ -4486,6 +4486,8 @@ describe('kookr-status boundStatusJson (issue #2846)', () => {
       .toEqual({ inProgress: 1 });
     expect((bounded.details as { summary: { totalCost: number } }).summary.totalCost).toBe(1);
     expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(2 * 1024);
+    expect((bounded.details as { agents: unknown[] }).agents).toHaveLength(1);
+    expect((bounded.details as { truncation?: { agents?: unknown } }).truncation?.agents).toBeUndefined();
   });
 
   it('defaults KOOKR_STATUS_JSON_MAX_BYTES to 80 KiB and accepts a positive override', () => {
