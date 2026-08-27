@@ -194,6 +194,8 @@ describe('verifyDocumentedCommands', () => {
     expect(content).toContain('audit.snapshot.json');
     expect(content).toContain('node-epoch');
     expect(content).toContain('skill-digests/');
+    expect(content).toContain('playbook-state/post-recovery-queue-fill/');
+    expect(content).toContain('lastKickUtcDay');
 
     const commands = extractDocumentedCommands(file, content);
     expect(commands.map((command) => command.text)).toEqual(expect.arrayContaining([
