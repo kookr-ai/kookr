@@ -164,6 +164,7 @@ not user configuration knobs.
 | --- | --- | --- | --- |
 | `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr spawn` and `kookr ralph` use this URL directly and skip port probing. |
 | `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr status`, `kookr spawn`, or `kookr ralph` to talk to one local instance. |
+| `KOOKR_STATUS_JSON_MAX_BYTES` | `81920` (80 KiB) | Positive integer bytes | Maximum serialized size of `kookr status --json`. Large collections (`details.agents`, `details.summary.findings`) are shortened *before* serialization so the envelope stays one complete JSON document; `details.truncation` reports original and returned counts. Invalid or unset values keep the 80 KiB default. Human-readable `kookr status` is unaffected. |
 | `KOOKR_ISSUE_CLAIMS` | `off` | `1`/`true`/`on` to enable | Feature flag for the issue-ownership claim registry (RFC rfc-issue-ownership-lock). Read once at startup — restart to change; the boot log prints the resolved value. Off: no registry, claim routes 404 (clients proceed as pre-lock), release calls no-op. |
 | `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
 | `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |

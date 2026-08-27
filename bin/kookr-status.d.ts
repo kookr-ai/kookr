@@ -559,3 +559,37 @@ export function resolvePort(env?: Record<string, string | undefined>): Promise<P
 export function main(deps?: MainDeps): Promise<void>;
 export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
 export const HELP_TEXT: string;
+/** Default machine-readable status JSON budget (80 KiB). */
+export const STATUS_JSON_MAX_BYTES: number;
+/** Per-string UTF-8 cap so one field cannot blow the document. */
+export const STATUS_JSON_MAX_STRING_BYTES: number;
+
+export interface StatusJsonCollectionTruncation {
+  truncated: true;
+  originalCount: number;
+  returnedCount: number;
+}
+
+export interface BoundStatusJsonOptions {
+  maxBytes?: number;
+  maxStringBytes?: number;
+}
+
+export interface StatusJsonEnvelope {
+  ok: unknown;
+  code: unknown;
+  message: unknown;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Bound a status JSON envelope so stringify() yields one complete document
+ * under `maxBytes`. Does not slice the serialized byte stream.
+ */
+export function boundStatusJson(
+  envelope: StatusJsonEnvelope,
+  options?: BoundStatusJsonOptions,
+): StatusJsonEnvelope;
+export function resolveStatusJsonMaxBytes(
+  env?: Record<string, string | undefined>,
+): number;

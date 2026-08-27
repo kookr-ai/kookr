@@ -35,6 +35,10 @@ import {
   resolvePort,
   apiAuthHeaders,
   main,
+  boundStatusJson,
+  STATUS_JSON_MAX_BYTES,
+  STATUS_JSON_MAX_STRING_BYTES,
+  resolveStatusJsonMaxBytes,
 } from '../../bin/kookr-status.js';
 
 function parseSingleJsonLog(logs: string[]): any {
@@ -3865,6 +3869,128 @@ describe('kookr-status main (integration-style)', () => {
     });
     expect(envelope.details.agents).toBeUndefined();
   });
+
+  it('keeps --json parseable when the unbounded snapshot exceeds 80 KiB (issue #2846)', async () => {
+    const agents = Array.from({ length: 400 }, (_, i) => ({
+      agentId: `agent-${String(i).padStart(4, '0')}`,
+      taskName: `reflection-task-${i}`,
+      taskStatus: i % 4 === 0 ? 'inProgress' : 'completed',
+      description: `escaped-summary-${'x'.repeat(180)}-${i}`,
+      tokenUsage: { costUsd: 0.01 },
+      anomaly: null,
+    }));
+    const unboundedBytes = Buffer.byteLength(JSON.stringify({
+      ok: true,
+      code: 'OK',
+      message: 'Kookr status snapshot',
+      details: { port: 4800, health: {}, agents, summary: {} },
+    }), 'utf8');
+    expect(unboundedBytes).toBeGreaterThan(STATUS_JSON_MAX_BYTES);
+
+    mockSuccessfulFetch(agents, {
+      capacity: {
+        maxActiveTasks: 16,
+        active: 15,
+        free: 1,
+        effectiveWorking: 10,
+        phantomActive: 3,
+        utilizationPct: 93.75,
+        effectiveUtilizationPct: 62.5,
+        pendingQueueDepth: 7,
+        byClass: { working: 10, finishedAwaitingAck: 2, hungSuspect: 3, launching: 0 },
+      },
+      attentionQueue: { activeFindingDepth: 4, oldestFindingAgeMs: 9_000 },
+    });
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const raw = deps.logs[0];
+    expect(() => JSON.parse(raw)).not.toThrow();
+    const envelope = JSON.parse(raw);
+    expect(Buffer.byteLength(raw, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_BYTES);
+    expect(envelope.ok).toBe(true);
+    expect(envelope.details.summary.statusCounts).toEqual({ inProgress: 100, completed: 300 });
+    expect(envelope.details.health.capacity.pendingQueueDepth).toBe(7);
+    expect(envelope.details.health.attentionQueue.activeFindingDepth).toBe(4);
+    expect(envelope.details.capacity).toMatchObject({ phantomActive: 3, utilizationPct: 93.75 });
+    expect(envelope.details.truncation.agents).toEqual({
+      truncated: true,
+      originalCount: 400,
+      returnedCount: envelope.details.agents.length,
+    });
+    expect(envelope.details.agents.length).toBeLessThan(400);
+    expect(envelope.details.agents.length).toBe(envelope.details.truncation.agents.returnedCount);
+  });
+
+  it('does not change human-readable status when the fleet is large (issue #2846)', async () => {
+    const agents = Array.from({ length: 400 }, (_, i) => ({
+      agentId: `agent-${i}`,
+      taskName: `task ${i}`,
+      taskStatus: 'completed',
+      tokenUsage: { costUsd: 0.01 },
+      anomaly: null,
+    }));
+    mockSuccessfulFetch(agents);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main(deps);
+    expect(deps.exits).toEqual([]);
+    expect(deps.logs[0]).toContain('Agents:  400');
+    expect(deps.logs[0]).toContain('completed=400');
+    expect(deps.logs[0]).not.toContain('"truncation"');
+  });
+
+  it('honors a configured JSON byte budget immediately below and above the boundary (issue #2846)', async () => {
+    const maxBytes = 6 * 1024;
+    const description = `row-${'y'.repeat(40)}`;
+    const makeFleet = (n: number) => Array.from({ length: n }, (_, i) => ({
+      agentId: `a${i}`,
+      taskName: `t${i}`,
+      taskStatus: 'completed' as const,
+      description,
+      anomaly: null,
+    }));
+
+    let n = 1;
+    const probe = async (count: number) => {
+      mockSuccessfulFetch(makeFleet(count));
+      const deps = makeDeps({
+        KOOKR_PORT: '4800',
+        KOOKR_STATUS_JSON_MAX_BYTES: String(maxBytes),
+      });
+      await main({ ...deps, argv: ['--json'] });
+      const raw = deps.logs[0];
+      const envelope = JSON.parse(raw);
+      return { raw, envelope, bytes: Buffer.byteLength(raw, 'utf8') };
+    };
+
+    while ((await probe(n)).envelope.details.truncation == null) {
+      n *= 2;
+      if (n > 2_000) break;
+    }
+    let lo = 1;
+    let hi = n;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      const { envelope } = await probe(mid);
+      if (envelope.details.truncation == null) lo = mid;
+      else hi = mid - 1;
+    }
+
+    const below = await probe(lo);
+    expect(below.envelope.details.truncation).toBeUndefined();
+    expect(below.envelope.details.agents).toHaveLength(lo);
+    expect(below.bytes).toBeLessThanOrEqual(maxBytes);
+
+    const above = await probe(lo + 1);
+    expect(above.envelope.details.truncation.agents).toMatchObject({
+      truncated: true,
+      originalCount: lo + 1,
+    });
+    expect(above.envelope.details.agents.length).toBe(above.envelope.details.truncation.agents.returnedCount);
+    expect(above.bytes).toBeLessThanOrEqual(maxBytes);
+    expect(() => JSON.parse(above.raw)).not.toThrow();
+  });
 });
 
 describe('kookr-status summarizeTasks (issue #2848)', () => {
@@ -4195,5 +4321,170 @@ describe('kookr-status resolvePort', () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('down')) as typeof fetch;
     const result = await resolvePort({});
     expect(result).toEqual({ kind: 'none' });
+  });
+});
+
+describe('kookr-status boundStatusJson (issue #2846)', () => {
+  function jsonBytes(value: unknown): number {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  }
+
+  function makeAgent(i: number, extra: Record<string, unknown> = {}) {
+    return {
+      agentId: `agent-${String(i).padStart(4, '0')}`,
+      taskName: `task ${i}`,
+      taskStatus: i % 3 === 0 ? 'inProgress' : 'completed',
+      description: `fleet-row-${i}`,
+      anomaly: null,
+      ...extra,
+    };
+  }
+
+  function statusEnvelope(agents: ReturnType<typeof makeAgent>[], extra: Record<string, unknown> = {}) {
+    const inProgress = agents.filter((agent) => agent.taskStatus === 'inProgress').length;
+    return {
+      ok: true,
+      code: 'OK',
+      message: 'Kookr status snapshot',
+      details: {
+        port: 4800,
+        health: {
+          status: 'ok',
+          capacity: {
+            maxActiveTasks: 16,
+            active: 12,
+            free: 4,
+            pendingQueueDepth: 7,
+            byClass: { working: 8, finishedAwaitingAck: 2, hungSuspect: 1, launching: 1 },
+          },
+          attentionQueue: { activeFindingDepth: 3, oldestFindingAgeMs: 9_000 },
+        },
+        agents,
+        summary: {
+          statusCounts: { inProgress, completed: agents.length - inProgress },
+          severityCounts: { critical: 0, warning: 0, info: 0 },
+          findings: [],
+          totalCost: 12.5,
+        },
+        ...extra,
+      },
+    };
+  }
+
+  function largestFittingCount(maxBytes: number): number {
+    let n = 1;
+    while (jsonBytes(statusEnvelope(Array.from({ length: n }, (_, i) => makeAgent(i)))) <= maxBytes) {
+      n *= 2;
+      if (n > 20_000) break;
+    }
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (jsonBytes(statusEnvelope(Array.from({ length: mid }, (_, i) => makeAgent(i)))) <= maxBytes) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  it('leaves output unchanged immediately below the configured byte budget', () => {
+    const maxBytes = 8 * 1024;
+    const n = largestFittingCount(maxBytes);
+    expect(n).toBeGreaterThan(0);
+    const envelope = statusEnvelope(Array.from({ length: n }, (_, i) => makeAgent(i)));
+    expect(jsonBytes(envelope)).toBeLessThanOrEqual(maxBytes);
+    const bounded = boundStatusJson(envelope, { maxBytes });
+    expect(bounded.details?.truncation).toBeUndefined();
+    expect(bounded.details?.agents).toHaveLength(n);
+    expect(jsonBytes(bounded)).toBeLessThanOrEqual(maxBytes);
+    expect(JSON.parse(JSON.stringify(bounded))).toEqual(bounded);
+  });
+
+  it('shortens agents immediately above the configured byte budget and stays valid JSON', () => {
+    const maxBytes = 8 * 1024;
+    const n = largestFittingCount(maxBytes);
+    const envelope = statusEnvelope(Array.from({ length: n + 1 }, (_, i) => makeAgent(i)));
+    expect(jsonBytes(envelope)).toBeGreaterThan(maxBytes);
+    const bounded = boundStatusJson(envelope, { maxBytes });
+    const serialized = JSON.stringify(bounded);
+    expect(() => JSON.parse(serialized)).not.toThrow();
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(maxBytes);
+    const truncation = (bounded.details as { truncation: { agents: { truncated: true; originalCount: number; returnedCount: number } } }).truncation;
+    expect(truncation.agents).toEqual({
+      truncated: true,
+      originalCount: n + 1,
+      returnedCount: (bounded.details as { agents: unknown[] }).agents.length,
+    });
+    expect(truncation.agents.returnedCount).toBeLessThan(n + 1);
+    expect(bounded.details).toMatchObject({
+      summary: {
+        statusCounts: envelope.details.summary.statusCounts,
+        totalCost: 12.5,
+      },
+      health: {
+        capacity: { pendingQueueDepth: 7, maxActiveTasks: 16 },
+        attentionQueue: { activeFindingDepth: 3 },
+      },
+    });
+  });
+
+  it('always parses as JSON when the unbounded form exceeds 80 KiB', () => {
+    const agents = Array.from({ length: 500 }, (_, i) => makeAgent(i, {
+      description: `escaped-task-summary-${'z'.repeat(120)}-${i}`,
+    }));
+    const envelope = statusEnvelope(agents);
+    expect(jsonBytes(envelope)).toBeGreaterThan(STATUS_JSON_MAX_BYTES);
+    const bounded = boundStatusJson(envelope);
+    const serialized = JSON.stringify(bounded);
+    expect(() => JSON.parse(serialized)).not.toThrow();
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_BYTES);
+    expect((bounded.details as { truncation: { agents: { originalCount: number } } }).truncation.agents.originalCount).toBe(500);
+  });
+
+  it('keeps a single oversized string from making the document invalid', () => {
+    const envelope = statusEnvelope([
+      makeAgent(0, { description: `huge-${'é'.repeat(STATUS_JSON_MAX_STRING_BYTES)}-${'x'.repeat(100_000)}` }),
+    ]);
+    expect(jsonBytes(envelope)).toBeGreaterThan(STATUS_JSON_MAX_BYTES);
+    const bounded = boundStatusJson(envelope);
+    const serialized = JSON.stringify(bounded);
+    expect(() => JSON.parse(serialized)).not.toThrow();
+    expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_BYTES);
+    const description = (bounded.details as { agents: Array<{ description: string }> }).agents[0].description;
+    expect(Buffer.byteLength(description, 'utf8')).toBeLessThanOrEqual(STATUS_JSON_MAX_STRING_BYTES);
+    expect(description.includes('\uFFFD')).toBe(false);
+  });
+
+  it('reports findings truncation with original and returned counts', () => {
+    const findings = Array.from({ length: 80 }, (_, i) => ({
+      agentId: `f${i}`,
+      taskName: `finding ${i}`,
+      type: 'stale_agent',
+      severity: 'warning',
+      explanation: `blocked-on-input-${'n'.repeat(40)}-${i}`,
+    }));
+    const envelope = statusEnvelope([makeAgent(0)], { summary: {
+      statusCounts: { inProgress: 1 },
+      severityCounts: { critical: 0, warning: 80, info: 0 },
+      findings,
+      totalCost: 1,
+    } });
+    const bounded = boundStatusJson(envelope, { maxBytes: 2 * 1024 });
+    const truncation = (bounded.details as { truncation: { findings: { truncated: true; originalCount: number; returnedCount: number } } }).truncation;
+    expect(truncation.findings.truncated).toBe(true);
+    expect(truncation.findings.originalCount).toBe(80);
+    expect(truncation.findings.returnedCount).toBeLessThan(80);
+    expect((bounded.details as { summary: { findings: unknown[]; statusCounts: unknown; totalCost: number } }).summary.findings)
+      .toHaveLength(truncation.findings.returnedCount);
+    expect((bounded.details as { summary: { statusCounts: unknown; totalCost: number } }).summary.statusCounts)
+      .toEqual({ inProgress: 1 });
+    expect((bounded.details as { summary: { totalCost: number } }).summary.totalCost).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(bounded), 'utf8')).toBeLessThanOrEqual(2 * 1024);
+  });
+
+  it('defaults KOOKR_STATUS_JSON_MAX_BYTES to 80 KiB and accepts a positive override', () => {
+    expect(resolveStatusJsonMaxBytes({})).toBe(STATUS_JSON_MAX_BYTES);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: '4096' })).toBe(4096);
+    expect(resolveStatusJsonMaxBytes({ KOOKR_STATUS_JSON_MAX_BYTES: 'nope' })).toBe(STATUS_JSON_MAX_BYTES);
   });
 });

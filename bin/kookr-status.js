@@ -24,6 +24,18 @@ const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 // snapshot and the degraded-path task list each carry their own bounded timeout.
 const SNAPSHOT_TIMEOUT_MS = 2000;
 const TASKS_TIMEOUT_MS = 2000;
+// Machine-readable status is a closed JSON document. A size limit is
+// reasonable, but slicing the serialized byte stream at 80 KiB (the
+// 2026-08-25 fleet dump ended mid-string; jq then failed) removes that
+// contract. Bound collections and oversized strings first, then stringify.
+const STATUS_JSON_MAX_BYTES = 80 * 1024;
+const STATUS_JSON_MAX_STRING_BYTES = 4 * 1024;
+/** Named collections that may be shortened so the envelope stays under budget. */
+const STATUS_JSON_COLLECTIONS = [
+  { name: 'agents', path: ['agents'] },
+  { name: 'snapshot', path: ['snapshot'] },
+  { name: 'findings', path: ['summary', 'findings'] },
+];
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
 
 Usage:
@@ -1437,12 +1449,141 @@ function parseStatusArgs(argv) {
   return args;
 }
 
-function emitJson(out, { ok, code, message, details = {} }) {
-  out.log(JSON.stringify({ ok, code, message, details }));
+function jsonBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-function exitJson({ out, exit, exitCode, ok, code, message, details }) {
-  emitJson(out, { ok, code, message, details });
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function truncateUtf8(text, maxBytes) {
+  const raw = String(text);
+  const buf = Buffer.from(raw, 'utf8');
+  if (buf.length <= maxBytes) return raw;
+  let end = Math.max(0, maxBytes);
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end -= 1;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+function boundValueStrings(value, maxStringBytes) {
+  if (typeof value === 'string') return truncateUtf8(value, maxStringBytes);
+  if (Array.isArray(value)) return value.map((item) => boundValueStrings(item, maxStringBytes));
+  if (value && typeof value === 'object') {
+    /** @type {Record<string, unknown>} */
+    const out = {};
+    for (const [key, nested] of Object.entries(value)) {
+      out[key] = boundValueStrings(nested, maxStringBytes);
+    }
+    return out;
+  }
+  return value;
+}
+
+function getPath(obj, path) {
+  let cur = obj;
+  for (const key of path) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[key];
+  }
+  return cur;
+}
+
+function setPath(obj, path, value) {
+  let cur = obj;
+  for (let i = 0; i < path.length - 1; i += 1) {
+    cur = cur[path[i]];
+  }
+  cur[path[path.length - 1]] = value;
+}
+
+function shrinkArrayToFit(items, apply, maxBytes) {
+  if (jsonBytes(apply(items)) <= maxBytes) return items;
+  let lo = 0;
+  let hi = items.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (jsonBytes(apply(items.slice(0, mid))) <= maxBytes) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return items.slice(0, best);
+}
+
+function resolveStatusJsonMaxBytes(env = process.env) {
+  const raw = env.KOOKR_STATUS_JSON_MAX_BYTES;
+  if (raw === undefined || raw === '') return STATUS_JSON_MAX_BYTES;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return STATUS_JSON_MAX_BYTES;
+  return n;
+}
+
+/**
+ * Bound a status JSON envelope so stringify() yields one complete document
+ * under `maxBytes`. Capacity, queue depth, outcome counts, and envelope
+ * metadata stay intact; large task/event collections are shortened with
+ * explicit original/returned counts instead of slicing the byte stream.
+ *
+ * @param {{ ok: unknown, code: unknown, message: unknown, details?: unknown }} envelope
+ * @param {{ maxBytes?: number, maxStringBytes?: number }} [options]
+ */
+function boundStatusJson(envelope, options = {}) {
+  const maxBytes = options.maxBytes ?? STATUS_JSON_MAX_BYTES;
+  const maxStringBytes = options.maxStringBytes ?? STATUS_JSON_MAX_STRING_BYTES;
+  const message = typeof envelope.message === 'string'
+    ? truncateUtf8(envelope.message, Math.max(maxStringBytes, 256))
+    : envelope.message;
+  const detailsRaw = envelope.details == null ? {} : cloneJson(envelope.details);
+  const next = {
+    ok: envelope.ok,
+    code: envelope.code,
+    message,
+    details: boundValueStrings(detailsRaw, maxStringBytes),
+  };
+  if (jsonBytes(next) <= maxBytes) return next;
+  const details = next.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return next;
+
+  /** @type {Record<string, { truncated: true, originalCount: number, returnedCount: number }>} */
+  const truncation = {};
+  for (const spec of STATUS_JSON_COLLECTIONS) {
+    if (jsonBytes(next) <= maxBytes) break;
+    const items = getPath(details, spec.path);
+    if (!Array.isArray(items) || items.length === 0) continue;
+    const originalCount = items.length;
+    const apply = (sliced) => {
+      setPath(details, spec.path, sliced);
+      if (sliced.length < originalCount) {
+        truncation[spec.name] = {
+          truncated: true,
+          originalCount,
+          returnedCount: sliced.length,
+        };
+        details.truncation = truncation;
+      } else {
+        delete truncation[spec.name];
+        if (Object.keys(truncation).length === 0) delete details.truncation;
+        else details.truncation = truncation;
+      }
+      return next;
+    };
+    truncation[spec.name] = { truncated: true, originalCount, returnedCount: 0 };
+    details.truncation = truncation;
+    apply(shrinkArrayToFit(items, apply, maxBytes));
+  }
+  return next;
+}
+
+function emitJson(out, { ok, code, message, details = {} }, options = {}) {
+  out.log(JSON.stringify(boundStatusJson({ ok, code, message, details }, options)));
+}
+
+function exitJson({ out, exit, exitCode, ok, code, message, details, jsonOptions }) {
+  emitJson(out, { ok, code, message, details }, jsonOptions);
   return exit(exitCode);
 }
 
@@ -1514,6 +1655,7 @@ function buildHealthDetailProjections(health) {
 }
 
 async function main({ argv = process.argv.slice(2), env = process.env, out = console, exit = process.exit } = {}) {
+  const jsonOptions = { maxBytes: resolveStatusJsonMaxBytes(env) };
   const args = parseStatusArgs(argv);
   if (args.error) {
     if (args.json) {
@@ -1525,6 +1667,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         code: 'USER_ERROR',
         message: args.error,
         details: { subcommand: 'status' },
+        jsonOptions,
       });
     }
     out.error(args.error);
@@ -1541,6 +1684,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         code: 'OK',
         message: 'Help',
         details: { help: HELP_TEXT },
+        jsonOptions,
       });
     }
     out.log(HELP_TEXT);
@@ -1558,6 +1702,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         code: 'USER_ERROR',
         message: `KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`,
         details: { raw: resolved.raw },
+        jsonOptions,
       });
     }
     out.error(`KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`);
@@ -1581,6 +1726,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ports: PORTS_TO_TRY,
           restartIntent: restartIntentJson(intent),
         },
+        jsonOptions,
       });
     }
     out.error(
@@ -1628,6 +1774,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           error: msg,
           restartIntent: restartIntentJson(intent, now),
         },
+        jsonOptions,
       });
     }
     if (resolved.kind === 'explicit') {
@@ -1673,6 +1820,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
           ...buildHealthDetailProjections(health),
           ...gateDetails,
         },
+        jsonOptions,
       });
     }
     out.log(renderReport({ port, health, agents }));
@@ -1780,6 +1928,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
         degraded,
         ...gateDetails,
       },
+      jsonOptions,
     });
   }
   // renderReport takes the slim DegradedRenderContext shape ({ snapshotReason,
@@ -1814,6 +1963,10 @@ if (isInvokedDirectly()) {
 
 export {
   HELP_TEXT,
+  STATUS_JSON_MAX_BYTES,
+  STATUS_JSON_MAX_STRING_BYTES,
+  boundStatusJson,
+  resolveStatusJsonMaxBytes,
   apiAuthHeaders,
   formatUptime,
   formatCost,
