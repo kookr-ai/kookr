@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -422,10 +422,16 @@ describe('PostRecoveryService', () => {
     ]);
     expect(launcher).toHaveBeenCalledOnce();
 
-    const stateRaw = await readFile(join(kickDir, 'jeanibarz-lucy.json'), 'utf-8');
+    const statePath = join(kickDir, 'jeanibarz-lucy.json');
+    const stateRaw = await readFile(statePath, 'utf-8');
     const state = JSON.parse(stateRaw) as { lastKickUtcDay: string; lastKickScoutTaskId: string };
     expect(state.lastKickUtcDay).toBe('2026-08-10');
     expect(state.lastKickScoutTaskId).toBe('scout-happy');
+    if (process.platform === 'linux' || process.platform === 'darwin') {
+      const mode = (await stat(statePath)).mode & 0o777;
+      expect(mode & 0o077).toBe(0);
+      expect(mode).toBe(0o600);
+    }
 
     const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('post_recovery_queue_fill_kick');
@@ -440,6 +446,77 @@ describe('PostRecoveryService', () => {
     });
     expect(launcher).toHaveBeenCalledOnce(); // still one
   });
+
+  it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
+    'rewrites kick-state owner-only even when umask would leave the file world-readable (#2869)',
+    async () => {
+      const launcher = vi.fn(async () => ({
+        task: { id: 'scout-mode', status: 'running' } as Task,
+        queued: false,
+      }));
+      const schedules = [
+        schedule({
+          id: 'batch',
+          name: 'Lucy batch',
+          enabled: true,
+          playbook: {
+            path: 'parallel-issue-batch.md',
+            parameters: {
+              repoFullName: 'jeanibarz/lucy',
+              localPath: '/tmp/lucy',
+            },
+          },
+        }),
+      ];
+      let clock = nowMs;
+      const kickDir = join(tempDir, 'kick-mode');
+      const service = new PostRecoveryService({
+        listSchedules: () => schedules,
+        setEnabled: vi.fn(),
+        taskStore: makeTaskStore(),
+        getCapacityLedger: () => makeLedger({ free: 7, freeForGeneralSources: 7, pendingQueueDepth: 0 }),
+        launcher,
+        isDispatchHealthy: () => true,
+        kookrDir: tempDir,
+        kickStateDir: kickDir,
+        starvationStateDir: join(tempDir, 'starvation-mode'),
+        now: () => clock,
+        log: () => {},
+      });
+
+      const previousUmask = process.umask(0o000);
+      try {
+        const first = await service.runQueueFillKicks();
+        expect(first[0]).toMatchObject({
+          repo: 'jeanibarz/lucy',
+          kicked: true,
+          utcDay: '2026-08-10',
+        });
+        const statePath = join(kickDir, 'jeanibarz-lucy.json');
+        const afterCreate = (await stat(statePath)).mode & 0o777;
+        expect(afterCreate & 0o077).toBe(0);
+        expect(afterCreate).toBe(0o600);
+
+        // Rename keeps the temp file's mode, not the destination's. A 0644
+        // leftover must not survive the next UTC-day rewrite.
+        await chmod(statePath, 0o644);
+        expect((await stat(statePath)).mode & 0o777).toBe(0o644);
+        clock = nowMs + 24 * 60 * 60 * 1000;
+        const second = await service.runQueueFillKicks();
+        expect(second[0]).toMatchObject({
+          repo: 'jeanibarz/lucy',
+          kicked: true,
+          utcDay: '2026-08-11',
+        });
+        expect(launcher).toHaveBeenCalledTimes(2);
+        const afterRewrite = (await stat(statePath)).mode & 0o777;
+        expect(afterRewrite & 0o077).toBe(0);
+        expect(afterRewrite).toBe(0o600);
+      } finally {
+        process.umask(previousUmask);
+      }
+    },
+  );
 
   it('create-then-launch_error does not persist the UTC-day kick or stamp lastStarvationScoutAt (#2744)', async () => {
     const { TaskStore } = await import('../core/tasks.js');
