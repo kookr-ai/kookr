@@ -1101,6 +1101,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     let admissionMarkerWrittenByOwner: Task['launchAdmission'];
     let expectedProbeSessionId: string | undefined;
     const launchReapGuard: LaunchReapGuard = { reaped: false };
+    const launchAbort = new AbortController();
     const priorSessionIds = new Set(pending.sessions.map((session) => session.tmuxSession));
     try {
       const intent = validatePersistedLaunchIntent(pending);
@@ -1131,6 +1132,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         : undefined;
       const adapterOpts = {
         ...pins,
+        signal: launchAbort.signal,
         onSessionCreated: (sessionId: string) => {
           const lateCleanup = noteLaunchSession(
             launchReapGuard,
@@ -1254,6 +1256,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
         adapter,
         reapGuard: launchReapGuard,
         reapKnownSessionOnTimeout: true,
+        abort: launchAbort,
       });
       adapterLaunchSettled = true;
       if (dependencyAdmission?.admit) {
@@ -1361,7 +1364,9 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           // looking so a concurrent terminal transition attempts the same
           // idempotent stop rather than skipping it as already aborted.
           taskStore.updateSession(pending.id, failedSessionId, { lastStatus: undefined });
-          if (!launchReapGuard.reaped) {
+          if (launchReapGuard.reaped) {
+            taskStore.updateSession(pending.id, failedSessionId, { lastStatus: 'aborted' });
+          } else {
             const adapter = launchAdapter ?? adapterRegistry.get(pending.agentType);
             try {
               await (launchReapGuard.reapPromise

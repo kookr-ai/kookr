@@ -125,6 +125,21 @@ describe('GrokBuildAdapter', () => {
     expect(timeline.indexOf('session-created')).toBeLessThan(timeline.indexOf('phase:agent-boot'));
   });
 
+  test('aborted launch signal after session create skips addSession and kills the session', async () => {
+    const adapter = makeAdapter();
+    const abort = new AbortController();
+    const task = taskStore.createTask('do it', '/workspace');
+    let createdId = '';
+    await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, {
+      onSessionCreated: (id) => { createdId = id; abort.abort(); },
+      signal: abort.signal,
+    })).rejects.toThrow(/Launch cancelled after session/);
+    expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
+    expect(createdId).toMatch(/^kookr-/);
+    expect(backend.sessions.has(createdId)).toBe(true);
+    expect(await backend.isAlive(createdId)).toBe(false);
+  });
+
   test('launch env is allowlisted: GROK_HOME set, shared GROK_AUTH_PATH, server secrets excluded', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');
@@ -474,6 +489,27 @@ describe('GrokBuildAdapter', () => {
       // cleanupFailedLaunch ran: no orphaned session or session home dir.
       expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
       expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+    });
+
+    test('a launch AbortSignal cancels a hung agent-boot wait before addSession', async () => {
+      const adapter = new GrokBuildAdapter(backend, taskStore, {
+        env: { ...baseEnv },
+        installedStateOverride: testedState(),
+        sourceGrokHome,
+        sessionHomeRoot,
+        promptBracketedPaste: false,
+        promptReadyTimeoutMs: 30,
+        agentBootTimeoutMs: 5_000,
+      });
+      vi.spyOn(backend, 'captureBytes').mockImplementation(() => new Promise(() => { /* hung boot */ }));
+      const abort = new AbortController();
+      const task = taskStore.createTask('x', '/workspace');
+      const launch = adapter.launch(task.id, 'x', '/workspace', undefined, { signal: abort.signal });
+      await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+      abort.abort();
+      await expect(launch).rejects.toThrow(/Launch cancelled after session/);
+      expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
+      expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
     });
   });
 

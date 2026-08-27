@@ -370,6 +370,7 @@ export async function recoverCrashedSessions(
       let launchAdapter: AgentAdapter | undefined;
       let expectedProbeSessionId: string | undefined;
       const launchReapGuard: LaunchReapGuard = { reaped: false };
+      const launchAbort = new AbortController();
       const priorSessionIds = new Set(task.sessions.map((candidate) => candidate.tmuxSession));
       try {
         const adapter = adapterRegistry.get(task.agentType);
@@ -379,6 +380,7 @@ export async function recoverCrashedSessions(
           : undefined;
         const launchOptions = {
           ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
+          signal: launchAbort.signal,
           onSessionCreated: (sessionId: string) => {
             const lateCleanup = noteLaunchSession(
               launchReapGuard,
@@ -499,6 +501,7 @@ export async function recoverCrashedSessions(
           adapter,
           reapGuard: launchReapGuard,
           reapKnownSessionOnTimeout: true,
+          abort: launchAbort,
         });
         adapterLaunchSettled = true;
         if (dependencyAdmission?.admit) {

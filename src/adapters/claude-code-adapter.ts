@@ -45,6 +45,7 @@ import { effectiveHookSettingsPath, readPersistedHookSettings } from './effectiv
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
+import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
@@ -350,6 +351,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--settings', settingsPath);
     }
 
+    throwIfLaunchAborted(opts?.signal);
     await this.backend.createSession({
       id: tmuxName,
       command: this.agentBin,
@@ -362,6 +364,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // launch (top-level launch timeout) can link and reap it instead of leaving
     // it unowned for up to 24h. `addSession` below only runs at `ack`.
     opts?.onSessionCreated?.(tmuxName);
+    if (opts?.signal?.aborted) {
+      await this.cleanupFailedLaunch(tmuxName);
+      throw new LaunchAbortedError(tmuxName);
+    }
     // Phase instrumentation (issue #1589): agent-boot covers readiness and the
     // initial-prompt delivery/submit-confirmation loop below.
     opts?.onPhase?.('agent-boot');
@@ -379,29 +385,37 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         // trailing Enter as a keystroke, not paste content. See
         // deliverInitialPromptToSession.
         const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
-        let deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
-          inputWriter: this.inputWriter,
-          bracketedPaste: this.promptBracketedPaste,
-          waitForReady: this.promptBracketedPaste,
-          awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
-          submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
-          submitRetries: this.promptSubmitRetries,
-          readyTimeoutMs: this.promptReadyTimeoutMs,
-          readyPollMs: this.promptReadyPollMs,
-        });
+        let deliveryResult = await raceAgainstLaunchAbort(
+          deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+            inputWriter: this.inputWriter,
+            bracketedPaste: this.promptBracketedPaste,
+            waitForReady: this.promptBracketedPaste,
+            awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
+            submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+            submitRetries: this.promptSubmitRetries,
+            readyTimeoutMs: this.promptReadyTimeoutMs,
+            readyPollMs: this.promptReadyPollMs,
+          }),
+          opts?.signal,
+          tmuxName,
+        );
         if (deliveryResult.status === 'unconfirmed' && this.promptBracketedPaste) {
           // Claude Code v2.1.156 can advertise bracketed-paste mode but still
           // drop the wrapped prompt during startup. Fall back to the legacy
           // plain write+Enter path, but keep the same UserPromptSubmit-backed
           // confirmation loop so the fallback cannot silently strand text in
           // the composer.
-          deliveryResult = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
-            inputWriter: this.inputWriter,
-            bracketedPaste: false,
-            awaitSubmit,
-            submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
-            submitRetries: this.promptSubmitRetries,
-          });
+          deliveryResult = await raceAgainstLaunchAbort(
+            deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+              inputWriter: this.inputWriter,
+              bracketedPaste: false,
+              awaitSubmit,
+              submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+              submitRetries: this.promptSubmitRetries,
+            }),
+            opts?.signal,
+            tmuxName,
+          );
         }
         if (deliveryResult.status === 'unconfirmed') {
           throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
@@ -417,6 +431,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
+    if (opts?.signal?.aborted) {
+      await this.cleanupFailedLaunch(tmuxName);
+      throw new LaunchAbortedError(tmuxName);
+    }
     // Phase instrumentation (issue #1589): ack — the prompt was acknowledged
     // (or resume needs none); register the session.
     opts?.onPhase?.('ack');

@@ -17,7 +17,7 @@ export class LaunchTimeoutError extends Error {
   constructor(agentType: string, taskId: string, timeoutMs: number) {
     super(
       `Agent launch timed out after ${Math.round(timeoutMs / 1000)}s ` +
-      `(agent ${agentType}, task ${taskId}) — launch abandoned and task cleaned up`,
+      `(agent ${agentType}, task ${taskId}) — launch abandoned`,
     );
     this.name = 'LaunchTimeoutError';
   }
@@ -100,6 +100,11 @@ export async function raceLaunchAgainstTimeout(
     reapGuard?: LaunchReapGuard;
     /** Reap a session reported before the adapter promise settles. */
     reapKnownSessionOnTimeout?: boolean;
+    /**
+     * Aborted when the timeout fires so adapters can stop session creation
+     * and prompt delivery instead of racing a late `addSession`.
+     */
+    abort?: AbortController;
   },
 ): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -110,6 +115,8 @@ export async function raceLaunchAgainstTimeout(
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
+          if (ctx.reapGuard) ctx.reapGuard.timedOut = true;
+          ctx.abort?.abort();
           reject(new LaunchTimeoutError(ctx.agentType, ctx.taskId, timeoutMs));
         }, timeoutMs);
       }),

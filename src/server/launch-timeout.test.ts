@@ -32,6 +32,17 @@ describe('raceLaunchAgainstTimeout', () => {
     })).rejects.toBe(error);
   });
 
+  test('aborts the shared controller when the timeout fires', async () => {
+    const abort = new AbortController();
+    await expect(raceLaunchAgainstTimeout(new Promise<string>(() => undefined), 5, {
+      taskId: 'task-abort',
+      agentType: 'claude-code',
+      adapter: { stop: vi.fn() },
+      abort,
+    })).rejects.toSatisfy(isLaunchTimeoutError);
+    expect(abort.signal.aborted).toBe(true);
+  });
+
   test('does not mark a timeout cleanup reaped before physical stop succeeds', async () => {
     const guard: LaunchReapGuard = { reaped: false };
     let rejectStop!: (error: Error) => void;

@@ -2775,6 +2775,82 @@ describe('promotePendingTasks (integration)', () => {
     });
   });
 
+  test('ordinary promotion timeout cancels the pending task and reaps a session created before timeout', async () => {
+    const task = taskStore.createTask('timed out promotion', '/cwd');
+    taskStore.pendTask(task.id);
+    vi.mocked(adapter.launch).mockImplementationOnce(async (_taskId, _prompt, _cwd, _resume, options) => {
+      options?.onSessionCreated?.('kookr-promo-timeout');
+      expect(options?.signal?.aborted).toBe(false);
+      return new Promise<string>(() => undefined);
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, getLaunchTimeoutMs: () => 5 },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(0);
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('kookr-promo-timeout');
+      });
+      const cancelled = taskStore.getTask(task.id);
+      expect(cancelled?.status).toBe('cancelled');
+      expect(cancelled?.sessions.find((session) => session.tmuxSession === 'kookr-promo-timeout')?.lastStatus)
+        .toBe('aborted');
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('late completion after promotion timeout does not attach a live session', async () => {
+    const task = taskStore.createTask('late promoted launch', '/cwd');
+    taskStore.pendTask(task.id);
+    let resolveLate!: (sessionId: string) => void;
+    let launchOpts: { onSessionCreated?: (id: string) => void; signal?: AbortSignal } | undefined;
+    vi.mocked(adapter.launch).mockImplementationOnce((_taskId, _prompt, _cwd, _resume, options) => {
+      launchOpts = options;
+      return new Promise<string>((resolve) => { resolveLate = resolve; });
+    });
+    deps = {
+      ...deps,
+      lifecycleDeps: { ...deps.lifecycleDeps, getLaunchTimeoutMs: () => 5 },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await promotePendingTasks(deps)).toBe(0);
+      expect(launchOpts?.signal?.aborted).toBe(true);
+
+      launchOpts?.onSessionCreated?.('kookr-promo-late');
+      resolveLate('kookr-promo-late');
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('kookr-promo-late');
+        expect(taskStore.getTask(task.id)?.sessions.find((session) => session.tmuxSession === 'kookr-promo-late')?.lastStatus)
+          .toBe('aborted');
+      });
+
+      expect(() => taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-promo-late',
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      })).toThrow(/Cannot attach aborted session kookr-promo-late|terminal task/);
+
+      const cancelled = taskStore.getTask(task.id);
+      expect(cancelled?.status).toBe('cancelled');
+      expect(cancelled?.sessions.find((session) => session.tmuxSession === 'kookr-promo-late')?.lastStatus)
+        .toBe('aborted');
+      expect(cancelled?.sessions.some((session) => session.lastStatus === undefined)).toBe(false);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   test('stale ordinary promoter cannot cancel a successor between create and attach', async () => {
     const task = taskStore.createTask({
       prompt: 'promotion ownership replacement',

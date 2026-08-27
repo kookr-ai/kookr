@@ -130,6 +130,20 @@ describe('CodexCliAdapter', () => {
     expect(spec.args).toContain('--prompt-file');
   });
 
+  test('aborted launch signal after session create skips addSession and kills the session', async () => {
+    const abort = new AbortController();
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    let createdId = '';
+    await expect(adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+      onSessionCreated: (id) => { createdId = id; abort.abort(); },
+      signal: abort.signal,
+    })).rejects.toThrow(/Launch cancelled after session/);
+    expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
+    expect(createdId).toMatch(/^kookr-/);
+    expect(backend.sessions.has(createdId)).toBe(true);
+    expect(await backend.isAlive(createdId)).toBe(false);
+  });
+
   test('launch delivers the initial prompt via --prompt-file, never argv', async () => {
     // 200 KiB exceeds Linux ARG_MAX headroom — proves the prompt is never an
     // argv entry regardless of size, and is delivered as a file artifact.
