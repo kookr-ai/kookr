@@ -662,6 +662,8 @@ The envelope fields are:
 
 `kookr status` exits `1` for invalid ports, unreachable servers, and an unexpected `/api/health` response; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. A slow, unreachable, or malformed `/api/snapshot` is non-fatal: the command exits `0` with `code: "OK_DEGRADED"` and a `details.degraded` block (issue #2848). When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`.
 
+`kookr status --json` always emits one complete JSON document. A size limit of 80 KiB is applied *before* serialization (override with `KOOKR_STATUS_JSON_MAX_BYTES`): large collections such as `details.agents` and `details.summary.findings` are shortened structurally, and `details.truncation` reports each shortened collection with `truncated`, `originalCount`, and `returnedCount`. Capacity, queue depth, outcome counts, and envelope metadata stay complete. Oversized strings are capped so a single field cannot make the document invalid. The serialized byte stream is never sliced. Human-readable `kookr status` is unchanged.
+
 Examples:
 
 ```bash
@@ -751,7 +753,7 @@ Options:
 
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
-| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `--json` | none | false | Print one complete machine-readable JSON envelope to stdout. Large fleets are bounded structurally at 80 KiB (see JSON Output). |
 | `--fail-on` | `critical`, `warning`, `info`, or `none` | `none` | Exit `5` when active findings meet or exceed the requested severity. `critical` fails only on critical findings; `warning` fails on warning or critical; `info` fails on any known active finding. |
 | `-h`, `--help` | none | false | Print command help and exit. |
 
