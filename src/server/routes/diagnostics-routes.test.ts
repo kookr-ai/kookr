@@ -5532,4 +5532,42 @@ describe('diagnostics routes', () => {
     });
   });
 
+  describe('GET /api/diagnostics/schedule-terminal-reasons (issue #2877)', () => {
+    test('returns the schedule terminal-reason rollup and passes the window through', async () => {
+      const taskStore = new TaskStore();
+      const nowMs = Date.now();
+      const aggregateTerminalReasons = vi.fn((opts: { nowMs: number; windowMs: number }) => ({
+        windowMs: opts.windowMs,
+        generatedAt: new Date(opts.nowMs).toISOString(),
+        total: 3,
+        occupiedMs: 900_000,
+        byReason: { timeout: { count: 2, occupiedMs: 600_000 }, provider_failure: { count: 1, occupiedMs: 300_000 } },
+        byProvider: { 'grok-build': { count: 1, occupiedMs: 300_000 } },
+      }));
+      const scheduleService = { aggregateTerminalReasons } as unknown as RouteDeps['scheduleService'];
+
+      const res = await mkApp({ taskStore, scheduleService, nowMs: () => nowMs })
+        .request('/api/diagnostics/schedule-terminal-reasons?hours=1');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('schedule-terminal-reasons-diagnostics-route.v1');
+      expect(body.total).toBe(3);
+      expect(body.byReason).toMatchObject({ timeout: { count: 2 }, provider_failure: { count: 1 } });
+      expect(body.byProvider).toMatchObject({ 'grok-build': { count: 1 } });
+      expect(aggregateTerminalReasons).toHaveBeenCalledWith({ nowMs, windowMs: 60 * 60 * 1000 });
+    });
+
+    test('returns an empty rollup when scheduling is not configured (fail-open)', async () => {
+      const taskStore = new TaskStore();
+      const nowMs = Date.now();
+      const res = await mkApp({ taskStore, nowMs: () => nowMs })
+        .request('/api/diagnostics/schedule-terminal-reasons');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(0);
+      expect(body.byReason).toEqual({});
+      expect(body.byProvider).toEqual({});
+    });
+  });
+
 });

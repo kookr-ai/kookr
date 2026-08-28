@@ -1,6 +1,7 @@
 import type { AgentSelection } from './agent-types.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage.js';
+import type { TerminalReasonCategory, TerminalTransitionSource } from './task.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -133,6 +134,41 @@ export type ScheduleExecutionReasonCode =
   /** Cheap probe failed/blipped without an agent (issue #2569) — exit 1. */
   | 'probe_blip';
 
+/**
+ * Classified task terminal cause carried onto a schedule execution receipt
+ * (issue #2877). Mirrors `core/schedule`. Bounded typed fields copied from the
+ * fire's task terminal receipt (#2847) at the task→schedule terminal
+ * transition, so a schedule execution row can answer "did this fire time out,
+ * fail on the provider, die in a restart, or is it a legacy unknown?" without
+ * joining `/api/schedules` back to `/api/tasks`.
+ *
+ * Deliberately narrow: it copies only the typed classification, the resolved
+ * provider/agent type, and the transition timestamp — never a prompt or a raw
+ * provider error string. `reasonCode` reuses the task-side
+ * {@link TerminalReasonCategory} so `timeout`, `provider_failure`,
+ * `server_restart`, `unknown`, and `unknown_legacy` classify identically on both
+ * sides.
+ */
+export interface ScheduleTerminalReason {
+  /**
+   * Typed WHY category from the task receipt (`timeout`, `provider_failure`,
+   * `server_restart`, `unknown`, `unknown_legacy`, …). `unknown_legacy` marks a
+   * row whose task predated the task-receipt field (#2847) — kept explicit
+   * rather than guessed.
+   */
+  reasonCode: TerminalReasonCategory;
+  /** WHO/WHAT drove the task terminal transition (`watchdog`, `provider_admission`, `restart_recovery`, …). */
+  source: TerminalTransitionSource;
+  /**
+   * Resolved provider/agent type for a `provider_failure`, when known (e.g.
+   * `claude-code`, `grok-build`). Omitted for other reasons. Never a prompt or
+   * raw error.
+   */
+  provider?: string;
+  /** ISO-8601 timestamp of the task terminal transition. */
+  at: string;
+}
+
 export interface ScheduleExecutionLedgerEntry {
   id: string;
   scheduleId: string;
@@ -160,6 +196,13 @@ export interface ScheduleExecutionLedgerEntry {
    * ledger-write time (issue #1582). Mirrors the `core/schedule` definition.
    */
   artifacts?: string[];
+  /**
+   * Classified task terminal cause joined from the fire's task receipt at the
+   * terminal transition (issue #2877). Absent on non-terminal rows and on
+   * fires that never reached a task (dispatch/skip outcomes). Mirrors the
+   * `core/schedule` definition.
+   */
+  terminalReason?: ScheduleTerminalReason;
 }
 
 export interface ScheduleExecutionReceipt {
@@ -185,6 +228,13 @@ export interface ScheduleLatestExecutionStatus {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  /**
+   * Classified task terminal cause for the most recent fire (issue #2877), set
+   * alongside a terminal `outcome`. Lets `schedulesPausedByFailure` and the UI
+   * surface the last classified reason without a task join. Mirrors
+   * `core/schedule`.
+   */
+  terminalReason?: ScheduleTerminalReason;
 }
 
 export interface Schedule {
@@ -290,6 +340,14 @@ export interface ScheduleStatusSnapshot {
     id: string;
     name: string;
     consecutiveFailures: number;
+    /**
+     * Last classified terminal reason that contributed to the fail-closed pause
+     * (issue #2877), joined from the schedule's `latestExecution.terminalReason`.
+     * Lets recovery logic and operators see WHY a schedule stopped (a timeout
+     * storm vs. provider silence vs. legacy unknown) and WHEN, without joining
+     * back to `/api/tasks`. Absent on legacy holds with no classified fire.
+     */
+    lastTerminalReason?: ScheduleTerminalReason;
   }>;
 }
 

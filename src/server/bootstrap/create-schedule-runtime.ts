@@ -7,7 +7,7 @@ import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
 import { ScheduleStaleAlarm } from '../schedule-liveness.js';
 import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
-import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
+import { deriveLedgerEnrichment, deriveScheduleTerminalReason, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 import { bindOperationalAlertSink, OperationalAlertSink } from '../operational-alert-sink.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
@@ -185,6 +185,11 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // issue #1582: join cost/artifacts onto ledger rows at write time by
     // reading the completed fire's task from the live store.
     resolveLedgerEnrichment: (taskId) => deriveLedgerEnrichment(deps.taskStore.getTask(taskId)),
+    // issue #2877: join the fire's classified terminal reason onto its schedule
+    // execution receipt at the terminal transition, by reading the task's
+    // structured terminal receipt (#2847). Legacy/absent tasks classify as
+    // explicit unknowns rather than being guessed.
+    resolveTerminalReason: (taskId) => deriveScheduleTerminalReason(deps.taskStore.getTask(taskId)),
     // issue #1665: raise a per-schedule failure alert through the same
     // dashboard alert channel the dead-man switch uses.
     emitAlert: (message) => deps.broadcastToAll(message),
