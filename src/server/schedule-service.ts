@@ -13,6 +13,7 @@ import {
   type ScheduleListResponse,
   type ScheduleLatestExecutionStatus,
   type ScheduleStatusSnapshot,
+  type ScheduleTerminalReason,
   type UpdateScheduleDefinitionInput,
   isTriggerLimitExhausted,
   pruneExecutionLedger,
@@ -20,6 +21,12 @@ import {
   ScheduleValidationError,
 } from '../core/schedule.js';
 import type { ScheduleRollup } from '../core/schedule-rollup.js';
+import {
+  aggregateScheduleTerminalReasons,
+  type ScheduleTerminalReasonAggregate,
+} from '../core/schedule-terminal-reasons.js';
+import type { Task } from '../core/task-read-model.js';
+import { projectTerminalReceipt } from '../core/terminal-receipt.js';
 import type { TerminationReason } from '../shared/contracts/task-status.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
@@ -345,6 +352,35 @@ export function deriveLedgerEnrichment(task: LedgerEnrichmentTaskLike | undefine
   return enrichment;
 }
 
+/**
+ * Derive the schedule-side terminal classification for a fire from its task
+ * (issue #2877). Reads the task's structured terminal receipt (#2847) via
+ * {@link projectTerminalReceipt} — which synthesizes an explicit
+ * `unknown_legacy` classification for a terminal task that predates the receipt
+ * field, so legacy rows stay readable rather than guessed — and copies only the
+ * typed reason, source, and transition timestamp onto the schedule receipt.
+ *
+ * The resolved provider/agent type is attached ONLY for a `provider_failure`,
+ * so a provider-silence storm is attributable per provider while the field
+ * stays bounded; no prompt or raw provider error is ever copied. Returns
+ * undefined for a non-terminal task (no receipt to classify) so callers leave
+ * the field absent rather than fabricating a cause.
+ */
+export function deriveScheduleTerminalReason(task: Task | undefined): ScheduleTerminalReason | undefined {
+  if (!task) return undefined;
+  const receipt = projectTerminalReceipt(task);
+  if (!receipt) return undefined;
+  const terminalReason: ScheduleTerminalReason = {
+    reasonCode: receipt.reason,
+    source: receipt.source,
+    at: receipt.at,
+  };
+  if (receipt.reason === 'provider_failure' && task.agentType) {
+    terminalReason.provider = task.agentType;
+  }
+  return terminalReason;
+}
+
 export interface ScheduleServiceDeps {
   store: ScheduleStore;
   validator: ScheduleValidator;
@@ -357,6 +393,15 @@ export interface ScheduleServiceDeps {
    * stubbed in tests.
    */
   resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
+  /**
+   * Joins a fire's `taskId` to its classified terminal reason (issue #2877) at
+   * the task→schedule terminal transition, by reading the task's structured
+   * terminal receipt (#2847). Optional: when absent, terminal rows persist
+   * exactly as before with no classification. Kept as a narrow lookup (like
+   * {@link resolveLedgerEnrichment}) so the service stays decoupled from the
+   * full task store and the join is trivially stubbed in tests.
+   */
+  resolveTerminalReason?: (taskId: string) => ScheduleTerminalReason | undefined;
   /**
    * Sink for the per-schedule failure alert (issue #1665). Optional: when
    * absent, the `consecutiveFailures` counter is still maintained and surfaced,
@@ -403,6 +448,7 @@ export class ScheduleService {
   private readonly validator: ScheduleValidator;
   private readonly broadcast?: (payload: ScheduleListResponse) => void;
   private readonly resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
+  private readonly resolveTerminalReason?: (taskId: string) => ScheduleTerminalReason | undefined;
   private readonly emitAlert?: (message: Extract<ServerMessage, { type: 'alert' }>) => void;
   private readonly getFailureAlertThreshold?: () => number;
   private readonly getDefaultAgentType?: () => AgentSelection;
@@ -426,6 +472,7 @@ export class ScheduleService {
     this.validator = deps.validator;
     this.broadcast = deps.broadcast;
     this.resolveLedgerEnrichment = deps.resolveLedgerEnrichment;
+    this.resolveTerminalReason = deps.resolveTerminalReason;
     this.emitAlert = deps.emitAlert;
     this.getFailureAlertThreshold = deps.getFailureAlertThreshold;
     this.getDefaultAgentType = deps.getDefaultAgentType;
@@ -534,6 +581,18 @@ export class ScheduleService {
     return this.store.listRollups();
   }
 
+  /**
+   * Bounded diagnostic rollup of schedule terminal reasons over a trailing
+   * window (issue #2877). Aggregates classified terminal fires by reason and
+   * provider — with occupied slot-time — reading only the in-memory execution
+   * ledgers (each capped at {@link MAX_LEDGER_ENTRIES}), so it never serializes
+   * full task event histories. Lets the daily reflection spot a provider-wide
+   * timeout storm directly.
+   */
+  aggregateTerminalReasons(opts: { nowMs: number; windowMs: number }): ScheduleTerminalReasonAggregate {
+    return aggregateScheduleTerminalReasons(this.store.list(), opts);
+  }
+
   getStatusSnapshot(): ScheduleStatusSnapshot {
     const loadError = this.store.getLoadError();
     const lastTickCompletedAt = this.lastTickCompletedAt;
@@ -544,6 +603,14 @@ export class ScheduleService {
         id: s.id,
         name: s.name,
         consecutiveFailures: s.consecutiveFailures ?? 0,
+        // Surface WHY the schedule stopped and WHEN (issue #2877): the last
+        // classified terminal reason from its most recent fire, so recovery
+        // logic and operators can distinguish a timeout storm from provider
+        // silence without joining back to `/api/tasks`. Absent on a legacy hold
+        // whose last fire predates the classification.
+        ...(s.latestExecution?.terminalReason
+          ? { lastTerminalReason: s.latestExecution.terminalReason }
+          : {}),
       }));
     return {
       timezone: currentTimezone(),
@@ -1249,6 +1316,14 @@ export class ScheduleService {
     // resolver or a task with no measured usage leaves the fields absent.
     const enrichment = this.resolveLedgerEnrichment?.(taskId) ?? {};
 
+    // Join the task's classified terminal reason onto the row (issue #2877), so
+    // a watchdog-terminated fire records `timeout`/`watchdog` and a
+    // provider-failed fire records `provider_failure` + the resolved provider —
+    // without ever storing prompts or raw provider errors. Absent resolver or a
+    // still-live task leaves the field off. Spread unconditionally below.
+    const terminalReason = this.resolveTerminalReason?.(taskId);
+    const terminalReasonPatch = terminalReason ? { terminalReason } : {};
+
     // Issue #2458: after an overlap-skip, latestExecution.taskId still points
     // at the previous fire (the blocking pointer). When that previous task
     // later cancels, do not rewrite the skip as `cancelled` or increment
@@ -1267,6 +1342,7 @@ export class ScheduleService {
           ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
           ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
           ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
+          ...terminalReasonPatch,
         }),
         updatedAt: now,
       });
@@ -1308,6 +1384,7 @@ export class ScheduleService {
         ...schedule.latestExecution,
         outcome: status,
         reasonCode: 'none',
+        ...terminalReasonPatch,
       },
       executionLedger: updateLedgerEntryForTask(schedule.executionLedger, taskId, {
         outcome: status,
@@ -1316,6 +1393,7 @@ export class ScheduleService {
         ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
         ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
         ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
+        ...terminalReasonPatch,
       }),
       ...(currentReceipt ? {
         currentExecution: {
@@ -1447,6 +1525,17 @@ export class ScheduleService {
         // Enrich the reconciled-completion row too (issue #1582) — the task is
         // already in hand here, so join its cost/artifacts directly.
         const enrichment = deriveLedgerEnrichment(task);
+        // Carry the task's classified terminal reason onto the reconciled row
+        // (issue #2877). The task is in hand, so derive directly rather than via
+        // the resolver. The classification is whatever the task's receipt holds:
+        // a `server-restart` termination → `server_restart`/`restart_recovery`, a
+        // `timeout` → `timeout`/`watchdog`, a plain crashed `unknown` →
+        // `unknown`/`unknown`, and a legacy row with no receipt → the explicit
+        // `unknown_legacy` projection — all readable rather than opaque.
+        const reconciledTerminalReason = deriveScheduleTerminalReason(task);
+        const reconciledTerminalReasonPatch = reconciledTerminalReason
+          ? { terminalReason: reconciledTerminalReason }
+          : {};
         // Default-deny counting (issue #2521): a `completed` reconcile resets the
         // streak; a `cancelled` increments ONLY when the task's terminationReason
         // is a genuine execution failure. This is the actual path the 2026-08-14
@@ -1500,6 +1589,7 @@ export class ScheduleService {
             ...latest,
             outcome: scheduleOutcome,
             reasonCode: 'reconciled_after_restart',
+            ...reconciledTerminalReasonPatch,
           },
           executionLedger: updateLedgerEntryForTask(schedule.executionLedger, task.id, {
             outcome: scheduleOutcome,
@@ -1508,6 +1598,7 @@ export class ScheduleService {
             ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
             ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
             ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
+            ...reconciledTerminalReasonPatch,
           }),
           ...(schedule.currentExecution ? {
             currentExecution: {
@@ -1640,7 +1731,7 @@ function ledgerEntryFromReceipt(
 function updateLedgerEntryForTask(
   ledger: ScheduleExecutionLedgerEntry[],
   taskId: string,
-  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit'>>,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit' | 'terminalReason'>>,
 ): ScheduleExecutionLedgerEntry[] {
   let updated = false;
   const next = ledger.map((entry) => {
@@ -1658,7 +1749,7 @@ function updateLedgerEntryForTask(
 function closeMidFlightLedgerRowsForTask(
   ledger: ScheduleExecutionLedgerEntry[],
   taskId: string,
-  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit'>>,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit' | 'terminalReason'>>,
 ): ScheduleExecutionLedgerEntry[] {
   let updated = false;
   const next = ledger.map((entry) => {

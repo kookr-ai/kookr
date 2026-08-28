@@ -1303,6 +1303,33 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     });
   });
 
+  // Schedule terminal-reason rollup over a bounded trailing window (issue
+  // #2877): aggregates classified schedule fires by terminal reason and by
+  // resolved provider — with occupied slot-time — so the daily reflection can
+  // spot a provider-wide timeout storm directly instead of joining
+  // `/api/schedules` to `/api/tasks` per fire. Reads only the in-memory,
+  // already-capped execution ledgers; never serializes task event histories.
+  // `?windowMs=` (or `?hours=`) selects the window; default 24h, capped at 30d.
+  // Empty rollup when scheduling is not configured.
+  app.get('/api/diagnostics/schedule-terminal-reasons', (c) => {
+    const nowMs = deps.nowMs?.() ?? Date.now();
+    const windowMs = parseTerminalOutcomeWindowMs(c.req.query('windowMs'), c.req.query('hours'));
+    const aggregate = deps.scheduleService
+      ? deps.scheduleService.aggregateTerminalReasons({ nowMs, windowMs })
+      : {
+          windowMs,
+          generatedAt: new Date(nowMs).toISOString(),
+          total: 0,
+          occupiedMs: 0,
+          byReason: {},
+          byProvider: {},
+        };
+    return c.json({
+      schemaVersion: 'schedule-terminal-reasons-diagnostics-route.v1',
+      ...aggregate,
+    });
+  });
+
   // Median human-reply wait over the last 24 hours (issue #2583). Reads the
   // existing session interaction JSONL files; does not invent a store.
   // The StatusBar chip hides itself below five samples — this route still

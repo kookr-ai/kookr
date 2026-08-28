@@ -7,6 +7,7 @@ import { isValidCron, nextRun, describeCron } from './cron.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
+import type { TerminalReasonCategory, TerminalTransitionSource } from '../shared/contracts/task.js';
 import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
 import { isCriticalAllowlistedSchedule } from './critical-schedule-rearm.js';
 
@@ -252,6 +253,26 @@ export type ScheduleExecutionReasonCode =
   | 'probe_quiet'
   | 'probe_blip';
 
+/**
+ * Classified task terminal cause carried onto a schedule execution receipt
+ * (issue #2877). Mirrors `shared/contracts/schedule`. Bounded typed fields
+ * copied from the fire's task terminal receipt (#2847) at the task→schedule
+ * terminal transition, so a schedule row can answer "did this fire time out,
+ * fail on the provider, die in a restart, or is it a legacy unknown?" without
+ * joining `/api/schedules` back to `/api/tasks`.
+ *
+ * Deliberately narrow: only the typed classification, the resolved
+ * provider/agent type, and the transition timestamp — never a prompt or a raw
+ * provider error string. `reasonCode` reuses the task-side
+ * {@link TerminalReasonCategory} so classification is identical on both sides.
+ */
+export interface ScheduleTerminalReason {
+  reasonCode: TerminalReasonCategory;
+  source: TerminalTransitionSource;
+  provider?: string;
+  at: string;
+}
+
 export interface ScheduleExecutionLedgerEntry {
   id: string;
   scheduleId: string;
@@ -298,6 +319,13 @@ export interface ScheduleExecutionLedgerEntry {
    * `live-verified` delivery.
    */
   mergeCommit?: string;
+  /**
+   * Classified task terminal cause joined from the fire's task receipt at the
+   * terminal transition (issue #2877). Absent on non-terminal rows and on fires
+   * that never reached a task (dispatch/skip outcomes). Mirrors
+   * `shared/contracts/schedule`.
+   */
+  terminalReason?: ScheduleTerminalReason;
 }
 
 /**
@@ -384,6 +412,13 @@ export interface ScheduleLatestExecutionStatus {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  /**
+   * Classified task terminal cause for the most recent fire (issue #2877), set
+   * alongside a terminal `outcome`. Lets `schedulesPausedByFailure` and the UI
+   * surface the last classified reason without a task join. Mirrors
+   * `shared/contracts/schedule`.
+   */
+  terminalReason?: ScheduleTerminalReason;
 }
 
 export interface Schedule {
@@ -541,6 +576,14 @@ export interface ScheduleStatusSnapshot {
     id: string;
     name: string;
     consecutiveFailures: number;
+    /**
+     * Last classified terminal reason that contributed to the fail-closed pause
+     * (issue #2877), joined from the schedule's `latestExecution.terminalReason`.
+     * Lets recovery logic and operators see WHY a schedule stopped and WHEN,
+     * without joining back to `/api/tasks`. Absent on legacy holds with no
+     * classified fire.
+     */
+    lastTerminalReason?: ScheduleTerminalReason;
   }>;
 }
 
@@ -1080,6 +1123,10 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
   const mergeCommit = typeof candidate.mergeCommit === 'string' && candidate.mergeCommit.length > 0
     ? candidate.mergeCommit
     : undefined;
+  // Optional terminal-reason classification (issue #2877). Legacy ledgers
+  // predate it, so it must load cleanly when absent and be dropped when
+  // malformed rather than trusted — the enriched receipt survives a restart.
+  const terminalReason = normalizeScheduleTerminalReason(candidate.terminalReason);
   return {
     id: String(candidate.id),
     scheduleId: String(candidate.scheduleId),
@@ -1098,6 +1145,7 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
     ...(tokenUsage ? { tokenUsage } : {}),
     ...(artifacts ? { artifacts } : {}),
     ...(mergeCommit ? { mergeCommit } : {}),
+    ...(terminalReason ? { terminalReason } : {}),
   };
 }
 
@@ -1142,12 +1190,39 @@ function normalizeLedgerArtifacts(raw: unknown): string[] | undefined {
   return artifacts.length > 0 ? artifacts : undefined;
 }
 
+/**
+ * Coerce a persisted {@link ScheduleTerminalReason} blob (issue #2877). Returns
+ * undefined unless `reasonCode`, `source`, and `at` are all present non-empty
+ * strings — a partial or malformed record is dropped rather than half-trusted.
+ * `reasonCode`/`source` are stored as strings (they mirror the task-side unions)
+ * and pass through as-is; the type unions are enforced at write time, and a
+ * future value added on the task side must still round-trip here.
+ */
+function normalizeScheduleTerminalReason(raw: unknown): ScheduleTerminalReason | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Partial<ScheduleTerminalReason>;
+  if (
+    typeof c.reasonCode !== 'string' || c.reasonCode.length === 0
+    || typeof c.source !== 'string' || c.source.length === 0
+    || typeof c.at !== 'string' || c.at.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    reasonCode: c.reasonCode,
+    source: c.source,
+    at: c.at,
+    ...(typeof c.provider === 'string' && c.provider.length > 0 ? { provider: c.provider } : {}),
+  };
+}
+
 function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const candidate = raw as Partial<ScheduleLatestExecutionStatus>;
   if (!candidate.executionToken || !candidate.evaluatedAt || !candidate.trigger || !candidate.outcome) {
     return undefined;
   }
+  const terminalReason = normalizeScheduleTerminalReason(candidate.terminalReason);
   return {
     executionToken: candidate.executionToken,
     evaluatedAt: candidate.evaluatedAt,
@@ -1159,6 +1234,7 @@ function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus |
     ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
     ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
     ...(candidate.message ? { message: candidate.message } : {}),
+    ...(terminalReason ? { terminalReason } : {}),
   };
 }
 
