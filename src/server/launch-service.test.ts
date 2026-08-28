@@ -4709,6 +4709,215 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
   });
 });
 
+describe('manual-launch checkout auto-sync (opt-in per project)', () => {
+  function cleanGitEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    return env;
+  }
+
+  function git(cwd: string, ...args: string[]) {
+    execFileSync('git', args, { cwd, stdio: 'pipe', env: cleanGitEnv() });
+  }
+
+  /** Read-only git query with the same env-stripping as `git()` — a leaked
+   * GIT_DIR/GIT_WORK_TREE from a concurrent test in the same worker must
+   * never redirect an assertion onto the ambient repo instead of the
+   * mkdtemp one (see commit fixing this exact failure under the full suite). */
+  function gitOutput(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, { cwd, env: cleanGitEnv() }).toString().trim();
+  }
+
+  async function initGitRepo(dir: string) {
+    await mkdir(dir, { recursive: true });
+    git(dir, 'init');
+    git(dir, 'config', 'user.email', 'test@example.com');
+    git(dir, 'config', 'user.name', 'Test User');
+    await writeFile(join(dir, 'README.md'), '# test\n');
+    git(dir, 'add', 'README.md');
+    git(dir, 'commit', '-m', 'init');
+  }
+
+  function projectConfigStoreWith(localPath: string, autoSyncOnManualLaunch: boolean) {
+    return {
+      getAllConfigs: () => [{ project: 'local/repo', localPath, autoSyncOnManualLaunch }],
+    };
+  }
+
+  it('runs the sync and folds a failure warning into the launch note for a ui launch', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n'); // uncommitted -> sync is skipped with a warning
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(repoDir, true) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toContain('Auto-sync skipped');
+      expect(store.getTask(result.task.id)?.launchNote).toContain('uncommitted changes');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run for a schedule-fired launch even when the project opts in', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n');
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(repoDir, true) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'schedule' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toBeUndefined();
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run for a ui launch when the project has not opted in', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n');
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(repoDir, false) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toBeUndefined();
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run for a ui launch into an unrelated cwd', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    const otherDir = await mkdtemp(join(tmpdir(), 'launch-autosync-other-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n');
+
+      const store = new TaskStore();
+      // Config opts in a *different* localPath than the launch's cwd.
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(otherDir, true) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toBeUndefined();
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+      await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it('picks the matching config by localPath, not by array position', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    const otherDir = await mkdtemp(join(tmpdir(), 'launch-autosync-other-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n');
+
+      const store = new TaskStore();
+      const deps = {
+        ...makeDeps(store),
+        projectConfigStore: {
+          // A non-matching config sorts first — `.find()` must not stop
+          // (or accidentally pick index 0) before reaching the real match.
+          getAllConfigs: () => [
+            { project: 'other/repo', localPath: otherDir, autoSyncOnManualLaunch: true },
+            { project: 'local/repo', localPath: repoDir, autoSyncOnManualLaunch: true },
+          ],
+        },
+      };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toContain('uncommitted changes');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+      await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces a warning note when the sync itself fails (no origin remote configured)', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(repoDir); // clean tree, attached HEAD, but no `origin` remote
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(repoDir, true) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'cli' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toContain('git fetch origin');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stays silent — no launch note — for a clean sync that actually succeeds', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'launch-autosync-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(remoteDir);
+      git(remoteDir, 'branch', '-M', 'main');
+      const cloneDir = join(workDir, 'clone');
+      git(workDir, 'clone', remoteDir, cloneDir);
+      git(cloneDir, 'branch', '-M', 'main');
+      git(cloneDir, 'branch', '--set-upstream-to=origin/main', 'main');
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(cloneDir, true) };
+      const result = await launchTask(deps, { prompt: 'go', cwd: cloneDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toBeUndefined();
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('never runs the sync for a deduped repeat launch — it is the LAST step before createTask', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'launch-autosync-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(remoteDir);
+      git(remoteDir, 'branch', '-M', 'main');
+      const cloneDir = join(workDir, 'clone');
+      git(workDir, 'clone', remoteDir, cloneDir);
+      git(cloneDir, 'branch', '-M', 'main');
+      git(cloneDir, 'branch', '--set-upstream-to=origin/main', 'main');
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(cloneDir, true) };
+
+      const first = await launchTask(deps, { prompt: 'dedup-autosync', cwd: cloneDir, launchSource: 'ui' });
+      expect(first.duplicate).toBeFalsy();
+
+      // Advance origin AFTER the first launch's sync. If a deduped second
+      // launch reached the sync step at all, this new commit would be
+      // fetched and rebased in — which must not happen: dedup rejects
+      // before createTask, and the sync now runs immediately before
+      // createTask, so a rejected/deduped launch must never pay for it.
+      await writeFile(join(remoteDir, 'NEW.md'), 'new\n');
+      git(remoteDir, 'add', 'NEW.md');
+      git(remoteDir, 'commit', '-m', 'advance origin after first launch');
+      const newRemoteHead = gitOutput(remoteDir, 'rev-parse', 'HEAD');
+
+      const second = await launchTask(deps, { prompt: 'dedup-autosync', cwd: cloneDir, launchSource: 'ui' });
+
+      expect(second.duplicate).toBe(true);
+      expect(second.task.id).toBe(first.task.id);
+      const headAfter = gitOutput(cloneDir, 'rev-parse', 'HEAD');
+      expect(headAfter).not.toBe(newRemoteHead);
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
   let store: TaskStore;
   let deps: LaunchServiceDeps;

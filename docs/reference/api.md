@@ -801,6 +801,7 @@ before save (`sanitizeProjectConfig`).
 | `budgetWarnUsd` | no | finite number or `null` | Per-task cost warning in USD; `0` disables alerts for this project; negatives clamp to `0`; `null` clears the override |
 | `notes` | no | string | Free-form notes; truncated to 2000 characters if longer |
 | `webhook` | no | object | `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` |
+| `autoSyncOnManualLaunch` | no | boolean | When `true`, a manual (`ui`/`cli`) launch into this project's `localPath` runs `git fetch origin` + `git pull --rebase` against that checkout before the task starts; a sync failure surfaces as a warning in the task's launch note rather than blocking the launch. Requires `localPath` to already be set (stamped automatically from a prior launch's cwd). Never applies to scheduled or other automated launches. |
 
 Returns the full sanitized config object for that project.
 

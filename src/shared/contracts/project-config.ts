@@ -42,6 +42,15 @@ export interface ProjectConfig {
   notes?: string;
   localPath?: string;
   webhook?: ProjectWebhookRoutingSettings;
+  /**
+   * When true, a manual (human-triggered — `launchSource: 'ui'` or `'cli'`)
+   * launch first runs `git fetch origin` + `git pull --rebase` against
+   * `localPath` before the task starts, so operators never begin work
+   * against a stale ambient checkout. Requires `localPath` to be set — the
+   * match is by canonicalized cwd, not project id. Never applies to
+   * schedule-fired or other automated launches. Defaults to false/unset.
+   */
+  autoSyncOnManualLaunch?: boolean;
 }
 
 /** Finite non-negative integer — used for PR rate-limit fields. */
@@ -92,5 +101,8 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
   if (typeof input.localPath === 'string') config.localPath = input.localPath;
   const webhook = normalizeProjectWebhookRoutingSettings(input.webhook);
   if (webhook !== undefined) config.webhook = webhook;
+  if (typeof input.autoSyncOnManualLaunch === 'boolean') {
+    config.autoSyncOnManualLaunch = input.autoSyncOnManualLaunch;
+  }
   return config;
 }
