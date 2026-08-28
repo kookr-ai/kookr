@@ -91,6 +91,30 @@ describe('preparePlaybookList', () => {
     expect(mockKbProbe).not.toHaveBeenCalled();
   });
 
+  test('R4b.8 expands portable home paths before matching pinned repository identity', async () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = '/home/catalog-user';
+    try {
+      mockDiscoverPlaybooks.mockResolvedValueOnce([
+        playbook([], { id: 'portable-pin.md', cwd: '$HOME/repos/target' }),
+      ]);
+      mockGetProjectId.mockImplementation(async (cwd: string) => (
+        cwd === '/work/target' || cwd === '/home/catalog-user/repos/target'
+          ? 'github.com/acme/target'
+          : 'unexpected'
+      ));
+
+      const result = await preparePlaybookList('/work/target');
+
+      expect(result.playbooks.map((item) => item.id)).toEqual(['portable-pin.md']);
+      expect(mockGetProjectId).toHaveBeenCalledWith('/home/catalog-user/repos/target');
+      expect(mockGetProjectId).not.toHaveBeenCalledWith('$HOME/repos/target');
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
+  });
+
   test('returns playbooks with no capabilities when no parameter is gated (no probe)', async () => {
     mockDiscoverPlaybooks.mockResolvedValueOnce([
       playbook([param({ name: 'plain' })]),
