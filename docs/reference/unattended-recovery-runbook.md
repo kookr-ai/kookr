@@ -44,6 +44,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Ready fails after restart | `GET /api/ready` body `checks` | Fix named subsystem, then re-probe (offline card §1) |
 | Discord silent after a real edge | `$KOOKR_DIR/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
 | After restart, hourly safety-net last-fired stamps are empty | `GET /api/health.timerHealth` (`neverFired` / `overdue`) or `GET /api/diagnostics/timer-health` `lastFiredAt` | Expected for ~60s until the deferred startup fire; do not page until `overdue` — [hourly-timer boot window](#7-hourly-timer-boot-window). After HTTP goes dark, read the same four fields from last-good health. |
+| Health body may be stale or partially collected, not live | `controlPlane.collectionStatus` (`ok`/`degraded`/`unavailable`), `controlPlane.source` (`live`/`last-good`/`unavailable`), `lastGoodAgeMs`, `timedOutComponents`/`erroredComponents` | `source == "last-good"` ⇒ a preserved on-disk snapshot served after the cold-cache assembly missed `HEALTH_ASSEMBLY_DEADLINE_MS` (counts intact but stale by `lastGoodAgeMs`); `degraded` with `source == "live"` ⇒ a named component read timed out/failed but the gauges are current; `unavailable` omits counts — never a fabricated zero. Read-only signal, never a restart (issue #2798). |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.

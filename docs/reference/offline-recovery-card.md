@@ -6,6 +6,8 @@ Short checklist for host-class failures when you return to a machine running una
 
 `/api/health` is dashboard-friendly (often 200 even when degraded). Engine supervisors should use **`/api/ready`**.
 
+Check `controlPlane.collectionStatus` / `controlPlane.source` (issue #2798): a `degraded` or `unavailable` status, or a `source` of `last-good`, flags a body that is stale or only partially collected (age in `controlPlane.lastGoodAgeMs`) rather than live.
+
 ```bash
 # Expect HTTP 200 when the engine is safe to supervise launches
 curl -sS -o /tmp/kookr-ready.json -w '%{http_code}\n' http://127.0.0.1:4800/api/ready
