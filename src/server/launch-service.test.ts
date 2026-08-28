@@ -4710,11 +4710,23 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
 });
 
 describe('manual-launch checkout auto-sync (opt-in per project)', () => {
-  function git(cwd: string, ...args: string[]) {
+  function cleanGitEnv(): NodeJS.ProcessEnv {
     const env = { ...process.env };
     delete env.GIT_DIR;
     delete env.GIT_WORK_TREE;
-    execFileSync('git', args, { cwd, stdio: 'pipe', env });
+    return env;
+  }
+
+  function git(cwd: string, ...args: string[]) {
+    execFileSync('git', args, { cwd, stdio: 'pipe', env: cleanGitEnv() });
+  }
+
+  /** Read-only git query with the same env-stripping as `git()` — a leaked
+   * GIT_DIR/GIT_WORK_TREE from a concurrent test in the same worker must
+   * never redirect an assertion onto the ambient repo instead of the
+   * mkdtemp one (see commit fixing this exact failure under the full suite). */
+  function gitOutput(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, { cwd, env: cleanGitEnv() }).toString().trim();
   }
 
   async function initGitRepo(dir: string) {
@@ -4891,13 +4903,13 @@ describe('manual-launch checkout auto-sync (opt-in per project)', () => {
       await writeFile(join(remoteDir, 'NEW.md'), 'new\n');
       git(remoteDir, 'add', 'NEW.md');
       git(remoteDir, 'commit', '-m', 'advance origin after first launch');
-      const newRemoteHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteDir }).toString().trim();
+      const newRemoteHead = gitOutput(remoteDir, 'rev-parse', 'HEAD');
 
       const second = await launchTask(deps, { prompt: 'dedup-autosync', cwd: cloneDir, launchSource: 'ui' });
 
       expect(second.duplicate).toBe(true);
       expect(second.task.id).toBe(first.task.id);
-      const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headAfter = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(headAfter).not.toBe(newRemoteHead);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });

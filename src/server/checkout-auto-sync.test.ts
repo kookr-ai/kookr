@@ -5,11 +5,22 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 
-function git(cwd: string, ...args: string[]) {
+function cleanGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
-  execFileSync('git', args, { cwd, stdio: 'pipe', env });
+  return env;
+}
+
+function git(cwd: string, ...args: string[]) {
+  execFileSync('git', args, { cwd, stdio: 'pipe', env: cleanGitEnv() });
+}
+
+/** Read-only git query, same env-stripping as `git()` — a leaked GIT_DIR/GIT_WORK_TREE
+ * from a concurrent test in the same worker must never redirect an assertion's
+ * `git rev-parse`/`status` onto the ambient repo instead of the mkdtemp one. */
+function gitOutput(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, env: cleanGitEnv() }).toString().trim();
 }
 
 async function initGitRepo(dir: string) {
@@ -44,12 +55,12 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       await writeFile(join(remoteDir, 'NEW.md'), 'new\n');
       git(remoteDir, 'add', 'NEW.md');
       git(remoteDir, 'commit', '-m', 'advance origin');
-      const originHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteDir }).toString().trim();
+      const originHead = gitOutput(remoteDir, 'rev-parse', 'HEAD');
 
       const result = await autoSyncCheckoutForManualLaunch(cloneDir);
 
       expect(result).toEqual({ attempted: true, synced: true });
-      const cloneHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const cloneHead = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(cloneHead).toBe(originHead);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
@@ -65,13 +76,13 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       const cloneDir = await cloneAndTrack(remoteDir, workDir);
       await writeFile(join(cloneDir, 'README.md'), 'dirty\n');
 
-      const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headBefore = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       const result = await autoSyncCheckoutForManualLaunch(cloneDir);
 
       expect(result.attempted).toBe(false);
       expect(result.synced).toBe(false);
       expect(result.warning).toContain('uncommitted changes');
-      const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headAfter = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(headAfter).toBe(headBefore);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
@@ -85,7 +96,7 @@ describe('autoSyncCheckoutForManualLaunch', () => {
     try {
       await initGitRepo(remoteDir);
       const cloneDir = await cloneAndTrack(remoteDir, workDir);
-      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const head = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       git(cloneDir, 'checkout', '--detach', head);
 
       const result = await autoSyncCheckoutForManualLaunch(cloneDir);
@@ -112,17 +123,17 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       await writeFile(join(cloneDir, 'README.md'), '# local change\n');
       git(cloneDir, 'add', 'README.md');
       git(cloneDir, 'commit', '-m', 'local edits README');
-      const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headBefore = gitOutput(cloneDir, 'rev-parse', 'HEAD');
 
       const result = await autoSyncCheckoutForManualLaunch(cloneDir);
 
       expect(result.attempted).toBe(true);
       expect(result.synced).toBe(false);
       expect(result.warning).toContain('git pull --rebase');
-      const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headAfter = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(headAfter).toBe(headBefore);
-      const status = execFileSync('git', ['status', '--porcelain'], { cwd: cloneDir }).toString();
-      expect(status.trim()).toBe(''); // rebase --abort left the tree clean
+      const status = gitOutput(cloneDir, 'status', '--porcelain');
+      expect(status).toBe(''); // rebase --abort left the tree clean
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
       await rm(workDir, { recursive: true, force: true });
@@ -135,7 +146,7 @@ describe('autoSyncCheckoutForManualLaunch', () => {
     try {
       await initGitRepo(remoteDir);
       const cloneDir = await cloneAndTrack(remoteDir, workDir);
-      const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headBefore = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       // Point origin at a path with no git repository so `git fetch` itself
       // fails deterministically, before `git pull --rebase` is ever reached.
       git(cloneDir, 'remote', 'set-url', 'origin', join(workDir, 'does-not-exist'));
@@ -146,7 +157,7 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       expect(result.synced).toBe(false);
       expect(result.warning).toContain('git fetch origin');
       expect(result.warning).not.toContain('git pull --rebase');
-      const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const headAfter = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(headAfter).toBe(headBefore);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
@@ -163,7 +174,7 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       await writeFile(join(remoteDir, 'NEW.md'), 'new\n');
       git(remoteDir, 'add', 'NEW.md');
       git(remoteDir, 'commit', '-m', 'advance origin');
-      const originHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteDir }).toString().trim();
+      const originHead = gitOutput(remoteDir, 'rev-parse', 'HEAD');
 
       // Two "manual launches into the same project" firing close together
       // must never race their own `git fetch`/`pull --rebase` on one working
@@ -175,7 +186,7 @@ describe('autoSyncCheckoutForManualLaunch', () => {
 
       expect(first).toBe(second); // same in-flight promise, not two independent syncs
       expect(first).toEqual({ attempted: true, synced: true });
-      const cloneHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      const cloneHead = gitOutput(cloneDir, 'rev-parse', 'HEAD');
       expect(cloneHead).toBe(originHead);
 
       // A later call is a fresh sync (the in-flight entry cleared once settled),
