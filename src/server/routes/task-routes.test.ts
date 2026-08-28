@@ -907,6 +907,29 @@ Do something else.
     expect(body).toHaveLength(1);
     expect(body[0].name).toBe('Alt playbook');
   });
+
+  test('R4b.8 excludes user playbooks pinned to another project', async () => {
+    const userDir = join(tempDir, 'user-playbooks');
+    mkdirSync(userDir, { recursive: true });
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    writeFileSync(join(userDir, 'portable.md'), `---
+name: Portable
+---
+Run in the selected project.
+`);
+    writeFileSync(join(userDir, 'pinned.md'), `---
+name: Pinned elsewhere
+cwd: /definitely-another-project
+---
+Run in the pinned project.
+`);
+
+    const res = await mkApp({ serverCwd: tempDir }).request('/api/playbooks');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.map((playbook: { id: string }) => playbook.id)).toEqual(['portable.md']);
+  });
 });
 
 describe('PATCH /api/tasks/:id/name', () => {

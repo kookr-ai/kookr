@@ -1,6 +1,5 @@
 import type { Context, Hono } from 'hono';
 import { join } from 'node:path';
-import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
@@ -90,6 +89,7 @@ import {
   shouldUseLiveMergeVerify,
 } from '../../core/merge-required.js';
 import { preparePlaybookLaunchWithMetadata } from '../use-cases/playbook-launch.js';
+import { discoverApplicablePlaybooks } from '../use-cases/playbook-list.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -1314,7 +1314,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   app.get('/api/playbooks', async (c) => {
     try {
       const cwd = c.req.query('cwd') ?? serverCwd;
-      const playbooks = await discoverPlaybooks(cwd);
+      const playbooks = await discoverApplicablePlaybooks(cwd);
       return c.json(playbooks);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

@@ -197,6 +197,7 @@ They share the same normalization helper as WebSocket `launchPlaybook`. No dupli
 For v1:
 
 - `cwd:` in playbook frontmatter means "this playbook pins the execution target."
+- During catalog listing, `cwd:` also scopes visibility to the same repository identity; alternate checkouts and worktrees of that repository remain eligible.
 - Project-drawer target override is illegal when `cwd:` resolves to a different canonical path.
 - Legacy launch with only `cwd` is not treated as a target override; `cwd:` keeps existing precedence.
 - This is intentionally conservative. A future RFC may add explicit metadata such as `target: selected-project`, but v1 does not infer that from comments or UI entry point.

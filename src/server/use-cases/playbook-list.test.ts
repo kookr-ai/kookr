@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Playbook, PlaybookParameter } from '../../core/playbook.js';
 
-const { mockDiscoverPlaybooks, mockKbProbe, mockEvolutionConfigProbe } = vi.hoisted(() => ({
+const { mockDiscoverPlaybooks, mockGetProjectId, mockKbProbe, mockEvolutionConfigProbe } = vi.hoisted(() => ({
   mockDiscoverPlaybooks: vi.fn(),
+  mockGetProjectId: vi.fn(),
   mockKbProbe: vi.fn(),
   mockEvolutionConfigProbe: vi.fn(),
 }));
 
 vi.mock('../../core/playbook-discovery.js', () => ({
   discoverPlaybooks: mockDiscoverPlaybooks,
+}));
+
+vi.mock('../../core/project-identity.js', () => ({
+  getProjectId: mockGetProjectId,
 }));
 
 // preparePlaybookList only consumes CAPABILITY_PROBES; we mock the whole
@@ -28,7 +33,7 @@ function param(overrides: Partial<PlaybookParameter> = {}): PlaybookParameter {
   };
 }
 
-function playbook(parameters: PlaybookParameter[]): Playbook {
+function playbook(parameters: PlaybookParameter[], overrides: Partial<Playbook> = {}): Playbook {
   return {
     id: 'pb.md',
     scope: 'project',
@@ -39,12 +44,75 @@ function playbook(parameters: PlaybookParameter[]): Playbook {
     tags: [],
     body: '',
     sourceCwd: '/p',
+    ...overrides,
   };
 }
 
 describe('preparePlaybookList', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  test('R4b.8 hides playbooks pinned to a different repository from the browsed project', async () => {
+    mockDiscoverPlaybooks.mockResolvedValueOnce([
+      playbook([], { id: 'portable.md' }),
+      playbook([], { id: 'same-repo.md', cwd: '/work/target-other-checkout' }),
+      playbook([], { id: 'other-repo.md', cwd: '/work/other' }),
+    ]);
+    mockGetProjectId.mockImplementation(async (cwd: string) => {
+      if (cwd === '/work/target' || cwd === '/work/target-other-checkout') {
+        return 'github.com/acme/target';
+      }
+      return 'github.com/acme/other';
+    });
+
+    const result = await preparePlaybookList('/work/target');
+
+    expect(result.playbooks.map((item) => item.id)).toEqual(['portable.md', 'same-repo.md']);
+    expect(mockGetProjectId).toHaveBeenCalledWith('/work/target');
+    expect(mockGetProjectId).toHaveBeenCalledWith('/work/target-other-checkout');
+    expect(mockGetProjectId).toHaveBeenCalledWith('/work/other');
+  });
+
+  test('R4b.8 excludes hidden pinned playbooks from capability probes', async () => {
+    mockDiscoverPlaybooks.mockResolvedValueOnce([
+      playbook([param({ name: 'gated', gatedBy: 'kb' })], {
+        id: 'hidden.md',
+        cwd: '/work/other',
+      }),
+    ]);
+    mockGetProjectId.mockImplementation(async (cwd: string) => (
+      cwd === '/work/target' ? 'github.com/acme/target' : 'github.com/acme/other'
+    ));
+
+    const result = await preparePlaybookList('/work/target');
+
+    expect(result).toEqual({ playbooks: [] });
+    expect(mockKbProbe).not.toHaveBeenCalled();
+  });
+
+  test('R4b.8 expands portable home paths before matching pinned repository identity', async () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = '/catalog-home';
+    try {
+      mockDiscoverPlaybooks.mockResolvedValueOnce([
+        playbook([], { id: 'portable-pin.md', cwd: '$HOME/repos/target' }),
+      ]);
+      mockGetProjectId.mockImplementation(async (cwd: string) => (
+        cwd === '/work/target' || cwd === '/catalog-home/repos/target'
+          ? 'github.com/acme/target'
+          : 'unexpected'
+      ));
+
+      const result = await preparePlaybookList('/work/target');
+
+      expect(result.playbooks.map((item) => item.id)).toEqual(['portable-pin.md']);
+      expect(mockGetProjectId).toHaveBeenCalledWith('/catalog-home/repos/target');
+      expect(mockGetProjectId).not.toHaveBeenCalledWith('$HOME/repos/target');
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
   });
 
   test('returns playbooks with no capabilities when no parameter is gated (no probe)', async () => {
