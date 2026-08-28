@@ -329,6 +329,7 @@ describe('bash completion behavior', () => {
   it('completes --model values from the shared model allowlist', async () => {
     await expect(completeBash(['kookr', 'spawn', '--model', ''])).resolves.toEqual(
       expect.arrayContaining([
+        'claude-opus-5',
         'claude-fable-5',
         'claude-opus-4-8',
         'claude-sonnet-5',
@@ -337,6 +338,7 @@ describe('bash completion behavior', () => {
     );
     await expect(completeBash(['kookr', 'spawn', '--model='])).resolves.toEqual(
       expect.arrayContaining([
+        '--model=claude-opus-5',
         '--model=claude-fable-5',
         '--model=claude-sonnet-5',
         '--model=claude-haiku-4-5',
@@ -704,6 +706,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes --model values from the shared model allowlist (zsh)', async () => {
     await expect(completeZsh(['kookr', 'spawn', '--model', ''], 4)).resolves.toEqual(
       expect.arrayContaining([
+        'claude-opus-5',
         'claude-fable-5',
         'claude-opus-4-8',
         'claude-sonnet-5',
@@ -712,6 +715,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     );
     await expect(completeZsh(['kookr', 'spawn', '--model='], 3)).resolves.toEqual(
       expect.arrayContaining([
+        '--model=claude-opus-5',
         '--model=claude-fable-5',
         '--model=claude-sonnet-5',
         '--model=claude-haiku-4-5',
