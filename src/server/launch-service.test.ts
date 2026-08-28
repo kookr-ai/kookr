@@ -4801,6 +4801,34 @@ describe('manual-launch checkout auto-sync (opt-in per project)', () => {
     }
   });
 
+  it('picks the matching config by localPath, not by array position', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    const otherDir = await mkdtemp(join(tmpdir(), 'launch-autosync-other-'));
+    try {
+      await initGitRepo(repoDir);
+      await writeFile(join(repoDir, 'README.md'), 'dirty\n');
+
+      const store = new TaskStore();
+      const deps = {
+        ...makeDeps(store),
+        projectConfigStore: {
+          // A non-matching config sorts first — `.find()` must not stop
+          // (or accidentally pick index 0) before reaching the real match.
+          getAllConfigs: () => [
+            { project: 'other/repo', localPath: otherDir, autoSyncOnManualLaunch: true },
+            { project: 'local/repo', localPath: repoDir, autoSyncOnManualLaunch: true },
+          ],
+        },
+      };
+      const result = await launchTask(deps, { prompt: 'go', cwd: repoDir, launchSource: 'ui' });
+
+      expect(store.getTask(result.task.id)?.launchNote).toContain('uncommitted changes');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+      await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
   it('surfaces a warning note when the sync itself fails (no origin remote configured)', async () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
     try {
@@ -4832,6 +4860,45 @@ describe('manual-launch checkout auto-sync (opt-in per project)', () => {
       const result = await launchTask(deps, { prompt: 'go', cwd: cloneDir, launchSource: 'ui' });
 
       expect(store.getTask(result.task.id)?.launchNote).toBeUndefined();
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('never runs the sync for a deduped repeat launch — it is the LAST step before createTask', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'launch-autosync-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'launch-autosync-'));
+    try {
+      await initGitRepo(remoteDir);
+      git(remoteDir, 'branch', '-M', 'main');
+      const cloneDir = join(workDir, 'clone');
+      git(workDir, 'clone', remoteDir, cloneDir);
+      git(cloneDir, 'branch', '-M', 'main');
+      git(cloneDir, 'branch', '--set-upstream-to=origin/main', 'main');
+
+      const store = new TaskStore();
+      const deps = { ...makeDeps(store), projectConfigStore: projectConfigStoreWith(cloneDir, true) };
+
+      const first = await launchTask(deps, { prompt: 'dedup-autosync', cwd: cloneDir, launchSource: 'ui' });
+      expect(first.duplicate).toBeFalsy();
+
+      // Advance origin AFTER the first launch's sync. If a deduped second
+      // launch reached the sync step at all, this new commit would be
+      // fetched and rebased in — which must not happen: dedup rejects
+      // before createTask, and the sync now runs immediately before
+      // createTask, so a rejected/deduped launch must never pay for it.
+      await writeFile(join(remoteDir, 'NEW.md'), 'new\n');
+      git(remoteDir, 'add', 'NEW.md');
+      git(remoteDir, 'commit', '-m', 'advance origin after first launch');
+      const newRemoteHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteDir }).toString().trim();
+
+      const second = await launchTask(deps, { prompt: 'dedup-autosync', cwd: cloneDir, launchSource: 'ui' });
+
+      expect(second.duplicate).toBe(true);
+      expect(second.task.id).toBe(first.task.id);
+      const headAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cloneDir }).toString().trim();
+      expect(headAfter).not.toBe(newRemoteHead);
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
       await rm(workDir, { recursive: true, force: true });

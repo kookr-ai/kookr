@@ -131,6 +131,7 @@ All three paths run through `sanitizeProjectConfig` before persistence.
 | `notes` | string | Free-form operator notes. Values longer than 2000 characters are **truncated** on write |
 | `localPath` | string | Absolute local checkout path (first-write wins on task start) |
 | `webhook` | object | Optional `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` routing override |
+| `autoSyncOnManualLaunch` | boolean | Opt-in, defaults to `false`/unset. When `true`, a human-triggered (`ui`/`cli`) launch whose cwd canonicalizes to `localPath` runs `git fetch origin` + `git pull --rebase` against that checkout before the task starts; a sync failure is reported as a launch-note warning rather than blocking the launch. Never applies to scheduled or other automated launches. Requires `localPath` to be an absolute path |
 
 See [Data Directory](reference/data-directory.md) for file location and
 [API Reference](reference/api.md#projects) for the HTTP body shape.

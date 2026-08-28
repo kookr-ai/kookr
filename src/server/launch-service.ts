@@ -48,6 +48,7 @@ import { registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js'
 import { hashPrompt } from './hash-prompt.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
+import { isAbsolute } from 'node:path';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
@@ -1267,16 +1268,6 @@ async function launchTaskCore(
   const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
   let launchNote = formatLaunchNote(dependencyFindings);
 
-  // #lucy-manual-autosync: for a manual (human-triggered) launch into a
-  // project opted into autoSyncOnManualLaunch, sync the ambient checkout
-  // with origin BEFORE resolving worktree guidance below — so the base ref
-  // that guidance recommends (`origin/<branch>`) reflects what was just
-  // fetched, not a possibly-stale local view.
-  const autoSyncWarning = await maybeAutoSyncCheckoutForManualLaunch(opts, deps);
-  if (autoSyncWarning) {
-    launchNote = launchNote ? `${launchNote}\n\n${autoSyncWarning}` : autoSyncWarning;
-  }
-
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
@@ -1613,6 +1604,20 @@ async function launchTaskCore(
       );
       throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
     }
+  }
+
+  // #lucy-manual-autosync: for a manual (human-triggered) launch into a
+  // project opted into autoSyncOnManualLaunch, sync the ambient checkout
+  // with origin now — deliberately the LAST step before createTask, after
+  // every reject-before-create admission check above (dedup, quota
+  // headroom, spawn burst, host-load, relaunch/issue-claim, pending-queue
+  // depth) has already passed. A launch that will be rejected or deduped
+  // must never pay for a real `git fetch`/`pull --rebase` network round
+  // trip first. Appends onto whatever launchNote survived admission (e.g.
+  // a dependency-park note) rather than overwriting it.
+  const autoSyncWarning = await maybeAutoSyncCheckoutForManualLaunch(opts, deps);
+  if (autoSyncWarning) {
+    launchNote = launchNote ? `${launchNote}\n\n${autoSyncWarning}` : autoSyncWarning;
   }
 
   let task: Task;
@@ -2459,6 +2464,7 @@ async function maybeAutoSyncCheckoutForManualLaunch(
   const match = configs.find((config) => (
     config.autoSyncOnManualLaunch === true
     && !!config.localPath
+    && isAbsolute(config.localPath)
     && canonicalizeCwd(config.localPath) === canonicalCwd
   ));
   if (!match) return undefined;
