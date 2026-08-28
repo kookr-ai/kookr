@@ -36,6 +36,9 @@ import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import { DrainController } from '../drain-state.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
+import * as retroVerifyQueue from '../../core/retro-verify-queue.js';
+import * as pipelineStarvationState from '../../core/pipeline-starvation-state.js';
+import { LastGoodHealthWriter } from '../last-good-health.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
 import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
@@ -3009,6 +3012,241 @@ describe('diagnostics routes', () => {
         connectedViewerCount: 0,
         grantStoreWritable: true,
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — controlPlane collection block (issue #2798)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health controlPlane block (issue #2798)', () => {
+    function hookIngestionStub(lastLagMs: number, lastProcessedAt: string): unknown {
+      return {
+        getDiagnosticsSnapshot: () => ({
+          schemaVersion: 'hook-ingestion-diagnostics.v1',
+          generatedAt: '2026-08-28T00:00:10.000Z',
+          lagWarningThresholdMs: 2_000,
+          sessionCount: 1,
+          totalArrivals: 1,
+          missingWriteTimestampCount: 0,
+          notableLagCount: 1,
+          sessions: [{
+            kookrSessionId: 's-1',
+            totalArrivals: 1,
+            dispatchedArrivals: 1,
+            duplicateArrivals: 0,
+            missingWriteTimestampCount: 0,
+            invalidWriteTimestampCount: 0,
+            futureWriteTimestampCount: 0,
+            notableLagCount: 1,
+            startupReplayArrivalCount: 0,
+            lastProcessedAt,
+            lastWriteTimestampAt: lastProcessedAt,
+            lastWriteTimestampSource: 'payload',
+            lag: { count: 1, lastMs: lastLagMs, meanMs: lastLagMs, maxMs: lastLagMs, p95Ms: lastLagMs },
+            sourceCounts: { file: 0, http: 1 },
+            writeTimestampSourceCounts: { payload: 1, file_mtime: 0, missing: 0, invalid: 0 },
+          }],
+        }),
+      };
+    }
+
+    function twoTaskStore(): TaskStore {
+      const store = new TaskStore();
+      store.createTask({ prompt: 'a', cwd: '/repo' });
+      store.createTask({ prompt: 'b', cwd: '/repo' });
+      return store;
+    }
+
+    function delayResolve<T>(value: T, ms: number): Promise<T> {
+      return new Promise((resolve) => { setTimeout(() => resolve(value), ms); });
+    }
+
+    test('live round stamps collectionStatus ok, source live, and hook-lag freshness', async () => {
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockResolvedValue([]);
+      vi.spyOn(pipelineStarvationState, 'listPipelineStarvationHealth').mockResolvedValue({});
+
+      const res = await mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hookIngestion: hookIngestionStub(291_000, '2026-08-28T00:00:05.000Z') as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        agents: number;
+        controlPlane: {
+          schemaVersion: string;
+          collectionStatus: string;
+          source: string;
+          lastGoodAt: string | null;
+          lastGoodAgeMs: number | null;
+          timedOutComponents: string[];
+          erroredComponents: string[];
+          hookLag: { lastLagMs: number | null; lastProcessedAt: string | null; ageMs: number | null } | null;
+        };
+      };
+      expect(body.agents).toBe(2);
+      expect(body.controlPlane.schemaVersion).toBe('control-plane-collection.v1');
+      expect(body.controlPlane.collectionStatus).toBe('ok');
+      expect(body.controlPlane.source).toBe('live');
+      expect(body.controlPlane.timedOutComponents).toEqual([]);
+      expect(body.controlPlane.erroredComponents).toEqual([]);
+      expect(typeof body.controlPlane.lastGoodAt).toBe('string');
+      expect(typeof body.controlPlane.lastGoodAgeMs).toBe('number');
+      // Latest hook-ingestion lag + freshness, from the newest processed session.
+      expect(body.controlPlane.hookLag?.lastLagMs).toBe(291_000);
+      expect(body.controlPlane.hookLag?.lastProcessedAt).toBe('2026-08-28T00:00:05.000Z');
+    });
+
+    test('a slow component degrades only itself; worker counts stay live (not zeroed)', async () => {
+      // Read slower than the per-component budget → ciBlindDebt times out, but
+      // the rest of the body still assembles from live in-memory gauges.
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockReturnValue(delayResolve([], 200));
+      vi.spyOn(pipelineStarvationState, 'listPipelineStarvationHealth').mockResolvedValue({});
+
+      const res = await mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        healthComponentBudgetMs: 20,
+      }).request('/api/health');
+
+      const body = await res.json() as {
+        agents: number;
+        controlPlane: { collectionStatus: string; source: string; timedOutComponents: string[] };
+      };
+      expect(body.controlPlane.source).toBe('live');
+      expect(body.controlPlane.collectionStatus).toBe('degraded');
+      expect(body.controlPlane.timedOutComponents).toEqual(['ciBlindDebt']);
+      // AC: active counts are not overwritten with zero merely because a
+      // collection component was slow.
+      expect(body.agents).toBe(2);
+    });
+
+    test('a failing provider is named in erroredComponents; counts stay live', async () => {
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockResolvedValue([]);
+      vi.spyOn(pipelineStarvationState, 'listPipelineStarvationHealth')
+        .mockRejectedValue(new Error('provider down'));
+
+      const res = await mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      const body = await res.json() as {
+        agents: number;
+        controlPlane: { collectionStatus: string; source: string; erroredComponents: string[] };
+      };
+      expect(body.controlPlane.source).toBe('live');
+      expect(body.controlPlane.collectionStatus).toBe('degraded');
+      expect(body.controlPlane.erroredComponents).toEqual(['pipelineStarvation']);
+      expect(body.agents).toBe(2);
+    });
+
+    test('cold-cache deadline serves the on-disk last-good snapshot with counts intact', async () => {
+      // Seed a durable last-good mirror recording a 7-agent fleet.
+      new LastGoodHealthWriter({ kookrDir: tempDir, now: () => Date.parse('2026-08-28T00:00:00.000Z') })
+        .record({ status: 'ok', agents: 7, capacity: { active: 5 } });
+
+      // Make the first assembly miss its (zero) deadline; the read still resolves
+      // shortly so the background assembly completes cleanly.
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockReturnValue(delayResolve([], 40));
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+        healthAssemblyDeadlineMs: 0,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        agents: number;
+        controlPlane: { collectionStatus: string; source: string; lastGoodAt: string | null; lastGoodAgeMs: number | null; timedOutComponents: string[] };
+      };
+      expect(body.controlPlane.source).toBe('last-good');
+      expect(body.controlPlane.collectionStatus).toBe('degraded');
+      expect(body.controlPlane.timedOutComponents).toEqual(['healthAssembly']);
+      // lastGoodAt derives from the mirror file's real mtime; assert only shape
+      // and that its age is a non-negative number.
+      expect(typeof body.controlPlane.lastGoodAt).toBe('string');
+      expect(body.controlPlane.lastGoodAgeMs).toBeGreaterThanOrEqual(0);
+      // AC: worker/session counts survive from the preserved snapshot — never 0.
+      expect(body.agents).toBe(7);
+    });
+
+    test('cold-cache deadline with no last-good returns a typed unavailable body (no zero counts)', async () => {
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockReturnValue(delayResolve([], 40));
+
+      const res = await mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        healthAssemblyDeadlineMs: 0,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        agents?: number;
+        status: string;
+        controlPlane: { collectionStatus: string; source: string; lastGoodAt: string | null };
+      };
+      expect(body.controlPlane.source).toBe('unavailable');
+      expect(body.controlPlane.collectionStatus).toBe('unavailable');
+      expect(body.controlPlane.lastGoodAt).toBeNull();
+      // Never fabricate a zero fleet: the count is omitted, not reported as 0.
+      expect(body.agents).toBeUndefined();
+    });
+
+    test('a cold-cache assembly exception surfaces as 500, not a downgraded controlPlane', async () => {
+      // A genuine assembly throw is not a slow-collection case: it must stay
+      // visible as a 500 (unchanged pre-#2798 behavior), never be silently
+      // downgraded to a last-good / unavailable 200 body.
+      const taskStore = new TaskStore();
+      vi.spyOn(taskStore, 'viewTasks').mockImplementation(() => { throw new Error('assembly boom'); });
+
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        healthAssemblyDeadlineMs: 5_000,
+      }).request('/api/health');
+
+      expect(res.status).toBe(500);
+    });
+
+    test('recovers to live data on a later poll once collection is fast again', async () => {
+      vi.spyOn(retroVerifyQueue, 'readPendingRetroVerify').mockReturnValue(delayResolve([], 30));
+      vi.spyOn(pipelineStarvationState, 'listPipelineStarvationHealth').mockResolvedValue({});
+
+      const app = mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+        healthAssemblyDeadlineMs: 0,
+      });
+
+      // First poll hits the deadline (cold cache, no mirror) → unavailable.
+      const first = await (await app.request('/api/health')).json() as {
+        controlPlane: { source: string };
+      };
+      expect(first.controlPlane.source).toBe('unavailable');
+
+      // The single-flight assembly keeps running; once it lands, a later poll
+      // serves fresh live data.
+      await vi.waitFor(async () => {
+        const body = await (await app.request('/api/health')).json() as {
+          agents: number;
+          controlPlane: { source: string; collectionStatus: string };
+        };
+        expect(body.controlPlane.source).toBe('live');
+        expect(body.controlPlane.collectionStatus).toBe('ok');
+        expect(body.agents).toBe(2);
+      }, { timeout: 2_000, interval: 25 });
     });
   });
 

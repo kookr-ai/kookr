@@ -582,6 +582,21 @@ export interface RouteDeps {
    */
   healthRefreshScheduler?: (task: () => void) => void;
   /**
+   * Per-component budget (ms) for the disk-backed reads inside a health
+   * assembly (issue #2798). A read slower than this degrades only its own block
+   * and is named in `controlPlane.timedOutComponents`. Defaults to
+   * HEALTH_COMPONENT_BUDGET_MS; injected in tests to drive a slow collector.
+   */
+  healthComponentBudgetMs?: number;
+  /**
+   * Cold-cache request budget (ms) for GET /api/health (issue #2798). If the
+   * first assembly does not finish within this deadline, the request serves the
+   * on-disk last-good snapshot (counts intact) or a typed `unavailable` body
+   * instead of hanging. Defaults to HEALTH_ASSEMBLY_DEADLINE_MS; injected in
+   * tests to force the deadline path deterministically.
+   */
+  healthAssemblyDeadlineMs?: number;
+  /**
    * Last-good `/api/health` mirror writer (issue #2495). After each successful
    * assembly, diagnostics drops a redacted, size-capped copy to
    * `<kookrDir>/last-good-health.json` so an offline digest can still quote a

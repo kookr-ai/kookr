@@ -74,7 +74,15 @@ import {
 import { summarizeOssAttemptsForHealth } from '../oss-attempts-snapshot.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
-import { LastGoodHealthWriter } from '../last-good-health.js';
+import { LastGoodHealthWriter, readLastGoodHealth } from '../last-good-health.js';
+import {
+  buildControlPlaneCollectionBlock,
+  collectBounded,
+  hookLagFreshnessFromSnapshot,
+  raceWithDeadline,
+  type ControlPlaneCollectionBlock,
+  type DeadlineResult,
+} from '../control-plane-health.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
   formatSafeModeDigestLine,
@@ -174,6 +182,25 @@ export const SHADOW_REPORT_REQUEST_BUDGET_MS = 8_000;
  * verdict.
  */
 export const HEALTH_BODY_CACHE_MS = 1_000;
+/**
+ * Per-component budget for the disk-backed reads inside a health assembly
+ * (issue #2798): the retro-verify spool and pipeline-starvation state files. A
+ * read slower than this degrades only its own block (recorded in
+ * `controlPlane.timedOutComponents`) instead of stalling the whole assembly —
+ * the in-memory gauges (agents, capacity, sessions) still collect and are never
+ * zeroed by one slow provider. Comfortably under HEALTH_ASSEMBLY_DEADLINE_MS.
+ */
+export const HEALTH_COMPONENT_BUDGET_MS = 1_500;
+/**
+ * Cold-cache request budget for GET /api/health (issue #2798). With no cached
+ * body to serve stale, the first caller would otherwise await the full assembly
+ * with no bound. If the assembly does not finish within this deadline, the
+ * request serves the on-disk last-good snapshot (worker/session counts intact)
+ * marked `controlPlane.source: "last-good"`, or a typed `unavailable` body when
+ * no last-good exists — never a hang, and never fabricated zero counts. The
+ * single-flight assembly keeps running so the next poll recovers to live data.
+ */
+export const HEALTH_ASSEMBLY_DEADLINE_MS = 2_500;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -534,19 +561,31 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
     }
 
+    // Component-collection provenance (issue #2798): the two disk-backed reads
+    // below are bounded per-component so one slow/failing provider degrades only
+    // its own block and is named in `controlPlane.{timedOut,errored}Components`,
+    // rather than stalling the whole assembly or being an indistinguishable
+    // silent omission. The cheap in-memory gauges above (agents, capacity,
+    // sessions) always collect, so a degraded round never zeroes worker counts.
+    const timedOutComponents: string[] = [];
+    const erroredComponents: string[] = [];
+    const recordComponentOutcome = (source: 'live' | 'timed-out' | 'error', name: string): void => {
+      if (source === 'timed-out') timedOutComponents.push(name);
+      else if (source === 'error') erroredComponents.push(name);
+    };
+
     // CI-blind-merge debt (issue #1703) — retro-verify queue depth + blind-merge
     // count. The spool is a small JSONL under ~/.kookr (or
     // KOOKR_RETRO_VERIFY_QUEUE_DIR); a single read is cheap enough for the
     // health hot path (unlike lesson-yield's hook-log scan). Failures are
     // soft: health stays 200 and omits the block rather than 500.
-    let ciBlindDebtBlock: CiBlindDebt | undefined;
-    try {
-      const spoolDir = defaultRetroVerifyQueueDir(process.env);
-      const pending = await readPendingRetroVerify(spoolDir);
-      ciBlindDebtBlock = computeCiBlindDebt(pending);
-    } catch {
-      ciBlindDebtBlock = undefined;
-    }
+    const ciBlindDebtOutcome = await collectBounded<CiBlindDebt>(
+      'ciBlindDebt',
+      async () => computeCiBlindDebt(await readPendingRetroVerify(defaultRetroVerifyQueueDir(process.env))),
+      deps.healthComponentBudgetMs ?? HEALTH_COMPONENT_BUDGET_MS,
+    );
+    recordComponentOutcome(ciBlindDebtOutcome.source, ciBlindDebtOutcome.name);
+    const ciBlindDebtBlock: CiBlindDebt | undefined = ciBlindDebtOutcome.value;
 
     // Pipeline starvation projection (RFC overnight-throughput PR1 / #1715).
     // Small per-repo JSON under playbook-state; soft-omit on failure.
@@ -558,14 +597,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           inventByPriorityClass?: InventPriorityClassHealth;
         }
       | undefined;
-    try {
-      const stateDir = deps.kookrDir
-        ? `${deps.kookrDir}/playbook-state/pipeline-starvation`
-        : defaultPipelineStarvationStateDir();
-      const repos = await listPipelineStarvationHealth({ stateDir });
-      const inventByPriorityClass = await loadInventPriorityClassHealth({
-        kookrDir: deps.kookrDir,
-      });
+    const pipelineStarvationOutcome = await collectBounded(
+      'pipelineStarvation',
+      async () => {
+        const stateDir = deps.kookrDir
+          ? `${deps.kookrDir}/playbook-state/pipeline-starvation`
+          : defaultPipelineStarvationStateDir();
+        const repos = await listPipelineStarvationHealth({ stateDir });
+        const inventByPriorityClass = await loadInventPriorityClassHealth({
+          kookrDir: deps.kookrDir,
+        });
+        return { repos, inventByPriorityClass };
+      },
+      deps.healthComponentBudgetMs ?? HEALTH_COMPONENT_BUDGET_MS,
+    );
+    recordComponentOutcome(pipelineStarvationOutcome.source, pipelineStarvationOutcome.name);
+    if (pipelineStarvationOutcome.value) {
+      const { repos, inventByPriorityClass } = pipelineStarvationOutcome.value;
       if (
         Object.keys(repos).length > 0
         || inventByPriorityClass.product
@@ -579,8 +627,6 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           inventByPriorityClass,
         };
       }
-    } catch {
-      pipelineStarvationBlock = undefined;
     }
 
     const staleProcesses = getStaleProcessSummary();
@@ -735,6 +781,27 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       typeof serverStartedAt === 'string' ? serverStartedAt : undefined,
     );
 
+    // Read the hook-ingestion diagnostics once and share it between the lag
+    // summary block and the control-plane hook-lag freshness reading (#2798).
+    const hookIngestionSnapshot = deps.hookIngestion?.getDiagnosticsSnapshot();
+
+    // Control-plane collection provenance (issue #2798). This live assembly
+    // stamps `source: "live"` and its own collection time; a degraded round
+    // (one of the bounded components above timed out or failed) flips
+    // collectionStatus to `degraded` while still serving the live gauges. The
+    // cold-cache deadline fallback in getCachedHealthBody overwrites this block
+    // with a `last-good` / `unavailable` verdict when it serves a preserved
+    // snapshot instead.
+    const controlPlaneNowMs = deps.nowMs?.() ?? Date.now();
+    const controlPlaneBlock: ControlPlaneCollectionBlock = buildControlPlaneCollectionBlock({
+      source: 'live',
+      collectedAtMs: controlPlaneNowMs,
+      nowMs: controlPlaneNowMs,
+      timedOutComponents,
+      erroredComponents,
+      hookLag: hookLagFreshnessFromSnapshot(hookIngestionSnapshot, controlPlaneNowMs),
+    });
+
     return {
       status: 'ok',
       agents: tasks.length,
@@ -816,9 +883,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // automation polling /api/health (and `kookr status`) see data-plane lag
       // without scraping /api/diagnostics/hook-ingestion. Never re-scans files.
       // Observability only; does not change /api/ready criticality.
-      ...(deps.hookIngestion
-        ? { hookIngestion: buildHookIngestionHealthSummary(deps.hookIngestion.getDiagnosticsSnapshot()) }
+      ...(hookIngestionSnapshot
+        ? { hookIngestion: buildHookIngestionHealthSummary(hookIngestionSnapshot) }
         : {}),
+      // Bounded-collection provenance (issue #2798): live/last-good/unavailable
+      // source, last-good age, timed-out/failed component names, hook-lag
+      // freshness. Read-only — this never restarts an agent or the daemon.
+      controlPlane: controlPlaneBlock,
       // OSS attempts summary (issue #2332): open/total counts + last refresh +
       // issue-check error count so operators see contribution-gate pressure from
       // /api/health and `kookr status` without fetching the full attempts array.
@@ -914,10 +985,69 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
       return serveHealthBody(healthBodyCache, now);
     }
-    // Cold cache: nothing to serve stale, so the first caller must wait for the
-    // assembly (still single-flight for any overlapping cold callers).
-    await startHealthAssembly();
-    return serveHealthBody(healthBodyCache!, deps.nowMs?.() ?? Date.now());
+    // Cold cache (issue #2798): with no stale body to serve, bound the first
+    // assembly so a slow or wedged collector cannot hang the endpoint. On
+    // success serve the fresh body; on a deadline (or a rejected assembly)
+    // serve the on-disk last-good snapshot — worker/session counts intact —
+    // or a typed `unavailable` body. The single-flight assembly keeps running,
+    // so the next poll recovers to live data.
+    const deadlineMs = deps.healthAssemblyDeadlineMs ?? HEALTH_ASSEMBLY_DEADLINE_MS;
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(() => deadlineController.abort(), deadlineMs);
+    (deadlineTimer as { unref?: () => void }).unref?.();
+    let outcome: DeadlineResult<Record<string, unknown>>;
+    try {
+      outcome = await raceWithDeadline(startHealthAssembly(), deadlineController.signal);
+    } finally {
+      clearTimeout(deadlineTimer);
+    }
+    if (outcome.status === 'value' && healthBodyCache !== undefined) {
+      return serveHealthBody(healthBodyCache, deps.nowMs?.() ?? Date.now());
+    }
+    // A genuine assembly *exception* is not a slow-collection case — surface it
+    // (Hono → 500) so the failure stays visible, exactly as before #2798. The
+    // rejected single-flight already cleared, so the next request rebuilds.
+    if (outcome.status === 'error') {
+      throw outcome.error;
+    }
+    // Deadline exceeded (slow / wedged collection): serve the preserved
+    // last-good snapshot, or a typed unavailable body — never a hang.
+    return serveColdDegradedBody(deps.nowMs?.() ?? Date.now());
+  }
+
+  // Build the degraded body served when a cold-cache assembly misses its
+  // deadline (issue #2798). Prefers the durable on-disk last-good mirror
+  // (issue #2495) so worker/session counts survive a slow round instead of
+  // being reported as zero; falls back to a typed `unavailable` body that omits
+  // counts entirely rather than fabricating zeros. Read-only: no restart.
+  function serveColdDegradedBody(nowMs: number): Record<string, unknown> {
+    const hookLag = hookLagFreshnessFromSnapshot(
+      deps.hookIngestion?.getDiagnosticsSnapshot(),
+      nowMs,
+    );
+    const mirror = deps.kookrDir ? readLastGoodHealth(deps.kookrDir, { now: nowMs }) : null;
+    if (mirror) {
+      const body: Record<string, unknown> = { ...mirror.snapshot.health };
+      body.controlPlane = buildControlPlaneCollectionBlock({
+        source: 'last-good',
+        collectedAtMs: mirror.mtimeMs,
+        nowMs,
+        timedOutComponents: ['healthAssembly'],
+        hookLag,
+      });
+      body.healthCacheAgeMs = mirror.ageMs;
+      return body;
+    }
+    return {
+      status: 'ok',
+      controlPlane: buildControlPlaneCollectionBlock({
+        source: 'unavailable',
+        collectedAtMs: null,
+        nowMs,
+        timedOutComponents: ['healthAssembly'],
+        hookLag,
+      }),
+    };
   }
 
   app.get('/api/health', async (c) => c.json(await getCachedHealthBody()));
