@@ -77,6 +77,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       zeroDrainIssueLimit?: number | null;
       notes?: string;
       webhook?: unknown;
+      autoSyncOnManualLaunch?: boolean;
     };
     if (!body.project) return c.json({ error: 'project is required' }, 400);
 
@@ -90,11 +91,18 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       zeroDrainIssueLimit?: number;
       notes?: string;
       webhook?: ProjectConfig['webhook'];
+      autoSyncOnManualLaunch?: boolean;
     } = {};
     if (body.tracked !== undefined) patch.tracked = body.tracked;
     if (body.dailyPrLimit !== undefined) patch.dailyPrLimit = body.dailyPrLimit;
     if (body.weeklyPrLimit !== undefined) patch.weeklyPrLimit = body.weeklyPrLimit;
     if (body.budgetWarnUsd !== undefined) patch.budgetWarnUsd = body.budgetWarnUsd ?? undefined;
+    if (body.autoSyncOnManualLaunch !== undefined) {
+      if (typeof body.autoSyncOnManualLaunch !== 'boolean') {
+        return c.json({ error: 'autoSyncOnManualLaunch must be a boolean' }, 400);
+      }
+      patch.autoSyncOnManualLaunch = body.autoSyncOnManualLaunch;
+    }
     if (body.zeroDrainIssueLimit !== undefined) {
       if (
         body.zeroDrainIssueLimit !== null

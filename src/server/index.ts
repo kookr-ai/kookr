@@ -1665,6 +1665,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       allowlist: currentSettings.agentFallbackAllowlist,
     }),
     recordLaunchBootLatency: (agentType, timings) => agentBootLatency.record(agentType, timings),
+    projectConfigStore,
     interactionLog,
     // Issue #2500: same shared audit trail the session reaper writes to, so a
     // launch-service-mediated reap of a late dtach master leaves a durable

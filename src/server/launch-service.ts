@@ -50,6 +50,7 @@ import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
+import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
@@ -164,6 +165,15 @@ export interface LaunchServiceDeps {
    * abandonment). Best-effort; never called with an unresolved sentinel agent.
    */
   recordLaunchBootLatency?: (agentType: AgentType, timings: LaunchPhaseTimings) => void;
+  /**
+   * Project registry consulted to gate `autoSyncCheckoutForManualLaunch`: a
+   * manual launch (`launchSource: 'ui'` or `'cli'`) whose canonicalized cwd
+   * matches a config's `localPath` with `autoSyncOnManualLaunch: true` gets
+   * a `git fetch origin` + `git pull --rebase` against that cwd before the
+   * task starts. Omitted (older wiring/tests) disables the feature entirely
+   * — no config to match against means no launch is ever auto-synced.
+   */
+  projectConfigStore?: Pick<import('../core/project-config-store.js').ProjectConfigStore, 'getAllConfigs'>;
   interactionLog?: DeferredInteractionLogWriter;
   /**
    * Shared `audit.jsonl` path (issue #2500). When set, a launch abandoned after
@@ -1256,6 +1266,16 @@ async function launchTaskCore(
   ));
   const launchHealthSummary = summarizeLaunchHealth(dependencyFindings);
   let launchNote = formatLaunchNote(dependencyFindings);
+
+  // #lucy-manual-autosync: for a manual (human-triggered) launch into a
+  // project opted into autoSyncOnManualLaunch, sync the ambient checkout
+  // with origin BEFORE resolving worktree guidance below — so the base ref
+  // that guidance recommends (`origin/<branch>`) reflects what was just
+  // fetched, not a possibly-stale local view.
+  const autoSyncWarning = await maybeAutoSyncCheckoutForManualLaunch(opts, deps);
+  if (autoSyncWarning) {
+    launchNote = launchNote ? `${launchNote}\n\n${autoSyncWarning}` : autoSyncWarning;
+  }
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
@@ -2415,6 +2435,35 @@ function sanitizeLaunchPreflightFindings(findings: LaunchPreflightFinding[]): La
     ...finding,
     ...(finding.detail ? { detail: redactDiagnosticText(finding.detail, 500) } : {}),
   }));
+}
+
+const MANUAL_LAUNCH_SOURCES: ReadonlySet<string> = new Set(['ui', 'cli']);
+
+/**
+ * Gate for `autoSyncCheckoutForManualLaunch`: only human-triggered launches
+ * (`launchSource: 'ui'` from the web UI, `'cli'` from the CLI — never
+ * `'schedule'`, `'api'`, or any automated/relay source) into a project whose
+ * `ProjectConfig.autoSyncOnManualLaunch` is true AND whose `localPath`
+ * canonicalizes to this launch's cwd qualify. Returns the sync's warning (if
+ * any) to fold into the launch note; a clean sync or a no-op match returns
+ * undefined — success is silent, only trouble is surfaced.
+ */
+async function maybeAutoSyncCheckoutForManualLaunch(
+  opts: LaunchOpts,
+  deps: LaunchServiceDeps,
+): Promise<string | undefined> {
+  if (!opts.launchSource || !MANUAL_LAUNCH_SOURCES.has(opts.launchSource)) return undefined;
+  const configs = deps.projectConfigStore?.getAllConfigs();
+  if (!configs?.length) return undefined;
+  const canonicalCwd = canonicalizeCwd(opts.cwd);
+  const match = configs.find((config) => (
+    config.autoSyncOnManualLaunch === true
+    && !!config.localPath
+    && canonicalizeCwd(config.localPath) === canonicalCwd
+  ));
+  if (!match) return undefined;
+  const result = await autoSyncCheckoutForManualLaunch(opts.cwd);
+  return result.warning;
 }
 
 function formatLaunchNote(findings: LaunchPreflightFinding[]): string | undefined {

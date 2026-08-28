@@ -158,6 +158,27 @@ describe('POST /api/projects/configs webhook routing', () => {
     });
   });
 
+  test('persists autoSyncOnManualLaunch and rejects a non-boolean value', async () => {
+    const app = mkApp({ projectConfigStore, broadcastProjectSummaries: () => {} });
+
+    const rejected = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'local/lucy', autoSyncOnManualLaunch: 'yes' }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(projectConfigStore.getConfig('local/lucy')).toBeUndefined();
+
+    const accepted = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'local/lucy', autoSyncOnManualLaunch: true }),
+    });
+    expect(accepted.status).toBe(200);
+    expect((await accepted.json()).autoSyncOnManualLaunch).toBe(true);
+    expect(projectConfigStore.getConfig('local/lucy')?.autoSyncOnManualLaunch).toBe(true);
+  });
+
   test('persists a zero-drain issue limit and rejects only the configured deployment ceiling', async () => {
     const unlimited = await mkApp({
       projectConfigStore,
