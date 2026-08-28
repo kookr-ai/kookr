@@ -31,7 +31,7 @@ Choosing a tier:
 
 ## CWD expansion
 
-Playbook and schedule launches expand a narrow set of portable home spellings via `expandConfiguredCwd` ([`src/server/cwd-paths.ts`](../src/server/cwd-paths.ts)). Expansion runs at **schedule validation** and **playbook launch** only — not inside shell scripts or agent prompts.
+Playbook and schedule launches expand a narrow set of portable home spellings via `expandConfiguredCwd` ([`src/server/cwd-paths.ts`](../src/server/cwd-paths.ts)). Expansion runs during **catalog filtering**, **schedule validation**, and **playbook launch** only — not inside shell scripts or agent prompts.
 
 Supported forms (when `HOME` is set):
 
@@ -61,8 +61,9 @@ So a repo can shadow a bundled playbook by dropping a same-named file in `.kookr
 ## What appears in each repo
 
 - `project` playbooks only appear when the dashboard cwd matches the repo.
-- `user` playbooks appear in every cwd.
-- `plugin` playbooks appear in every cwd by default — unless the playbook declares `repo-tags`, in which case it's filtered.
+- `user` playbooks appear in every cwd unless they declare `cwd:`.
+- `plugin` playbooks appear in every cwd by default — unless they declare `cwd:` or `repo-tags`, in which case they're filtered.
+- A playbook with `cwd:` appears only when the browsed cwd has the same repository identity as the pin. Alternate checkouts and worktrees of that repository remain eligible.
 
 ## Filtering plugin playbooks with `repo-tags`
 

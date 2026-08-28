@@ -60,8 +60,8 @@ Kookr discovers playbooks from these tiers:
 | Tier | Location | Visibility |
 | --- | --- | --- |
 | `project` | `<cwd>/.kookr/playbooks/*.md` | Only for that project cwd |
-| `user` | `~/.kookr/playbooks/*.md` or `$KOOKR_USER_PLAYBOOKS_DIR` | Every project |
-| `plugin` | `<kookr-toolkit-plugin>/playbooks/*.md` | Every project, unless filtered by `repo-tags` |
+| `user` | `~/.kookr/playbooks/*.md` or `$KOOKR_USER_PLAYBOOKS_DIR` | Every project unless constrained by `cwd` |
+| `plugin` | `<kookr-toolkit-plugin>/playbooks/*.md` | Every project unless constrained by `cwd` or filtered by `repo-tags` |
 
 If two tiers define the same relative filename, precedence is
 `project > user > plugin`. See [Playbook Scoping](../playbook-scoping.md) for
@@ -81,7 +81,7 @@ discovery, precedence, and plugin portability rules.
 | `deliveryPreAuthorized` | boolean | no | absent | Server delivery-policy flag. Absent (or `true`) launches tasks with pre-authorized delivery — the full commit/push/PR cycle without asking. Set `false` to require the agent to ask before pushing and opening a PR. Unrecognized values (e.g. `no`, `0`) fail safe to ask-first. |
 | `deliveryMode` | string | no | absent | Opts a dependent-phase chain into the self-advancing delivery contract (umbrella #2711): each phase self-merges through the merge wrapper and spawns the next. Only `self-advancing` is recognized; any other value is a parse error (fail-loud). Absent preserves the `deliveryPreAuthorized`-driven `pre-authorized`/`ask-first` shape, and `deliveryMode: self-advancing` takes precedence over `deliveryPreAuthorized`. Gated globally by the `KOOKR_SELF_ADVANCING_DISABLED` kill switch. |
 | `autoCloseOnSignal` | boolean | no | absent | When `true`, tasks launched from this playbook auto-complete after their agent's `completion_ready` signal has been pending for the configured Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30 minutes), instead of waiting indefinitely for manual review. Successors spawned via `parentTaskId` inherit it automatically. Only `true` and `false` are recognized. See [auto-close-on-signal](./auto-close-on-signal.md). |
-| `cwd` | string | no | launch dialog cwd | Target working directory override for launched tasks. Portable home spellings (`~`, `$HOME`, `${HOME}`, and their `/path` forms) are expanded at launch and schedule validation — see [CWD expansion](../playbook-scoping.md#cwd-expansion). |
+| `cwd` | string | no | launch dialog cwd | Target working directory override for launched tasks and catalog visibility constraint. The playbook appears only while browsing the same repository identity; alternate checkouts and worktrees of that repository remain eligible. Portable home spellings (`~`, `$HOME`, `${HOME}`, and their `/path` forms) are expanded during catalog filtering, launch, and schedule validation — see [CWD expansion](../playbook-scoping.md#cwd-expansion). |
 | `dependencies` | list of launch dependency strings | no | `[]` | External capabilities the playbook requires before launch. Unsupported values are parse errors. Currently supported: `kb`. |
 | `repo-tags` | list of strings | no | `[]` | Plugin-tier visibility filter. Ignored for project and user playbooks. |
 
