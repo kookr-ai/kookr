@@ -11,7 +11,7 @@ describe('lookupPricing — strict exact-match', () => {
     // MUST have its own pricing row. If you add an OpenAI model to the disk corpus,
     // add it here and to MODEL_PRICING in the same change.
     const observed = [
-      'claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
+      'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
       'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini',
       'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
     ];

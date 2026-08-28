@@ -431,6 +431,7 @@ describe('reasoning-effort levels (#681)', () => {
 
 describe('per-task model allowlist (#1518)', () => {
   test('claude-code allowlist includes Fable and issue-listed pins', () => {
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-opus-5');
     expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-fable-5');
     expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-opus-4-8');
     expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-sonnet-5');
@@ -449,6 +450,8 @@ describe('per-task model allowlist (#1518)', () => {
 
   test('isValidModelForAgent accepts exact ids and dated suffixes', () => {
     expect(isValidModelForAgent('claude-code', 'claude-fable-5')).toBe(true);
+    expect(isValidModelForAgent('claude-code', 'claude-opus-5')).toBe(true);
+    expect(isValidModelForAgent('claude-code', 'claude-opus-5-20260828')).toBe(true);
     expect(isValidModelForAgent('claude-code', 'claude-haiku-4-5-20251001')).toBe(true);
     expect(isValidModelForAgent('claude-code', 'claude-opus-4-8-20260701')).toBe(true);
     expect(isValidModelForAgent('claude-code', 'gpt-5.6-sol')).toBe(false);

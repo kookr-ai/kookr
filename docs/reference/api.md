@@ -344,8 +344,8 @@ against the **resolved** agent's known-model allowlist after any `round-robin`
 resolution; an invalid id returns `400 {"error", "code": "invalid_model"}` with
 no silent fallback. Allowed base ids for `claude-code`:
 
-- `claude-fable-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`,
-  `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- `claude-opus-5`, `claude-fable-5`, `claude-opus-4-8`, `claude-opus-4-7`,
+  `claude-opus-4-6`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
 - dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
   accepted
 

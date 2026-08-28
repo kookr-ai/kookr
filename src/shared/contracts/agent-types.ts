@@ -180,6 +180,7 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
  *   allowlists. Empty (not Claude inheritance) mirrors the effort pattern.
  */
 export const CLAUDE_CODE_MODEL_IDS = [
+  'claude-opus-5',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',

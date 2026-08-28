@@ -54,6 +54,7 @@ export interface ModelPricing {
  */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // Anthropic
+  'claude-opus-5':     { vendor: 'anthropic', lastVerified: '2026-08-28', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-opus-4-8':   { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-fable-5':    { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 1     },
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },

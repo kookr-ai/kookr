@@ -71,6 +71,7 @@ const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhig
 // Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
 // with a known base. Authoritative agent-specific check still runs server-side.
 const MODEL_IDS = [
+  'claude-opus-5',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
@@ -176,8 +177,9 @@ Options:
                            grok-build:  omit --effort (server rejects any value).
       --model <id>         Pin the model for this task (default: agent CLI /
                            env default). claude-code accepts known Claude ids
-                           (e.g. claude-fable-5, claude-opus-4-8,
-                           claude-sonnet-5, claude-haiku-4-5 and dated
+                           (e.g. claude-opus-5, claude-fable-5,
+                           claude-opus-4-8, claude-sonnet-5,
+                           claude-haiku-4-5 and dated
                            suffixes). codex-cli / grok-build reject --model
                            (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
