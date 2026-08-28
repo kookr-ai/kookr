@@ -93,13 +93,13 @@ describe('preparePlaybookList', () => {
 
   test('R4b.8 expands portable home paths before matching pinned repository identity', async () => {
     const originalHome = process.env.HOME;
-    process.env.HOME = '/home/catalog-user';
+    process.env.HOME = '/catalog-home';
     try {
       mockDiscoverPlaybooks.mockResolvedValueOnce([
         playbook([], { id: 'portable-pin.md', cwd: '$HOME/repos/target' }),
       ]);
       mockGetProjectId.mockImplementation(async (cwd: string) => (
-        cwd === '/work/target' || cwd === '/home/catalog-user/repos/target'
+        cwd === '/work/target' || cwd === '/catalog-home/repos/target'
           ? 'github.com/acme/target'
           : 'unexpected'
       ));
@@ -107,7 +107,7 @@ describe('preparePlaybookList', () => {
       const result = await preparePlaybookList('/work/target');
 
       expect(result.playbooks.map((item) => item.id)).toEqual(['portable-pin.md']);
-      expect(mockGetProjectId).toHaveBeenCalledWith('/home/catalog-user/repos/target');
+      expect(mockGetProjectId).toHaveBeenCalledWith('/catalog-home/repos/target');
       expect(mockGetProjectId).not.toHaveBeenCalledWith('$HOME/repos/target');
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
