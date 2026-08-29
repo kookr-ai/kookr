@@ -306,18 +306,21 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     // Clear any stale "couldn't pre-select" note when the directory changes —
     // the prefill was evaluated against the previous cwd, not this one.
     setPrefillUnmatched(false);
     if (!cwd.trim()) {
       setPlaybooks([]);
       setPlaybookId('');
+      setPlaybooksLoading(false);
       return;
     }
     const timeout = setTimeout(() => {
       setPlaybooksLoading(true);
       listPlaybooksForCwd(cwd.trim())
         .then((items: Playbook[]) => {
+          if (cancelled) return;
           // Schedules now resolve from an explicit pinned scope (project | user
           // | plugin), so offer playbooks from all three tiers and persist the
           // selected scope on create. See rfc-schedule-playbook-resolution R8.
@@ -337,6 +340,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
           });
         })
         .catch(() => {
+          if (cancelled) return;
           setPlaybooks([]);
           setPlaybookId('');
           setPendingPlaybookId((pending) => {
@@ -344,9 +348,14 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
             return null;
           });
         })
-        .finally(() => setPlaybooksLoading(false));
+        .finally(() => {
+          if (!cancelled) setPlaybooksLoading(false);
+        });
     }, 200);
-    return () => clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [cwd]);
 
   useEffect(() => {

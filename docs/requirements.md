@@ -1303,6 +1303,20 @@ The system SHALL show a per-schedule scorecard on each Schedules dialog card fro
 
 **Evidence:** `src/frontend/components/SchedulesDialog.tsx`, `src/frontend/schedule-api.ts`, `src/frontend/schedule-format.ts`, `src/frontend/components/SchedulesDialog.test.ts`, `src/frontend/schedule-format.test.ts`, `src/frontend/schedule-api.test.ts`, `docs/reference/schedule-roi.md`, `docs/reports/cost-attribution-semantics-reaped-tasks.md`, `src/server/cost-attribution-semantics.test.ts`.
 
+### R10.5: Keep Schedule Playbook Lookups Bound to the Current Directory [#2893] — SHALL — `done`
+
+The system SHALL keep the schedule-creation playbook catalog and its related form state consistent with the working directory currently shown in the form when directory lookups overlap.
+
+**Acceptance criteria:**
+- Only the latest non-empty working-directory lookup may update the playbook catalog, selected playbook, pending prefill result, unmatched-prefill note, or loading state
+- A stale successful response SHALL NOT replace a newer catalog or selection
+- A stale failed response SHALL NOT clear a newer catalog or surface an unmatched-prefill note for the current directory
+- A stale request settling SHALL NOT hide the loading indicator while the current request remains pending
+- Clearing the working directory SHALL cancel any in-flight lookup and keep the catalog, selection, and loading state empty after that stale request settles
+- Component tests cover both response orders, a stale rejection, overlapping loading state, and clearing the directory during a request
+
+**Evidence:** `src/frontend/components/SchedulesDialog.tsx` (current-effect guard across success, failure, loading finalization, and empty-directory reset), `src/frontend/components/SchedulesDialog.test.tsx` (both response orders, stale rejection, overlapping loading state, and clearing the directory during a request).
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1537,6 +1551,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
 | R10.3 | F11 | SHALL | done | cron description helpers |
 | R10.4 | F11.7 | SHALL | done | SchedulesDialog rollup glance, schedule-api, schedule-format |
+| R10.5 | #2893 | SHALL | done | SchedulesDialog current-effect guard and overlap regressions |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
