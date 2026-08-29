@@ -5,6 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
+import type { Playbook } from '../../shared/contracts/playbook.js';
 import type { ScheduleResponse } from '../../shared/contracts/schedule.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { SchedulesDialog } from './SchedulesDialog.js';
@@ -18,6 +19,40 @@ function syncGlobalStore() {
 }
 
 const TASK_ID = 'task-abcdef1234567890';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function makePlaybook(id: string, name: string): Playbook {
+  return {
+    id,
+    scope: 'project',
+    name,
+    description: `${name} description`,
+    parameters: [],
+    checklist: [],
+    tags: [],
+  };
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function changeInput(input: HTMLInputElement, value: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
 
 function makeSchedule(overrides: Partial<ScheduleResponse> = {}): ScheduleResponse {
   return {
@@ -53,6 +88,173 @@ function makeAgent(
 ): AgentState {
   return { agentId, events: [], anomaly: null, taskId, taskStatus };
 }
+
+describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let lookups: Map<string, ReturnType<typeof deferred<Response>>>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    lookups = new Map();
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/playbooks?cwd=')) {
+        const cwd = decodeURIComponent(url.slice('/api/playbooks?cwd='.length));
+        const lookup = deferred<Response>();
+        lookups.set(cwd, lookup);
+        return lookup.promise;
+      }
+      if (url === '/api/schedules') {
+        return Promise.resolve(jsonResponse({
+          revision: 0,
+          schedules: [],
+          status: {
+            timezone: 'UTC',
+            catchUpMode: 'auto',
+            catchUpEnabled: true,
+            schedulerHealthy: true,
+          },
+        }));
+      }
+      if (url === '/api/schedules/rollups') {
+        return Promise.resolve(jsonResponse({ rollups: [] }));
+      }
+      if (url === '/api/schedules/preview') {
+        return Promise.resolve(jsonResponse({
+          cronDescription: 'At 09:00 every day',
+          nextRuns: [],
+          timezone: 'UTC',
+        }));
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  function renderWithPrefill(playbookId = 'shared.md') {
+    act(() => {
+      root.render(React.createElement(SchedulesDialog, {
+        onClose: vi.fn(),
+        prefill: { cwd: '/project-a', playbookId },
+      }));
+    });
+  }
+
+  function cwdInput(): HTMLInputElement {
+    const field = Array.from(container.querySelectorAll<HTMLLabelElement>('.schedule-form-field'))
+      .find((label) => label.querySelector('span')?.textContent === 'Working Directory');
+    const input = field?.querySelector<HTMLInputElement>('input');
+    if (!input) throw new Error('Working Directory input not found');
+    return input;
+  }
+
+  function playbookSelect(): HTMLSelectElement {
+    const select = container.querySelector<HTMLSelectElement>('.schedule-form-field select');
+    if (!select) throw new Error('Playbook select not found');
+    return select;
+  }
+
+  async function startLookup(cwd: string): Promise<ReturnType<typeof deferred<Response>>> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    const lookup = lookups.get(cwd);
+    if (!lookup) throw new Error(`Lookup for ${cwd} did not start`);
+    return lookup;
+  }
+
+  async function changeCwd(cwd: string): Promise<ReturnType<typeof deferred<Response>>> {
+    act(() => changeInput(cwdInput(), cwd));
+    return startLookup(cwd);
+  }
+
+  async function settle(action: () => void): Promise<void> {
+    await act(async () => {
+      action();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test('keeps the newer catalog when its response arrives before the stale response', async () => {
+    renderWithPrefill();
+    const projectA = await startLookup('/project-a');
+    const projectB = await changeCwd('/project-b');
+
+    await settle(() => projectB.resolve(jsonResponse([makePlaybook('shared.md', 'Project B job')])));
+    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+
+    await settle(() => projectA.resolve(jsonResponse([makePlaybook('shared.md', 'Project A job')])));
+    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(container.textContent).not.toContain('Project A job');
+  });
+
+  test('ignores the stale response when it arrives before the current response', async () => {
+    renderWithPrefill();
+    const projectA = await startLookup('/project-a');
+    const projectB = await changeCwd('/project-b');
+
+    await settle(() => projectA.resolve(jsonResponse([makePlaybook('shared.md', 'Project A job')])));
+    expect(container.textContent).not.toContain('Project A job');
+    expect(container.textContent).toContain('Loading playbooks…');
+
+    await settle(() => projectB.resolve(jsonResponse([makePlaybook('shared.md', 'Project B job')])));
+    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+  });
+
+  test('ignores a stale failure after the current catalog succeeds', async () => {
+    renderWithPrefill('project-b.md');
+    const projectA = await startLookup('/project-a');
+    const projectB = await changeCwd('/project-b');
+
+    await settle(() => projectB.resolve(jsonResponse([makePlaybook('project-b.md', 'Project B job')])));
+    await settle(() => projectA.reject(new Error('Project A lookup failed')));
+
+    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(container.textContent).not.toContain('Couldn’t pre-select');
+    expect(container.textContent).not.toContain('No playbooks found');
+  });
+
+  test('keeps loading visible when a stale request settles before the current request', async () => {
+    renderWithPrefill();
+    const projectA = await startLookup('/project-a');
+    const projectB = await changeCwd('/project-b');
+
+    await settle(() => projectA.resolve(jsonResponse([makePlaybook('shared.md', 'Project A job')])));
+    expect(container.textContent).toContain('Loading playbooks…');
+
+    await settle(() => projectB.resolve(jsonResponse([makePlaybook('shared.md', 'Project B job')])));
+    expect(container.textContent).not.toContain('Loading playbooks…');
+  });
+
+  test('keeps the catalog empty when the directory is cleared during a request', async () => {
+    renderWithPrefill();
+    const projectA = await startLookup('/project-a');
+
+    act(() => changeInput(cwdInput(), ''));
+    expect(playbookSelect().value).toBe('');
+    expect(container.textContent).not.toContain('Loading playbooks…');
+
+    await settle(() => projectA.resolve(jsonResponse([makePlaybook('shared.md', 'Project A job')])));
+    expect(playbookSelect().value).toBe('');
+    expect(container.textContent).not.toContain('Project A job');
+    expect(container.textContent).not.toContain('Loading playbooks…');
+  });
+});
 
 describe('SchedulesDialog task reference', () => {
   let container: HTMLDivElement;
