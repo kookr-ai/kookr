@@ -20,12 +20,12 @@ src/core/              — Domain logic, contracts, parsers, stores, anomaly det
 src/adapters/          — I/O boundaries: TerminalBackend + LocalDtachBackend, Claude Code adapter, Codex CLI adapter
 src/server/            — HTTP (Hono) + WebSocket server, hook file watcher, reconciliation
 src/frontend/          — React SPA: components, Zustand store, WebSocket hook, CSS
-.claude/skills/        — Kookr-internal skills (project-scope; reference Kookr paths/commands)
-.claude/agents/        — Kookr-internal review agents (project-scope)
+.claude/skills/        — Kookr source-maintenance skills (project-scope; natural cwd is this repo)
+.claude/agents/        — Kookr source-maintenance review agents (project-scope)
 plugin/                — Kookr Toolkit (Claude Code plugin distributed via marketplace)
 plugin/.claude-plugin/plugin.json  — Plugin manifest (name, version, author)
-plugin/skills/         — General-purpose toolkit skills (no Kookr-internal refs)
-plugin/agents/         — General-purpose review subagents
+plugin/skills/         — Distributed toolkit skills, including cross-repo Kookr runtime operations
+plugin/agents/         — Distributed review subagents
 .claude-plugin/marketplace.json    — Marketplace manifest pointing at ./plugin
 ```
 
@@ -85,8 +85,8 @@ outright rather than left to run:
 
 Two homes only (RFC: `docs/rfc/rfc-skill-agent-distribution.md`):
 
-- **Kookr-internal** (references `pnpm prod:*`, `pnpm build:server`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system / `.review-state` markers): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix in the directory or file name. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
-- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
+- **Kookr source maintenance** (edits or inspects Kookr source, tests, hooks, build scripts, release procedures, or repo-local architecture): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix. Its natural cwd is the Kookr repository, so it stays project-scoped.
+- **Distributed use** (general engineering guidance or Kookr runtime operations agents need while working in other repositories, such as launching playbooks or supervising tasks): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. It may reference Kookr's public CLI/API/runtime contracts, but must not require the Kookr source checkout as cwd. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
 
 The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enforces both rules: every dir in `.claude/skills/` and every file in `.claude/agents/` must start with `kookr-`; nothing in `plugin/skills/` may; no name collision between the two trees; no unqualified `subagent_type` references inside skill bodies.
 
@@ -149,7 +149,7 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - Before designing any new system, check if aegiscore or openclaw already solved it
 - Keep V1-era constraints in mind: single package and local-first. Prefer existing persistence and plugin mechanisms over introducing new surfaces.
 - **Verify with real data, don't assume** — Before designing a fix for any behavior bug, find the actual inputs causing the problem (hook logs in `~/.kookr/hooks/*.jsonl`, transcripts, DB records). Reproduce the issue programmatically with real data. Scan broadly to measure real-world frequency of both false-positives and true-positives. The data may reveal the right solution is fundamentally different from what you'd assume.
-- **Capitalize on gathered knowledge** — When a research task, POC, or debugging session produces reusable knowledge (how a system works, validated patterns, gotchas), distill it into a skill in `.claude/skills/`. Don't let hard-won insights evaporate with the conversation. If a skill already exists for the topic, update it. If not, create one. The bar is: "would a future agent benefit from knowing this without re-discovering it?"
+- **Capitalize on gathered knowledge** — When a research task, POC, or debugging session produces reusable knowledge (how a system works, validated patterns, gotchas), consult `placement-picker` and distill it into the correctly scoped existing or new skill. Use `.claude/skills/kookr-*` for Kookr source-maintenance knowledge and `plugin/skills/` for cross-repo procedures or runtime guidance. Don't let hard-won insights evaporate with the conversation. The bar is: "would a future agent benefit from knowing this without re-discovering it?"
 - **Persistence Mechanism Picker** — When you need to persist anything (a rule, a learning, a correction), consult the picker below **before** choosing where it goes. The system-prompt `# auto memory` section actively trains you toward memory as a default; this section overrides that default for behavioral rules.
 - **Load `codex-claude-compatibility` skill before Codex fork work** — Before modifying, building, or deploying `~/git/codex`, load the skill first. It documents the exact build command, install path, version scheme, branch policy, and verification workflow.
 

@@ -48,13 +48,14 @@ The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enfor
 |---|---|---|
 | `.claude/skills/` (Kookr repo-local) | **must start with `kookr-`** | `kookr-shadow-detection`, `kookr-pre-push` |
 | `.claude/agents/` (Kookr repo-local) | **must start with `kookr-`** | `kookr-oss-issue-scout.md` |
-| `plugin/skills/` (distributed toolkit) | `kookr-*` for Kookr-domain skills; unprefixed for general skills | `kookr-cli`, `architecture-drift-signals` |
-| `plugin/agents/` (distributed toolkit) | `kookr-*` allowed for Kookr-domain agents; unprefixed for general agents | `kookr-task-supervisor.md`, `boundary-critic.md` |
+| `plugin/skills/` (distributed toolkit) | must not start with `kookr-` | `self-continuation-task`, `architecture-drift-signals` |
+| `plugin/agents/` (distributed toolkit) | must not start with `kookr-` | `boundary-critic.md` |
 
-The `kookr-` prefix means "this skill or agent is about Kookr as a product or
-runtime." That can be true in either tier. The directory decides visibility:
-repo-local Kookr maintenance goes in `.claude/`; Kookr runtime operations that
-agents need from any repository go in `plugin/`.
+The `kookr-` prefix marks project-scoped Kookr source maintenance. Distributed
+skills stay unprefixed even when they operate Kookr at runtime; the
+`kookr-toolkit:` namespace already identifies their origin. The directory
+decides visibility: repo-local maintenance goes in `.claude/`, while Kookr
+runtime operations that agents need from any repository go in `plugin/`.
 
 ## How to decide if a skill should be kookr-internal vs published
 
@@ -82,9 +83,8 @@ or local sync, including:
 2. If the skill has scripts, audit whether they require the Kookr source tree as
    cwd. Runtime paths such as the Kookr daemon API or `kookr-spawn` can be valid
    distributed behavior.
-3. `git mv .claude/skills/kookr-<slug> plugin/skills/<slug>`. Keep the
-   `kookr-` prefix when the skill is about Kookr runtime operations; drop it only
-   when the promoted skill is genuinely general-purpose.
+3. `git mv .claude/skills/kookr-<slug> plugin/skills/<slug>` and drop the
+   `kookr-` prefix. Plugin names rely on the `kookr-toolkit:` namespace instead.
 4. Update the `name:` field in the SKILL.md frontmatter to match the new
    directory name.
 5. Update any `related:` references in OTHER skills' frontmatter that pointed at the old name.
@@ -112,8 +112,8 @@ Default to asking whether the agent needs this while its cwd is outside
 - **`.claude/skills/foo/`** without the `kookr-` prefix — repo-local Kookr
   skills must be visibly Kookr-specific.
 - **A Kookr runtime skill kept in `.claude/skills/` even though agents need it
-  outside the Kookr repo** — move it to `plugin/skills/`, usually keeping the
-  `kookr-` prefix.
+  outside the Kookr repo** — move it to `plugin/skills/` and drop the `kookr-`
+  prefix; the plugin namespace identifies its origin.
 - **A distributed skill that assumes the Kookr source checkout as cwd** — either
   move it back to `.claude/skills/kookr-*` or rewrite it to operate from any cwd.
 - **Renaming a published skill without bumping the plugin version** — breaks every project that referenced the old name.

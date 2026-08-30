@@ -82,6 +82,11 @@ All 15 use only `name`, `description`, `model` frontmatter — no `hooks`, `mcpS
 
 (`oss-issue-scout` exists both as a skill and as an agent; both are PROJECT — counted once in each row.)
 
+> **2026-08-30 follow-up:** `kookr-playbooks` was promoted and renamed to
+> `playbook-authoring` under `plugin/skills/` because playbook and scheduled
+> orchestration guidance is needed outside the Kookr source checkout. The
+> classifications and counts above remain the original 2026-04-25 snapshot.
+
 ## Sanitization candidates (future)
 
 Three skills are PROJECT only because they have small Kookr-specific sections that could be sanitized to enable promotion in a follow-up:

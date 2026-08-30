@@ -51,11 +51,36 @@ ALLOWLIST=(
   ".claude/skills/claude-code-permissions/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-codex-claude-compatibility/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-playbooks/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-skill-naming-convention/SKILL.md # follow-up: NONE — load-bearing personal path"
+  "plugin/skills/playbook-authoring/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-shadow-detection/SKILL.md # follow-up: NONE — load-bearing personal path"
+
+  # Distributed skills may document portable user-scope state and configuration
+  # for the runtimes they support. Scanning plugin skills keeps maintainer-only
+  # paths gated while these universal ~/.claude, ~/.codex, and ~/.kookr
+  # contracts remain explicit.
+  "plugin/skills/agent-efficiency-retrofit/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/claude-code-hooks/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/claude-code-metrics-analysis/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/claude-code-permissions/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-distill/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-plan/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/codex-pr-threshold/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/github-issue-workflow/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/oss-fork-manager/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/oss-pr-critic/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/oss-pr-distill/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/oss-pr-plan/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/oss-pr-threshold/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/placement-picker/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/pr-contribution-excellence/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/pre-pr-review/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/reviewer-distillation-predict/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/reviewer-distillation-select/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/task-feedback-reflect/SKILL.md # follow-up: NONE — load-bearing user-scope path"
 
   # Project CLAUDE.md: Persistence Picker section documents the Claude Code
   # filesystem convention paths (~/.claude/hooks/, ~/.claude/CLAUDE.md,
@@ -107,6 +132,7 @@ TARGETS=()
 [ -e "CLAUDE.md" ] && TARGETS+=("CLAUDE.md")
 [ -e "AGENTS.md" ] && TARGETS+=("AGENTS.md")
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/skills   -name 'SKILL.md' -type f 2>/dev/null | sort)
+while IFS= read -r f; do TARGETS+=("$f"); done < <(find plugin/skills   -name 'SKILL.md' -type f 2>/dev/null | sort)
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/agents    -name '*.md'     -type f 2>/dev/null | sort)
 while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/playbooks -name '*.md'     -type f 2>/dev/null | sort)
 
@@ -128,6 +154,7 @@ STRICT_TARGETS=()
 [ -e ".env.example" ] && STRICT_TARGETS+=(".env.example")
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.kookr/playbooks/*.md' 2>/dev/null | sort)
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.claude/agents/*.md' 2>/dev/null | sort)
+while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files 'plugin/skills/*/SKILL.md' 2>/dev/null | sort)
 
 for f in "${STRICT_TARGETS[@]}"; do
   if grep -qF "$MAINTAINER_HOME_PATTERN" "$f"; then

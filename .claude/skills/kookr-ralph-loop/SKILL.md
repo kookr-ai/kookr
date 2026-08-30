@@ -2,7 +2,7 @@
 name: kookr-ralph-loop
 description: Start, observe, pause, resume, or cancel Kookr's first-class Ralph iteration loops for task-scoped repeated agent work
 keywords: ralph, ralph loop, use Ralph loop in Kookr, iteration loop, loop prompt, stop predicate, kookr ralph, task loop
-related: kookr-playbooks, kookr-supervise-tasks
+related: playbook-authoring, kookr-supervise-tasks
 ---
 
 # Kookr Ralph Loop
