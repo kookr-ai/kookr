@@ -640,7 +640,7 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.issue.body).not.toContain('"reviewVerdict": "block"');
   });
 
-  test('reclaims a legacy review-correction claim without creating a new-namespace claim', async () => {
+  test('fails closed through a finalized legacy review claim whose terminal owner recorded no PR', async () => {
     const legacyKey = 'chain:2711:phase:P1:review:2';
     const harness = makeHarness(makeLedger({
       phases: [
@@ -651,7 +651,6 @@ describe('UmbrellaChainAdvancer', () => {
       mode: 'spawn',
       reachable: new Set([10]),
       terminalTasks: new Set(['legacy-review-task']),
-      reclaimableClaims: new Set([legacyKey]),
     });
     harness.claims.set(legacyKey, {
       key: legacyKey,
@@ -662,9 +661,16 @@ describe('UmbrellaChainAdvancer', () => {
 
     await harness.advancer.sweep();
 
-    expect(harness.calls).toContain(`launch:${legacyKey}`);
-    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'task-next' });
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'legacy-review-task' });
     expect(harness.claims.has('chain:kookr-ai/kookr:2711:phase:P1:review:2')).toBe(false);
+    expect(harness.issue.body).toContain('"taskId": "legacy-review-task"');
+    expect(harness.issue.body).toContain('"ownerTerminal": true');
+    expect(harness.issue.body).not.toContain('"prNumber": 10');
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
+      reason: expect.stringContaining('terminal-owner-no-pr:P1'),
+    });
   });
 
   test('external projects never consult an unqualified legacy review claim', async () => {

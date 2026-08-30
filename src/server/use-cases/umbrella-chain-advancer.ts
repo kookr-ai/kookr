@@ -711,9 +711,39 @@ export class UmbrellaChainAdvancer {
       return false;
     }
     const existingClaim = preferredClaim ?? legacyClaim;
-    if (existingClaim?.taskId
-      && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(existingClaim.taskId)))) {
-      return false;
+    if (existingClaim?.taskId) {
+      const ownerTerminal = Boolean(
+        this.deps.isTaskTerminal
+        && await this.deps.isTaskTerminal(existingClaim.taskId),
+      );
+      if (!ownerTerminal) return false;
+
+      // A finalized claim proves the correction launch happened even when its
+      // ledger write was lost. Reconstruct that terminal ownership and fail
+      // closed instead of reclaiming the same attempt after idempotency expiry.
+      phase.status = 'in-flight';
+      phase.taskId = existingClaim.taskId;
+      phase.ownerTerminal = true;
+      delete phase.prNumber;
+      delete phase.mergedAt;
+      delete phase.reviewVerdict;
+      delete phase.reviewedAt;
+      delete phase.reviewerTaskId;
+      delete phase.reviewHeadSha;
+      phase.reviewAttempts = attempt;
+      const reason = `terminal-owner-no-pr:${phase.id}; review-correction attempt ${attempt} must record its PR before retrying`;
+      await this.persistIfChanged(project, issue, ledger, true);
+      this.recordHealth(project, ledger, 'blocked', phase.id, false, reason);
+      this.emit(project, {
+        ledger: 'ok',
+        next: phase.id,
+        depSatisfied: true,
+        inFlight: false,
+        claim: 'held',
+        decision: 'skip',
+        reason,
+      }, issue.number);
+      return true;
     }
     const key = legacyClaim ? legacyKey : preferredKey;
     const claim = await this.claimStore.claim(key);
