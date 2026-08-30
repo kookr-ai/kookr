@@ -51,7 +51,7 @@ ALLOWLIST=(
   ".claude/skills/claude-code-permissions/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-codex-claude-compatibility/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-playbooks/SKILL.md # follow-up: NONE — load-bearing personal path"
+  "plugin/skills/playbook-authoring/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-skill-naming-convention/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"

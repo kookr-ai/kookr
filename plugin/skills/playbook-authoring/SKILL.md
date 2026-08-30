@@ -1,7 +1,8 @@
 ---
-name: kookr-playbooks
-description: How to create, structure, and launch Kookr playbook tasks — reusable agent task templates with dynamic sources and project identity
-keywords: playbook, playbooks, task, template, kookr, launch, repeatable, tracked-projects, project, source
+name: playbook-authoring
+description: Create or revise Kookr playbooks and scheduled orchestration, including parameters, project identity, idempotency, model policy, and launch integration
+keywords: playbook, playbooks, write playbook, author playbook, orchestration, schedule, scheduled task, recurring task, task template, kookr, launch, model tier, small model, tracked-projects, project, source
+related: self-continuation-task
 ---
 
 # Kookr Playbooks
@@ -113,7 +114,8 @@ For parameters that are mechanically derivable from `repoFullName` (like `repoSl
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-` (e.g., `microsoft/vscode` → `microsoft-vscode`)
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/`
+- **githubLogin**: resolve with `gh api user --jq .login`
+- **forkName**: `<githubLogin>/<repo>` where `<repo>` is the part after `/`
 - **defaultBranch**: look up from recon report at `~/.claude/<repoSlug>-recon/recon-report.md`, or default to `main`
 
 Use these derived values wherever they appear below.
@@ -139,6 +141,49 @@ Use `{{paramName}}` in the body. When the user launches the playbook, values are
 ```markdown
 Deploy version {{version}} to {{environment}}.
 ```
+
+## Model policy for recurring orchestration
+
+Model policy belongs to the task or schedule launch, not to playbook
+frontmatter. When a playbook runs frequently and its work is routine, bounded,
+or supervisory, request Kookr's portable small tier and let Kookr choose the
+provider from its live default:
+
+- Set `modelTier: "small"` on the task or schedule.
+- Omit `agentType`; do not hardcode `claude-code`, `codex-cli`, or `grok-build`
+  in the playbook body or its launcher unless the work truly depends on one
+  provider.
+- Do not combine `modelTier` with raw `model` or `effort` pins.
+- For a continuation or watchdog that launches more routine work, propagate
+  `--model-tier small` and omit `--agent`. Preserve an explicit operator agent
+  override when the surrounding orchestration exposes one.
+- When migrating an existing schedule, PATCH `agentType: null` as well as
+  `modelTier: "small"`; omitting `agentType` from a PATCH would retain a legacy
+  provider pin.
+
+The current `small` mapping is Claude Code Haiku 4.5, Codex CLI Luna with high
+reasoning, and Grok Build 4.6. Kookr resolves this mapping after default-agent,
+round-robin, and provider-fallback selection, so the orchestration follows
+changes to the configured default without being rewritten.
+
+CLI launch example:
+
+```bash
+kookr spawn --model-tier small --playbook my-playbook.md --auto-idempotency \
+  --cwd /path/to/repo "Run the routine scan."
+```
+
+Schedule policy fragment:
+
+```json
+{
+  "modelTier": "small",
+  "agentType": null
+}
+```
+
+Use an explicit provider or larger model only when task evidence justifies it,
+not merely because an older launcher happened to pin one.
 
 ## How playbooks are launched
 
@@ -219,7 +264,8 @@ checklist:
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-`
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/`
+- **githubLogin**: resolve with `gh api user --jq .login`
+- **forkName**: `<githubLogin>/<repo>` where `<repo>` is the part after `/`
 
 ## Objective
 

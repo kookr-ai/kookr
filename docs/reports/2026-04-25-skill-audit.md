@@ -33,7 +33,7 @@ Plus a manual review of any file that mentions "Kookr" by name to determine whet
 | `codex-claude-compatibility` | `pnpm codex:rebuild`, references Kookr fork build path |
 | `codex-pr-state` | "Kookr's dashboard reads this field" |
 | `demo-recording` | `KOOKR_TTS`, `KOOKR_TTS_URL`, `$HOME/git/kookr` |
-| `kookr-playbooks` | About `.kookr/playbooks/` directory and the dashboard UI |
+| `playbook-authoring` | About `.kookr/playbooks/`, scheduled orchestration, and the dashboard UI |
 | `kookr-terminal-backend` | `KOOKR_BACKEND` env var |
 | `mbse-system-modeling` | Hardcoded `$HOME/git/kookr` path argument in embedded scripts |
 | `oss-contribution-gate` | `KOOKR_TASK_ID`, `~/.kookr/` ledger paths |
