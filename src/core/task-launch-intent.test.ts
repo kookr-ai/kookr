@@ -61,6 +61,19 @@ describe('task launch intent', () => {
     expect(launchIntentFingerprint(null)).not.toBe(launchIntentFingerprint(undefined));
   });
 
+  it('distinguishes portable tier policy from identical concrete raw pins', () => {
+    const tierIntent = buildTaskLaunchIntent('claude-code', {
+      modelTier: 'small',
+      model: 'claude-haiku-4-5',
+    });
+    const rawIntent = buildTaskLaunchIntent('claude-code', {
+      model: 'claude-haiku-4-5',
+    });
+
+    expect(launchIntentFingerprint(tierIntent)).not.toBe(launchIntentFingerprint(rawIntent));
+    expect(sameLaunchIntent(tierIntent, 'claude-code', { model: 'claude-haiku-4-5' })).toBe(false);
+  });
+
   it('validates and sanitizes the full replay contract', () => {
     const result = validatePersistedLaunchIntent({
       agentType: 'claude-code',

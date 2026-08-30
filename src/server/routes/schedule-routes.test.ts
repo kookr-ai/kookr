@@ -314,7 +314,7 @@ Do not schedule.
       [{ modelTier: 'small', effort: 'high' }, 'Cannot be combined with model or effort pins'],
     ])('rejects invalid portable-tier patch without mutating the schedule', async (policy, message) => {
       const schedule = await seedSchedule(service, tempDir);
-      const before = store.get(schedule.id);
+      const before = structuredClone(store.get(schedule.id));
       const res = await mkApp({ scheduleService: service }).request(`/api/schedules/${schedule.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

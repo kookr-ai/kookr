@@ -18,6 +18,7 @@ import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
+import { buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -4313,21 +4314,33 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(store.listTasks()).toHaveLength(1);
     });
 
-    it('preserves replayed small-tier intent through quota rotation', async () => {
+    it('preserves provider-reset small-tier intent through quota rotation', async () => {
       const store = new TaskStore();
       const deps = quotaDeps(store, {
         fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
         sevenDay: null,
       });
-      const result = await launchTask(deps, {
+      const replay = buildProviderResumeLaunch({
+        id: 'paused-small',
         prompt: 'retry portable small fallback',
         cwd: '/tmp',
         agentType: 'claude-code',
-        modelTier: 'small',
+        issueClaim: { repo: 'github.com/kookr-ai/kookr', number: 42 },
+        launchIntent: {
+          schemaVersion: 'task-launch-intent.v1',
+          agentType: 'claude-code',
+          prompt: 'retry portable small fallback',
+          cwd: '/tmp',
+          modelTier: 'small',
+          model: 'claude-haiku-4-5',
+        },
       });
+      const { claimIssue: _claimIssue, ...replayWithoutClaim } = replay;
+      const result = await launchTask(deps, replayWithoutClaim);
       expect(result.task.agentType).toBe('codex-cli');
       expect(result.task.launchIntent).toMatchObject({
         agentType: 'codex-cli',
+        modelTier: 'small',
         model: 'gpt-5.6-luna',
         effort: 'high',
       });

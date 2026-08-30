@@ -189,6 +189,8 @@ Options:
                            (use --model-tier for portable model intent).
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
+                           Codex requires the Kookr fork; stock/older binaries
+                           fail closed (run pnpm codex:rebuild from Kookr).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --idempotency-key <key>

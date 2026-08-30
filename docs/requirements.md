@@ -827,7 +827,7 @@ The system SHALL let routine tasks request `modelTier: "small"` without pinning 
 
 **Non-functional requirement (Must):** Tier resolution SHALL use an exhaustive agent mapping and SHALL NOT invoke a provider CLI or an LLM to choose the target.
 
-**Evidence:** `src/shared/contracts/model-tier.ts`, `src/server/launch-service.ts`, `src/core/schedule.ts`, `src/server/schedule-runner.ts`, `bin/kookr-spawn.js`, and focused tests beside each module.
+**Evidence:** `src/shared/contracts/model-tier.ts`, `src/shared/contracts/task.ts`, `src/core/task-launch-intent.ts`, `src/server/launch-service.ts`, `src/server/provider-transient-retry.ts`, `src/server/provider-reset-scheduler.ts`, `src/adapters/codex-cli-adapter.ts`, `src/core/schedule.ts`, `src/server/schedule-runner.ts`, `bin/kookr-spawn.js`, and focused tests beside each module.
 
 ---
 
