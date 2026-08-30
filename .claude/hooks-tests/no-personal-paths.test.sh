@@ -154,6 +154,7 @@ STRICT_TARGETS=()
 [ -e ".env.example" ] && STRICT_TARGETS+=(".env.example")
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.kookr/playbooks/*.md' 2>/dev/null | sort)
 while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files '.claude/agents/*.md' 2>/dev/null | sort)
+while IFS= read -r f; do STRICT_TARGETS+=("$f"); done < <(git ls-files 'plugin/skills/*/SKILL.md' 2>/dev/null | sort)
 
 for f in "${STRICT_TARGETS[@]}"; do
   if grep -qF "$MAINTAINER_HOME_PATTERN" "$f"; then

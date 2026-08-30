@@ -108,18 +108,32 @@ assert_case \
   ""
 
 assert_case \
-  "plugin skill with kookr prefix passes" \
+  "plain-repo plugin skill with kookr prefix passes" \
   "$plain_repo" \
   "$(event_write "$plain_repo/plugin/skills/kookr-example/SKILL.md")" \
   0 \
   ""
 
 assert_case \
-  "plugin agent with kookr prefix passes" \
+  "plain-repo plugin agent with kookr prefix passes" \
   "$plain_repo" \
   "$(event_write "$plain_repo/plugin/agents/kookr-agent.md")" \
   0 \
   ""
+
+assert_case \
+  "kookr plugin skill with kookr prefix warns" \
+  "$kookr_repo" \
+  "$(event_write "$kookr_repo/plugin/skills/kookr-example/SKILL.md")" \
+  0 \
+  "distributed plugin skills must not start"
+
+assert_case \
+  "kookr plugin agent with kookr prefix warns" \
+  "$kookr_repo" \
+  "$(event_write "$kookr_repo/plugin/agents/kookr-agent.md")" \
+  0 \
+  "distributed plugin agents must not start"
 
 assert_case \
   "kookr project agent without prefix warns" \

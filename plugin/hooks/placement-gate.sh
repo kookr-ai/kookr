@@ -83,6 +83,18 @@ while IFS= read -r raw_path; do
   fi
 
   case "$rel" in
+    plugin/skills/kookr-*/*)
+      if [ "$is_kookr_repo" = 1 ]; then
+        warnings="${warnings}
+- $rel: distributed plugin skills must not start with 'kookr-'; the kookr-toolkit namespace already identifies their origin."
+      fi
+      ;;
+    plugin/agents/kookr-*.md)
+      if [ "$is_kookr_repo" = 1 ]; then
+        warnings="${warnings}
+- $rel: distributed plugin agents must not start with 'kookr-'; the kookr-toolkit namespace already identifies their origin."
+      fi
+      ;;
     .claude/skills/*/*)
       skill=${rel#".claude/skills/"}
       skill=${skill%%/*}
