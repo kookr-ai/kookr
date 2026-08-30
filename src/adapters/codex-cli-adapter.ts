@@ -490,6 +490,12 @@ export class CodexCliAdapter implements AgentAdapter {
     // Luna tops out at `max`; an explicit `ultra` request selects Sol, which
     // advertises ultra — regardless of KOOKR_CODEX_MODEL.
     const forkCapabilitiesSupported = await this.probeKookrForkSupport();
+    if (opts?.model !== undefined && !forkCapabilitiesSupported) {
+      throw new Error(
+        `[codex-cli-adapter] per-task model "${opts.model}" requires the Kookr Codex fork; ` +
+        `refusing to launch with the stock Codex default. Run \`pnpm codex:rebuild\` from kookr to install the fork.`,
+      );
+    }
     const effort = opts?.effort ?? this.resolveDefaultEffort?.();
     const model = forkCapabilitiesSupported ? resolveCodexModel(effort, process.env, opts?.model) : undefined;
 

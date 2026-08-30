@@ -364,7 +364,9 @@ Claude Code → `claude-haiku-4-5`, Codex CLI → `gpt-5.6-luna` with `high`
 reasoning, Grok Build → `grok-4.6`. It cannot be combined with raw `model` or
 `effort` pins. A schedule can persist the same field while omitting `agentType`,
 so every fire follows the live Kookr default and then resolves the matching
-small target.
+small target. Codex tier launches require the Kookr Codex fork's per-task model
+capability; a stock or older Codex binary is rejected instead of silently
+running its default model.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*

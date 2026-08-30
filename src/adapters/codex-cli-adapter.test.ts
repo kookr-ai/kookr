@@ -1153,6 +1153,23 @@ describe('CodexCliAdapter', () => {
       expect(effortValueIndex(spec.args)).toBe(-1);
     });
 
+    test('stock Codex rejects an explicit portable-tier model instead of silently using its default', async () => {
+      const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: stockProbeExec,
+        writeFile: async () => {},
+      });
+      const task = taskStore.createTask('Use portable small Codex', '/cwd');
+      await expect(stockAdapter.launch(
+        task.id,
+        'Use portable small Codex',
+        '/cwd',
+        undefined,
+        { model: 'gpt-5.6-luna', effort: 'high' },
+      )).rejects.toThrow('requires the Kookr Codex fork');
+      expect(backend.sessions.size).toBe(0);
+    });
+
     test('explicit ultra selects the Sol model that supports it', async () => {
       const ultraAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,

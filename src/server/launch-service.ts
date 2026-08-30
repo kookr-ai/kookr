@@ -79,8 +79,8 @@ import {
 import {
   MODEL_TIERS,
   isModelTier,
-  isResolvedModelTierTarget,
   resolveModelTier,
+  type ModelTier,
 } from '../shared/contracts/model-tier.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
@@ -844,7 +844,7 @@ function allowRemoteChatCodex(): boolean {
  * the live-task view so a large completed-task pile is not cloned on every
  * spawn. Returns the existing task if found, undefined otherwise.
  *
- * Dedup key is (promptHash, agentType, canonicalCwd, model, effort,
+ * Dedup key is (promptHash, agentType, canonicalCwd, modelTier, model, effort,
  * dependencies, ralphVerdictEnv). Two
  * launches with the same prompt in different directories are different tasks;
  * two launches with different model/effort pins are also different tasks. The
@@ -857,6 +857,7 @@ export function checkSubmission(
   agentType: AgentType,
   cwd: string,
   intent: {
+    modelTier?: ModelTier;
     model?: string;
     effort?: string;
     dependencies?: readonly LaunchDependency[];
@@ -1234,6 +1235,7 @@ async function launchTaskCore(
       'modelTier cannot be combined with model or effort pins',
     );
   }
+  const portableModelTier = opts.modelTier;
   // Per-task effort/model pins may be dropped if plan-quota rotation (#1936)
   // substitutes a different agent — same as schedule WS1.3 substitution.
   let effectiveEffort: string | undefined = opts.effort;
@@ -1277,11 +1279,7 @@ async function launchTaskCore(
   // model-tier targets come from the exhaustive trusted mapping above.
   if (
     effectiveModel !== undefined
-    && opts.modelTier === undefined
-    && !(
-      opts.replayResolvedPins === true
-      && isResolvedModelTierTarget(agentType, effectiveModel, effectiveEffort)
-    )
+    && portableModelTier === undefined
     && !isValidModelForAgent(agentType, effectiveModel)
   ) {
     const valid = modelsForAgent(agentType);
@@ -1320,14 +1318,23 @@ async function launchTaskCore(
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
   const bypassAllPermissions = deps.bypassAllPermissions === true;
 
-  // Dedup: if an active task with the same prompt and canonical cwd exists,
-  // return it idempotently
-  if (!opts.disableDedup) {
+  // Dedup once for the initially selected provider and, if quota admission
+  // rotates it, once more for the final provider below. The first pass keeps
+  // idempotent replays available even when quota is exhausted with no fallback;
+  // the second prevents two identical portable-tier requests from creating
+  // duplicate tasks after both resolve to the same alternate provider.
+  const findDuplicate = async (
+    selectedAgent: AgentType,
+    model: string | undefined,
+    effort: string | undefined,
+  ): Promise<LaunchResult | undefined> => {
+    if (opts.disableDedup) return undefined;
     let staleDuplicate: Task | undefined;
     let existing: Task | undefined;
-    while ((existing = checkSubmission(taskStore, effectivePrompt, agentType, opts.cwd, {
-      model: effectiveModel,
-      effort: effectiveEffort,
+    while ((existing = checkSubmission(taskStore, effectivePrompt, selectedAgent, opts.cwd, {
+      ...(portableModelTier !== undefined ? { modelTier: portableModelTier } : {}),
+      model,
+      effort,
       dependencies: opts.dependencies,
       ralphVerdictEnv: opts.ralphVerdictEnv,
     }))) {
@@ -1357,6 +1364,11 @@ async function launchTaskCore(
     if (staleDuplicate) {
       console.log(`[dedup] Ignored stale duplicate prompt (existing task ${staleDuplicate.id}, status=${staleDuplicate.status}, cwd=${canonicalizeCwd(opts.cwd)})`);
     }
+    return undefined;
+  };
+  const initialDuplicate = await findDuplicate(agentType, effectiveModel, effectiveEffort);
+  if (initialDuplicate) {
+    return initialDuplicate;
   }
 
   // Observe after dedup so a retry of an already parked task cannot affect
@@ -1492,10 +1504,10 @@ async function launchTaskCore(
       }
       if (toAgent) {
         const fromAgent = agentType;
-        if (opts.modelTier !== undefined) {
+        if (portableModelTier !== undefined) {
           // Portable intent follows the final provider. Re-resolve instead of
           // dropping the original provider's concrete pins.
-          const target = resolveModelTier(toAgent, opts.modelTier);
+          const target = resolveModelTier(toAgent, portableModelTier);
           effectiveEffort = target.effort;
           effectiveModel = target.model;
         } else {
@@ -1540,6 +1552,23 @@ async function launchTaskCore(
           decision.resetsAt,
         );
       }
+    }
+  }
+
+  if (planQuotaRotation) {
+    const rotatedDuplicate = await findDuplicate(agentType, effectiveModel, effectiveEffort);
+    if (rotatedDuplicate) {
+      return {
+        ...rotatedDuplicate,
+        admission: 'rotated',
+        reason: 'plan_quota',
+        fromAgent: planQuotaRotation.fromAgent,
+        toAgent: planQuotaRotation.toAgent,
+        maxUtilization: planQuotaRotation.maxUtilization,
+        threshold: planQuotaRotation.threshold,
+        resetsAt: planQuotaRotation.resetsAt,
+        agentSubstitutionChain: [...agentSubstitutionChain],
+      };
     }
   }
 
@@ -1693,6 +1722,7 @@ async function launchTaskCore(
       playbookParameterValues: opts.playbookParameterValues,
       launchIntent: buildLaunchIntent(opts, {
         agentType,
+        ...(portableModelTier !== undefined ? { modelTier: portableModelTier } : {}),
         effort: effectiveEffort,
         model: effectiveModel,
       }),
@@ -2554,12 +2584,13 @@ function formatParkedLaunchNote(
 
 function buildLaunchIntent(
   opts: LaunchOpts,
-  resolved: { agentType: AgentType; effort?: string; model?: string },
+  resolved: { agentType: AgentType; effort?: string; model?: string; modelTier?: ModelTier },
 ): TaskLaunchIntent {
   return buildTaskLaunchIntent(resolved.agentType, {
     prompt: opts.prompt,
     cwd: opts.cwd,
     ...(opts.projectId ? { projectId: opts.projectId } : {}),
+    ...(resolved.modelTier !== undefined ? { modelTier: resolved.modelTier } : {}),
     ...(resolved.effort !== undefined ? { effort: resolved.effort } : {}),
     ...(resolved.model !== undefined ? { model: resolved.model } : {}),
     ...(opts.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),

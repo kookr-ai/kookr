@@ -1,6 +1,15 @@
 import { isAgentType, type AgentType } from '../shared/contracts/agent-types.js';
+import {
+  isValidEffortForAgent,
+  isValidModelForAgent,
+} from './agent-types.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../shared/contracts/playbook.js';
 import type { TaskLaunchIntent } from '../shared/contracts/task.js';
+import {
+  isModelTier,
+  resolveModelTier,
+  type ModelTier,
+} from '../shared/contracts/model-tier.js';
 
 /** The persisted shape used to replay a task without guessing its launch settings. */
 export const TASK_LAUNCH_INTENT_SCHEMA = 'task-launch-intent.v1' as const;
@@ -13,6 +22,7 @@ export interface LaunchIntentPins {
 }
 
 export interface LaunchIntentOptions extends LaunchIntentPins {
+  modelTier?: ModelTier;
   prompt?: string;
   cwd?: string;
   projectId?: string;
@@ -30,6 +40,7 @@ export function buildTaskLaunchIntent(agentType: AgentType, options: LaunchInten
   return {
     schemaVersion: TASK_LAUNCH_INTENT_SCHEMA,
     agentType,
+    ...(options.modelTier !== undefined ? { modelTier: options.modelTier } : {}),
     ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.projectId !== undefined ? { projectId: options.projectId } : {}),
@@ -42,9 +53,8 @@ export function buildTaskLaunchIntent(agentType: AgentType, options: LaunchInten
 }
 
 /**
- * Validate only the persisted contract. Model and effort are intentionally
- * opaque here: provider-specific validation belongs to the original launch
- * admission path, while this boundary must preserve both pins independently.
+ * Validate the persisted contract and its provider-specific pins before any
+ * automatic path can pass them directly to an adapter.
  */
 export function validatePersistedLaunchIntent(
   task: { agentType: AgentType; launchIntent?: unknown },
@@ -97,6 +107,32 @@ export function validatePersistedLaunchIntent(
       detail: 'launch intent model and effort pins must be non-empty strings when present',
     };
   }
+  if (candidate.modelTier !== undefined && !isModelTier(candidate.modelTier)) {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: `launch intent has an invalid model tier: ${String(candidate.modelTier)}`,
+    };
+  }
+  if (candidate.modelTier !== undefined) {
+    const target = resolveModelTier(candidate.agentType, candidate.modelTier);
+    if (candidate.model !== target.model || candidate.effort !== target.effort) {
+      return {
+        ok: false,
+        reason: 'malformed_launch_intent',
+        detail: `launch intent pins do not match tier "${candidate.modelTier}" for agent ${candidate.agentType}`,
+      };
+    }
+  } else if (
+    (candidate.model !== undefined && !isValidModelForAgent(candidate.agentType, candidate.model))
+    || (candidate.effort !== undefined && !isValidEffortForAgent(candidate.agentType, candidate.effort))
+  ) {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: `launch intent contains unsupported pins for agent ${candidate.agentType}`,
+    };
+  }
   for (const [field, value] of [
     ['prompt', candidate.prompt],
     ['cwd', candidate.cwd],
@@ -139,6 +175,7 @@ export function validatePersistedLaunchIntent(
       ...(candidate.prompt !== undefined ? { prompt: candidate.prompt } : {}),
       ...(candidate.cwd !== undefined ? { cwd: candidate.cwd } : {}),
       ...(candidate.projectId !== undefined ? { projectId: candidate.projectId } : {}),
+      ...(candidate.modelTier !== undefined ? { modelTier: candidate.modelTier } : {}),
       ...(candidate.model !== undefined ? { model: candidate.model } : {}),
       ...(candidate.effort !== undefined ? { effort: candidate.effort } : {}),
       ...(candidate.ralphVerdictEnv !== undefined ? { ralphVerdictEnv: candidate.ralphVerdictEnv } : {}),
@@ -177,6 +214,9 @@ export function launchIntentFingerprint(intent: unknown): string | undefined {
     raw.agentType,
     model,
     effort,
+    Object.prototype.hasOwnProperty.call(raw, 'modelTier')
+      ? ['present', raw.modelTier]
+      : ['absent'],
     dependencies,
     raw.ralphVerdictEnv === true,
   ]);

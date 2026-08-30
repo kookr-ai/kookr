@@ -34,23 +34,23 @@ describe('task launch intent', () => {
     });
   });
 
-  it('keeps model and effort as independent opaque pins in fingerprints and adapter fields', () => {
+  it('keeps model and effort as independent pins in fingerprints and adapter fields', () => {
     const intent = buildTaskLaunchIntent('claude-code', {
-      model: 'provider-model-a',
-      effort: 'provider-effort-b',
+      model: 'claude-fable-5',
+      effort: 'high',
     });
 
-    expect(launchIntentPins(intent)).toEqual({ model: 'provider-model-a', effort: 'provider-effort-b' });
+    expect(launchIntentPins(intent)).toEqual({ model: 'claude-fable-5', effort: 'high' });
     expect(sameLaunchIntent(intent, 'claude-code', {
-      model: 'provider-model-a',
-      effort: 'provider-effort-b',
+      model: 'claude-fable-5',
+      effort: 'high',
     })).toBe(true);
     expect(sameLaunchIntent(intent, 'claude-code', {
-      model: 'provider-model-a',
-      effort: 'provider-effort-c',
+      model: 'claude-fable-5',
+      effort: 'max',
     })).toBe(false);
     expect(launchIntentFingerprint(intent)).not.toBe(launchIntentFingerprint(
-      buildTaskLaunchIntent('claude-code', { model: 'provider-model-a', effort: 'provider-effort-c' }),
+      buildTaskLaunchIntent('claude-code', { model: 'claude-fable-5', effort: 'max' }),
     ));
     expect(launchIntentFingerprint({
       schemaVersion: 'task-launch-intent.v1',
@@ -87,6 +87,31 @@ describe('task launch intent', () => {
         idempotencyKey: 'launch-1',
       }),
     });
+  });
+
+  it('accepts only exact resolved pins when a portable model tier is persisted', () => {
+    const intent = buildTaskLaunchIntent('codex-cli', {
+      modelTier: 'small',
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+    });
+    expect(validatePersistedLaunchIntent({ agentType: 'codex-cli', launchIntent: intent }))
+      .toEqual({ ok: true, intent });
+    expect(validatePersistedLaunchIntent({
+      agentType: 'codex-cli',
+      launchIntent: { ...intent, model: 'gpt-5.6-sol' },
+    })).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
+  });
+
+  it('rejects unsupported raw persisted pins before an adapter can receive them', () => {
+    expect(validatePersistedLaunchIntent({
+      agentType: 'codex-cli',
+      launchIntent: buildTaskLaunchIntent('codex-cli', { model: 'arbitrary-model' }),
+    })).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
+    expect(validatePersistedLaunchIntent({
+      agentType: 'grok-build',
+      launchIntent: buildTaskLaunchIntent('grok-build', { model: 'arbitrary-model' }),
+    })).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
   });
 
   it('keeps dependency and Ralph wiring in the dedup identity', () => {

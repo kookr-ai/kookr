@@ -508,6 +508,24 @@ describe('ProviderResetScheduler', () => {
       expect(opts.scheduleId).toBe('sched-9');
     });
 
+    it('replays portable tier intent instead of exposing its concrete pins as raw input', () => {
+      const opts = buildProviderResumeLaunch({
+        ...src,
+        agentType: 'codex-cli',
+        launchIntent: {
+          ...src.launchIntent,
+          agentType: 'codex-cli',
+          modelTier: 'small',
+          model: 'gpt-5.6-luna',
+          effort: 'high',
+        },
+      });
+
+      expect(opts.modelTier).toBe('small');
+      expect(opts.model).toBeUndefined();
+      expect(opts.effort).toBeUndefined();
+    });
+
     it('omits scheduleId for non-schedule provenance and omits absent optionals', () => {
       const opts = buildProviderResumeLaunch({
         id: 'paused-2',

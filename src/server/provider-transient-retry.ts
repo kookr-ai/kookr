@@ -5,7 +5,6 @@ import type {
   ProviderTransientAlertRequest,
 } from '../core/silent-failure-classifier.js';
 import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
-import { isResolvedModelTierTarget } from '../shared/contracts/model-tier.js';
 
 /**
  * Bounded auto-retry + operator-alert handlers for `provider_transient` silent
@@ -71,11 +70,7 @@ export function createProviderTransientRetryHandler(
       return;
     }
     const pins = launchIntentPins(intent.intent);
-    const replaysTierTarget = isResolvedModelTierTarget(
-      intent.intent.agentType,
-      pins.model,
-      pins.effort,
-    );
+    const replayTier = intent.intent.modelTier;
 
     const launchOpts: LaunchOpts = {
       prompt: intent.intent.prompt ?? original.prompt,
@@ -88,11 +83,12 @@ export function createProviderTransientRetryHandler(
         ? { projectId: intent.intent.projectId ?? original.projectId }
         : {}),
       agentType: intent.intent.agentType,
-      ...(pins.model !== undefined ? { model: pins.model } : {}),
-      ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
-      // Keep exact provider-internal tier targets replayable without exposing
-      // arbitrary persisted values as trusted raw API pins.
-      ...(replaysTierTarget ? { replayResolvedPins: true } : {}),
+      ...(replayTier !== undefined
+        ? { modelTier: replayTier }
+        : {
+            ...(pins.model !== undefined ? { model: pins.model } : {}),
+            ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+          }),
       ...(intent.intent.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
       ...(intent.intent.dependencies ? { dependencies: [...intent.intent.dependencies] } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.

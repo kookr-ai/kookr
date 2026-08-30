@@ -821,7 +821,8 @@ The system SHALL let routine tasks request `modelTier: "small"` without pinning 
 - `small` resolves to Claude Haiku 4.5, Codex Luna with high reasoning, or Grok 4.6 for the final agent
 - A tier request cannot be combined with raw `model` or `effort` pins and an unknown tier returns a typed 400 error
 - Schedules persist and forward `modelTier` while an omitted `agentType` continues to follow the live Kookr default
-- Queued and recovered tasks persist the resolved provider-specific model/effort pins, so replay does not depend on a later default change
+- Queued and recovered tasks persist the portable tier with its resolved provider-specific pins, validate that pair before direct adapter replay, and re-resolve the tier when recovery rotates providers
+- Codex tier launches fail explicitly when the binary lacks the Kookr fork's per-task model capability; they never silently run the stock default
 - Launches and schedules that omit `modelTier` preserve their previous behavior
 
 **Non-functional requirement (Must):** Tier resolution SHALL use an exhaustive agent mapping and SHALL NOT invoke a provider CLI or an LLM to choose the target.

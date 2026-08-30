@@ -2,6 +2,7 @@ import type { RalphLoopState } from './ralph.js';
 import type { AgentType } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
 import type { TaskStatus } from './task-status.js';
+import type { ModelTier } from './model-tier.js';
 
 export type AutomaticRelaunchSource =
   | 'crash-recovery'
@@ -133,6 +134,8 @@ export interface TaskLaunchIntent {
   /** Normalized repository identity, when one was available at launch time. */
   projectId?: string;
   agentType: AgentType;
+  /** Portable model policy retained alongside its resolved concrete pins. */
+  modelTier?: ModelTier;
   effort?: string;
   model?: string;
   /** Preserve Ralph iteration-0 verdict wiring across deferred promotion. */

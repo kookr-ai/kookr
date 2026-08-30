@@ -467,9 +467,7 @@ describe('launchTask', () => {
         prompt: 'retry small codex',
         cwd: '/tmp',
         agentType: 'codex-cli',
-        model: 'gpt-5.6-luna',
-        effort: 'high',
-        replayResolvedPins: true,
+        modelTier: 'small',
       });
       expect(result.task.launchIntent).toMatchObject({
         agentType: 'codex-cli',
@@ -482,7 +480,6 @@ describe('launchTask', () => {
         agentType: 'codex-cli',
         model: 'gpt-5.6-sol',
         effort: 'high',
-        replayResolvedPins: true,
       })).rejects.toBeInstanceOf(ModelValidationError);
     });
 
@@ -4293,6 +4290,37 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       });
       const result = await launchTask(deps, {
         prompt: 'portable small fallback',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        modelTier: 'small',
+      });
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(result.task.launchIntent).toMatchObject({
+        agentType: 'codex-cli',
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+      });
+      expect(vi.mocked(deps.adapterRegistry.get('codex-cli').launch).mock.calls[0]?.[4])
+        .toMatchObject({ model: 'gpt-5.6-luna', effort: 'high' });
+
+      const repeated = await launchTask(deps, {
+        prompt: 'portable small fallback',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        modelTier: 'small',
+      });
+      expect(repeated).toMatchObject({ duplicate: true, task: { id: result.task.id } });
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('preserves replayed small-tier intent through quota rotation', async () => {
+      const store = new TaskStore();
+      const deps = quotaDeps(store, {
+        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
+        sevenDay: null,
+      });
+      const result = await launchTask(deps, {
+        prompt: 'retry portable small fallback',
         cwd: '/tmp',
         agentType: 'claude-code',
         modelTier: 'small',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isModelTier, isResolvedModelTierTarget, resolveModelTier } from './model-tier.js';
+import { isModelTier, resolveModelTier } from './model-tier.js';
 
 describe('small model tier', () => {
   it('maps every coding agent to its portable small target', () => {
@@ -14,10 +14,4 @@ describe('small model tier', () => {
     expect(isModelTier(undefined)).toBe(false);
   });
 
-  it('recognizes only exact resolved targets', () => {
-    expect(isResolvedModelTierTarget('codex-cli', 'gpt-5.6-luna', 'high')).toBe(true);
-    expect(isResolvedModelTierTarget('grok-build', 'grok-4.6', undefined)).toBe(true);
-    expect(isResolvedModelTierTarget('codex-cli', 'gpt-5.6-luna', 'max')).toBe(false);
-    expect(isResolvedModelTierTarget('codex-cli', 'gpt-5.6-sol', 'high')).toBe(false);
-  });
 });

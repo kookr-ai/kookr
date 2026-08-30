@@ -34,18 +34,6 @@ export function isModelTier(value: unknown): value is ModelTier {
   return typeof value === 'string' && MODEL_TIERS.includes(value as ModelTier);
 }
 
-/** True when persisted concrete pins exactly match one portable tier target. */
-export function isResolvedModelTierTarget(
-  agentType: AgentType,
-  model: string | undefined,
-  effort: string | undefined,
-): boolean {
-  return MODEL_TIERS.some((tier) => {
-    const target = resolveModelTier(agentType, tier);
-    return target.model === model && target.effort === effort;
-  });
-}
-
 function assertNever(agentType: never, tier: ModelTier): never {
   throw new Error(`Unhandled model tier target: ${String(agentType)}:${String(tier)}`);
 }

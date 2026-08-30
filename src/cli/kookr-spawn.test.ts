@@ -3706,6 +3706,39 @@ describe('main', () => {
     }
   });
 
+  it('--auto-idempotency includes --model-tier in the exact key passed by main', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--auto-idempotency', '--model-tier', 'small', 'implement #42'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.idempotencyKey).toBe(deriveAutoIdempotencyKey({
+        prompt: 'implement #42',
+        cwd: tmpCwd,
+        criteria: null,
+        agent: null,
+        modelTier: 'small',
+      }));
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('KOOKR_SPAWN_AUTO_IDEMPOTENCY=1 enables it; --no-auto-idempotency overrides the env', async () => {
     const bodies: any[] = [];
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
