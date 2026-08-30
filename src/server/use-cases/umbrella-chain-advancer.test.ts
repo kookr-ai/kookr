@@ -658,7 +658,21 @@ describe('UmbrellaChainAdvancer', () => {
       claimedAt: '2026-08-23T10:00:00.000Z',
       taskId: 'legacy-review-task',
     });
+    harness.comments.push({
+      body: `<!-- kookr-phase-result ${JSON.stringify({
+        version: 1,
+        chainId: 'chain:kookr-ai/kookr:2711',
+        issueNumber: 2711,
+        phaseId: 'P1',
+        prNumber: 10,
+        status: 'in-flight',
+        taskId: 'superseded-owner',
+        ownerTerminal: false,
+        reviewAttempts: 1,
+      })} -->`,
+    });
 
+    await harness.advancer.sweep();
     await harness.advancer.sweep();
 
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);

@@ -319,6 +319,7 @@ export function reconcilePhaseResultComments(
     if (!result || result.chainId !== ledger.chainId || result.issueNumber !== ledger.issueNumber) continue;
     const phase = byId.get(result.phaseId);
     if (!phase) continue;
+    if (result.reviewAttempts !== undefined && result.reviewAttempts < (phase.reviewAttempts ?? 0)) continue;
     if (result.reviewVerdict !== undefined && (result.reviewAttempts ?? 1) < (phase.reviewAttempts ?? 0)) continue;
     // Once a correction attempt is durable, legacy owner comments without an
     // attempt generation cannot resurrect the superseded PR/task.
