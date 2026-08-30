@@ -144,6 +144,114 @@ function makeHarness(ledger: PhaseLedger, options: {
 }
 
 describe('UmbrellaChainAdvancer', () => {
+  test('TS-CHAIN-001: scans configured repositories independently and preserves project-qualified identity', async () => {
+    const contexts = [
+      {
+        projectId: 'github.com/kookr-ai/kookr',
+        repo: 'kookr-ai/kookr',
+        repoPath: '/repos/kookr',
+        baseBranch: 'main',
+      },
+      {
+        projectId: 'github.com/example/external',
+        repo: 'example/external',
+        repoPath: '/repos/external',
+        baseBranch: 'master',
+      },
+    ];
+    const ledgers = new Map(contexts.map((context) => [context.repo, makeLedger({
+      chainId: `chain:${context.repo}:2711`,
+      repo: context.repo,
+    })]));
+    const calls: string[] = [];
+    const launches: Array<{
+      projectId?: string;
+      cwd: string;
+      idempotencyKey: string;
+      claimIssue: { number: number; repo: string };
+    }> = [];
+    const remote: UmbrellaChainRemote = {
+      async listOpenIssues(repo) {
+        calls.push(`list:${repo}`);
+        return [{ number: 2711 }];
+      },
+      async getIssue(repo, number) {
+        const ledger = ledgers.get(repo);
+        if (!ledger) return null;
+        return {
+          number,
+          body: `# Umbrella\n\n${serializePhaseLedgerBlock(ledger)}\n`,
+          comments: [],
+        };
+      },
+      async updateIssueBody() {},
+      async refreshBase(repoPath, baseBranch) {
+        calls.push(`fetch:${repoPath}:${baseBranch}`);
+      },
+      async isPullRequestReachable() {
+        return false;
+      },
+      async getPullRequestMergedAt() {
+        return null;
+      },
+      async getPullRequestHeadSha() {
+        return null;
+      },
+    };
+    const advancer = new UmbrellaChainAdvancer({
+      kookrDir: '/tmp/kookr-chain-project-test',
+      repo: contexts[0]!.repo,
+      repoPath: contexts[0]!.repoPath,
+      projects: async () => contexts,
+      remote,
+      mode: 'spawn',
+      claimStore: {
+        async claim(key) {
+          return {
+            kind: 'claimed',
+            claim: { key, ownerToken: `owner:${key}`, claimedAt: '2026-08-23T10:00:00.000Z' },
+          };
+        },
+        async finalize() {},
+        async release() {},
+        async get() { return undefined; },
+      },
+      launch: async (options) => {
+        launches.push(options);
+        return { taskId: `task-${launches.length}` };
+      },
+      isReviewTaskIndependent: () => true,
+    });
+
+    await advancer.sweep();
+
+    expect(calls).toEqual(expect.arrayContaining([
+      'list:kookr-ai/kookr',
+      'list:example/external',
+      'fetch:/repos/kookr:main',
+      'fetch:/repos/external:master',
+    ]));
+    expect(launches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        projectId: 'github.com/kookr-ai/kookr',
+        cwd: '/repos/kookr',
+        idempotencyKey: 'chain:kookr-ai/kookr:2711:phase:P1',
+        claimIssue: { number: 2711, repo: 'kookr-ai/kookr' },
+      }),
+      expect.objectContaining({
+        projectId: 'github.com/example/external',
+        cwd: '/repos/external',
+        idempotencyKey: 'chain:example/external:2711:phase:P1',
+        claimIssue: { number: 2711, repo: 'example/external' },
+      }),
+    ]));
+    expect(advancer.getHealthSnapshot().chains).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueNumber: 2711, repo: 'kookr-ai/kookr' }),
+      expect.objectContaining({ issueNumber: 2711, repo: 'example/external' }),
+    ]));
+    expect(advancer.getHealthSnapshot().chains).toHaveLength(2);
+  });
+
   test('fetches the base before scoped PR reachability and blocks on an unmerged predecessor', async () => {
     const harness = makeHarness(makeLedger({
       phases: [
@@ -249,6 +357,23 @@ describe('UmbrellaChainAdvancer', () => {
     await harness.advancer.sweep();
     expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
     expect(harness.events.some((event) => event.includes('owner-active'))).toBe(true);
+  });
+
+  test('TS-CHAIN-003: fails closed when a terminal phase owner recorded no PR', async () => {
+    const harness = makeHarness(makeLedger({ phases: [
+      { id: 'P1', dependsOn: [], status: 'in-flight', taskId: 'task-terminal' },
+      { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+    ] }), { mode: 'spawn', terminalTasks: new Set(['task-terminal']) });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.issue.body).toContain('"ownerTerminal": true');
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
+      nextPhase: 'P1',
+      reason: expect.stringContaining('terminal-owner-no-pr:P1'),
+    });
   });
 
   test('requires the predecessor owner to be terminal after the grace window', async () => {

@@ -37,15 +37,27 @@ export interface UmbrellaChainSpawn {
   taskId: string;
 }
 
-export interface UmbrellaChainAdvancerDeps {
-  kookrDir: string;
+/** One configured GitHub repository the singleton advancer scans serially. */
+export interface UmbrellaChainProject {
+  projectId: string;
   repo: string;
   repoPath: string;
+  baseBranch?: string;
+}
+
+export interface UmbrellaChainAdvancerDeps {
+  kookrDir: string;
+  /** Legacy single-repository fallback retained for callers and isolated tests. */
+  repo: string;
+  repoPath: string;
+  /** Live configured-project inventory. When absent, the legacy repo is scanned. */
+  projects?: () => Promise<readonly UmbrellaChainProject[]>;
   remote: UmbrellaChainRemote;
   claimStore?: Pick<UmbrellaChainClaimStore, 'claim' | 'finalize' | 'release' | 'get'>;
   launch?: (options: {
     prompt: string;
     cwd: string;
+    projectId: string;
     idempotencyKey: string;
     claimIssue: { number: number; repo: string };
   }) => Promise<UmbrellaChainSpawn>;
@@ -186,7 +198,7 @@ export class UmbrellaChainAdvancer {
   private lastTickAt: string | null = null;
   private lastTickError: string | null = null;
   private tickCount = 0;
-  private readonly chains = new Map<number, MutableChainHealth>();
+  private readonly chains = new Map<string, MutableChainHealth>();
 
   constructor(deps: UmbrellaChainAdvancerDeps) {
     this.deps = deps;
@@ -245,7 +257,7 @@ export class UmbrellaChainAdvancer {
     try {
       const lockResult = await withCrossProcessLock(this.lockPath, async () => this.scanAll());
       if (lockResult.kind === 'busy') {
-        this.emit({ ledger: 'ok', next: null, depSatisfied: false, inFlight: true, claim: 'held', decision: 'skip', reason: 'sweep-in-flight' });
+        this.emit(undefined, { ledger: 'ok', next: null, depSatisfied: false, inFlight: true, claim: 'held', decision: 'skip', reason: 'sweep-in-flight' });
         return;
       }
       this.lastTickAt = this.now().toISOString();
@@ -256,39 +268,68 @@ export class UmbrellaChainAdvancer {
       this.tickCount += 1;
       this.lastTickError = messageOf(error);
       this.logger.error?.(`[umbrella-chain-advancer] sweep failed: ${this.lastTickError}`);
-      this.emit({ ledger: 'ok', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason: `sweep-error:${this.lastTickError}` });
+      this.emit(undefined, { ledger: 'ok', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason: `sweep-error:${this.lastTickError}` });
     }
   }
 
   private async scanAll(): Promise<void> {
-    const candidates = await this.deps.remote.listOpenIssues(this.deps.repo);
-    await this.deps.remote.refreshBase(this.deps.repoPath, this.baseBranch);
     let scanned = 0;
-    for (const candidate of candidates) {
-      const issue = await this.deps.remote.getIssue(this.deps.repo, candidate.number);
-      if (!issue) continue;
-      scanned += 1;
-      await this.scanIssue(issue);
+    const projects = await this.resolveProjects();
+    for (const project of projects) {
+      const baseBranch = project.baseBranch ?? this.baseBranch;
+      const candidates = await this.deps.remote.listOpenIssues(project.repo);
+      await this.deps.remote.refreshBase(project.repoPath, baseBranch);
+      for (const candidate of candidates) {
+        const issue = await this.deps.remote.getIssue(project.repo, candidate.number);
+        if (!issue) continue;
+        scanned += 1;
+        await this.scanIssue(issue, project, baseBranch);
+      }
     }
-    this.logger.info?.(`[umbrella-chain-advancer] tick-summary ${JSON.stringify({ issues: scanned })}`);
+    this.logger.info?.(`[umbrella-chain-advancer] tick-summary ${JSON.stringify({ projects: projects.length, issues: scanned })}`);
   }
 
-  private async scanIssue(issue: UmbrellaIssue): Promise<void> {
+  private async resolveProjects(): Promise<readonly UmbrellaChainProject[]> {
+    const configured = this.deps.projects
+      ? await this.deps.projects()
+      : [{
+          projectId: `github.com/${this.deps.repo}`,
+          repo: this.deps.repo,
+          repoPath: this.deps.repoPath,
+          baseBranch: this.baseBranch,
+        }];
+    const byRepository = new Map<string, UmbrellaChainProject>();
+    for (const project of configured) {
+      const key = project.repo.trim().replace(/^github\.com\//i, '').toLowerCase();
+      if (!key || byRepository.has(key)) continue;
+      byRepository.set(key, {
+        ...project,
+        repo: project.repo.trim().replace(/^github\.com\//i, ''),
+      });
+    }
+    return [...byRepository.values()];
+  }
+
+  private async scanIssue(
+    issue: UmbrellaIssue,
+    project: UmbrellaChainProject,
+    baseBranch: string,
+  ): Promise<void> {
     let ledger: PhaseLedger;
     try {
       ledger = parsePhaseLedgerFromIssueBody(issue.body);
     } catch (error) {
-      this.emit({ ledger: 'malformed', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason: messageOf(error) }, issue.number);
-      this.recordMalformedHealth(issue.number, messageOf(error));
+      this.emit(project, { ledger: 'malformed', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason: messageOf(error) }, issue.number);
+      this.recordMalformedHealth(project, issue.number, messageOf(error));
       return;
     }
 
-    if (!this.repoMatches(ledger.repo) || ledger.issueNumber !== issue.number) {
+    if (!this.repoMatches(ledger.repo, project.repo) || ledger.issueNumber !== issue.number) {
       const reason = ledger.issueNumber !== issue.number
         ? `ledger-issue-mismatch:${ledger.issueNumber}`
         : `ledger-repo-mismatch:${ledger.repo}`;
-      this.emit({ ledger: 'malformed', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason }, issue.number);
-      this.recordMalformedHealth(issue.number, reason);
+      this.emit(project, { ledger: 'malformed', next: null, depSatisfied: false, inFlight: false, claim: 'not-attempted', decision: 'skip', reason }, issue.number);
+      this.recordMalformedHealth(project, issue.number, reason);
       return;
     }
 
@@ -299,17 +340,23 @@ export class UmbrellaChainAdvancer {
     const reachable = new Map<number, boolean>();
     const currentHeadByPr = new Map<number, string>();
     for (const phase of ledger.phases) {
+      if (phase.taskId && !phase.ownerTerminal && this.deps.isTaskTerminal) {
+        if (await this.deps.isTaskTerminal(phase.taskId)) {
+          phase.ownerTerminal = true;
+          changed = true;
+        }
+      }
       if (phase.prNumber === undefined) continue;
       const isReachable = await this.deps.remote.isPullRequestReachable(
-        this.deps.repoPath,
-        this.baseBranch,
+        project.repoPath,
+        baseBranch,
         phase.prNumber,
-        this.deps.repo,
+        project.repo,
       );
       if (isReachable) {
-        const headSha = await this.deps.remote.getPullRequestHeadSha(this.deps.repo, phase.prNumber);
+        const headSha = await this.deps.remote.getPullRequestHeadSha(project.repo, phase.prNumber);
         if (headSha) currentHeadByPr.set(phase.prNumber, headSha);
-        const mergedAt = await this.deps.remote.getPullRequestMergedAt(this.deps.repo, phase.prNumber);
+        const mergedAt = await this.deps.remote.getPullRequestMergedAt(project.repo, phase.prNumber);
         if (mergedAt === null || !isValidIsoTimestamp(mergedAt)) {
           reachable.set(phase.prNumber, false);
           this.logger.warn?.(`[umbrella-chain-advancer] could not verify merge time for PR #${phase.prNumber}; holding the chain`);
@@ -327,19 +374,13 @@ export class UmbrellaChainAdvancer {
       } else {
         reachable.set(phase.prNumber, false);
       }
-      if (phase.taskId && !phase.ownerTerminal && this.deps.isTaskTerminal) {
-        if (await this.deps.isTaskTerminal(phase.taskId)) {
-          phase.ownerTerminal = true;
-          changed = true;
-        }
-      }
     }
 
     const result = nextEligiblePhase(ledger.phases, (prNumber) => reachable.get(prNumber) === true);
     if (ledger.blockedReason === 'gate-red' || ledger.blockedReason === 'stuck-claim') {
-      await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'blocked', result.phase?.id ?? null, false, `manual-block:${ledger.blockedReason}`);
-      this.emit({ ledger: 'ok', next: result.phase?.id ?? null, depSatisfied: result.outcome === 'eligible', inFlight: false, claim: 'not-attempted', decision: 'skip', reason: `manual-block:${ledger.blockedReason}` }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'blocked', result.phase?.id ?? null, false, `manual-block:${ledger.blockedReason}`);
+      this.emit(project, { ledger: 'ok', next: result.phase?.id ?? null, depSatisfied: result.outcome === 'eligible', inFlight: false, claim: 'not-attempted', decision: 'skip', reason: `manual-block:${ledger.blockedReason}` }, issue.number);
       return;
     }
     if (result.outcome === 'blocked') {
@@ -348,22 +389,22 @@ export class UmbrellaChainAdvancer {
         ledger.blockedSince ??= this.now().toISOString();
         changed = true;
       }
-      await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'blocked', null, false, result.reason);
-      this.emit({ ledger: 'ok', next: null, depSatisfied: false, inFlight: false, claim: 'not-needed', decision: 'skip', reason: `dependency-unmerged:${result.reason}` }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'blocked', null, false, result.reason);
+      this.emit(project, { ledger: 'ok', next: null, depSatisfied: false, inFlight: false, claim: 'not-needed', decision: 'skip', reason: `dependency-unmerged:${result.reason}` }, issue.number);
       return;
     }
     if (result.outcome === 'complete') {
       const reviewBlocker = await this.findReviewAuditBlocker(ledger.phases, currentHeadByPr);
       if (reviewBlocker) {
-        if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
+        if (await this.launchReviewCorrection(project, issue, ledger, reviewBlocker, currentHeadByPr)) return;
         const reviewAudit = reviewAuditKind(reviewBlocker, currentHeadByPr.get(reviewBlocker.prNumber ?? -1));
         const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
         ledger.blockedReason = 'review-block';
         ledger.blockedSince ??= this.now().toISOString();
-        await this.persistIfChanged(issue, ledger, true);
-        this.recordHealth(ledger, 'blocked', null, false, reason, reviewAudit);
-        this.emit({ ledger: 'ok', next: null, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason }, issue.number);
+        await this.persistIfChanged(project, issue, ledger, true);
+        this.recordHealth(project, ledger, 'blocked', null, false, reason, reviewAudit);
+        this.emit(project, { ledger: 'ok', next: null, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason }, issue.number);
         return;
       }
       if (ledger.blockedReason !== undefined || ledger.blockedSince !== undefined) {
@@ -371,9 +412,9 @@ export class UmbrellaChainAdvancer {
         delete ledger.blockedSince;
         changed = true;
       }
-      await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'complete', null, false, result.reason, 'pass');
-      this.emit({ ledger: 'ok', next: null, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason: result.reason }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'complete', null, false, result.reason, 'pass');
+      this.emit(project, { ledger: 'ok', next: null, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason: result.reason }, issue.number);
       return;
     }
 
@@ -381,7 +422,7 @@ export class UmbrellaChainAdvancer {
     const predecessorPhases = ledger.phases.slice(0, ledger.phases.indexOf(phase));
     const reviewBlocker = await this.findReviewAuditBlocker(predecessorPhases, currentHeadByPr);
     if (reviewBlocker) {
-      if (await this.launchReviewCorrection(issue, ledger, reviewBlocker, currentHeadByPr)) return;
+      if (await this.launchReviewCorrection(project, issue, ledger, reviewBlocker, currentHeadByPr)) return;
       const reviewAudit = reviewAuditKind(reviewBlocker, currentHeadByPr.get(reviewBlocker.prNumber ?? -1));
       const reason = `review-audit-${reviewAudit}:${reviewBlocker.id}`;
       if (ledger.blockedReason !== 'review-block' || ledger.blockedSince === undefined) {
@@ -389,9 +430,9 @@ export class UmbrellaChainAdvancer {
         ledger.blockedSince ??= this.now().toISOString();
         changed = true;
       }
-      await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'blocked', phase.id, false, reason, reviewAudit);
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'blocked', phase.id, false, reason, reviewAudit);
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: false, claim: 'not-needed', decision: 'skip', reason }, issue.number);
       return;
     }
     if (ledger.blockedReason !== undefined || ledger.blockedSince !== undefined) {
@@ -399,7 +440,7 @@ export class UmbrellaChainAdvancer {
       delete ledger.blockedSince;
       changed = true;
     }
-    const preferredKey = phaseClaimKey(this.deps.repo, ledger.issueNumber, phase.id);
+    const preferredKey = phaseClaimKey(project.repo, ledger.issueNumber, phase.id);
     const legacyKey = legacyPhaseClaimKey(ledger.issueNumber, phase.id);
     const preferredClaim = await this.claimStore.get(preferredKey);
     const legacyClaim = await this.claimStore.get(legacyKey);
@@ -422,6 +463,17 @@ export class UmbrellaChainAdvancer {
       existingClaim?.taskId
       && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(existingClaim.taskId))),
     );
+    if (phase.taskId
+      && phase.ownerTerminal === true
+      && phase.prNumber === undefined
+      && !namespaceConflict
+      && !claimOwnerActive) {
+      const reason = `terminal-owner-no-pr:${phase.id}; record a phase-result comment with prNumber or clear the stale phase owner before retrying`;
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'blocked', phase.id, false, reason);
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: false, claim: existingClaim ? 'held' : 'not-attempted', decision: 'skip', reason }, issue.number);
+      return;
+    }
     // Do not gate on an existing claim here: claim() is the durable CAS and
     // owns stale-claim reclamation. Calling it is what lets a crashed owner's
     // expired claim be reclaimed without ever allowing two live spawns.
@@ -448,8 +500,9 @@ export class UmbrellaChainAdvancer {
       else if (this.mode === 'observe') reason = 'observe-only';
       else if (isSelfAdvancingDisabled()) reason = 'self-advancing-disabled';
       else reason = 'spawning-disabled';
-      await this.persistIfChanged(issue, ledger, changed);
+      await this.persistIfChanged(project, issue, ledger, changed);
       this.recordHealth(
+        project,
         ledger,
         namespaceConflict ? 'blocked' : 'eligible',
         phase.id,
@@ -457,7 +510,7 @@ export class UmbrellaChainAdvancer {
         reason,
         predecessorPhases.length > 0 ? 'pass' : 'not-required',
       );
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: existingInFlight, claim: existingInFlight ? 'held' : 'not-attempted', decision: 'skip', reason }, issue.number);
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: existingInFlight, claim: existingInFlight ? 'held' : 'not-attempted', decision: 'skip', reason }, issue.number);
       return;
     }
 
@@ -467,10 +520,10 @@ export class UmbrellaChainAdvancer {
       if (claim.kind === 'error') {
         ledger.blockedReason = 'stuck-claim';
         ledger.blockedSince ??= this.now().toISOString();
-        await this.persistIfChanged(issue, ledger, true);
+        await this.persistIfChanged(project, issue, ledger, true);
       }
-      this.recordHealth(ledger, claim.kind === 'error' ? 'blocked' : 'eligible', phase.id, claim.kind === 'busy', reason, predecessorPhases.length > 0 ? 'pass' : 'not-required');
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: claim.kind === 'busy' ? 'held' : 'failed', decision: 'skip', reason }, issue.number);
+      this.recordHealth(project, ledger, claim.kind === 'error' ? 'blocked' : 'eligible', phase.id, claim.kind === 'busy', reason, predecessorPhases.length > 0 ? 'pass' : 'not-required');
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: claim.kind === 'busy' ? 'held' : 'failed', decision: 'skip', reason }, issue.number);
       return;
     }
 
@@ -478,9 +531,10 @@ export class UmbrellaChainAdvancer {
     try {
       const launched = await this.deps.launch({
         prompt: phasePrompt(issue, phase, ledger.chainId),
-        cwd: this.deps.repoPath,
+        cwd: project.repoPath,
+        projectId: project.projectId,
         idempotencyKey: key,
-        claimIssue: { number: ledger.issueNumber, repo: this.deps.repo },
+        claimIssue: { number: ledger.issueNumber, repo: project.repo },
       });
       launchedTaskId = launched.taskId;
       phase.status = 'in-flight';
@@ -488,9 +542,9 @@ export class UmbrellaChainAdvancer {
       phase.ownerTerminal = false;
       changed = true;
       await this.claimStore.finalize(key, launchedTaskId, claim.claim.ownerToken);
-      await this.persistIfChanged(issue, ledger, changed);
-      this.recordHealth(ledger, 'eligible', phase.id, true, `spawned:${launchedTaskId}`, predecessorPhases.length > 0 ? 'pass' : 'not-required');
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'spawn', reason: `spawned:${launchedTaskId}` }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, changed);
+      this.recordHealth(project, ledger, 'eligible', phase.id, true, `spawned:${launchedTaskId}`, predecessorPhases.length > 0 ? 'pass' : 'not-required');
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'spawn', reason: `spawned:${launchedTaskId}` }, issue.number);
     } catch (error) {
       if (launchedTaskId === undefined) {
         try {
@@ -499,23 +553,28 @@ export class UmbrellaChainAdvancer {
           this.logger.warn?.(`[umbrella-chain-advancer] failed to release claim ${key}: ${messageOf(releaseError)}`);
         }
         const reason = `spawn-failed:${messageOf(error)}`;
-        this.recordHealth(ledger, 'blocked', phase.id, false, reason);
-        this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: false, claim: 'released', decision: 'skip', reason }, issue.number);
+        this.recordHealth(project, ledger, 'blocked', phase.id, false, reason);
+        this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: false, claim: 'released', decision: 'skip', reason }, issue.number);
         return;
       }
       // The task already exists. Retain the durable claim and ledger owner so a
       // finalization/lock failure cannot turn into a duplicate spawn later.
-      await this.persistIfChanged(issue, ledger, true);
+      await this.persistIfChanged(project, issue, ledger, true);
       const reason = `claim-finalize-failed:${messageOf(error)}`;
-      this.recordHealth(ledger, 'blocked', phase.id, true, reason);
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'skip', reason }, issue.number);
+      this.recordHealth(project, ledger, 'blocked', phase.id, true, reason);
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'skip', reason }, issue.number);
     }
   }
 
-  private async persistIfChanged(issue: UmbrellaIssue, ledger: PhaseLedger, changed: boolean): Promise<void> {
+  private async persistIfChanged(
+    project: UmbrellaChainProject,
+    issue: UmbrellaIssue,
+    ledger: PhaseLedger,
+    changed: boolean,
+  ): Promise<void> {
     if (!changed || this.mode !== 'spawn') return;
     try {
-      const latest = await this.deps.remote.getIssue(this.deps.repo, issue.number);
+      const latest = await this.deps.remote.getIssue(project.repo, issue.number);
       if (!latest) {
         this.logger.warn?.(`[umbrella-chain-advancer] skipped issue #${issue.number} update because it could not be refetched`);
         return;
@@ -530,7 +589,7 @@ export class UmbrellaChainAdvancer {
         this.logger.warn?.(`[umbrella-chain-advancer] skipped non-round-tripping issue #${issue.number} ledger update`);
         return;
       }
-      await this.deps.remote.updateIssueBody(this.deps.repo, issue.number, body);
+      await this.deps.remote.updateIssueBody(project.repo, issue.number, body);
     } catch (error) {
       this.logger.warn?.(`[umbrella-chain-advancer] failed to persist issue #${issue.number}: ${messageOf(error)}`);
     }
@@ -551,6 +610,7 @@ export class UmbrellaChainAdvancer {
   }
 
   private async launchReviewCorrection(
+    project: UmbrellaChainProject,
     issue: UmbrellaIssue,
     ledger: PhaseLedger,
     phase: PhaseLedgerPhase,
@@ -564,7 +624,7 @@ export class UmbrellaChainAdvancer {
 
     const attempt = (phase.reviewAttempts ?? 1) + 1;
     const preferredKey = reviewClaimKey(
-      phaseClaimKey(this.deps.repo, ledger.issueNumber, phase.id),
+      phaseClaimKey(project.repo, ledger.issueNumber, phase.id),
       attempt,
     );
     const legacyKey = reviewClaimKey(
@@ -598,9 +658,10 @@ export class UmbrellaChainAdvancer {
           '',
           issue.body,
         ].join('\n'),
-        cwd: this.deps.repoPath,
+        cwd: project.repoPath,
+        projectId: project.projectId,
         idempotencyKey: key,
-        claimIssue: { number: ledger.issueNumber, repo: this.deps.repo },
+        claimIssue: { number: ledger.issueNumber, repo: project.repo },
       });
       launchedTaskId = launched.taskId;
       phase.status = 'in-flight';
@@ -614,8 +675,8 @@ export class UmbrellaChainAdvancer {
       delete phase.reviewHeadSha;
       phase.reviewAttempts = attempt;
       await this.claimStore.finalize(key, launchedTaskId, claim.claim.ownerToken);
-      await this.persistIfChanged(issue, ledger, true);
-      this.emit({ ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'spawn', reason: `review-correction:${phase.id}:${attempt}` }, issue.number);
+      await this.persistIfChanged(project, issue, ledger, true);
+      this.emit(project, { ledger: 'ok', next: phase.id, depSatisfied: true, inFlight: true, claim: 'acquired', decision: 'spawn', reason: `review-correction:${phase.id}:${attempt}` }, issue.number);
       return true;
     } catch (error) {
       if (launchedTaskId === undefined) {
@@ -627,6 +688,7 @@ export class UmbrellaChainAdvancer {
   }
 
   private recordHealth(
+    project: UmbrellaChainProject,
     ledger: PhaseLedger,
     status: UmbrellaChainHealth['status'],
     nextPhase: string | null,
@@ -635,9 +697,9 @@ export class UmbrellaChainAdvancer {
     reviewAudit?: UmbrellaChainHealth['reviewAudit'],
   ): void {
     const now = this.now();
-    this.chains.set(ledger.issueNumber, {
+    this.chains.set(this.chainHealthKey(project.repo, ledger.issueNumber), {
       issueNumber: ledger.issueNumber,
-      repo: ledger.repo,
+      repo: project.repo,
       chainId: ledger.chainId,
       status,
       nextPhase,
@@ -651,11 +713,11 @@ export class UmbrellaChainAdvancer {
     });
   }
 
-  private recordMalformedHealth(issueNumber: number, reason: string): void {
+  private recordMalformedHealth(project: UmbrellaChainProject, issueNumber: number, reason: string): void {
     const now = this.now();
-    this.chains.set(issueNumber, {
+    this.chains.set(this.chainHealthKey(project.repo, issueNumber), {
       issueNumber,
-      repo: this.deps.repo,
+      repo: project.repo,
       chainId: 'unknown',
       status: 'malformed',
       nextPhase: null,
@@ -667,12 +729,17 @@ export class UmbrellaChainAdvancer {
     });
   }
 
-  private repoMatches(ledgerRepo: string): boolean {
+  private chainHealthKey(repo: string, issueNumber: number): string {
+    return `${repo.trim().replace(/^github\.com\//i, '').toLowerCase()}#${issueNumber}`;
+  }
+
+  private repoMatches(ledgerRepo: string, projectRepo: string): boolean {
     const normalized = ledgerRepo.replace(/^github\.com\//, '').toLowerCase();
-    return normalized === this.deps.repo.replace(/^github\.com\//, '').toLowerCase();
+    return normalized === projectRepo.replace(/^github\.com\//, '').toLowerCase();
   }
 
   private emit(
+    project: UmbrellaChainProject | undefined,
     event: {
       ledger: 'ok' | 'malformed';
       next: string | null;
@@ -685,6 +752,7 @@ export class UmbrellaChainAdvancer {
     issueNumber?: number,
   ): void {
     this.logger.info?.(`[umbrella-chain-advancer] ${JSON.stringify({
+      repo: project?.repo ?? null,
       issue: issueNumber ?? null,
       ...event,
     })}`);

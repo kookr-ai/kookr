@@ -77,6 +77,7 @@ import {
   type DeliverySnapshot,
 } from '../core/loop-delivery-watchdog.js';
 import { gitIn } from '../core/git-helpers.js';
+import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
@@ -2745,6 +2746,44 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       kookrDir,
       repo: umbrellaRepo,
       repoPath: serverCwd,
+      projects: async () => {
+        const projectIds = new Set<string>([
+          serverProjectId,
+          ...projectConfigStore.getAllConfigs().map((config) => config.project),
+        ]);
+        const projects = [];
+        for (const projectId of [...projectIds].sort()) {
+          const match = projectId.match(/^github\.com\/([^/]+\/[^/]+)$/i);
+          if (!match) continue;
+          try {
+            const context = await resolveWorkspaceContext(projectId, {
+              taskStore,
+              serverCwd,
+              serverProjectId,
+              projectConfigStore,
+              includeTaskFallback: false,
+            });
+            const defaultRef = await resolveDefaultBranch(context.repoPath, {
+              allowLocalFallback: false,
+            });
+            if (!defaultRef?.startsWith('origin/')) {
+              console.warn(`[umbrella-chain-advancer] skipping ${projectId}: remote default branch is unresolved`);
+              continue;
+            }
+            projects.push({
+              projectId,
+              repo: match[1]!,
+              repoPath: context.repoPath,
+              baseBranch: defaultRef.slice('origin/'.length),
+            });
+          } catch (error) {
+            console.warn(
+              `[umbrella-chain-advancer] skipping ${projectId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        return projects;
+      },
       remote: new GhUmbrellaChainClient(),
       mode: umbrellaChainAdvancerMode,
       launch: async (options) => {
@@ -2753,7 +2792,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           launchSource: 'schedule',
           unattended: true,
           autoCloseOnSignal: true,
-          projectId: serverProjectId,
         }, { deliveryPolicy: 'self-advancing' });
         return { taskId: result.task.id };
       },
@@ -2774,7 +2812,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
       logger: console,
     });
-    console.log(`[umbrella-chain-advancer] mode=${umbrellaChainAdvancerMode} repo=${umbrellaRepo}`);
+    console.log(`[umbrella-chain-advancer] mode=${umbrellaChainAdvancerMode} project-inventory=configured-github-projects`);
   }
 
   const takePredeleteSnapshot = async (): Promise<void> => {

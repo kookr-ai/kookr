@@ -34,7 +34,6 @@ export interface GhUmbrellaChainClientOptions {
 
 interface GhIssueView {
   body?: unknown;
-  comments?: Array<{ body?: unknown }>;
 }
 
 interface GhPullRequestView {
@@ -48,6 +47,10 @@ function json<T>(stdout: string): T {
   return JSON.parse(stdout) as T;
 }
 
+function nonEmptyLines(stdout: string): string[] {
+  return stdout.split(/\r?\n/).filter((line) => line.length > 0);
+}
+
 /** Small `gh`/`git` boundary used by the advancer; all policy remains testable above it. */
 export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   private readonly run: typeof execFile;
@@ -58,34 +61,46 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
 
   async listOpenIssues(repo: string): Promise<readonly OpenIssueSummary[]> {
     const { stdout } = await this.run('gh', [
-      'issue', 'list', '--repo', repo, '--state', 'open', '--limit', '1000', '--json', 'number',
+      'api',
+      '--paginate',
+      `repos/${repo}/issues?state=open&per_page=100`,
+      '--jq',
+      '.[] | select((has("pull_request") | not) and (.body | type == "string") and (.body | contains("```kookr-phase-ledger"))) | .number',
     ], { timeout: 20_000 });
-    const rows = json<unknown>(stdout);
-    if (!Array.isArray(rows)) throw new Error('gh issue list returned a non-array payload');
-    return rows.flatMap((row): OpenIssueSummary[] => {
-      if (!row || typeof row !== 'object') return [];
-      const value = row as { number?: unknown };
-      return typeof value.number === 'number' && Number.isInteger(value.number)
-        ? [{ number: value.number }]
-        : [];
+    return nonEmptyLines(stdout).map((line): OpenIssueSummary => {
+      if (!/^[1-9]\d*$/.test(line)) {
+        throw new Error(`gh issue REST query returned an invalid issue number: ${line}`);
+      }
+      const number = Number(line);
+      if (!Number.isSafeInteger(number)) {
+        throw new Error(`gh issue REST query returned an invalid issue number: ${line}`);
+      }
+      return { number };
     });
   }
 
   async getIssue(repo: string, issueNumber: number): Promise<UmbrellaIssue | null> {
     try {
       const { stdout } = await this.run('gh', [
-        'issue', 'view', String(issueNumber), '--repo', repo, '--json', 'body,comments',
+        'api', `repos/${repo}/issues/${issueNumber}`,
       ], { timeout: 20_000 });
       const value = json<GhIssueView>(stdout);
       if (typeof value.body !== 'string') return null;
+      const commentsResult = await this.run('gh', [
+        'api',
+        '--paginate',
+        `repos/${repo}/issues/${issueNumber}/comments?per_page=100`,
+        '--jq',
+        '.[] | select(.body | type == "string") | .body | @json',
+      ], { timeout: 20_000 });
       return {
         number: issueNumber,
         body: value.body,
-        comments: Array.isArray(value.comments)
-          ? value.comments.flatMap((comment) => typeof comment?.body === 'string'
-            ? [{ body: comment.body }]
-            : [])
-          : [],
+        comments: nonEmptyLines(commentsResult.stdout).map((line) => {
+          const body = json<unknown>(line);
+          if (typeof body !== 'string') throw new Error('gh issue comments REST query returned a non-string body');
+          return { body };
+        }),
       };
     } catch {
       return null;
