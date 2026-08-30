@@ -159,17 +159,23 @@ provider from its live default:
   override when the surrounding orchestration exposes one.
 - When migrating an existing schedule, PATCH `agentType: null` as well as
   `modelTier: "small"`; omitting `agentType` from a PATCH would retain a legacy
-  provider pin.
+  provider pin. This works only when the existing schedule has no raw `model`
+  or `effort` pin. The current PATCH contract cannot clear those pins, so
+  recreate a pinned schedule without them before applying a model tier.
 
 The current `small` mapping is Claude Code Haiku 4.5, Codex CLI Luna with high
 reasoning, and Grok Build 4.6. Kookr resolves this mapping after default-agent,
 round-robin, and provider-fallback selection, so the orchestration follows
 changes to the configured default without being rewritten.
 
-CLI launch example:
+CLI prompt-wrapper launch example:
+
+`kookr spawn --playbook` wraps a supplied prompt; it does not launch an
+arbitrary dashboard playbook. The referenced wrapper must declare a required
+`prompt` parameter and interpolate `{{prompt}}` in its body.
 
 ```bash
-kookr spawn --model-tier small --playbook my-playbook.md --auto-idempotency \
+kookr spawn --model-tier small --playbook my-wrapper.md --auto-idempotency \
   --cwd /path/to/repo "Run the routine scan."
 ```
 

@@ -20,12 +20,12 @@ src/core/              — Domain logic, contracts, parsers, stores, anomaly det
 src/adapters/          — I/O boundaries: TerminalBackend + LocalDtachBackend, Claude Code adapter, Codex CLI adapter
 src/server/            — HTTP (Hono) + WebSocket server, hook file watcher, reconciliation
 src/frontend/          — React SPA: components, Zustand store, WebSocket hook, CSS
-.claude/skills/        — Kookr-internal skills (project-scope; reference Kookr paths/commands)
-.claude/agents/        — Kookr-internal review agents (project-scope)
+.claude/skills/        — Kookr source-maintenance skills (project-scope; natural cwd is this repo)
+.claude/agents/        — Kookr source-maintenance review agents (project-scope)
 plugin/                — Kookr Toolkit (Claude Code plugin distributed via marketplace)
 plugin/.claude-plugin/plugin.json  — Plugin manifest (name, version, author)
-plugin/skills/         — General-purpose toolkit skills (no Kookr-internal refs)
-plugin/agents/         — General-purpose review subagents
+plugin/skills/         — Distributed toolkit skills, including cross-repo Kookr runtime operations
+plugin/agents/         — Distributed review subagents
 .claude-plugin/marketplace.json    — Marketplace manifest pointing at ./plugin
 ```
 
@@ -85,8 +85,8 @@ outright rather than left to run:
 
 Two homes only (RFC: `docs/rfc/rfc-skill-agent-distribution.md`):
 
-- **Kookr-internal** (references `pnpm prod:*`, `pnpm build:server`, `KOOKR_*`, `~/.kookr/`, `.hooks/`, hardcoded `/home/.../git/kookr`, or describes Kookr internals like the dashboard / supervisor / playbook system / `.review-state` markers): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix in the directory or file name. Loaded as project-scope when cwd is the Kookr repo. Not shipped to other developers.
-- **General-purpose** (no Kookr-internal references): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. Ships via the toolkit plugin to all consumers. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
+- **Kookr source maintenance** (edits or inspects Kookr source, tests, hooks, build scripts, release procedures, or repo-local architecture): goes in `<kookr>/.claude/{skills,agents}/` with a **`kookr-`** prefix. Its natural cwd is the Kookr repository, so it stays project-scoped.
+- **Distributed use** (general engineering guidance or Kookr runtime operations agents need while working in other repositories, such as launching playbooks or supervising tasks): goes in `<kookr>/plugin/{skills,agents}/` with **no** `kookr-` prefix. It may reference Kookr's public CLI/API/runtime contracts, but must not require the Kookr source checkout as cwd. **Bump `plugin/.claude-plugin/plugin.json#version`** in the same PR — the pre-push hook enforces this.
 
 The `hooks/skill-placement-gate.sh` script (called from `.hooks/pre-push`) enforces both rules: every dir in `.claude/skills/` and every file in `.claude/agents/` must start with `kookr-`; nothing in `plugin/skills/` may; no name collision between the two trees; no unqualified `subagent_type` references inside skill bodies.
 

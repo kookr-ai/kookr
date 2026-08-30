@@ -33,7 +33,7 @@ Plus a manual review of any file that mentions "Kookr" by name to determine whet
 | `codex-claude-compatibility` | `pnpm codex:rebuild`, references Kookr fork build path |
 | `codex-pr-state` | "Kookr's dashboard reads this field" |
 | `demo-recording` | `KOOKR_TTS`, `KOOKR_TTS_URL`, `$HOME/git/kookr` |
-| `playbook-authoring` | About `.kookr/playbooks/`, scheduled orchestration, and the dashboard UI |
+| `kookr-playbooks` | About `.kookr/playbooks/` directory and the dashboard UI |
 | `kookr-terminal-backend` | `KOOKR_BACKEND` env var |
 | `mbse-system-modeling` | Hardcoded `$HOME/git/kookr` path argument in embedded scripts |
 | `oss-contribution-gate` | `KOOKR_TASK_ID`, `~/.kookr/` ledger paths |
@@ -81,6 +81,11 @@ All 15 use only `name`, `description`, `model` frontmatter — no `hooks`, `mcpS
 | **Total** | **70** | **16** | **86** |
 
 (`oss-issue-scout` exists both as a skill and as an agent; both are PROJECT — counted once in each row.)
+
+> **2026-08-30 follow-up:** `kookr-playbooks` was promoted and renamed to
+> `playbook-authoring` under `plugin/skills/` because playbook and scheduled
+> orchestration guidance is needed outside the Kookr source checkout. The
+> classifications and counts above remain the original 2026-04-25 snapshot.
 
 ## Sanitization candidates (future)
 
