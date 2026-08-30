@@ -69,7 +69,7 @@ describe('createProviderTransientRetryHandler', () => {
       id: 'orig-pinned',
       agentType: 'claude-code',
       provenance: { kind: 'schedule', sourceId: 'sched-pinned' },
-      launchIntent: buildTaskLaunchIntent('claude-code', { model: 'model-a', effort: 'effort-b' }),
+      launchIntent: buildTaskLaunchIntent('claude-code', { model: 'claude-fable-5', effort: 'high' }),
     });
     const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
     const launchTask = vi.fn().mockResolvedValue({ task: aTask({ id: 'retry-pinned' }) });
@@ -82,9 +82,37 @@ describe('createProviderTransientRetryHandler', () => {
 
     handler({ originalTaskId: 'orig-pinned', failedTaskId: 'orig-pinned', attempt: 1, delayMs: 0 });
     await vi.waitFor(() => expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'model-a',
-      effort: 'effort-b',
+      model: 'claude-fable-5',
+      effort: 'high',
     })));
+  });
+
+  it('marks an exact persisted tier target as trusted for replay', async () => {
+    const original = aTask({
+      id: 'orig-small',
+      agentType: 'codex-cli',
+      provenance: { kind: 'schedule', sourceId: 'sched-small' },
+      launchIntent: buildTaskLaunchIntent('codex-cli', {
+        modelTier: 'small',
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+      }),
+    });
+    const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
+    const launchTask = vi.fn().mockResolvedValue({ task: aTask({ id: 'retry-small' }) });
+    const handler = createProviderTransientRetryHandler({
+      taskStore: taskStore as any,
+      launchTask,
+      setTimeoutFn: immediateTimer,
+      logger: silentLogger,
+    });
+
+    handler({ originalTaskId: 'orig-small', failedTaskId: 'orig-small', attempt: 1, delayMs: 0 });
+    await vi.waitFor(() => expect(launchTask).toHaveBeenCalledWith(
+      expect.objectContaining({ modelTier: 'small' }),
+    ));
+    expect(launchTask.mock.calls[0]?.[0]).not.toHaveProperty('model');
+    expect(launchTask.mock.calls[0]?.[0]).not.toHaveProperty('effort');
   });
 
   it('records a durable non-relaunch outcome for a legacy task', () => {

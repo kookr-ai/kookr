@@ -121,6 +121,35 @@ describe('ScheduleStore', () => {
     expect(schedule.model).toBeUndefined();
   });
 
+  it('persists and clears portable small intent without pinning an agent', async () => {
+    const schedule = store.create({
+      name: 'Routine sentinel',
+      cron: '*/15 * * * *',
+      playbook: { path: 'sentinel.md', parameters: {} },
+      cwd: '/tmp',
+      modelTier: 'small',
+    });
+    expect(schedule.agentType).toBeUndefined();
+    expect(schedule.modelTier).toBe('small');
+
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.get(schedule.id)?.modelTier).toBe('small');
+    expect(reloaded.updateDefinition(schedule.id, { modelTier: null }).modelTier).toBeUndefined();
+  });
+
+  it('rejects ambiguous schedule tier and raw pins', () => {
+    expect(() => store.create({
+      name: 'Ambiguous',
+      cron: '0 * * * *',
+      playbook: { path: 'sentinel.md', parameters: {} },
+      cwd: '/tmp',
+      modelTier: 'small',
+      model: 'claude-haiku-4-5',
+    })).toThrow(ScheduleValidationError);
+  });
+
   it('persists a loop config (empty {} is enough to arm) and clears it on null (#1899)', async () => {
     const schedule = store.create({
       name: 'Always-on batch',

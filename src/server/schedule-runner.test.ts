@@ -32,6 +32,7 @@ describe('ScheduleRunner', () => {
     agentType?: string;
     effort?: string;
     model?: string;
+    modelTier?: string;
     launchSource?: string;
     dependencies?: string[];
     autoCloseOnSignal?: boolean;
@@ -95,6 +96,7 @@ Do the test thing.
           agentType: opts.agentType,
           effort: opts.effort,
           model: opts.model,
+          modelTier: opts.modelTier,
           launchSource: opts.launchSource,
           dependencies: opts.dependencies,
           priorAgentSubstitutions: opts.priorAgentSubstitutions,
@@ -180,6 +182,30 @@ Do the test thing.
       agentType: 'claude-code',
       // issue #1526 Phase C / C3: schedule provenance — exempts the fire from
       // the spawn burst budget and stamps metadata.launchSource.
+      launchSource: 'schedule',
+    });
+  });
+
+  it('forwards portable small intent while following the live default agent', async () => {
+    const schedule = store.create({
+      name: 'Routine sentinel',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      modelTier: 'small',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    let liveDefault: 'claude-code' | 'codex-cli' = 'claude-code';
+    const runner = createRunner({ getDefaultAgentType: () => liveDefault });
+    liveDefault = 'codex-cli';
+    await runner.tick();
+
+    expect(launched[0]).toMatchObject({
+      agentType: 'codex-cli',
+      modelTier: 'small',
       launchSource: 'schedule',
     });
   });
@@ -2122,6 +2148,31 @@ Do the plugin thing.
     });
   });
   describe('schedule loop arming via launchLoopedPlaybook (#1899 / #1699 WS2.1)', () => {
+    it('carries portable small intent into looped schedule dispatch', async () => {
+      const schedule = store.create({
+        name: 'SmallLoopArm',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+        modelTier: 'small',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const loopedTiers: Array<string | undefined> = [];
+      const runner = createRunner({
+        loopedLauncher: async (s) => {
+          loopedTiers.push(s.modelTier);
+          return { task: { id: 'small-loop-task' } as any, queued: false };
+        },
+      });
+
+      await runner.tick();
+      expect(loopedTiers).toEqual(['small']);
+    });
+
     it('arms an always-running loop via loopedLauncher when the schedule carries a loop config', async () => {
       const schedule = store.create({
         name: 'LoopArm',

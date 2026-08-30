@@ -130,6 +130,18 @@ describe('CodexCliAdapter', () => {
     expect(spec.args).toContain('--prompt-file');
   });
 
+  test('launch forwards a resolved tier model into Codex argv', async () => {
+    const task = taskStore.createTask('Routine work', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Routine work', '/cwd', undefined, {
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+    });
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).toContain('model="gpt-5.6-luna"');
+    expect(spec.args).toContain('model_reasoning_effort="high"');
+  });
+
   test('aborted launch signal after session create skips addSession and kills the session', async () => {
     const abort = new AbortController();
     const task = taskStore.createTask('Fix bug', '/cwd');
@@ -1141,6 +1153,23 @@ describe('CodexCliAdapter', () => {
       expect(effortValueIndex(spec.args)).toBe(-1);
     });
 
+    test('stock Codex rejects an explicit portable-tier model instead of silently using its default', async () => {
+      const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: stockProbeExec,
+        writeFile: async () => {},
+      });
+      const task = taskStore.createTask('Use portable small Codex', '/cwd');
+      await expect(stockAdapter.launch(
+        task.id,
+        'Use portable small Codex',
+        '/cwd',
+        undefined,
+        { model: 'gpt-5.6-luna', effort: 'high' },
+      )).rejects.toThrow('requires the Kookr Codex fork');
+      expect(backend.sessions.size).toBe(0);
+    });
+
     test('explicit ultra selects the Sol model that supports it', async () => {
       const ultraAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
@@ -1214,6 +1243,11 @@ describe('resolveCodexModel', () => {
   test('honors KOOKR_CODEX_MODEL for non-ultra effort', () => {
     expect(resolveCodexModel(undefined, { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' })).toBe('gpt-5.6-luna');
     expect(resolveCodexModel('max', { KOOKR_CODEX_MODEL: '  gpt-5.6-luna  ' })).toBe('gpt-5.6-luna');
+  });
+
+  test('lets a resolved per-task tier model override the environment default', () => {
+    expect(resolveCodexModel('high', { KOOKR_CODEX_MODEL: 'gpt-5.6-sol' }, 'gpt-5.6-luna'))
+      .toBe('gpt-5.6-luna');
   });
 
   test('ultra always escalates to Sol regardless of env', () => {

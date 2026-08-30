@@ -230,7 +230,7 @@ GET /api/tasks?limit=50&offset=100
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
+`agentType`, `modelTier`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
 `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
 `playbook` (optional) wraps the supplied prompt with a parsed playbook before
@@ -349,13 +349,24 @@ no silent fallback. Allowed base ids for `claude-code`:
 - dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
   accepted
 
-`codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
-`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
+`codex-cli` and `grok-build` reject a raw per-task `model` pin (use
+`modelTier` for portable policy or the agent-specific environment setting).
+Omitting `model` leaves the agent
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. The dashboard Launch dialog and Quick Launch send the same field
 when the operator picks a model there. Resolution order for both `effort`
 and `model`: **per-task override → per-schedule value → global agent-type
 default → unset**.
+
+`modelTier` (optional) is a provider-neutral model intent. The only current
+value is `small`, which resolves after Kookr has selected the final agent:
+Claude Code → `claude-haiku-4-5`, Codex CLI → `gpt-5.6-luna` with `high`
+reasoning, Grok Build → `grok-4.6`. It cannot be combined with raw `model` or
+`effort` pins. A schedule can persist the same field while omitting `agentType`,
+so every fire follows the live Kookr default and then resolves the matching
+small target. Codex tier launches require the Kookr Codex fork's per-task model
+capability; a stock or older Codex binary is rejected instead of silently
+running its default model.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*
@@ -818,6 +829,11 @@ Returns the full sanitized config object for that project.
 | `POST /api/schedules/:id/run` | Trigger a scheduled task immediately. A capacity wait returns `queued: true`; a required-dependency wait additionally returns `parked: true`, `outcome: "parked_dependency"`, and `reasonCode: "dependency_degraded"` so consumers do not misdiagnose it as capacity exhaustion. |
 | `POST /api/schedules/recover` | Bulk re-enable schedules parked by the fail-closed `consecutive_failures` auto-pause (issue #2520). Body `{ "stopReason": "consecutive_failures", "heldBefore"?: "<ISO>" }`; `heldBefore` scopes recovery to holds established before a fix-commit / deploy watermark. Returns `{ ok, recovered[], skipped[] }`. Backs `kookr schedule enable --stop-reason consecutive_failures`. |
 | `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
+
+Schedule create/update bodies accept `modelTier: "small"` with the same mapping
+as task launches. Omit `agentType` (or PATCH it to `null`) to follow the live
+default agent on every fire. PATCH `modelTier` to `null` to clear the tier.
+A tier cannot coexist with an effective raw `model` or `effort` pin.
 
 ### `POST /api/pipeline-starvation/handle`
 

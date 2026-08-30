@@ -70,6 +70,7 @@ export function createProviderTransientRetryHandler(
       return;
     }
     const pins = launchIntentPins(intent.intent);
+    const replayTier = intent.intent.modelTier;
 
     const launchOpts: LaunchOpts = {
       prompt: intent.intent.prompt ?? original.prompt,
@@ -82,8 +83,12 @@ export function createProviderTransientRetryHandler(
         ? { projectId: intent.intent.projectId ?? original.projectId }
         : {}),
       agentType: intent.intent.agentType,
-      ...(pins.model !== undefined ? { model: pins.model } : {}),
-      ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+      ...(replayTier !== undefined
+        ? { modelTier: replayTier }
+        : {
+            ...(pins.model !== undefined ? { model: pins.model } : {}),
+            ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
+          }),
       ...(intent.intent.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
       ...(intent.intent.dependencies ? { dependencies: [...intent.intent.dependencies] } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.

@@ -70,10 +70,16 @@ export const ULTRA_CODEX_MODEL = 'gpt-5.6-sol';
  * Resolve the Codex model for a Kookr-fork launch.
  *
  * - `effort === 'ultra'` → {@link ULTRA_CODEX_MODEL} (Sol)
+ * - an explicit per-task model → that model
  * - otherwise → `KOOKR_CODEX_MODEL` if set and non-empty, else {@link DEFAULT_CODEX_MODEL}
  */
-export function resolveCodexModel(effort?: string, env: NodeJS.ProcessEnv = process.env): string {
+export function resolveCodexModel(
+  effort?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  requestedModel?: string,
+): string {
   if (effort === 'ultra') return ULTRA_CODEX_MODEL;
+  if (requestedModel) return requestedModel;
   const fromEnv = env[CODEX_MODEL_ENV]?.trim();
   return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_CODEX_MODEL;
 }
@@ -484,8 +490,14 @@ export class CodexCliAdapter implements AgentAdapter {
     // Luna tops out at `max`; an explicit `ultra` request selects Sol, which
     // advertises ultra — regardless of KOOKR_CODEX_MODEL.
     const forkCapabilitiesSupported = await this.probeKookrForkSupport();
+    if (opts?.model !== undefined && !forkCapabilitiesSupported) {
+      throw new Error(
+        `[codex-cli-adapter] per-task model "${opts.model}" requires the Kookr Codex fork; ` +
+        `refusing to launch with the stock Codex default. Run \`pnpm codex:rebuild\` from kookr to install the fork.`,
+      );
+    }
     const effort = opts?.effort ?? this.resolveDefaultEffort?.();
-    const model = forkCapabilitiesSupported ? resolveCodexModel(effort) : undefined;
+    const model = forkCapabilitiesSupported ? resolveCodexModel(effort, process.env, opts?.model) : undefined;
 
     // V8: argv-based launch through the backend. No shell features needed;
     // env goes in SessionSpec.env, flags become argv.

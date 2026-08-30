@@ -80,6 +80,7 @@ const MODEL_IDS = [
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
 ];
+const MODEL_TIERS = new Set(['small']);
 function isKnownModelId(model) {
   if (typeof model !== 'string' || model.length === 0) return false;
   if (MODEL_IDS.includes(model)) return true;
@@ -112,7 +113,7 @@ function isTruthyEnv(value) {
  * only sound window.
  *
  * SCOPE — read before relying on this: the key hashes the prompt, cwd, criteria,
- * agent, playbook path, and playbook scope. It does not hash playbook file
+ * agent, model policy, playbook path, and playbook scope. It does not hash playbook file
  * contents. It only replays retries that re-issue the *identical* spawn. A
  * caller whose retry regenerates the prompt
  * (an embedded random branch suffix, a timestamp, etc.) computes a *different*
@@ -123,17 +124,21 @@ function isTruthyEnv(value) {
  * opt-in convenience for stable-prompt spawns, not a general orphan cure for
  * entropy-prompt orchestrators.
  *
- * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, playbook?: string|null, playbookScope?: string|null }} input
+ * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null, modelTier?: string|null, playbook?: string|null, playbookScope?: string|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
-function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, playbook = null, playbookScope = null }) {
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, playbook = null, playbookScope = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
+  const hasModelPolicy = effort !== null || model !== null || modelTier !== null;
   const identity = JSON.stringify([
     prompt ?? '',
     cwd ?? '',
     criteria ?? '',
     agent ?? '',
+    // Preserve the pre-model-tier identity when no policy is supplied. A
+    // timeout retry that crosses a deploy must still find its ledger entry.
+    ...(hasModelPolicy ? ['model-policy', effort ?? '', model ?? '', modelTier ?? ''] : []),
     ...(playbook ? [playbook, playbookScope ?? 'project'] : []),
   ]);
   // 64-bit digest — collision-negligible at any realistic spawn rate.
@@ -181,7 +186,11 @@ Options:
                            claude-opus-4-8, claude-sonnet-5,
                            claude-haiku-4-5 and dated
                            suffixes). codex-cli / grok-build reject --model
-                           (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
+                           (use --model-tier for portable model intent).
+      --model-tier <tier>  Portable model intent resolved after agent choice.
+                           small = Haiku, Luna/high, or Grok 4.6.
+                           Codex requires the Kookr fork; stock/older binaries
+                           fail closed (run pnpm codex:rebuild from Kookr).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --idempotency-key <key>
@@ -194,10 +203,10 @@ Options:
                            an idempotency key survives prompt text that varies
                            between attempts (e.g. an embedded random suffix).
       --auto-idempotency   When no --idempotency-key is given, derive one
-                           (auto-<hash>) from prompt+cwd+criteria+agent and any
-                           playbook path/scope. A client-timeout retry replays
-                           only when prompt, cwd, criteria, agent, playbook path,
-                           and playbook scope are unchanged (bounded by the
+                           (auto-<hash>) from prompt, cwd, criteria, agent,
+                           model policy, and any playbook path/scope. A
+                           client-timeout retry replays only when those inputs
+                           are unchanged (bounded by the
                            server's 24h idempotency TTL). If any input can change
                            between retries, pass an explicit --idempotency-key
                            instead. Also enabled by
@@ -297,6 +306,7 @@ function parseArgs(argv) {
     agent: null,
     effort: null,
     model: null,
+    modelTier: null,
     criteria: null,
     dedupe: 'warn',
     idempotencyKey: null,
@@ -343,6 +353,10 @@ function parseArgs(argv) {
       out.model = eat();
     } else if (tok.startsWith('--model=')) {
       out.model = tok.slice('--model='.length);
+    } else if (tok === '--model-tier') {
+      out.modelTier = eat();
+    } else if (tok.startsWith('--model-tier=')) {
+      out.modelTier = tok.slice('--model-tier='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
@@ -426,6 +440,12 @@ function parseArgs(argv) {
     throw new UsageError(
       `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
     );
+  }
+  if (out.modelTier !== null && !MODEL_TIERS.has(out.modelTier)) {
+    throw new UsageError(`--model-tier must be "small" (got: ${out.modelTier})`);
+  }
+  if (out.modelTier !== null && (out.model !== null || out.effort !== null)) {
+    throw new UsageError('--model-tier cannot be combined with --model or --effort');
   }
   if (out.idempotencyKey !== null) {
     const trimmed = out.idempotencyKey.trim();
@@ -947,6 +967,7 @@ function buildTaskPostBody({
   agent = null,
   effort = null,
   model = null,
+  modelTier = null,
   criteria = null,
   disableDedup = false,
   metadataIntent = null,
@@ -970,6 +991,7 @@ function buildTaskPostBody({
   if (agent) body.agentType = agent;
   if (effort) body.effort = effort;
   if (model) body.model = model;
+  if (modelTier) body.modelTier = modelTier;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
@@ -1166,13 +1188,14 @@ function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask
   return lines.join('\n');
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
   const body = buildTaskPostBody({
     prompt,
     cwd,
     agent,
     effort,
     model,
+    modelTier,
     criteria,
     disableDedup,
     metadataIntent,
@@ -2134,6 +2157,9 @@ async function main({
       cwd: cwdAbs,
       criteria: args.criteria,
       agent: args.agent,
+      effort: args.effort,
+      model: args.model,
+      modelTier: args.modelTier,
       playbook: args.playbook,
       playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
     });
@@ -2165,6 +2191,7 @@ async function main({
       agent: args.agent,
       effort: args.effort,
       model: args.model,
+      modelTier: args.modelTier,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -2202,6 +2229,7 @@ async function main({
         agent: args.agent,
         effort: args.effort,
         model: args.model,
+        modelTier: args.modelTier,
         criteria: args.criteria,
         disableDedup: args.dedupe === 'skip',
         metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -2399,6 +2427,7 @@ async function main({
           agent: args.agent,
           effort: args.effort,
           model: args.model,
+          modelTier: args.modelTier,
           criteria: args.criteria,
           disableDedup: true,
           metadataIntent: 'keep_as_duplicate',

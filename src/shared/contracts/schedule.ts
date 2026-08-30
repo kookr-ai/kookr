@@ -1,4 +1,5 @@
 import type { AgentSelection } from './agent-types.js';
+import type { ModelTier } from './model-tier.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage.js';
 import type { TerminalReasonCategory, TerminalTransitionSource } from './task.js';
@@ -274,6 +275,7 @@ export interface Schedule {
    * `round-robin`.
    */
   agentType?: AgentSelection;
+  modelTier?: ModelTier;
   /** Optional per-schedule reasoning-effort pin (#1518). */
   effort?: string;
   /** Optional per-schedule model pin (#1518). */

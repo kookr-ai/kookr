@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { TaskStore } from '../../core/tasks.js';
+import { AdapterRegistry } from '../../adapters/agent-adapter.js';
 import { SERVER_RESTARTING_MARKER_FILE } from '../server-restart-marker.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { LaunchServiceDeps } from '../launch-service.js';
@@ -43,6 +44,44 @@ describe('createScheduleRuntime', () => {
         runnerStartedAt: expect.any(String),
       }),
     }));
+  });
+
+  test('forwards a schedule model tier through the runtime loop composition root', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-schedule-tier-'));
+    const taskStore = new TaskStore();
+    const launchLoopedPlaybookFn = vi.fn().mockResolvedValue({
+      task: taskStore.createTask('looped small task', tempDir),
+      queued: false,
+    });
+    const adapterRegistry = new AdapterRegistry();
+    adapterRegistry.register({ agentType: 'claude-code' } as any);
+    const runtime = await createScheduleRuntime({
+      kookrDir: tempDir,
+      taskStore,
+      launchServiceDeps: { adapterRegistry } as LaunchServiceDeps,
+      getMaxActiveTasks: () => 5,
+      broadcastToAll: () => {},
+      ralphLoopService: {} as any,
+      launchLoopedPlaybookFn,
+    });
+    const schedule = runtime.scheduleStore.create({
+      name: 'Portable small loop',
+      cron: '* * * * *',
+      playbook: { path: 'workflow.md', parameters: {} },
+      cwd: tempDir,
+      loop: {},
+      modelTier: 'small',
+    });
+
+    await runtime.scheduleRunner.runNow(schedule.id);
+
+    expect(launchLoopedPlaybookFn).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        scheduleId: schedule.id,
+        modelTier: 'small',
+      }),
+    );
   });
 
   // issue #2512: a scheduled fire interrupted by a server restart (its accepted

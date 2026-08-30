@@ -84,6 +84,8 @@ export interface ScheduleRuntimeDeps {
    * schedules fail dispatch with a clear ledger error (no silent one-shot fallthrough).
    */
   ralphLoopService?: RalphLoopService;
+  /** Test seam for verifying composition-root forwarding into looped launches. */
+  launchLoopedPlaybookFn?: typeof launchLoopedPlaybook;
   /**
    * Cleanup hook for a looped-playbook launch that partially fails after task
    * creation (issue #1899). Typically `cancelTask` from agent-lifecycle.
@@ -261,7 +263,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     ...(deps.ralphLoopService
       ? {
           loopedLauncher: (schedule: Schedule) =>
-            launchLoopedPlaybook(
+            (deps.launchLoopedPlaybookFn ?? launchLoopedPlaybook)(
               {
                 taskStore: deps.taskStore,
                 ralphLoopService: deps.ralphLoopService!,
@@ -279,6 +281,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
                 scheduleId: schedule.id,
                 ...(schedule.effort ? { effort: schedule.effort } : {}),
                 ...(schedule.model ? { model: schedule.model } : {}),
+                ...(schedule.modelTier ? { modelTier: schedule.modelTier } : {}),
               },
             ),
         }

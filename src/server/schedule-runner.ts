@@ -923,6 +923,7 @@ export class ScheduleRunner {
         ...(launch.dependencies ? { dependencies: [...launch.dependencies] } : {}),
         ...(launch.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: launch.autoCloseOnSignal }),
         agentType,
+        ...(schedule.modelTier !== undefined ? { modelTier: schedule.modelTier } : {}),
         // #1518: forward schedule-level effort/model pins into the spawned
         // task. launchTask still validates them against the resolved agent.
         ...(schedule.effort !== undefined && (!substituted || isValidEffortForAgent(agentType as AgentType, schedule.effort))

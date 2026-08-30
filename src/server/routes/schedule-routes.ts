@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { normalizeAgentSelection } from "../../core/agent-types.js";
+import { isModelTier } from "../../shared/contracts/model-tier.js";
 import {
   normalizeScheduleLoopConfig,
   ScheduleValidationError,
@@ -134,6 +135,13 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
         // Empty string clears the pin (follow server default).
         if (body.agentType.trim() === "") patch.agentType = null;
         else patch.agentType = normalizeAgentSelection(body.agentType);
+      }
+      if (body.modelTier === null) patch.modelTier = null;
+      else if (isModelTier(body.modelTier)) patch.modelTier = body.modelTier;
+      else if (body.modelTier !== undefined) {
+        throw new ScheduleValidationError("Invalid schedule definition", {
+          modelTier: "Must be one of: small",
+        });
       }
       if (typeof body.effort === "string") patch.effort = body.effort;
       if (typeof body.model === "string") patch.model = body.model;
