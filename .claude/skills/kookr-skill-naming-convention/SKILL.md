@@ -112,8 +112,8 @@ Default to asking whether the agent needs this while its cwd is outside
 - **`.claude/skills/foo/`** without the `kookr-` prefix — repo-local Kookr
   skills must be visibly Kookr-specific.
 - **A Kookr runtime skill kept in `.claude/skills/` even though agents need it
-  outside the Kookr repo** — move it to `plugin/skills/`, usually keeping the
-  `kookr-` prefix.
+  outside the Kookr repo** — move it to `plugin/skills/` and drop the `kookr-`
+  prefix; the plugin namespace identifies its origin.
 - **A distributed skill that assumes the Kookr source checkout as cwd** — either
   move it back to `.claude/skills/kookr-*` or rewrite it to operate from any cwd.
 - **Renaming a published skill without bumping the plugin version** — breaks every project that referenced the old name.
