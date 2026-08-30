@@ -130,6 +130,18 @@ describe('CodexCliAdapter', () => {
     expect(spec.args).toContain('--prompt-file');
   });
 
+  test('launch forwards a resolved tier model into Codex argv', async () => {
+    const task = taskStore.createTask('Routine work', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Routine work', '/cwd', undefined, {
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+    });
+
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).toContain('model="gpt-5.6-luna"');
+    expect(spec.args).toContain('model_reasoning_effort="high"');
+  });
+
   test('aborted launch signal after session create skips addSession and kills the session', async () => {
     const abort = new AbortController();
     const task = taskStore.createTask('Fix bug', '/cwd');

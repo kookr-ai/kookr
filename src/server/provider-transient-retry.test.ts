@@ -87,6 +87,33 @@ describe('createProviderTransientRetryHandler', () => {
     })));
   });
 
+  it('marks an exact persisted tier target as trusted for replay', async () => {
+    const original = aTask({
+      id: 'orig-small',
+      agentType: 'codex-cli',
+      provenance: { kind: 'schedule', sourceId: 'sched-small' },
+      launchIntent: buildTaskLaunchIntent('codex-cli', {
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+      }),
+    });
+    const taskStore = { getTask: vi.fn().mockReturnValue(original), setRetryLineage: vi.fn() };
+    const launchTask = vi.fn().mockResolvedValue({ task: aTask({ id: 'retry-small' }) });
+    const handler = createProviderTransientRetryHandler({
+      taskStore: taskStore as any,
+      launchTask,
+      setTimeoutFn: immediateTimer,
+      logger: silentLogger,
+    });
+
+    handler({ originalTaskId: 'orig-small', failedTaskId: 'orig-small', attempt: 1, delayMs: 0 });
+    await vi.waitFor(() => expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+      replayResolvedPins: true,
+    })));
+  });
+
   it('records a durable non-relaunch outcome for a legacy task', () => {
     const original = aTask({ id: 'legacy', provenance: { kind: 'schedule', sourceId: 's1' } });
     const setRelaunchDisposition = vi.fn();

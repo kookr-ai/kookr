@@ -1648,11 +1648,11 @@ parameters:
   });
 
   test('rejects unknown or ambiguous model tiers before launch', async () => {
-    for (const body of [
-      { modelTier: 'flagship' },
-      { modelTier: 'small', model: 'claude-haiku-4-5' },
-      { modelTier: 'small', effort: 'high' },
-    ]) {
+    for (const [body, expectedCode] of [
+      [{ modelTier: 'flagship' }, 'invalid_model_tier'],
+      [{ modelTier: 'small', model: 'claude-haiku-4-5' }, 'model_tier_conflict'],
+      [{ modelTier: 'small', effort: 'high' }, 'model_tier_conflict'],
+    ] as const) {
       vi.mocked(launchTask).mockClear();
       const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
         method: 'POST',
@@ -1660,7 +1660,7 @@ parameters:
         body: JSON.stringify({ prompt: 'p', cwd: '/cwd', ...body }),
       });
       expect(res.status).toBe(400);
-      expect((await res.json()).code).toMatch(/^invalid_model_tier$|^model_tier_conflict$/);
+      expect((await res.json()).code).toBe(expectedCode);
       expect(launchTask).not.toHaveBeenCalled();
     }
   });

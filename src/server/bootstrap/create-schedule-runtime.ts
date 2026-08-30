@@ -279,6 +279,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
                 scheduleId: schedule.id,
                 ...(schedule.effort ? { effort: schedule.effort } : {}),
                 ...(schedule.model ? { model: schedule.model } : {}),
+                ...(schedule.modelTier ? { modelTier: schedule.modelTier } : {}),
               },
             ),
         }

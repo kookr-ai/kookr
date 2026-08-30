@@ -67,12 +67,14 @@ Loop {{target}}.
         cwd,
         playbookPath: 'workflow.md',
         parameterValues: { target: 'repo' },
+        modelTier: 'small',
       });
 
       expect(result.task.playbookId).toBe('workflow.md');
       expect(launchTask).toHaveBeenCalledWith(
         expect.objectContaining({
           disableDedup: true,
+          modelTier: 'small',
           prompt: expect.stringContaining('This runtime is one loop iteration, not the whole loop.'),
         }),
         { deliveryPolicy: 'pre-authorized' },

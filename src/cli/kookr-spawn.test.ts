@@ -300,9 +300,21 @@ describe('deriveAutoIdempotencyKey', () => {
 
   it('differs when any identity component differs', () => {
     const ref = deriveAutoIdempotencyKey({ ...base });
-    for (const patch of [{ prompt: 'implement #43' }, { cwd: '/repo/two' }, { criteria: 'other' }, { agent: 'codex-cli' }]) {
+    for (const patch of [
+      { prompt: 'implement #43' },
+      { cwd: '/repo/two' },
+      { criteria: 'other' },
+      { agent: 'codex-cli' },
+      { effort: 'high' },
+      { model: 'claude-haiku-4-5' },
+      { modelTier: 'small' },
+    ]) {
       expect(deriveAutoIdempotencyKey({ ...base, ...patch })).not.toBe(ref);
     }
+  });
+
+  it('preserves the pre-tier key when no model policy is supplied', () => {
+    expect(deriveAutoIdempotencyKey({ ...base })).toBe('auto-f5986d30903fe868');
   });
 
   it('distinguishes playbook wrappers and their effective scopes', () => {
@@ -1187,6 +1199,30 @@ describe('postTask', () => {
     }
   });
 
+  it('includes portable model tier when provided and omits it otherwise', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: 'small',
+        cwd: '/tmp',
+        agent: null,
+        modelTier: 'small',
+        criteria: null,
+      });
+      await postTask({ baseUrl, prompt: 'default', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].modelTier).toBe('small');
+      expect(bodies[0]).not.toHaveProperty('agentType');
+      expect(bodies[1]).not.toHaveProperty('modelTier');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('includes parentTaskId when provided and omits it otherwise', async () => {
     const bodies: any[] = [];
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
@@ -1361,20 +1397,24 @@ describe('postTaskWithReconcile (#1591)', () => {
   it('re-POSTs with the same key after a 5xx and returns the idempotent replay', async () => {
     let calls = 0;
     const seenKeys: unknown[] = [];
+    const seenTiers: unknown[] = [];
     const { server, baseUrl } = await startFakeApi((_req, body) => {
       calls += 1;
-      seenKeys.push(JSON.parse(body).idempotencyKey);
+      const parsed = JSON.parse(body);
+      seenKeys.push(parsed.idempotencyKey);
+      seenTiers.push(parsed.modelTier);
       if (calls === 1) return { status: 500, body: JSON.stringify({ error: 'boom' }) };
       return { status: 200, body: JSON.stringify({ id: 't-recon', idempotentReplay: true }) };
     });
     try {
       const result = await postTaskWithReconcile({
-        postArgs: basePostArgs(baseUrl, 'recon-key'),
+        postArgs: { ...basePostArgs(baseUrl, 'recon-key'), modelTier: 'small' },
         idempotencyKey: 'recon-key',
         sleep: async () => {},
       });
       expect(calls).toBe(2);
       expect(seenKeys).toEqual(['recon-key', 'recon-key']);
+      expect(seenTiers).toEqual(['small', 'small']);
       expect(result.kind).toBe('created');
       if (result.kind === 'created') expect(result.task.idempotentReplay).toBe(true);
     } finally {
@@ -2082,7 +2122,7 @@ describe('main', () => {
       const errBucket = makeConsoleCapture();
       const { codes, exit } = makeExitCapture();
       await main({
-        argv: ['--dry-run', '--json', '--agent', 'claude-code', 'preview me'],
+        argv: ['--dry-run', '--json', '--model-tier', 'small', 'preview me'],
         env: { KOOKR_API_BASE_URL: baseUrl },
         stdin: ttyStdin(),
         cwd: tmpCwd,
@@ -2109,7 +2149,7 @@ describe('main', () => {
           body: {
             prompt: 'preview me',
             cwd: tmpCwd,
-            agentType: 'claude-code',
+            modelTier: 'small',
           },
         },
       });

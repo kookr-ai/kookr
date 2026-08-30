@@ -79,6 +79,7 @@ import {
 import {
   MODEL_TIERS,
   isModelTier,
+  isResolvedModelTierTarget,
   resolveModelTier,
 } from '../shared/contracts/model-tier.js';
 import {
@@ -1277,6 +1278,10 @@ async function launchTaskCore(
   if (
     effectiveModel !== undefined
     && opts.modelTier === undefined
+    && !(
+      opts.replayResolvedPins === true
+      && isResolvedModelTierTarget(agentType, effectiveModel, effectiveEffort)
+    )
     && !isValidModelForAgent(agentType, effectiveModel)
   ) {
     const valid = modelsForAgent(agentType);

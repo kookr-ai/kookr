@@ -3,6 +3,7 @@ import type { Task, TaskStore } from '../../core/tasks.js';
 import type { RalphLoopRequest, RalphLoopService } from '../ralph-loop-service.js';
 import { canonicalizeCwd } from '../cwd.js';
 import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
+import type { ModelTier } from '../../shared/contracts/model-tier.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import {
   preparePlaybookLaunchWithMetadata,
@@ -50,6 +51,8 @@ export interface LaunchLoopedPlaybookInput extends PreparePlaybookLaunchInput {
   effort?: string;
   /** Optional schedule-level model pin forwarded into the launch (#1518). */
   model?: string;
+  /** Portable model intent forwarded by a schedule-armed loop. */
+  modelTier?: ModelTier;
 }
 
 export interface ReplaceLoopedPlaybookDeps extends LaunchLoopedPlaybookDeps {
@@ -153,6 +156,7 @@ export async function launchLoopedPlaybook(
       ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.modelTier ? { modelTier: input.modelTier } : {}),
       // PR4: inject RALPH_VERDICT_FILE on iteration 0 so the agent's first
       // launch can write a verdict. Subsequent iterations get this via
       // launchFreshRuntime's extraEnv. Without this, iteration 0 silently

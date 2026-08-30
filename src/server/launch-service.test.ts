@@ -430,15 +430,60 @@ describe('launchTask', () => {
       expect(store.listTasks()).toHaveLength(0);
     });
 
-    it('rejects a Claude model pin for codex-cli (#1518)', async () => {
+    it('rejects raw tier-target model pins for Codex and Grok (#1518)', async () => {
       await expect(
         launchTask(deps, {
           prompt: 'hello',
           cwd: '/tmp',
           agentType: 'codex-cli',
-          model: 'claude-fable-5',
+          model: 'gpt-5.6-luna',
         }),
       ).rejects.toBeInstanceOf(ModelValidationError);
+
+      deps.adapterRegistry.register({
+        agentType: 'grok-build',
+        launch: vi.fn(),
+        sendInput: vi.fn(),
+        sendKeystroke: vi.fn(),
+        stop: vi.fn(),
+        captureDisplay: vi.fn(),
+        onEvent: vi.fn(),
+        onRefreshNeeded: vi.fn(),
+        injectHookEvent: vi.fn(),
+      } as any);
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello grok',
+          cwd: '/tmp',
+          agentType: 'grok-build',
+          model: 'grok-4.6',
+        }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('accepts provider-internal pins only when replaying validated intent', async () => {
+      const result = await launchTask(deps, {
+        prompt: 'retry small codex',
+        cwd: '/tmp',
+        agentType: 'codex-cli',
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+        replayResolvedPins: true,
+      });
+      expect(result.task.launchIntent).toMatchObject({
+        agentType: 'codex-cli',
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+      });
+      await expect(launchTask(deps, {
+        prompt: 'forged retry target',
+        cwd: '/tmp',
+        agentType: 'codex-cli',
+        model: 'gpt-5.6-sol',
+        effort: 'high',
+        replayResolvedPins: true,
+      })).rejects.toBeInstanceOf(ModelValidationError);
     });
 
     it.each([
@@ -3058,6 +3103,31 @@ describe('launchTask round-robin', () => {
     expect(result.task.agentType).toBe('claude-code');
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
     expect(cursor).toBe(1);
+  });
+
+  it('resolves small intent after each round-robin choice', async () => {
+    const first = await launchTask(deps, {
+      prompt: 'small round robin one',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+      modelTier: 'small',
+    });
+    const second = await launchTask(deps, {
+      prompt: 'small round robin two',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+      modelTier: 'small',
+    });
+
+    expect(first.task.launchIntent).toMatchObject({
+      agentType: 'claude-code',
+      model: 'claude-haiku-4-5',
+    });
+    expect(second.task.launchIntent).toMatchObject({
+      agentType: 'codex-cli',
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+    });
   });
 
   it('lets an explicit concrete request override a round-robin default', async () => {

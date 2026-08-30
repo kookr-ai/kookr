@@ -130,14 +130,15 @@ function isTruthyEnv(value) {
 function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, playbook = null, playbookScope = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
+  const hasModelPolicy = effort !== null || model !== null || modelTier !== null;
   const identity = JSON.stringify([
     prompt ?? '',
     cwd ?? '',
     criteria ?? '',
     agent ?? '',
-    effort ?? '',
-    model ?? '',
-    modelTier ?? '',
+    // Preserve the pre-model-tier identity when no policy is supplied. A
+    // timeout retry that crosses a deploy must still find its ledger entry.
+    ...(hasModelPolicy ? ['model-policy', effort ?? '', model ?? '', modelTier ?? ''] : []),
     ...(playbook ? [playbook, playbookScope ?? 'project'] : []),
   ]);
   // 64-bit digest — collision-negligible at any realistic spawn rate.

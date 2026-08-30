@@ -37,6 +37,11 @@ export interface LaunchOpts {
   /** Provider-neutral model intent resolved after the final agent is known. */
   modelTier?: ModelTier;
   /**
+   * Internal replay marker: model/effort came from a validated persisted
+   * launch intent, not an untrusted raw request.
+   */
+  replayResolvedPins?: boolean;
+  /**
    * Optional per-task reasoning-effort override (#681). Wins over the
    * configured per-agent-type default for this one launch. Validated against
    * the *resolved* agent's allowed set inside `launchTask` (after any
