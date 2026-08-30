@@ -164,7 +164,8 @@ behind a synthetic-canary/review rollout:
   surface (`umbrellaChains` on `GET /api/health`) listing every scanned umbrella chain's phase/status/
   staleness; a defined staleness threshold + documented unstick procedure for a stuck claim; and
   a post-merge gate that blocks the next spawn until a distinct reviewer task records a passing
-  verdict. Merge-time timestamp auditing and paging remain future work.
+  verdict. Issue discovery and phase-result comment retrieval use paginated GitHub REST
+  queries; merge-time timestamp auditing remains future work.
 
 ### Phase 3 (D3) — RFC-first refactor front-end *(implemented)*
 

@@ -4,6 +4,7 @@ import {
   type PhaseLedger,
 } from '../../core/phase-ledger-codec.js';
 import {
+  buildUmbrellaChainProjectInventory,
   UmbrellaChainAdvancer,
   phaseClaimKey,
   legacyPhaseClaimKey,
@@ -45,6 +46,13 @@ function makeHarness(ledger: PhaseLedger, options: {
   /** When set, `getIssue` returns null from its second call onward (persist-time refetch fails). */
   refetchReturnsNull?: boolean;
   repo?: string;
+  projects?: readonly {
+    projectId: string;
+    repo: string;
+    repoPath: string;
+    baseBranch?: string;
+  }[];
+  legacyClaimRepo?: string | null;
   reclaimableClaims?: Set<string>;
 } = {}) {
   const events: string[] = [];
@@ -102,6 +110,8 @@ function makeHarness(ledger: PhaseLedger, options: {
     kookrDir: '/tmp/kookr-chain-test',
     repo: options.repo ?? 'kookr-ai/kookr',
     repoPath: '/tmp/kookr-repo',
+    ...(options.projects ? { projects: async () => options.projects! } : {}),
+    ...(options.legacyClaimRepo !== undefined ? { legacyClaimRepo: options.legacyClaimRepo } : {}),
     remote,
     mode: options.mode ?? 'observe',
     claimStore: {
@@ -144,6 +154,36 @@ function makeHarness(ledger: PhaseLedger, options: {
 }
 
 describe('UmbrellaChainAdvancer', () => {
+  test('TS-CHAIN-001: inventory skips projects without a canonical checkout or remote default branch', async () => {
+    const warnings: string[] = [];
+    const inventory = await buildUmbrellaChainProjectInventory([
+      'github.com/example/good',
+      'github.com/example/no-checkout',
+      'github.com/example/no-remote-default',
+      'local/not-github',
+    ], {
+      async resolveRepoPath(projectId) {
+        if (projectId.endsWith('/no-checkout')) throw new Error('checkout unresolved');
+        return `/repos/${projectId.split('/').at(-1)}`;
+      },
+      async resolveDefaultRef(repoPath) {
+        return repoPath.endsWith('/no-remote-default') ? null : 'origin/main';
+      },
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(inventory).toEqual([{
+      projectId: 'github.com/example/good',
+      repo: 'example/good',
+      repoPath: '/repos/good',
+      baseBranch: 'main',
+    }]);
+    expect(warnings).toEqual([
+      '[umbrella-chain-advancer] skipping github.com/example/no-checkout: checkout unresolved',
+      '[umbrella-chain-advancer] skipping github.com/example/no-remote-default: remote default branch is unresolved',
+    ]);
+  });
+
   test('TS-CHAIN-001: scans configured repositories independently and preserves project-qualified identity', async () => {
     const contexts = [
       {
@@ -252,6 +292,52 @@ describe('UmbrellaChainAdvancer', () => {
     expect(advancer.getHealthSnapshot().chains).toHaveLength(2);
   });
 
+  test('TS-CHAIN-001: continues with later repositories when one project scan fails', async () => {
+    const calls: string[] = [];
+    const ledger = makeLedger({
+      chainId: 'chain:example/good:2711',
+      repo: 'example/good',
+    });
+    const remote: UmbrellaChainRemote = {
+      async listOpenIssues(repo) {
+        calls.push(`list:${repo}`);
+        if (repo === 'example/broken') throw new Error('repository unavailable');
+        return [{ number: ledger.issueNumber }];
+      },
+      async getIssue(_repo, number) {
+        return { number, body: serializePhaseLedgerBlock(ledger), comments: [] };
+      },
+      async updateIssueBody() {},
+      async refreshBase(repoPath) { calls.push(`fetch:${repoPath}`); },
+      async isPullRequestReachable() { return false; },
+      async getPullRequestMergedAt() { return null; },
+      async getPullRequestHeadSha() { return null; },
+    };
+    const warnings: string[] = [];
+    const advancer = new UmbrellaChainAdvancer({
+      kookrDir: '/tmp/kookr-chain-project-failure-test',
+      repo: 'kookr-ai/kookr',
+      repoPath: '/repos/kookr',
+      projects: async () => [
+        { projectId: 'github.com/example/broken', repo: 'example/broken', repoPath: '/repos/broken' },
+        { projectId: 'github.com/example/good', repo: 'example/good', repoPath: '/repos/good' },
+      ],
+      remote,
+      mode: 'observe',
+      logger: { warn: (message) => warnings.push(message) },
+    });
+
+    await advancer.sweep();
+
+    expect(calls).toEqual(['list:example/broken', 'list:example/good', 'fetch:/repos/good']);
+    expect(warnings).toContain(
+      '[umbrella-chain-advancer] skipping example/broken: project-scan-error:repository unavailable',
+    );
+    expect(advancer.getHealthSnapshot().chains).toEqual([
+      expect.objectContaining({ repo: 'example/good', issueNumber: 2711 }),
+    ]);
+  });
+
   test('fetches the base before scoped PR reachability and blocks on an unmerged predecessor', async () => {
     const harness = makeHarness(makeLedger({
       phases: [
@@ -293,12 +379,11 @@ describe('UmbrellaChainAdvancer', () => {
     expect(second.calls).toContain('launch:chain:example/other:2711:phase:P1');
   });
 
-  test('reclaims through a legacy phase key instead of creating a new-namespace claim', async () => {
+  test('fails closed through a finalized legacy phase claim whose terminal owner recorded no PR', async () => {
     const legacyKey = 'chain:2711:phase:P1';
     const harness = makeHarness(makeLedger(), {
       mode: 'spawn',
       terminalTasks: new Set(['legacy-task']),
-      reclaimableClaims: new Set([legacyKey]),
     });
     harness.claims.set(legacyKey, {
       key: legacyKey,
@@ -309,9 +394,40 @@ describe('UmbrellaChainAdvancer', () => {
 
     await harness.advancer.sweep();
 
-    expect(harness.calls).toContain(`launch:${legacyKey}`);
-    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'task-next' });
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'legacy-task' });
     expect(harness.claims.has('chain:kookr-ai/kookr:2711:phase:P1')).toBe(false);
+    expect(harness.issue.body).toContain('"taskId": "legacy-task"');
+    expect(harness.issue.body).toContain('"ownerTerminal": true');
+  });
+
+  test('external projects never consult an unqualified legacy phase claim', async () => {
+    const externalRepo = 'example/external';
+    const legacyKey = 'chain:2711:phase:P1';
+    const harness = makeHarness(makeLedger({
+      chainId: `chain:${externalRepo}:2711`,
+      repo: externalRepo,
+    }), {
+      mode: 'spawn',
+      terminalTasks: new Set(),
+      projects: [{
+        projectId: `github.com/${externalRepo}`,
+        repo: externalRepo,
+        repoPath: '/repos/external',
+        baseBranch: 'main',
+      }],
+    });
+    harness.claims.set(legacyKey, {
+      key: legacyKey,
+      ownerToken: 'legacy-owner',
+      claimedAt: '2026-08-23T10:00:00.000Z',
+      taskId: 'active-legacy-task',
+    });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls).toContain('launch:chain:example/external:2711:phase:P1');
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'active-legacy-task' });
   });
 
   test('fails closed when current and legacy phase claims both exist', async () => {
@@ -372,6 +488,46 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
       status: 'blocked',
       nextPhase: 'P1',
+      reason: expect.stringContaining('terminal-owner-no-pr:P1'),
+    });
+  });
+
+  test('TS-CHAIN-003: fails closed when terminal ownership has no task id or PR', async () => {
+    const harness = makeHarness(makeLedger({ phases: [
+      { id: 'P1', dependsOn: [], status: 'in-flight', ownerTerminal: true },
+      { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+    ] }), { mode: 'spawn' });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
+      nextPhase: 'P1',
+      reason: expect.stringContaining('terminal-owner-no-pr:P1'),
+    });
+  });
+
+  test('TS-CHAIN-003: repairs terminal ownership from a finalized claim when the prior ledger write was lost', async () => {
+    const harness = makeHarness(makeLedger(), {
+      mode: 'spawn',
+      terminalTasks: new Set(['task-from-lost-write']),
+    });
+    const key = 'chain:kookr-ai/kookr:2711:phase:P1';
+    harness.claims.set(key, {
+      key,
+      ownerToken: 'prior-owner',
+      claimedAt: '2026-08-23T10:00:00.000Z',
+      taskId: 'task-from-lost-write',
+    });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls.filter((call) => call.startsWith('launch:'))).toHaveLength(0);
+    expect(harness.issue.body).toContain('"taskId": "task-from-lost-write"');
+    expect(harness.issue.body).toContain('"ownerTerminal": true');
+    expect(harness.advancer.getHealthSnapshot().chains[0]).toMatchObject({
+      status: 'blocked',
       reason: expect.stringContaining('terminal-owner-no-pr:P1'),
     });
   });
@@ -509,6 +665,40 @@ describe('UmbrellaChainAdvancer', () => {
     expect(harness.calls).toContain(`launch:${legacyKey}`);
     expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'task-next' });
     expect(harness.claims.has('chain:kookr-ai/kookr:2711:phase:P1:review:2')).toBe(false);
+  });
+
+  test('external projects never consult an unqualified legacy review claim', async () => {
+    const externalRepo = 'example/external';
+    const legacyKey = 'chain:2711:phase:P1:review:2';
+    const harness = makeHarness(makeLedger({
+      chainId: `chain:${externalRepo}:2711`,
+      repo: externalRepo,
+      phases: [
+        { id: 'P1', dependsOn: [], prNumber: 10, status: 'merged', taskId: 'owner-1', ownerTerminal: true, mergedAt: '2026-08-22T00:00:00.000Z', reviewVerdict: 'block', reviewedAt: '2026-08-23T09:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'test-head' },
+        { id: 'P2', dependsOn: ['P1'], status: 'pending' },
+      ],
+    }), {
+      mode: 'spawn',
+      reachable: new Set([10]),
+      terminalTasks: new Set(),
+      projects: [{
+        projectId: `github.com/${externalRepo}`,
+        repo: externalRepo,
+        repoPath: '/repos/external',
+        baseBranch: 'main',
+      }],
+    });
+    harness.claims.set(legacyKey, {
+      key: legacyKey,
+      ownerToken: 'legacy-review-owner',
+      claimedAt: '2026-08-23T10:00:00.000Z',
+      taskId: 'active-legacy-review-task',
+    });
+
+    await harness.advancer.sweep();
+
+    expect(harness.calls).toContain('launch:chain:example/external:2711:phase:P1:review:2');
+    expect(harness.claims.get(legacyKey)).toMatchObject({ taskId: 'active-legacy-review-task' });
   });
 
   test('fails closed when current and legacy review claims both exist', async () => {

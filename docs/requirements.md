@@ -1494,7 +1494,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 
 **Linked tests:** TS-CHAIN-001, TS-CHAIN-002, TS-CHAIN-003.
 
-**Evidence:** `src/server/use-cases/umbrella-chain-advancer.ts`, `src/server/index.ts`, `src/adapters/github-umbrella-chain-client.ts`, `src/server/use-cases/umbrella-chain-advancer.test.ts` (`TS-CHAIN-001`, `TS-CHAIN-003`), `src/adapters/github-umbrella-chain-client.test.ts` (`TS-CHAIN-002`), `src/server/use-cases/workspace-context.test.ts`.
+**Evidence:** `src/server/use-cases/umbrella-chain-advancer.ts`, `src/server/index.ts`, `src/adapters/github-umbrella-chain-client.ts`, `src/server/use-cases/workspace-context.ts`, `src/core/repo-policy-resolver.ts`, `src/server/use-cases/umbrella-chain-advancer.test.ts` (`TS-CHAIN-001`, `TS-CHAIN-003`), `src/adapters/github-umbrella-chain-client.test.ts` (`TS-CHAIN-002`), `src/server/use-cases/workspace-context.test.ts`.
 
 ## Summary Matrix
 

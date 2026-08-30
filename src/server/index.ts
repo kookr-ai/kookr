@@ -152,6 +152,7 @@ import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-c
 import { isTerminalStatus } from '../core/task-status.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
 import {
+  buildUmbrellaChainProjectInventory,
   UmbrellaChainAdvancer,
   UMBRELLA_CHAIN_ADVANCER_STALE_MS,
   umbrellaChainAdvancerModeFromEnv,
@@ -203,7 +204,7 @@ import {
 } from '../core/retro-verify-queue.js';
 import { decorateClaim } from './issue-claim-decorator.js';
 import { resolveClaimRepo } from './use-cases/resolve-claim-repo.js';
-import { getProjectId } from '../core/project-identity.js';
+import { getProjectId, projectIdToOwnerRepo } from '../core/project-identity.js';
 import { acquireSingleWriterLock } from './single-writer-lock.js';
 import {
   getOperationalAlertConfig,
@@ -2740,22 +2741,30 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     attemptRepository,
   } = await createContributionWorkspaceServices({ kookrDir, serverCwd, taskStore });
 
-  const umbrellaRepo = serverProjectId?.match(/^github\.com\/([^/]+\/[^/]+)$/i)?.[1];
-  if (umbrellaRepo) {
+  const umbrellaServerRepoParts = serverProjectId ? projectIdToOwnerRepo(serverProjectId) : null;
+  const umbrellaRepo = umbrellaServerRepoParts
+    ? `${umbrellaServerRepoParts.owner}/${umbrellaServerRepoParts.repo}`
+    : null;
+  const umbrellaFallbackProjectId = [
+    ...(serverProjectId ? [serverProjectId] : []),
+    ...projectConfigStore.getAllConfigs().map((config) => config.project),
+  ].find((projectId) => projectIdToOwnerRepo(projectId) !== null);
+  const umbrellaFallbackRepoParts = umbrellaFallbackProjectId
+    ? projectIdToOwnerRepo(umbrellaFallbackProjectId)
+    : null;
+  if (umbrellaFallbackRepoParts) {
     umbrellaChainAdvancer = new UmbrellaChainAdvancer({
       kookrDir,
-      repo: umbrellaRepo,
+      repo: `${umbrellaFallbackRepoParts.owner}/${umbrellaFallbackRepoParts.repo}`,
       repoPath: serverCwd,
+      legacyClaimRepo: umbrellaRepo,
       projects: async () => {
         const projectIds = new Set<string>([
-          serverProjectId,
+          ...(serverProjectId ? [serverProjectId] : []),
           ...projectConfigStore.getAllConfigs().map((config) => config.project),
         ]);
-        const projects = [];
-        for (const projectId of [...projectIds].sort()) {
-          const match = projectId.match(/^github\.com\/([^/]+\/[^/]+)$/i);
-          if (!match) continue;
-          try {
+        return buildUmbrellaChainProjectInventory(projectIds, {
+          resolveRepoPath: async (projectId) => {
             const context = await resolveWorkspaceContext(projectId, {
               taskStore,
               serverCwd,
@@ -2763,26 +2772,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
               projectConfigStore,
               includeTaskFallback: false,
             });
-            const defaultRef = await resolveDefaultBranch(context.repoPath, {
-              allowLocalFallback: false,
-            });
-            if (!defaultRef?.startsWith('origin/')) {
-              console.warn(`[umbrella-chain-advancer] skipping ${projectId}: remote default branch is unresolved`);
-              continue;
-            }
-            projects.push({
-              projectId,
-              repo: match[1]!,
-              repoPath: context.repoPath,
-              baseBranch: defaultRef.slice('origin/'.length),
-            });
-          } catch (error) {
-            console.warn(
-              `[umbrella-chain-advancer] skipping ${projectId}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }
-        return projects;
+            return context.repoPath;
+          },
+          resolveDefaultRef: (repoPath) => resolveDefaultBranch(repoPath, {
+            allowLocalFallback: false,
+          }),
+          warn: (message) => console.warn(message),
+        });
       },
       remote: new GhUmbrellaChainClient(),
       mode: umbrellaChainAdvancerMode,

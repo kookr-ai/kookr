@@ -9,6 +9,7 @@ import {
   type PhaseLedgerPhase,
 } from '../../core/phase-ledger-codec.js';
 import { nextEligiblePhase } from '../../core/phase-ledger.js';
+import { projectIdToOwnerRepo } from '../../core/project-identity.js';
 import { DEFAULT_AUTONOMOUS_REVIEW_ITERATION_CAP } from '../../core/autonomous-review-policy.js';
 import type { UmbrellaChainRemote, UmbrellaIssue } from '../../adapters/github-umbrella-chain-client.js';
 import { withCrossProcessLock } from '../cross-process-lock.js';
@@ -45,11 +46,50 @@ export interface UmbrellaChainProject {
   baseBranch?: string;
 }
 
+export interface UmbrellaChainProjectInventoryDeps {
+  resolveRepoPath(projectId: string): Promise<string>;
+  resolveDefaultRef(repoPath: string): Promise<string | null>;
+  warn?(message: string): void;
+}
+
+/** Resolve only configured GitHub projects with a trustworthy checkout and remote default branch. */
+export async function buildUmbrellaChainProjectInventory(
+  projectIds: Iterable<string>,
+  deps: UmbrellaChainProjectInventoryDeps,
+): Promise<readonly UmbrellaChainProject[]> {
+  const projects: UmbrellaChainProject[] = [];
+  for (const projectId of [...new Set(projectIds)].sort()) {
+    const ownerRepo = projectIdToOwnerRepo(projectId);
+    if (!ownerRepo) continue;
+    try {
+      const repoPath = await deps.resolveRepoPath(projectId);
+      const defaultRef = await deps.resolveDefaultRef(repoPath);
+      if (!defaultRef?.startsWith('origin/')) {
+        deps.warn?.(`[umbrella-chain-advancer] skipping ${projectId}: remote default branch is unresolved`);
+        continue;
+      }
+      projects.push({
+        projectId,
+        repo: `${ownerRepo.owner}/${ownerRepo.repo}`,
+        repoPath,
+        baseBranch: defaultRef.slice('origin/'.length),
+      });
+    } catch (error) {
+      deps.warn?.(
+        `[umbrella-chain-advancer] skipping ${projectId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return projects;
+}
+
 export interface UmbrellaChainAdvancerDeps {
   kookrDir: string;
   /** Legacy single-repository fallback retained for callers and isolated tests. */
   repo: string;
   repoPath: string;
+  /** Repository that owns pre-migration unqualified claims; null disables legacy lookup. */
+  legacyClaimRepo?: string | null;
   /** Live configured-project inventory. When absent, the legacy repo is scanned. */
   projects?: () => Promise<readonly UmbrellaChainProject[]>;
   remote: UmbrellaChainRemote;
@@ -111,6 +151,10 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function normalizeGithubRepo(repo: string): string {
+  return repo.trim().replace(/^github\.com\//i, '').toLowerCase();
+}
+
 /**
  * The deterministic idempotency key for an `(issue, phase)` spawn claim.
  *
@@ -123,7 +167,7 @@ function messageOf(error: unknown): string {
  * claimed before the upgrade are still honored.
  */
 export function phaseClaimKey(repo: string, issueNumber: number, phaseId: string): string {
-  const normalizedRepo = repo.trim().toLowerCase();
+  const normalizedRepo = normalizeGithubRepo(repo);
   return `chain:${normalizedRepo}:${issueNumber}:phase:${phaseId}`;
 }
 
@@ -276,14 +320,28 @@ export class UmbrellaChainAdvancer {
     let scanned = 0;
     const projects = await this.resolveProjects();
     for (const project of projects) {
-      const baseBranch = project.baseBranch ?? this.baseBranch;
-      const candidates = await this.deps.remote.listOpenIssues(project.repo);
-      await this.deps.remote.refreshBase(project.repoPath, baseBranch);
-      for (const candidate of candidates) {
-        const issue = await this.deps.remote.getIssue(project.repo, candidate.number);
-        if (!issue) continue;
-        scanned += 1;
-        await this.scanIssue(issue, project, baseBranch);
+      try {
+        const baseBranch = project.baseBranch ?? this.baseBranch;
+        const candidates = await this.deps.remote.listOpenIssues(project.repo);
+        await this.deps.remote.refreshBase(project.repoPath, baseBranch);
+        for (const candidate of candidates) {
+          const issue = await this.deps.remote.getIssue(project.repo, candidate.number);
+          if (!issue) continue;
+          scanned += 1;
+          await this.scanIssue(issue, project, baseBranch);
+        }
+      } catch (error) {
+        const reason = `project-scan-error:${messageOf(error)}`;
+        this.logger.warn?.(`[umbrella-chain-advancer] skipping ${project.repo}: ${reason}`);
+        this.emit(project, {
+          ledger: 'ok',
+          next: null,
+          depSatisfied: false,
+          inFlight: false,
+          claim: 'not-attempted',
+          decision: 'skip',
+          reason,
+        });
       }
     }
     this.logger.info?.(`[umbrella-chain-advancer] tick-summary ${JSON.stringify({ projects: projects.length, issues: scanned })}`);
@@ -300,7 +358,7 @@ export class UmbrellaChainAdvancer {
         }];
     const byRepository = new Map<string, UmbrellaChainProject>();
     for (const project of configured) {
-      const key = project.repo.trim().replace(/^github\.com\//i, '').toLowerCase();
+      const key = normalizeGithubRepo(project.repo);
       if (!key || byRepository.has(key)) continue;
       byRepository.set(key, {
         ...project,
@@ -443,7 +501,12 @@ export class UmbrellaChainAdvancer {
     const preferredKey = phaseClaimKey(project.repo, ledger.issueNumber, phase.id);
     const legacyKey = legacyPhaseClaimKey(ledger.issueNumber, phase.id);
     const preferredClaim = await this.claimStore.get(preferredKey);
-    const legacyClaim = await this.claimStore.get(legacyKey);
+    // Unqualified claims predate multi-project scans and belong exclusively to
+    // the original server repository. Consulting them for external projects
+    // would let equal issue numbers cross-block or replay one another.
+    const legacyClaim = this.isLegacyClaimRepository(project)
+      ? await this.claimStore.get(legacyKey)
+      : undefined;
     const namespaceConflict = preferredClaim !== undefined && legacyClaim !== undefined;
     // Continue through the legacy key when upgrading an in-flight chain. Its
     // claim() call remains the durable CAS and safely reclaims it when stale.
@@ -459,12 +522,18 @@ export class UmbrellaChainAdvancer {
       && !phase.ownerTerminal
       && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(phase.taskId))),
     );
-    const claimOwnerActive = Boolean(
+    const claimOwnerTerminal = Boolean(
       existingClaim?.taskId
-      && (!this.deps.isTaskTerminal || !(await this.deps.isTaskTerminal(existingClaim.taskId))),
+      && this.deps.isTaskTerminal
+      && await this.deps.isTaskTerminal(existingClaim.taskId),
     );
-    if (phase.taskId
-      && phase.ownerTerminal === true
+    const claimOwnerActive = Boolean(existingClaim?.taskId && !claimOwnerTerminal);
+    if (claimOwnerTerminal && existingClaim?.taskId && phase.taskId === undefined) {
+      phase.taskId = existingClaim.taskId;
+      phase.ownerTerminal = true;
+      changed = true;
+    }
+    if (phase.ownerTerminal === true
       && phase.prNumber === undefined
       && !namespaceConflict
       && !claimOwnerActive) {
@@ -632,7 +701,9 @@ export class UmbrellaChainAdvancer {
       attempt,
     );
     const preferredClaim = await this.claimStore.get(preferredKey);
-    const legacyClaim = await this.claimStore.get(legacyKey);
+    const legacyClaim = this.isLegacyClaimRepository(project)
+      ? await this.claimStore.get(legacyKey)
+      : undefined;
     if (preferredClaim && legacyClaim) {
       this.logger.warn?.(
         `[umbrella-chain-advancer] both current and legacy review claims exist for ${phase.id} attempt ${attempt}`,
@@ -730,12 +801,19 @@ export class UmbrellaChainAdvancer {
   }
 
   private chainHealthKey(repo: string, issueNumber: number): string {
-    return `${repo.trim().replace(/^github\.com\//i, '').toLowerCase()}#${issueNumber}`;
+    return `${normalizeGithubRepo(repo)}#${issueNumber}`;
   }
 
   private repoMatches(ledgerRepo: string, projectRepo: string): boolean {
-    const normalized = ledgerRepo.replace(/^github\.com\//, '').toLowerCase();
-    return normalized === projectRepo.replace(/^github\.com\//, '').toLowerCase();
+    return normalizeGithubRepo(ledgerRepo) === normalizeGithubRepo(projectRepo);
+  }
+
+  private isLegacyClaimRepository(project: UmbrellaChainProject): boolean {
+    const legacyRepo = this.deps.legacyClaimRepo === undefined
+      ? this.deps.repo
+      : this.deps.legacyClaimRepo;
+    return legacyRepo !== null
+      && normalizeGithubRepo(project.repo) === normalizeGithubRepo(legacyRepo);
   }
 
   private emit(

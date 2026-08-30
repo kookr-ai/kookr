@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isValidIsoTimestamp } from '../core/iso-timestamp.js';
+import { PHASE_LEDGER_FENCE } from '../core/phase-ledger-codec.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -60,12 +61,13 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   }
 
   async listOpenIssues(repo: string): Promise<readonly OpenIssueSummary[]> {
+    const ledgerFenceStart = `\`\`\`${PHASE_LEDGER_FENCE}`;
     const { stdout } = await this.run('gh', [
       'api',
       '--paginate',
       `repos/${repo}/issues?state=open&per_page=100`,
       '--jq',
-      '.[] | select((has("pull_request") | not) and (.body | type == "string") and (.body | contains("```kookr-phase-ledger"))) | .number',
+      `.[] | select((has("pull_request") | not) and (.body | type == "string") and (.body | contains(${JSON.stringify(ledgerFenceStart)}))) | .number`,
     ], { timeout: 20_000 });
     return nonEmptyLines(stdout).map((line): OpenIssueSummary => {
       if (!/^[1-9]\d*$/.test(line)) {
@@ -80,31 +82,27 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   }
 
   async getIssue(repo: string, issueNumber: number): Promise<UmbrellaIssue | null> {
-    try {
-      const { stdout } = await this.run('gh', [
-        'api', `repos/${repo}/issues/${issueNumber}`,
-      ], { timeout: 20_000 });
-      const value = json<GhIssueView>(stdout);
-      if (typeof value.body !== 'string') return null;
-      const commentsResult = await this.run('gh', [
-        'api',
-        '--paginate',
-        `repos/${repo}/issues/${issueNumber}/comments?per_page=100`,
-        '--jq',
-        '.[] | select(.body | type == "string") | .body | @json',
-      ], { timeout: 20_000 });
-      return {
-        number: issueNumber,
-        body: value.body,
-        comments: nonEmptyLines(commentsResult.stdout).map((line) => {
-          const body = json<unknown>(line);
-          if (typeof body !== 'string') throw new Error('gh issue comments REST query returned a non-string body');
-          return { body };
-        }),
-      };
-    } catch {
-      return null;
-    }
+    const { stdout } = await this.run('gh', [
+      'api', `repos/${repo}/issues/${issueNumber}`,
+    ], { timeout: 20_000 });
+    const value = json<GhIssueView>(stdout);
+    if (typeof value.body !== 'string') return null;
+    const commentsResult = await this.run('gh', [
+      'api',
+      '--paginate',
+      `repos/${repo}/issues/${issueNumber}/comments?per_page=100`,
+      '--jq',
+      '.[] | select(.body | type == "string") | .body | @json',
+    ], { timeout: 20_000 });
+    return {
+      number: issueNumber,
+      body: value.body,
+      comments: nonEmptyLines(commentsResult.stdout).map((line) => {
+        const body = json<unknown>(line);
+        if (typeof body !== 'string') throw new Error('gh issue comments REST query returned a non-string body');
+        return { body };
+      }),
+    };
   }
 
   async updateIssueBody(repo: string, issueNumber: number, body: string): Promise<void> {

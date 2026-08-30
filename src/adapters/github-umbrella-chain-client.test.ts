@@ -213,7 +213,7 @@ describe('GhUmbrellaChainClient.getIssue', () => {
     expect(calls[1]).toContain('--paginate');
   });
 
-  test('returns null when the body is missing or the query fails', async () => {
+  test('returns null when the body is missing and surfaces REST failures to the project boundary', async () => {
     const missing = makeClient([
       { when: (call) => has(call, 'gh', 'api', 'repos/o/r/issues/10'), stdout: JSON.stringify({}) },
     ]);
@@ -222,6 +222,6 @@ describe('GhUmbrellaChainClient.getIssue', () => {
     const failing = makeClient([
       { when: (call) => has(call, 'gh', 'api', 'repos/o/r/issues/10'), throws: new Error('boom') },
     ]);
-    expect(await failing.client.getIssue('o/r', 10)).toBeNull();
+    await expect(failing.client.getIssue('o/r', 10)).rejects.toThrow('boom');
   });
 });
