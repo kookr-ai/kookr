@@ -200,10 +200,10 @@ Options:
                            an idempotency key survives prompt text that varies
                            between attempts (e.g. an embedded random suffix).
       --auto-idempotency   When no --idempotency-key is given, derive one
-                           (auto-<hash>) from prompt+cwd+criteria+agent and any
-                           playbook path/scope. A client-timeout retry replays
-                           only when prompt, cwd, criteria, agent, playbook path,
-                           and playbook scope are unchanged (bounded by the
+                           (auto-<hash>) from prompt, cwd, criteria, agent,
+                           model policy, and any playbook path/scope. A
+                           client-timeout retry replays only when those inputs
+                           are unchanged (bounded by the
                            server's 24h idempotency TTL). If any input can change
                            between retries, pass an explicit --idempotency-key
                            instead. Also enabled by
