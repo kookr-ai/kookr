@@ -1317,6 +1317,17 @@ The system SHALL keep the schedule-creation playbook catalog and its related for
 
 **Evidence:** `src/frontend/components/SchedulesDialog.tsx` (current-effect guard across success, failure, loading finalization, and empty-directory reset), `src/frontend/components/SchedulesDialog.test.tsx` (both response orders, stale rejection, overlapping loading state, and clearing the directory during a request).
 
+### R10.6: Preserve Scheduled Playbook Completion Policy [#2904] — SHALL — `done`
+
+The system SHALL preserve a playbook's configured completion-signal policy when a schedule launches that playbook.
+
+**Acceptance criteria:**
+- A scheduled playbook with `autoCloseOnSignal: true` launches a task with the policy enabled
+- A scheduled playbook with `autoCloseOnSignal: false` launches a task with the policy explicitly disabled
+- A scheduled playbook that omits `autoCloseOnSignal` leaves the task policy unset
+
+**Evidence:** `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, and `src/server/schedule-runner.test.ts`.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1552,6 +1563,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R10.3 | F11 | SHALL | done | cron description helpers |
 | R10.4 | F11.7 | SHALL | done | SchedulesDialog rollup glance, schedule-api, schedule-format |
 | R10.5 | #2893 | SHALL | done | SchedulesDialog current-effect guard and overlap regressions |
+| R10.6 | #2904 | SHALL | done | schedule-validator and schedule-runner completion-policy propagation |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |

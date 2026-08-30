@@ -34,6 +34,7 @@ describe('ScheduleRunner', () => {
     model?: string;
     launchSource?: string;
     dependencies?: string[];
+    autoCloseOnSignal?: boolean;
   }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
@@ -97,6 +98,7 @@ Do the test thing.
           launchSource: opts.launchSource,
           dependencies: opts.dependencies,
           priorAgentSubstitutions: opts.priorAgentSubstitutions,
+          autoCloseOnSignal: opts.autoCloseOnSignal,
         });
         const queued = activeCount >= maxActive;
         if (queued) {
@@ -207,6 +209,36 @@ Do dependency-gated work.
     await runner.tick();
 
     expect(launched[0]?.dependencies).toEqual(['kb']);
+  });
+
+  it.each([
+    ['enabled', true],
+    ['explicitly disabled', false],
+    ['unset', undefined],
+  ] as const)('R10.6 forwards the playbook completion policy when %s', async (_label, autoCloseOnSignal) => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'completion-policy.md'), `---
+name: Completion Policy
+description: Exercise scheduled completion policy propagation
+${autoCloseOnSignal === undefined ? '' : `autoCloseOnSignal: ${autoCloseOnSignal}\n`}parameters: []
+checklist: []
+---
+
+Run the scheduled task.
+`);
+    const schedule = store.create({
+      name: 'Completion policy',
+      cron: '* * * * *',
+      playbook: { path: 'completion-policy.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched[0]?.autoCloseOnSignal).toBe(autoCloseOnSignal);
   });
 
   it('records a dependency-parked one-shot separately from a capacity queue', async () => {
