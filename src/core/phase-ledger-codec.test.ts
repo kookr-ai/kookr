@@ -108,7 +108,7 @@ describe('phase ledger codec', () => {
       taskId: 'correction-task',
     }] } satisfies PhaseLedger;
     const oldBlock = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, reviewVerdict: 'block', reviewedAt: '2026-08-23T10:00:00.000Z', reviewerTaskId: 'review-1', reviewAttempts: 1, reviewHeadSha: 'OLD' })} -->`;
-    const oldOwner = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, status: 'in-flight', taskId: 'old-owner' })} -->`;
+    const oldOwner = `<!-- kookr-phase-result ${JSON.stringify({ version: 1, chainId: ledger.chainId, issueNumber: 2711, phaseId: 'P2', prNumber: 2720, status: 'in-flight', taskId: 'old-owner', reviewAttempts: 1 })} -->`;
     expect(reconcilePhaseResultComments(corrected, [oldOwner, oldBlock])).toEqual(corrected);
   });
 

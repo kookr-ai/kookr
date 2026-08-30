@@ -117,6 +117,28 @@ describe('resolveWorkspaceContext', () => {
     expect(context.repoPath).toBe('/right-repo');
   });
 
+  it('can restrict configured-project resolution to the inventory path', async () => {
+    mockGitResponses({
+      '/configured-repo rev-parse --path-format=absolute --git-common-dir': '/configured-repo/.git',
+      '-C /configured-repo remote get-url origin': 'git@github.com:org/repo.git',
+    });
+    const getAllTasks = vi.fn(() => {
+      throw new Error('task history must not be scanned');
+    });
+
+    const context = await resolveWorkspaceContext('github.com/org/repo', {
+      serverCwd: '/server',
+      projectConfigStore: {
+        getConfig: () => ({ project: 'github.com/org/repo', localPath: '/configured-repo' }),
+      },
+      taskStore: { getAllTasks },
+      includeTaskFallback: false,
+    });
+
+    expect(context.repoPath).toBe('/configured-repo');
+    expect(getAllTasks).not.toHaveBeenCalled();
+  });
+
   it('throws when multiple distinct roots exist for the same project', async () => {
     mockGitResponses({
       '/repo-a rev-parse --path-format=absolute --git-common-dir': '/repo-a/.git',

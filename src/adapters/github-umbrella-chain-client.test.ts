@@ -166,48 +166,62 @@ describe('GhUmbrellaChainClient.getPullRequestHeadSha', () => {
 });
 
 describe('GhUmbrellaChainClient.listOpenIssues', () => {
-  test('keeps only integer issue numbers', async () => {
-    const { client } = makeClient([
+  test('TS-CHAIN-002: discovers phase-ledger issues through the paginated REST endpoint', async () => {
+    const { client, calls } = makeClient([
       {
-        when: (call) => has(call, 'gh', 'issue', 'list'),
-        stdout: JSON.stringify([{ number: 1 }, { number: 2.5 }, { nope: true }, { number: 3 }]),
+        when: (call) => has(call, 'gh', 'api', '--paginate'),
+        stdout: '3\n7\n',
       },
     ]);
-    expect(await client.listOpenIssues('o/r')).toEqual([{ number: 1 }, { number: 3 }]);
+    expect(await client.listOpenIssues('o/r')).toEqual([{ number: 3 }, { number: 7 }]);
+    expect(calls[0]).toEqual([
+      'gh',
+      'api',
+      '--paginate',
+      'repos/o/r/issues?state=open&per_page=100',
+      '--jq',
+      '.[] | select((has("pull_request") | not) and (.body | type == "string") and (.body | contains("```kookr-phase-ledger"))) | .number',
+    ]);
   });
 
-  test('throws when the payload is not an array', async () => {
+  test('fails closed when the filtered REST output contains an invalid issue number', async () => {
     const { client } = makeClient([
-      { when: (call) => has(call, 'gh', 'issue', 'list'), stdout: JSON.stringify({ number: 1 }) },
+      { when: (call) => has(call, 'gh', 'api', '--paginate'), stdout: '3\nnot-a-number\n' },
     ]);
-    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/non-array/);
+    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/invalid issue number/);
   });
 });
 
 describe('GhUmbrellaChainClient.getIssue', () => {
-  test('parses the body and only string comment bodies', async () => {
-    const { client } = makeClient([
+  test('reads the issue and paginated comments through REST without losing embedded newlines', async () => {
+    const { client, calls } = makeClient([
       {
-        when: (call) => has(call, 'gh', 'issue', 'view'),
-        stdout: JSON.stringify({ body: '# Umbrella', comments: [{ body: 'a' }, { body: 5 }, {}] }),
+        when: (call) => has(call, 'gh', 'api', 'repos/o/r/issues/10'),
+        stdout: JSON.stringify({ body: '# Umbrella' }),
+      },
+      {
+        when: (call) => has(call, 'gh', 'api', '--paginate', 'repos/o/r/issues/10/comments?per_page=100'),
+        stdout: `${JSON.stringify('a')}\n${JSON.stringify('line 1\nline 2')}\n`,
       },
     ]);
     expect(await client.getIssue('o/r', 10)).toEqual({
       number: 10,
       body: '# Umbrella',
-      comments: [{ body: 'a' }],
+      comments: [{ body: 'a' }, { body: 'line 1\nline 2' }],
     });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain('--paginate');
   });
 
-  test('returns null when the body is missing or the query fails', async () => {
+  test('returns null when the body is missing and surfaces REST failures to the project boundary', async () => {
     const missing = makeClient([
-      { when: (call) => has(call, 'gh', 'issue', 'view'), stdout: JSON.stringify({ comments: [] }) },
+      { when: (call) => has(call, 'gh', 'api', 'repos/o/r/issues/10'), stdout: JSON.stringify({}) },
     ]);
     expect(await missing.client.getIssue('o/r', 10)).toBeNull();
 
     const failing = makeClient([
-      { when: (call) => has(call, 'gh', 'issue', 'view'), throws: new Error('boom') },
+      { when: (call) => has(call, 'gh', 'api', 'repos/o/r/issues/10'), throws: new Error('boom') },
     ]);
-    expect(await failing.client.getIssue('o/r', 10)).toBeNull();
+    await expect(failing.client.getIssue('o/r', 10)).rejects.toThrow('boom');
   });
 });

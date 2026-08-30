@@ -1478,6 +1478,24 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 
 **Evidence:** `src/core/project-config-store.ts`, `src/core/emission-budget.ts`, `src/cli/kookr-emission.ts`, `src/frontend/components/ProjectDetailDrawer.tsx`, `src/core/project-config-store.test.ts` (`TS-EMISSION-001`), `src/core/emission-budget.test.ts` (`TS-EMISSION-002`), `src/cli/kookr-emission.test.ts` (`TS-EMISSION-003`), `src/frontend/components/ProjectDetailDrawer.tied.test.ts` (`TS-EMISSION-004`).
 
+## R17: Self-Advancing Chain Recovery
+
+### R17.1: Reconcile Umbrella Chains Across Configured Projects [#2903] — SHALL — `done`
+
+The system SHALL reconcile self-advancing umbrella chains in every configured GitHub project whose canonical checkout and remote default branch can be resolved.
+
+**Acceptance criteria:**
+- One sweep discovers valid phase ledgers in at least two configured repositories while preserving the existing single-repository behavior.
+- Each continuation launch uses the matching project ID and canonical checkout, plus a repository-qualified phase claim and idempotency key.
+- Health keeps chains with the same issue number in different repositories as separate rows identified by repository and issue number.
+- Discovery ignores ordinary open issues without a `kookr-phase-ledger` marker instead of recording them as malformed chains.
+- A terminal phase owner without a recorded PR is persisted as terminal, is not relaunched, and produces an actionable fail-closed health reason.
+- A project whose checkout or remote default branch cannot be resolved is skipped without attributing its chains to another project.
+
+**Linked tests:** TS-CHAIN-001, TS-CHAIN-002, TS-CHAIN-003.
+
+**Evidence:** `src/server/use-cases/umbrella-chain-advancer.ts`, `src/server/index.ts`, `src/adapters/github-umbrella-chain-client.ts`, `src/server/use-cases/workspace-context.ts`, `src/core/repo-policy-resolver.ts`, `src/server/use-cases/umbrella-chain-advancer.test.ts` (`TS-CHAIN-001`, `TS-CHAIN-003`), `src/adapters/github-umbrella-chain-client.test.ts` (`TS-CHAIN-002`), `src/server/use-cases/workspace-context.test.ts`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1591,6 +1609,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R14.1 | #1445 | SHALL | done | TTS server input validation |
 | R15.1 | #2782 | SHALL | done | orchestration-pause, orchestration-pause-service, diagnostics-routes |
 | R16.1 | emission bootstrap | SHALL | done | project-config-store, emission-budget, kookr-emission, ProjectDetailDrawer |
+| R17.1 | #2903 | SHALL | done | umbrella-chain-advancer, github-umbrella-chain-client, workspace-context, server wiring |
 
 ---
 

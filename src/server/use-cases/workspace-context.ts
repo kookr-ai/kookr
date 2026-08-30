@@ -18,6 +18,8 @@ export interface WorkspaceContextDeps {
   serverCwd: string;
   serverProjectId?: string;
   projectConfigStore?: Pick<ProjectConfigStore, 'getConfig'>;
+  /** Disable task-history probing when the caller is resolving configured inventory only. */
+  includeTaskFallback?: boolean;
 }
 
 export interface WorkspaceContext {
@@ -45,14 +47,16 @@ export async function resolveWorkspaceContext(
     await addMatchingRepoRoot(roots, projectId, deps.serverCwd);
   }
 
-  for (const task of deps.taskStore.getAllTasks()) {
-    if (task.projectId !== projectId) continue;
+  if (deps.includeTaskFallback !== false) {
+    for (const task of deps.taskStore.getAllTasks()) {
+      if (task.projectId !== projectId) continue;
 
-    await addMatchingRepoRoot(roots, projectId, task.cwd);
+      await addMatchingRepoRoot(roots, projectId, task.cwd);
 
-    for (const session of task.sessions) {
-      if (!session.cwd) continue;
-      await addMatchingRepoRoot(roots, projectId, session.cwd);
+      for (const session of task.sessions) {
+        if (!session.cwd) continue;
+        await addMatchingRepoRoot(roots, projectId, session.cwd);
+      }
     }
   }
 

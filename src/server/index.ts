@@ -77,6 +77,7 @@ import {
   type DeliverySnapshot,
 } from '../core/loop-delivery-watchdog.js';
 import { gitIn } from '../core/git-helpers.js';
+import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
@@ -151,6 +152,7 @@ import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-c
 import { isTerminalStatus } from '../core/task-status.js';
 import { GhUmbrellaChainClient } from '../adapters/github-umbrella-chain-client.js';
 import {
+  buildUmbrellaChainProjectInventory,
   UmbrellaChainAdvancer,
   UMBRELLA_CHAIN_ADVANCER_STALE_MS,
   umbrellaChainAdvancerModeFromEnv,
@@ -202,7 +204,7 @@ import {
 } from '../core/retro-verify-queue.js';
 import { decorateClaim } from './issue-claim-decorator.js';
 import { resolveClaimRepo } from './use-cases/resolve-claim-repo.js';
-import { getProjectId } from '../core/project-identity.js';
+import { getProjectId, projectIdToOwnerRepo } from '../core/project-identity.js';
 import { acquireSingleWriterLock } from './single-writer-lock.js';
 import {
   getOperationalAlertConfig,
@@ -2739,12 +2741,45 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     attemptRepository,
   } = await createContributionWorkspaceServices({ kookrDir, serverCwd, taskStore });
 
-  const umbrellaRepo = serverProjectId?.match(/^github\.com\/([^/]+\/[^/]+)$/i)?.[1];
-  if (umbrellaRepo) {
+  const umbrellaServerRepoParts = serverProjectId ? projectIdToOwnerRepo(serverProjectId) : null;
+  const umbrellaRepo = umbrellaServerRepoParts
+    ? `${umbrellaServerRepoParts.owner}/${umbrellaServerRepoParts.repo}`
+    : null;
+  const umbrellaFallbackProjectId = [
+    ...(serverProjectId ? [serverProjectId] : []),
+    ...projectConfigStore.getAllConfigs().map((config) => config.project),
+  ].find((projectId) => projectIdToOwnerRepo(projectId) !== null);
+  const umbrellaFallbackRepoParts = umbrellaFallbackProjectId
+    ? projectIdToOwnerRepo(umbrellaFallbackProjectId)
+    : null;
+  if (umbrellaFallbackRepoParts) {
     umbrellaChainAdvancer = new UmbrellaChainAdvancer({
       kookrDir,
-      repo: umbrellaRepo,
+      repo: `${umbrellaFallbackRepoParts.owner}/${umbrellaFallbackRepoParts.repo}`,
       repoPath: serverCwd,
+      legacyClaimRepo: umbrellaRepo,
+      projects: async () => {
+        const projectIds = new Set<string>([
+          ...(serverProjectId ? [serverProjectId] : []),
+          ...projectConfigStore.getAllConfigs().map((config) => config.project),
+        ]);
+        return buildUmbrellaChainProjectInventory(projectIds, {
+          resolveRepoPath: async (projectId) => {
+            const context = await resolveWorkspaceContext(projectId, {
+              taskStore,
+              serverCwd,
+              serverProjectId,
+              projectConfigStore,
+              includeTaskFallback: false,
+            });
+            return context.repoPath;
+          },
+          resolveDefaultRef: (repoPath) => resolveDefaultBranch(repoPath, {
+            allowLocalFallback: false,
+          }),
+          warn: (message) => console.warn(message),
+        });
+      },
       remote: new GhUmbrellaChainClient(),
       mode: umbrellaChainAdvancerMode,
       launch: async (options) => {
@@ -2753,7 +2788,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           launchSource: 'schedule',
           unattended: true,
           autoCloseOnSignal: true,
-          projectId: serverProjectId,
         }, { deliveryPolicy: 'self-advancing' });
         return { taskId: result.task.id };
       },
@@ -2774,7 +2808,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
       logger: console,
     });
-    console.log(`[umbrella-chain-advancer] mode=${umbrellaChainAdvancerMode} repo=${umbrellaRepo}`);
+    console.log(`[umbrella-chain-advancer] mode=${umbrellaChainAdvancerMode} project-inventory=configured-github-projects`);
   }
 
   const takePredeleteSnapshot = async (): Promise<void> => {
