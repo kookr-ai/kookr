@@ -185,6 +185,29 @@ describe('schedule routes', () => {
   // POST /api/schedules
   // ---------------------------------------------------------------------------
   describe('POST /api/schedules', () => {
+    test('persists portable small-model intent without pinning an agent', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Small sentinel',
+            cron: '*/30 * * * *',
+            cwd: tempDir,
+            modelTier: 'small',
+            playbook: { path: 'daily.md', parameters: {} },
+          }),
+        },
+      );
+
+      expect(res.status).toBe(201);
+      const schedule = await res.json();
+      expect(schedule.modelTier).toBe('small');
+      expect(schedule.agentType).toBeUndefined();
+      expect(store.get(schedule.id)?.modelTier).toBe('small');
+    });
+
     test('rejects cron expressions that fire more often than every five minutes', async () => {
       const res = await mkApp({ scheduleService: service }).request(
         '/api/schedules',
@@ -244,6 +267,25 @@ Do not schedule.
   // PATCH /api/schedules/:id
   // ---------------------------------------------------------------------------
   describe('PATCH /api/schedules/:id', () => {
+    test('sets a portable tier while clearing a legacy agent pin', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      store.updateDefinition(schedule.id, { agentType: 'claude-code' });
+
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ modelTier: 'small', agentType: null }),
+        },
+      );
+
+      expect(res.status).toBe(200);
+      const updated = await res.json();
+      expect(updated.modelTier).toBe('small');
+      expect(updated.agentType).toBeUndefined();
+    });
+
     test('rejects cron expressions that fire more often than every five minutes', async () => {
       const schedule = await seedSchedule(service, tempDir);
       const res = await mkApp({ scheduleService: service }).request(

@@ -20,6 +20,7 @@ import {
   isCwdValidationError,
   isEffortValidationError,
   isModelValidationError,
+  isModelTierValidationError,
   isPendingQueueFullError,
   isSpawnBurstLimitError,
   isHostLoadAdmissionError,
@@ -75,6 +76,7 @@ import {
 import { applyDefaultAgentUpdate } from '../settings-service.js';
 import { filterLaunchableAgentTypes } from '../../adapters/grok-auth-availability.js';
 import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
+import { isModelTier } from '../../shared/contracts/model-tier.js';
 import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
 import {
   evaluateLessonDecisionGate,
@@ -510,6 +512,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         agentType?: string;
         effort?: unknown;
         model?: unknown;
+        modelTier?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
@@ -525,6 +528,12 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (!body.cwd || typeof body.cwd !== 'string') {
         return c.json({ error: 'cwd is required and must be a string' }, 400);
+      }
+      if (body.modelTier !== undefined && !isModelTier(body.modelTier)) {
+        return c.json({ error: 'modelTier must be one of: small', code: 'invalid_model_tier' }, 400);
+      }
+      if (body.modelTier !== undefined && (body.model !== undefined || body.effort !== undefined)) {
+        return c.json({ error: 'modelTier cannot be combined with model or effort pins', code: 'model_tier_conflict' }, 400);
       }
       let playbookWrapper: { path: string; scope?: PlaybookScope } | undefined;
       if (body.playbook !== undefined) {
@@ -659,6 +668,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         criteria: preparedPlaybook?.launchOpts.criteria ?? body.criteria,
         parentTaskId: body.parentTaskId,
         agentType,
+        modelTier: isModelTier(body.modelTier) ? body.modelTier : undefined,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
         model: typeof body.model === 'string' ? body.model : undefined,
         disableDedup: body.disableDedup === true,
@@ -739,6 +749,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (isModelValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isModelTierValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (isIssueClaimRepoError(err)) {

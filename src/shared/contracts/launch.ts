@@ -1,4 +1,5 @@
 import type { AgentSelection, AgentType } from './agent-types.js';
+import type { ModelTier } from './model-tier.js';
 import type { LaunchDependency } from './playbook.js';
 import type { AgentSubstitutionHop, TaskLaunchAdmission, TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
@@ -33,6 +34,8 @@ export interface LaunchOpts {
    * `round-robin` sentinel, which the server resolves to a concrete agent.
    */
   agentType?: AgentSelection;
+  /** Provider-neutral model intent resolved after the final agent is known. */
+  modelTier?: ModelTier;
   /**
    * Optional per-task reasoning-effort override (#681). Wins over the
    * configured per-agent-type default for this one launch. Validated against

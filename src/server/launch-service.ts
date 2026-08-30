@@ -77,6 +77,11 @@ import {
   validatePersistedLaunchIntent,
 } from '../core/task-launch-intent.js';
 import {
+  MODEL_TIERS,
+  isModelTier,
+  resolveModelTier,
+} from '../shared/contracts/model-tier.js';
+import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
   isLaunchTimeoutError,
@@ -575,6 +580,20 @@ export class ModelValidationError extends Error {
     super(message);
     this.name = 'ModelValidationError';
   }
+}
+
+/** Invalid or ambiguous provider-neutral model-tier request. */
+export class ModelTierValidationError extends Error {
+  readonly code: 'invalid_model_tier' | 'model_tier_conflict';
+  constructor(code: ModelTierValidationError['code'], message: string) {
+    super(message);
+    this.name = 'ModelTierValidationError';
+    this.code = code;
+  }
+}
+
+export function isModelTierValidationError(err: unknown): err is ModelTierValidationError {
+  return err instanceof ModelTierValidationError;
 }
 
 /** Type guard for {@link ModelValidationError}, for callers mapping to 400. */
@@ -1202,10 +1221,27 @@ async function launchTaskCore(
         deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
       )
     : requestedAgent;
+  if (opts.modelTier !== undefined && !isModelTier(opts.modelTier)) {
+    throw new ModelTierValidationError(
+      'invalid_model_tier',
+      `Invalid model tier "${String(opts.modelTier)}"; valid tiers: ${MODEL_TIERS.join(', ')}`,
+    );
+  }
+  if (opts.modelTier !== undefined && (opts.model !== undefined || opts.effort !== undefined)) {
+    throw new ModelTierValidationError(
+      'model_tier_conflict',
+      'modelTier cannot be combined with model or effort pins',
+    );
+  }
   // Per-task effort/model pins may be dropped if plan-quota rotation (#1936)
   // substitutes a different agent — same as schedule WS1.3 substitution.
   let effectiveEffort: string | undefined = opts.effort;
   let effectiveModel: string | undefined = opts.model;
+  if (opts.modelTier !== undefined) {
+    const target = resolveModelTier(agentType, opts.modelTier);
+    effectiveEffort = target.effort;
+    effectiveModel = target.model;
+  }
   // Populated when plan-quota admission rotates claude-code onto an alternate.
   let planQuotaRotation: {
     fromAgent: AgentType;
@@ -1236,8 +1272,13 @@ async function launchTaskCore(
   // Validate a per-task model pin against the *resolved* agent's allowlist
   // (#1518). Same placement as effort — after round-robin, before side effects.
   // No silent fallback: unknown models throw rather than launch with the CLI
-  // default. codex-cli / grok-build currently have empty allowlists.
-  if (effectiveModel !== undefined && !isValidModelForAgent(agentType, effectiveModel)) {
+  // default. codex-cli / grok-build currently have empty public allowlists;
+  // model-tier targets come from the exhaustive trusted mapping above.
+  if (
+    effectiveModel !== undefined
+    && opts.modelTier === undefined
+    && !isValidModelForAgent(agentType, effectiveModel)
+  ) {
     const valid = modelsForAgent(agentType);
     throw new ModelValidationError(
       valid.length === 0
@@ -1446,13 +1487,20 @@ async function launchTaskCore(
       }
       if (toAgent) {
         const fromAgent = agentType;
-        // Drop pins that are invalid for the substitute (schedule WS1.3 drops
-        // all pins on substitution; we only drop ones the substitute rejects).
-        if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
-          effectiveEffort = undefined;
-        }
-        if (effectiveModel !== undefined && !isValidModelForAgent(toAgent, effectiveModel)) {
-          effectiveModel = undefined;
+        if (opts.modelTier !== undefined) {
+          // Portable intent follows the final provider. Re-resolve instead of
+          // dropping the original provider's concrete pins.
+          const target = resolveModelTier(toAgent, opts.modelTier);
+          effectiveEffort = target.effort;
+          effectiveModel = target.model;
+        } else {
+          // Drop explicit pins the substitute cannot honor independently.
+          if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
+            effectiveEffort = undefined;
+          }
+          if (effectiveModel !== undefined && !isValidModelForAgent(toAgent, effectiveModel)) {
+            effectiveModel = undefined;
+          }
         }
         agentType = toAgent;
         planQuotaRotation = {

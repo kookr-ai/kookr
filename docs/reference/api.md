@@ -230,7 +230,7 @@ GET /api/tasks?limit=50&offset=100
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
+`agentType`, `modelTier`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
 `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
 `playbook` (optional) wraps the supplied prompt with a parsed playbook before
@@ -349,13 +349,22 @@ no silent fallback. Allowed base ids for `claude-code`:
 - dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
   accepted
 
-`codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
-`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
+`codex-cli` and `grok-build` reject a raw per-task `model` pin (use
+`modelTier` for portable policy or the agent-specific environment setting).
+Omitting `model` leaves the agent
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. The dashboard Launch dialog and Quick Launch send the same field
 when the operator picks a model there. Resolution order for both `effort`
 and `model`: **per-task override → per-schedule value → global agent-type
 default → unset**.
+
+`modelTier` (optional) is a provider-neutral model intent. The only current
+value is `small`, which resolves after Kookr has selected the final agent:
+Claude Code → `claude-haiku-4-5`, Codex CLI → `gpt-5.6-luna` with `high`
+reasoning, Grok Build → `grok-4.6`. It cannot be combined with raw `model` or
+`effort` pins. A schedule can persist the same field while omitting `agentType`,
+so every fire follows the live Kookr default and then resolves the matching
+small target.
 
 `idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
 protects a retried request from creating a duplicate task. It is a *different*

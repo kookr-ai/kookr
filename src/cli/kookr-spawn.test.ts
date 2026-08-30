@@ -214,6 +214,15 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--model', 'not-a-model'])).toThrow(UsageError);
   });
 
+  it('parses portable small model intent and rejects ambiguous raw pins', () => {
+    expect(parseArgs([]).modelTier).toBeNull();
+    expect(parseArgs(['--model-tier', 'small']).modelTier).toBe('small');
+    expect(parseArgs(['--model-tier=small']).modelTier).toBe('small');
+    expect(() => parseArgs(['--model-tier', 'flagship'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model-tier', 'small', '--model', 'claude-haiku-4-5'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model-tier', 'small', '--effort', 'high'])).toThrow(UsageError);
+  });
+
   it('rejects invalid --dedupe value', () => {
     expect(() => parseArgs(['--dedupe', 'maybe'])).toThrow(UsageError);
   });

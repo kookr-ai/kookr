@@ -1216,6 +1216,11 @@ describe('resolveCodexModel', () => {
     expect(resolveCodexModel('max', { KOOKR_CODEX_MODEL: '  gpt-5.6-luna  ' })).toBe('gpt-5.6-luna');
   });
 
+  test('lets a resolved per-task tier model override the environment default', () => {
+    expect(resolveCodexModel('high', { KOOKR_CODEX_MODEL: 'gpt-5.6-sol' }, 'gpt-5.6-luna'))
+      .toBe('gpt-5.6-luna');
+  });
+
   test('ultra always escalates to Sol regardless of env', () => {
     expect(resolveCodexModel('ultra', {})).toBe(ULTRA_CODEX_MODEL);
     expect(resolveCodexModel('ultra', { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' })).toBe(ULTRA_CODEX_MODEL);

@@ -21,6 +21,7 @@ export interface ParsedArgs {
   agent: 'claude-code' | 'codex-cli' | 'grok-build' | null;
   effort: string | null;
   model: string | null;
+  modelTier: 'small' | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   idempotencyKey: string | null;
@@ -103,6 +104,7 @@ export interface PostTaskArgs {
   agent: 'claude-code' | 'codex-cli' | 'grok-build' | null;
   effort?: string | null;
   model?: string | null;
+  modelTier?: 'small' | null;
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;

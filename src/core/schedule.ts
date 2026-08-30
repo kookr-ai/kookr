@@ -8,6 +8,7 @@ import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import type { TerminalReasonCategory, TerminalTransitionSource } from '../shared/contracts/task.js';
+import { isModelTier, type ModelTier } from '../shared/contracts/model-tier.js';
 import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
 import { isCriticalAllowlistedSchedule } from './critical-schedule-rearm.js';
 
@@ -464,6 +465,8 @@ export interface Schedule {
    * `round-robin`.
    */
   agentType?: AgentSelection;
+  /** Portable model intent resolved against the concrete agent on every fire. */
+  modelTier?: ModelTier;
   /**
    * Optional per-schedule reasoning-effort pin (#1518). Forwarded into each
    * spawned task as the launch `effort` (wins over the global per-agent-type
@@ -600,6 +603,7 @@ export interface CreateScheduleInput {
   playbook: SchedulePlaybook;
   cwd: string;
   agentType?: AgentSelection;
+  modelTier?: ModelTier;
   /** Optional reasoning-effort pin for every run of this schedule (#1518). */
   effort?: string;
   /** Optional model pin for every run of this schedule (#1518). */
@@ -623,6 +627,8 @@ export interface UpdateScheduleDefinitionInput {
    * so the schedule follows the server default again.
    */
   agentType?: AgentSelection | null;
+  /** Set a tier, pass null to clear it, or omit to leave unchanged. */
+  modelTier?: ModelTier | null;
   /** Set to a string to pin; omit to leave unchanged. */
   effort?: string;
   /** Set to a string to pin; omit to leave unchanged. */
@@ -807,6 +813,14 @@ export class ScheduleStore {
     }
     if (!input.playbook?.path) throw new ScheduleValidationError('playbook.path is required', { playbook: 'Required' });
     if (!input.cwd?.trim()) throw new ScheduleValidationError('cwd is required', { cwd: 'Required' });
+    if (input.modelTier !== undefined && !isModelTier(input.modelTier)) {
+      throw new ScheduleValidationError('Invalid model tier', { modelTier: 'Must be one of: small' });
+    }
+    if (input.modelTier !== undefined && (input.model !== undefined || input.effort !== undefined)) {
+      throw new ScheduleValidationError('Conflicting model policy', {
+        modelTier: 'Cannot be combined with model or effort pins',
+      });
+    }
 
     const now = new Date().toISOString();
     // Accept loop config at the top level or nested under playbook (issue #1899).
@@ -828,6 +842,7 @@ export class ScheduleStore {
       cwd: input.cwd,
       // Omit agentType when unset so fire-time resolves settings.defaultAgentType.
       ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
+      ...(input.modelTier !== undefined ? { modelTier: input.modelTier } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(loop ? { loop } : {}),
@@ -852,8 +867,26 @@ export class ScheduleStore {
     if (patch.maxTriggers !== undefined && patch.maxTriggers !== null && !isValidMaxTriggers(patch.maxTriggers)) {
       throw new ScheduleValidationError('Invalid trigger limit', { maxTriggers: 'Must be a positive integer' });
     }
+    const nextModelTier = patch.modelTier === null ? undefined : (patch.modelTier ?? existing.modelTier);
+    const nextEffort = patch.effort ?? existing.effort;
+    const nextModel = patch.model ?? existing.model;
+    if (nextModelTier !== undefined && !isModelTier(nextModelTier)) {
+      throw new ScheduleValidationError('Invalid model tier', { modelTier: 'Must be one of: small' });
+    }
+    if (nextModelTier !== undefined && (nextModel !== undefined || nextEffort !== undefined)) {
+      throw new ScheduleValidationError('Conflicting model policy', {
+        modelTier: 'Cannot be combined with model or effort pins',
+      });
+    }
 
-    const { maxTriggers, loop: patchLoop, playbook: patchPlaybook, agentType: patchAgentType, ...rest } = patch;
+    const {
+      maxTriggers,
+      loop: patchLoop,
+      playbook: patchPlaybook,
+      agentType: patchAgentType,
+      modelTier: patchModelTier,
+      ...rest
+    } = patch;
     const nextTriggerState = computeUpdatedTriggerState(existing, maxTriggers, new Date().toISOString());
     // Loop config update (issue #1899): top-level `null` clears; nested
     // `playbook.loop` is accepted; omit leaves the existing value.
@@ -867,6 +900,11 @@ export class ScheduleStore {
         ? {}
         : patchAgentType !== undefined
           ? { agentType: patchAgentType }
+          : {}),
+      ...(patchModelTier === null
+        ? {}
+        : patchModelTier !== undefined
+          ? { modelTier: patchModelTier }
           : {}),
       ...nextTriggerState,
       ...(patchPlaybook ? {
@@ -893,6 +931,9 @@ export class ScheduleStore {
     }
     if (patchAgentType === null) {
       delete updated.agentType;
+    }
+    if (patchModelTier === null) {
+      delete updated.modelTier;
     }
     this.schedules.set(id, updated);
     this.rollupStore.updateFromSchedule(updated);
@@ -1057,6 +1098,7 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     ...(typeof candidate.agentType === 'string' && candidate.agentType.trim() !== ''
       ? { agentType: normalizeAgentSelection(candidate.agentType) }
       : {}),
+    ...(isModelTier(candidate.modelTier) ? { modelTier: candidate.modelTier } : {}),
     ...(typeof candidate.effort === 'string' ? { effort: candidate.effort } : {}),
     ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
     // Carry a persisted loop config so schedule-armed Ralph loops survive

@@ -757,7 +757,7 @@ The system SHALL let the operator pin reasoning effort and model on a dashboard 
 - Launch dialog and Quick Launch expose optional effort and model selects for the resolved agent
 - Chosen values are forwarded on the WebSocket `launch` payload into the existing `LaunchOpts` contract
 - Leaving a select on "Agent default" omits that field so the server default still applies
-- Agents that reject a per-task model pin (currently Codex CLI and Grok Build) hide the model select
+- Agents that reject a raw per-task model pin (currently Codex CLI and Grok Build) hide the model select
 - Agents with no validated effort levels (currently Grok Build) hide the effort select
 
 **Rationale:** The launch pipeline already validates per-task effort (#681) and model (#1518). Without dashboard controls, operators could only pin those values via CLI or API.
@@ -811,6 +811,22 @@ The system SHALL preserve required work without consuming a worker when confirme
 - Duplicate and idempotent REST responses preserve admission metadata; compact task listings retain only safe legacy launch pins (`schemaVersion`, `agentType`, `model`, `effort`) and redact prompt-bearing/replay fields
 
 **Evidence:** `src/core/launch-dependency-admission.ts`, `src/core/launch-dependency-task-admission.ts`, `src/core/task-launch-intent.ts`, `src/core/pending-task-ttl.ts`, `src/core/capacity-ledger.ts`, `src/core/launch-dependency-diagnostics.ts`, `src/core/session-registry.ts`, `src/core/tasks.ts`, `src/server/launch-service.ts`, `src/server/agent-lifecycle.ts`, `src/server/crash-recovery.ts`, `src/server/provider-transient-retry.ts`, `src/server/reconciliation.ts`, `src/server/startup-recovery.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/server/ralph-loop-service.ts`, `src/server/use-cases/looped-playbook-launch.ts`, `src/server/use-cases/delete-task.ts`, `src/server/use-cases/task-lifecycle-commands.ts`, `src/server/use-cases/prune-aged-task-records.ts`, `src/server/routes/task-routes.ts`, and focused tests beside each module.
+
+### R4b.13: Portable Small-Model Intent [F4.1, F11] — SHALL — `done`
+
+The system SHALL let routine tasks request `modelTier: "small"` without pinning a coding-agent provider.
+
+**Acceptance criteria (Must):**
+- Kookr resolves the final agent from the explicit pin, live default, round robin, and provider fallback before resolving the tier
+- `small` resolves to Claude Haiku 4.5, Codex Luna with high reasoning, or Grok 4.6 for the final agent
+- A tier request cannot be combined with raw `model` or `effort` pins and an unknown tier returns a typed 400 error
+- Schedules persist and forward `modelTier` while an omitted `agentType` continues to follow the live Kookr default
+- Queued and recovered tasks persist the resolved provider-specific model/effort pins, so replay does not depend on a later default change
+- Launches and schedules that omit `modelTier` preserve their previous behavior
+
+**Non-functional requirement (Must):** Tier resolution SHALL use an exhaustive agent mapping and SHALL NOT invoke a provider CLI or an LLM to choose the target.
+
+**Evidence:** `src/shared/contracts/model-tier.ts`, `src/server/launch-service.ts`, `src/core/schedule.ts`, `src/server/schedule-runner.ts`, `bin/kookr-spawn.js`, and focused tests beside each module.
 
 ---
 
@@ -1526,6 +1542,7 @@ The system SHALL let a repository with no project-specific zero-drain setting em
 | R4b.10 | F4.1 | SHALL | done | last-launch-pins, LaunchTaskDialog, QuickLaunch, launch-effort-model |
 | R4b.11 | F4.1 | SHOULD | done | LaunchTaskDialog (`looksLikeAbsoluteClipboardPath`), LaunchTaskDialog.paste.test.ts |
 | R4b.12 | F4.12, F10.5 | SHALL | done | launch-dependency-admission, task-launch-intent, launch-service, agent-lifecycle, crash-recovery, schedule-validator, task-routes |
+| R4b.13 | F4.1, F11 | SHALL | done | model-tier, launch-service, schedule, schedule-runner, kookr-spawn |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |

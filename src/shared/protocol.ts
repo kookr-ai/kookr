@@ -31,6 +31,7 @@ export type {
   EffortLevel,
   AgentEffortMap,
 } from './contracts/agent-types.js';
+export type { ModelTier } from './contracts/model-tier.js';
 export {
   AGENT_TYPES,
   AGENT_SELECTIONS,

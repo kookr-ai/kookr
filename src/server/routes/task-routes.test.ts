@@ -1632,6 +1632,39 @@ parameters:
     expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ effort: 'max' }));
   });
 
+  test('forwards portable small intent without an agent pin', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'routine sentinel', cwd: '/cwd', modelTier: 'small' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      agentType: undefined,
+      modelTier: 'small',
+    }));
+  });
+
+  test('rejects unknown or ambiguous model tiers before launch', async () => {
+    for (const body of [
+      { modelTier: 'flagship' },
+      { modelTier: 'small', model: 'claude-haiku-4-5' },
+      { modelTier: 'small', effort: 'high' },
+    ]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', cwd: '/cwd', ...body }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toMatch(/^invalid_model_tier$|^model_tier_conflict$/);
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
   test('returns 400 when model is not a string (#1518)', async () => {
     for (const bad of [3, null, ['claude-fable-5'], { id: 'claude-fable-5' }]) {
       vi.mocked(launchTask).mockClear();

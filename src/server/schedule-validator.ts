@@ -21,6 +21,7 @@ import {
   type AgentSelection,
 } from '../core/agent-types.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
+import { isModelTier } from '../shared/contracts/model-tier.js';
 
 export interface ResolvedScheduleLaunch {
   prompt: string;
@@ -49,6 +50,12 @@ export class ScheduleValidator {
     if (cronError) fieldErrors.cron = cronError;
     if (input.maxTriggers !== undefined && !isValidMaxTriggers(input.maxTriggers)) {
       fieldErrors.maxTriggers = 'Must be a positive integer';
+    }
+    if (input.modelTier !== undefined && !isModelTier(input.modelTier)) {
+      fieldErrors.modelTier = 'Must be one of: small';
+    }
+    if (input.modelTier !== undefined && (input.model !== undefined || input.effort !== undefined)) {
+      fieldErrors.modelTier = 'Cannot be combined with model or effort pins';
     }
 
     // Effort/model pins are validated against the pin when present, else the
@@ -91,6 +98,19 @@ export class ScheduleValidator {
         : (patch.agentType ?? existing.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE);
     const effort = patch.effort !== undefined ? patch.effort : existing.effort;
     const model = patch.model !== undefined ? patch.model : existing.model;
+    const modelTier = patch.modelTier === null
+      ? undefined
+      : (patch.modelTier ?? existing.modelTier);
+    if (modelTier !== undefined && !isModelTier(modelTier)) {
+      throw new ScheduleValidationError('Invalid schedule definition', {
+        modelTier: 'Must be one of: small',
+      });
+    }
+    if (modelTier !== undefined && (model !== undefined || effort !== undefined)) {
+      throw new ScheduleValidationError('Invalid schedule definition', {
+        modelTier: 'Cannot be combined with model or effort pins',
+      });
+    }
     const effortModelErrors = validateScheduleEffortModel(resolvedAgent, effort, model);
     if (Object.keys(effortModelErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', effortModelErrors);

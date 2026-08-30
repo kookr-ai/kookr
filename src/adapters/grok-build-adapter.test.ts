@@ -108,6 +108,17 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
+  test('a resolved per-task tier model overrides the adapter default', async () => {
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('do it', '/workspace');
+    const sessionId = await adapter.launch(task.id, 'do it', '/workspace', undefined, {
+      model: 'grok-4.6',
+    });
+
+    expect(backend.sessions.get(sessionId)!.spec.args)
+      .toEqual(['--no-alt-screen', '--model', 'grok-4.6']);
+  });
+
   test('reports the dtach master via onSessionCreated once the session exists (issue #2500)', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');

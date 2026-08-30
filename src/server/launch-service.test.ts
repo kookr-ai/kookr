@@ -329,7 +329,7 @@ describe('launchTask', () => {
 
   describe('per-task effort override (#681)', () => {
     /** The AdapterLaunchOptions (5th) arg of the first adapter.launch call. */
-    function launchOptsFor(deps: LaunchServiceDeps, agent: 'claude-code' | 'codex-cli') {
+    function launchOptsFor(deps: LaunchServiceDeps, agent: 'claude-code' | 'codex-cli' | 'grok-build') {
       const launch = vi.mocked(deps.adapterRegistry.get(agent).launch);
       return launch.mock.calls[0]?.[4];
     }
@@ -430,7 +430,7 @@ describe('launchTask', () => {
       expect(store.listTasks()).toHaveLength(0);
     });
 
-    it('rejects any model pin for codex-cli empty allowlist (#1518)', async () => {
+    it('rejects a Claude model pin for codex-cli (#1518)', async () => {
       await expect(
         launchTask(deps, {
           prompt: 'hello',
@@ -439,6 +439,44 @@ describe('launchTask', () => {
           model: 'claude-fable-5',
         }),
       ).rejects.toBeInstanceOf(ModelValidationError);
+    });
+
+    it.each([
+      ['claude-code', { model: 'claude-haiku-4-5' }],
+      ['codex-cli', { model: 'gpt-5.6-luna', effort: 'high' }],
+      ['grok-build', { model: 'grok-4.6' }],
+    ] as const)('resolves small intent for %s after agent selection', async (agentType, expected) => {
+      if (agentType === 'grok-build') {
+        deps.adapterRegistry.register({
+          agentType: 'grok-build',
+          launch: vi.fn().mockResolvedValue('tmux-grok'),
+          sendInput: vi.fn(),
+          sendKeystroke: vi.fn(),
+          stop: vi.fn(),
+          captureDisplay: vi.fn(),
+          onEvent: vi.fn(),
+          onRefreshNeeded: vi.fn(),
+          injectHookEvent: vi.fn(),
+        } as any);
+      }
+      const result = await launchTask(deps, {
+        prompt: `small-${agentType}`,
+        cwd: '/tmp',
+        agentType,
+        modelTier: 'small',
+      });
+      expect(launchOptsFor(deps, agentType)).toMatchObject(expected);
+      expect(result.task.launchIntent).toMatchObject({ agentType, ...expected });
+    });
+
+    it('rejects mixing portable intent with raw provider pins', async () => {
+      await expect(launchTask(deps, {
+        prompt: 'ambiguous policy',
+        cwd: '/tmp',
+        modelTier: 'small',
+        model: 'claude-haiku-4-5',
+      })).rejects.toMatchObject({ code: 'model_tier_conflict' });
+      expect(store.listTasks()).toHaveLength(0);
     });
 
     it('rejects empty-string model (#1518)', async () => {
@@ -4175,6 +4213,28 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       expect(store.getTask(result.task.id)?.metadata?.agentSubstitutionChain).toEqual([
         { reason: 'quota_rotate', from: 'claude-code', to: 'codex-cli' },
       ]);
+    });
+
+    it('re-resolves small intent for the final agent after quota rotation', async () => {
+      const store = new TaskStore();
+      const deps = quotaDeps(store, {
+        fiveHour: { utilization: 100, resetsAt: '2026-08-04T12:00:00.000Z' },
+        sevenDay: null,
+      });
+      const result = await launchTask(deps, {
+        prompt: 'portable small fallback',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+        modelTier: 'small',
+      });
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(result.task.launchIntent).toMatchObject({
+        agentType: 'codex-cli',
+        model: 'gpt-5.6-luna',
+        effort: 'high',
+      });
+      expect(vi.mocked(deps.adapterRegistry.get('codex-cli').launch).mock.calls[0]?.[4])
+        .toMatchObject({ model: 'gpt-5.6-luna', effort: 'high' });
     });
 
     it('does not rotate onto disallowed codex-cli when policy denies it (issue #2001)', async () => {

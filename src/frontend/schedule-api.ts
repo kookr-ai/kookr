@@ -1,4 +1,4 @@
-import type { AgentSelection, Playbook, PlaybookScope, ScheduleListResponse, ScheduleResponse, ScheduleRollup } from '../shared/protocol.js';
+import type { AgentSelection, ModelTier, Playbook, PlaybookScope, ScheduleListResponse, ScheduleResponse, ScheduleRollup } from '../shared/protocol.js';
 
 export interface SchedulePreviewResponse {
   cronDescription: string;
@@ -18,6 +18,7 @@ export interface CreateScheduleRequest {
   cwd: string;
   enabled: boolean;
   agentType: AgentSelection;
+  modelTier?: ModelTier;
   /** Optional per-schedule reasoning-effort pin (#1518). */
   effort?: string;
   /** Optional per-schedule model pin (#1518). */
