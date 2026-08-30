@@ -30,6 +30,7 @@ export interface ResolvedScheduleLaunch {
   playbookId: string;
   projectId?: string;
   dependencies?: LaunchDependency[];
+  autoCloseOnSignal?: boolean;
 }
 
 const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
@@ -165,6 +166,7 @@ export class ScheduleValidator {
         playbookId: schedule.playbook.path,
         projectId,
         ...(playbook.dependencies ? { dependencies: [...playbook.dependencies] } : {}),
+        ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
       };
     } catch (err) {
       if (err instanceof ScheduleValidationError) throw err;
